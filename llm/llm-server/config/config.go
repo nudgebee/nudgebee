@@ -131,21 +131,28 @@ type appConfig struct {
 	// silently escalate a tenant to fail-closed and break traffic.
 	LlmServerEgressFilterPIIMode string `mapstructure:"llm_server_egressfilter_pii_mode"`
 	// Detection backend for the PII scrub wrapper:
-	//   - "http"      (default) — batch POST to ml-k8s-server /scrub. Runs
-	//                  Python Tier-1 regex + Tier-2 NER + infra allowlist.
+	//   - "inprocess" (default, 2026-08-04) — Go in-process regex only
+	//                  (EMAIL, PHONE). No HTTP hop, sub-ms per call, no
+	//                  remote dependency. Loses NER coverage — PERSON /
+	//                  LOCATION not detected. Right choice for the SRE
+	//                  workloads this platform runs, where spaCy NER on
+	//                  ops content produced ~0% precision (see 3-round
+	//                  allowlist arc: #35439/#35440/#35446) and free-
+	//                  text names/places are rare. Secrets are always
+	//                  handled in-process by the egressfilter secret
+	//                  rules; this knob only affects PII detection.
+	//   - "http"      — batch POST to ml-k8s-server /scrub. Runs Python
+	//                  Tier-1 regex + Tier-2 NER + infra allowlist.
 	//                  Higher recall (catches PERSON/LOCATION), higher
 	//                  latency (~50-200ms round-trip), depends on Python
-	//                  service availability.
-	//   - "inprocess" — Go in-process regex only (EMAIL, PHONE). No HTTP
-	//                  hop, sub-ms per call, no remote dependency. Loses
-	//                  NER coverage (PERSON/LOCATION not detected). Right
-	//                  choice for SRE-heavy workloads where free-text
-	//                  names/places are rare and the HTTP hop is pure
-	//                  overhead. Secrets are always handled in-process by
-	//                  the egressfilter secret rules; this knob only
-	//                  affects PII detection.
-	// Unrecognized values are treated as "http" so a typo can never
-	// silently disable coverage.
+	//                  service availability. Set this if you have a
+	//                  regulated tenant that needs NER; a better NER
+	//                  backend is on the roadmap so both modes should
+	//                  eventually converge.
+	// Case-insensitive; leading/trailing whitespace trimmed. Any
+	// unrecognized value falls through to the old default "http" so a
+	// typo cannot silently disable coverage (asserted by
+	// TestScrubbedLLM_InProcessBackend_ConfigValueTolerance).
 	LlmServerEgressFilterPIIBackend string `mapstructure:"llm_server_egressfilter_pii_backend"`
 	MLK8sServerURL                  string `mapstructure:"ml_k8s_server_url"`
 
@@ -932,10 +939,13 @@ func init() {
 	viper.SetDefault("llm_server_egressfilter_pii_ner_enabled", false)
 	viper.SetDefault("llm_server_egressfilter_pii_timeout_seconds", 10)
 	viper.SetDefault("llm_server_egressfilter_pii_mode", "detect")
-	// PII scrub backend: "http" preserves current behavior (ml-k8s-server
-	// /scrub, NER included); "inprocess" runs regex-only in Go. See the
-	// LlmServerEgressFilterPIIBackend field doc for the trade-off.
-	viper.SetDefault("llm_server_egressfilter_pii_backend", "http")
+	// PII scrub backend defaults to "inprocess" (Go regex, no HTTP hop) as
+	// of 2026-08-04. Dev verification (session 2956e870, 5 real secrets +
+	// 7 real PII, zero false-fires) proved parity for the categories we
+	// actually use. Tenants that need NER (PERSON/LOCATION) set
+	// LLM_SERVER_EGRESSFILTER_PII_BACKEND=http to route through
+	// ml-k8s-server /scrub. See LlmServerEgressFilterPIIBackend field doc.
+	viper.SetDefault("llm_server_egressfilter_pii_backend", "inprocess")
 	viper.SetDefault("ml_k8s_server_url", "http://ml-k8s-server:9999")
 	viper.SetDefault("llm_server_db_max_connection", 150)
 	viper.SetDefault("llm_server_db_min_connection", 1)
