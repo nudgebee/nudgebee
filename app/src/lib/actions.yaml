@@ -1484,6 +1484,42 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: List all available LLM models for conversation
+  - name: ai_list_model_pricing
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/conversations/ai_list_model_pricing'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: List built-in and tenant-specific LLM model pricing
+  - name: ai_upsert_model_pricing
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/conversations/ai_upsert_model_pricing'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Set this tenant's own price for a model, overriding the built-in rate
+  - name: ai_delete_model_pricing
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/conversations/ai_delete_model_pricing'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Remove this tenant's price override so the model falls back to the built-in rate
   - name: ai_list_references
     comment: List citation references for a conversation message
     definition:

@@ -210,7 +210,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		return ConversationTree{}, fmt.Errorf("GetConversationTree model_calls: %w", err)
 	}
 
-	pricing, err := chat.GetConversationCosts(nil)
+	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
 	if err != nil {
 		return ConversationTree{}, fmt.Errorf("GetConversationTree pricing: %w", err)
 	}

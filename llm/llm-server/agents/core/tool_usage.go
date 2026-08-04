@@ -172,7 +172,7 @@ func (chat *ConversationDao) ListToolUsage(filter UsageMetricsFilter, sortBy str
 				THEN tc.child_agent_id::uuid
 				ELSE NULL
 			END
-		LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider
+		LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider AND p.tenant_id IS NULL
 		WHERE %s AND NULLIF(tc.child_agent_id, '') IS NOT NULL AND NULLIF(tc.tool_name, '') IS NOT NULL
 		GROUP BY tc.tool_name`, perCallCostExpr, where)
 

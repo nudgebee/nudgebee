@@ -6,6 +6,7 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { Modal } from '@ui/Modal';
+import { Banner } from '@ui/Banner';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { Checkbox } from '@ui/Checkbox';
@@ -17,7 +18,7 @@ import apiUser from '@api1/user';
 import apiIntegrations from '@api1/integrations';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 
-const PROVIDERS = ['anthropic', 'azure', 'bedrock', 'googleai', 'huggingface', 'openai', 'sagemaker', 'vertexai'];
+const PROVIDERS = ['anthropic', 'azure', 'bedrock', 'googleai', 'huggingface', 'openai', 'custom', 'sagemaker', 'vertexai'];
 
 const TIER_KEYS = ['reasoning', 'retrieval', 'summary'];
 
@@ -117,23 +118,26 @@ const emptyConfig = () => ({
 // lives at the Select-binding boundary.
 const INHERIT_SENTINEL = '__inherit__';
 
-// Providers that serve operator-deployed (custom) models, where the context
-// window depends on the deployment rather than a fixed published value. Only
-// these expose the "Context window (tokens)" field — managed providers
+// Providers that serve operator-deployed models, where the context window
+// depends on the deployment rather than a fixed published value. Only these
+// expose the "Context window (tokens)" field — managed providers
 // (openai/anthropic/azure/googleai) have known windows from the model map.
-const CUSTOM_DEPLOY_PROVIDERS = ['huggingface', 'sagemaker', 'vertexai', 'bedrock'];
+// 'custom' is the most deployment-dependent of all: an arbitrary gateway
+// (OpenRouter, vLLM, Ollama, LiteLLM) serving model slugs the map can't know,
+// so without this it would silently fall back to the 32k default.
+const CUSTOM_DEPLOY_PROVIDERS = ['huggingface', 'sagemaker', 'vertexai', 'bedrock', 'custom'];
 const showsContextSize = (p) => CUSTOM_DEPLOY_PROVIDERS.includes(p);
 
 // providerFieldShape returns which credential inputs apply for a given provider.
 // Mirrors the global section's showsApiKey / showsApiEndpoint / ... booleans so
 // the tier and agent cards can render the same provider-conditional inputs.
 const providerFieldShape = (p) => ({
-  showsApiKey: ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'vertexai'].includes(p),
-  showsApiEndpoint: ['azure', 'openai', 'sagemaker', 'anthropic', 'huggingface'].includes(p),
+  showsApiKey: ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'custom', 'vertexai'].includes(p),
+  showsApiEndpoint: ['azure', 'openai', 'custom', 'sagemaker', 'anthropic', 'huggingface'].includes(p),
   showsApiVersion: p === 'azure',
   showsRegion: ['bedrock', 'sagemaker'].includes(p),
   showsBedrockKeys: p === 'bedrock',
-  showsApiType: ['openai', 'huggingface'].includes(p),
+  showsApiType: ['openai', 'custom', 'huggingface'].includes(p),
 });
 
 /**
@@ -838,12 +842,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   };
 
   // Conditional credential visibility — mirrors integrations/llm.go ShowWhen rules.
-  const showsApiKey = ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'vertexai'].includes(provider);
-  const showsApiEndpoint = ['azure', 'openai', 'sagemaker', 'anthropic', 'huggingface'].includes(provider);
+  const showsApiKey = ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'custom', 'vertexai'].includes(provider);
+  const showsApiEndpoint = ['azure', 'openai', 'custom', 'sagemaker', 'anthropic', 'huggingface'].includes(provider);
   const showsApiVersion = provider === 'azure';
   const showsRegion = ['bedrock', 'sagemaker'].includes(provider);
   const showsBedrockKeys = provider === 'bedrock';
-  const showsApiType = ['openai', 'huggingface'].includes(provider);
+  const showsApiType = ['openai', 'custom', 'huggingface'].includes(provider);
   const showsAdapter = ['azure', 'huggingface'].includes(provider);
 
   // A secret field counts as "present" if either the user typed a non-empty
@@ -1161,6 +1165,149 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     }
   };
 
+  // Optional price for the model being configured. Offered here because a
+  // custom endpoint has no built-in rate, so without it the very first thing
+  // the config does is report $0 spend. Written through the same RPC the
+  // Model Pricing tab uses — two entry points, one write path, so they cannot
+  // drift.
+  const [priceInput, setPriceInput] = useState('');
+  const [priceOutput, setPriceOutput] = useState('');
+  // Long-context tier. Providers like Gemini charge more once a prompt crosses
+  // a threshold; leaving these blank means flat pricing.
+  const [priceCachedInput, setPriceCachedInput] = useState('');
+  const [priceCacheCreation, setPriceCacheCreation] = useState('');
+  const [priceThreshold, setPriceThreshold] = useState('');
+  const [priceInputLong, setPriceInputLong] = useState('');
+  const [priceOutputLong, setPriceOutputLong] = useState('');
+  // The modal is mounted permanently and only toggled via `open`, so pricing
+  // state survives a dismiss. Without this reset, a rate typed for one model is
+  // still populated when the modal is reopened for a different one — and would
+  // be saved against it.
+  useEffect(() => {
+    if (open) return;
+    setPriceInput('');
+    setPriceOutput('');
+    setPriceCachedInput('');
+    setPriceCacheCreation('');
+    setPriceThreshold('');
+    setPriceInputLong('');
+    setPriceOutputLong('');
+  }, [open]);
+
+  // Only meaningful once there is a (provider, model) to attach a rate to.
+  const canPrice = Boolean(provider && model && model.trim());
+
+  // Saved after the config, and never allowed to fail the config save: the
+  // credentials are the point of this modal, and a rejected price should not
+  // roll back a provider the user just set up correctly.
+  const savePriceIfProvided = async () => {
+    if (!canPrice) return;
+    const input = Number(priceInput);
+    const output = Number(priceOutput);
+    // Pricing is optional, so both blank means "not pricing this model". One
+    // blank is a half-filled form: returning silently would discard what the
+    // user did type with no feedback.
+    if (priceInput === '' && priceOutput === '') {
+      // Every other rate hangs off input/output, so filling only a cache or
+      // tier field and leaving these blank would discard that input silently.
+      if ([priceCachedInput, priceCacheCreation, priceThreshold, priceInputLong, priceOutputLong].some((v) => v !== '')) {
+        snackbar.error('Pricing not saved — an input and an output rate are required before the other pricing fields apply.');
+      }
+      return;
+    }
+    if (priceInput === '' || priceOutput === '') {
+      snackbar.error('Pricing not saved — enter both an input and an output rate. Set it from Settings → Model Pricing.');
+      return;
+    }
+    if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) {
+      snackbar.error('Pricing not saved — rates must be zero or a positive number. Set it from Settings → Model Pricing.');
+      return;
+    }
+    // Cache rates are independently optional; an omitted one falls back to the input rate.
+    if ([priceCachedInput, priceCacheCreation].some((v) => v !== '' && !(Number(v) >= 0))) {
+      snackbar.error('Pricing not saved — cache rates must be zero or a positive number. Set it from Settings → Model Pricing.');
+      return;
+    }
+
+    // All three tier fields or none. A threshold without rates (or rates
+    // without a threshold) stores a tier that never fires — it reads as
+    // configured but bills every long prompt at the short rate.
+    const tierFilled = [priceThreshold, priceInputLong, priceOutputLong].filter((v) => v !== '').length;
+    if (tierFilled !== 0 && tierFilled !== 3) {
+      snackbar.error('Pricing not saved — long-context pricing needs a threshold and both long-context rates, or leave all three blank.');
+      return;
+    }
+    const threshold = Number(priceThreshold);
+    const inputLong = Number(priceInputLong);
+    const outputLong = Number(priceOutputLong);
+    if (tierFilled === 3 && (!Number.isFinite(threshold) || threshold <= 0 || !(inputLong >= 0) || !(outputLong >= 0))) {
+      snackbar.error('Pricing not saved — the threshold must be a positive token count and long-context rates zero or above.');
+      return;
+    }
+    const price = {
+      model_name: model.trim(),
+      provider_name: provider,
+      cost_per_million_input_tokens: input,
+      cost_per_million_output_tokens: output,
+    };
+
+    if (tierFilled === 3) {
+      price.context_threshold_tokens = threshold;
+      price.cost_per_million_input_tokens_long_ctx = inputLong;
+      price.cost_per_million_output_tokens_long_ctx = outputLong;
+    }
+    if (priceCachedInput !== '') price.cost_per_million_cached_input_tokens = Number(priceCachedInput);
+    if (priceCacheCreation !== '') price.cost_per_million_cache_creation_tokens = Number(priceCacheCreation);
+
+    // Anything left blank is carried over from the model's existing price. The
+    // upsert replaces the whole row, so a flat price over a tiered model (every
+    // Gemini Pro) would null its threshold and bill long prompts at the short
+    // rate — and the same replacement would drop a cache discount, billing every
+    // cached token at full input rate.
+    const carryTier = tierFilled !== 3;
+    const carryCache = priceCachedInput === '' || priceCacheCreation === '';
+    if (carryTier || carryCache) {
+      try {
+        const existing = await apiAskNudgebee.listModelPricing();
+        // listModelPricing resolves with { data, errors } rather than rejecting,
+        // so a failed fetch has to be turned into one. Left as-is, prices would
+        // read as empty, the carry-forward would quietly no-op, and the upsert
+        // would null the tier it exists to preserve — the exact silent data loss
+        // this block guards against.
+        if (existing.errors && existing.errors.length > 0) {
+          throw new Error(existing.errors[0].message || 'could not read existing pricing');
+        }
+        const match = (existing.data.prices || [])
+          .filter((p) => p.provider_name === provider && p.model_name === model.trim())
+          // A tenant's own row wins over the built-in, as the server resolves.
+          .sort((a, b) => Number(a.is_built_in) - Number(b.is_built_in))[0];
+        if (match) {
+          if (carryTier && match.context_threshold_tokens) {
+            price.context_threshold_tokens = match.context_threshold_tokens;
+            price.cost_per_million_input_tokens_long_ctx = match.cost_per_million_input_tokens_long_ctx;
+            price.cost_per_million_output_tokens_long_ctx = match.cost_per_million_output_tokens_long_ctx;
+          }
+          if (priceCachedInput === '' && match.cost_per_million_cached_input_tokens != null) {
+            price.cost_per_million_cached_input_tokens = match.cost_per_million_cached_input_tokens;
+          }
+          if (priceCacheCreation === '' && match.cost_per_million_cache_creation_tokens != null) {
+            price.cost_per_million_cache_creation_tokens = match.cost_per_million_cache_creation_tokens;
+          }
+        }
+      } catch (err) {
+        // Losing an existing tier or cache rate silently is worse than not pricing at all.
+        console.error('could not read existing pricing', err);
+        snackbar.error('Provider saved, but pricing was skipped — set it from Settings → Model Pricing.');
+        return;
+      }
+    }
+
+    const res = await apiAskNudgebee.upsertModelPricing([price]);
+    if (res?.errors?.length) {
+      snackbar.error(`Provider saved, but pricing was not: ${res.errors[0]?.message || 'unknown error'}`);
+    }
+  };
+
   const handleSave = async () => {
     if (!canSubmit) {
       return;
@@ -1198,6 +1345,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         return;
       }
       snackbar.success(isEdit ? 'LLM Provider updated' : 'LLM Provider added');
+      await savePriceIfProvided();
       if (onSaved) {
         onSaved();
       }
@@ -1253,7 +1401,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             value={provider}
             onChange={handleProviderChange}
             options={PROVIDERS}
-            help='Name of the LLM provider (openai, bedrock, sagemaker, huggingface, azure, googleai, vertexai, anthropic). Changing the provider clears model and credential fields.'
+            help='Name of the LLM provider. Changing it clears the model and credential fields.'
             required
           />
 
@@ -1279,6 +1427,19 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           />
 
           {/* Provider-specific credentials — visibility driven by selected provider */}
+          {provider === 'custom' && (
+            <Banner
+              tone='info'
+              title='Custom uses the OpenAI Chat Completions API'
+              message={
+                <>
+                  Point this at any service that exposes OpenAI&apos;s <code>/chat/completions</code> — OpenRouter, vLLM, Ollama, Groq, Together,
+                  DeepSeek, LiteLLM and most gateways do. Give the base URL <strong>including the version segment</strong> (e.g.{' '}
+                  <code>https://openrouter.ai/api/v1</code>); <code>/chat/completions</code> is appended to it.
+                </>
+              }
+            />
+          )}
           {showsApiKey && (
             <SecretInput
               label='API Key'
@@ -1297,9 +1458,81 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               value={apiEndpoint}
               onChange={setConnField(setApiEndpoint)}
               onBlur={trimOnBlur(apiEndpoint, setApiEndpoint)}
-              help='Custom API endpoint for the LLM provider.'
-              required={['azure', 'sagemaker', 'huggingface', 'anthropic'].includes(provider)}
+              help={
+                provider === 'custom'
+                  ? 'Base URL including the version segment — e.g. https://openrouter.ai/api/v1. "/chat/completions" is appended to it, so omitting /v1 will 404.'
+                  : 'Custom API endpoint for the LLM provider.'
+              }
+              required={['azure', 'sagemaker', 'huggingface', 'anthropic', 'custom'].includes(provider)}
             />
+          )}
+          {canPrice && (
+            <>
+              <Input
+                label='Input rate (USD per 1M tokens)'
+                size='sm'
+                type='number'
+                value={priceInput}
+                onChange={setPriceInput}
+                placeholder='e.g. 0.40'
+                help={
+                  provider === 'custom'
+                    ? 'Optional. We ship no rate for custom endpoints, so without this the model reports $0 spend.'
+                    : 'Optional. Overrides the built-in rate for this tenant. Any long-context tier or cache rate you leave blank is preserved — edit it from Settings → Model Pricing.'
+                }
+              />
+              <Input
+                label='Output rate (USD per 1M tokens)'
+                size='sm'
+                type='number'
+                value={priceOutput}
+                onChange={setPriceOutput}
+                placeholder='e.g. 0.60'
+              />
+              <Input
+                label='Cached input rate (USD per 1M tokens)'
+                size='sm'
+                type='number'
+                value={priceCachedInput}
+                onChange={setPriceCachedInput}
+                placeholder='e.g. 0.10'
+                help='Optional. Most providers discount prompt tokens served from cache. Leave blank to bill them at the input rate.'
+              />
+              <Input
+                label='Cache creation rate (USD per 1M tokens)'
+                size='sm'
+                type='number'
+                value={priceCacheCreation}
+                onChange={setPriceCacheCreation}
+                placeholder='e.g. 0.50'
+                help='Optional. Charged when tokens are first written to cache — Anthropic bills 1.25x input; OpenAI-compatible providers do not charge it.'
+              />
+              <Input
+                label='Long-context threshold (prompt tokens)'
+                size='sm'
+                type='number'
+                value={priceThreshold}
+                onChange={setPriceThreshold}
+                placeholder='e.g. 200000'
+                help='Optional. Some providers charge more above a prompt size — Gemini Pro doubles above 200k. Leave blank for flat pricing; fill all three to set a tier.'
+              />
+              <Input
+                label='Input rate above threshold (USD per 1M)'
+                size='sm'
+                type='number'
+                value={priceInputLong}
+                onChange={setPriceInputLong}
+                placeholder='e.g. 0.80'
+              />
+              <Input
+                label='Output rate above threshold (USD per 1M)'
+                size='sm'
+                type='number'
+                value={priceOutputLong}
+                onChange={setPriceOutputLong}
+                placeholder='e.g. 1.20'
+              />
+            </>
           )}
           {showsApiVersion && (
             <Input

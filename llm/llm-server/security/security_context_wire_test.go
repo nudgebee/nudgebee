@@ -173,3 +173,40 @@ func TestSecurityContextWire_ScopedCustomPermissions(t *testing.T) {
 		t.Errorf("round-trip must not widen scope to acct-B")
 	}
 }
+
+// Model-pricing read access is granted in app/src/lib/actions.yaml to
+// tenant_admin, tenant_admin_readonly, account_admin and account_admin_readonly.
+// The llm-server handler must accept the same set, or an account admin passes
+// the gateway and is then refused by the service on a tab they can already see.
+// Writing rates is deliberately narrower — tenant_admin only.
+func TestPricingRolePredicates_MatchActionsYamlGrants(t *testing.T) {
+	for _, tc := range []struct {
+		role     string
+		canRead  bool
+		canWrite bool
+	}{
+		{AUTH_TENANT_ADMIN_ROLE, true, true},
+		{AUTH_TENANT_READ_ADMIN_ROLE, true, false},
+		{AUTH_ACCOUNT_ADMIN_ROLE, true, false},
+		{AUTH_ACCOUNT_READ_ADMIN_ROLE, true, false},
+		{AUTH_K8S_NAMESPACE_ADMIN_ROLE, false, false},
+		{AUTH_TENANT_USAGE_ROLE, false, false},
+		{AUTH_ACCOUNT_USAGE_ROLE, false, false},
+	} {
+		t.Run(tc.role, func(t *testing.T) {
+			sc := &SecurityContext{roles: []string{tc.role}}
+
+			// Mirrors the gate in api/conversation.go ai_list_model_pricing.
+			read := sc.IsTenantAdmin() || sc.IsTenantReadAdmin() || sc.IsAccountAdmin() ||
+				sc.IsAccountReadAdmin() || sc.IsSuperAdmin() || sc.IsSuperAdminReadonly()
+			if read != tc.canRead {
+				t.Errorf("read access for %s = %v, want %v", tc.role, read, tc.canRead)
+			}
+
+			// Mirrors the gate in ai_upsert_model_pricing.
+			if write := sc.IsTenantAdmin(); write != tc.canWrite {
+				t.Errorf("write access for %s = %v, want %v", tc.role, write, tc.canWrite)
+			}
+		})
+	}
+}

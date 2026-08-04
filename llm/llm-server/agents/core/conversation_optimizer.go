@@ -267,7 +267,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 	}
 	args := []any{sessionID, accountID}
 
-	pricing, err := chat.GetConversationCosts(nil)
+	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
 	if err != nil {
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile pricing: %w", err)
 	}

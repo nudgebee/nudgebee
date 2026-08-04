@@ -842,15 +842,29 @@ func getDetailedTokenInfo(response *llms.ContentResponse, cacheResp *CacheRespon
 
 	// Standard token fields (e.g., "input_tokens", "output_tokens")
 	// Note: For Anthropic, "InputTokens" in the response refers to the non-cached tokens.
+	// "PromptTokens"/"CompletionTokens" is the OpenAI naming langchaingo emits for
+	// every OpenAI-compatible client (openai, azure, and any custom gateway). Without
+	// these keys those providers report zero tokens and therefore zero cost — which
+	// is what made provider=openai spend invisible.
+	// inputIncludesCache records the convention the count above came from, so the
+	// reconciliation below knows whether cached tokens are already counted in it.
+	inputIncludesCache := false
 	if val, ok := generateInfo["InputTokens"]; ok {
 		info.InputTokens = extractInt(val)
 	} else if val, ok := generateInfo["input_tokens"]; ok {
 		info.InputTokens = extractInt(val)
+	} else if val, ok := generateInfo["PromptTokens"]; ok {
+		info.InputTokens = extractInt(val)
+		// OpenAI: prompt_tokens is the total and already contains
+		// prompt_tokens_details.cached_tokens, same convention as Google AI.
+		inputIncludesCache = true
 	}
 
 	if val, ok := generateInfo["OutputTokens"]; ok {
 		info.OutputTokens = extractInt(val)
 	} else if val, ok := generateInfo["output_tokens"]; ok {
+		info.OutputTokens = extractInt(val)
+	} else if val, ok := generateInfo["CompletionTokens"]; ok {
 		info.OutputTokens = extractInt(val)
 	}
 
@@ -870,6 +884,15 @@ func getDetailedTokenInfo(response *llms.ContentResponse, cacheResp *CacheRespon
 		}
 	}
 
+	// OpenAI-compatible cache field (prompt_tokens_details.cached_tokens). There is
+	// no matching creation field: OpenAI caches automatically and bills no separate
+	// write, unlike Anthropic's explicit 1.25x cache-creation charge.
+	if val, ok := generateInfo["PromptCachedTokens"]; ok {
+		if info.CacheReadTokens == 0 {
+			info.CacheReadTokens = extractInt(val)
+		}
+	}
+
 	// Reconcile "InputTokens" to a unified "total input (fresh + cached)" convention.
 	// Providers disagree on what input_tokens means when caching is active:
 	//   - Anthropic: input_tokens is the NON-cached (fresh) portion; total = fresh + cache_read.
@@ -878,9 +901,13 @@ func getDetailedTokenInfo(response *llms.ContentResponse, cacheResp *CacheRespon
 	//     ("this includes the number of tokens in the cached content"). Adding cache_read here
 	//     would double-count the cached portion — inflating InputTokens by ~2× on cache hits,
 	//     which corrupts downstream cache-hit-rate display and per-token cost calculations.
+	//   - OpenAI-compatible: prompt_tokens likewise INCLUDES cached_tokens, per
+	//     https://platform.openai.com/docs/guides/prompt-caching — flagged by
+	//     inputIncludesCache above rather than by a marker key, since langchaingo's
+	//     OpenAI client emits no equivalent of NonCachedInputTokens.
 	// The googleai client sets NonCachedInputTokens (see llms/googleai/googleai.go) precisely
 	// so we can detect its convention; presence of that key means "already includes cache".
-	if _, alreadyIncludesCache := generateInfo["NonCachedInputTokens"]; !alreadyIncludesCache {
+	if _, marker := generateInfo["NonCachedInputTokens"]; !marker && !inputIncludesCache {
 		info.InputTokens += info.CacheReadTokens
 	}
 
@@ -2965,12 +2992,17 @@ func trackTokenUsage(
 	// Cost at insert time, using pricing as of now. Nil (not 0) when the
 	// (provider, model) has no llm_model_pricing entry, so readers can tell
 	// "unpriced" from "actually free" and fall back to a live pricing JOIN.
+	//
+	// Priced against the request's tenant so a tenant's own rate for a model
+	// (V843) is what gets stored. This is the path that matters most: the
+	// aggregate queries prefer this stored cost_usd, so getting it right here
+	// means custom-priced models report correctly everywhere downstream.
 	nonCachedInputTokens := tokenInfo.InputTokens - tokenInfo.CacheReadTokens
 	if nonCachedInputTokens < 0 {
 		nonCachedInputTokens = 0
 	}
 	var costUsd *float64
-	if cost, err := dao.GetConversationCost(provider, model, nonCachedInputTokens, tokenInfo.CacheReadTokens, tokenInfo.CacheCreationTokens, tokenInfo.OutputTokens, tokenInfo.ThinkingTokens); err == nil {
+	if cost, err := dao.GetConversationCost(provider, model, nonCachedInputTokens, tokenInfo.CacheReadTokens, tokenInfo.CacheCreationTokens, tokenInfo.OutputTokens, tokenInfo.ThinkingTokens, pricingTenantFromContext(ctx)); err == nil {
 		costUsd = &cost
 	} else {
 		ctx.GetLogger().Debug("trackTokenUsage: no pricing data for cost calc", "provider", provider, "model", model, "error", err)

@@ -286,7 +286,8 @@ func TestLLMRequiredSummaryFieldsMatchSchema(t *testing.T) {
 	const apiKeySummary = "llm_provider_api_key_summary_agent"
 	apiKeyProviders := map[string]bool{
 		"azure": true, "anthropic": true, "googleai": true,
-		"huggingface": true, "openai": true, "vertexai": true,
+		"huggingface": true, "openai": true, "custom": true,
+		"vertexai": true,
 	}
 
 	for _, provider := range llmProviders {

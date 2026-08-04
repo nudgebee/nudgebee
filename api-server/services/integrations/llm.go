@@ -32,7 +32,7 @@ func IsLLMSecretFieldName(name string) bool {
 // llmProviders is the set of accepted llm_provider / llm_provider_summary_agent
 // values. It MUST stay in sync with the Enum declared in ConfigSchema; the
 // drift-guard test in llm_test.go enforces that.
-var llmProviders = []string{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "sagemaker", "vertexai"}
+var llmProviders = []string{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "custom", "sagemaker", "vertexai"}
 
 // providerRequiredFields returns the base field names that must be non-empty
 // for a given provider. These mirror the RequiredWhen contracts declared in
@@ -48,6 +48,11 @@ func providerRequiredFields(provider string) []string {
 		return []string{"llm_provider_api_key", "llm_provider_api_endpoint", "llm_provider_api_version"}
 	case "anthropic", "googleai", "huggingface", "openai", "vertexai":
 		return []string{"llm_provider_api_key"}
+	case "custom":
+		// Unlike "openai" there is no default base URL to fall back on, so a
+		// missing endpoint would silently send the request to api.openai.com
+		// carrying someone else's key.
+		return []string{"llm_provider_api_key", "llm_provider_api_endpoint"}
 	default:
 		return nil
 	}
@@ -67,6 +72,8 @@ func providerRequiredSummaryFields(provider string) []string {
 		return []string{"llm_provider_api_key_summary_agent", "llm_provider_api_endpoint_summary_agent", "llm_provider_api_version_summary_agent"}
 	case "anthropic", "googleai", "huggingface", "openai", "vertexai":
 		return []string{"llm_provider_api_key_summary_agent"}
+	case "custom":
+		return []string{"llm_provider_api_key_summary_agent", "llm_provider_api_endpoint_summary_agent"}
 	default:
 		return nil
 	}
@@ -123,8 +130,8 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 			},
 			"llm_provider": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Name of the LLM provider (e.g., openai, bedrock, sagemaker, huggingface, azure, googleai, vertexai, anthropic).",
-				Enum:        []any{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "sagemaker", "vertexai"},
+				Description: "Name of the LLM provider. Use custom for any service exposing the OpenAI Chat Completions API at its own base URL (OpenRouter, vLLM, Ollama, Groq, Together, LiteLLM); it requires llm_provider_api_endpoint including the version segment, e.g. https://openrouter.ai/api/v1.",
+				Enum:        []any{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "custom", "sagemaker", "vertexai"},
 				Priority:    20,
 			},
 			"llm_model_name": {
@@ -147,7 +154,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				// working; new edits auto-upgrade to encrypted.
 				IsEncrypted: true,
 				RequiredWhen: map[string]any{
-					"llm_provider": []string{"anthropic", "azure", "googleai", "huggingface", "openai", "vertexai"},
+					"llm_provider": []string{"anthropic", "azure", "googleai", "huggingface", "openai", "custom", "vertexai"},
 				},
 			},
 			"llm_provider_api_endpoint": {
@@ -155,10 +162,10 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Description: "Custom API endpoint for the LLM provider.",
 				Priority:    17,
 				RequiredWhen: map[string]any{
-					"llm_provider": []string{"azure", "sagemaker"},
+					"llm_provider": []string{"azure", "custom", "sagemaker"},
 				},
 				ShowWhen: map[string]any{
-					"llm_provider": []string{"azure", "openai", "sagemaker"},
+					"llm_provider": []string{"azure", "openai", "custom", "sagemaker"},
 				},
 			},
 			"llm_provider_api_version": {
@@ -244,7 +251,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 			"llm_provider_summary_agent": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Name of the LLM provider to be used specifically for summarization tasks.",
-				Enum:        []any{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "sagemaker", "vertexai"},
+				Enum:        []any{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "custom", "sagemaker", "vertexai"},
 				Priority:    9,
 				ShowWhen: map[string]any{
 					"add_model_for_summarization": true,
@@ -283,7 +290,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Priority:    6,
 				RequiredWhen: map[string]any{
 					"add_model_for_summarization": true,
-					"llm_provider_summary_agent":  []string{"azure", "sagemaker"},
+					"llm_provider_summary_agent":  []string{"azure", "custom", "sagemaker"},
 				},
 				ShowWhen: map[string]any{
 					"add_model_for_summarization": true,

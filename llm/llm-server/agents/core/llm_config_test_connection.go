@@ -349,6 +349,8 @@ func buildLLMFromConfig(provider, model string, cfg map[string]string) (llms.Mod
 	switch provider {
 	case "openai":
 		return newOpenAIFromConfig(model, cfg)
+	case ProviderCustom:
+		return newCustomFromConfig(model, cfg)
 	case "azure":
 		return newAzureFromConfig(model, cfg)
 	case "anthropic":
@@ -380,6 +382,18 @@ func newOpenAIFromConfig(model string, cfg map[string]string) (llms.Model, error
 		opts = append(opts, openai.WithBaseURL(ep))
 	}
 	return openai.New(opts...)
+}
+
+// newCustomFromConfig mirrors the runtime's getCustomLLM: the OpenAI client
+// pointed at a caller-supplied base URL. The endpoint is required rather than
+// defaulted — without this guard a config missing it would probe
+// api.openai.com, so a user holding a valid OpenAI key would see the test pass
+// and the runtime then fail.
+func newCustomFromConfig(model string, cfg map[string]string) (llms.Model, error) {
+	if strings.TrimSpace(cfg[cfgKeyAPIEndpoint]) == "" {
+		return nil, fmt.Errorf("llm provider %q requires llm_provider_api_endpoint (e.g. https://openrouter.ai/api/v1)", ProviderCustom)
+	}
+	return newOpenAIFromConfig(model, cfg)
 }
 
 func newAzureFromConfig(model string, cfg map[string]string) (llms.Model, error) {

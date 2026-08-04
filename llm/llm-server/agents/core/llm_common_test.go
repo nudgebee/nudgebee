@@ -286,6 +286,143 @@ func TestGetDetailedTokenInfo_CacheReadHandling_ProviderConventions(t *testing.T
 	}
 }
 
+// Every provider must have its usage keys read, because a provider whose naming
+// nobody reads records zero tokens and therefore zero cost — silently, with no
+// error anywhere. That is how provider=openai logged 89 calls at zero.
+//
+// The clients use three different conventions for the same two numbers:
+//
+//	InputTokens/OutputTokens         huggingface (in-house), anthropic
+//	input_tokens/output_tokens       bedrock, googleai, vertexai, vertexai_endpoint
+//	PromptTokens/CompletionTokens    azure (in-house), openai, custom
+//
+// Each case below uses the keys that provider's client actually emits, so adding
+// a provider without wiring its naming fails here rather than in the cost report.
+func TestGetDetailedTokenInfo_ReadsEveryProviderUsageNaming(t *testing.T) {
+	tests := []struct {
+		provider       string
+		generationInfo map[string]any
+		wantInput      int
+		wantOutput     int
+	}{
+		{
+			provider:       "huggingface (in-house)",
+			generationInfo: map[string]any{"InputTokens": 1000, "OutputTokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			provider:       "anthropic",
+			generationInfo: map[string]any{"input_tokens": 1000, "output_tokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			provider:       "bedrock",
+			generationInfo: map[string]any{"input_tokens": 1000, "output_tokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			// googleai emits both conventions; input_tokens is checked first and
+			// is the one carrying its cache-inclusive semantics.
+			provider: "googleai",
+			generationInfo: map[string]any{
+				"input_tokens": 1000, "output_tokens": 500,
+				"PromptTokens": 1000, "CompletionTokens": 500,
+				"NonCachedInputTokens": 1000,
+			},
+			wantInput: 1000, wantOutput: 500,
+		},
+		{
+			provider:       "vertexai_endpoint",
+			generationInfo: map[string]any{"input_tokens": 1000, "output_tokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			provider:       "azure (in-house)",
+			generationInfo: map[string]any{"PromptTokens": 1000, "CompletionTokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			provider:       "openai / custom (langchaingo)",
+			generationInfo: map[string]any{"PromptTokens": 1000, "CompletionTokens": 500, "TotalTokens": 1500},
+			wantInput:      1000, wantOutput: 500,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.provider, func(t *testing.T) {
+			resp := &llms.ContentResponse{
+				Choices: []*llms.ContentChoice{{GenerationInfo: tc.generationInfo}},
+			}
+			info := getDetailedTokenInfo(resp, nil)
+			assert.Equal(t, tc.wantInput, info.InputTokens, "input tokens unread for %s", tc.provider)
+			assert.Equal(t, tc.wantOutput, info.OutputTokens, "output tokens unread for %s", tc.provider)
+		})
+	}
+}
+
+// OpenAI reports cached tokens as a SUBSET of prompt_tokens, the same convention
+// Google AI uses — but langchaingo's OpenAI client emits no NonCachedInputTokens
+// marker, so the marker check alone would let the additive branch fire and inflate
+// input ~2x on every cache hit. That is the Gemini double-count, reintroduced for
+// openai/azure/custom. InputTokens must stay exactly prompt_tokens.
+func TestGetDetailedTokenInfo_OpenAICachedTokensAreNotDoubleCounted(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"PromptTokens":       10000, // total, already includes the 8000 cached
+		"CompletionTokens":   500,
+		"PromptCachedTokens": 8000,
+	}}}}
+
+	info := getDetailedTokenInfo(resp, nil)
+
+	assert.Equal(t, 10000, info.InputTokens, "prompt_tokens already includes cached; must NOT become 18000")
+	assert.Equal(t, 8000, info.CacheReadTokens, "cache reads must be surfaced so the cached rate applies")
+	assert.Equal(t, 500, info.OutputTokens)
+	// OpenAI bills no separate cache write, unlike Anthropic's 1.25x creation rate.
+	assert.Equal(t, 0, info.CacheCreationTokens)
+}
+
+// The Anthropic convention must be untouched by the OpenAI branch: there
+// input_tokens is the fresh portion only, so cache reads still get added.
+func TestGetDetailedTokenInfo_AnthropicStillAddsCacheRead(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"input_tokens":         1500, // fresh only
+		"output_tokens":        100,
+		"CacheReadInputTokens": 20000,
+	}}}}
+
+	info := getDetailedTokenInfo(resp, nil)
+
+	assert.Equal(t, 21500, info.InputTokens, "Anthropic input_tokens is fresh-only; total = fresh + cache_read")
+	assert.Equal(t, 20000, info.CacheReadTokens)
+}
+
+// A provider-specific cache field must win over the generic OpenAI one when both
+// somehow appear, so the more precise number is the one billed.
+func TestGetDetailedTokenInfo_ProviderCacheFieldBeatsOpenAIField(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"PromptTokens":         10000,
+		"CompletionTokens":     100,
+		"CacheReadInputTokens": 7000,
+		"PromptCachedTokens":   9999,
+	}}}}
+
+	info := getDetailedTokenInfo(resp, nil)
+
+	assert.Equal(t, 7000, info.CacheReadTokens)
+}
+
+// Precedence is load-bearing where a client emits more than one convention:
+// the in-house naming carries the cache semantics getDetailedTokenInfo relies on.
+func TestGetDetailedTokenInfo_InHouseNamingWinsOverOpenAI(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"InputTokens": 111, "OutputTokens": 222,
+		"PromptTokens": 999, "CompletionTokens": 999,
+	}}}}
+	info := getDetailedTokenInfo(resp, nil)
+	assert.Equal(t, 111, info.InputTokens)
+	assert.Equal(t, 222, info.OutputTokens)
+}
+
 // TestResolveThinkingBudget guards the per-ModelTier thinking-token cap and its
 // global-override precedence.
 func TestResolveThinkingBudget(t *testing.T) {

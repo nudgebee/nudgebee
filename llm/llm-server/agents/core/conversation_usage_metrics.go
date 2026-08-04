@@ -257,14 +257,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	}
 
 	// Calculate model usage statistics
-	modelUsage := calculateModelUsageStats(detailedRecords)
+	modelUsage := calculateModelUsageStats(detailedRecords, pricingTenantFromContext(ctx))
 
 	// Fetch costs for cache savings calculation
 	modelNames := []string{}
 	for _, record := range detailedRecords {
 		modelNames = append(modelNames, record.LLMModel)
 	}
-	costs, _ := GetConversationDao().GetConversationCosts(modelNames)
+	costs, _ := GetConversationDao().GetConversationCosts(modelNames, pricingTenantFromContext(ctx))
 
 	// Add per-hour storage cost for conversation-scoped caches owned by this
 	// conversation. Account/tenant/global-scoped caches are excluded — their
@@ -343,7 +343,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 }
 
 // calculateModelUsageStats aggregates statistics by model
-func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageStat {
+func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId string) []ModelUsageStat {
 	if len(records) == 0 {
 		return []ModelUsageStat{}
 	}
@@ -361,7 +361,7 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageSt
 	// CostUsd stays zero and only the per-model token aggregates are populated.
 	var costs map[string]modelPricing
 	if dao := GetConversationDao(); dao != nil {
-		costs, _ = dao.GetConversationCosts(modelNames)
+		costs, _ = dao.GetConversationCosts(modelNames, tenantId)
 	}
 
 	modelMap := make(map[string]*ModelUsageStat)

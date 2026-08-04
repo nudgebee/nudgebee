@@ -1734,6 +1734,78 @@ const api = {
       return { data: {}, errors: [error] };
     }
   },
+  // Model pricing. Rows come back as built-in (shipped defaults, shared by
+  // every tenant) plus this tenant's own overrides, distinguished by
+  // is_built_in — the tenant is resolved server-side from the session, never
+  // sent from here.
+  async listModelPricing() {
+    const LIST_MODEL_PRICING = `
+    query ListModelPricing($request: AIListModelPricingRequest!) {
+      ai_list_model_pricing(request: $request) {
+        data
+        errors
+      }
+    }
+    `;
+    try {
+      // No account: prices are tenant-scoped and the tenant comes from the
+      // session server-side.
+      const response = await queryGraphQL(LIST_MODEL_PRICING, 'ListModelPricing', { request: {} });
+      return {
+        data: response.data?.data?.ai_list_model_pricing?.data || {},
+        errors: response.data?.data?.ai_list_model_pricing?.errors || response.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to list model pricing-', error);
+      return { data: {}, errors: [error] };
+    }
+  },
+  // Writes this tenant's own rates. Restricted to tenant admins server-side;
+  // the UI hides the controls for everyone else but does not rely on that.
+  async upsertModelPricing(prices: Record<string, unknown>[]) {
+    const UPSERT_MODEL_PRICING = `
+    mutation UpsertModelPricing($request: AIUpsertModelPricingRequest!) {
+      ai_upsert_model_pricing(request: $request) {
+        data
+        errors
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(UPSERT_MODEL_PRICING, 'UpsertModelPricing', { request: { prices } });
+      return {
+        data: response.data?.data?.ai_upsert_model_pricing?.data || {},
+        errors: response.data?.data?.ai_upsert_model_pricing?.errors || response.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to save model pricing-', error);
+      return { data: {}, errors: [error] };
+    }
+  },
+  // Drops this tenant's override so the model bills at the built-in rate again.
+  // The tenant is taken from the session server-side, never from these args.
+  async deleteModelPricing(providerName: string, modelName: string) {
+    const DELETE_MODEL_PRICING = `
+    mutation DeleteModelPricing($request: AIDeleteModelPricingRequest!) {
+      ai_delete_model_pricing(request: $request) {
+        data
+        errors
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(DELETE_MODEL_PRICING, 'DeleteModelPricing', {
+        request: { provider_name: providerName, model_name: modelName },
+      });
+      return {
+        data: response.data?.data?.ai_delete_model_pricing?.data || {},
+        errors: response.data?.data?.ai_delete_model_pricing?.errors || response.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to delete model pricing-', error);
+      return { data: {}, errors: [error] };
+    }
+  },
   async getModelConfig(accountId: string, conversationId?: string, signal?: AbortSignal) {
     if (accountId === 'demo') return null;
     const GET_MODEL_CONFIG = `

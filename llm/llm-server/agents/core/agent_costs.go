@@ -56,7 +56,7 @@ const agentCostFrom = `
 	FROM llm_conversation_token_usage t
 	INNER JOIN llm_conversations c ON c.id = t.conversation_id
 	INNER JOIN llm_conversation_agent a ON a.id = t.agent_id
-	LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider`
+	LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider AND p.tenant_id IS NULL`
 
 // AgentCallRow is one agent invocation in one conversation, with its rolled-up
 // direct cost/latency/error stats. conversation_id is the session_id (for the

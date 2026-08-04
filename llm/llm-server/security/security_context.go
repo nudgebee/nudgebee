@@ -193,6 +193,14 @@ func (sc *SecurityContext) IsTenantReadAdmin() bool {
 	return slices.Contains(sc.roles, AUTH_TENANT_READ_ADMIN_ROLE)
 }
 
+func (sc *SecurityContext) IsAccountAdmin() bool {
+	return slices.Contains(sc.roles, AUTH_ACCOUNT_ADMIN_ROLE)
+}
+
+func (sc *SecurityContext) IsAccountReadAdmin() bool {
+	return slices.Contains(sc.roles, AUTH_ACCOUNT_READ_ADMIN_ROLE)
+}
+
 // HasPermission reports whether the user holds a dynamic-RBAC custom-role grant
 // for the given (module, class), e.g. HasPermission("notifications", "Write").
 // module/class MUST be the normalized values produced by

@@ -63,7 +63,7 @@ const cacheSavingsExpr = `(CASE
 const usageBaseFrom = `
 	FROM llm_conversation_token_usage t
 	INNER JOIN llm_conversations c ON c.id = t.conversation_id
-	LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider`
+	LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider AND p.tenant_id IS NULL`
 
 // usageDimensions whitelists the dimensions a caller may group cost by.
 // Membership is the only thing taken from caller input; the SQL column /
@@ -661,7 +661,7 @@ func (chat *ConversationDao) runCacheStorageCost(filter UsageMetricsFilter) (*Ca
 			COUNT(*)                           AS entries
 		FROM llm_cache_lifecycle cl
 		LEFT JOIN llm_model_pricing p
-			ON p.model_name = cl.llm_model AND p.provider_name = cl.llm_provider
+			ON p.model_name = cl.llm_model AND p.provider_name = cl.llm_provider AND p.tenant_id IS NULL
 		WHERE %s
 		GROUP BY cl.scope
 		ORDER BY cost_usd DESC`, where)

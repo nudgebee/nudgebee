@@ -291,8 +291,8 @@ type IConversationDao interface {
 	CountWaitingSubAgents(parentAgentId, messageId string) (int, error)
 	MarkInProgressConversationAsKilled() error
 	GetConversationTokenUsage(conversationId, accountId string) ([]TokenMetrics, error)
-	GetConversationCost(provider string, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) (float64, error)
-	GetConversationCosts(models []string) (map[string]modelPricing, error)
+	GetConversationCost(provider string, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int, tenantId string) (float64, error)
+	GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error)
 	GetImageSupportCatalog() (map[string]bool, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
@@ -2631,18 +2631,59 @@ func CalculateTotalCost(p *modelPricing, nonCachedInputTokens, cachedInputTokens
 		(float64(outputTokens+thinkingTokens)/million)*outputRate
 }
 
-func (chat *ConversationDao) fetchModelPricing() (map[string]modelPricing, error) {
-	return chat.GetConversationCosts(nil)
+// tenantForPricing resolves the tenant whose price overrides apply to an
+// account's usage. Pricing is tenant-scoped (V843): a tenant's own row for a
+// (model, provider) beats the built-in one.
+//
+// A failure degrades to "" — built-in pricing only — rather than failing the
+// read: a cost display that falls back to list prices is far better than a
+// conversation view that will not load.
+// pricingTenantFromContext is the request-context form of tenantForPricing:
+// the tenant is already on the security context, so no lookup is needed.
+func pricingTenantFromContext(ctx *security.RequestContext) string {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return ""
+	}
+	return ctx.GetSecurityContext().GetTenantId()
 }
 
-func (chat *ConversationDao) GetConversationCosts(models []string) (map[string]modelPricing, error) {
+func TenantForPricing(accountId string) string {
+	if accountId == "" {
+		return ""
+	}
+	tenantId, err := security.GetTenantIdFromAccountId(accountId)
+	if err != nil {
+		slog.Warn("pricing: could not resolve tenant for account, using built-in pricing",
+			"error", err, "account_id", accountId)
+		return ""
+	}
+	return tenantId
+}
+
+func (chat *ConversationDao) fetchModelPricing(tenantId string) (map[string]modelPricing, error) {
+	return chat.GetConversationCosts(nil, tenantId)
+}
+
+// GetConversationCosts returns pricing keyed "provider:model".
+//
+// tenantId selects whose prices apply: a tenant's own row for a
+// (model, provider) wins over the built-in row, and an empty tenantId means
+// built-in only. Pricing became tenant-scoped in V843 so that two tenants
+// running the same model name at different negotiated rates stop overwriting
+// each other — see the migration for why the key is two partial indexes.
+func (chat *ConversationDao) GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error) {
 	pricingMap := make(map[string]modelPricing)
 
 	// V726 onwards: pricing has explicit cached_input / creation / storage rates
 	// plus tiered (long_ctx) variants for Gemini-style threshold pricing.
 	// Old cache_cost_per_million_tokens_per_hour is kept until backfill so
 	// reading it here is a temporary belt-and-braces measure.
-	query := `SELECT provider_name, model_name,
+	// DISTINCT ON keeps exactly one row per (provider, model). Ordering
+	// tenant_id NULLS LAST puts the tenant's own row first, so it is the one
+	// kept. Doing this in SQL rather than merging two result sets in Go also
+	// avoids the row-duplication a plain OR-join would cause.
+	query := `SELECT DISTINCT ON (provider_name, model_name)
+	    provider_name, model_name,
 	    cost_per_million_input_tokens,
 	    cost_per_million_output_tokens,
 	    cache_cost_per_million_tokens_per_hour,
@@ -2657,15 +2698,28 @@ func (chat *ConversationDao) GetConversationCosts(models []string) (map[string]m
 	FROM llm_model_pricing`
 
 	var args []any
-	if len(models) > 0 {
-		query += ` WHERE model_name IN (?)`
-		var err error
-		query, args, err = sqlx.In(query, models)
-		if err != nil {
-			return nil, err
-		}
-		query = chat.dbManager.Db.Rebind(query)
+	var wheres []string
+	if tenantId != "" {
+		wheres = append(wheres, `(tenant_id IS NULL OR tenant_id = ?)`)
+		args = append(args, tenantId)
+	} else {
+		wheres = append(wheres, `tenant_id IS NULL`)
 	}
+	if len(models) > 0 {
+		wheres = append(wheres, `model_name IN (?)`)
+		args = append(args, models)
+	}
+	query += ` WHERE ` + strings.Join(wheres, " AND ") +
+		` ORDER BY provider_name, model_name, tenant_id NULLS LAST`
+
+	// sqlx.In expands the IN slice and renumbers every placeholder; it is
+	// required even without a models filter so the tenant arg gets rebound.
+	var err error
+	query, args, err = sqlx.In(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	query = chat.dbManager.Db.Rebind(query)
 
 	rows, err := chat.dbManager.Db.Queryx(query, args...)
 	if err != nil {
@@ -2742,7 +2796,7 @@ func (chat *ConversationDao) GetConversationCosts(models []string) (map[string]m
 func (chat *ConversationDao) GetImageSupportCatalog() (map[string]bool, error) {
 	rows, err := chat.dbManager.Db.Queryx(`SELECT provider_name, model_name, supports_image_input
 		FROM llm_model_pricing
-		WHERE supports_image_input IS NOT NULL`)
+		WHERE supports_image_input IS NOT NULL AND tenant_id IS NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("GetImageSupportCatalog: query failed: %w", err)
 	}
@@ -2770,7 +2824,7 @@ func (chat *ConversationDao) GetImageSupportCatalog() (map[string]bool, error) {
 func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId string) ([]TokenMetrics, error) {
 
 	// Fetch Pricing Map upfront to avoid N+1 queries
-	pricingMap, err := chat.fetchModelPricing()
+	pricingMap, err := chat.fetchModelPricing(TenantForPricing(accountId))
 	if err != nil {
 		slog.Error("Failed to fetch model pricing", "error", err)
 		// Proceed with empty map, costs will be 0
@@ -2915,8 +2969,10 @@ func (chat *ConversationDao) GetConversationCost(
 	cacheCreationTokens int,
 	outputTokens int,
 	thinkingTokens int,
+	// Whose prices apply. Empty means built-in only — see GetConversationCosts.
+	tenantId string,
 ) (float64, error) {
-	pricingMap, err := chat.GetConversationCosts([]string{model})
+	pricingMap, err := chat.GetConversationCosts([]string{model}, tenantId)
 	if err != nil {
 		return -1, err
 	}
@@ -3140,7 +3196,7 @@ func (chat *ConversationDao) GetConversationLifecycleStorageCost(conversationId 
 		FROM llm_cache_lifecycle cl
 		INNER JOIN llm_conversations c ON c.id = cl.conversation_id
 		LEFT JOIN llm_model_pricing p
-			ON p.model_name = cl.llm_model AND p.provider_name = cl.llm_provider
+			ON p.model_name = cl.llm_model AND p.provider_name = cl.llm_provider AND p.tenant_id IS NULL
 		WHERE c.session_id = $1
 		  AND c.tenant_id = $2
 		  AND cl.scope = 'conversation';`

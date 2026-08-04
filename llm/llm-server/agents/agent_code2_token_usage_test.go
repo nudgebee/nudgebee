@@ -20,7 +20,7 @@ type fakeUsageDao struct {
 	nilAgentOnce bool // simulate the FK retry nulling record.AgentID on first insert
 }
 
-func (f *fakeUsageDao) GetConversationCost(provider, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) (float64, error) {
+func (f *fakeUsageDao) GetConversationCost(provider, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int, tenantId string) (float64, error) {
 	inRate, cachedRate, outRate := 2.0, 0.2, 12.0
 	if nonCachedInputTokens+cachedInputTokens+cacheCreationTokens > 200000 {
 		inRate, cachedRate, outRate = 4.0, 0.4, 18.0
@@ -81,7 +81,7 @@ func TestRecordCodeAnalysisTokenUsage_MultiRowPerCallTiering(t *testing.T) {
 	// Standard rates: 3 × (0.15M×$2 + 0.001M×$12) = 3 × $0.312 = $0.936
 	assert.InDelta(t, 0.936, total, 0.001)
 	// The aggregate priced as one record would be long-ctx: 0.45M×$4 + 0.003M×$18 = $1.854
-	aggCost, err := fake.GetConversationCost("googleai", "gemini-3.1-pro-preview", 450000, 0, 0, 3000, 0)
+	aggCost, err := fake.GetConversationCost("googleai", "gemini-3.1-pro-preview", 450000, 0, 0, 3000, 0, "")
 	require.NoError(t, err)
 	assert.Greater(t, aggCost, 1.8)
 

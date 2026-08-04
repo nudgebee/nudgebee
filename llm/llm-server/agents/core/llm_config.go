@@ -134,6 +134,17 @@ func resolveCredsFingerprint(accountId, provider, agentName string, appendAgentN
 	)
 }
 
+// ProviderCustom is the generic provider for anything speaking
+// OpenAI's Chat Completions API at a caller-supplied base URL — the de-facto
+// standard that gateways (OpenRouter, LiteLLM, Portkey), hosted vendors (Groq,
+// Together, DeepSeek) and self-hosted runtimes (vLLM, Ollama, TGI) all
+// implement. One provider covers all of them; adding a case per vendor would
+// only duplicate this client under different names.
+//
+// Kept as a constant because the same string has to agree across llm-server,
+// the api-server integration config and the app's provider dropdown.
+const ProviderCustom = "custom"
+
 func GetLLMModel(provider string, modelName string, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
 	slog.Debug("GetLLMModel called", "provider", provider, "modelName", modelName, "agentName", agentName, "appendAgentName", appendAgentName, "accountId", accountId)
 
@@ -166,6 +177,14 @@ func GetLLMModel(provider string, modelName string, agentName string, appendAgen
 	case "openai":
 		slog.Debug("Routing to OpenAI LLM provider")
 		model, err = getOpenAILLM(provider, modelName, agentName, appendAgentName, accountId, res)
+	case ProviderCustom:
+		// Anything speaking the OpenAI Chat Completions wire format at a
+		// caller-supplied base URL: OpenRouter, vLLM, Ollama, Groq, Together,
+		// DeepSeek, LiteLLM and friends. Same client as "openai" — the only
+		// difference is that the endpoint is required rather than defaulted,
+		// which getCustomLLM enforces.
+		slog.Debug("Routing to OpenAI-compatible LLM provider")
+		model, err = getCustomLLM(provider, modelName, agentName, appendAgentName, accountId, res)
 	case "bedrock":
 		slog.Debug("Routing to Bedrock LLM provider")
 		model, err = getBedrockLLM(provider, modelName, agentName, appendAgentName, accountId, res)
@@ -1448,6 +1467,32 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 	}
 	slog.Info("Using OpenAI LLM", "model", modelName, "agentName", agentName, "apiType", apiType)
 	return llm, nil
+}
+
+// getCustomLLM serves any provider exposing OpenAI's Chat Completions
+// API at its own base URL. It reuses the OpenAI client because the wire format
+// is identical — the only real difference is that there is no sensible default
+// endpoint, so a missing one is an error rather than a silent fall-through to
+// api.openai.com with someone else's key.
+//
+// Endpoint convention: the client appends "/chat/completions" verbatim, so the
+// configured value must already include the version segment —
+// "https://openrouter.ai/api/v1", not "https://openrouter.ai/api". Note this
+// differs from the huggingface provider, whose client appends
+// "/v1/chat/completions" itself.
+func getCustomLLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
+	var res *LLMConfigResolution
+	if len(resolution) > 0 {
+		res = resolution[0]
+	}
+
+	if endpoint := getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res); strings.TrimSpace(endpoint) == "" {
+		slog.Error("openai-compatible provider requires an api endpoint",
+			"provider", provider, "model", modelName, "agentName", agentName)
+		return nil, fmt.Errorf("llm provider %q requires llm_provider_api_endpoint (e.g. https://openrouter.ai/api/v1)", provider)
+	}
+
+	return getOpenAILLM(provider, modelName, agentName, appendAgentName, accountId, resolution...)
 }
 
 func getBedrockLLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {

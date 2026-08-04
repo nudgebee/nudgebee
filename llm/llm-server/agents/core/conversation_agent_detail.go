@@ -331,7 +331,7 @@ func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, ag
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail model_calls: %w", err)
 	}
 
-	pricing, err := chat.GetConversationCosts(nil)
+	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
 	if err != nil {
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail pricing: %w", err)
 	}
