@@ -50,32 +50,6 @@ func NormalizeProvider(name string) schemas.ModelProvider {
 	}
 }
 
-// SupportsEndpointOperator reports whether an operator can enable this provider with
-// just an endpoint and no key — the self-hosted, OpenAI-compatible servers (Ollama,
-// vLLM, SGL), which are reached by base URL with an OPTIONAL bearer token. These are
-// operator-only (a per-tenant DirectKey cannot carry a base URL).
-func SupportsEndpointOperator(providerName string) bool {
-	switch NormalizeProvider(providerName) {
-	case schemas.Ollama, schemas.VLLM, schemas.SGL:
-		return true
-	}
-	return false
-}
-
-// SupportsKeylessOperator reports whether an operator can configure this provider
-// with no static credential material — i.e. it authenticates via an ambient mechanism.
-// Bedrock (AWS default chain / IRSA on EKS), Azure (Azure default chain / managed
-// identity) and Vertex (GCP Application Default Credentials / Workload Identity) can;
-// the api-key providers cannot. Used to decide whether to enable a provider whose
-// LLM_PROVIDER_* block carries no key.
-func SupportsKeylessOperator(providerName string) bool {
-	switch NormalizeProvider(providerName) {
-	case schemas.Bedrock, schemas.Azure, schemas.Vertex:
-		return true
-	}
-	return false
-}
-
 // buildCred converts OPERATOR config into a Bifrost Key. For cloud providers it
 // populates the structured cloud config (Bedrock here); for api-key providers it
 // sets Value. Operator Bedrock may be KEYLESS: with no static access/secret keys,

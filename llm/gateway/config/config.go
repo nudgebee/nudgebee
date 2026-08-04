@@ -37,26 +37,17 @@ type Configuration struct {
 	// them simultaneously (the passthrough routes by endpoint, so one key each).
 	// HuggingFace is served only through the generic /v1 endpoint (Bifrost's HF
 	// provider has no native passthrough), so it has no /huggingface mount.
-	// For a cloud provider needing structured creds (Bedrock/Vertex/Azure), use the
-	// LLM_PROVIDER_* block below instead.
+	// For a cloud provider needing structured creds (Bedrock/Vertex/Azure) or a custom
+	// OpenAI-compatible endpoint, configure it as a per-tenant (or platform-scoped) LLM
+	// integration — the gateway resolves those. The gateway intentionally has NO shared
+	// LLM_PROVIDER_* block: reusing llm-server's env coupled the two services' config
+	// (and let a gateway-only change silently affect llm-server), so it was removed. The
+	// gateway's operator credentials are these GATEWAY_*_API_KEY keys; everything else
+	// (cloud, custom endpoints, per-tenant BYO) comes from integrations.
 	AnthropicAPIKey   string `mapstructure:"gateway_anthropic_api_key"`
 	OpenAIAPIKey      string `mapstructure:"gateway_openai_api_key"`
 	GeminiAPIKey      string `mapstructure:"gateway_gemini_api_key"`
 	HuggingFaceAPIKey string `mapstructure:"gateway_huggingface_api_key"`
-
-	// Operator default / cloud provider credential — mirrors llm-server's
-	// LLM_PROVIDER_* env convention. Use for a single provider or a cloud provider
-	// (Bedrock/Vertex/Azure) needing structured creds; the per-provider keys above
-	// take precedence for the key-based providers. Cloud fields (access/secret/
-	// session) feed BedrockKeyConfig; api_key feeds the Value for api-key providers.
-	LlmProvider             string `mapstructure:"llm_provider"`
-	LlmProviderApiKey       string `mapstructure:"llm_provider_api_key"`
-	LlmProviderApiEndpoint  string `mapstructure:"llm_provider_api_endpoint"`
-	LlmProviderRegion       string `mapstructure:"llm_provider_region"`
-	LlmProviderAccessKey    string `mapstructure:"llm_provider_access_key"`
-	LlmProviderSecretKey    string `mapstructure:"llm_provider_secret_key"`
-	LlmProviderSessionToken string `mapstructure:"llm_provider_session_token"`
-	LlmProviderProjectId    string `mapstructure:"llm_provider_project_id"` // vertex GCP project
 
 	// Metastore (Postgres): virtual keys, identity, pricing catalog.
 	GatewayDBURL        string `mapstructure:"gateway_db_url"`
@@ -194,14 +185,6 @@ var keyDefaults = map[string]any{
 	"gateway_openai_api_key":                "",
 	"gateway_gemini_api_key":                "",
 	"gateway_huggingface_api_key":           "",
-	"llm_provider":                          "anthropic",
-	"llm_provider_api_key":                  "",
-	"llm_provider_api_endpoint":             "",
-	"llm_provider_region":                   "us-west-2",
-	"llm_provider_access_key":               "",
-	"llm_provider_secret_key":               "",
-	"llm_provider_session_token":            "",
-	"llm_provider_project_id":               "",
 	"gateway_db_url":                        "",
 	"gateway_db_max_connections":            20,
 	"gateway_db_min_connections":            2,
