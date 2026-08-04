@@ -639,6 +639,30 @@ func hasOpenAnomaly(dbms *database.DatabaseManager, accountId string, anomalyTyp
 	return err == nil && count > 0
 }
 
+// getOpenAnomalyNameSet fetches all open anomaly names for a given account and type
+// in a single query, returning a set for O(1) lookups. Uses the partial index
+// idx_anomaly_open_account_type_name.
+func getOpenAnomalyNameSet(dbms *database.DatabaseManager, accountId string, anomalyType AnomalyType) (map[string]bool, error) {
+	if dbms == nil || dbms.Db == nil || accountId == "" {
+		return nil, fmt.Errorf("spend-anomaly: invalid arguments for open anomaly lookup")
+	}
+	var names []string
+	err := dbms.Db.Select(&names, `
+		SELECT DISTINCT name FROM anomaly
+		WHERE account_id = $1
+		  AND anomaly_type = $2
+		  AND anomaly_status = 'OPEN'
+	`, accountId, anomalyType)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return set, nil
+}
+
 func detectNewAccountLevelAnomalies(
 	ctx *security.RequestContext,
 	dbms *database.DatabaseManager,
@@ -805,12 +829,20 @@ func detectNewServiceLevelAnomalies(
 		return
 	}
 
+	// Batch-fetch all open service-level anomaly names in one query instead of
+	// issuing a per-service SELECT COUNT(*) inside the loop (N+1 → 1).
+	openNames, err := getOpenAnomalyNameSet(dbms, accountId, MetricAnomolyTypeCloudSpendService)
+	if err != nil {
+		slog.Error("spend-anomaly: failed to fetch open anomaly names, aborting detection", "error", err, "account", accountName)
+		return
+	}
+
 	for _, r := range results {
 		if !isSpendAnomaly(r, cfg) {
 			continue
 		}
 
-		if hasOpenAnomaly(dbms, accountId, MetricAnomolyTypeCloudSpendService, r.ServiceName) {
+		if openNames[r.ServiceName] {
 			slog.Debug("spend-anomaly: open service-level anomaly exists, skipping",
 				"account", accountName, "service", r.ServiceName)
 			continue
