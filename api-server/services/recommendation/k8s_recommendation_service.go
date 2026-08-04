@@ -556,9 +556,9 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 		node, _ := row["node"].(string)
 		if node == "" {
 			// The fs-scan pins the Job to this node to reuse the node-local image.
-			// Without it the Job schedules anywhere and IfNotPresent falls back to a
-			// registry pull (fails for private registries). Skip; a later cycle picks
-			// it up once discovery has populated the node.
+			// Without it the Job schedules anywhere and the pull-policy-Never
+			// container can never start. Skip; a later cycle picks it up once
+			// discovery has populated the node.
 			ctx.GetLogger().Warn("image_scanner: skipping image with no node", "image", img, "account_id", accountId)
 			continue
 		}

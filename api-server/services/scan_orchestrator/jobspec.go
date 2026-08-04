@@ -35,7 +35,8 @@ type JobSpec struct {
 	NodeName string `json:"node_name,omitempty"`
 
 	// ImagePullPolicy overrides the main container's pull policy. image_scanner
-	// sets "IfNotPresent" so the node-local image copy is reused, not re-pulled.
+	// sets "Never" so the node-local image copy is reused and a missing copy
+	// fails fast instead of falling back to a registry pull.
 	ImagePullPolicy string `json:"image_pull_policy,omitempty"`
 
 	// RunAsUser sets the main container's securityContext.runAsUser. Pointer so an
