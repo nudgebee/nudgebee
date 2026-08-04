@@ -1633,6 +1633,7 @@ func UpdateIntegrationConfigStatus(
 		slog.Error("integrations: failed to begin transaction", "error", err)
 		return err
 	}
+	committed := false
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Rollback()
@@ -1640,7 +1641,7 @@ func UpdateIntegrationConfigStatus(
 			err = fmt.Errorf("recovered from panic: %v", p)
 		} else if err != nil {
 			_ = tx.Rollback()
-		} else {
+		} else if !committed {
 			if commitErr := tx.Commit(); commitErr != nil {
 				slog.Error("integrations: commit failed", "error", commitErr)
 				err = commitErr
@@ -1741,6 +1742,18 @@ func UpdateIntegrationConfigStatus(
 		slog.Error("integrations: failed to update integration status", "error", err)
 		return err
 	}
+
+	// Commit before the audit write. audit.CreateAudit does not take this tx — it
+	// acquires its own manager (ClickHouse Warehouse when enabled, a remote
+	// round-trip; else a second Metastore connection). Leaving the commit to the
+	// deferred closure would hold the integrations row lock idle-in-transaction
+	// across that write on every enable/disable. Same idiom as SaveIntegrationConfig.
+	if err = tx.Commit(); err != nil {
+		slog.Error("integrations: commit failed", "error", err)
+		return err
+	}
+	committed = true
+	InvalidateIntegrationCache()
 
 	// Audit
 	auditEvent := audit.Audit{
