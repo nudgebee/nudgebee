@@ -136,6 +136,14 @@ func BuildGcpAuth(creds CloudAccountCredentials) (*CloudAuthResult, error) {
 	result.Env["CLOUDSDK_CORE_DISABLE_PROMPTS"] = "1"
 	result.Env["TERM"] = "xterm"
 
+	// We always activate an explicit service account key below, so gcloud never
+	// needs its GCE auto-detection probe. Without this, every invocation hits the
+	// metadata server (169.254.169.254), which the workspace pod's NetworkPolicy
+	// blackholes (silently drops, no RST) to prevent IMDS credential theft — the
+	// probe then burns ~15-18s per call waiting out its own connect timeout/retries
+	// before falling back to the explicit key. Disabling the check skips it entirely.
+	result.Env["CLOUDSDK_CORE_CHECK_GCE_METADATA"] = "False"
+
 	// Use a per-account gcloud config directory to isolate auth state between different
 	// GCP accounts. Without this, activating account B overwrites account A's active
 	// session, causing "no active account selected" errors on subsequent account A calls.
