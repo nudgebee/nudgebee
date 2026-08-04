@@ -352,13 +352,12 @@ func DeleteUpgradePlan(ctx *security.RequestContext, tenantID, accountID, planID
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer func() {
-		if err != nil {
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				ctx.GetLogger().Error("Failed to rollback transaction", "error", rollbackErr)
-			}
-		}
-	}()
+	// Unconditional: the "plan not found" return below leaves the local `err` nil
+	// (the return is unnamed), so an `if err != nil` guard would skip the rollback
+	// and strand the connection idle-in-transaction holding the DELETE locks.
+	// Rollback after a successful Commit returns sql.ErrTxDone, which LogRollback
+	// treats as benign.
+	defer database.LogRollback(tx, ctx.GetLogger())
 
 	// Delete tasks belonging to steps of this plan
 	_, err = tx.Exec(`
