@@ -8,15 +8,15 @@ authors = ["Nudgebee <dev@nudgebee.com>"]
 python = ">=3.11,<3.13"
 python-dotenv = "^1.0.0"
 flask = "^3.1.3"
-prometheus-api-client = "^0.5.4"
+prometheus-api-client = ">=0.5.4,<0.8.0"
 pandas = "^2.1.4"
 numpy = "^1.26.2"
 gunicorn = "23.0.0"
 
 # stubs
-boto3-stubs = "1.42.84"
+boto3-stubs = "1.43.62"
 pandas-stubs = "2.0.3.230814"
-types-tensorflow = "2.12.0.10"
+types-tensorflow = "2.18.0.20260724"
 sqlalchemy-stubs = "0.4"
 types-requests = "2.33.0.20260503"
 python-json-logger = "^2.0.7"
@@ -30,19 +30,20 @@ scikit-learn = "^1.4.1.post1"
 opentelemetry-api = "^1.27.0"
 opentelemetry-sdk = "^1.40.0"
 opentelemetry-exporter-otlp = "^1.27.0"
-# 0.48b0 imported the legacy `pkg_resources` at startup, which forced a
-# setuptools<81 cap (see below). opentelemetry-python-contrib dropped
-# pkg_resources in 0.50b0; 0.65b0 is the release aligned with core 1.44
-# (contrib 0.NNb0 tracks core 1.MM where NN = MM + 21).
-opentelemetry-instrumentation-system-metrics = "^0.65b0"
-opentelemetry-instrumentation-flask = "^0.65b0"
-opentelemetry-instrumentation-requests = "^0.65b0"
+opentelemetry-instrumentation-system-metrics = "^0.61b0"
+opentelemetry-instrumentation-flask = "^0.61b0"
+opentelemetry-instrumentation-requests = "^0.61b0"
 pydantic = "^2.10.3"
 kombu = "^5.4.2"
-kubernetes = "^26.1.0"
+kubernetes = ">=26.1,<37.0"
 
-# Security: pin patched versions of otherwise-transitive deps flagged HIGH by
-# the image scan (pulled in via boto3 / tensorflow / packaging tooling). These
+# --- Universal data scrubbing (Tier-2 NER; Tier-1 regex needs no deps) ---
+presidio-analyzer = ">=2.2.355"
+spacy = ">=3.8,<3.9"
+en_core_web_sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+
+# Security: pin patched versions of otherwise-transitive deps flagged by the
+# image scan (pulled in via boto3 / tensorflow / packaging tooling). These
 # floors don't change functionality; they just keep the resolved graph off the
 # vulnerable releases.
 urllib3 = ">=2.7.0"
@@ -51,13 +52,12 @@ Brotli = ">=1.2.0"
 "jaraco.context" = ">=6.1.0"
 wheel = ">=0.46.2"
 msgpack = ">=1.2.1"
-# setuptools 82 removed the legacy `pkg_resources` module, which used to crash
-# this service on boot ("No module named 'pkg_resources'") because
-# opentelemetry-instrumentation-system-metrics 0.48b0 imported it at startup.
-# That import is gone as of contrib 0.50b0 (we now run 0.65b0), so the old
-# `<81` cap is lifted and the floor moves to 83.0.0 for CVE-2026-59890.
-# Re-verify with `uv pip install --requirements pyproject.toml` that no
-# installed package still imports pkg_resources before lowering this floor.
+# setuptools floor 83.0.0 for CVE-2026-59890. The old `<81` cap guarded a boot
+# crash ("No module named 'pkg_resources'") caused by
+# opentelemetry-instrumentation-system-metrics 0.48b0 importing pkg_resources at
+# startup; contrib dropped that import in 0.50b0 and this service runs 0.61b0,
+# so the cap no longer applies. Re-verify no installed package imports
+# pkg_resources unguarded before lowering this floor.
 setuptools = ">=83"
 
 [build-system]
@@ -66,8 +66,8 @@ build-backend = "poetry.core.masonry.api"
 
 
 [tool.poetry.group.dev.dependencies]
-pre-commit = "4.5.1"
-black = "26.5.0"
+pre-commit = "4.6.1"
+black = "26.5.1"
 mypy = "1.5.1"
 flake8 = "7.3.0"
 
@@ -96,3 +96,11 @@ exclude = '''
   | notebooks
 )/
 '''
+
+[tool.pytest.ini_options]
+markers = [
+    "benchmark: timing benchmark; deselected by default (run with -m benchmark)",
+]
+# Benchmarks are informational and slower (NER model load); keep them out of
+# the default/CI run. Opt in explicitly with: pytest -m benchmark
+addopts = "-m 'not benchmark'"
