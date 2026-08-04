@@ -120,7 +120,7 @@ export function ToolsView({ metrics, loading, error, onSelectTool }: ToolsViewPr
     {
       component: (
         <Box sx={{ ...numCell, textAlign: 'right', color: (t.failures ?? 0) > 0 ? 'var(--ds-red-600)' : 'var(--ds-gray-500)' }}>
-          {(t.failures ?? 0) > 0 ? `${t.failures.toLocaleString()} (${failureRate(t.failures, t.calls)})` : '—'}
+          {(t.failures ?? 0) > 0 ? `${t.failures.toLocaleString()} (${failureRate(t.failures, t.calls ?? 0)})` : '—'}
         </Box>
       ),
     },
