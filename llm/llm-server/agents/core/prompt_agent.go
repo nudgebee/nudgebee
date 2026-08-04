@@ -288,7 +288,17 @@ func formatRAGDocument(ragConfig NBAgentPromptRag, rawDocument string) string {
 // formatting in their prompts (thought_action, final_answer, etc.).
 // defaultReactOutputFormat is injected as FINAL ANSWER REQUIREMENTS for react-style planners
 // when the agent does not specify its own OutputFormat. It conditionally applies the
-// investigation format (5-Whys, evidence chain) only for troubleshooting queries.
+// investigation format (Causality Chain (Root Cause), evidence chain) only for
+// troubleshooting queries.
+//
+// Header wording is load-bearing: downstream DB consumers pattern-match on the
+// canonical string `### Causality Chain (Root Cause)`. planner_react_3_base.txt
+// (line 265) already lists `### Causality Chain (5-Whys)` as a forbidden
+// variant; this const previously contradicted that spec and emitted the
+// forbidden `(5-Whys)` header directly. That contradiction was traced to 80
+// prod responses/week with the un-normalized header on single-agent
+// orchestrator turns (which don't run the formatter — see executor.go:1035
+// `len(distinctAgents) > 1` gate).
 const defaultReactOutputFormat = `Choose the format based on the type of user request:
 
 **FOR INVESTIGATION / TROUBLESHOOTING QUERIES** (e.g. "why is X failing", "debug Y", "show me recent issues"):
@@ -297,7 +307,7 @@ const defaultReactOutputFormat = `Choose the format based on the type of user re
 - **Symptom:** [What user reported]
 - **Signal:** [What metrics/logs/events showed]
 
-### Causality Chain (5-Whys)
+### Causality Chain (Root Cause)
 - **Symptom:** (The primary issue reported/observed)
 - **Why?** (Immediate cause of the symptom)
 - **Why?** (Next layer of causality)
