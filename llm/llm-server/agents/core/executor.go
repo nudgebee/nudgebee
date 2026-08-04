@@ -1020,21 +1020,48 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		GenerateImageDescriptionsAsync(ctx, request)
 	}
 
-	// use response formatting only when there are multiple agents involved
+	// Run the LLM response formatter only when a turn touched enough distinct
+	// agents that step-reference guidance and citation normalization pay off.
+	//
+	// Threshold raised from >1 (2+ agents) to >4 (5+ agents) on 2026-08-04
+	// after a 7d prod review found: the formatter is a fresh LLM call
+	// (~500ms + ~$0.005) whose measurable unique contribution is step-ID
+	// citation rewriting (~28.6% of runs) and header/prose polish. On 2/3/4-
+	// agent turns the citation guide adds little (few tool sources to link),
+	// the prose polish has historically drifted into chatty/emoji tone that
+	// violates the professional persona (memory item on tone-drift), AND the
+	// formatter runs a fresh LLM call with only its own system prompt — it
+	// does NOT reference account-level persona/tone customization, so any
+	// tenant with a custom voice gets overridden on every formatted response.
+	//
+	// Raising the threshold to 5+ agents drops ~417 marginal runs/wk
+	// (~68% reduction: 2-agent 146 + 3-agent 162 + 4-agent 109) while
+	// keeping formatter on the ~199/wk heavy-fanout narratives (5+ distinct
+	// tool/agent sources) where the step-ref guide is genuinely
+	// load-bearing.
+	//
+	// Follow-up review 2-3 days after deploy: sample formatted vs
+	// un-formatted responses at 5+/4-/1-agent slices — decide whether to
+	// raise further, keep, or replace the LLM formatter with a deterministic
+	// header/citation normalization pass (which would remove the persona-
+	// conflict problem entirely). Companion header-source fix in PR #35608
+	// removes the primary reason we needed formatter to run broadly
+	// (un-normalized `(5-Whys)` header on single-agent turns).
 	if agentResponse.Status == ConversationStatusCompleted && (request.ParentAgentId == "" || request.ParentAgentId == request.AgentId || request.ParentAgentId == uuid.Nil.String()) {
+		const formatterMinDistinctAgents = 4 // formatter fires when count > this (i.e. 5+ agents)
 		distinctAgents := make(map[string]bool)
 		for _, invocation := range agentResponse.AgentStepResponse {
 			if invocation.Call.FunctionCall != nil && invocation.Call.FunctionCall.Name != "" && !strings.EqualFold(invocation.Call.FunctionCall.Name, "llm") && !strings.EqualFold(invocation.Call.FunctionCall.Name, "planner") && !strings.Contains(invocation.Call.FunctionCall.Name, "debug") {
 				if _, ok := GetNBAgent(ctx, invocation.Call.FunctionCall.Name, request.AccountId, AgentStatusEnabled); ok {
 					distinctAgents[strings.ToLower(invocation.Call.FunctionCall.Name)] = true
 				}
-				if len(distinctAgents) > 1 {
+				if len(distinctAgents) > formatterMinDistinctAgents {
 					break
 				}
 			}
 		}
 
-		if len(distinctAgents) > 1 {
+		if len(distinctAgents) > formatterMinDistinctAgents {
 			// Pass the effective (runtime) planner type: orchestrating/react agents
 			// run as react_3 and assign sequential DisplayIDs, so the formatter must
 			// build the step-reference guide for them too — not just declared-react_3 agents.
