@@ -101,7 +101,7 @@ func HandleGitOpsOrTicket(
 
 		result := copyMap(baseResult)
 		if resolverType == "AutoOptimize" {
-			resolutionID, err := service.RecommendationResolve(taskCtx.GetNewRequestContext(), service.RecommendationResolutionRequest{
+			resolved, err := service.RecommendationResolve(taskCtx.GetNewRequestContext(), service.RecommendationResolutionRequest{
 				AccountID:        accountID,
 				RecommendationID: recommendationID,
 				Data:             prData,
@@ -121,7 +121,10 @@ func HandleGitOpsOrTicket(
 				return nil, false, fmt.Errorf("failed to resolve recommendation: %w", err)
 			}
 			result["status"] = "resolved"
-			result["resolution_id"] = resolutionID
+			result["resolution_id"] = resolved.ID
+			// Carried through so the run's notification can tell a pull request this
+			// run raised or rewrote from one it was simply handed back.
+			result["pr_action"] = resolved.PRAction
 			result["description"] = description
 		} else {
 			prInput := service.GitPushRequest{

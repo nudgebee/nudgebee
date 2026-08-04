@@ -94,13 +94,22 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 // recommendation whose PR is still open on the remote, or nil when none exists.
 //
 // A resolution counts as "open" when it carries a real PR URL (type_reference_id
-// like http...) and its pr_lifecycle_state is not one of the terminal states
-// ('merged' / 'closed' / 'unresolvable') that the reconciler in
-// account/adapter/pr_lifecycle.go drives rows to once a PR is resolved. Failed
+// like http...), is still InProgress, and its pr_lifecycle_state is not one of
+// the terminal states ('merged' / 'closed' / 'unresolvable') that the reconciler
+// in account/adapter/pr_lifecycle.go drives rows to once a PR is resolved. Failed
 // PR-creation attempts leave type_reference_id empty, so they are ignored. NULL
 // lifecycle rows with a URL are treated as open (a PR was raised but the
 // reconciler has not classified it yet) to stay on the safe side of not opening
 // a duplicate.
+//
+// The status filter is not redundant with the lifecycle filter: it keeps this
+// query's idea of "open" the same as the reconciler's, which selects on
+// status = 'InProgress' throughout. A row the reconciler will never look at
+// again must not be able to block a recommendation here, because nothing can
+// ever release it — a row stuck at ('Success', 'created') pinned llm-server and
+// relay-server to PRs that had already merged, and no new PR was raised for
+// either for a month. status only moves off InProgress via prTerminalFields,
+// i.e. the PR really did merge or close, so this cannot hide a live PR.
 func findOpenPRResolution(recommendationId string) (*models.RecommendationResolution, error) {
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -114,10 +123,12 @@ func findOpenPRResolution(recommendationId string) (*models.RecommendationResolu
 		WHERE recommendation_id = $1
 		AND type = $2
 		AND type_reference_id LIKE 'http%'
+		AND status = $3
 		AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state NOT IN ('merged', 'closed', 'unresolvable'))
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, recommendationId, string(models.RecommendationResolutionTypePullRequest))
+	`, recommendationId, string(models.RecommendationResolutionTypePullRequest),
+		string(models.RecommendationResolutionStatusInProgress))
 	resolution := models.RecommendationResolution{}
 	if err := row.StructScan(&resolution); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -346,8 +357,10 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 				"decision", decision.Reason)
 
 			message := fmt.Sprintf("a pull request is already open for this recommendation - %s", existingPR.TypeReferenceId)
+			action := PRActionUnchanged
 			if decision.Refreshed {
 				message = fmt.Sprintf("%s - %s", existingPR.TypeReferenceId, decision.Reason)
+				action = PRActionRefreshed
 			}
 
 			return RecommendationApplyResponse{
@@ -357,6 +370,7 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 				}},
 				Resolution: *existingPR,
 				Status:     models.RecommendationStatusInProgress,
+				PRAction:   action,
 			}, nil
 		}
 	}
@@ -455,11 +469,15 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 	if err != nil {
 		ctx.GetLogger().Error("error triggering notification", "error", err)
 	}
-	return RecommendationApplyResponse{
+	applyResponse := RecommendationApplyResponse{
 		Data:       []any{resp.Data},
 		Resolution: resolution,
 		Status:     models.RecommendationStatus(string(recommendationStatus)),
-	}, nil
+	}
+	if resolutionType == models.RecommendationResolutionTypePullRequest {
+		applyResponse.PRAction = PRActionCreated
+	}
+	return applyResponse, nil
 }
 
 // RetryRecommendationResolution retries a failed recommendation resolution

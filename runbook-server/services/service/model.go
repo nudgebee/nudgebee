@@ -382,3 +382,19 @@ type RecommendationResolutionRequest struct {
 	// that does not opt in.
 	RefreshOpenPRChangePct map[string]float64 `json:"refresh_open_pr_change_pct,omitempty"`
 }
+
+// RecommendationResolveResult is what an apply did, not just what it produced.
+//
+// The resolution id alone cannot answer "did this run change anything?" — an
+// apply handed back a pull request that was already open returns the same id it
+// returned an hour ago. PRAction carries that distinction from the one place
+// that knows it (the api-server's open-PR guard) to the one place that needs it
+// (the run's completion notification).
+type RecommendationResolveResult struct {
+	ID string
+	// PRAction is "created", "refreshed", "unchanged", or "" — the last from an
+	// api-server that predates the field, which reads as "not unchanged" and so
+	// keeps the previous behaviour. Values are named in internal/model, next to
+	// the task attribute they end up on.
+	PRAction string
+}

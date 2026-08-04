@@ -185,6 +185,12 @@ func (a *Activities) ExecuteTaskActivity(ctx context.Context, taskID string) err
 				}
 			}
 
+			// What the apply actually did to the pull request, which the resolution
+			// id alone does not say (see AutoOptimizeTaskAttributes.PRAction).
+			if prAction, ok := outMap["pr_action"].(string); ok && prAction != "" {
+				task.Attributes.PRAction = prAction
+			}
+
 			// Store ticket URL in task attributes
 			if ticketURL, ok := outMap["ticket_url"].(string); ok && ticketURL != "" {
 				task.Attributes.TicketLink = &ticketURL

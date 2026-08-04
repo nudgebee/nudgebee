@@ -781,7 +781,7 @@ func RaisePR(ctx *security.RequestContext, input GitPushRequest) (string, error)
 	return response.Resolution.ID, nil
 }
 
-func RecommendationResolve(ctx *security.RequestContext, input RecommendationResolutionRequest) (string, error) {
+func RecommendationResolve(ctx *security.RequestContext, input RecommendationResolutionRequest) (RecommendationResolveResult, error) {
 	serviceRequest := map[string]any{
 		"action": map[string]any{
 			"name": "recommendation_resolve",
@@ -802,7 +802,7 @@ func RecommendationResolve(ctx *security.RequestContext, input RecommendationRes
 	)
 
 	if err != nil {
-		return "", fmt.Errorf("services: push_request_recommendation, unable to process request: %w", err)
+		return RecommendationResolveResult{}, fmt.Errorf("services: push_request_recommendation, unable to process request: %w", err)
 	}
 
 	defer func() {
@@ -813,32 +813,36 @@ func RecommendationResolve(ctx *security.RequestContext, input RecommendationRes
 
 	jsonBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %w", err)
+		return RecommendationResolveResult{}, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	if resp.StatusCode == 401 {
-		return "", fmt.Errorf("unauthorized: %s", string(jsonBody))
+		return RecommendationResolveResult{}, fmt.Errorf("unauthorized: %s", string(jsonBody))
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("service server error status %d: %s", resp.StatusCode, string(jsonBody))
+		return RecommendationResolveResult{}, fmt.Errorf("service server error status %d: %s", resp.StatusCode, string(jsonBody))
 	}
 
 	var response struct {
 		Status     string `json:"status"`
+		PRAction   string `json:"pr_action"`
 		Resolution struct {
 			ID string `json:"id"`
 		} `json:"resolution"`
 	}
 
 	if err := common.UnmarshalJson(jsonBody, &response); err != nil {
-		return "", fmt.Errorf("failed to unmarshal response: %w", err)
+		return RecommendationResolveResult{}, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	if response.Status != "" && response.Status != "InProgress" {
-		return "", fmt.Errorf("got %s from service server for PR request", response.Status)
+		return RecommendationResolveResult{}, fmt.Errorf("got %s from service server for PR request", response.Status)
 	}
 
-	return response.Resolution.ID, nil
+	return RecommendationResolveResult{
+		ID:       response.Resolution.ID,
+		PRAction: response.PRAction,
+	}, nil
 }
 
 func ListMetricsSeries(ctx *security.RequestContext, accountId, provider string) (ObservabilityMetricsSeriesResponse, error) {

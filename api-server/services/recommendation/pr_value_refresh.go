@@ -144,18 +144,26 @@ func dispatchValueRefresh(
 	summary := describeDrifts(drifts)
 	prompt := buildValueRefreshPrompt(existingPR.TypeReferenceId, newValues, drifts)
 
-	adapter.DispatchPRValueRefresh(ctx, existingPR, prompt, valueRefreshCap, valueRefreshCooldown, func(success bool, message string) {
-		if !success {
+	adapter.DispatchPRValueRefresh(ctx, existingPR, prompt, valueRefreshCap, valueRefreshCooldown, func(outcome adapter.ValueRefreshOutcome, message string) {
+		switch outcome {
+		case adapter.ValueRefreshUpdated:
+			if err := recordValueRefresh(ctx, existingPR, newValues, summary); err != nil {
+				ctx.GetLogger().Error("pr_value_refresh: pull request updated but recording it failed",
+					"resolution_id", existingPR.Id, "error", err)
+			}
+		case adapter.ValueRefreshUnnecessary:
+			// Not a problem, so not an error: the branch already says what we would
+			// have written. The values are still not recorded — we asked the agent to
+			// change the branch and it did not, so claiming they are on it would be
+			// the #34924 mistake.
+			ctx.GetLogger().Info("pr_value_refresh: pull request needed no update",
+				"resolution_id", existingPR.Id, "pr_url", existingPR.TypeReferenceId, "detail", message)
+		default:
 			// The dispatcher has already handed the claim back and recorded the
 			// reason on the row, so the next run can retry rather than finding it
 			// apparently mid-flight.
 			ctx.GetLogger().Error("pr_value_refresh: failed to update open pull request",
 				"resolution_id", existingPR.Id, "pr_url", existingPR.TypeReferenceId, "error", message)
-			return
-		}
-		if err := recordValueRefresh(ctx, existingPR, newValues, summary); err != nil {
-			ctx.GetLogger().Error("pr_value_refresh: pull request updated but recording it failed",
-				"resolution_id", existingPR.Id, "error", err)
 		}
 	})
 }
@@ -207,7 +215,15 @@ func recordValueRefresh(
 		return err
 	}
 
-	_, err = dbms.Db.ExecContext(context.Background(), `
+	// The terminal guard is what stops a merge landing mid-refresh from being
+	// undone. Without it this write stamps 'created' over 'merged' while leaving
+	// status = 'Success', and that pair is unrecoverable: every lifecycle cron
+	// query filters status = 'InProgress', so nothing ever re-terminalises the
+	// row, while the open-PR guard keeps treating it as the recommendation's open
+	// PR — pinning it to a PR that merged months ago and blocking every PR after.
+	// Every other writer of pr_lifecycle_state guards on the state it replaces;
+	// this one did not.
+	res, err := dbms.Db.ExecContext(context.Background(), `
 		UPDATE recommendation_resolution
 		SET data = COALESCE(data, '{}'::jsonb) || $1::jsonb,
 			value_refresh_count = value_refresh_count + 1,
@@ -216,10 +232,23 @@ func recordValueRefresh(
 			pr_lifecycle_state = 'created',
 			status_message = $3,
 			updated_at = $2
-		WHERE id = $4`,
+		WHERE id = $4
+		  AND (pr_lifecycle_state IS NULL
+		       OR pr_lifecycle_state NOT IN ('merged', 'closed', 'unresolvable'))`,
 		string(valuesJSON), time.Now().UTC(),
 		truncateRefreshMessage("PR updated — "+summary), existingPR.Id)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// No row means the PR reached a terminal state while the agent was running.
+	// The branch was updated for nothing, but the terminal state is the truth and
+	// is left alone.
+	if rows, raErr := res.RowsAffected(); raErr == nil && rows == 0 {
+		ctx.GetLogger().Info("pr_value_refresh: pull request went terminal during the refresh; leaving it terminal",
+			"resolution_id", existingPR.Id, "pr_url", existingPR.TypeReferenceId)
+	}
+	return nil
 }
 
 func truncateRefreshMessage(s string) string {

@@ -11,6 +11,22 @@ import (
 	"nudgebee/services/security"
 )
 
+// ValueRefreshOutcome is what came of a dispatched refresh. "Did not update the
+// branch" is deliberately split in two: the agent declining because there is
+// nothing to change is a different event from the refresh being unable to run,
+// and they want different handling — different cooldown treatment, and different
+// log severity, since only one of them is a problem.
+type ValueRefreshOutcome int
+
+const (
+	// ValueRefreshUpdated — the agent changed the branch; the new values are live.
+	ValueRefreshUpdated ValueRefreshOutcome = iota
+	// ValueRefreshUnnecessary — the agent looked and found nothing to change.
+	ValueRefreshUnnecessary
+	// ValueRefreshFailed — the refresh could not be run or the agent errored.
+	ValueRefreshFailed
+)
+
 // DispatchPRValueRefresh re-runs the code agent against an already-open pull
 // request so it applies changed rightsizing values, and reports whether the
 // update landed (#34959).
@@ -31,23 +47,23 @@ func DispatchPRValueRefresh(
 	prompt string,
 	maxRefreshes int,
 	cooldown time.Duration,
-	onDone func(success bool, message string),
+	onDone func(outcome ValueRefreshOutcome, message string),
 ) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
-		onDone(false, "failed to reach the database: "+err.Error())
+		onDone(ValueRefreshFailed, "failed to reach the database: "+err.Error())
 		return
 	}
 
 	meta, tenantID, err := prMetadataForResolution(resolution)
 	if err != nil {
-		onDone(false, err.Error())
+		onDone(ValueRefreshFailed, err.Error())
 		return
 	}
 
 	gitToken, err := getGitTokenForTenant(dbms, tenantID, meta.Provider)
 	if err != nil {
-		onDone(false, "failed to get git token: "+err.Error())
+		onDone(ValueRefreshFailed, "failed to get git token: "+err.Error())
 		return
 	}
 
@@ -59,11 +75,11 @@ func DispatchPRValueRefresh(
 	// same branch, so the guardrails are part of the same atomic update.
 	claimed, err := claimResolutionForValueRefresh(dbms, resolution.Id, maxRefreshes, cooldown)
 	if err != nil {
-		onDone(false, "failed to claim the pull request for updating: "+err.Error())
+		onDone(ValueRefreshFailed, "failed to claim the pull request for updating: "+err.Error())
 		return
 	}
 	if !claimed {
-		onDone(false, "another run is already updating this pull request, or a guardrail now blocks it")
+		onDone(ValueRefreshFailed, "another run is already updating this pull request, or a guardrail now blocks it")
 		return
 	}
 
@@ -77,7 +93,18 @@ func DispatchPRValueRefresh(
 	fail := func(message string) {
 		releaseValueRefreshClaim(dbms, resolution.Id,
 			truncateForStatus("Could not update the pull request with the changed values: "+message))
-		onDone(false, message)
+		onDone(ValueRefreshFailed, message)
+	}
+
+	// A no_op is the agent having looked and decided the branch already says what
+	// we asked for. That is an answer, not a failure, so it keeps the cooldown the
+	// claim consumed — handing it back would re-run the agent on the very next
+	// scheduled run and every one after it, since nothing about the inputs has
+	// changed. Only the lifecycle state is restored.
+	settle := func(message string) {
+		restoreValueRefreshState(dbms, resolution.Id,
+			truncateForStatus("Pull request already matches the changed values: "+message))
+		onDone(ValueRefreshUnnecessary, message)
 	}
 
 	runPRFollowupAgent(reqCtx, tenantID, chatRequest, "resolution_id", resolution.Id,
@@ -91,11 +118,14 @@ func DispatchPRValueRefresh(
 				return
 			}
 			outcome := classifyFollowupOutcome(response.Response)
-			if outcome.name != followupOutcomeSuccess.name {
+			switch outcome.name {
+			case followupOutcomeSuccess.name:
+				onDone(ValueRefreshUpdated, "")
+			case followupOutcomeNoOp.name:
+				settle("code agent reported " + outcome.name)
+			default:
 				fail("code agent did not update the pull request: " + outcome.name)
-				return
 			}
-			onDone(true, "")
 		})
 }
 
@@ -175,6 +205,22 @@ func releaseValueRefreshClaim(dbms *database.DatabaseManager, resolutionID, reas
 	_, _ = dbms.Db.Exec(
 		`UPDATE recommendation_resolution
 		 SET pr_lifecycle_state = 'created', status_message = $1, updated_at = now(), last_value_refresh_at = NULL
+		 WHERE id = $2 AND pr_lifecycle_state = 'addressing'`,
+		reason, resolutionID)
+}
+
+// restoreValueRefreshState hands the row back after a refresh the agent declined
+// to make, keeping the cooldown stamp the claim consumed.
+//
+// The difference from releaseValueRefreshClaim is deliberate and is the whole
+// point: a failed refresh should retry on the next run, but a no_op should not.
+// The agent already read the branch and found nothing to change, and the next
+// run computes the same drift from the same values — so handing the cooldown
+// back buys another identical agent run every hour, indefinitely.
+func restoreValueRefreshState(dbms *database.DatabaseManager, resolutionID, reason string) {
+	_, _ = dbms.Db.Exec(
+		`UPDATE recommendation_resolution
+		 SET pr_lifecycle_state = 'created', status_message = $1, updated_at = now()
 		 WHERE id = $2 AND pr_lifecycle_state = 'addressing'`,
 		reason, resolutionID)
 }

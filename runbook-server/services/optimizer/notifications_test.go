@@ -24,20 +24,34 @@ func task(status string, resolutionID *uuid.UUID, ticketLink *string, ns, kind, 
 	}
 }
 
+// withPRAction stamps the api-server's verdict on what the apply did to the PR.
+func withPRAction(t model.AutoOptimizeTask, action string) model.AutoOptimizeTask {
+	t.Attributes.PRAction = action
+	return t
+}
+
 func TestClassifyTask(t *testing.T) {
 	resID := uuidptr()
 	link := strptr("https://jira/BROW-1")
+	complete := string(model.AutopilotTaskStatusComplete)
 	cases := []struct {
 		name string
 		in   model.AutoOptimizeTask
 		want taskOutcome
 	}{
-		{"in-place applied", task(string(model.AutopilotTaskStatusComplete), nil, nil, "app", "Deployment", "api"), outcomeApplied},
-		{"gitops pr", task(string(model.AutopilotTaskStatusComplete), resID, nil, "app", "Deployment", "web"), outcomePR},
-		{"ticket", task(string(model.AutopilotTaskStatusComplete), resID, link, "app", "Deployment", "worker"), outcomeTicket},
+		{"in-place applied", task(complete, nil, nil, "app", "Deployment", "api"), outcomeApplied},
+		{"gitops pr", task(complete, resID, nil, "app", "Deployment", "web"), outcomePR},
+		{"ticket", task(complete, resID, link, "app", "Deployment", "worker"), outcomeTicket},
 		{"failed", task(string(model.AutopilotTaskStatusFailed), nil, nil, "app", "Deployment", "cron"), outcomeFailed},
 		{"skipped", task(string(model.AutopilotTaskStatusSkipped), nil, nil, "app", "Deployment", "cache"), outcomeNoChange},
 		{"dry-run", task(string(model.AutoOptimizeStatusDryrun), nil, nil, "app", "Deployment", "db"), outcomeNoChange},
+		// The open-PR guard hands back the same resolution every run; that is not a
+		// change and must not be reported as one.
+		{"pr left untouched", withPRAction(task(complete, resID, nil, "app", "Deployment", "web"), model.PRActionUnchanged), outcomePRUnchanged},
+		{"pr rewritten with new values", withPRAction(task(complete, resID, nil, "app", "Deployment", "web"), "refreshed"), outcomePR},
+		{"pr newly raised", withPRAction(task(complete, resID, nil, "app", "Deployment", "web"), "created"), outcomePR},
+		// An api-server that predates the field says nothing; keep the old reading.
+		{"no pr action reported", task(complete, resID, nil, "app", "Deployment", "web"), outcomePR},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -61,6 +75,33 @@ func TestBuildCompletionSummary_ChangeGate(t *testing.T) {
 		t.Fatalf("expected no-change summary to be suppressed, got has=%v body=%q", has, body)
 	}
 
+	// The hourly-noise case: every task completed, but each was handed back a pull
+	// request that was already open. Nothing changed, so nothing is sent.
+	allReused := []model.AutoOptimizeTask{
+		withPRAction(task(string(model.AutopilotTaskStatusComplete), uuidptr(), nil, "app", "Deployment", "a"), model.PRActionUnchanged),
+		withPRAction(task(string(model.AutopilotTaskStatusComplete), uuidptr(), nil, "app", "Deployment", "b"), model.PRActionUnchanged),
+		task(string(model.AutopilotTaskStatusSkipped), nil, nil, "app", "Deployment", "c"),
+	}
+	if body, has := buildCompletionSummary(ao, allReused, "slack"); has || body != "" {
+		t.Fatalf("expected a run that only reused open PRs to be suppressed, got has=%v body=%q", has, body)
+	}
+
+	// But when something else did change, the reused ones are still worth naming.
+	someReused := []model.AutoOptimizeTask{
+		task(string(model.AutopilotTaskStatusComplete), nil, nil, "app", "Deployment", "api"),
+		withPRAction(task(string(model.AutopilotTaskStatusComplete), uuidptr(), nil, "app", "Deployment", "a"), model.PRActionUnchanged),
+	}
+	body, has := buildCompletionSummary(ao, someReused, "slack")
+	if !has {
+		t.Fatal("expected summary to be sent when a change accompanies the reused PRs")
+	}
+	if !strings.Contains(body, "1 already have an open pull request.") {
+		t.Errorf("summary missing the reused-PR line\n---\n%s", body)
+	}
+	if strings.Contains(body, "Pull requests in progress") {
+		t.Errorf("reused PR must not be reported as one this run raised\n---\n%s", body)
+	}
+
 	// Mixed outcomes → send, with each section present.
 	mixed := []model.AutoOptimizeTask{
 		task(string(model.AutopilotTaskStatusComplete), nil, nil, "app", "Deployment", "api"),                          // applied
@@ -69,7 +110,7 @@ func TestBuildCompletionSummary_ChangeGate(t *testing.T) {
 		task(string(model.AutopilotTaskStatusFailed), nil, nil, "app", "Deployment", "cron"),                           // failed
 		task(string(model.AutopilotTaskStatusSkipped), nil, nil, "app", "Deployment", "cache"),                         // skipped
 	}
-	body, has := buildCompletionSummary(ao, mixed, "slack")
+	body, has = buildCompletionSummary(ao, mixed, "slack")
 	if !has {
 		t.Fatal("expected change summary to be sent")
 	}

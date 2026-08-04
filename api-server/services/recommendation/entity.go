@@ -38,7 +38,31 @@ type RecommendationApplyResponse struct {
 	Data       []any                           `json:"data" mapstructure:"data"`
 	Resolution models.RecommendationResolution `json:"resolution" mapstructure:"resolution"`
 	Status     models.RecommendationStatus     `json:"status" mapstructure:"status"`
+	// PRAction says what actually happened to the pull request behind Resolution,
+	// so a caller can tell "this run changed something" from "this run was handed
+	// back a pull request that was already open".
+	//
+	// Without it the two are indistinguishable — both return a resolution id — and
+	// a scheduled auto optimize re-reporting the same open PRs every hour looks
+	// exactly like one raising fresh ones. Empty for non-PR resolutions, and from
+	// an older api-server, which reads as "not unchanged" and so preserves the
+	// previous behaviour.
+	PRAction PRAction `json:"pr_action,omitempty" mapstructure:"pr_action"`
 }
+
+// PRAction is what an apply did to the pull request behind a recommendation.
+type PRAction string
+
+const (
+	// PRActionCreated — this apply raised a new pull request.
+	PRActionCreated PRAction = "created"
+	// PRActionRefreshed — a pull request was already open and this apply rewrote
+	// it with values that had moved (#34959).
+	PRActionRefreshed PRAction = "refreshed"
+	// PRActionUnchanged — a pull request was already open and this apply left it
+	// exactly as it was.
+	PRActionUnchanged PRAction = "unchanged"
+)
 
 type GenerateRecommendationRequest struct {
 	AccountId []string `json:"account_id" mapstructure:"account_id" validate:"required"`
