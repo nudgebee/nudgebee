@@ -413,6 +413,24 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 				RunAsGroup:   &runAsGroup,
 				RunAsNonRoot: &runAsNonRoot,
 			},
+			// GKE resolves metadata.google.internal to the real metadata IP
+			// (169.254.169.254) inside pods, but the NetworkPolicy blackholes
+			// that IP to prevent IMDS credential theft — silently dropping
+			// packets instead of refusing the connection. Every cloud CLI
+			// credential path that resolves this hostname before connecting
+			// (not just the ones gated by gcloud's own CLOUDSDK_CORE_CHECK_GCE_METADATA
+			// property) then hangs for ~15-18s per call waiting out its own
+			// connect timeout/retries. Overriding it to loopback here makes
+			// the connection fail instantly instead, matching how it already
+			// behaves everywhere the hostname simply doesn't resolve (e.g. any
+			// machine outside GCP). Nothing in this pod relies on reaching real
+			// metadata — the NetworkPolicy already blocks it unconditionally.
+			HostAliases: []corev1.HostAlias{
+				{
+					IP:        "127.0.0.1",
+					Hostnames: []string{"metadata.google.internal"},
+				},
+			},
 			Containers: []corev1.Container{
 				{
 					Name:            "workspace-server",
