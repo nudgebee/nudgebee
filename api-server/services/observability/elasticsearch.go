@@ -351,12 +351,25 @@ func ParseSourceMap(src map[string]any) (OutputLog, bool) {
 		}
 	}
 
-	// Message: Fluent-Bit/ECS docs carry it at top-level "log"; OTel-native docs
+	// Message: Fluent-Bit docs carry it at top-level "log"; OTel-native docs
 	// (data stream logs-generic.otel-default) carry it at body.text — or a bare
-	// string "body". Fall back to the OTel shape so those hits are not dropped.
+	// string "body"; ECS docs (Beats / Elastic Agent / Logstash) carry it at
+	// "message" and use "log" for an object ({level, file, offset}), so the "log"
+	// assertion fails there. Try all three so no shipper's hits are dropped.
 	msg, ok := src["log"].(string)
 	if !ok || strings.TrimSpace(msg) == "" {
 		msg = otelBodyText(src)
+	}
+	if strings.TrimSpace(msg) == "" {
+		msg, _ = src["message"].(string)
+	}
+	// Still nothing recognisable as a line: the document is a real event that
+	// simply has no message field (Packetbeat network_traffic.*, and other Elastic
+	// integrations that match a logs-* pattern while carrying only structured
+	// fields). Render the whole _source as the line rather than dropping the hit,
+	// so those datasets are visible instead of silently returning nothing.
+	if strings.TrimSpace(msg) == "" {
+		msg = sourceAsMessage(src)
 	}
 	if strings.TrimSpace(msg) == "" {
 		return OutputLog{}, false
@@ -427,6 +440,31 @@ func otelBodyText(src map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// sourceAsMessage renders a document's _source as a compact JSON string, for use
+// as the log line when the document carries no message field of its own.
+// @timestamp is omitted — OutputLog already carries it in its own field, so
+// repeating it in the line is noise. Returns "" when nothing else remains, so a
+// document that is only a timestamp (or is empty) is still dropped rather than
+// rendered as "{}". Keys are emitted sorted: encoding/json orders map keys, so
+// the same document always renders identically.
+func sourceAsMessage(src map[string]any) string {
+	rest := make(map[string]any, len(src))
+	for k, v := range src {
+		if k == "@timestamp" {
+			continue
+		}
+		rest[k] = v
+	}
+	if len(rest) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(rest)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // otelIOStream returns attributes.log.iostream ("stdout"/"stderr") from an OTel doc.

@@ -145,8 +145,14 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		renderedJSON, _ := json.Marshal(queryBody)
 		renderedQuery := string(renderedJSON)
 
+		// Mirrors the "ES log query" line so both paths are greppable the same way:
+		// resolved index, full URL, the window, and the rendered body — enough to
+		// replay the exact request by hand against the cluster.
 		esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
-		slog.Info("ES metrics query debug", "url", esURL, "body", renderedQuery)
+		slog.Info("ES metrics query", "index", index, "url", esURL,
+			"query_key", queryKey, "query_type", queryType,
+			"start_ms", req.StartTime, "end_ms", req.EndTime,
+			"body", renderedQuery)
 
 		resp, err := esRequestJSON("POST", esURL, queryBody, cfg) //nolint:bodyclose
 		if err != nil {
@@ -483,6 +489,12 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 		groups[key].values = append(groups[key].values, val)
 	}
 
+	// Drop counters — an empty metrics result carries no error, so without these
+	// "matched nothing" and "matched but every hit was discarded" are the same
+	// observation. Tracked per reason so the log names which shape assumption failed.
+	var droppedNoTimestamp, droppedNonNumericValue int
+	sampleTimestamp := ""
+
 	for _, hit := range esResp.Hits.Hits {
 		src := hit.Source
 
@@ -493,6 +505,17 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 		}
 		t, err := time.Parse(time.RFC3339Nano, timeStr)
 		if err != nil {
+			// Record the raw value and its Go type once: a JSON number, or the
+			// epoch-millis string OTel-native indices use, fails the .(string)
+			// assertion or RFC3339Nano and lands here for every hit in the response.
+			if sampleTimestamp == "" {
+				raw, exists := src["time"]
+				if !exists {
+					raw = src["@timestamp"]
+				}
+				sampleTimestamp = fmt.Sprintf("%T(%v)", raw, raw)
+			}
+			droppedNoTimestamp++
 			continue
 		}
 		ts := t.Unix()
@@ -506,6 +529,7 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 			for name, raw := range metricsMap {
 				val, ok := raw.(float64)
 				if !ok {
+					droppedNonNumericValue++
 					continue
 				}
 				labels := make(map[string]string, len(base)+1)
@@ -538,6 +562,27 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 			}
 		}
 		add(labels, ts, val)
+	}
+
+	returned := len(esResp.Hits.Hits)
+	switch {
+	case returned == 0:
+		slog.Info("ES metrics query: matched no documents",
+			"matched", esHitsTotal(string(bodyBytes)), "returned", 0,
+			"hint", "index or the time filter (`time` OR `@timestamp`) excludes everything; label-values aggregate with no time bound, which is why they still return data")
+	case len(groups) == 0:
+		slog.Warn("ES metrics query: no series parsed from hits",
+			"matched", esHitsTotal(string(bodyBytes)), "returned", returned,
+			"dropped_unparseable_timestamp", droppedNoTimestamp,
+			"dropped_non_numeric_value", droppedNonNumericValue,
+			"sample_timestamp", sampleTimestamp,
+			"sample_source_fields", esSourceFieldNames(esResp.Hits.Hits[0].Source),
+			"hint", "timestamps must be an RFC3339 string at `time` or `@timestamp`; values at metrics.<name> or name+value|sum|count")
+	default:
+		slog.Info("ES metrics query: parsed hits",
+			"matched", esHitsTotal(string(bodyBytes)), "returned", returned, "series", len(groups),
+			"dropped_unparseable_timestamp", droppedNoTimestamp,
+			"dropped_non_numeric_value", droppedNonNumericValue)
 	}
 
 	results := make([]Result, 0, len(groups))
@@ -657,7 +702,10 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 		renderedQuery := string(renderedJSON)
 
 		esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
-		slog.Info("ES utilisation query", "metric", metricKey, "otlp", otlpName, "url", esURL)
+		slog.Info("ES utilisation query", "index", index, "url", esURL,
+			"metric", metricKey, "otlp", otlpName,
+			"start_ms", req.StartTime, "end_ms", req.EndTime,
+			"body", renderedQuery)
 
 		resp, reqErr := esRequestJSON("POST", esURL, queryBody, cfg) //nolint:bodyclose
 		if reqErr != nil {

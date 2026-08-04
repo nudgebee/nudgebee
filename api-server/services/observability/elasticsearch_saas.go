@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+	"sort"
 	"strings"
 	"time"
 
@@ -510,6 +512,16 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			return nil, berr
 		}
 
+		// Log the exact index and body sent upstream. Labels/label-values hit the
+		// same cluster over aggregations with no time bound, so when they return
+		// data and this does not, the difference is in the resolved index or in
+		// this body — both need to be replayable by hand against the cluster.
+		renderedJSON, _ := json.Marshal(body)
+		slog.Info("ES log query", "index", index,
+			"url", fmt.Sprintf("%s/%s/_search", cfg.Url, index),
+			"start_ms", fetchLogRequest.StartTime, "end_ms", fetchLogRequest.EndTime,
+			"body", string(renderedJSON))
+
 		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), body, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute elasticsearch DSL query: %w", err)
@@ -582,9 +594,70 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 				output = append(output, log)
 			}
 		}
+
+		// An empty log result carries no error, so the two very different causes —
+		// "the query matched nothing" and "the query matched but every hit was an
+		// unrecognised shape" — look identical at the UI. Separate them here:
+		// matched is the cluster's own hit count, returned is what came back under
+		// `size`, and parsed is what survived ParseSourceMap.
+		matched := esHitsTotal(rawJSON)
+		returned := len(searchResp.Hits.Hits)
+		switch {
+		case returned == 0:
+			slog.Info("ES log query: matched no documents",
+				"matched", matched, "returned", 0,
+				"hint", "index pattern or @timestamp window excludes everything; labels/label-values do not apply a time bound, which is why they still return data")
+		case len(output) == 0:
+			slog.Warn("ES log query: all hits dropped as unparseable",
+				"matched", matched, "returned", returned, "parsed", 0,
+				"sample_source_fields", esSourceFieldNames(searchResp.Hits.Hits[0].Source),
+				"hint", "ParseSourceMap needs a message at log|body|body.text|message and an @timestamp")
+		default:
+			slog.Info("ES log query: parsed hits",
+				"matched", matched, "returned", returned, "parsed", len(output),
+				"dropped", returned-len(output))
+		}
 	}
 
 	return output, nil
+}
+
+// esHitsTotal best-effort reads hits.total from a raw _search response for
+// logging. ES 7+/OpenSearch return an object ({value, relation}); ES 6 returned a
+// bare number. Decoded separately from SearchResponse and tolerant of both so a
+// shape it does not know can never break query parsing. Returns -1 when unknown.
+func esHitsTotal(rawJSON string) int64 {
+	var probe struct {
+		Hits struct {
+			Total json.RawMessage `json:"total"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &probe); err != nil || len(probe.Hits.Total) == 0 {
+		return -1
+	}
+	var asObject struct {
+		Value int64 `json:"value"`
+	}
+	if err := json.Unmarshal(probe.Hits.Total, &asObject); err == nil {
+		return asObject.Value
+	}
+	var asNumber int64
+	if err := json.Unmarshal(probe.Hits.Total, &asNumber); err == nil {
+		return asNumber
+	}
+	return -1
+}
+
+// esSourceFieldNames returns the sorted top-level _source field names of one hit,
+// so a schema mismatch can be identified from the log without dumping document
+// contents (which may hold customer data).
+func esSourceFieldNames(src map[string]any) []string {
+	keys := make([]string, 0, len(src))
+	for k := range src {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (e *ElasticSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabel, error) {
