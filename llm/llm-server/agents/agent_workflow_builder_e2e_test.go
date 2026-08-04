@@ -11,6 +11,7 @@ import (
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -2065,3 +2066,64 @@ func TestWorkflowBuilder_E2E_OOMKilled_QARepro(t *testing.T) {
 // internal/model/workflow.go:208), which rejects "7d"/"1w" but accepts
 // compound durations like "1h30m". A previous revision had the rule
 // inverted — this test prevents that regression.
+
+// TestWorkflowBuilder_UnlimitedPlanRevisions verifies that repeated "Request Changes" cycles
+// never start a build on their own. The builder used to auto-build once the revision count passed
+// maxPlanAttempts, which surfaced as "the third Request Changes skipped the approval step and
+// directly started the build" (#34098). Every cycle must come back to the approval prompt; only
+// "Approve and Build" builds.
+func TestWorkflowBuilder_UnlimitedPlanRevisions(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping test: TEST_ACCOUNT not set")
+	}
+
+	accountId := os.Getenv("TEST_ACCOUNT")
+	userId := os.Getenv("TEST_USER")
+	tenantId := os.Getenv("TEST_TENANT")
+	sessionId := "ut-wb-unlimited-revisions"
+
+	agent := newWorkflowBuilderAgent(accountId)
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
+	_ = core.DeleteConversationBySession(sessionId, accountId, userId)
+
+	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
+		"Build an automation named revision-cap-probe with a manual trigger that prints the message 'v0'")
+	assert.Nil(t, err)
+
+	answer := func(text string) {
+		t.Helper()
+		messageId, perr := uuid.Parse(resp.MessageId)
+		assert.Nil(t, perr)
+		agentId, perr := uuid.Parse(resp.AgentId)
+		assert.Nil(t, perr)
+		resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId, text,
+			core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
+			core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
+		assert.Nil(t, err)
+	}
+
+	// Clear any clarifying questions until the plan-approval prompt appears.
+	for i := 0; i < 4 && resp.Status == core.ConversationStatusWaiting &&
+		!slices.Contains(resp.FollowupRequest.FollowupOptions, PlanApprovalOptionApprove); i++ {
+		answer("Skip")
+	}
+	assert.Equal(t, core.ConversationStatusWaiting, resp.Status, "expected a plan-approval prompt")
+
+	// Five revision cycles — well past the retired cap of 3. Every one must return to approval.
+	for i := 1; i <= 5; i++ {
+		answer(PlanApprovalOptionChanges)
+		assert.Equal(t, core.ConversationStatusWaiting, resp.Status, "revision %d: must ask what to change", i)
+
+		answer(fmt.Sprintf("change the printed message to 'v%d'", i))
+		assert.Equal(t, core.ConversationStatusWaiting, resp.Status,
+			"revision %d: must return to plan approval, not auto-build", i)
+		assert.Contains(t, resp.FollowupRequest.FollowupOptions, PlanApprovalOptionApprove,
+			"revision %d: approval options must be offered", i)
+		t.Logf("revision %d: still awaiting approval", i)
+	}
+
+	// Only an explicit approval builds.
+	answer(PlanApprovalOptionApprove)
+	assert.NotEqual(t, core.ConversationStatusWaiting, resp.Status, "approval must build")
+	t.Logf("after approval: status=%s response=%.200s", resp.Status, strings.Join(resp.Response, "\n"))
+}

@@ -27,10 +27,14 @@ var uuidRegex = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}
 // outputRefRegex matches {{ Tasks['task-id'].output.fieldname }} patterns for schema-driven validation.
 var outputRefRegex = regexp.MustCompile(`Tasks\[['"]([^'"]+)['"]\]\.output\.(\w+)`)
 
+// Plan revisions are unlimited. A previous maxPlanAttempts=3 cap silently auto-built once
+// exceeded, which surfaced as "the third Request Changes skipped the approval step and started
+// the build" (#34098). Building is the user's call, however many revisions it takes, so the
+// builder now always returns to the approval prompt. state.PlanAttempts is still counted for
+// logging, but nothing gates on it.
 const (
 	PlanApprovalOptionApprove = "Approve and Build"
 	PlanApprovalOptionChanges = "Request Changes"
-	maxPlanAttempts           = 3
 )
 
 // turnIntent is the result of classifyTurnIntent — what the user wants this turn.
@@ -826,25 +830,12 @@ func (a *WorkflowBuilderAgent) handlePlanApproval(ctx *security.RequestContext, 
 }
 
 // handleFeedback incorporates user feedback, regenerates the plan, and asks for approval again.
+// It always returns to the approval prompt — there is no revision cap, so a build only ever starts
+// from an explicit "Approve and Build" (#34098).
 func (a *WorkflowBuilderAgent) handleFeedback(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
 	feedback := strings.TrimSpace(request.Query)
 	a.state.Feedback = feedback
 	a.state.PlanAttempts++
-
-	// If we've exceeded max plan attempts, incorporate latest feedback then auto-build.
-	if a.state.PlanAttempts > maxPlanAttempts {
-		ctx.GetLogger().Info("workflow_builder: max plan attempts reached, auto-building with latest feedback", "attempts", a.state.PlanAttempts)
-		originalRequest := request
-		originalRequest.Query = a.state.OriginalQuery
-		// Regenerate plan with the latest feedback so the auto-build uses an up-to-date plan.
-		plan, err := a.regeneratePlan(ctx, originalRequest, a.state.Intent, a.state.Plan, feedback)
-		if err != nil {
-			ctx.GetLogger().Warn("workflow_builder: plan regeneration failed on auto-build, using previous plan", "error", err)
-			plan = a.state.Plan
-		}
-		a.state.Plan = plan
-		return a.buildAndValidate(ctx, originalRequest, a.state.Intent, a.state.Plan)
-	}
 
 	// Regenerate plan incorporating feedback
 	originalRequest := request

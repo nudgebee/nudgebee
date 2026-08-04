@@ -2169,3 +2169,27 @@ func TestIsRawWorkflowJSON(t *testing.T) {
 func TestAntiThrash_ThresholdRaised(t *testing.T) {
 	assert.Equal(t, 6, readOnlyToolStreakThreshold, "anti-thrash threshold must be 6 to avoid premature nudges")
 }
+
+// TestPlanApproval_RequestChangesNeverBuilds verifies "Request Changes" always returns the
+// feedback prompt, no matter how many revisions have already happened. The old maxPlanAttempts
+// cap silently started a build instead, which read as the approval step being skipped (#34098).
+func TestPlanApproval_RequestChangesNeverBuilds(t *testing.T) {
+	for _, attempts := range []int{1, 3, 4, 25} {
+		t.Run(fmt.Sprintf("attempts=%d", attempts), func(t *testing.T) {
+			agent := newWorkflowBuilderAgent("test-account")
+			agent.state = WorkflowBuilderState{
+				Stage:         "plan_approval",
+				OriginalQuery: "Build an automation that prints hello",
+				Plan:          "1. print hello",
+				PlanAttempts:  attempts,
+			}
+
+			resp, err := agent.Execute(nil, core.NBAgentRequest{Query: PlanApprovalOptionChanges})
+			assert.Nil(t, err)
+			assert.Equal(t, core.ConversationStatusWaiting, resp.Status)
+			assert.Equal(t, core.FollowupTypeText, resp.FollowupRequest.FollowupType)
+			assert.Contains(t, resp.FollowupRequest.Question, "What changes")
+			assert.Equal(t, "feedback", agent.state.Stage)
+		})
+	}
+}
