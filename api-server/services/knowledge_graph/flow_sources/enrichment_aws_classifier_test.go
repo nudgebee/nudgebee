@@ -59,8 +59,32 @@ func TestAWSClassifier_ClassifyHostname(t *testing.T) {
 			wantService: "ecr",
 		},
 
-		// Non-AWS host returns "" for both.
+		// Region-truncated forms emitted by the eBPF service-map sensor
+		// (drops "-<N>.amazonaws.com"). Must classify identically to their
+		// full-hostname equivalents above. See reconstructTruncatedAWSHost.
+		{"trunc_sqs", "sqs.us-east", core.NodeTypeMessageQueue, "sqs"},
+		{"trunc_dynamodb_regional", "dynamodb.us-east", core.NodeTypeDatabase, "dynamodb"},
+		{
+			name:        "trunc_ddb_account_scoped",
+			hostname:    testenv.FakeAWSAccountID + ".ddb.us-east",
+			wantType:    core.NodeTypeDatabase,
+			wantService: "dynamodb",
+		},
+		{
+			name:        "trunc_ecr_private",
+			hostname:    testenv.FakeAWSAccountID + ".dkr.ecr.us-east",
+			wantType:    core.NodeTypeContainerRegistry,
+			wantService: "ecr",
+		},
+		{"trunc_s3_bucket", "my-bucket.s3.us-east", core.NodeTypeStorage, "s3"},
+		{"trunc_generic_service_api", "kms.us-east", core.NodeTypeCloudResource, "aws"},
+		{"trunc_govcloud_region", "ec2.us-gov-east", core.NodeTypeCloudResource, "aws"},
+
+		// Non-AWS hosts whose last label is not a region prefix must NOT be
+		// repaired into AWS hostnames.
 		{"non_aws", "example.com", "", ""},
+		{"non_aws_pypi", "pypi.org", "", ""},
+		{"non_aws_two_word_tld_like", "chat.googleapis.com", "", ""},
 	}
 
 	for _, tc := range cases {
@@ -143,8 +167,23 @@ func TestAWSClassifier_IsBareAWSServiceEndpoint(t *testing.T) {
 		// per-resource (leftmost label is the distribution id).
 		{"cloudfront_distribution", "d1234567890abc.cloudfront.net", false},
 
+		// Region-truncated bare forms from the eBPF sensor — the "-<N>.amazonaws.com"
+		// is gone but service+region still identify a shared regional API.
+		{"trunc_ec2_regional", "ec2.sa-east", true},
+		{"trunc_kms_regional", "kms.us-east", true},
+		{"trunc_sqs_regional", "sqs.us-east", true},
+		{"trunc_cloudformation_regional", "cloudformation.ap-northeast", true},
+		{"trunc_govcloud", "ec2.us-gov-east", true},
+
+		// Region-truncated per-resource forms — still NOT bare (leftmost label
+		// is a customer id), so the collapse-onto-real-resource path runs.
+		{"trunc_s3_bucket", "my-bucket.s3.us-east", false},
+		{"trunc_ddb_account", testenv.FakeAWSAccountID + ".ddb.us-east", false},
+		{"trunc_ecr_account", testenv.FakeAWSAccountID + ".dkr.ecr.us-east", false},
+
 		// Non-AWS / empty.
 		{"non_aws", "example.com", false},
+		{"non_aws_pypi", "pypi.org", false},
 		{"empty", "", false},
 		{"whitespace_only", "   ", false},
 	}
