@@ -138,6 +138,8 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	}
 	if queryBuilder.Index != "" {
 		configs["index"] = queryBuilder.Index
+	} else if logProvider.DefaultIndex != "" {
+		configs["index"] = logProvider.DefaultIndex
 	}
 
 	response, err := executeFetchLogsCanonical(nbRequestContext, logProvider, queryBuilder.Where, configs)

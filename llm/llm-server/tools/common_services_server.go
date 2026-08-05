@@ -200,16 +200,23 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		p.limit = newLimit
 	}
 
+	idx := p.index
+	if idx == "" {
+		idx = logProvider.DefaultIndex
+	}
+
 	logRequest := services_server.LogQueryRequest{
-		Query:        "",
-		Limit:        p.limit,
-		StartTime:    p.startTime,
-		EndTime:      p.endTime,
-		AccountId:    ctx.AccountId,
-		Offset:       p.offset,
-		Request:      p.request,
-		Index:        p.index,
-		QueryRequest: &services_server.LogsQueryBuilderRequest{Where: where},
+		Query:             "",
+		Limit:             p.limit,
+		StartTime:         p.startTime,
+		EndTime:           p.endTime,
+		AccountId:         ctx.AccountId,
+		LogProvider:       logProvider.Provider,
+		LogProviderSource: logProvider.IntegrationSource,
+		Offset:            p.offset,
+		Request:           p.request,
+		Index:             idx,
+		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
 		// Opt into label-name validation: on an empty/failed result the agent gets
 		// an actionable error naming the mistyped label instead of a silent empty
 		// result, so it can self-correct. Only meaningful on this canonical path,
@@ -225,10 +232,13 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		logRequest.LogProviderSource = logProvider.IntegrationSource
 	}
 
+	slog.Info("executeFetchLogsCanonical: sending LogQueryRequest", "account_id", ctx.AccountId, "provider", logProvider.Provider, "where", where, "index", idx)
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
 	if err != nil {
+		slog.Warn("executeFetchLogsCanonical: QueryLogs returned error", "error", err)
 		return core.ObservabilityLogResponse{}, err
 	}
+	slog.Info("executeFetchLogsCanonical: QueryLogs complete", "log_count", len(logs.Logs), "suggestion", logs.Suggestion)
 	return logs, nil
 }
 

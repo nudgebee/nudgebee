@@ -599,7 +599,8 @@ func sanitizeFloats(v any) any {
 }
 
 type MetricsListTool struct {
-	Provider string
+	Provider     string
+	DefaultIndex string
 }
 
 func (m MetricsListTool) Name() string {
@@ -666,7 +667,15 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 	if strings.EqualFold(provider, "ES") {
 		// ES doesn't support metrics_list; use metrics_list_label_values with label="name"
 		// and the index pattern passed in a nested "request" object (matching the GraphQL schema).
-		indexPattern := query
+		indexPattern := m.DefaultIndex
+		if strings.Contains(query, "*") || strings.Contains(query, "?") {
+			indexPattern = query
+		}
+		if indexPattern == "" {
+			if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics", ""); err == nil && obsProvider.DefaultIndex != "" {
+				indexPattern = obsProvider.DefaultIndex
+			}
+		}
 		labelValuesResp, err := services_server.ListMetricsSeriesLabelValues(
 			*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, "name",
 			map[string]any{"request": map[string]any{"metric_name": indexPattern}},
@@ -989,7 +998,8 @@ func parseMetricNamesFromLLMResponse(content string) []string {
 }
 
 type ListMetricsLabelsTool struct {
-	Provider string
+	Provider     string
+	DefaultIndex string
 }
 
 func (m ListMetricsLabelsTool) Name() string {
@@ -1040,7 +1050,15 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 		provider = m.Provider
 	}
 
-	labelsResponse, err := services_server.ListMetricsSeriesLabels(*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, query)
+	seriesName := query
+	if strings.EqualFold(provider, "ES") {
+		idxPattern := getESMetricIndexPattern(nbRequestContext, m.DefaultIndex)
+		if idxPattern != "" && !strings.Contains(query, "*") && !strings.Contains(query, "?") {
+			seriesName = idxPattern
+		}
+	}
+
+	labelsResponse, err := services_server.ListMetricsSeriesLabels(*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, seriesName)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("unable to fetch metrics labels", "error", err.Error())
 		return core.NBToolResponse{
@@ -1076,6 +1094,179 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 	}, nil
 }
 
+// ListMetricsLabelValuesTool answers "what values does this label actually take?".
+//
+// metrics_labels_list returns label NAMES only, so an agent that knows a resource by
+// its human name (a node, a pod, an instance) had no way to learn how that resource is
+// spelled in the label it must filter on. The observed failure mode is a guess-loop:
+// filter by a plausible label, get no data, guess a different label name, repeat until
+// the iteration budget runs out and the run reports "no data" for a resource that is
+// in fact fully instrumented. Enumerating the values ends the loop in one call.
+type ListMetricsLabelValuesTool struct {
+	Provider     string
+	DefaultIndex string
+}
+
+func (m ListMetricsLabelValuesTool) Name() string {
+	return ToolMetricsLabelValues
+}
+
+func (m ListMetricsLabelValuesTool) GetType() core.NBToolType {
+	return core.NBToolTypeTool
+}
+
+func (m ListMetricsLabelValuesTool) Description() string {
+	return `Returns the actual VALUES a label takes in this environment (metrics_labels_list returns label NAMES only).
+		Usage:
+		* Input: label (required, e.g. 'instance', 'node', 'pod'); filter (optional substring to narrow high-cardinality labels); metric (optional, narrows to one metric family on providers that support it).
+		* Output: the list of values for that label, capped and reported as truncated when the cap is hit.
+
+		Purpose: Use this when a query returns no data for a resource you can name, to find out how that resource is actually spelled. Example: a node is known as 'worker-1' but node_* metrics are labelled by 'instance' holding an IP:port — call metrics_label_values(label="instance") to see the real values instead of guessing another label name.`
+}
+
+func (m ListMetricsLabelValuesTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"label": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Label name whose values to list (required), e.g. 'instance', 'node', 'pod'.",
+			},
+			"filter": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional case-insensitive substring to narrow the values. Strongly recommended for high-cardinality labels like 'instance' or 'pod'.",
+			},
+			"metric": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional metric name to scope the lookup to one family. Honoured by providers that support it; Prometheus returns values across all metrics.",
+			},
+		},
+		Required: []string{"label"},
+	}
+}
+
+// filterAndCapLabelValues drops empties, applies the case-insensitive substring
+// filter, sorts, and caps. It returns the capped slice, the count that matched
+// BEFORE capping, and whether capping occurred — the agent needs the pre-cap
+// count to know whether to narrow its filter.
+func filterAndCapLabelValues(raw []core.ObservabilityMetricsLabelValue, filter string) ([]string, int, bool) {
+	lowered := strings.ToLower(filter)
+	values := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if v.Value == "" {
+			continue
+		}
+		if filter != "" && !strings.Contains(strings.ToLower(v.Value), lowered) {
+			continue
+		}
+		values = append(values, v.Value)
+	}
+	sort.Strings(values)
+
+	matched := len(values)
+	if matched > maxPrometheusLabelValuesInResponse {
+		return values[:maxPrometheusLabelValuesInResponse], matched, true
+	}
+	return values, matched, false
+}
+
+func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	label := strings.TrimSpace(argString(input, "label"))
+	if label == "" {
+		// Some planners pass a single required arg in the bare command instead.
+		label = strings.TrimSpace(input.Command)
+	}
+	label = strings.ReplaceAll(strings.ReplaceAll(label, "\\", ""), "`", "")
+	filter := strings.TrimSpace(argString(input, "filter"))
+	metric := strings.TrimSpace(argString(input, "metric"))
+
+	if label == "" {
+		return core.NBToolResponse{
+			Data:   "Error: 'label' is required. Provide the label name whose values you want (e.g. 'instance', 'node', 'pod'). Use metrics_labels_list first if you do not know the label names for a metric.",
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
+	provider := "prometheus"
+	if m.Provider != "" {
+		provider = m.Provider
+	}
+
+	nbRequestContext.Ctx.GetLogger().Info("metrics: executing metrics_label_values tool call", "label", label, "filter", filter, "metric", metric, "provider", provider)
+
+	cacheKey := labelValuesCacheKey{
+		accountId: nbRequestContext.AccountId,
+		provider:  provider,
+		label:     label,
+		filter:    filter,
+		metric:    metric,
+	}
+	if cached, ok := metricsLabelValuesCache.Load(cacheKey); ok {
+		if entry, ok := cached.(metricsListCacheEntry); ok && time.Now().Before(entry.expiry) {
+			nbRequestContext.Ctx.GetLogger().Info("metrics: cache hit for metrics_label_values", "label", label)
+			return entry.response, nil
+		}
+		metricsLabelValuesCache.Delete(cacheKey)
+	}
+
+	var extraRequest []map[string]any
+	if metric != "" {
+		extraRequest = append(extraRequest, map[string]any{"request": map[string]any{"metric_name": metric}})
+	} else if strings.EqualFold(provider, "ES") {
+		idxPattern := getESMetricIndexPattern(nbRequestContext, m.DefaultIndex)
+		if idxPattern != "" {
+			extraRequest = append(extraRequest, map[string]any{"request": map[string]any{"metric_name": idxPattern}})
+		}
+	}
+
+	valuesResponse, err := services_server.ListMetricsSeriesLabelValues(
+		*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, label, extraRequest...,
+	)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("metrics: unable to fetch label values", "error", err.Error(), "label", label)
+		return core.NBToolResponse{
+			Data:   err.Error(),
+			Status: core.NBToolResponseStatusError,
+		}, err
+	}
+
+	values, matched, truncated := filterAndCapLabelValues(valuesResponse.Values, filter)
+
+	if matched == 0 {
+		hint := fmt.Sprintf("No values found for label %q.", label)
+		if filter != "" {
+			hint += fmt.Sprintf(" No value contains %q — retry without the filter to see the naming scheme, or the resource may be labelled under a different label.", filter)
+		} else {
+			hint += " The label may not exist in this environment. Call metrics_labels_list on the metric to see which labels it actually carries."
+		}
+		return core.NBToolResponse{
+			Data:   hint,
+			Status: core.NBToolResponseStatusSuccess,
+		}, nil
+	}
+
+	payload := map[string]any{"label": label, "values": values, "matched": matched, "truncated": truncated}
+	if truncated {
+		payload["note"] = fmt.Sprintf("Showing %d of %d values. Pass a 'filter' substring to narrow the results.", len(values), matched)
+	}
+
+	dataResponse, err := common.MarshalJson(payload)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("metrics: unable to marshal label values", "error", err.Error())
+		return core.NBToolResponse{
+			Data:   "",
+			Status: core.NBToolResponseStatusError,
+		}, err
+	}
+
+	response := core.NBToolResponse{
+		Data:   string(dataResponse),
+		Type:   core.NBToolResponseTypeJson,
+		Status: core.NBToolResponseStatusSuccess,
+	}
+	metricsLabelValuesCache.Store(cacheKey, metricsListCacheEntry{response: response, expiry: time.Now().Add(metricsListCacheTTL())})
+	return response, nil
+}
 // SearchMetricsTool provides semantic/natural language search over customer metrics via RAG.
 // Unlike MetricsListTool (keyword substring match), this uses vector similarity search
 // against the account-specific prometheus collection in Qdrant, returning the most
@@ -1179,4 +1370,16 @@ func (s SearchMetricsTool) Call(nbRequestContext core.NbToolContext, input core.
 		Data:   sb.String(),
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+func getESMetricIndexPattern(nbRequestContext core.NbToolContext, defaultIndex string) string {
+	if defaultIndex != "" {
+		return defaultIndex
+	}
+	if nbRequestContext.Ctx != nil {
+		if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics", ""); err == nil && obsProvider.DefaultIndex != "" {
+			return obsProvider.DefaultIndex
+		}
+	}
+	return ""
 }

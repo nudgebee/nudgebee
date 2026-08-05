@@ -185,8 +185,9 @@ func fetchLabelsAndIndices(accountId string, provider services_server.Observabil
 	}
 	var indices map[string]string
 	if tools.IsESLogProvider(provider.Provider) {
-		indices = utils.GetESAccountIndexConfig(accountId).Indices
+		indices = utils.GetESAccountIndexConfig(accountId, "logs").Indices
 	}
+	slog.Info("fetch_logs: fetchLabelsAndIndices complete", "account_id", accountId, "provider", provider.Provider, "label_count", len(labels), "labels", labels, "indices", indices)
 	return labels, indices
 }
 

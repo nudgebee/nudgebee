@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/relay"
+	"strings"
 )
 
 var labelData = map[string]string{
@@ -153,31 +154,77 @@ type ESIndexConfig struct {
 }
 
 func GetESAccountIndex(accountId string) string {
-	cfg := GetESAccountIndexConfig(accountId)
+	cfg := GetESAccountIndexConfig(accountId, "logs")
 	return cfg.DefaultIndex
 }
 
-func GetESAccountMetricsIndex(accountId string) string {
-	cfg := GetESAccountMetricsIndexConfig(accountId)
-	return cfg.DefaultIndex
-}
-
-// GetESAccountMetricsIndexConfig is similar to GetESAccountIndexConfig but defaults to "metrics-*"
-// instead of "*" to better support metric-specific queries.
-func GetESAccountMetricsIndexConfig(accountId string) ESIndexConfig {
-	cfg := GetESAccountIndexConfig(accountId)
-	if cfg.DefaultIndex == "*" || cfg.DefaultIndex == "" {
-		cfg.DefaultIndex = "metrics-*"
+// extractIndexFromConfig searches data (which can be a map[string]any or a []any array of {"name": "...", "value": "..."})
+// for any matching field name in fieldNames and returns the first non-empty, non-wildcard index pattern found.
+func extractIndexFromConfig(data any, fieldNames []string) string {
+	if data == nil {
+		return ""
 	}
-	return cfg
+
+	// 1. If data is a map[string]any:
+	if m, ok := data.(map[string]any); ok {
+		for _, fn := range fieldNames {
+			if val, ok := m[fn]; ok && val != nil {
+				if s, ok := val.(string); ok && s != "" && s != "*" {
+					return s
+				}
+			}
+		}
+	}
+
+	// 2. If data is a []any array (e.g. [{"name": "metrics_index", "value": "metricbeat*"}, ...]):
+	if arr, ok := data.([]any); ok {
+		for _, item := range arr {
+			if m, ok := item.(map[string]any); ok {
+				name, _ := m["name"].(string)
+				value, _ := m["value"].(string)
+				for _, fn := range fieldNames {
+					if strings.EqualFold(name, fn) && value != "" && value != "*" {
+						return value
+					}
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
-// GetESAccountIndexConfig returns the full index configuration for an account,
-// including the default index and any named index aliases from log_provider_config.
-// The "indices" map in log_provider_config allows admins to define named index
-// patterns, e.g. {"app": "app-logs-*", "nginx": "nginx-access-*"}.
-func GetESAccountIndexConfig(accountId string) ESIndexConfig {
+func extractIndicesMapFromConfig(data any) map[string]string {
+	if data == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	if m, ok := data.(map[string]any); ok {
+		if indices, ok := m["indices"]; ok && indices != nil {
+			if indicesMap, ok := indices.(map[string]any); ok {
+				for name, pattern := range indicesMap {
+					if s, ok := pattern.(string); ok && s != "" {
+						result[name] = s
+					}
+				}
+			}
+		}
+	}
+	if len(result) > 0 {
+		return result
+	}
+	return nil
+}
+
+// GetESAccountIndexConfig returns the full index configuration for an account
+// for the given providerType ("logs", "metrics", "traces"), checking provider-specific config keys first.
+func GetESAccountIndexConfig(accountId string, providerType string) ESIndexConfig {
 	cfg := ESIndexConfig{DefaultIndex: "*"}
+	if strings.EqualFold(providerType, "metrics") {
+		cfg.DefaultIndex = "metrics-*"
+	} else if strings.EqualFold(providerType, "traces") {
+		cfg.DefaultIndex = "traces-*"
+	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -195,6 +242,17 @@ func GetESAccountIndexConfig(accountId string) ESIndexConfig {
 		}
 	}()
 
+	fieldNames := []string{"log_index", "logs_index", "default_index"}
+	configKeys := []string{"log_provider_config"}
+	switch strings.ToLower(providerType) {
+	case "metrics":
+		fieldNames = []string{"metrics_index", "metric_index", "metrics_default_index", "default_index"}
+		configKeys = []string{"metrics_provider_config", "metric_provider_config", "log_provider_config"}
+	case "traces":
+		fieldNames = []string{"trace_index", "traces_index", "trace_default_index", "default_index"}
+		configKeys = []string{"traces_provider_config", "trace_provider_config", "log_provider_config"}
+	}
+
 	for rows.Next() {
 		var connectionStatusString *string
 		err := rows.Scan(&connectionStatusString)
@@ -202,33 +260,39 @@ func GetESAccountIndexConfig(accountId string) ESIndexConfig {
 			slog.Error("GetESAccountIndexConfig: unable to scan rows", "error", err)
 			break
 		}
-		connectionStatus := map[string]any{}
-		if connectionStatusString != nil {
-			err = common.UnmarshalJson([]byte(*connectionStatusString), &connectionStatus)
-			if err != nil {
-				slog.Error("GetESAccountIndexConfig: unable to unmarshal rows", "error", err)
-				break
-			}
+		if connectionStatusString == nil || *connectionStatusString == "" {
+			continue
 		}
-		logProviderConfig, ok := connectionStatus["log_provider_config"]
-		if ok && logProviderConfig != nil {
-			logProviderConfig1 := logProviderConfig.(map[string]any)
-			if defaultIndex, ok := logProviderConfig1["default_index"]; ok && defaultIndex != nil {
-				cfg.DefaultIndex = defaultIndex.(string)
-			} else {
-				slog.Error("GetESAccountIndexConfig: unable to find ES index, will be using default *")
+
+		var rawData any
+		err = common.UnmarshalJson([]byte(*connectionStatusString), &rawData)
+		if err != nil {
+			slog.Error("GetESAccountIndexConfig: unable to unmarshal connection_status", "error", err)
+			continue
+		}
+
+		// 1. Try top-level connection_status (handles both map and array format)
+		if idx := extractIndexFromConfig(rawData, fieldNames); idx != "" {
+			cfg.DefaultIndex = idx
+			if idxMap := extractIndicesMapFromConfig(rawData); idxMap != nil {
+				cfg.Indices = idxMap
 			}
-			if indices, ok := logProviderConfig1["indices"]; ok && indices != nil {
-				if indicesMap, ok := indices.(map[string]any); ok {
-					cfg.Indices = make(map[string]string, len(indicesMap))
-					for name, pattern := range indicesMap {
-						if s, ok := pattern.(string); ok {
-							cfg.Indices[name] = s
+			return cfg
+		}
+
+		// 2. Try nested config keys if rawData is a map
+		if connectionStatus, ok := rawData.(map[string]any); ok {
+			for _, key := range configKeys {
+				if subConfig, ok := connectionStatus[key]; ok && subConfig != nil {
+					if idx := extractIndexFromConfig(subConfig, fieldNames); idx != "" {
+						cfg.DefaultIndex = idx
+						if idxMap := extractIndicesMapFromConfig(subConfig); idxMap != nil {
+							cfg.Indices = idxMap
 						}
+						return cfg
 					}
 				}
 			}
-			return cfg
 		}
 	}
 	return cfg

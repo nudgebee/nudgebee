@@ -21,6 +21,27 @@ func TestFetchLogsAgentV2_EmbedsV1Identity(t *testing.T) {
 	assert.Equal(t, core.AgentPlannerTypeCustom, a.GetPlannerType())
 }
 
+func TestInjectDefaultIndexIfMissing(t *testing.T) {
+	t.Run("injects when index is missing", func(t *testing.T) {
+		input := `{"where":{"kubernetes.namespace":{"_eq":"nudgebee"}},"time_range":"1h"}`
+		got := injectDefaultIndexIfMissing(input, "logs-kubernetes.container_logs-*")
+		assert.Contains(t, got, `"index": "logs-kubernetes.container_logs-*"`)
+	})
+
+	t.Run("preserves existing index", func(t *testing.T) {
+		input := `{"where":{"kubernetes.namespace":{"_eq":"nudgebee"}},"index":"custom-index-*"}`
+		got := injectDefaultIndexIfMissing(input, "logs-kubernetes.container_logs-*")
+		assert.Contains(t, got, `"custom-index-*"`)
+		assert.NotContains(t, got, "logs-kubernetes.container_logs-*")
+	})
+
+	t.Run("no-op on empty default index", func(t *testing.T) {
+		input := `{"where":{"kubernetes.namespace":{"_eq":"nudgebee"}}}`
+		got := injectDefaultIndexIfMissing(input, "")
+		assert.Equal(t, input, got)
+	})
+}
+
 // TestFetchResponseIsEmpty pins the kubectl-fallback trigger: a services-server
 // fetch is "empty" when the makeFetchResponse envelope has no log content (blank
 // logs, the No-logs sentinel, or a {"logs":[]} envelope), but NOT when it has

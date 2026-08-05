@@ -105,6 +105,7 @@ func (t *NBLogTool) QueryLabels() []string {
 	if len(labels) > 0 {
 		t.labels = append(labels, "_body")
 	}
+	slog.Info("logs: QueryLabels complete", "account_id", t.accountId, "provider", t.logProvider.Provider, "raw_labels_count", len(logLabels.Labels), "final_labels_count", len(t.labels), "final_labels", t.labels)
 	return t.labels
 }
 
