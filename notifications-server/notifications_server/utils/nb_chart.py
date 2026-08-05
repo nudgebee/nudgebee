@@ -9,7 +9,10 @@ agent (llm/llm-server/agents/prompts_repo/agent_finops.txt), self-constrained
 there to <=12 labels / <=4 series. Schema:
     {"type": "bar|doughnut|pie|line|area", "title": "...", "labels": [...],
      "series": [{"key": "...", "data": [...]}], "format": "gi|usd|percent|number"}
-For pie/doughnut, "values": [...] replaces "series".
+For pie/doughnut, "values": [...] replaces "series". Real model output doesn't
+always follow this exactly: pie/doughnut "values" is also accepted as a list
+of {"label": ..., "value": ...} objects in place of the top-level "labels"
+array - see _render_nb_pie.
 """
 
 import json
@@ -102,15 +105,28 @@ def _truncation_note(view_url: Optional[str], *parts: str) -> List[BaseBlock]:
 
 
 def _render_nb_pie(
-    title: str, raw_labels: List[Any], data: Dict[str, Any], view_url: Optional[str] = None
+    title: str, raw_labels: Optional[List[Any]], data: Dict[str, Any], view_url: Optional[str] = None
 ) -> List[BaseBlock]:
     values = data.get("values")
     if not isinstance(values, list) or not values:
         return []
-    labels = [_truncate_label(str(v)) for v in raw_labels]
     try:
-        all_pairs = sorted(zip(labels, (float(v) for v in values)), key=lambda item: item[1], reverse=True)
-    except (TypeError, ValueError):
+        if isinstance(raw_labels, list) and raw_labels:
+            labels = [_truncate_label(str(v)) for v in raw_labels]
+            all_pairs = sorted(zip(labels, (float(v) for v in values)), key=lambda item: item[1], reverse=True)
+        elif all(isinstance(v, dict) for v in values):
+            # Some agents nest each label/value pair inside "values" (e.g.
+            # [{"label": "EC2", "value": 1200}]) instead of the documented
+            # parallel top-level "labels" array - accept that shape too
+            # rather than silently falling back to raw JSON.
+            all_pairs = sorted(
+                ((_truncate_label(str(v["label"])), float(v["value"])) for v in values),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        else:
+            return []
+    except (TypeError, ValueError, KeyError):
         return []
 
     segments_truncated = len(all_pairs) > _SLACK_MAX_PIE_SEGMENTS
@@ -194,11 +210,13 @@ def render_nb_chart(code: str, view_url: Optional[str] = None) -> List[BaseBlock
         return []
 
     raw_labels = data.get("labels")
-    if not isinstance(raw_labels, list) or not raw_labels:
-        return []
-
     title = str(data.get("title") or "Chart")
 
     if slack_type == "pie":
+        # Unlike bar/line/area, pie/doughnut can also derive labels from
+        # {"label", "value"} objects nested in "values" - see _render_nb_pie.
         return _render_nb_pie(title, raw_labels, data, view_url)
+
+    if not isinstance(raw_labels, list) or not raw_labels:
+        return []
     return _render_nb_series_chart(title, slack_type, raw_labels, data, view_url)

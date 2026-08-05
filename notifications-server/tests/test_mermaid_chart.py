@@ -152,6 +152,37 @@ class TestRenderXyChart:
         line_block = next(b for b in blocks if b.chart["type"] == "line")
         assert line_block.chart["series"][0]["name"] == "Latency"
 
+    def test_unlabeled_series_is_parsed_not_dropped(self):
+        # Real, valid Mermaid xychart-beta syntax allows a bar/line series
+        # with NO label at all - "line [1, 2, 3]" directly after the kind,
+        # unlike the always-labeled form our regex previously required.
+        # Without this, the whole chart silently fell back to a raw code
+        # block, even though the exact same code renders fine in the web app.
+        code = (
+            "xychart-beta\n"
+            '    title "Monthly Revenue Trend"\n'
+            "    x-axis [Jan, Feb, Mar]\n"
+            '    y-axis "Revenue" 0 --> 250\n'
+            "    line [120, 150, 180]\n"
+        )
+        blocks = render_mermaid_code(code)
+
+        assert isinstance(blocks[0], ChartBlock)
+        assert blocks[0].chart["type"] == "line"
+        assert blocks[0].chart["series"][0]["data"] == [
+            {"label": "Jan", "value": 120.0},
+            {"label": "Feb", "value": 150.0},
+            {"label": "Mar", "value": 180.0},
+        ]
+        # No explicit series label - falls back to the y-axis label instead
+        # of a blank legend entry.
+        assert blocks[0].chart["series"][0]["name"] == "Revenue"
+
+    def test_unlabeled_series_without_y_axis_falls_back_to_generic_name(self):
+        code = "xychart-beta\n    x-axis [Jan, Feb]\n    bar [1, 2]\n"
+        blocks = render_mermaid_code(code)
+        assert blocks[0].chart["series"][0]["name"] == "Value"
+
     def test_truncates_to_slack_limits_and_notes_it(self):
         many_categories = ", ".join(f'"c{i}"' for i in range(25))
         many_values = ", ".join(str(i) for i in range(25))

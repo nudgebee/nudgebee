@@ -1,3 +1,5 @@
+import json
+
 from notifications_server.message_templates.blocks import ChartBlock, ContextBlock, LinksBlock
 from notifications_server.utils.nb_chart import render_nb_chart, split_nb_chart_segments
 
@@ -118,6 +120,52 @@ class TestRenderNbChart:
 
     def test_pie_without_values_returns_empty(self):
         code = '{"type":"pie","title":"T","labels":["A","B"]}'
+        assert render_nb_chart(code) == []
+
+    def test_pie_with_label_value_objects_and_no_top_level_labels(self):
+        # Real observed shape: the model omits the top-level "labels" array
+        # and instead nests each label/value pair inside "values".
+        code = (
+            '{"type":"doughnut","title":"Spend by Namespace",'
+            '"values":[{"label":"nudgebee","value":124.4},{"label":"kube-system","value":73.59}],'
+            '"format":"usd"}'
+        )
+        blocks = render_nb_chart(code)
+        assert len(blocks) == 1
+        assert blocks[0].chart["type"] == "pie"
+        assert blocks[0].chart["segments"] == [
+            {"label": "nudgebee", "value": 124.4},
+            {"label": "kube-system", "value": 73.59},
+        ]
+
+    def test_pie_with_label_value_objects_over_limit_rolls_into_other(self):
+        # The "Other" rollup (over 12 slices) must still apply to this
+        # shape, same as the parallel labels/values array shape.
+        values = [{"label": f"s{i}", "value": float(15 - i)} for i in range(15)]
+        code = '{"type":"pie","title":"T","values":' + json.dumps(values) + "}"
+        blocks = render_nb_chart(code)
+
+        segments = blocks[0].chart["segments"]
+        assert len(segments) == 12
+        assert segments[11] == {"label": "Other", "value": 10.0}
+        assert sum(s["value"] for s in segments) == sum(15 - i for i in range(15))
+
+    def test_pie_with_labels_array_present_takes_priority_over_label_value_objects(self):
+        # If a real top-level "labels" array is present, it must still win -
+        # the label/value-object path is a fallback for when "labels" is
+        # missing entirely, not an alternative source of truth to merge with.
+        code = '{"type":"pie","title":"T","labels":["Real"],' '"values":[{"label":"Ignored","value":1}]}'
+        assert render_nb_chart(code) == []  # zip(["Real"], [{"label":...}]) -> float() on a dict fails
+
+    def test_pie_with_malformed_label_value_object_returns_empty(self):
+        # All-or-nothing, matching the existing parallel-array shape's
+        # behavior: one bad entry fails the whole chart rather than
+        # silently dropping just that slice.
+        code = '{"type":"pie","title":"T","values":[{"label":"A","value":1},{"label":"B"}]}'
+        assert render_nb_chart(code) == []
+
+    def test_pie_with_neither_labels_nor_label_value_objects_returns_empty(self):
+        code = '{"type":"pie","title":"T","values":[1,2,3]}'
         assert render_nb_chart(code) == []
 
     def test_real_untagged_finops_payload_end_to_end(self):

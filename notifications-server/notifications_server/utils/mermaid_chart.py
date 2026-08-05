@@ -175,11 +175,15 @@ def _parse_xychart(code: str) -> Tuple[Optional[str], List[str], Optional[str], 
             continue
 
         # Series label follows the same quoted-or-unquoted convention as
-        # title/y-axis above (real agents don't always quote it).
-        match = re.match(r'^(bar|line)\s+(?:"([^"]*)"|([^"\[]+?))\s+\[(.*)]$', stripped)
+        # title/y-axis above (real agents don't always quote it) - and, per
+        # real Mermaid xychart-beta syntax, the label itself is optional
+        # entirely (e.g. "line [1, 2, 3]" with nothing between the kind and
+        # the values array), most common for a single unnamed series.
+        match = re.match(r'^(bar|line)\s+(?:(?:"([^"]*)"|([^"\[]+?))\s+)?\[(.*)]$', stripped)
         if match:
             kind, quoted_label, unquoted_label, raw_values = match.groups()
-            label = (quoted_label if quoted_label is not None else unquoted_label).strip()
+            raw_label = quoted_label if quoted_label is not None else unquoted_label
+            label = raw_label.strip() if raw_label else ""
             values = _parse_numeric_array(raw_values)
             if values:
                 series.append((kind, label, values))
@@ -235,7 +239,11 @@ def _render_xychart(code: str, view_url: Optional[str] = None) -> List[BaseBlock
             "type": kind,
             "series": [
                 {
-                    "name": label,
+                    # An unlabeled series (real, valid Mermaid syntax - just
+                    # "line [1, 2, 3]") falls back to the y-axis label, since
+                    # that's what it's implicitly plotting, rather than
+                    # showing a blank legend entry.
+                    "name": label or y_label or "Value",
                     "data": [{"label": categories[i], "value": v} for i, v in enumerate(values[: len(categories)])],
                 }
                 for label, values in kind_series
