@@ -1,6 +1,7 @@
 package eventlog
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -48,12 +49,25 @@ func Append(evt Event) error {
 			 actor_kind, actor_id, idempotency_key, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
-	_, err = db.Db.Exec(query,
+	args := []any{
 		evt.TenantID, evt.UserID, evt.AgentModule, evt.EventType, evt.Payload,
 		evt.ActorKind, evt.ActorID, evt.IdempotencyKey, evt.CreatedAt,
-	)
+	}
+	_, err = db.Db.Exec(query, args...)
 	if err != nil {
-		return fmt.Errorf("eventlog.Append: insert: %w", err)
+		if !isPgCode(err, pgCheckViolation) {
+			return fmt.Errorf("eventlog.Append: insert: %w", err)
+		}
+		// No partition covers this row's month. The scheduled
+		// memory_partition_maint run should have created it, but a tenant
+		// enabled at runtime (feature_flag, 30s cache TTL) can start writing
+		// without any restart, so boot-time provisioning alone can't cover
+		// every case. Create it now and retry once rather than dropping the
+		// write.
+		slog.Warn("eventlog.Append: no partition for row, provisioning now", "created_at", evt.CreatedAt)
+		if healErr := provisionAndRetry(db, evt.CreatedAt, query, args); healErr != nil {
+			return fmt.Errorf("eventlog.Append: insert: %w (%v)", err, healErr)
+		}
 	}
 	return nil
 }
@@ -109,4 +123,25 @@ func UnmarshalPayload(data []byte) (map[string]any, error) {
 		out = map[string]any{}
 	}
 	return out, nil
+}
+
+// provisionAndRetry creates the partition the rejected row needs and replays
+// the insert once. Split out of Append so the timeout's cancel can be deferred
+// at function scope: a defer inside Append's error branch would only fire when
+// Append itself returns, which is correct today but silently wrong the moment
+// anyone adds work after the branch.
+//
+// One context spans both steps, so a slow provision leaves the retry less time
+// rather than doubling the ceiling.
+func provisionAndRetry(db *common.DatabaseManager, createdAt time.Time, query string, args []any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
+	defer cancel()
+
+	if err := EnsurePartitionForTime(ctx, createdAt); err != nil {
+		return fmt.Errorf("partition provisioning failed: %w", err)
+	}
+	if _, err := db.Db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("insert after provisioning partition: %w", err)
+	}
+	return nil
 }

@@ -95,7 +95,10 @@ func buildWatchJudgeClient(ctx *security.RequestContext, w watch.Watch) (watch.L
 		userID:         userID,
 		accountID:      w.AccountID.String(),
 		conversationID: w.ConversationID.String(),
-		messageID:      w.ID.String(),
+		// No owning message: a watch poll isn't a conversation turn. The watch
+		// id is a valid UUID but not a llm_conversation_messages row, so
+		// passing it here failed the message_id FK and lost the usage row.
+		messageID: "",
 	}, nil
 }
 
