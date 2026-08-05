@@ -638,16 +638,11 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 	}
 
 	if strings.EqualFold(provider.Provider, "ES") || strings.EqualFold(provider.Provider, "elasticsearch") {
-		esIndex := provider.DefaultIndex
-		if esIndex == "" {
-			esIndex = utils.GetESAccountIndexConfig(accountId, "logs").DefaultIndex
-		}
-		// An empty index is fine — logs_list_labels resolves the account default
-		// server-side. fetch_index is deliberately unset: it now asks for the
-		// index list, and this caller wants fields, which is the default.
+		esIndex := utils.GetESAccountIndex(accountId)
 		queryPayload["input"].(map[string]any)["request"].(map[string]any)["request"] = map[string]any{
 			"index": esIndex,
 		}
+		queryPayload["input"].(map[string]any)["request"].(map[string]any)["fetch_index"] = true
 	}
 
 	tenant := ctx.GetSecurityContext().GetTenantId()
@@ -702,7 +697,6 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 		return core.ObservabilityLogLabelResponse{}, err
 	}
 
-	slog.Info("services_server: QueryLogLabels complete", "account_id", accountId, "provider", provider.Provider, "status_code", resp.StatusCode, "label_count", len(response))
 	return core.ObservabilityLogLabelResponse{Labels: response}, nil
 }
 
