@@ -112,7 +112,7 @@ func detectMetricSchemas(indexCfg utils.ESIndexConfig) (schemas map[esMetricSche
 func (e ElasticSearchMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	var indexCfg utils.ESIndexConfig
 	if ctx != nil {
-		if provider, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics", ""); err == nil && provider.DefaultIndex != "" {
+		if provider, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics"); err == nil && provider.DefaultIndex != "" {
 			indexCfg.DefaultIndex = provider.DefaultIndex
 		}
 	}
@@ -303,7 +303,7 @@ func (e ElasticSearchMetricsAgent) GetSystemPrompt(ctx *security.RequestContext,
 func (e ElasticSearchMetricsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	defaultIndex := ""
 	if ctx != nil {
-		if providerInfo, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics", ""); err == nil && providerInfo.DefaultIndex != "" {
+		if providerInfo, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics"); err == nil && providerInfo.DefaultIndex != "" {
 			defaultIndex = providerInfo.DefaultIndex
 		}
 	}

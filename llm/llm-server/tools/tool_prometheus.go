@@ -33,6 +33,16 @@ type metricsListCacheEntry struct {
 
 var metricsListCache sync.Map
 
+type labelValuesCacheKey struct {
+	accountId string
+	provider  string
+	label     string
+	filter    string
+	metric    string
+}
+
+var metricsLabelValuesCache sync.Map
+
 // metricsListCacheTTL returns the configured TTL for the metrics list cache.
 // Configurable via llm_server_agent_promql_metrics_cache_ttl_minutes (default 5m).
 func metricsListCacheTTL() time.Duration {
@@ -44,11 +54,13 @@ func metricsListCacheTTL() time.Duration {
 
 const ToolMetricsList = "metrics_list"
 const ToolMetricsLabelsList = "metrics_labels_list"
+const ToolMetricsLabelValues = "metrics_label_values"
 const ToolQueryPrometheus = "prometheus_execute"
 const ToolSearchMetrics = "search_metrics"
 
 // maxPrometheusMetricsInResponse caps the number of metrics returned by metrics_list when LLM filtering is active.
 const maxPrometheusMetricsInResponse = 100
+const maxPrometheusLabelValuesInResponse = 100
 
 func init() {
 	core.RegisterNBToolFactory(ToolQueryPrometheus, func(accountId string) (core.NBTool, error) {
@@ -672,7 +684,7 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 			indexPattern = query
 		}
 		if indexPattern == "" {
-			if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics", ""); err == nil && obsProvider.DefaultIndex != "" {
+			if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics"); err == nil && obsProvider.DefaultIndex != "" {
 				indexPattern = obsProvider.DefaultIndex
 			}
 		}
@@ -1267,6 +1279,7 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 	metricsLabelValuesCache.Store(cacheKey, metricsListCacheEntry{response: response, expiry: time.Now().Add(metricsListCacheTTL())})
 	return response, nil
 }
+
 // SearchMetricsTool provides semantic/natural language search over customer metrics via RAG.
 // Unlike MetricsListTool (keyword substring match), this uses vector similarity search
 // against the account-specific prometheus collection in Qdrant, returning the most
@@ -1377,7 +1390,7 @@ func getESMetricIndexPattern(nbRequestContext core.NbToolContext, defaultIndex s
 		return defaultIndex
 	}
 	if nbRequestContext.Ctx != nil {
-		if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics", ""); err == nil && obsProvider.DefaultIndex != "" {
+		if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics"); err == nil && obsProvider.DefaultIndex != "" {
 			return obsProvider.DefaultIndex
 		}
 	}

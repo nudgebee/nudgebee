@@ -353,6 +353,12 @@ func extractTimestamp(src map[string]any) string {
 	return ""
 }
 
+func ParseSourceMap(src map[string]any) (OutputLog, bool) {
+	ts := extractTimestamp(src)
+	if ts == "" {
+		return OutputLog{}, false
+	}
+
 	// Message: ECS/Filebeat/Elastic Agent carry it at top-level "message";
 	// Fluent-Bit carries it at top-level "log"; OTel-native docs carry it at
 	// body.text — or a bare string "body".
