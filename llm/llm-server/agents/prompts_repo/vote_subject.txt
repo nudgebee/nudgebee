@@ -1,0 +1,7 @@
+You are given the final answer an SRE assistant gave to a user.
+
+Reply with ONE line naming the root cause that answer identified — the specific finding, including the affected resource where the answer names one.
+
+Do not restate the user's question. Do not add a preamble, quotes or markdown.
+
+If the answer identifies no root cause (it is chit-chat, a refusal, or a status update), reply exactly: NONE

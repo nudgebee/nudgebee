@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/ee/memory"
 	memprefs "nudgebee/llm/ee/memory/stores/preferences"
+	rscope "nudgebee/llm/ee/memory/stores/scope"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -248,4 +249,53 @@ func TestPreferenceConfirmMissingRowIsSkipped(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, resp.Skipped)
+}
+
+// The same preference mentioned once with an account in context and once
+// without produced two identical rows differing only in cloud_account_id —
+// six such pairs in dev. The unscoped row already applies everywhere the
+// scoped one would, so the scoped copy is redundant and must not be written.
+func TestScopedInferredDuplicateIsSkipped(t *testing.T) {
+	tenantID, userID, _, cleanup := requireEdgeIntegration(t)
+	defer cleanup()
+
+	const key = "scope_dup_log_source"
+	seedInferred(t, tenantID, userID, key, "loki")
+
+	acct := "acct-" + userID
+	wrote, err := memprefs.Upsert(&memprefs.Preference{
+		TenantID: tenantID, Scope: memprefs.ScopeUser, UserID: userID,
+		Key: key, Value: "loki", Source: memprefs.SourceInferred, Confidence: 0.8,
+		ResourceScope: rscope.ResourceScope{CloudAccountID: &acct},
+	})
+	require.NoError(t, err)
+	assert.False(t, wrote, "a scoped copy of an identical unscoped value is redundant")
+
+	rows, err := memprefs.ListForUser(tenantID, userID, "")
+	require.NoError(t, err)
+	n := 0
+	for _, r := range rows {
+		if r.Key == key {
+			n++
+		}
+	}
+	assert.Equal(t, 1, n, "exactly one row for the key, not an unscoped/scoped pair")
+}
+
+// A DIFFERENT value under a scope is genuinely new information and must land.
+func TestScopedInferredDifferentValueIsKept(t *testing.T) {
+	tenantID, userID, _, cleanup := requireEdgeIntegration(t)
+	defer cleanup()
+
+	const key = "scope_diff_log_source"
+	seedInferred(t, tenantID, userID, key, "loki")
+
+	acct := "acct-" + userID
+	wrote, err := memprefs.Upsert(&memprefs.Preference{
+		TenantID: tenantID, Scope: memprefs.ScopeUser, UserID: userID,
+		Key: key, Value: "elasticsearch", Source: memprefs.SourceInferred, Confidence: 0.8,
+		ResourceScope: rscope.ResourceScope{CloudAccountID: &acct},
+	})
+	require.NoError(t, err)
+	assert.True(t, wrote, "a scope-specific override is not a duplicate")
 }

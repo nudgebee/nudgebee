@@ -262,19 +262,30 @@ export const decisionsList = (opts: { userId?: string; limit?: number; scope?: S
     include_superseded: opts.includeSuperseded ?? false,
   });
 
+/**
+ * Records a decision. Callers that know their own subject (AutoPilot
+ * approve/decline) pass `subject`. A vote on an answer passes `messageId` and
+ * `accountId` instead: the server derives the subject from that answer, so the
+ * decision names the root cause rather than the question that prompted it, and
+ * re-voting the same message updates rather than appends.
+ */
 export const decisionsRecord = (opts: {
   userId?: string;
   decisionType: string;
-  subject: string;
+  subject?: string;
   rationale?: string;
+  messageId?: string;
+  accountId?: string;
   conversationId?: string;
   agentModule?: string;
 }) =>
   call('ai_memory_create_decision', {
     user_id: opts.userId ?? '',
     decision_type: opts.decisionType,
-    subject: opts.subject,
+    subject: opts.subject ?? '',
     rationale: opts.rationale ?? '',
+    message_id: opts.messageId ?? '',
+    account_id: opts.accountId ?? '',
     conversation_id: opts.conversationId ?? '',
     agent_module: opts.agentModule ?? '',
   });

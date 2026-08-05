@@ -7,6 +7,12 @@ Extract knowledge that would save significant time if this exact problem (or a s
 Ask yourself: "Would a senior SRE find this fact valuable 6 months from now?" If not, don't extract it.
 
 WHAT TO EXTRACT (HIGH VALUE):
+- **Explicit user instructions** — when the user uses imperative phrasing such as
+  "remember …", "always …", "from now on …", "default to …", "never …",
+  "prefer X over Y", or "use X for Z", treat it as a HIGH-VALUE user_preference
+  even when there is no investigation context. The user has stated intent;
+  capture it verbatim. This rule overrides the "quality over quantity" guidance
+  below — explicit instructions are always worth one fact each.
 - Actionable routing rules and user preferences (e.g., "Always use the postgres agent for DB schema questions")
 - Generalised resolution paths for non-obvious problems
 - Non-obvious service dependencies discovered during the investigation
@@ -29,34 +35,167 @@ WHAT NOT TO EXTRACT (LOW VALUE):
 OUTPUT FORMAT:
 Respond with a JSON array of memory facts. Each fact must have this structure:
 [{
+  "subject": "REQUIRED — a short snake_case key or topic phrase that names WHAT this fact is about. For user_preference: the preference key (e.g. default_namespace). For is_pattern: the recurring entity (e.g. orders-db). For a decision_type fact: the thing that was decided (e.g. the root cause, the runbook chosen, the tool selected). For architectural_fact / dependency_mapping / configuration_insight / troubleshooting / workflow: a short topic label the entry is filed under (e.g. relay_server_routing, orders_db_connection_pool). NEVER leave empty — a subject-less fact is a data point with no referent",
   "content": "The fact or procedure text",
-  "type": "investigation_result|architectural_fact|dependency_mapping|troubleshooting_guide|configuration_insight|user_preference|pattern|workflow",
+  "type": "MUST BE EXACTLY ONE OF: investigation_result | architectural_fact | dependency_mapping | troubleshooting_guide | configuration_insight | user_preference | pattern | workflow. Do NOT invent new types (frequent_failure_mode, system_behavior, configuration_issue are all WRONG). If none fit, drop the fact rather than invent.",
   "is_pattern": true/false,
   "is_workflow": true/false,
   "is_update": true/false,
-  "old_content": "original fact text (only if is_update is true)"
+  "old_content": "original fact text (only if is_update is true)",
+  "description": "one-sentence human-readable description (REQUIRED when is_pattern is true; omit otherwise)",
+  "rationale": "the WHY behind a decision (REQUIRED when decision_type is set; omit otherwise)",
+  "evidence_quote": "the user's own words that justify this fact — a short verbatim snippet from the conversation (REQUIRED for user_preference AND whenever decision_type is set — a decision must quote the user's own agreement/choice; recommended otherwise; omit only if no direct user quote supports it)",
+  "pattern_kind": "snake_case pattern category (REQUIRED when is_pattern is true; omit otherwise)",
+  "decision_type": "snake_case decision category — set ONLY when the USER makes or confirms an explicit choice/verdict (approve, agree, pick, accept, reject) AND you can quote their words in evidence_quote. NEVER set it for a plain finding or root cause the assistant produced. omit otherwise"
 }]
 
 FIELD DEFINITIONS:
-- content: The fact, pattern, or workflow text to remember
+- subject: REQUIRED FOR EVERY FACT — a short snake_case key or topic phrase that
+  names WHAT the fact is about. Per-type guidance:
+  * user_preference: the preference key, not its value (e.g. "default_namespace",
+    "preferred_log_source", "preferred_cloud", "confirm_destructive"). Stored
+    by key — empty key collapses every preference into one anonymous row.
+    REUSE AN EXISTING KEY WHENEVER ONE FITS. "Existing Knowledge" lists the
+    preference keys this user already has under [preferences]; if the fact
+    belongs to one of them, emit that key EXACTLY as listed. Coining a variant
+    of a key that already exists ("assistant_tone" when "tone" is listed,
+    "user_style_verbosity" when "verbosity" is listed) creates a second row
+    holding the same thing, and both then reach the model as separate
+    instructions. Only invent a key when nothing listed covers the fact.
+  * is_pattern: the specific entity that recurs — service, namespace, resource
+    type, or flow (e.g. "orders-db", "payments", "compute_instances",
+    "cluster_health_summary"). A pattern with no subject can't be identified,
+    counted, or acted on.
+  * decision_type set: the thing decided — the root cause topic, the runbook
+    name, the recommendation, the tool, etc. (e.g. "orders_api_oomkill",
+    "restart_worker_pods_runbook", "kubectl_top_for_metrics"). A subject-less
+    decision renders as a blank row in the UI and carries no information.
+  * architectural_fact / dependency_mapping / configuration_insight /
+    troubleshooting / workflow: a short topic label the entry is filed under
+    (e.g. "relay_server_routing", "orders_db_connection_pool",
+    "loki_query_syntax"). The Collective store's dedupe key includes subject,
+    so an empty one causes multiple facts to silently overwrite each other.
+  Never emit an empty or whitespace-only subject — the fact will be rejected
+  and lost. If you cannot state clearly what a fact is about in a short phrase,
+  do not emit the fact.
+- content: The fact or procedure text to remember. For user_preference the
+  content is the VALUE of the preference (e.g. "nudgebee", "loki", "always
+  require confirmation"), not the directive itself.
 - type: The category of memory — choose the MOST SPECIFIC type that fits:
   - investigation_result: A specific root cause or finding from this investigation (what was wrong and why)
   - architectural_fact: A structural truth about the system (how components relate, what owns what)
   - dependency_mapping: A non-obvious dependency between two or more services or components
   - troubleshooting_guide: A diagnostic procedure or decision tree for a class of problems
   - configuration_insight: A non-obvious config requirement, default value, or tuning that matters
-  - user_preference: An explicit instruction or preference stated by the user
+  - user_preference: An explicit instruction or preference stated by the user. This includes:
+    (a) imperative directives — "remember X", "always do Y", "from now on Z", "default to A", "never B"
+    (b) declared defaults — "use namespace nudgebee", "preferred cloud is aws"
+    (c) routing rules — "use the postgres agent for DB questions"
+    (d) inferred preferences from repeated stated intent during the conversation
+    Capture the directive verbatim with enough scope context (e.g., the cluster, namespace, account, agent, or tool it applies to).
+    A user_preference is how the USER wants YOU to behave. It is NOT a fact about
+    their system and NOT a procedure. Use the more specific type instead when:
+    * it states what something IS rather than how to behave — an image tag, a
+      version, a namespace that exists, a cluster name → configuration_insight
+      or architectural_fact, NOT user_preference
+    * it is a sequence of steps ("1. check X 2. verify Y") or a named runbook
+      → workflow, NOT user_preference
+    * it describes the user's tone, verbosity or answer formatting → that is
+      Soul, already captured elsewhere; do NOT emit it as a preference
+    Test before choosing user_preference: could the user have set this in a
+    settings form? If it is a value they chose, yes. If it is something true
+    about their infrastructure, or a set of steps, no — pick another type.
   - pattern: A recurring behaviour or failure mode seen across multiple incidents
   - workflow: A multi-step operational procedure (e.g., deploy, rollback, rotate credentials)
 - is_pattern: Set to true for recurring issues or behaviours that span multiple incidents
 - is_workflow: Set to true for multi-step operational or troubleshooting procedures
 - is_update: Set to true when updating an existing fact from "Existing Knowledge"
 - old_content: The original fact text being updated (required when is_update is true)
+- description: ONE plain-English sentence that a teammate could read to understand
+  what the pattern is and why it matters. REQUIRED for pattern records — the UI
+  surfaces this verbatim. Within the sentence, wrap the INTENT (the verb / action
+  phrase) in single underscores and the ENTITY (the concrete noun the user
+  interacts with — service, namespace, tool, dashboard) in double asterisks so
+  the UI can style them: `User _frequently investigates_ the **payments-api**
+  service in the prod cluster.` Wrap exactly one intent and one entity per
+  sentence; if the pattern has no obvious entity (rare), omit the asterisks and
+  leave only the underscored intent. Omit (do not emit the key) for non-pattern
+  records.
+- rationale: The reason a decision was made — the "because…" half of "you decided
+  X because Y." REQUIRED for decision-type records (e.g. a routing choice, a
+  runbook selection, a recommendation acceptance). The UI shows this as the
+  decision's subtitle. Omit (do not emit the key) for non-decision records.
+- evidence_quote: A short verbatim snippet of the USER's own words that justifies
+  this fact, copied from the conversation. REQUIRED for user_preference so the
+  inference is auditable ("why did we remember this?"). Keep it brief (one phrase
+  or sentence). Omit only when no direct user quote supports the fact — never
+  paraphrase or invent one.
+- pattern_kind: The snake_case category of a pattern. REQUIRED when is_pattern
+  is true. MUST be one of the following FIXED values — do NOT invent new kinds,
+  do NOT pluralize, do NOT add adjectives. Pick the CLOSEST fit; if nothing
+  fits, do not emit the fact at all rather than inventing a kind:
+    frequent_service               — a specific service seen repeatedly
+                                     across investigations (any behavior)
+    frequent_service_failure       — a service that repeatedly fails / crashes
+                                     / OOMs / restarts (use for ANY failure
+                                     mode; do not sub-categorize per error)
+    frequent_service_error         — a service that logs / returns errors
+                                     without hard failure (5xx, 401, etc.)
+    frequent_namespace             — a namespace touched repeatedly
+    frequent_resource_type         — a k8s / cloud resource TYPE seen often
+                                     (pods, workloads, ec2, s3-buckets, …)
+    frequent_configuration_error   — the same misconfiguration recurring
+    frequent_root_cause            — the same underlying root cause recurring
+                                     across otherwise-different symptoms
+    preferred_diagnostic_flow      — user's habitual investigation sequence
+                                     (e.g. "always checks pods → logs → metrics")
+    misleading_logs                — logs / errors that mislead diagnosis
+                                     (users repeatedly hit the same false trail)
+  RULE: same underlying phenomenon → same pattern_kind. If you're tempted to
+  write "frequent_service_behavior" or "frequent_workload_behavior" or
+  "frequent_service_issue", use frequent_service (or frequent_service_failure
+  if it's specifically about failures). Every extra kind fragments the taxonomy.
+  Omit (do not emit the key) for non-pattern records.
+- decision_type: The snake_case category of a decision the USER made. Set it ONLY
+  when the user explicitly chooses, agrees, accepts, or rejects something in the
+  conversation — AND you can quote their words in evidence_quote. A root cause or
+  finding the assistant produced is NOT a decision (nobody chose it); do NOT set
+  decision_type for findings. MUST be EXACTLY one of these FIXED values — do NOT
+  invent new decision_types, do NOT use pattern-like slugs (frequent_*, *_pattern,
+  *_failure, *_behavior are ALL WRONG here — those belong to pattern_kind):
+    root_cause_agreed       — the user explicitly agreed with a specific root cause
+                              ("yes, that's the cause", "agreed, it's the cache")
+    root_cause_disagreed    — the user rejected a proposed root cause
+                              ("no, that's not it", "disagree, check the DB")
+    runbook_chosen          — the user picked a specific runbook/playbook to apply
+                              ("apply the OOM runbook", "let's run the memory-leak playbook")
+    tool_selected           — the user picked one agent/tool over another
+                              ("use the postgres agent for this", "loki not datadog")
+    recommendation_accepted — the user agreed to a proposed action
+                              ("yes, bump the memory", "go ahead with the rollback")
+    recommendation_dismissed — the user declined / deferred a proposed action
+                              ("no, not yet", "skip that for now")
+  If none of these six fit, the fact is NOT a decision — either drop it or emit
+  it as a pattern / collective / user_preference instead.
+  Omit (do not emit the key) for non-decision records (user_preference, pattern,
+  architectural_fact, plain findings) AND whenever the user did not actually make
+  a choice. Click-wired events (Approve/Decline on AutoPilot cards, thumbs up/down
+  on RCA) are captured separately and SHOULD NOT be re-emitted here even if the
+  transcript mentions them.
 
 EXAMPLES OF GOOD EXTRACTIONS:
 
-User preference:
-{"content": "User prefers kubectl top for quick metric checks instead of the Prometheus agent", "type": "user_preference", "is_pattern": false, "is_workflow": false, "is_update": false}
+User preference (explicit imperative — "remember to use nudgebee NS"):
+{"subject": "default_namespace", "content": "nudgebee", "type": "user_preference", "is_pattern": false, "is_workflow": false, "is_update": false, "evidence_quote": "remember to always use the nudgebee namespace"}
+
+User preference ("always" instruction):
+{"subject": "preferred_agent_for_db", "content": "postgres", "type": "user_preference", "is_pattern": false, "is_workflow": false, "is_update": false, "evidence_quote": "always use the postgres agent for DB questions"}
+
+User preference ("from now on" instruction):
+{"subject": "preferred_metric_tool", "content": "kubectl top", "type": "user_preference", "is_pattern": false, "is_workflow": false, "is_update": false, "evidence_quote": "from now on show me kubectl top for metrics"}
+
+User preference (inferred from repeated stated intent):
+{"subject": "preferred_metric_tool", "content": "kubectl top", "type": "user_preference", "is_pattern": false, "is_workflow": false, "is_update": false, "evidence_quote": "just give me kubectl top again"}
 
 Architectural fact (structural truth about the system):
 {"content": "relay-server is the sole gateway for all kubectl operations from llm-server; direct cluster API calls are not used", "type": "architectural_fact", "is_pattern": false, "is_workflow": false, "is_update": false}
@@ -71,12 +210,22 @@ Configuration insight (non-obvious config requirement):
 {"content": "ECR image pulls require imagePullSecrets even when nodes have IAM roles — kubelet does not inherit node IAM credentials automatically", "type": "configuration_insight", "is_pattern": false, "is_workflow": false, "is_update": false}
 
 Pattern (recurring failure):
-{"content": "orders-db query latency spikes > 800ms correlate with autovacuum falling behind on high-write tables, not connection pool exhaustion", "type": "pattern", "is_pattern": true, "is_workflow": false, "is_update": false}
+{"subject": "orders-db", "content": "orders-db query latency spikes > 800ms correlate with autovacuum falling behind on high-write tables, not connection pool exhaustion", "type": "pattern", "is_pattern": true, "is_workflow": false, "is_update": false, "pattern_kind": "frequent_service", "description": "**orders-db** _latency spikes_ consistently trace to autovacuum lag, not pool exhaustion"}
+
+Decision (runbook chosen from conversation — note the user's own words in evidence_quote):
+{"subject": "OOM investigation runbook for payments-api", "content": "user picked the OOM investigation runbook over manual exploration", "type": "investigation_result", "is_pattern": false, "is_workflow": false, "is_update": false, "decision_type": "runbook_chosen", "rationale": "user explicitly applied the runbook for repeatable OOM diagnosis", "evidence_quote": "apply the OOM investigation runbook"}
+
+Decision (tool selected from conversation):
+{"subject": "postgres agent for DB schema questions", "content": "user picked the postgres agent over the generic DB agent", "type": "investigation_result", "is_pattern": false, "is_workflow": false, "is_update": false, "decision_type": "tool_selected", "rationale": "postgres agent gives schema-specific output the user prefers", "evidence_quote": "use the postgres agent for DB schema questions"}
+
+Decision (recommendation accepted from conversation):
+{"subject": "bump payments-api memory limit to 2Gi", "content": "user accepted the memory-bump recommendation", "type": "investigation_result", "is_pattern": false, "is_workflow": false, "is_update": false, "decision_type": "recommendation_accepted", "rationale": "user agreed the OOM pattern justified the bump", "evidence_quote": "yes, bump payments-api memory to 2Gi"}
 
 Workflow (multi-step operational procedure):
 {"content": "Multi-registry ImagePullBackOff resolution:\n1. Identify all unique image registries in pod spec\n2. For each registry verify imagePullSecrets exist and are not expired\n3. For cloud registries verify IAM roles on node service accounts", "type": "workflow", "is_pattern": false, "is_workflow": true, "is_update": false}
 
-Investigation result (specific finding from this incident):
+Root-cause finding — a FINDING, not a decision (the assistant derived it; the user
+did not choose it, so NO decision_type and NO evidence_quote):
 {"content": "services-server OOMKilled in prod was caused by unbounded in-memory cache growth under high event volume, not a memory leak in request handlers", "type": "investigation_result", "is_pattern": false, "is_workflow": false, "is_update": false}
 
 EXAMPLES OF BAD EXTRACTIONS (DO NOT EXTRACT THESE):
@@ -88,6 +237,10 @@ EXAMPLES OF BAD EXTRACTIONS (DO NOT EXTRACT THESE):
 ❌ Obvious from error: "403 Forbidden means authentication failed"
 ❌ One-time observation: "Found my-agent-node-agent-2qmhq in ImagePullBackOff"
 ❌ Googleable fact: "Kubernetes probes use HTTP GET by default"
+❌ Pinned image tag / digest: "ml-k8s-server uses image registry/.../ml-k8s-server:2026-06-09T05-29-28_b4b0443c2e" (stale on the next deploy — not durable)
+❌ Incident description: "ml-k8s-server experienced ImagePullBackOff due to registry access issues" (a past event, not a durable truth)
+❌ Recommendation, not a fact: "accounting deployment memory limit should be increased to 256Mi" (a suggestion for one incident, not established knowledge)
+❌ Bare command: "kubectl get pods -n nudgebee -l app=llm-server -w" (a command any engineer knows — extract the INSIGHT, not the command)
 
 DEDUPLICATION RULES (CRITICAL):
 Before extracting ANY fact, scan "Existing Knowledge" carefully:
@@ -107,6 +260,7 @@ Examples of proper updates:
 
 CRITICAL RULES:
 1. QUALITY OVER QUANTITY — most investigations yield 0–2 truly valuable facts. Extract more only if genuinely warranted.
+   EXCEPTION: explicit user instructions ("remember …", "always …", "from now on …", "default to …", "never …") are ALWAYS extracted as user_preference, regardless of investigation depth.
 2. NO DUPLICATES — if a fact is semantically similar to existing knowledge or another fact in your output, consolidate or skip it.
 3. The "would a senior SRE find this valuable in 6 months" test must pass for every extraction.
 4. If the fact is googleable or in standard documentation, DO NOT extract it.

@@ -1075,18 +1075,19 @@ const KubernetesLLMRequestResponse = (props) => {
         cloud_account_id: props.accountId,
         useful: createFeedbackObject.type == 'thumbs_up',
       });
-      // Mirror the vote into Memory's Decisions layer so the next chat
-      // sees "user has agreed/disagreed with N RCAs about <subject>".
+      // Mirror the vote into Memory's Decisions layer so the next chat sees
+      // which root causes this user has accepted or rejected. The subject is
+      // derived server-side from the answer being voted on — sending the
+      // question instead recorded decisions like "hi: user thumbs-up on RCA".
       // Fire-and-forget — feedback is the user-facing success path.
       const isPositive = createFeedbackObject.type == 'thumbs_up';
-      const questionText = typeof props.generateQuestionText === 'function' ? props.generateQuestionText() : props.generateQuestionText;
-      const question = (questionText || '').trim();
-      if (question) {
+      if (props.toolCall?.id) {
         decisionsRecord({
           decisionType: isPositive ? 'root_cause_agreed' : 'root_cause_disagreed',
-          subject: question.slice(0, 240),
           rationale: isPositive ? 'user thumbs-up on RCA' : createFeedbackObject.message || 'user thumbs-down on RCA',
-          conversationId: props.toolCall?.id,
+          messageId: props.toolCall.id,
+          accountId: props.accountId,
+          conversationId: props.conversationId,
         }).catch(() => {
           // Memory write is best-effort; never block feedback toast.
         });
