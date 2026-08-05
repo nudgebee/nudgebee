@@ -51,8 +51,8 @@ type K8sWorkloadRow struct {
 	IsActive         bool            `db:"is_active"`
 	Meta             json.RawMessage `db:"meta"`
 	Labels           json.RawMessage `db:"labels"`
-	CreatedAt        time.Time       `db:"created_at"`
-	UpdatedAt        time.Time       `db:"updated_at"`
+	CreatedAt        sql.NullTime    `db:"created_at"`
+	UpdatedAt        sql.NullTime    `db:"updated_at"`
 	LastDeployedTime sql.NullTime    `db:"last_deployed_time"`
 }
 
