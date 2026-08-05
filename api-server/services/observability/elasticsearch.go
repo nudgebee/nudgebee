@@ -784,7 +784,7 @@ func whereToBool(where query.QueryWhereClause) (map[string]any, error) {
 	// Handle binary clauses at this level
 	for field, ops := range where.Binary {
 		for op, val := range ops {
-			clause, negate, err := binaryToESClause(field, op, val)
+			clause, negate, err := binaryClauseForField(field, op, val)
 			if err != nil {
 				return nil, err
 			}
