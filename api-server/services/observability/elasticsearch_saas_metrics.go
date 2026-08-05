@@ -453,6 +453,65 @@ func otelMetricLabels(src map[string]any) map[string]string {
 	return labels
 }
 
+// beatsLabelSkip are `kubernetes.*` subtrees that are constant per pod, node or
+// namespace and repeated on every single document. They would bloat every
+// series' label set without distinguishing any two series; the log pipeline
+// drops the same ones for the same reason.
+var beatsLabelSkip = []string{
+	"kubernetes.labels.",
+	"kubernetes.annotations.",
+	"kubernetes.namespace_labels.",
+	"kubernetes.node.labels.",
+}
+
+// beatsMetricSeries splits a Metricbeat document's `kubernetes` subtree into
+// numeric leaves (one metric apiece, keyed by full dotted path) and string
+// leaves (labels).
+//
+// Metricbeat encodes a metric's identity in its field path and carries no
+// name/value pair: `kubernetes.pod.cpu.usage.nanocores` IS the metric name, and
+// one document holds ~16 of them. All are emitted; callers narrow to a single
+// metric with `_source` filtering on the query, which is the only selector the
+// request contract offers today (`metric_name` is consumed as the ES index).
+func beatsMetricSeries(src map[string]any) (labels map[string]string, values map[string]float64) {
+	labels = map[string]string{}
+	values = map[string]float64{}
+
+	root, ok := src["kubernetes"].(map[string]any)
+	if !ok {
+		return labels, values
+	}
+
+	var walk func(node map[string]any, path string)
+	walk = func(node map[string]any, path string) {
+		for k, v := range node {
+			p := path + "." + k
+			switch tv := v.(type) {
+			case map[string]any:
+				walk(tv, p)
+			case float64:
+				values[p] = tv
+			case string:
+				if !hasAnyPrefix(p, beatsLabelSkip) {
+					labels[p] = tv
+				}
+			}
+		}
+	}
+	walk(root, "kubernetes")
+
+	return labels, values
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseESMetricsHits parses an ES search response into []Result grouped by label set.
 // Each unique combination of metric name + attributes becomes one Result with
 // collected timestamps (epoch seconds) and values.
@@ -545,13 +604,54 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 		// Legacy flat shape: {name, value|sum|count, attributes}.
 		name, _ := src["name"].(string)
 		var val float64
+		var haveVal bool
 		if v, ok := src["value"].(float64); ok {
-			val = v
+			val, haveVal = v, true
 		} else if v, ok := src["sum"].(float64); ok {
-			val = v
+			val, haveVal = v, true
 		} else if v, ok := src["count"].(float64); ok {
-			val = v
+			val, haveVal = v, true
 		}
+
+		if !haveVal {
+			// Beats (Metricbeat) shape: no name/value pair anywhere — every value
+			// is a numeric leaf nested under `kubernetes.*`, and the metric's
+			// identity IS its field path. Emit one series per leaf; narrow to a
+			// single metric with `_source` filtering on the query.
+			//
+			// Dispatch is by shape, not by shipper. Keying off `metricset.name` or
+			// `agent.type` looks tempting but breaks twice: `_source` filtering
+			// strips those fields (so the documented way to select one metric would
+			// disable detection), and a Beat emitting a reshaped name/value document
+			// would be stolen from the flat branch below.
+			labels, values := beatsMetricSeries(src)
+			if len(values) == 0 {
+				// Nothing recognisable. Falling through would append a datapoint of
+				// 0 — indistinguishable from a real zero reading — so an unknown
+				// shape rendered as a flat zero line with no error anywhere, and
+				// dropped_non_numeric_value stayed 0 while the log said "parsed".
+				// A value key that *is* present and holds 0 keeps haveVal=true and
+				// never reaches here.
+				droppedNonNumericValue++
+				continue
+			}
+			// Map iteration order is random; sort so series order is stable.
+			names := make([]string, 0, len(values))
+			for n := range values {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			for _, n := range names {
+				m := make(map[string]string, len(labels)+1)
+				for k, v := range labels {
+					m[k] = v
+				}
+				m["__name__"] = n
+				add(m, ts, values[n])
+			}
+			continue
+		}
+
 		labels := map[string]string{}
 		if name != "" {
 			labels["__name__"] = name
@@ -577,7 +677,7 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 			"dropped_non_numeric_value", droppedNonNumericValue,
 			"sample_timestamp", sampleTimestamp,
 			"sample_source_fields", esSourceFieldNames(esResp.Hits.Hits[0].Source),
-			"hint", "timestamps must be an RFC3339 string at `time` or `@timestamp`; values at metrics.<name> or name+value|sum|count")
+			"hint", "timestamps must be an RFC3339 string at `time` or `@timestamp`; values at metrics.<name>, name+value|sum|count, or numeric leaves under kubernetes.* (Metricbeat)")
 	default:
 		slog.Info("ES metrics query: parsed hits",
 			"matched", esHitsTotal(string(bodyBytes)), "returned", returned, "series", len(groups),
