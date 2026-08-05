@@ -12,6 +12,7 @@ import (
 	"nudgebee/llm/relay"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"nudgebee/llm/utils"
 	"strings"
 	"time"
 )
@@ -558,8 +559,9 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 	}
 
 	if strings.EqualFold(provider.Provider, "ES") || strings.EqualFold(provider.Provider, "elasticsearch") {
+		esIndex := utils.GetESAccountIndex(accountId)
 		queryPayload["input"].(map[string]any)["request"].(map[string]any)["request"] = map[string]any{
-			"index": "fluentk8-*",
+			"index": esIndex,
 		}
 		queryPayload["input"].(map[string]any)["request"].(map[string]any)["fetch_index"] = true
 	}

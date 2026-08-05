@@ -341,22 +341,25 @@ func (e *ElasticSource) ExtractRawResponseString(resp any) (string, error) {
 	}
 }
 
-func ParseSourceMap(src map[string]any) (OutputLog, bool) {
-	ts, ok := src["@timestamp"].(string)
-	if !ok || strings.TrimSpace(ts) == "" {
-		if tsVal, exists := src["@timestamp"]; exists {
-			ts = fmt.Sprintf("%v", tsVal)
-		} else {
-			return OutputLog{}, false
+func extractTimestamp(src map[string]any) string {
+	for _, key := range []string{"@timestamp", "time", "timestamp", "datetime"} {
+		if val, exists := src[key]; exists && val != nil {
+			str := strings.TrimSpace(fmt.Sprintf("%v", val))
+			if str != "" && str != "<nil>" {
+				return str
+			}
 		}
 	}
+	return ""
+}
 
-	// Message: Fluent-Bit docs carry it at top-level "log"; OTel-native docs
-	// (data stream logs-generic.otel-default) carry it at body.text — or a bare
-	// string "body"; ECS docs (Beats / Elastic Agent / Logstash) carry it at
-	// "message" and use "log" for an object ({level, file, offset}), so the "log"
-	// assertion fails there. Try all three so no shipper's hits are dropped.
-	msg, ok := src["log"].(string)
+	// Message: ECS/Filebeat/Elastic Agent carry it at top-level "message";
+	// Fluent-Bit carries it at top-level "log"; OTel-native docs carry it at
+	// body.text — or a bare string "body".
+	msg, ok := src["message"].(string)
+	if !ok || strings.TrimSpace(msg) == "" {
+		msg, ok = src["log"].(string)
+	}
 	if !ok || strings.TrimSpace(msg) == "" {
 		msg = otelBodyText(src)
 	}
@@ -416,7 +419,7 @@ func ParseSourceMap(src map[string]any) (OutputLog, bool) {
 		}
 	default:
 		for k, v := range src {
-			if k == "@timestamp" || k == "stream" || k == "log" {
+			if k == "@timestamp" || k == "time" || k == "timestamp" || k == "datetime" || k == "stream" || k == "log" || k == "message" {
 				continue
 			}
 			if v != nil {
