@@ -211,7 +211,16 @@ const IntegrationDynamicFormModal = ({
         // check lowercases it, so 'es' — not 'elasticsearch' — is what matches here.
         const CLOUD_CAPABLE_INTEGRATIONS = ['datadog', 'observe', 'dynatrace', 'splunk_observability_platform', 'solarwinds', 'elasticsearch', 'es'];
         const isWebhook = configs.category === 'incident_webhook' || (integrationName || '').toLowerCase().includes('webhook');
-        const showAllAccounts = isWebhook || (!isAgentSource && CLOUD_CAPABLE_INTEGRATIONS.includes((integrationName || '').toLowerCase()));
+        // The VM agent (forager) is the exception to the !isAgentSource rule above.
+        // That rule excludes agent-sourced providers because they need an
+        // in-cluster relay agent a cloud account does not have — but a forager is
+        // not in-cluster. It is a per-network-segment process dialling out to the
+        // relay, and reaching EC2 or Azure VMs inside a customer's VPC is exactly
+        // what it is for. Filtering cloud accounts out here is what forces VM
+        // fleets to be onboarded under a Kubernetes account (#35683).
+        const isVmAgent = (integrationName || '').toLowerCase() === 'vm_agent' || configs.type === 'vm_agent';
+        const showAllAccounts =
+          isWebhook || isVmAgent || (!isAgentSource && CLOUD_CAPABLE_INTEGRATIONS.includes((integrationName || '').toLowerCase()));
         for (const key in updatedConfig.properties) {
           const field = updatedConfig.properties[key];
           if (field.auto_generate_func && field.auto_generate_func === 'listAccounts') {

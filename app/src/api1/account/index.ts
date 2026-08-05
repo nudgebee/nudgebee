@@ -442,7 +442,7 @@ const apiAccount = {
   },
   async getAllAccount() {
     try {
-      const cloudProviders = ['K8s', 'AWS', 'Azure', 'GCP', 'CloudFoundry'];
+      const cloudProviders = ['K8s', 'AWS', 'Azure', 'GCP', 'CloudFoundry', 'SelfHosted'];
       const messagingPlatforms = ['slack', 'ms_teams', 'google_chat', 'discord'];
       const integrationTypes = [
         'github',

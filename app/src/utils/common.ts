@@ -144,6 +144,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'CLOUDFOUNDRY':
       label = 'Cloud Foundry';
       break;
+    case 'SELFHOSTED':
+      label = 'Self-Hosted VMs';
+      break;
     case 'SNOWFLAKE':
       label = 'Snowflake';
       break;

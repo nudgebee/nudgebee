@@ -38,7 +38,7 @@ const DISABLED_PROVIDERS = new Set([
 ]);
 // Constants moved to top level for better organization
 const PROVIDERS = {
-  CLOUD: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY'],
+  CLOUD: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY', 'SELFHOSTED'],
   MGMNT_TOOL: ['JIRA', 'SERVICENOW', 'PAGERDUTY'],
   WEBHOOKS: [
     'PAGERDUTY_WEBHOOK',
@@ -85,7 +85,7 @@ const SECTIONS_CONFIG = [
     id: 'cloud',
     label: 'Kubernetes & Cloud',
     icon: CloudAccountIcon,
-    providers: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY'],
+    providers: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY', 'SELFHOSTED'],
     tab: 1,
   },
   {

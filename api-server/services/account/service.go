@@ -33,6 +33,25 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/subscription/armsubscription"
 )
 
+// A fleet of bare VMs reached through an agent rather than a provider API —
+// the same shape as `kubernetes` (one since V104), except the agent fronts
+// machines instead of a cluster and there is no cloud account behind it to
+// authenticate against or bill from.
+//
+// The two columns carry different facts and must not be collapsed:
+// account_type says *what* is managed (vm / kubernetes / cloud), cloud_provider
+// says *who runs it* (SelfHosted / AWS / GCP / ...). That split is what lets a
+// VM fleet discovered by an agent inside a cloud VPC keep account_type `vm`
+// while naming its real provider.
+//
+// account_type is a free-text column with no database constraint, and several
+// integrations already define their own values (jira, slack, snowflake, ...),
+// so adding one needs no migration. cloud_provider does have one — see V848.
+const (
+	AccountTypeVM             = "vm"
+	AccountProviderSelfHosted = "SelfHosted"
+)
+
 const (
 	// azureCostManagementWarningMsg is the message shown when Azure credentials lack Cost Management API access
 	azureCostManagementWarningMsg = "Azure account created successfully, but the credentials do not have permission to access the Azure Cost Management API. Please grant the 'Cost Management Reader' role or equivalent to enable cost tracking. You can update the permissions in the Azure Portal and the system will automatically detect the change on the next sync."
@@ -736,6 +755,24 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 		query.AgentAccessSecretV2 = k8sAccessSecretHashed
 		query.CloudProvider = "K8s"
 		query.AccountType = "kubernetes"
+	} else if strings.EqualFold(query.CloudProvider, AccountProviderSelfHosted) || strings.EqualFold(query.AccountType, AccountTypeVM) {
+		// A self-hosted VM fleet has no cloud behind it: no provider API to
+		// authenticate against, no billing source, no region. So unlike the cloud
+		// branch below there is nothing to validate.
+		//
+		// It also issues no credentials, unlike the kubernetes branch above. A
+		// cluster has exactly one agent, so minting its credentials alongside the
+		// account is natural; a VM account holds *many* foragers, one per network
+		// segment, and each gets its own identity from the VM agent integration
+		// (CreateProxyAgent) together with its install command. An account-level
+		// credential here would be a second, unused identity implying a one-agent
+		// model we do not have.
+		//
+		// Without this branch the request falls through to "unknown cloud
+		// provider", which is why VM fleets are currently onboarded as kubernetes
+		// accounts (see #35683).
+		query.CloudProvider = AccountProviderSelfHosted
+		query.AccountType = AccountTypeVM
 	} else if strings.EqualFold("cloud", query.AccountType) || slices.Contains([]string{"aws", "azure", "gcp", "cloudfoundry"}, strings.ToLower(query.CloudProvider)) {
 		switch query.CloudProvider {
 		case "AWS":

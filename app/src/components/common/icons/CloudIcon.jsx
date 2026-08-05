@@ -53,6 +53,7 @@ import {
   GrafanaColorIcon,
   Last9Icon,
   CloudFoundryIcon,
+  SelfHostedIcon,
   ElasticSearchIcon,
   PinotIcon,
   HiveIcon,
@@ -76,6 +77,10 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = ouK8s;
   } else if (cloud_provider.toUpperCase() === 'CLOUDFOUNDRY') {
     Icon = CloudFoundryIcon;
+  } else if (cloud_provider.toUpperCase() === 'SELFHOSTED') {
+    // Without this the chain falls through to the cloudBlackIcon default — a
+    // cloud glyph on the one account type that has no cloud behind it.
+    Icon = SelfHostedIcon;
   } else if (cloud_provider.toUpperCase() === 'SNOWFLAKE') {
     Icon = ouSnowFlake;
   } else if (cloud_provider.toUpperCase() === 'OPENAI') {

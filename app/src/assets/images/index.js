@@ -764,6 +764,7 @@ export const GrafanaTempoIcon = require('@assets/grafana-tempo.svg');
 export const BitBucketIcon = require('@assets/bit_bucket.svg');
 export const OpenSearchIcon = require('@assets/opensearch_logo_default.svg');
 export const CloudFoundryIcon = require('@assets/cloud-account/cloudfoundry.svg');
+export const SelfHostedIcon = require('@assets/cloud-account/self-hosted.svg');
 
 export const AzureVMIcon = AzureVMIconComp;
 export const AzureSqlIcon = AzureSqlIconComp;
