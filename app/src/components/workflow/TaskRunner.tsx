@@ -249,6 +249,10 @@ const TaskRunner: React.FC<TaskRunnerProps> = ({ accountId }) => {
         <Box sx={{ flex: 1, minWidth: 0, height: '100%' }}>
           {selectedTaskType ? (
             <ActionDetailsSidebar
+              // Remount per selected task so the ephemeral test form + results start
+              // empty on every task switch (the sidebar's internal localData buffer is
+              // otherwise preserved across switches by its dirty-guard). See issue #34678.
+              key={selectedTaskType}
               variant='inline'
               open
               onClose={() => setSelectedTaskType(null)}
