@@ -479,6 +479,24 @@ func finalizeESLogQueryBody(queryJSON string, startMillis, endMillis int64, limi
 }
 
 func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
+	// A where clause that failed to render must never reach the cluster as an
+	// unfiltered search. FetchLogs treats a GetQuery error as non-fatal — some
+	// providers (Signoz, Datadog) apply the where clause natively inside
+	// QueryLogs — and leaves Query empty; Elasticsearch has no such path, the
+	// rendered body is the only place a filter can live, and
+	// finalizeESLogQueryBody turns an empty body into match_all. The caller
+	// would then get every document in the time window back as though the
+	// filter had applied. Re-run the render here so the reason it failed (e.g.
+	// "_is_null operator requires boolean value") reaches the UI instead of
+	// wrong rows.
+	if strings.TrimSpace(fetchLogRequest.Query) == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
+		_, qErr := e.GetQuery(ctx, fetchLogRequest)
+		if qErr == nil {
+			qErr = errors.New("filter rendered to an empty query")
+		}
+		return nil, fmt.Errorf("elasticsearch: refusing to run an unfiltered search: %w", qErr)
+	}
+
 	cfg, err := GetElasticsearchConfig(ctx, fetchLogRequest.AccountId)
 	if err != nil {
 		return nil, err

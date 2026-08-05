@@ -53,6 +53,12 @@ const buildStructuredWhere = (items: any[]): any[] =>
         .map((v) => v.trim())
         .filter(Boolean);
     }
+    // The IS NULL chip is value-less, so the builder gives it value ''. _is_null
+    // carries its meaning in the value and the backend requires a boolean there,
+    // so '' was rejected and the whole filter was dropped.
+    if (op === '_is_null' && typeof value !== 'boolean') {
+      value = true;
+    }
     return { _binary: { [item.label]: { [op]: value } } };
   });
 

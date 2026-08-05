@@ -625,6 +625,13 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                 value = true;
               }
 
+              // The IS NULL chip is value-less, so the builder gives it value ''.
+              // _is_null carries its meaning in the value and the backend requires a
+              // boolean there, so '' was rejected and the whole filter was dropped.
+              if (backendOp === '_is_null' && typeof value !== 'boolean') {
+                value = true;
+              }
+
               // is_one_of/is_not_one_of → split comma-separated string into array
               if (item.operator === 'is_one_of' || item.operator === 'is_not_one_of') {
                 value = String(item.value)
