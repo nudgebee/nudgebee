@@ -246,6 +246,58 @@ func estimateUsage(messages []llms.MessageContent, resp *llms.ContentResponse) (
 	return prompt, completion
 }
 
+// usesOpenAIWireFormat reports whether this client talks to an OpenAI-compatible
+// server through langchaingo's openai driver.
+func (c *Client) usesOpenAIWireFormat() bool {
+	switch Provider(c.config.LLM.Provider) {
+	case ProviderOpenAI, ProviderHuggingFace:
+		return true
+	default:
+		return false
+	}
+}
+
+// splitToolMessages expands every Tool message carrying more than one
+// ToolCallResponse into one Tool message per response.
+//
+// The ReAct planner batches all of a step's parallel tool results into a single
+// Tool message, which is what the genai path wants. The OpenAI wire format
+// instead carries exactly one result per message (keyed by tool_call_id), and
+// langchaingo rejects anything else outright with "expected exactly one part
+// for role tool" — a client-side error, so the request never even leaves the
+// process. Translating here, at the provider boundary, keeps the planner's
+// message bookkeeping (and the observation-aging gate that indexes into it)
+// untouched.
+func splitToolMessages(messages []llms.MessageContent) []llms.MessageContent {
+	needsSplit := false
+	capacity := 0
+	for _, m := range messages {
+		if m.Role == llms.ChatMessageTypeTool && len(m.Parts) > 1 {
+			needsSplit = true
+			capacity += len(m.Parts)
+		} else {
+			capacity++
+		}
+	}
+	if !needsSplit {
+		return messages
+	}
+	out := make([]llms.MessageContent, 0, capacity)
+	for _, m := range messages {
+		if m.Role != llms.ChatMessageTypeTool || len(m.Parts) <= 1 {
+			out = append(out, m)
+			continue
+		}
+		for _, part := range m.Parts {
+			out = append(out, llms.MessageContent{
+				Role:  m.Role,
+				Parts: []llms.ContentPart{part},
+			})
+		}
+	}
+	return out
+}
+
 // GenerateContentNoRetry performs a single LLM call with no transient-error
 // retry loop. Use this for best-effort, non-fatal calls where a 30+ second
 // retry chain would waste more time than retrying the whole task. The
@@ -254,6 +306,9 @@ func estimateUsage(messages []llms.MessageContent, resp *llms.ContentResponse) (
 func (c *Client) GenerateContentNoRetry(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	if c.llm == nil {
 		return nil, errors.New("LLM client not initialized")
+	}
+	if c.usesOpenAIWireFormat() {
+		messages = splitToolMessages(messages)
 	}
 	opts := []llms.CallOption{
 		llms.WithMaxTokens(16384),
@@ -280,6 +335,10 @@ func (c *Client) GenerateContentNoRetry(ctx context.Context, messages []llms.Mes
 func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	if c.llm == nil {
 		return nil, errors.New("LLM client not initialized")
+	}
+
+	if c.usesOpenAIWireFormat() {
+		messages = splitToolMessages(messages)
 	}
 
 	// Use a generous default token limit for all responses.

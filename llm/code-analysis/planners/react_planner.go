@@ -2350,6 +2350,10 @@ func (p *ReActPlanner) injectLedgerBlock(messages []llms.MessageContent) []llms.
 	})
 }
 
+// toolCallTypeFunction is the OpenAI tool-call discriminator. Every ToolCall we
+// put back into the conversation must carry it.
+const toolCallTypeFunction = "function"
+
 // updateConversationMessagesMulti builds a single AI message with all ToolCalls
 // and a single Tool message with all ToolCallResponses, preserving IDs.
 func (p *ReActPlanner) updateConversationMessagesMulti(
@@ -2368,6 +2372,11 @@ func (p *ReActPlanner) updateConversationMessagesMulti(
 		argsJSON, _ := json.Marshal(s.ActionInput)
 		aiParts = append(aiParts, llms.ToolCall{
 			ID: s.ToolCallID,
+			// Type must be set: langchaingo's OpenAI client serializes it
+			// without omitempty, and OpenAI-compatible servers (vLLM behind the
+			// HuggingFace endpoints) discriminate the tool-call union on it —
+			// an empty type is a 400, not a default.
+			Type: toolCallTypeFunction,
 			FunctionCall: &llms.FunctionCall{
 				Name:      s.Action,
 				Arguments: string(argsJSON),
@@ -2567,7 +2576,8 @@ func (p *ReActPlanner) compactConversationWindow(ctx context.Context, messages [
 					// Keep tool call name + compact arguments summary
 					if p.FunctionCall != nil {
 						compactParts = append(compactParts, llms.ToolCall{
-							ID: p.ID,
+							ID:   p.ID,
+							Type: toolCallTypeFunction,
 							FunctionCall: &llms.FunctionCall{
 								Name:      p.FunctionCall.Name,
 								Arguments: compactJSONArgs(p.FunctionCall.Arguments, 200),
