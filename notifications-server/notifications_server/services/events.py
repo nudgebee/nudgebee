@@ -3,11 +3,12 @@ import html
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, List, Optional
 
 import aiohttp
 import requests
 from datetime import datetime
+from slack_sdk.errors import SlackApiError
 
 from botbuilder.core import TurnContext
 from botbuilder.schema import Activity
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from notifications_server.configs import settings
 from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, LLM_CHAT_ENDPOINT
-from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
+from notifications_server.message_templates.blocks import BaseBlock, MarkdownBlock, ContextBlock
 from notifications_server.models.models import ChannelAccountMapping
 from notifications_server.services.cache import Cache
 from notifications_server.services import channel_analysis
@@ -58,7 +59,10 @@ from notifications_server.repositories.google_chat_binding_repository import (
     find_google_chat_binding,
 )
 from notifications_server.repositories.user_repository import get_llm_conversation_by_session
-from notifications_server.utils.transformer import Transformer
+from notifications_server.utils.transformer import MAX_BLOCK_CHARS, Transformer
+from notifications_server.utils.mermaid_chart import render_mermaid_code, split_mermaid_segments
+from notifications_server.utils.markdown_table import render_table, split_table_segments
+from notifications_server.utils.nb_chart import render_nb_chart, split_nb_chart_segments
 
 LOG = logging.getLogger(__name__)
 event_cache = Cache()
@@ -69,6 +73,19 @@ SLACK_TEXT_BLOCK_LIMIT = settings.slack.text_block_limit
 FOLLOWUP_OPTIONS_THRESHOLD = settings.slack.followup_options_threshold
 # Slack static_select hard-caps at 100 options; reject-payload territory beyond that.
 SLACK_STATIC_SELECT_MAX_OPTIONS = 100
+# Slack's hard cap on blocks in a single message is 50; handle_final_response
+# batches atomic content groups (one chart, one table, one text chunk) up to
+# this (deliberately lower) limit instead of always sending one Slack message
+# per group. Kept a power of two so a rejected message can be evenly bisected
+# down to the single offending block (see _send_message_with_fallback).
+SLACK_MAX_BLOCKS_PER_MESSAGE = 32
+# Only these Slack errors mean "this exact block shape was rejected" - safe to
+# bisect and retry, since the same payload will deterministically fail again.
+# Everything else (ratelimited, invalid_auth, network errors, ...) is a
+# transient/systemic failure that splitting the message can't fix - retrying
+# it per-half would just amplify the outage with a request storm, so those
+# must propagate to handle_final_response's outer handler instead.
+SLACK_BISECTABLE_ERRORS = {"invalid_blocks", "invalid_blocks_format", "msg_too_long"}
 # How an inbound Google Chat space interaction is dispatched (see
 # Events._resolve_gchat_disposition). The join and message paths render each
 # disposition differently, but the bound-vs-unbound decision is identical.
@@ -1232,25 +1249,179 @@ class Events:
             current += (" " if current else "") + txt
         return current
 
+    def _render_plain_text_blocks(self, text: str, view_url: Optional[str] = None) -> List[List[BaseBlock]]:
+        """Split non-Mermaid text further into nb-chart (FinOps agent's own
+        ```nb-chart JSON convention, unrelated to Mermaid) / table / markdown
+        sub-segments, rendering each with native Slack primitives."""
+        message_blocks = []
+        for chart_segment in split_nb_chart_segments(text):
+            if chart_segment.is_chart:
+                chart_blocks = render_nb_chart(chart_segment.text, view_url)
+                if chart_blocks:
+                    message_blocks.append(chart_blocks)
+                    continue
+                # Didn't actually parse into a usable chart - show the raw JSON
+                # in a code block (matching mermaid_chart.py's own fallback)
+                # instead of as plain mrkdwn, where markdown special characters
+                # in the JSON values (*, _, `) would get misinterpreted and
+                # mangle the output.
+                message_blocks.append([MarkdownBlock(text=f"```\n{chart_segment.text}\n```")])
+                continue
+            for table_segment in split_table_segments(chart_segment.text):
+                if table_segment.is_table:
+                    table_blocks = render_table(table_segment.text, view_url)
+                    if table_blocks:
+                        message_blocks.append(table_blocks)
+                        continue
+                    # Didn't actually parse into rows - fall through as plain text.
+                message_blocks.extend(
+                    [MarkdownBlock(text=chunk)] for chunk in self.split_text(table_segment.text) if chunk.strip()
+                )
+        return message_blocks
+
+    @staticmethod
+    def _batch_slack_groups(slack_groups: List[List[dict]]) -> List[List[dict]]:
+        """Merge adjacent Slack block-dict groups (one chart, one table, one
+        text chunk, each already run through Transformer.to_slack) into as
+        few messages as possible, splitting only when the next group would
+        push a message over Slack's SLACK_MAX_BLOCKS_PER_MESSAGE cap -
+        instead of always sending one Slack message per group, which
+        fragments a single answer (prose/table/prose/table/...) into many
+        separate messages, loses prose's visual grouping with the table/chart
+        it introduces, and risks per-channel rate limiting from the burst of
+        chat.postMessage calls."""
+        if not slack_groups:
+            return []
+        messages: List[List[dict]] = []
+        current: List[dict] = []
+        for group in slack_groups:
+            if current and len(current) + len(group) > SLACK_MAX_BLOCKS_PER_MESSAGE:
+                messages.append(current)
+                current = []
+            current.extend(group)
+        messages.append(current)
+        return messages
+
+    @staticmethod
+    def _fallback_slack_block(block: dict) -> List[dict]:
+        """Best-effort plain-text substitute for one Slack block that Slack
+        rejected outright (e.g. a data_visualization/table payload shape it
+        doesn't accept even though it cleared our own local caps). Shows the
+        raw underlying data in a code block rather than just a "can't be
+        displayed" notice - mirrors mermaid_chart.py/nb_chart.py's own
+        fallbacks, which always show raw content instead of nothing, so the
+        numbers are still visible even when the visual can't render."""
+        block_type = block.get("type")
+        if block_type == "data_visualization":
+            notice = f"_\U0001f4ca {block.get('title', 'Chart')} — couldn't be displayed here._"
+            raw = json.dumps(block.get("chart", {}), indent=2)
+        elif block_type == "table":
+            notice = "_This table couldn't be displayed here._"
+            raw = json.dumps(block.get("rows", []), indent=2)
+        else:
+            return [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "_Part of this response couldn't be displayed._"},
+                }
+            ]
+
+        fenced = Transformer.apply_length_limit(f"```\n{raw}\n```", MAX_BLOCK_CHARS)
+        return [
+            {"type": "section", "text": {"type": "mrkdwn", "text": notice}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": fenced}},
+        ]
+
+    def _send_message_with_fallback(self, channel_id: str, team_id: str, thread_ts: str, blocks: List[dict]) -> None:
+        """Send ``blocks`` as one Slack message. If Slack rejects it for a
+        reason specific to this exact block shape (invalid_blocks and
+        friends - see SLACK_BISECTABLE_ERRORS), bisect the block list and
+        retry each half recursively, narrowing down to exactly which block
+        caused the rejection instead of assuming every rich block in the
+        message is at fault. A single block that still fails on its own
+        becomes a plain-text fallback notice, so only the offending piece
+        degrades and every other block still renders natively.
+
+        Any other failure (rate limiting, an expired token, a network blip,
+        ...) is not block-specific - bisecting would just retry the same
+        doomed request up to ~3x the original block count, worsening exactly
+        the outage causing it. Those propagate to handle_final_response's
+        outer handler, which already sends the generic error reply once."""
+        if not blocks:
+            return
+        try:
+            self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, blocks, False)
+            return
+        except SlackApiError as e:
+            error_code = e.response.data.get("error") if e.response is not None else None
+            if error_code not in SLACK_BISECTABLE_ERRORS:
+                raise
+
+            if len(blocks) == 1:
+                LOG.error("Slack rejected a block (%s), falling back to plain text", error_code)
+                try:
+                    self.common_service.slack_reply_in_thread(
+                        channel_id, team_id, thread_ts, self._fallback_slack_block(blocks[0]), False
+                    )
+                except Exception:
+                    LOG.error("Fallback send also failed for the offending block")
+                return
+
+            LOG.debug("Message of %d blocks rejected (%s), bisecting to isolate the cause", len(blocks), error_code)
+            mid = len(blocks) // 2
+            self._send_message_with_fallback(channel_id, team_id, thread_ts, blocks[:mid])
+            self._send_message_with_fallback(channel_id, team_id, thread_ts, blocks[mid:])
+
     def handle_final_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         try:
             response_text = payload.response
-            text_chunks = self.split_text(response_text)
+            mermaid_segments = split_mermaid_segments(response_text)
+            view_url = self._diagram_view_url(cached_entry)
 
-            for i, chunk in enumerate(text_chunks):
-                blocks = Transformer.to_slack(MarkdownBlock(text=chunk))
+            # A response with no Mermaid at all is just the len==1 case of this
+            # same loop (one non-mermaid segment covering the whole text), so
+            # there's no need to special-case it separately.
+            message_blocks = []
+            for segment in mermaid_segments:
+                if segment.is_mermaid:
+                    message_blocks.append(render_mermaid_code(segment.text, view_url))
+                else:
+                    message_blocks.extend(self._render_plain_text_blocks(segment.text, view_url))
 
-                if i == len(text_chunks) - 1 and cached_entry and cached_entry.get("slack_user_id"):
-                    blocks += Transformer.to_slack(ContextBlock(text=f"<@{cached_entry.get('slack_user_id')}>"))
+            if not message_blocks:
+                # response_text was empty/whitespace-only, so nothing survived the
+                # chunk.strip() filter - still send one message so the thread gets
+                # a reply. (render_mermaid_code always returns >=1 block, so this
+                # can only happen when there was no mermaid segment either.)
+                message_blocks = [[MarkdownBlock(text=response_text.strip())]]
 
-                self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, blocks, False)
+            # Transform each atomic group to its Slack block-dict form up
+            # front, so batching measures against Slack's real block count
+            # instead of BaseBlock counts, which don't map 1:1 to rendered
+            # blocks.
+            slack_groups = []
+            for group in message_blocks:
+                group_blocks = []
+                for block in group:
+                    group_blocks += Transformer.to_slack(block)
+                slack_groups.append(group_blocks)
+
+            if cached_entry and cached_entry.get("slack_user_id"):
+                slack_groups[-1] = slack_groups[-1] + Transformer.to_slack(
+                    ContextBlock(text=f"<@{cached_entry.get('slack_user_id')}>")
+                )
+
+            messages = self._batch_slack_groups(slack_groups)
+
+            for blocks in messages:
+                self._send_message_with_fallback(channel_id, team_id, thread_ts, blocks)
 
             if cached_entry:
                 event_cache.update_event_entry(thread_ts, status="COMPLETED")
                 LOG.debug("Conversation marked as COMPLETED.")
 
-            if len(text_chunks) > 1:
-                LOG.debug(f"Response was split into {len(text_chunks)} messages due to size limit")
+            if len(messages) > 1:
+                LOG.debug(f"Response was split into {len(messages)} messages due to size limit")
         except Exception as e:
             LOG.error(f"Failed to process LLM server response: {e}")
             self.reply(
@@ -1262,6 +1433,16 @@ class Events:
                     " Try again."
                 ),
             )
+
+    @staticmethod
+    def _diagram_view_url(cached_entry: Optional[dict]) -> Optional[str]:
+        """URL to view a Mermaid diagram rendered in the web app, when we have
+        enough context to build one (same link used for follow-up options)."""
+        account_id = cached_entry.get("account_id") if cached_entry else None
+        session_id = cached_entry.get("session_id") if cached_entry else None
+        if not (account_id and session_id):
+            return None
+        return f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
 
     @staticmethod
     def _build_followup_action_elements(followup_options, cached_entry):
