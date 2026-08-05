@@ -205,9 +205,66 @@ func runServiceToResource(service *runpb.Service, projectId string) providers.Re
 func (s *cloudRunService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
+	// Load GCP alarm templates for Cloud Run
+	runAlarmTemplates, err := LoadGCPAlarmTemplates(ServiceNameRun)
+	if err != nil {
+		ctx.GetLogger().Warn("Failed to load GCP Cloud Run alarm templates", "error", err)
+		runAlarmTemplates = []providers.AlarmTemplate{} // Continue with other recommendations
+	}
+
 	for _, resource := range existingResources {
 		if resource.ServiceName != ServiceNameRun {
 			continue
+		}
+
+		// resource.Id is the plain service name, matching the GCP Monitoring
+		// service_name label on cloud_run_revision (see runServiceToResource)
+		resourceFilter := GetResourceFilterForService(ServiceNameRun, resource.Id)
+
+		// Check for missing Cloud Monitoring alert policies
+		for _, template := range runAlarmTemplates {
+			isMissing, err := IsAlarmMissing(resource, template, resourceFilter)
+			if err != nil {
+				ctx.GetLogger().Warn("Failed to check if alarm is missing", "error", err, "template", template.Name)
+				continue
+			}
+
+			if !isMissing {
+				// Alarm already exists, skip
+				continue
+			}
+
+			threshold := calculateGCPRunThreshold(resource, template)
+
+			// Build alarm configuration for the recommendation data
+			alarmConfig := buildGCPAlarmConfig(resource, template, threshold, []providers.AlarmDimension{
+				{Name: "service_name", Value: resource.Id},
+			})
+
+			recommendations = append(recommendations, providers.Recommendation{
+				CategoryName: providers.RecommendationCategoryConfiguration,
+				RuleName:     template.Name,
+				Severity:     providers.RecommendationSeverityFromString(template.Severity),
+				Savings:      0,
+				Data: map[string]any{
+					"service_id":     resource.Id,
+					"service_name":   resource.Name,
+					"service_region": resource.Region,
+					"max_instances":  resource.Meta["max_instances"],
+					"metric_name":    template.Configuration.MetricName,
+					"threshold":      threshold,
+					"alarm_config":   alarmConfig,
+					"alarm_type":     template.AlarmType,
+					"reason":         template.Description,
+					"metric_type":    template.MetricType,
+					"project_id":     account.AccountNumber,
+				},
+				Action:              providers.RecommendationActionModify,
+				ResourceServiceName: resource.ServiceName,
+				ResourceId:          resource.Id,
+				ResourceType:        resource.Type,
+				ResourceRegion:      resource.Region,
+			})
 		}
 
 		// Recommendation 1: Check if service has no labels
@@ -297,6 +354,38 @@ func (s *cloudRunService) GetRecommendations(ctx providers.CloudProviderContext,
 	}
 
 	return recommendations, nil
+}
+
+// calculateGCPRunThreshold calculates the alarm threshold for a Cloud Run service.
+// When the template carries default_percentage, the threshold is that fraction of
+// the service's own max_instances (instance-count ceiling alert) — a fixed number
+// would be wrong for both a max_instances=10 and a max_instances=1000 service.
+// Falls back to the template default when max_instances is unavailable.
+func calculateGCPRunThreshold(resource providers.Resource, template providers.AlarmTemplate) float64 {
+	rules := template.ThresholdRules
+	if rules.DefaultPercentage > 0 {
+		if maxInstances, ok := metaNumber(resource.Meta, "max_instances"); ok && maxInstances > 0 {
+			return maxInstances * rules.DefaultPercentage
+		}
+	}
+	return rules.Default
+}
+
+// metaNumber reads a numeric Meta value regardless of the concrete type it
+// arrived as: int32 fresh from the GCP SDK, float64 after a JSON round-trip
+// through the resource store.
+func metaNumber(meta map[string]interface{}, key string) (float64, bool) {
+	switch v := meta[key].(type) {
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case float64:
+		return v, true
+	}
+	return 0, false
 }
 
 func (s *cloudRunService) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {

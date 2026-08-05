@@ -416,6 +416,13 @@ func convertStatisticToMQLFunction(statistic string) string {
 
 // convertComparisonOperator converts alarm config comparison operator to GCP comparison type
 func convertComparisonOperator(operator string) monitoringpb.ComparisonType {
+	// Alarm templates carry native comparison names ("COMPARISON_GT",
+	// "COMPARISON_LT", ...). Map those verbatim onto the enum — the keyword
+	// mapping below only knows the AWS-style names and silently degrades
+	// everything else to COMPARISON_GT (wrong for less-than templates).
+	if v, ok := monitoringpb.ComparisonType_value[strings.ToUpper(operator)]; ok {
+		return monitoringpb.ComparisonType(v)
+	}
 	switch operator {
 	case "GreaterThanThreshold":
 		return monitoringpb.ComparisonType_COMPARISON_GT
@@ -432,6 +439,13 @@ func convertComparisonOperator(operator string) monitoringpb.ComparisonType {
 
 // convertStatisticToAligner converts alarm config statistic to GCP aligner
 func convertStatisticToAligner(statistic string) monitoringpb.Aggregation_Aligner {
+	// Alarm templates carry native aligner names ("ALIGN_MAX",
+	// "ALIGN_PERCENTILE_99", ...). Map those verbatim onto the enum — the keyword
+	// mapping below only knows mean/sum/min/max/count and silently degrades
+	// everything else to ALIGN_MEAN, which is invalid for distribution metrics.
+	if v, ok := monitoringpb.Aggregation_Aligner_value[strings.ToUpper(statistic)]; ok {
+		return monitoringpb.Aggregation_Aligner(v)
+	}
 	switch strings.ToLower(statistic) {
 	case "average", "avg":
 		return monitoringpb.Aggregation_ALIGN_MEAN

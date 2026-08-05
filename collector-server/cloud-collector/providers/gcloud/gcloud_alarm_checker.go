@@ -82,8 +82,14 @@ func matchCondition(condition *monitoring.AlertPolicy_Condition, template provid
 		return false
 	}
 
-	// Check metric type
-	expectedMetric := getGCPMetricType(template.Configuration.Namespace, template.Configuration.MetricName)
+	// Check metric type. Prefer the template's authoritative metric_type_filter
+	// (the creator side already resolves from it, see resolveGCPMetricAndResource);
+	// the hardcoded getGCPMetricType mapping remains as fallback for templates
+	// that predate the field.
+	expectedMetric := template.Configuration.MetricTypeFilter
+	if expectedMetric == "" {
+		expectedMetric = getGCPMetricType(template.Configuration.Namespace, template.Configuration.MetricName)
+	}
 	if !strings.Contains(metricThreshold.Filter, expectedMetric) {
 		return false
 	}
