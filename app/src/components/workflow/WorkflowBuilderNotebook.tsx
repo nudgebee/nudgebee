@@ -2211,6 +2211,16 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       snackbar.success(`v${targetVersion} is now live.`);
       setConfirmLiveVersion(null);
       await refreshVersions();
+      // Live pointer moved — reload workflowData so the header badge and Run
+      // dropdown reflect the new live version without a manual refresh.
+      try {
+        const reload: any = await apiWorkflow.getWorkflowById(accountId, workflowId);
+        const reloaded = reload?.data?.workflow_get;
+        if (reloaded) setWorkflowData(reloaded);
+      } catch (err) {
+        // non-fatal: workflow data refresh failure, but log for debugging.
+        console.error('Failed to refresh workflow data after making version live:', err);
+      }
     } catch (err) {
       console.error('Failed to make version live:', err);
       snackbar.error('Failed to set live version.');
