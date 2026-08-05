@@ -70,7 +70,7 @@ func TestRecordCodeAnalysisTokenUsage_MultiRowPerCallTiering(t *testing.T) {
 		},
 	}
 
-	recordCodeAnalysisTokenUsage(usageQuery(), tu, 900)
+	recordCodeAnalysisTokenUsage(usageQuery(), tu, 900, nil, nil)
 
 	require.Len(t, fake.inserted, 3)
 	var total float64
@@ -99,7 +99,7 @@ func TestRecordCodeAnalysisTokenUsage_FallbackSingleRow(t *testing.T) {
 	fake := withFakeUsageDao(t)
 	tu := &codeAnalysisTokenUsage{PromptTokens: 450000, CompletionTokens: 3000, TotalTokens: 453000, Model: "m", Provider: "p"}
 
-	recordCodeAnalysisTokenUsage(usageQuery(), tu, 900)
+	recordCodeAnalysisTokenUsage(usageQuery(), tu, 900, nil, nil)
 
 	require.Len(t, fake.inserted, 1)
 	assert.Equal(t, 450000, fake.inserted[0].InputTokens)
@@ -119,7 +119,7 @@ func TestRecordCodeAnalysisTokenUsage_ResidualRow(t *testing.T) {
 		},
 	}
 
-	recordCodeAnalysisTokenUsage(usageQuery(), tu, 100)
+	recordCodeAnalysisTokenUsage(usageQuery(), tu, 100, nil, nil)
 
 	require.Len(t, fake.inserted, 2)
 	assert.Equal(t, 80000, fake.inserted[1].InputTokens)
@@ -142,7 +142,7 @@ func TestRecordCodeAnalysisTokenUsage_ResidualRowCachedOnly(t *testing.T) {
 		},
 	}
 
-	recordCodeAnalysisTokenUsage(usageQuery(), tu, 100)
+	recordCodeAnalysisTokenUsage(usageQuery(), tu, 100, nil, nil)
 
 	require.Len(t, fake.inserted, 2)
 	assert.Equal(t, 0, fake.inserted[1].InputTokens)
@@ -164,18 +164,104 @@ func TestRecordCodeAnalysisTokenUsage_AgentIDPropagation(t *testing.T) {
 		},
 	}
 
-	recordCodeAnalysisTokenUsage(query, tu, 1)
+	recordCodeAnalysisTokenUsage(query, tu, 1, nil, nil)
 
 	require.Len(t, fake.inserted, 2)
 	assert.Nil(t, fake.inserted[0].AgentID)
 	assert.Nil(t, fake.inserted[1].AgentID)
 }
 
+// Tier attribution must land on EVERY row a run produces — per-call rows and
+// the reconciliation residual alike. code_analyzer rows were the only ones in
+// llm_conversation_token_usage with model_tier/task_type NULL, which is why
+// cost could not be attributed per role.
+func TestRecordCodeAnalysisTokenUsage_TierAttributionOnAllRows(t *testing.T) {
+	fake := withFakeUsageDao(t)
+	tier, task := "reasoning", "investigation"
+	tu := &codeAnalysisTokenUsage{
+		PromptTokens: 300, CompletionTokens: 30, TotalTokens: 330, Model: "m", Provider: "p",
+		Calls: []codeAnalysisTokenUsageCall{
+			{PromptTokens: 100, CompletionTokens: 10},
+			{PromptTokens: 100, CompletionTokens: 10},
+		},
+	}
+
+	recordCodeAnalysisTokenUsage(usageQuery(), tu, 1, &tier, &task)
+
+	// Two per-call rows plus the residual reconciling the 100/10 shortfall.
+	require.Len(t, fake.inserted, 3)
+	for i, rec := range fake.inserted {
+		require.NotNil(t, rec.ModelTier, "row %d missing model_tier", i)
+		require.NotNil(t, rec.TaskType, "row %d missing task_type", i)
+		assert.Equal(t, "reasoning", *rec.ModelTier)
+		assert.Equal(t, "investigation", *rec.TaskType)
+	}
+}
+
+// Unstamped paths must write NULL, not an empty string — that is what keeps a
+// legacy row distinguishable from a real tier.
+func TestRecordCodeAnalysisTokenUsage_UnstampedStaysNull(t *testing.T) {
+	fake := withFakeUsageDao(t)
+	tu := &codeAnalysisTokenUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, Model: "m", Provider: "p"}
+
+	recordCodeAnalysisTokenUsage(usageQuery(), tu, 1, nil, nil)
+
+	require.Len(t, fake.inserted, 1)
+	assert.Nil(t, fake.inserted[0].ModelTier)
+	assert.Nil(t, fake.inserted[0].TaskType)
+}
+
+// A call's own tier/phase must win over the turn-level default, and an
+// unstamped call (older code-analysis image) must fall back to it rather than
+// dropping to NULL — the image tag is pinned in llm-server env and lags.
+func TestRecordCodeAnalysisTokenUsage_PerCallAttributionOverridesTurnLevel(t *testing.T) {
+	fake := withFakeUsageDao(t)
+	tier, task := "reasoning", "investigation"
+	tu := &codeAnalysisTokenUsage{
+		PromptTokens: 300, CompletionTokens: 30, TotalTokens: 330, Model: "m", Provider: "p",
+		Calls: []codeAnalysisTokenUsageCall{
+			// Main-loop call on the run model: unstamped phase, inherits the turn.
+			{PromptTokens: 100, CompletionTokens: 10, ModelTier: "reasoning"},
+			// Reflection on a cheap tier: both fields overridden.
+			{PromptTokens: 100, CompletionTokens: 10, ModelTier: "retrieval", TaskType: "reflection"},
+			// Older image emitted neither: falls back to the turn-level values.
+			{PromptTokens: 100, CompletionTokens: 10},
+		},
+	}
+
+	recordCodeAnalysisTokenUsage(usageQuery(), tu, 1, &tier, &task)
+
+	require.Len(t, fake.inserted, 3)
+	assert.Equal(t, "reasoning", *fake.inserted[0].ModelTier)
+	assert.Equal(t, "investigation", *fake.inserted[0].TaskType)
+	assert.Equal(t, "retrieval", *fake.inserted[1].ModelTier)
+	assert.Equal(t, "reflection", *fake.inserted[1].TaskType)
+	assert.Equal(t, "reasoning", *fake.inserted[2].ModelTier)
+	assert.Equal(t, "investigation", *fake.inserted[2].TaskType)
+}
+
+// parseTokenUsageCallMap must pick up the new per-call attribution keys, and
+// tolerate their absence — both skew directions cross this seam.
+func TestParseTokenUsageCallMap_Attribution(t *testing.T) {
+	withTier := parseTokenUsageCallMap(map[string]any{
+		"prompt_tokens": float64(100), "completion_tokens": float64(10),
+		"model_tier": "retrieval", "task_type": "reflection",
+	})
+	assert.Equal(t, "retrieval", withTier.ModelTier)
+	assert.Equal(t, "reflection", withTier.TaskType)
+
+	without := parseTokenUsageCallMap(map[string]any{
+		"prompt_tokens": float64(100), "completion_tokens": float64(10),
+	})
+	assert.Empty(t, without.ModelTier)
+	assert.Empty(t, without.TaskType)
+}
+
 // Nil and empty usage must record nothing.
 func TestRecordCodeAnalysisTokenUsage_EmptyGuard(t *testing.T) {
 	fake := withFakeUsageDao(t)
-	recordCodeAnalysisTokenUsage(usageQuery(), nil, 1)
-	recordCodeAnalysisTokenUsage(usageQuery(), &codeAnalysisTokenUsage{}, 1)
+	recordCodeAnalysisTokenUsage(usageQuery(), nil, 1, nil, nil)
+	recordCodeAnalysisTokenUsage(usageQuery(), &codeAnalysisTokenUsage{}, 1, nil, nil)
 	assert.Empty(t, fake.inserted)
 }
 

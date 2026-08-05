@@ -124,8 +124,11 @@ type OrchestratorAgent struct {
 // analysis: on any failure to build the derived client it falls back to the
 // run client. Derived clients share usage with the run client so the analysis
 // totals (final response, billing) still cover every call.
-func tierClient(cfg *config.Config, runClient *llm.Client, model, role string, logger *common.Logger) *llm.Client {
+func tierClient(cfg *config.Config, runClient *llm.Client, model, role, tier string, logger *common.Logger) *llm.Client {
 	if model == "" || model == cfg.LLM.Model {
+		// The role resolves to the run model, so its calls really do run on the
+		// run client's tier — leave them stamped as such rather than claiming a
+		// tier that was never billed.
 		return runClient
 	}
 	derived, err := llm.NewClient(cfg.CloneWithLLMOverride(config.LLMOverride{Model: model}))
@@ -136,8 +139,9 @@ func tierClient(cfg *config.Config, runClient *llm.Client, model, role string, l
 		return runClient
 	}
 	derived.ShareUsageWith(runClient)
+	derived.SetModelTier(tier)
 	logger.Log(common.EventAnalysisStart, "Agent model tier active", map[string]any{
-		"role": role, "model": model, "run_model": cfg.LLM.Model,
+		"role": role, "model": model, "run_model": cfg.LLM.Model, "tier": tier,
 	})
 	return derived
 }
@@ -148,9 +152,10 @@ func NewOrchestratorAgent(cfg *config.Config, llmClient *llm.Client, gitClient *
 	// Per-role model tiers: the specialist keeps the run's resolved model for
 	// reasoning; router/fixer/review are mechanical roles (exact instructions,
 	// no exploration) that don't need reasoning-tier pricing.
-	routerClient := tierClient(cfg, llmClient, cfg.Agent.ModelRouter, "router", logger)
-	fixerClient := tierClient(cfg, llmClient, cfg.Agent.ModelFixer, "fixer", logger)
-	reviewClient := tierClient(cfg, llmClient, cfg.Agent.ModelReview, "review", logger)
+	llmClient.SetModelTier(llm.ModelTierReasoning)
+	routerClient := tierClient(cfg, llmClient, cfg.Agent.ModelRouter, "router", llm.ModelTierRetrieval, logger)
+	fixerClient := tierClient(cfg, llmClient, cfg.Agent.ModelFixer, "fixer", llm.ModelTierRetrieval, logger)
+	reviewClient := tierClient(cfg, llmClient, cfg.Agent.ModelReview, "review", llm.ModelTierSummary, logger)
 
 	// Initialize specialist agents - all should work in the same workspace
 	// Note: Security queries are routed to ErrorRCAAgent which has all necessary tools

@@ -121,6 +121,16 @@ type ReActPlanner struct {
 	// fixer attempt N → N+1). Consumed by the next Plan() call.
 	seedLedger *Ledger
 
+	// compactionTriggerPct is the percentage of maxContextTokens at which the
+	// conversation window is compacted. See shouldCompact.
+	compactionTriggerPct int
+	// compactionMaxMessages is the message-count backstop for compaction. It is
+	// derived from maxIterations rather than fixed, so raising the iteration
+	// budget doesn't silently start compacting every run mid-flight.
+	compactionMaxMessages int
+	// compactionMinRemainingIters suppresses discretionary compaction near the
+	// end of a run, where it can never repay its own cost. See shouldCompact.
+	compactionMinRemainingIters int
 	// agingBudgetTokens is the estimated prompt size at which observation aging
 	// activates. Below it aging is a strict no-op — normal runs see full raw
 	// context and are byte-identical to aging-off. See agingBudgetTokensFromEnv.
@@ -447,7 +457,10 @@ func NewReActPlanner(llmClient *llm.Client, tools []core.NBTool, maxIterations i
 		consecutiveToolFailures:     make(map[string]int), // Circuit breaker tracking
 		maxConsecutiveFailures:      defaultMaxConsecutiveFailures,
 		maxObservationLines:         500,
-		maxContextTokens:            200000,
+		maxContextTokens:            maxContextTokensFromEnv(),
+		compactionTriggerPct:        compactionTriggerPctFromEnv(),
+		compactionMaxMessages:       compactionMaxMessagesFromEnv(maxIterations),
+		compactionMinRemainingIters: compactionMinRemainingItersFromEnv(),
 		recentObservationWindow:     recentObservationWindowFromEnv(),
 		agingBudgetTokens:           agingBudgetTokensFromEnv(),
 		executedCallHashes:          make(map[string]int),
@@ -790,9 +803,7 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 		result.Iterations = iteration + 1
 		stepNumber := iteration + 1
 
-		// Token-aware compaction: compact when estimated tokens exceed 70% of budget
-		// or message count exceeds 40 (fallback for models without token counting).
-		if estimateMessageTokens(llmConversation) > p.maxContextTokens*70/100 || len(llmConversation) > 40 {
+		if p.shouldCompact(llmConversation, iteration) {
 			llmConversation = p.compactConversationWindow(ctx, llmConversation)
 		}
 
@@ -2048,6 +2059,129 @@ func agingBudgetTokensFromEnv() int {
 	return n
 }
 
+// shouldCompact decides whether to compact the conversation window before this
+// iteration's LLM call.
+//
+// Compaction is expensive in a way the old trigger did not account for: it
+// rewrites the head and middle of the prompt, so the shared prefix with the
+// previous request collapses to two messages and Gemini's implicit cache
+// restarts from cold. It also costs an extra, uncacheable summariser call.
+//
+// The old condition was `estTokens > maxContextTokens*70/100 || len(msgs) > 40`.
+// The token arm never fired — SetMaxContextTokens is never called, so the
+// threshold sat at 140K — which left the hardcoded 40-message arm as the only
+// live trigger. That trips around iteration 20 regardless of how large the
+// messages actually are, which is why cache hit collapsed in the run tail.
+//
+// Four arms now, in precedence order:
+//
+//  1. Hard ceiling — never suppressed. The safety net that makes relaxing the
+//     rest safe.
+//  2. Soft token budget — the real trigger, and reachable: a Tool message
+//     carries every parallel tool response at the 15000-char cap, so three
+//     parallel calls run ~11K tokens per round.
+//  3. Message-count backstop — derived from the iteration budget rather than
+//     frozen at 40, for models without meaningful token accounting.
+//  4. Amortisation guard — suppresses 2 and 3 near the end of a run, where a
+//     compaction pays a summariser call plus a cold cache and has too few
+//     remaining calls to earn either back.
+func (p *ReActPlanner) shouldCompact(messages []llms.MessageContent, iteration int) bool {
+	est := estimateMessageTokens(messages)
+	if p.maxContextTokens > 0 && est > p.maxContextTokens*90/100 {
+		return true
+	}
+
+	overSoftBudget := p.maxContextTokens > 0 && p.compactionTriggerPct > 0 &&
+		est > p.maxContextTokens*p.compactionTriggerPct/100
+	overMessageCap := p.compactionMaxMessages > 0 && len(messages) > p.compactionMaxMessages
+	if !overSoftBudget && !overMessageCap {
+		return false
+	}
+
+	if remaining := p.maxIterations - iteration; p.compactionMinRemainingIters > 0 &&
+		remaining <= p.compactionMinRemainingIters {
+		// Logged because "no compaction happened" is otherwise indistinguishable
+		// from "the check is broken".
+		if p.logger != nil {
+			p.logger.Log(common.EventPlanningProgress, "Compaction suppressed near end of run", map[string]any{
+				"estimated_tokens":     est,
+				"message_count":        len(messages),
+				"iterations_remaining": remaining,
+			})
+		}
+		return false
+	}
+	return true
+}
+
+// maxContextTokensFromEnv reads REACT_MAX_CONTEXT_TOKENS — the assumed usable
+// context budget that the compaction thresholds are a percentage of. The
+// default is unchanged from the previous hardcoded value; it is now overridable
+// because it was only ever settable through a setter nothing called.
+func maxContextTokensFromEnv() int {
+	const def = 200000
+	v := strings.TrimSpace(os.Getenv("REACT_MAX_CONTEXT_TOKENS"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+// compactionTriggerPctFromEnv reads COMPACTION_TRIGGER_PCT — the percentage of
+// the context budget at which compaction becomes discretionary. Clamped below
+// the hard ceiling so the two arms cannot invert.
+func compactionTriggerPctFromEnv() int {
+	const def = 70
+	v := strings.TrimSpace(os.Getenv("COMPACTION_TRIGGER_PCT"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 89 {
+		return def
+	}
+	return n
+}
+
+// compactionMaxMessagesFromEnv reads COMPACTION_MAX_MESSAGES — the message-count
+// backstop. Empty or 0 derives it from the iteration budget: two messages per
+// round plus headroom for ledger hints, nudges and system pivots, floored so a
+// short budget still allows a reasonable window. At the default 30 iterations
+// this is 90, well clear of the ~70 a full run actually reaches, so it acts as
+// a backstop rather than a scheduled event.
+func compactionMaxMessagesFromEnv(maxIterations int) int {
+	if v := strings.TrimSpace(os.Getenv("COMPACTION_MAX_MESSAGES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	derived := 2*maxIterations + 30
+	if derived < 60 {
+		return 60
+	}
+	return derived
+}
+
+// compactionMinRemainingItersFromEnv reads COMPACTION_MIN_REMAINING_ITERS — how
+// many iterations must remain for a discretionary compaction to be worth its
+// cost. 0 disables the guard. The hard ceiling ignores it either way.
+func compactionMinRemainingItersFromEnv() int {
+	const def = 4
+	v := strings.TrimSpace(os.Getenv("COMPACTION_MIN_REMAINING_ITERS"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
 // stubObservation replaces a large observation body with its tool+args
 // identity, a short head, a pointer to the ledger, and a re-fetch hint.
 // Deterministic in its inputs, so an aged observation produces the same bytes
@@ -2349,7 +2483,7 @@ func (p *ReActPlanner) summarizeMiddle(ctx context.Context, middle []llms.Messag
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart(instr + transcript)},
 	}}
-	resp, err := p.llmClient.GenerateContent(ctx, msgs)
+	resp, err := p.llmClient.GenerateContent(llm.WithCallPhase(ctx, llm.CallPhaseCompaction), msgs)
 	if err != nil || resp == nil || len(resp.Choices) == 0 {
 		return "", false
 	}
@@ -3104,7 +3238,7 @@ Keep the response concise.`, investigationSummary.String())
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart(prompt)}},
 	}
 
-	response, err := p.llmClient.GenerateContent(ctx, messages)
+	response, err := p.llmClient.GenerateContent(llm.WithCallPhase(ctx, llm.CallPhaseFinalAnswer), messages)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate LLM summary: %w", err)
 	}

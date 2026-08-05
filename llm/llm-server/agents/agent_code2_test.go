@@ -664,10 +664,10 @@ func TestRecordCodeAnalysisTokenUsage_NilAndZero(t *testing.T) {
 	query := core.NBAgentRequest{AccountId: "test"}
 
 	// Should not panic on nil
-	recordCodeAnalysisTokenUsage(query, nil, 1.0)
+	recordCodeAnalysisTokenUsage(query, nil, 1.0, nil, nil)
 
 	// Should not panic on zero tokens
-	recordCodeAnalysisTokenUsage(query, &codeAnalysisTokenUsage{}, 1.0)
+	recordCodeAnalysisTokenUsage(query, &codeAnalysisTokenUsage{}, 1.0, nil, nil)
 }
 
 // joinErrors is a test helper that joins error strings.

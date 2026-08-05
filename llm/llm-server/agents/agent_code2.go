@@ -36,10 +36,14 @@ import (
 )
 
 // AgentCodeAnalyzer is the canonical registered name for the code-analysis
-// agent. Keep the old name as an agent-only factory for stored history and
-// explicit invocations created before the rename.
+// agent (deep code analysis, debugging, RCA, and optional PR creation). It
+// follows the repo's bare-noun agent-naming convention.
 const AgentCodeAnalyzer = "code_analyzer"
 
+// agentCodeAnalyzerLegacyName is the pre-rename registered name. It is kept as
+// a back-compat agent alias so stored conversation history, explicit
+// @agent_code_2 invocations, and api-server's hardcoded prompt prefix keep
+// resolving across deploys. Do not use in new code.
 const agentCodeAnalyzerLegacyName = "agent_code_2"
 
 // sanitizeWorkspacePathID maps an ID to the workspace's safe path charset
@@ -58,7 +62,7 @@ func sanitizeWorkspacePathID(id string) string {
 
 // Mode constants mirror llm/code-analysis. Kept inline (not imported) because
 // llm-server doesn't take a Go-module dependency on llm/code-analysis.
-// agent_code_2 only translates the upstream RaisePr flag into the mode field
+// code_analyzer only translates the upstream RaisePr flag into the mode field
 // it sends to /analyze — it does NOT classify or override the user's intent.
 const (
 	codeAgentModeExplore = "explore"
@@ -88,7 +92,7 @@ const (
 const irrelevantAnalysisMarker = "may not be directly addressing your specific issue"
 
 // codeAgentConversationFailures is a cache namespace for tracking conversations
-// where agent_code_2 already failed or returned an irrelevant analysis.
+// where code_analyzer already failed or returned an irrelevant analysis.
 // Entries expire after 24 hours to prevent unbounded memory growth.
 const codeAgentFailuresCacheNS = "code_agent_conv_failures"
 
@@ -135,6 +139,11 @@ Each call runs a full (expensive) analysis — decide the intended outcome first
 		return newCodeAgent(accountId), nil
 	}
 	core.RegisterNBAgentFactoryAndTool(AgentCodeAnalyzer, codeAnalyzerFactory, toolDescription, toolInput, toolOutput)
+	// Back-compat: keep the pre-rename "agent_code_2" name resolving as an agent.
+	// getSystemAgent does a direct registry lookup and does not honor
+	// GetNameAliases, so the legacy name must be a real factory key. Registered
+	// agent-only (not as a tool) so it is never re-offered to the model as a
+	// second tool — new tool callers use AgentCodeAnalyzer.
 	core.RegisterNBAgentFactory(agentCodeAnalyzerLegacyName, codeAnalyzerFactory)
 }
 
@@ -330,33 +339,44 @@ func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 	if c.Region != "" {
 		m["region"] = c.Region
 	}
+	// Per-role tier models. Omitting these was why per-role tiering never took
+	// effect on the workspace path: ResolveLLMConfigForForwarding populates
+	// Tiers and the code-analysis handler consumes it, but this hop dropped it,
+	// so every role — router, fixer, reviewer, reflection — fell back to the
+	// single run model. Tests existed on both sides of the seam and both passed.
+	if len(c.Tiers) > 0 {
+		tiers := make(map[string]any, len(c.Tiers))
+		for tier, model := range c.Tiers {
+			tiers[tier] = model
+		}
+		m["tiers"] = tiers
+	}
 	return m
 }
 
-// forwardedLLMConfigToEnv renders a resolved LLM config as pod env vars
+// forwardedLLMConfigToEnv renders a resolved tenant LLM config as pod env vars
 // for the legacy ephemeral pod path. Appended AFTER the LLM_* SecretKeyRef
 // fallback so these per-request values win (last duplicate env name wins in k8s).
-//
-// The credential vars are emitted even when empty: this override always sets
-// LLM_PROVIDER, so leaving an empty one out would let the secret's credential
-// for a *different* provider survive underneath it (a keyless Bedrock config
-// inheriting the pod's Google key). Blank beats mismatched. LLM_MODEL_NAME is
-// not a credential and keeps falling through, since an unresolved model is
-// better served by the pod's default than by nothing at all.
 func forwardedLLMConfigToEnv(c *core.ForwardedLLMConfig) []corev1.EnvVar {
 	env := []corev1.EnvVar{{Name: "LLM_PROVIDER", Value: c.Provider}}
-	if c.Model != "" {
-		env = append(env, corev1.EnvVar{Name: "LLM_MODEL_NAME", Value: c.Model})
+	add := func(name, val string) {
+		if val != "" {
+			env = append(env, corev1.EnvVar{Name: name, Value: val})
+		}
 	}
-	for _, kv := range []struct{ name, val string }{
-		{"LLM_PROVIDER_API_KEY", c.ApiKey},
-		{"LLM_PROVIDER_API_ENDPOINT", c.ApiEndpoint},
-		{"LLM_PROVIDER_API_VERSION", c.ApiVersion},
-		{"LLM_PROVIDER_API_TYPE", c.ApiType},
-		{"LLM_PROVIDER_REGION", c.Region},
-	} {
-		env = append(env, corev1.EnvVar{Name: kv.name, Value: kv.val})
-	}
+	add("LLM_MODEL_NAME", c.Model)
+	add("LLM_PROVIDER_API_KEY", c.ApiKey)
+	add("LLM_PROVIDER_API_ENDPOINT", c.ApiEndpoint)
+	add("LLM_PROVIDER_API_VERSION", c.ApiVersion)
+	add("LLM_PROVIDER_API_TYPE", c.ApiType)
+	add("LLM_PROVIDER_REGION", c.Region)
+	// Per-role tiers, mirroring forwardedLLMConfigToMap so the legacy pod path
+	// tiers identically to the workspace path. The reasoning tier is already
+	// carried by LLM_MODEL_NAME above; code-analysis maps retrieval onto both
+	// the router and the fixer, and summary onto the reviewer.
+	add("AGENT_MODEL_ROUTER", c.Tiers[string(core.ModelTierRetrieval)])
+	add("AGENT_MODEL_FIXER", c.Tiers[string(core.ModelTierRetrieval)])
+	add("AGENT_MODEL_REVIEW", c.Tiers[string(core.ModelTierSummary)])
 	return env
 }
 
@@ -494,14 +514,14 @@ func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgen
 		envVars = append(envVars, workspace.LLMSecretEnvVars(config.Config.LlmServerCodeAgentSecret)...)
 	}
 
-	// Forward the resolved, decrypted LLM config as explicit env vars, appended
-	// after the SecretKeyRef fallback so they win (last duplicate env name wins
-	// in k8s). Degrade gracefully; never log the API key.
+	// Forward the tenant-resolved, decrypted LLM config as explicit env vars,
+	// appended after the SecretKeyRef fallback so they win (last duplicate env
+	// name wins in k8s). Degrade gracefully; never log the API key.
 	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
 		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
 	} else if llmCfg != nil {
 		envVars = append(envVars, forwardedLLMConfigToEnv(llmCfg)...)
-		logger.Info("code: forwarding resolved LLM config to analysis pod", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
+		logger.Info("code: forwarding tenant LLM config to analysis pod", "provider", llmCfg.Provider, "model", llmCfg.Model)
 	}
 
 	pod := &corev1.Pod{
@@ -524,23 +544,6 @@ func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgen
 					ImagePullPolicy: "Always",
 					Command:         args,
 					Env:             envVars,
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "nudgebee-secret-volume",
-							MountPath: "/etc/secrets/nudgebee",
-							ReadOnly:  true,
-						},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "nudgebee-secret-volume",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: config.Config.LlmServerCodeAgentSecret,
-						},
-					},
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyNever,
@@ -736,6 +739,9 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// analysis must never be blocked on skills.
 	skillsBlock := ""
 	{
+		// Include the legacy name so knowledge bases mapped to "agent_code_2" in
+		// llm_kb_agent_mappings before the rename are still inherited (the lookup
+		// UNIONs both names and dedupes by kb id).
 		skillAgentNames := append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...)
 		skillQuery := agentRequest.OriginalQuery
 		if skillQuery == "" {
@@ -816,17 +822,16 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		}
 	}
 
-	// Forward the resolved, decrypted LLM config so the stateless code-analysis
-	// service runs on the tenant's own LLM integration — or, absent one, on the
-	// same default llm-server itself resolved — instead of whatever its startup
-	// env happens to name. Degrade gracefully: on any failure, or when no
-	// provider resolves at all, omit the block and let the pod use its
-	// fallback. The API key is plaintext — never log it.
+	// Forward the tenant-resolved, decrypted LLM config so the stateless
+	// code-analysis service honors the tenant's own LLM integration instead of
+	// the pod's global LLM_* secret-env fallback. Degrade gracefully: on any
+	// failure, or when nothing tenant-specific resolves, omit the block and let
+	// the pod use its fallback. The API key is plaintext — never log it.
 	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
 		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
 	} else if llmCfg != nil {
 		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
-		logger.Info("code: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
+		logger.Info("code: forwarding tenant LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model)
 	}
 
 	// Pre-flight: verify workspace pod is reachable before dispatching analysis
@@ -1013,6 +1018,14 @@ type codeAnalysisTokenUsageCall struct {
 	LatencySeconds      float64
 	Model               string
 	Provider            string
+	// ModelTier is the tier this individual call ran on. Per-call rather than
+	// per-run because a run's roles are tiered independently (router/fixer on
+	// retrieval, review on summary, specialists on reasoning).
+	ModelTier string
+	// TaskType labels non-main-loop calls by phase (reflection, compaction,
+	// final_answer). Empty for main-loop calls, which inherit the turn-level
+	// query/investigation classification.
+	TaskType string
 }
 
 // codeAnalysisResult bundles the agent response with optional token usage data.
@@ -1103,6 +1116,12 @@ func parseTokenUsageCallMap(cm map[string]any) codeAnalysisTokenUsageCall {
 	}
 	if v, ok := cm["provider"].(string); ok {
 		call.Provider = v
+	}
+	if v, ok := cm["model_tier"].(string); ok {
+		call.ModelTier = v
+	}
+	if v, ok := cm["task_type"].(string); ok {
+		call.TaskType = v
 	}
 	return call
 }
@@ -1218,7 +1237,7 @@ func mapCodeStepStatus(status string) toolcore.NBToolResponseStatus {
 }
 
 // persistCodeAnalysisSteps upserts the code-analysis service's tool invocations
-// as llm_conversation_tool_calls rows under agent_code_2's agent row, so the UI
+// as llm_conversation_tool_calls rows under code_analyzer's agent row, so the UI
 // can render the steps the coding agent took live (like other agents). It is
 // called on every /status poll; the `persisted` map (toolId → last status)
 // de-dupes so a step is only written when it first appears or transitions to a
@@ -1354,7 +1373,13 @@ func asJSONString(v any) string {
 // mandate is documented on GetConversationTokenUsage). Without per-call
 // records (older pod image), the previous single-aggregate-row behavior is
 // kept unchanged.
-func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTokenUsage, latency float64) {
+// modelTier and taskType are the tier attribution for this turn, resolved by the
+// CALLER via core.TierAttributionForRecord while the request context is still
+// live — this function runs in a goroutine that outlives the request, so it must
+// not read the context itself. Both nil on uninstrumented paths, which writes
+// NULL and keeps "legacy row" distinguishable from a real tier.
+func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTokenUsage, latency float64,
+	modelTier, taskType *string) {
 	if tu == nil || (tu.TotalTokens == 0 && len(tu.Calls) == 0) {
 		return
 	}
@@ -1395,7 +1420,8 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 	if len(tu.Calls) == 0 {
 		latencyPtr := &latency
 		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, provider, model,
-			tu.PromptTokens, tu.CachedContentTokens, tu.CacheCreationTokens, tu.CompletionTokens, tu.ThinkingTokens, latencyPtr)
+			tu.PromptTokens, tu.CachedContentTokens, tu.CacheCreationTokens, tu.CompletionTokens, tu.ThinkingTokens, latencyPtr,
+			modelTier, taskType)
 		if err := dao.InsertTokenUsage(record); err != nil {
 			slog.Error("code: failed to insert token usage",
 				"error", err,
@@ -1431,8 +1457,24 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 			l := call.LatencySeconds
 			latencyPtr = &l
 		}
+		// A call's own attribution wins over the turn-level default: roles are
+		// tiered independently, and reflection/compaction calls carry a phase the
+		// turn classification cannot express. An unstamped call (older image)
+		// falls back, so version skew degrades to turn-level rather than NULL.
+		// Copy before taking an address: pointing at the loop variable's fields
+		// would force the whole call struct onto the heap each iteration.
+		callTier, callTask := modelTier, taskType
+		if call.ModelTier != "" {
+			tier := call.ModelTier
+			callTier = &tier
+		}
+		if call.TaskType != "" {
+			task := call.TaskType
+			callTask = &task
+		}
 		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, callProvider, callModel,
-			call.PromptTokens, call.CachedContentTokens, call.CacheCreationTokens, call.CompletionTokens, call.ThinkingTokens, latencyPtr)
+			call.PromptTokens, call.CachedContentTokens, call.CacheCreationTokens, call.CompletionTokens, call.ThinkingTokens, latencyPtr,
+			callTier, callTask)
 		err := dao.InsertTokenUsage(record)
 		// The FK retry inside InsertTokenUsage nils record.AgentID when the
 		// agent row is missing — propagate BEFORE the error check (the record
@@ -1463,7 +1505,8 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 	resThinking := max(0, tu.ThinkingTokens-sumThinking)
 	if resPrompt > 0 || resCached > 0 || resCreation > 0 || resCompletion > 0 || resThinking > 0 {
 		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, provider, model,
-			resPrompt, resCached, resCreation, resCompletion, resThinking, nil)
+			resPrompt, resCached, resCreation, resCompletion, resThinking, nil,
+			modelTier, taskType)
 		if err := dao.InsertTokenUsage(record); err != nil {
 			slog.Error("code: failed to insert residual token usage row",
 				"error", err, "conversation_id", query.ConversationId)
@@ -1478,7 +1521,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 // trackTokenUsage rationale; storage cost lives in llm_cache_lifecycle.
 func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, dao core.IConversationDao,
 	provider, model string, promptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens int,
-	latencySeconds *float64) *core.TokenUsageRecord {
+	latencySeconds *float64, modelTier, taskType *string) *core.TokenUsageRecord {
 	nonCachedPromptTokens := promptTokens - cachedTokens
 	if nonCachedPromptTokens < 0 {
 		nonCachedPromptTokens = 0
@@ -1507,6 +1550,8 @@ func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, 
 		IsCacheHit:          cachedTokens > 0,
 		LatencySeconds:      latencySeconds,
 		RequestStatus:       "success",
+		ModelTier:           modelTier,
+		TaskType:            taskType,
 	}
 	// Thinking tokens stored only when non-zero — distinguishes "model didn't
 	// think" from "service didn't emit it". Mirrors trackTokenUsage:2159-2162.
@@ -1691,7 +1736,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 
 	// RaisePr is intentionally NOT hardcoded here. The entrypoint that built
 	// the request (recommendation-apply, event resolution, PR followup, frontend
-	// chat) is the source of truth — agent_code_2 must pass it through unchanged.
+	// chat) is the source of truth — code_analyzer must pass it through unchanged.
 	// Hardcoding `RaisePr = true` here was the cause of PR #29338, where a
 	// pure exploration question ("what is the default Postgres connection
 	// limit?") got promoted to fix-mode and produced a spurious PR.
@@ -1736,7 +1781,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 			})
 		} else if codeAgentRequest.Namespace != "" && codeAgentRequest.Workload != "" {
 			// Fallback: use namespace/workload from tool input JSON when QueryConfig is empty
-			// (QueryConfig comes from the original user request and is empty when agent_code_2 is invoked as a tool)
+			// (QueryConfig comes from the original user request and is empty when code_analyzer is invoked as a tool)
 			namespace = codeAgentRequest.Namespace
 			workloadName = codeAgentRequest.Workload
 			k8sInfoList = append(k8sInfoList, map[string]string{
@@ -2012,8 +2057,11 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		}
 		ctx.GetLogger().Info("Workspace /analyze Output", "output_length", len(wsResult.AgentResponse))
 
-		// Record token usage from code-analysis service (fire-and-forget)
-		go recordCodeAnalysisTokenUsage(query, wsResult.TokenUsage, latency)
+		// Record token usage from code-analysis service (fire-and-forget). Tier
+		// attribution is resolved here, on the request goroutine, because the
+		// recorder outlives the request context.
+		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		go recordCodeAnalysisTokenUsage(query, wsResult.TokenUsage, latency, modelTier, taskType)
 
 		// workspace path returns agent_response directly — parse and enrich
 		var actualResponse map[string]any
@@ -2088,7 +2136,8 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		}
 	}
 	// Record token usage from CLI/pod path (fire-and-forget)
-	go recordCodeAnalysisTokenUsage(query, cliTokenUsage, 0)
+	cliModelTier, cliTaskType := core.TierAttributionForRecord(ctx)
+	go recordCodeAnalysisTokenUsage(query, cliTokenUsage, 0, cliModelTier, cliTaskType)
 	if actualResponse == nil {
 		// If we couldn't find the expected structure, return the whole parsed response
 		return core.NBAgentResponse{
@@ -2215,7 +2264,7 @@ func firstNonEmptyField(m map[string]any, keys ...string) string {
 	return ""
 }
 
-// trackPRInResolution inserts an event_resolution row when agent_code_2 creates a PR.
+// trackPRInResolution inserts an event_resolution row when code_analyzer creates a PR.
 // This enables the pr-lifecycle-check cron to detect the PR and trigger automated
 // follow-up for CI failures and review comments. Runs as fire-and-forget.
 func trackPRInResolution(ctx *security.RequestContext, query core.NBAgentRequest, responseStr string, gitRepo string, provider string) {
@@ -3278,17 +3327,17 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		}
 	}
 
-	// Forward the resolved LLM config, exactly as the main analysis path does.
-	// Without this the workspace pod falls back to its global LLM_* secret env,
-	// which is not guaranteed to name a provider code-analysis supports — every
-	// followup then fails at client construction before doing any work. Degrade
-	// gracefully: on any failure, or when no provider resolves at all, omit the
-	// block. The API key is plaintext — never log it.
+	// Forward the tenant-resolved LLM config, exactly as the main analysis path
+	// does. Without this the workspace pod falls back to its global LLM_* secret
+	// env, which is not guaranteed to name a provider code-analysis supports —
+	// every followup then fails at client construction before doing any work.
+	// Degrade gracefully: on any failure, or when nothing tenant-specific
+	// resolves, omit the block. The API key is plaintext — never log it.
 	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, query.AccountId, AgentCodeAnalyzer, query.ConversationId); lerr != nil {
 		logger.Warn("code followup: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
 	} else if llmCfg != nil {
 		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
-		logger.Info("code followup: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
+		logger.Info("code followup: forwarding tenant LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model)
 	}
 
 	// Pre-flight: verify workspace pod is reachable
@@ -3315,14 +3364,16 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	var asyncResp map[string]any
 	if err := json.Unmarshal(respBytes, &asyncResp); err != nil {
 		result := extractAgentResponseWithTokenUsage(respBytes)
-		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds())
+		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
 
 	// Sync response (backward compat)
 	if _, hasResult := asyncResp["agent_response"]; hasResult {
 		result := extractAgentResponseWithTokenUsage(respBytes)
-		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds())
+		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
 
@@ -3405,7 +3456,8 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 			}
 			logger.Info("code followup: analysis completed", "analysis_id", analysisID)
 			caResult := extractAgentResponseWithTokenUsage(resultBytes)
-			go recordCodeAnalysisTokenUsage(query, caResult.TokenUsage, time.Since(followupStart).Seconds())
+			modelTier, taskType := core.TierAttributionForRecord(ctx)
+			go recordCodeAnalysisTokenUsage(query, caResult.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 			return core.NBAgentResponse{Response: []string{caResult.AgentResponse}}, nil
 		case "failed":
 			errMsg, _ := statusResp["error"].(string)

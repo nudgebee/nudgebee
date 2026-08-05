@@ -599,6 +599,111 @@ func TestSpliceModelResponses(t *testing.T) {
 		// Trailing FC without a recorded counterpart is kept as-is (unsigned).
 		assert.Nil(t, result[2].Parts[0].ThoughtSignature)
 	})
+
+	t.Run("suffix-aligned after compaction drops early FC turns", func(t *testing.T) {
+		// Semantic window compaction replaces the middle of the conversation with
+		// a single summary message, deleting the AI (FC-carrying) turns inside it.
+		// Recordings are append-only and never trimmed, so history ends up with
+		// FEWER FC contents than there are recordings. Front-aligned matching then
+		// pairs the surviving LATE turns with EARLY recordings — replaying calls
+		// that never produced these responses. The surviving k FC turns are always
+		// the most recent k, so alignment must come from the tail.
+		s := &GenAISession{responses: []*genai.Content{
+			newFCContent("step_1", "sig-1"),
+			newFCContent("step_2", "sig-2"),
+			newFCContent("step_3", "sig-3"),
+			newFCContent("step_4", "sig-4"),
+			newFCContent("step_5", "sig-5"),
+			newFCContent("step_6", "sig-6"),
+			newFCContent("step_7", "sig-7"),
+			newFCContent("step_8", "sig-8"),
+		}}
+		// Post-compaction history: system + query + summary, then the surviving
+		// tail — the last three rounds only.
+		history := []*genai.Content{
+			newTextContent("user", "system"),
+			newTextContent("user", "query"),
+			newTextContent("user", "[Earlier investigation summarized to save context]"),
+			newReconstructedFC("step_6"),
+			newTextContent("user", "FR6"),
+			newReconstructedFC("step_7"),
+			newTextContent("user", "FR7"),
+			newReconstructedFC("step_8"),
+			newTextContent("user", "FR8"),
+		}
+		result := s.spliceModelResponses(history)
+		require.Len(t, result, 9)
+		// Each surviving turn must carry ITS OWN recording, not an early one.
+		assert.Equal(t, "step_6", result[3].Parts[0].FunctionCall.Name)
+		assert.Equal(t, []byte("sig-6"), result[3].Parts[0].ThoughtSignature)
+		assert.Equal(t, "step_7", result[5].Parts[0].FunctionCall.Name)
+		assert.Equal(t, []byte("sig-7"), result[5].Parts[0].ThoughtSignature)
+		assert.Equal(t, "step_8", result[7].Parts[0].FunctionCall.Name)
+		assert.Equal(t, []byte("sig-8"), result[7].Parts[0].ThoughtSignature)
+	})
+
+	t.Run("a synthesized call never consumes another turn's recording", func(t *testing.T) {
+		// terminateFromLedger appends a submit_analysis turn to history that no
+		// LLM call produced, so it has no recording. Once a further real call
+		// happens, history holds MORE FC contents than there are recordings.
+		// Aligning by count alone then shifts recordings onto the wrong turns:
+		// the synthesized call gets overwritten by a later turn's function call
+		// and signature, producing a call/response name mismatch that Gemini
+		// rejects outright.
+		s := &GenAISession{responses: []*genai.Content{
+			newFCContent("step_1", "sig-1"),
+			newFCContent("step_2", "sig-2"),
+			newFCContent("step_3", "sig-3"),
+		}}
+		history := []*genai.Content{
+			newTextContent("user", "query"),
+			newReconstructedFC("step_1"),
+			newTextContent("user", "FR1"),
+			newReconstructedFC("step_2"),
+			newTextContent("user", "FR2"),
+			newReconstructedFC("submit_analysis"), // synthesized, never recorded
+			newTextContent("user", "submit rejected"),
+			newReconstructedFC("step_3"),
+			newTextContent("user", "FR3"),
+		}
+		result := s.spliceModelResponses(history)
+		require.Len(t, result, 9)
+
+		assert.Equal(t, "step_1", result[1].Parts[0].FunctionCall.Name)
+		assert.Equal(t, []byte("sig-1"), result[1].Parts[0].ThoughtSignature)
+		assert.Equal(t, "step_2", result[3].Parts[0].FunctionCall.Name)
+		assert.Equal(t, []byte("sig-2"), result[3].Parts[0].ThoughtSignature)
+		// The synthesized call must survive untouched — not be replaced by a
+		// later turn's recording.
+		assert.Equal(t, "submit_analysis", result[5].Parts[0].FunctionCall.Name)
+		assert.Nil(t, result[5].Parts[0].ThoughtSignature)
+		assert.Equal(t, "step_3", result[7].Parts[0].FunctionCall.Name)
+		assert.Equal(t, []byte("sig-3"), result[7].Parts[0].ThoughtSignature)
+	})
+
+	t.Run("append-only history is unaffected by suffix alignment", func(t *testing.T) {
+		// The common path: recordings and history FC contents are in lockstep, so
+		// alignment is the identity mapping and behaviour is unchanged.
+		s := &GenAISession{responses: []*genai.Content{
+			newFCContent("step_1", "sig-1"),
+			newFCContent("step_2", "sig-2"),
+			newFCContent("step_3", "sig-3"),
+		}}
+		history := []*genai.Content{
+			newTextContent("user", "query"),
+			newReconstructedFC("step_1"),
+			newTextContent("user", "FR1"),
+			newReconstructedFC("step_2"),
+			newTextContent("user", "FR2"),
+			newReconstructedFC("step_3"),
+			newTextContent("user", "FR3"),
+		}
+		result := s.spliceModelResponses(history)
+		require.Len(t, result, 7)
+		assert.Equal(t, []byte("sig-1"), result[1].Parts[0].ThoughtSignature)
+		assert.Equal(t, []byte("sig-2"), result[3].Parts[0].ThoughtSignature)
+		assert.Equal(t, []byte("sig-3"), result[5].Parts[0].ThoughtSignature)
+	})
 }
 
 // TestGenAISession_RecordIfFC verifies recordings only capture FC-containing
@@ -719,4 +824,27 @@ func TestReattachSignatures(t *testing.T) {
 		}}}}
 		assert.NotPanics(t, func() { s.reattachSignatures(history) })
 	})
+}
+
+// TestInvalidatedSuffixPct verifies the share-of-prefix-discarded metric that
+// the per-call token row uses to attribute a cache-hit drop to its cause.
+func TestInvalidatedSuffixPct(t *testing.T) {
+	tests := []struct {
+		name         string
+		firstChanged int
+		prevLen      int
+		want         int
+	}{
+		{"pure append invalidates nothing", -1, 20, 0},
+		{"no previous history", -1, 0, 0},
+		{"mutation at head invalidates everything", 0, 20, 100},
+		{"mutation mid-history", 10, 20, 50},
+		{"mutation at tail invalidates little", 19, 20, 5},
+		{"defensive: negative prevLen", 3, -1, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, invalidatedSuffixPct(tt.firstChanged, tt.prevLen))
+		})
+	}
 }

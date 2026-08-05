@@ -29,10 +29,10 @@ func TestTierClientFallsBackWithoutConfig(t *testing.T) {
 	}
 
 	// Empty tier and same-as-run tier must return the run client untouched.
-	if got := tierClient(cfg, run, "", "fixer", logger); got != run {
+	if got := tierClient(cfg, run, "", "fixer", llm.ModelTierRetrieval, logger); got != run {
 		t.Error("empty tier must return the run client")
 	}
-	if got := tierClient(cfg, run, "run-model", "fixer", logger); got != run {
+	if got := tierClient(cfg, run, "run-model", "fixer", llm.ModelTierRetrieval, logger); got != run {
 		t.Error("tier equal to run model must return the run client")
 	}
 }
@@ -45,7 +45,7 @@ func TestTierClientDerivesAndSharesUsage(t *testing.T) {
 		t.Fatalf("run client: %v", err)
 	}
 
-	tiered := tierClient(cfg, run, "cheap-model", "fixer", logger)
+	tiered := tierClient(cfg, run, "cheap-model", "fixer", llm.ModelTierRetrieval, logger)
 	if tiered == run {
 		t.Fatal("configured tier must derive a separate client")
 	}

@@ -269,6 +269,15 @@ func tierAttributionForRecord(ctx *security.RequestContext) (modelTier *string, 
 	return
 }
 
+// TierAttributionForRecord is the exported form of tierAttributionForRecord, for
+// callers outside package core that build TokenUsageRecords themselves — the
+// code-analysis path in package agents inserts its own per-call rows rather than
+// going through trackTokenUsage, and without this its rows are the only ones in
+// llm_conversation_token_usage with model_tier/task_type left NULL.
+func TierAttributionForRecord(ctx *security.RequestContext) (modelTier *string, taskType *string) {
+	return tierAttributionForRecord(ctx)
+}
+
 // promptVariantLean marks the lean (investigation-overlays-dropped) orchestrator
 // prompt. It is used both as the ContextKeyPromptVariant value and as the cache
 // key suffix. Kept short because it is appended to the Google AI cache key.

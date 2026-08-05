@@ -37,6 +37,10 @@ type Client struct {
 	// pricing a run's aggregate would tier almost every run into it).
 	calls        []TokenUsageCall
 	callsDropped int
+	// tier is the ModelTier this client's model was resolved for. Set by the
+	// orchestrator when it derives the per-role clients; stamped onto every
+	// call so spend can be attributed per tier.
+	tier string
 }
 
 type TokenUsage struct {
@@ -64,6 +68,15 @@ type TokenUsageCall struct {
 	// Estimated marks char/4 fallback numbers (non-genai providers) as opposed
 	// to provider-reported usage.
 	Estimated bool `json:"estimated,omitempty"`
+	// ModelTier is the tier this call actually ran on (reasoning/retrieval/
+	// summary), taken from the client that made it. Empty on clients that were
+	// never stamped, which persists as NULL rather than a guess.
+	ModelTier string `json:"model_tier,omitempty"`
+	// TaskType labels non-main-loop calls by phase (reflection, compaction,
+	// summary) so overhead spend is separable from the ReAct loop. Empty for
+	// main-loop calls, which fall back to llm-server's turn-level
+	// query/investigation classification.
+	TaskType string `json:"task_type,omitempty"`
 }
 
 // maxCallRecords bounds the per-run call slice; runs are ≤ ~150 calls, the cap
@@ -259,6 +272,7 @@ func (c *Client) GenerateContentNoRetry(ctx context.Context, messages []llms.Mes
 		CompletionTokens: completion,
 		LatencySeconds:   time.Since(callStart).Seconds(),
 		Estimated:        true,
+		TaskType:         callPhaseFromContext(ctx),
 	})
 	return resp, nil
 }
@@ -365,6 +379,7 @@ func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageCon
 		CompletionTokens: estimatedCompletionTokens,
 		LatencySeconds:   time.Since(attemptStart).Seconds(),
 		Estimated:        true,
+		TaskType:         callPhaseFromContext(ctx),
 	})
 
 	if c.logger != nil {
@@ -415,6 +430,58 @@ func (c *Client) SnapshotTokenUsage() *TokenUsage {
 	}
 }
 
+// Model tiers, mirroring llm-server's core.ModelTier values. They land verbatim
+// in llm_conversation_token_usage.model_tier, so the two vocabularies must not
+// drift.
+const (
+	ModelTierReasoning = "reasoning"
+	ModelTierRetrieval = "retrieval"
+	ModelTierSummary   = "summary"
+)
+
+// SetModelTier records which tier this client's model was resolved for, so
+// every call it makes is attributed to that tier. Set once at construction by
+// the orchestrator; not safe to change while calls are in flight.
+func (c *Client) SetModelTier(tier string) {
+	if c == nil {
+		return
+	}
+	c.tier = tier
+}
+
+// callPhaseKey types the context value carrying a call's phase label.
+type callPhaseKey struct{}
+
+// Call phases for non-main-loop LLM calls. These are structurally uncacheable
+// one-shot prompts (fresh system instruction, no tools), and together they are
+// a fifth of a long run's calls — so they need to be separable from the ReAct
+// loop when reading cost.
+const (
+	CallPhaseReflection  = "reflection"
+	CallPhaseCompaction  = "compaction"
+	CallPhaseFinalAnswer = "final_answer"
+)
+
+// WithCallPhase labels every LLM call made with the returned context. Threading
+// it through the context rather than the call signatures keeps the label
+// available on all four recording paths (retry, no-retry, structured, genai)
+// without changing any of them.
+func WithCallPhase(ctx context.Context, phase string) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return context.WithValue(ctx, callPhaseKey{}, phase)
+}
+
+// callPhaseFromContext returns the phase label, or "" for main-loop calls.
+func callPhaseFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	phase, _ := ctx.Value(callPhaseKey{}).(string)
+	return phase
+}
+
 // ShareUsageWith makes every future usage delta on this client also accumulate
 // on parent. Used by per-role tier clients so the run's reported totals include
 // their spend. One-way child→parent only; self-parenting is ignored.
@@ -449,6 +516,9 @@ func (c *Client) RecordCallUsage(call TokenUsageCall) {
 	}
 	if call.Provider == "" {
 		call.Provider = c.config.LLM.Provider
+	}
+	if call.ModelTier == "" {
+		call.ModelTier = c.tier
 	}
 	if call.TotalTokens == 0 {
 		call.TotalTokens = call.PromptTokens + call.CompletionTokens + call.ThinkingTokens
