@@ -638,7 +638,10 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 	}
 
 	if strings.EqualFold(provider.Provider, "ES") || strings.EqualFold(provider.Provider, "elasticsearch") {
-		esIndex := utils.GetESAccountIndex(accountId)
+		esIndex := provider.DefaultIndex
+		if esIndex == "" {
+			esIndex = utils.GetESAccountIndexConfig(accountId, "logs").DefaultIndex
+		}
 		queryPayload["input"].(map[string]any)["request"].(map[string]any)["request"] = map[string]any{
 			"index": esIndex,
 		}
@@ -697,6 +700,7 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 		return core.ObservabilityLogLabelResponse{}, err
 	}
 
+	slog.Info("services_server: QueryLogLabels complete", "account_id", accountId, "provider", provider.Provider, "status_code", resp.StatusCode, "label_count", len(response))
 	return core.ObservabilityLogLabelResponse{Labels: response}, nil
 }
 

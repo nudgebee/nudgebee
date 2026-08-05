@@ -44,7 +44,7 @@ func newFetchLogsAgentV2(accountId string) *FetchLogsAgentV2 {
 
 // canonicalEnabled reports whether the canonical v2 path is enabled for this
 // deploy, via the LLM_SERVER_LOG_AGENT_V2_ENABLED env var. It is a global
-// per-environment toggle (default false); there is no per-account granularity.
+// per-environment toggle (default true); there is no per-account granularity.
 func (a *FetchLogsAgentV2) canonicalEnabled(ctx *security.RequestContext) bool {
 	return config.Config.LogAgentV2Enabled
 }
@@ -262,6 +262,9 @@ func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.Req
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), "", nil
 	}
+	if provider.DefaultIndex != "" {
+		jsonQuery = injectDefaultIndexIfMissing(jsonQuery, provider.DefaultIndex)
+	}
 	logs, toolRefs, err := callTool(ctx, a.accountId, request, tools.ToolLogsExecuteV2, jsonQuery)
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), jsonQuery, nil
@@ -332,6 +335,27 @@ func generateCanonicalLogQuery(ctx *security.RequestContext, request core.NBAgen
 		return "", fmt.Errorf("empty LLM response")
 	}
 	return strings.TrimSpace(res.Choices[0].Content), nil
+}
+
+// injectDefaultIndexIfMissing parses jsonQuery and, if top-level "index" is empty or missing,
+// sets "index" to defaultIndex and marshals it back.
+func injectDefaultIndexIfMissing(jsonQuery string, defaultIndex string) string {
+	if strings.TrimSpace(defaultIndex) == "" {
+		return jsonQuery
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(jsonQuery), &doc); err != nil {
+		return jsonQuery
+	}
+	if idx, ok := doc["index"].(string); ok && strings.TrimSpace(idx) != "" {
+		return jsonQuery
+	}
+	doc["index"] = defaultIndex
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return jsonQuery
+	}
+	return string(b)
 }
 
 // buildCanonicalLogQueryPrompt assembles the byte-stable system prompt for the

@@ -5,6 +5,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"nudgebee/llm/utils"
@@ -59,7 +60,7 @@ func classifyIndex(pattern string) esMetricSchema {
 	if strings.Contains(lower, "kubernetes") {
 		return schemaElasticK8s
 	}
-	if strings.Contains(lower, "metricbeat") {
+	if strings.Contains(lower, "metricbeat") || strings.Contains(lower, "metricsbeat") {
 		return schemaMetricbeat
 	}
 	return schemaOTel
@@ -109,7 +110,15 @@ func detectMetricSchemas(indexCfg utils.ESIndexConfig) (schemas map[esMetricSche
 }
 
 func (e ElasticSearchMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	indexCfg := utils.GetESAccountMetricsIndexConfig(e.accountId)
+	var indexCfg utils.ESIndexConfig
+	if ctx != nil {
+		if provider, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics", ""); err == nil && provider.DefaultIndex != "" {
+			indexCfg.DefaultIndex = provider.DefaultIndex
+		}
+	}
+	if indexCfg.DefaultIndex == "" || indexCfg.DefaultIndex == "*" {
+		indexCfg = utils.GetESAccountIndexConfig(e.accountId, "metrics")
+	}
 	schemas, availableIndices := detectMetricSchemas(indexCfg)
 
 	// --- Base instructions (always included) ---
@@ -398,10 +407,20 @@ func buildTimestampRule(schemas map[esMetricSchema]bool) string {
 }
 
 func (e ElasticSearchMetricsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+	defaultIndex := ""
+	if ctx != nil {
+		if providerInfo, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics", ""); err == nil && providerInfo.DefaultIndex != "" {
+			defaultIndex = providerInfo.DefaultIndex
+		}
+	}
+	if defaultIndex == "" {
+		defaultIndex = utils.GetESAccountIndexConfig(e.accountId, "metrics").DefaultIndex
+	}
 	return []toolcore.NBTool{
 		tools.ESMetricsQueryTool{},
-		tools.MetricsListTool{Provider: "ES"},
-		tools.ListMetricsLabelsTool{Provider: "ES"},
+		tools.MetricsListTool{Provider: "ES", DefaultIndex: defaultIndex},
+		tools.ListMetricsLabelsTool{Provider: "ES", DefaultIndex: defaultIndex},
+		tools.ListMetricsLabelValuesTool{Provider: "ES", DefaultIndex: defaultIndex},
 	}
 }
 

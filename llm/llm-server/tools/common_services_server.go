@@ -201,6 +201,11 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		p.limit = newLimit
 	}
 
+	idx := p.index
+	if idx == "" {
+		idx = logProvider.DefaultIndex
+	}
+
 	logRequest := services_server.LogQueryRequest{
 		Query:             "",
 		Limit:             p.limit,
@@ -211,19 +216,26 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		LogProviderSource: logProvider.IntegrationSource,
 		Offset:            p.offset,
 		Request:           p.request,
-		Index:             p.index,
+		Index:             idx,
 		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
-		// Opt into label-name validation: on an empty/failed result the agent gets
-		// an actionable error naming the mistyped label instead of a silent empty
-		// result, so it can self-correct. Only meaningful on this canonical path,
-		// which sends the structured where-clause services-server validates.
-		ValidateRequest: false,
+		ValidateRequest:   false,
 	}
 
+	// Escape hatch: a pinned provider (env var or per-request override) may have no
+	// integration row for services-server to resolve, so forward it explicitly.
+	if strings.TrimSpace(config.Config.LLMServerLogProviderOverride) != "" ||
+		strings.TrimSpace(ctx.QueryConfig.LogProviderOverride) != "" {
+		logRequest.LogProvider = logProvider.Provider
+		logRequest.LogProviderSource = logProvider.IntegrationSource
+	}
+
+	slog.Info("executeFetchLogsCanonical: sending LogQueryRequest", "account_id", ctx.AccountId, "provider", logProvider.Provider, "where", where, "index", idx)
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
 	if err != nil {
+		slog.Warn("executeFetchLogsCanonical: QueryLogs returned error", "error", err)
 		return core.ObservabilityLogResponse{}, err
 	}
+	slog.Info("executeFetchLogsCanonical: QueryLogs complete", "log_count", len(logs.Logs), "suggestion", logs.Suggestion)
 	return logs, nil
 }
 

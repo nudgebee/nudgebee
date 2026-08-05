@@ -643,7 +643,8 @@ func sanitizeFloats(v any) any {
 }
 
 type MetricsListTool struct {
-	Provider string
+	Provider     string
+	DefaultIndex string
 }
 
 func (m MetricsListTool) Name() string {
@@ -710,7 +711,15 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 	if strings.EqualFold(provider, "ES") {
 		// ES doesn't support metrics_list; use metrics_list_label_values with label="name"
 		// and the index pattern passed in a nested "request" object (matching the GraphQL schema).
-		indexPattern := query
+		indexPattern := m.DefaultIndex
+		if strings.Contains(query, "*") || strings.Contains(query, "?") {
+			indexPattern = query
+		}
+		if indexPattern == "" {
+			if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics", ""); err == nil && obsProvider.DefaultIndex != "" {
+				indexPattern = obsProvider.DefaultIndex
+			}
+		}
 		labelValuesResp, err := services_server.ListMetricsSeriesLabelValues(
 			*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, "name",
 			map[string]any{"request": map[string]any{"metric_name": indexPattern}},
@@ -1033,7 +1042,8 @@ func parseMetricNamesFromLLMResponse(content string) []string {
 }
 
 type ListMetricsLabelsTool struct {
-	Provider string
+	Provider     string
+	DefaultIndex string
 }
 
 func (m ListMetricsLabelsTool) Name() string {
@@ -1084,7 +1094,15 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 		provider = m.Provider
 	}
 
-	labelsResponse, err := services_server.ListMetricsSeriesLabels(*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, query)
+	seriesName := query
+	if strings.EqualFold(provider, "ES") {
+		idxPattern := getESMetricIndexPattern(nbRequestContext, m.DefaultIndex)
+		if idxPattern != "" && !strings.Contains(query, "*") && !strings.Contains(query, "?") {
+			seriesName = idxPattern
+		}
+	}
+
+	labelsResponse, err := services_server.ListMetricsSeriesLabels(*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, seriesName)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("unable to fetch metrics labels", "error", err.Error())
 		return core.NBToolResponse{
@@ -1129,7 +1147,8 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 // the iteration budget runs out and the run reports "no data" for a resource that is
 // in fact fully instrumented. Enumerating the values ends the loop in one call.
 type ListMetricsLabelValuesTool struct {
-	Provider string
+	Provider     string
+	DefaultIndex string
 }
 
 func (m ListMetricsLabelValuesTool) Name() string {
@@ -1237,6 +1256,11 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 	var extraRequest []map[string]any
 	if metric != "" {
 		extraRequest = append(extraRequest, map[string]any{"request": map[string]any{"metric_name": metric}})
+	} else if strings.EqualFold(provider, "ES") {
+		idxPattern := getESMetricIndexPattern(nbRequestContext, m.DefaultIndex)
+		if idxPattern != "" {
+			extraRequest = append(extraRequest, map[string]any{"request": map[string]any{"metric_name": idxPattern}})
+		}
 	}
 
 	valuesResponse, err := services_server.ListMetricsSeriesLabelValues(
@@ -1391,4 +1415,16 @@ func (s SearchMetricsTool) Call(nbRequestContext core.NbToolContext, input core.
 		Data:   sb.String(),
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+func getESMetricIndexPattern(nbRequestContext core.NbToolContext, defaultIndex string) string {
+	if defaultIndex != "" {
+		return defaultIndex
+	}
+	if nbRequestContext.Ctx != nil {
+		if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics", ""); err == nil && obsProvider.DefaultIndex != "" {
+			return obsProvider.DefaultIndex
+		}
+	}
+	return ""
 }
