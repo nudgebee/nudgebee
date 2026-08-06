@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tmc/langchaingo/llms"
 	corev1 "k8s.io/api/core/v1"
@@ -2903,25 +2904,161 @@ Log data: %v`
 	return k8sInfoList, nil
 }
 
+// bareRepoPattern matches a response that is exactly "owner/repo" and nothing else.
+// Anchored on purpose: a chain-of-thought reply mentioning a file path such as
+// "deploy/kubernetes/values.yaml" must not be read as a repository reference.
+var bareRepoPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+// gitURLHostPath splits an https:// or scp-like git@host:path repository URL into its
+// host and path. Returns empty strings when raw is shaped like neither, so callers can
+// treat "unparseable" and "not a repository URL" identically.
+func gitURLHostPath(raw string) (host, path string) {
+	if rest, ok := strings.CutPrefix(raw, "git@"); ok {
+		h, p, found := strings.Cut(rest, ":")
+		if !found {
+			return "", ""
+		}
+		return h, p
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", ""
+	}
+	return u.Hostname(), u.Path
+}
+
+// isKnownGitHost reports whether host is a repository host we recognise. Self-hosted
+// GitLab is matched on hostname because the extraction prompt explicitly invites it.
+// A leading "www." is ignored so the hosted providers match either way.
+func isKnownGitHost(host string) bool {
+	host = strings.TrimPrefix(strings.ToLower(host), "www.")
+	switch host {
+	case "github.com", "gitlab.com", "bitbucket.org":
+		return true
+	}
+	return strings.Contains(host, "gitlab")
+}
+
 // extractGitURLFromText extracts a git repository URL from plain text input using regex.
 // Handles URLs like https://github.com/owner/repo, git@github.com:owner/repo, etc.
+// The host is matched on the parsed hostname rather than as a substring of the whole
+// match, so "https://github.com.example.net/x" is not mistaken for GitHub.
 func extractGitURLFromText(text string) string {
 	pattern := regexp.MustCompile(`(?:https?://|git@)[^\s,;'"]+`)
 	matches := pattern.FindAllString(text, -1)
 	for _, match := range matches {
 		// Strip trailing punctuation that's likely not part of the URL
 		match = strings.TrimRight(match, `.,;:!?)\"`)
-		lower := strings.ToLower(match)
-		if strings.Contains(lower, "github.com") || strings.Contains(lower, "gitlab.com") || strings.Contains(lower, "bitbucket.org") {
+		if host, _ := gitURLHostPath(match); isKnownGitHost(host) {
 			return match
 		}
 	}
 	return ""
 }
 
-// isValidGitURL checks if a string looks like a valid git repository URL.
+// isValidGitURL checks if a string is a well-formed git repository URL. It parses
+// rather than prefix-matches: the previous HasPrefix check accepted anything that
+// merely STARTED with a scheme, which included the "https://" that the repo extractor
+// itself had just prepended to a chain-of-thought blob (#35703).
 func isValidGitURL(s string) bool {
-	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "git@")
+	if s == "" || s != strings.TrimSpace(s) {
+		return false
+	}
+	if strings.IndexFunc(s, unicode.IsSpace) >= 0 || strings.IndexFunc(s, unicode.IsControl) >= 0 {
+		return false
+	}
+	host, path := gitURLHostPath(s)
+	if host == "" {
+		return false
+	}
+	segments := 0
+	for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
+		if segment != "" {
+			segments++
+		}
+	}
+	return segments >= 2
+}
+
+// normalizeExtractedRepo turns an LLM repo-extraction reply into a repository URL and
+// provider, or ("", "") when the reply does not confidently name one. Pure function —
+// kept separate from the LLM call so it can be unit tested without mocks, the same
+// split as validateRepoSelection.
+//
+// Reasoning models answer this prompt with a numbered chain-of-thought that often ends
+// in the correct answer ("6. Final output: Empty string."). Substring checks read that
+// as a repository, so the entire blob became the URL and reached `git push` (#35703).
+// Every branch below either yields an anchored match or yields nothing; there is
+// deliberately no fallback that treats the raw reply as a URL.
+func normalizeExtractedRepo(llmResponse string) (repo, provider string) {
+	resp := strings.TrimSpace(llmResponse)
+	resp = strings.Trim(resp, "`\"'")
+	resp = strings.TrimSpace(resp)
+	if resp == "" {
+		return "", ""
+	}
+	// A reasoning reply restates the prompt while it thinks, and the prompt contains
+	// example URLs. Searching the whole reply would happily return one of those
+	// placeholders. Consider only the final non-empty line — the model's answer —
+	// which for a single-line reply is the reply itself.
+	resp = lastNonEmptyLine(resp)
+	if resp == "" {
+		return "", ""
+	}
+	switch strings.ToLower(resp) {
+	case "none", "empty", "null", "nil", "uncertain":
+		return "", ""
+	}
+
+	// A URL on the answer line, tolerating a "Final output: <url>" style prefix.
+	// extractGitURLFromText is anchored and host-checked, and returns "" on no match.
+	if repoURL := extractGitURLFromText(resp); repoURL != "" {
+		if isPlaceholderRepoURL(repoURL) {
+			return "", ""
+		}
+		return repoURL, detectGitProvider(repoURL)
+	}
+
+	// Bare "owner/repo", accepted only when it is the whole answer line.
+	if bareRepoPattern.MatchString(resp) && !isPlaceholderRepoURL("https://github.com/"+resp) {
+		return "https://github.com/" + resp, "github"
+	}
+
+	return "", ""
+}
+
+// lastNonEmptyLine returns the final line of s that carries content once surrounding
+// whitespace and quoting are removed. Returns "" when s has no such line.
+//
+// Quotes are stripped before the second trim because a quoted answer keeps its own
+// padding — `" owner/repo "` unquotes to " owner/repo ", which the anchored
+// bareRepoPattern would then reject. A line that is nothing but quotes collapses to
+// empty and the scan continues to the line above.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if trimmed := strings.TrimSpace(strings.Trim(line, "`\"'")); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// isPlaceholderRepoURL reports whether repoURL is one of the illustrative repositories
+// named in PROMPT_EXTRACT_GIT_REPO. A model that echoes the instructions back would
+// otherwise have us clone and push to a repository that does not exist. Keep this in
+// step with the examples in that prompt.
+func isPlaceholderRepoURL(repoURL string) bool {
+	_, path := gitURLHostPath(repoURL)
+	switch strings.ToLower(strings.Trim(path, "/")) {
+	case "owner/repo", "group/project":
+		return true
+	}
+	return false
 }
 
 // validateRepoSelection normalizes an LLM repo-selection response and returns
@@ -3118,29 +3255,13 @@ Text: %v`
 	llmResponse := strings.TrimSpace(completion.Choices[0].Content)
 	logger.Debug("Received LLM response for Git repo extraction", "response", llmResponse)
 
-	// Clean up the response and validate it
-	if llmResponse == "" || strings.ToLower(llmResponse) == "none" || strings.ToLower(llmResponse) == "empty" {
+	repoURL, provider := normalizeExtractedRepo(llmResponse)
+	if repoURL == "" {
+		logger.Debug("No repository confidently identified in LLM extraction response")
 		return "", "", nil
 	}
 
-	// Detect provider from the response
-	provider := detectGitProvider(llmResponse)
-
-	// Basic validation and normalization
-	if strings.Contains(llmResponse, "github.com") {
-		return llmResponse, "github", nil
-	}
-	if strings.Contains(llmResponse, "gitlab") {
-		return llmResponse, "gitlab", nil
-	}
-
-	// If it's in owner/repo format without explicit provider, default to github
-	if strings.Count(llmResponse, "/") >= 1 && !strings.Contains(llmResponse, "://") {
-		llmResponse = "https://github.com/" + llmResponse
-		return llmResponse, "github", nil
-	}
-
-	return llmResponse, provider, nil
+	return repoURL, provider, nil
 }
 
 // extractJSONFromText attempts to extract a JSON array from text using multiple methods
