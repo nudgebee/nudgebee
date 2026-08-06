@@ -181,6 +181,8 @@ func GetResourceFilterForService(serviceName, resourceID string) string {
 		return fmt.Sprintf(`resource.type="k8s_cluster" AND resource.labels.cluster_name="%s"`, resourceID)
 	case ServiceNameLoadBalancing:
 		return fmt.Sprintf(`resource.type="https_lb_rule" AND resource.labels.forwarding_rule_name="%s"`, resourceID)
+	case ServiceNamePubSub:
+		return fmt.Sprintf(`resource.type="pubsub_subscription" AND resource.labels.subscription_id="%s"`, resourceID)
 	default:
 		return fmt.Sprintf(`resource.labels.resource_id="%s"`, resourceID)
 	}
