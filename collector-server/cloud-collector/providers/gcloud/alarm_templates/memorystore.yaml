@@ -1,0 +1,85 @@
+# GCP Memorystore for Redis Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for cache monitoring.
+service_name: "Memorystore"
+
+templates:
+  - name: "gcp_memorystore_memory_usage_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "An instance running close to its memory limit starts evicting keys or blocking writes, degrading every application that depends on the cache. Alert when memory usage stays above 85% of the instance limit."
+    configuration:
+      namespace: "redis.googleapis.com"
+      metric_name: "MemoryUsageRatio"
+      metric_type_filter: "redis.googleapis.com/stats/memory/usage_ratio"
+      resource_type: "redis_instance"
+      statistic: "ALIGN_MEAN"
+      period: 300  # 5 minutes
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.85  # 85% of the instance memory limit
+
+  - name: "gcp_memorystore_evicted_keys_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Sustained key evictions mean the instance is out of memory and silently dropping data. A short burst can be normal for cache workloads; sustained evictions are memory pressure that needs capacity or TTL tuning."
+    configuration:
+      namespace: "redis.googleapis.com"
+      metric_name: "EvictedKeys"
+      metric_type_filter: "redis.googleapis.com/stats/evicted_keys"
+      resource_type: "redis_instance"
+      statistic: "ALIGN_DELTA"
+      period: 300
+      # Unlike a dead-lettered message (discrete failure), evictions are a
+      # pressure signal — require two consecutive windows to avoid alerting
+      # on normal short bursts in cache workloads.
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_SUM"
+    threshold_rules:
+      default: 0.0  # any sustained eviction activity
+
+  - name: "gcp_memorystore_connected_clients_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Each Redis instance supports a bounded number of client connections; exhausting them makes new connections fail outright. Alert while there is still headroom to react."
+    configuration:
+      namespace: "redis.googleapis.com"
+      metric_name: "ConnectedClients"
+      metric_type_filter: "redis.googleapis.com/clients/connected"
+      resource_type: "redis_instance"
+      statistic: "ALIGN_MAX"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MAX"
+    threshold_rules:
+      default: 5000.0  # connections — starting point; workload-specific tuning expected
+
+  - name: "gcp_memorystore_cache_hit_ratio_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "A falling cache hit ratio means most reads miss the cache and fall through to the backing store, raising latency and database load — the cache stops paying for itself. Alert when the hit ratio drops below 80%."
+    configuration:
+      namespace: "redis.googleapis.com"
+      metric_name: "CacheHitRatio"
+      metric_type_filter: "redis.googleapis.com/stats/cache_hit_ratio"
+      resource_type: "redis_instance"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 2
+      # Less-than template: the alert fires when the ratio drops BELOW the
+      # threshold (relies on native COMPARISON_* passthrough from #35682)
+      comparison_operator: "COMPARISON_LT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.80  # hit ratio below 80%

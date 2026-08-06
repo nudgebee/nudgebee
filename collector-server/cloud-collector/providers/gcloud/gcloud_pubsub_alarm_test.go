@@ -32,6 +32,13 @@ func TestGetResourceFilterForServicePubSub(t *testing.T) {
 	got := GetResourceFilterForService(ServiceNamePubSub, "orders-sub")
 	want := `resource.type="pubsub_subscription" AND resource.labels.subscription_id="orders-sub"`
 	assert.Equal(t, want, got)
+
+	// Pub/Sub ids may legally contain tilde, plus and percent — the validation
+	// regex must not reject them, or the filter silently degrades to "" and the
+	// checker matches alerts from other subscriptions (false suppression)
+	got = GetResourceFilterForService(ServiceNamePubSub, "orders~sub+2%")
+	want = `resource.type="pubsub_subscription" AND resource.labels.subscription_id="orders~sub+2%"`
+	assert.Equal(t, want, got)
 }
 
 // pubsubTestSubscription builds a subscription resource the way

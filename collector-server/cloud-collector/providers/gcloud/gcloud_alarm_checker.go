@@ -13,8 +13,10 @@ import (
 
 const ServiceNameLoadBalancing = "Cloud Load Balancing"
 
-// validResourceID matches alphanumeric, hyphens, dots, underscores, and colons
-var validResourceID = regexp.MustCompile(`^[a-zA-Z0-9._:/-]+$`)
+// validResourceID guards against filter-string injection; it admits the
+// characters legal in GCP resource ids — including tilde/plus/percent, which
+// Pub/Sub subscription and topic ids may contain.
+var validResourceID = regexp.MustCompile(`^[a-zA-Z0-9._:/~+%-]+$`)
 
 // AlarmCheckResult contains alarm check result
 type AlarmCheckResult struct {
@@ -183,6 +185,10 @@ func GetResourceFilterForService(serviceName, resourceID string) string {
 		return fmt.Sprintf(`resource.type="https_lb_rule" AND resource.labels.forwarding_rule_name="%s"`, resourceID)
 	case ServiceNamePubSub:
 		return fmt.Sprintf(`resource.type="pubsub_subscription" AND resource.labels.subscription_id="%s"`, resourceID)
+	case ServiceNameMemorystore:
+		// resourceID must be the full instance path (projects/.../instances/...) —
+		// redis_instance's instance_id label carries the full resource name
+		return fmt.Sprintf(`resource.type="redis_instance" AND resource.labels.instance_id="%s"`, resourceID)
 	default:
 		return fmt.Sprintf(`resource.labels.resource_id="%s"`, resourceID)
 	}
