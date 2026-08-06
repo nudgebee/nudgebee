@@ -454,7 +454,11 @@ func UpsertTask(ctx *security.RequestContext, tenantID string, request TaskUpser
 			WHERE id = $1
 		`, strings.Join(setClauses, ", "))
 
-		result, err := tx.Exec(updateQuery, args...)
+		// `=`, not `:=` — a block-scoped err would shadow the function-level
+		// err the deferred rollback above guards on, leaking the transaction
+		// (connection stuck `idle in transaction`) when the update fails.
+		var result sql.Result
+		result, err = tx.Exec(updateQuery, args...)
 		if err != nil {
 			return fmt.Errorf("failed to update task: %w", err)
 		}
