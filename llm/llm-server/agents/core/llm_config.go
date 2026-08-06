@@ -242,9 +242,18 @@ type ForwardedLLMConfig struct {
 // ResolveLLMConfigForForwarding resolves the full, decrypted LLM config for the
 // given account/agent in one call, reusing the canonical resolvers (which apply
 // the DB-beats-ENV precedence and decrypt secrets). It returns nil (no error)
-// when there is nothing usable to forward — provider or API key unresolved — in
-// which case the caller omits the block and the pod falls back to its global
-// LLM_* secret env. The returned ApiKey is plaintext and MUST NOT be logged.
+// only when no provider resolves at all, in which case the caller omits the
+// block and the pod falls back to its global LLM_* secret env. The returned
+// ApiKey is plaintext and MUST NOT be logged.
+//
+// A missing API key is NOT a reason to skip forwarding. Keyless providers are
+// legitimate — Bedrock authenticates through the AWS credential chain, not an
+// API key — and bailing on an empty key also threw away the provider+model
+// llm-server itself resolved and runs on. The pod then fell back to its
+// startup env, which on a deployment whose secret sets no LLM_* keys leaves
+// code-analysis on its built-in default provider: one nobody selected, with no
+// credentials, failing at client construction. Forward what Nubi resolved and
+// let the pod fail on the real problem instead.
 func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agentName, conversationId string) (*ForwardedLLMConfig, error) {
 	// Fail-safe: without a tenant/account scope there is nothing tenant-specific
 	// to forward (and we must never run an unscoped tenant lookup). Skip
@@ -264,14 +273,10 @@ func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agen
 		return nil, nil
 	}
 	appendAgentName := agentName != ""
-	apiKey := getLLMApiKey(accountId, provider, agentName, appendAgentName, res)
-	if apiKey == "" {
-		return nil, nil
-	}
 	fwd := &ForwardedLLMConfig{
 		Provider:    provider,
 		Model:       res.Model,
-		ApiKey:      apiKey,
+		ApiKey:      getLLMApiKey(accountId, provider, agentName, appendAgentName, res),
 		ApiEndpoint: getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res),
 		ApiVersion:  getLLMApiVersion(accountId, provider, agentName, appendAgentName, res),
 		ApiType:     getLLMApiType(accountId, provider, agentName, appendAgentName, res),
