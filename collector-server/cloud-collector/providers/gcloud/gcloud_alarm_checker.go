@@ -101,6 +101,15 @@ func matchCondition(condition *monitoring.AlertPolicy_Condition, template provid
 		return false
 	}
 
+	// A template that pins metric labels (e.g. 5xx-only error rate) is not
+	// satisfied by a broader alert on the same metric — every pinned label
+	// must appear in the existing alert's filter.
+	for k, v := range template.Configuration.MetricLabelFilters {
+		if !strings.Contains(metricThreshold.Filter, fmt.Sprintf(`metric.labels.%s="%s"`, k, v)) {
+			return false
+		}
+	}
+
 	return true
 }
 
@@ -185,6 +194,8 @@ func GetResourceFilterForService(serviceName, resourceID string) string {
 		return fmt.Sprintf(`resource.type="https_lb_rule" AND resource.labels.forwarding_rule_name="%s"`, resourceID)
 	case ServiceNamePubSub:
 		return fmt.Sprintf(`resource.type="pubsub_subscription" AND resource.labels.subscription_id="%s"`, resourceID)
+	case ServiceNameFunctions:
+		return fmt.Sprintf(`resource.type="cloud_function" AND resource.labels.function_name="%s"`, resourceID)
 	case ServiceNameMemorystore:
 		// resourceID must be the full instance path (projects/.../instances/...) —
 		// redis_instance's instance_id label carries the full resource name

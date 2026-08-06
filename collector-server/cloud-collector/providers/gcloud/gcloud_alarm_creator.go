@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"sort"
 	"strings"
 	"time"
 
@@ -128,6 +129,7 @@ func buildGCPAlarmConfig(resource providers.Resource, template providers.AlarmTe
 		AlarmName:          fmt.Sprintf("%s-%s", template.Name, resource.Id),
 		MetricName:         template.Configuration.MetricName,
 		MetricTypeFilter:   template.Configuration.MetricTypeFilter,
+		MetricLabelFilters: template.Configuration.MetricLabelFilters,
 		ResourceType:       template.Configuration.ResourceType,
 		Namespace:          template.Configuration.Namespace,
 		Statistic:          template.Configuration.Statistic,
@@ -279,6 +281,20 @@ func buildSimpleCondition(config providers.AlarmCreationConfig) (*monitoringpb.A
 	if len(config.Dimensions) > 0 {
 		for _, dim := range config.Dimensions {
 			filter += fmt.Sprintf(` AND resource.labels.%s="%s"`, dim.Name, dim.Value)
+		}
+	}
+
+	// Metric-label filters are template constants (e.g. response_code_class="5xx"
+	// on an error-rate alert). Append in sorted key order so identical configs
+	// always build the identical filter string.
+	if len(config.MetricLabelFilters) > 0 {
+		keys := make([]string, 0, len(config.MetricLabelFilters))
+		for k := range config.MetricLabelFilters {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			filter += fmt.Sprintf(` AND metric.labels.%s="%s"`, k, config.MetricLabelFilters[k])
 		}
 	}
 

@@ -1,0 +1,72 @@
+# GCP Cloud Functions Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for serverless function monitoring.
+# execution_count carries a `status` metric label ("ok", "error", "timeout",
+# "crash", "out of memory", ...) — the error-rate and OOM templates pin it via
+# metric_label_filters so the alert watches only the failing series.
+service_name: "Cloud Functions"
+
+templates:
+  - name: "gcp_function_error_rate_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Failed executions mean callers see errors or events go unprocessed. Alert when executions with status \"error\" keep occurring."
+    configuration:
+      namespace: "cloudfunctions.googleapis.com"
+      metric_name: "ExecutionErrors"
+      metric_type_filter: "cloudfunctions.googleapis.com/function/execution_count"
+      resource_type: "cloud_function"
+      metric_label_filters:
+        status: "error"    # only the failing series — not total executions
+      statistic: "ALIGN_SUM"
+      period: 300  # 5 minutes
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_SUM"
+    threshold_rules:
+      default: 5.0  # errors per 5-minute window — starting point
+
+  - name: "gcp_function_execution_time_alarm_missing"
+    alarm_type: "LATENCY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Slow executions delay callers and downstream events, and raise cost (billed per 100ms). Alert when p99 execution time exceeds 5 seconds."
+    configuration:
+      namespace: "cloudfunctions.googleapis.com"
+      metric_name: "ExecutionTime"
+      metric_type_filter: "cloudfunctions.googleapis.com/function/execution_times"
+      resource_type: "cloud_function"
+      statistic: "ALIGN_PERCENTILE_99"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      # NOTE: execution_times is measured in NANOSECONDS —
+      # 5,000,000,000 ns = 5 seconds p99
+      default: 5000000000.0
+
+  - name: "gcp_function_oom_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "An out-of-memory termination kills the execution mid-flight — the caller gets an error and the work is lost. Even one is a sign the memory limit is too low. Alert on any OOM-terminated execution."
+    configuration:
+      namespace: "cloudfunctions.googleapis.com"
+      metric_name: "OOMTerminations"
+      metric_type_filter: "cloudfunctions.googleapis.com/function/execution_count"
+      resource_type: "cloud_function"
+      metric_label_filters:
+        status: "out of memory"    # exact status value, spaces included
+      statistic: "ALIGN_SUM"
+      period: 300
+      # An OOM kill is a discrete failure event (like a dead-lettered message) —
+      # a single window with any occurrence should fire.
+      evaluation_periods: 1
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_SUM"
+    threshold_rules:
+      default: 0.0  # any OOM termination is worth knowing about

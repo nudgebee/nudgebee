@@ -28,6 +28,13 @@ type AlarmConfiguration struct {
 	MetricTypeFilter string `yaml:"metric_type_filter,omitempty" json:"metric_type_filter,omitempty"`
 	ResourceType     string `yaml:"resource_type,omitempty" json:"resource_type,omitempty"`
 
+	// MetricLabelFilters pins metric-label equality filters that are part of
+	// the template's identity — e.g. response_code_class="5xx" for an
+	// error-rate alert. Unlike Dimensions (which scope the alert to one
+	// resource at recommendation time), these are constants of the template
+	// itself. GCP-only; unused by AWS/Azure.
+	MetricLabelFilters map[string]string `yaml:"metric_label_filters,omitempty" json:"metric_label_filters,omitempty"`
+
 	// Metric math fields (for multi-metric alarms with expressions)
 	Metrics []MetricQuery `yaml:"metrics,omitempty" json:"metrics,omitempty"` // Metric queries for metric math
 
@@ -101,6 +108,11 @@ type AlarmCreationConfig struct {
 	// required to build a valid alert policy filter. Empty for AWS/Azure.
 	MetricTypeFilter string `json:"metric_type_filter,omitempty"`
 	ResourceType     string `json:"resource_type,omitempty"`
+
+	// MetricLabelFilters carries the template's pinned metric-label filters
+	// (see AlarmConfiguration.MetricLabelFilters) into the stored alarm config
+	// so Create Alert scopes to the right label values (e.g. 5xx only).
+	MetricLabelFilters map[string]string `json:"metric_label_filters,omitempty"`
 
 	// Metric math fields (for multi-metric alarms with expressions)
 	Metrics []MetricQueryConfig `json:"metrics,omitempty"`
