@@ -252,6 +252,14 @@ type appConfig struct {
 	LLMServerAgentPromqlMaxIterations         int `mapstructure:"llm_server_agent_promql_max_iterations"`
 	LLMServerAgentObservabilityMaxIterations  int `mapstructure:"llm_server_agent_observability_max_iterations"`
 	LLMServerAgentObservabilityTimeoutSeconds int `mapstructure:"llm_server_agent_observability_timeout_seconds"`
+	// LlmServerFetchLogsWallClockTimeoutSeconds caps the entire FetchLogsAgentV2.Execute
+	// pipeline (services-server RPC + kubectl_execute + datadog + workspace pod) at
+	// this wall-clock budget. Any stall (see conv 8832d8f4 — 6520s hang on a single
+	// fetch_logs call, 2026-08-05) surfaces to the planner as a clean error envelope
+	// instead of stalling the whole conversation until TTL reap. 0 or unset falls
+	// back to the 300s default in agent_log_fetch_v2.go. Observed post-deploy p100
+	// for legitimate calls is ~116s, so 300s is ~2.5× headroom.
+	LlmServerFetchLogsWallClockTimeoutSeconds int `mapstructure:"llm_server_fetch_logs_wall_clock_timeout_seconds"`
 	// LlmServerAgentPromqlCacheTTLMinutes defines the lifespan of PromQL query results in the cache.
 	LlmServerAgentPromqlCacheTTLMinutes int `mapstructure:"llm_server_agent_promql_metrics_cache_ttl_minutes"`
 	// LlmServerLlmConfigCacheTTLMinutes defines the lifespan of the cached LLM

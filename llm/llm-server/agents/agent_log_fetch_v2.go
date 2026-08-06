@@ -1,8 +1,10 @@
 package agents
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
@@ -10,6 +12,7 @@ import (
 	"nudgebee/llm/tools"
 	"sort"
 	"strings"
+	"time"
 )
 
 // FetchLogsAgentV2 is the canonical, provider-independent variant of the
@@ -49,13 +52,62 @@ func (a *FetchLogsAgentV2) canonicalEnabled(ctx *security.RequestContext) bool {
 	return config.Config.LogAgentV2Enabled
 }
 
+// defaultFetchLogsWallClockTimeout is the fallback when
+// LlmServerFetchLogsWallClockTimeoutSeconds is 0 or unset. 300s picks a
+// value ~2.5× above the observed post-deploy p100 for legitimate calls
+// (fetch_logs success avg 37s, max 116s in the 4d 2026-08-02→08-06 window)
+// while still short enough to be actionable if a downstream provider stalls
+// — the same bar the api-server side uses for its 240s observability handler
+// cap (handle_actions_logs.go). Chosen tighter than the conversation-level
+// TTL so a wedged provider surfaces to the caller as a clean tool error
+// instead of stalling the whole conversation until TTL reap. Regression
+// this defends: conv 8832d8f4 on 2026-08-05 had a single fetch_logs call
+// hang 6520s (~108 min) — the api-server timeouts from PR #35570 covered
+// the RPC handler path (logs_query, logs_get_query, etc.) but NOT this
+// internal llm-server tool.
+const defaultFetchLogsWallClockTimeout = 300 * time.Second
+
+// fetchLogsWallClockTimeout is a test-override seam. In production (test
+// override zero) the effective timeout is resolved via
+// resolveFetchLogsWallClockTimeout so tenants can tune it at runtime via
+// LlmServerFetchLogsWallClockTimeoutSeconds without a code deploy. Tests
+// set this directly to shorten waits.
+var fetchLogsWallClockTimeout time.Duration
+
+// resolveFetchLogsWallClockTimeout returns the effective wall-clock bound:
+// test override (fetchLogsWallClockTimeout != 0) wins first, then the config
+// value if positive, else the compile-time default. Recomputed on every
+// Execute call so a config hot-reload takes effect without a restart.
+func resolveFetchLogsWallClockTimeout() time.Duration {
+	if fetchLogsWallClockTimeout > 0 {
+		return fetchLogsWallClockTimeout
+	}
+	if s := config.Config.LlmServerFetchLogsWallClockTimeoutSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return defaultFetchLogsWallClockTimeout
+}
+
 // Execute routes the log fetch. When the v2 gate (LLM_SERVER_LOG_AGENT_V2_ENABLED)
 // is off it delegates to the embedded v1 agent (identical to pre-v2 behaviour).
 // When on, it sends a canonical where to services-server for any backed provider,
 // keeps datadog on the proven facet path, and uses kubectl for empty/k8s. When
 // the services-server path fails or returns no logs, it falls back to kubectl
 // (kubectlFallback).
+//
+// Wrapped in runFetchLogsWithTimeout so any downstream stall (services-server
+// RPC, kubectl_execute, datadog client, workspace pod) bails at
+// fetchLogsWallClockTimeout instead of hanging the whole conversation until
+// TTL reap — the exact regression class from conv 8832d8f4.
 func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
+	return runFetchLogsWithTimeout(ctx, resolveFetchLogsWallClockTimeout(), func(tctx *security.RequestContext) (core.NBAgentResponse, error) {
+		return a.executeInner(tctx, request)
+	})
+}
+
+// executeInner is the pre-wall-clock-wrapper body of Execute. Split out so the
+// wrapper can be a thin decorator around unchanged routing logic.
+func (a *FetchLogsAgentV2) executeInner(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
 	// Flag off → behave exactly as v1 (which applies the override itself).
 	if !a.canonicalEnabled(ctx) {
 		return a.FetchLogsAgent.Execute(ctx, request)
@@ -88,6 +140,105 @@ func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NB
 		return a.kubectlFallback(ctx, request, provider, resp)
 	}
 	return resp, nil
+}
+
+// runFetchLogsWithTimeout enforces a wall-clock bound on the fetch_logs
+// Execute pipeline via TWO complementary mechanisms:
+//
+//   - **Active downstream cancellation**: builds a `context.WithTimeout(deadline)`
+//     derived from the caller's `ctx.GetContext()`, wraps it into a fresh
+//     `*security.RequestContext` (preserving security context, logger, tracer,
+//     meter), and passes THAT into fn. Downstream code that honors context
+//     (HttpWithContext, gRPC calls, database queries) will actively cancel at
+//     the deadline — freeing HTTP connections, DB handles, etc. before the
+//     downstream itself times out.
+//
+//   - **Wall-clock select backstop**: races fn completion against the same
+//     deadline in a goroutine. Fires regardless of whether downstream honors
+//     ctx — kubectl_execute-via-workspace, datadog client, or any provider
+//     that runs blocking CPU work all get cut off at the deadline instead of
+//     stalling the whole conversation.
+//
+// The two together give us bounded caller-return latency (from the select)
+// AND clean downstream resource release (from the derived ctx). Downstream
+// that ignores ctx still runs to natural completion in the orphan goroutine
+// but the caller has already returned — same tradeoff as the api-server
+// helper runObservabilityActionWithTimeout.
+//
+// Panic recovery: Gin's recovery middleware only guards the request-serving
+// goroutine, not spawned workers — a `panic` inside `fn` would crash the
+// whole llm-server process. Recover in the worker, log via a nil-safe logger
+// (ctx.GetLogger() falls back to slog.Default() when logger is nil), hand
+// the panic value back via buffered channel so the caller re-panics on the
+// request goroutine (where middleware catches it). When the deadline branch
+// fired first the caller has moved on; the panic is only logged, not
+// re-raised (re-panicking on nobody's goroutine crashes the process).
+//
+// On deadline: returns a clean errorResponse envelope so the planner sees
+// an actionable tool error and can pivot, instead of the entire
+// conversation stalling on the wedged provider.
+func runFetchLogsWithTimeout(ctx *security.RequestContext, timeout time.Duration, fn func(*security.RequestContext) (core.NBAgentResponse, error)) (core.NBAgentResponse, error) {
+	// Build a timeout-bound Go context derived from the caller's ctx (or
+	// Background when ctx is nil). Downstream code that plumbs
+	// ctx.GetContext() into HttpWithContext / gRPC / DB calls will actively
+	// cancel at the deadline. cancel() runs on return so both branches
+	// release the context tree regardless of who fires first.
+	var goCtx context.Context
+	var cancel context.CancelFunc
+	if ctx != nil && ctx.GetContext() != nil {
+		goCtx, cancel = context.WithTimeout(ctx.GetContext(), timeout)
+	} else {
+		goCtx, cancel = context.WithTimeout(context.Background(), timeout)
+	}
+	defer cancel()
+
+	// Wrap the timeout-bound Go context into a fresh RequestContext so fn
+	// receives all of the caller's security/logger/tracer/meter enrichment
+	// plus the derived deadline. Falls back to the raw ctx when we can't
+	// enrich (ctx == nil is only reachable from tests / degenerate call sites).
+	timeoutCtx := ctx
+	if ctx != nil {
+		timeoutCtx = security.NewRequestContext(goCtx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+	}
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	type result struct {
+		resp     core.NBAgentResponse
+		err      error
+		panicVal any
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger := slog.Default()
+				if ctx != nil {
+					logger = ctx.GetLogger()
+				}
+				logger.Error("fetch_logs panicked; propagating to caller goroutine if still waiting",
+					"panic", fmt.Sprintf("%v", r))
+				done <- result{panicVal: r}
+			}
+		}()
+		resp, err := fn(timeoutCtx)
+		done <- result{resp: resp, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.panicVal != nil {
+			panic(r.panicVal)
+		}
+		return r.resp, r.err
+	case <-deadline.C:
+		if ctx != nil {
+			ctx.GetLogger().Warn("fetch_logs exceeded wall-clock deadline; downstream ctx cancelled, goroutine orphaned until ctx-ignoring downstream gives up",
+				"deadline", timeout.String())
+		}
+		return errorResponse(FetchLogsAgentName, fmt.Errorf("fetch_logs exceeded %s wall-clock deadline (downstream provider hung — see conv 8832d8f4 class of failures)", timeout)), nil
+	}
 }
 
 // shouldFallbackToKubectl decides whether Execute should fall back to the
