@@ -25,6 +25,34 @@ import "regexp"
 // `\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`.
 var PIIEmailRegex = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
 
+// FindPIIEmails returns the [start, end) byte ranges of email matches, minus
+// any whose preceding byte is `@` — Go RE2 has no lookbehind, so the guard is
+// a post-filter (same shape as FindPIIPhones).
+//
+// An address is never chained onto another `@`. Elasticsearch field paths are:
+// `k8s@namespace@name.keyword` yields a bogus `namespace@name.keyword` match
+// (TLD `keyword` passes `[A-Za-z]{2,}`). Every es_metrics_query /
+// metrics_labels_list response carries these, so it fires on every such turn.
+// Left unguarded it also corrupts what the model reads — the field name it
+// must build a query from becomes `k8s@[EMAIL_1]`.
+func FindPIIEmails(text string) [][]int {
+	matches := PIIEmailRegex.FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	kept := matches[:0]
+	for _, m := range matches {
+		if m[0] > 0 && text[m[0]-1] == '@' {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
+}
+
 // piiPhoneCandidate is the pre-boundary phone regex — matches any of the
 // three supported shapes without the surrounding "not-preceded/followed-by-
 // digit" guards. The guards are re-applied by the PIIPhoneFilter helper

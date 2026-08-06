@@ -84,7 +84,7 @@ func ScrubPIIInProcess(texts []string) (scrubbed []string, mapping map[string]st
 // across runs. Each pass uses the shared tokenizer for cross-pass
 // dedup: an email is still an email even if a later phone pass runs.
 func substituteBoth(text string, tok *piiTokenizer) string {
-	text = replaceRanges(text, PIIEmailRegex.FindAllStringIndex(text, -1), func(match string) string {
+	text = replaceRanges(text, FindPIIEmails(text), func(match string) string {
 		return tok.tokenFor(match, "EMAIL")
 	})
 	text = replaceRanges(text, FindPIIPhones(text), func(match string) string {

@@ -192,3 +192,28 @@ func findTokenFor(t *testing.T, mapping map[string]string, value string) string 
 	t.Fatalf("no token found for %q in mapping %v", value, mapping)
 	return ""
 }
+
+// Elasticsearch field paths use `@` as a separator, so `k8s@namespace@name.keyword`
+// offered a bogus `namespace@name.keyword` match on every es_metrics_query turn.
+func TestScrubPIIInProcess_ChainedAtIsNotEmail(t *testing.T) {
+	for _, in := range []string{
+		`{"label":"attributes.resource.attributes.k8s@namespace@name.keyword"}`,
+		`{"term":{"attributes.resource.attributes.k8s@pod@name.keyword":"x"}}`,
+		`a@b@node@name.keyword`,
+	} {
+		out, mapping := ScrubPIIInProcess([]string{in})
+		assert.Empty(t, mapping, "false positive on %q", in)
+		assert.Equal(t, in, out[0], "payload must pass through untouched")
+	}
+}
+
+// The guard must not cost real detections — including an address that merely
+// sits next to an `@`-chained identifier in the same payload.
+func TestScrubPIIInProcess_RealEmailsStillTokenized(t *testing.T) {
+	in := `owner alice.smith@acme.co and k8s@pod@name.keyword and bob@example.org`
+	out, mapping := ScrubPIIInProcess([]string{in})
+	assert.Len(t, mapping, 2)
+	assert.Contains(t, out[0], "k8s@pod@name.keyword", "field path must survive")
+	assert.NotContains(t, out[0], "alice.smith@acme.co")
+	assert.NotContains(t, out[0], "bob@example.org")
+}

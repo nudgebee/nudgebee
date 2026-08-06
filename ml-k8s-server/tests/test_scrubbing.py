@@ -623,3 +623,21 @@ def test_ner_preserves_pod_ref(scrubber):
     r = scrubber.scrub_text("pod/api-server-x4qrt restarted by John", ner=True, reversible=True)
     assert "pod/api-server-x4qrt" in r.text
     assert "John" not in r.text
+
+
+def test_chained_at_is_not_email(scrubber):
+    """Elasticsearch field paths use `@` as a separator, so
+    `k8s@namespace@name.keyword` offered a bogus `namespace@name.keyword`
+    match (TLD `keyword` passes `[A-Za-z]{2,}`) on every es_metrics_query
+    turn. Go parity: FindPIIEmails in security/egressfilter."""
+    field = '{"label":"attributes.resource.attributes.k8s@namespace@name.keyword"}'
+    r = scrubber.scrub_text(field, reversible=True)
+    assert r.text == field
+    assert r.mapping == {}
+
+
+def test_chained_at_guard_keeps_real_emails(scrubber):
+    r = scrubber.scrub_text("owner jane@acme.co and k8s@pod@name.keyword", reversible=True)
+    assert "k8s@pod@name.keyword" in r.text
+    assert "jane@acme.co" not in r.text
+    assert r.mapping == {"[EMAIL_1]": "jane@acme.co"}
