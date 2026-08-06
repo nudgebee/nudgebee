@@ -407,6 +407,42 @@ func (s *Server) getWorkflowExecution(c *gin.Context) {
 	c.JSON(http.StatusOK, details)
 }
 
+// searchAIInvocableWorkflows ranks the automations the AI assistant may run
+// against a free-text query — normally the symptom a user described, not an
+// automation name.
+//
+// A dedicated endpoint rather than a flag on the listing because the two answer
+// different questions: the listing shows a user their automations from the
+// DRAFT definition, while the AI must see the LIVE version's llm_description —
+// what is published, not what someone is still editing.
+func (s *Server) searchAIInvocableWorkflows(c *gin.Context) {
+	sc, accountID, processRequest := s.getRequestDetails(c)
+	if !processRequest {
+		return
+	}
+
+	limit := 0
+	if raw := c.Query("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+			limit = parsed
+		}
+	}
+
+	result, err := s.workflowService.SearchAIInvocableWorkflows(sc, accountID, c.Query("query"), limit)
+	if err != nil {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
+			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
+			return
+		}
+		s.logger.Error("failed to search AI-invocable workflows", "account_id", accountID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search automations"})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 func (s *Server) triggerWorkflow(c *gin.Context) {
 	sc, accountID, processRequest := s.getRequestDetails(c)
 	if !processRequest {

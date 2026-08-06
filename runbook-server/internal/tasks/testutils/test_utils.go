@@ -161,6 +161,9 @@ func (m *MockWorkflowStore) ListByIntegrationName(ctx context.Context, tenantID,
 func (m *MockWorkflowStore) ListCallers(ctx context.Context, tenantID, accountID, calleeName string) ([]model.WorkflowCaller, error) {
 	return nil, nil
 }
+func (m *MockWorkflowStore) ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]model.AIInvocableWorkflow, error) {
+	return nil, nil
+}
 func (m *MockWorkflowStore) Update(ctx context.Context, tenantID, accountID, id string, wf model.Workflow) error {
 	return nil
 }

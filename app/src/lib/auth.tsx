@@ -436,6 +436,27 @@ export async function fetchFeatureFlagsForTenant(refresh = false): Promise<any[]
   return featureData[tenantKey];
 }
 
+/**
+ * Account-or-tenant feature check, mirroring runbook-server's
+ * `common.IsFeatureEnabledForAccount`: an account-scoped row wins, then a
+ * tenant-wide row, otherwise disabled.
+ *
+ * `hasFeatureAccess` alone reads only tenant-wide rows
+ * (`account_id IS NULL`), so a per-account rollout — the documented way to
+ * pilot a feature — turns the backend on while leaving the UI believing the
+ * feature is off. Any UI gate gating the same capability as a server-side
+ * account-aware check must use this instead.
+ */
+export async function hasFeatureAccessForAccount(featureName: string, accountId?: string): Promise<boolean> {
+  if (accountId) {
+    const accountFlags = await fetchFeatureFlagsForAccount(accountId);
+    if (accountFlags.some((f) => f['feature_id'] === featureName && f['status'] === 'enabled')) {
+      return true;
+    }
+  }
+  return hasFeatureAccess(featureName);
+}
+
 export async function fetchFeatureFlagsForAccount(accountId: string, refresh: boolean = false): Promise<any[]> {
   const tenantKey = getTenantKey();
   if (!tenantKey || !accountId) {

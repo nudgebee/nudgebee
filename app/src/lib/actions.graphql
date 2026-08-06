@@ -4751,6 +4751,8 @@ input WorkflowRequest {
   name: String!
   status: String
   created_from_session_id: String
+  description: String
+  ai_invocable: Boolean
 }
 
 input WorkflowDefinitionRequest {
@@ -4763,6 +4765,7 @@ input WorkflowDefinitionRequest {
   retry_policy: WorkflowDefinitionRetryPolicyRequest
   timeout: String
   layout: WorkflowDefinitionLayoutRequest
+  llm_description: String
 }
 
 input WorkflowDefinitionLayoutRequest {
@@ -8457,6 +8460,8 @@ type Workflow {
   created_at: timestamp
   updated_at: timestamp
   created_from_session_id: String
+  description: String
+  ai_invocable: Boolean
 }
 
 type WorkflowDefinition {
@@ -8469,6 +8474,7 @@ type WorkflowDefinition {
   retry_policy: WorkflowDefinitionRetryPolicy
   timeout: String
   layout: WorkflowDefinitionLayout
+  llm_description: String
 }
 
 type WorkflowDefinitionLayout {

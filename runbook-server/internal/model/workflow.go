@@ -30,10 +30,6 @@ type WorkflowDefinition struct {
 	// content: it snapshots with a published version, so the AI sees what is live
 	// rather than a half-finished draft.
 	LLMDescription string `yaml:"llm_description,omitempty" json:"llm_description,omitempty"`
-	// LLMKeywords are extra search terms for AI capability discovery, for
-	// automations whose name and description do not contain the words an
-	// operator would actually type (discovery matching is lexical). Optional.
-	LLMKeywords []string `yaml:"llm_keywords,omitempty" json:"llm_keywords,omitempty"`
 	// Presentation-only canvas layout (per-task coords live on Task.Layout / Trigger.Layout).
 	Layout *WorkflowDefinitionLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
 }
@@ -100,7 +96,10 @@ type Workflow struct {
 	// revocation is immediate: unchecking it stops AI runs at once instead of
 	// waiting for a publish + make-live, and a version rollback cannot silently
 	// re-expose an automation. Enforced server-side on every AI-originated
-	// trigger, so it is a real boundary and not merely a discovery filter.
+	// workflow run, so it is a real boundary and not merely a discovery filter
+	// — within its scope, which is workflow execution. Running a single task
+	// standalone and dry-running a composed definition are separate routes that
+	// have no workflow to opt in; see the SCOPE note on assertAIInvocationAllowed.
 	//
 	// Setting it requires the definition to carry a non-empty LLMDescription and
 	// a manual trigger (see validateWorkflowStructLevel).
@@ -342,6 +341,19 @@ func (d WorkflowDefinition) HasManualTrigger() bool {
 		}
 	}
 	return false
+}
+
+// SupportsAIInvocation reports whether this definition carries what the
+// AI-invocation opt-in depends on: something to tell the assistant when to reach
+// for the automation, and a manual trigger to reach for it with.
+//
+// validateWorkflowStructLevel enforces the same two conditions, but separately,
+// so it can name which one is missing. This is for the callers that need the
+// combined answer as a value: a save that swaps in a definition unable to carry
+// the grant drops the grant instead of failing outright, which is what the
+// settings UI does when the preconditions stop holding.
+func (d WorkflowDefinition) SupportsAIInvocation() bool {
+	return strings.TrimSpace(d.LLMDescription) != "" && d.HasManualTrigger()
 }
 
 // Validate performs struct-level validation for Trigger.
@@ -671,6 +683,44 @@ type ListWorkflowResponse struct {
 	Workflows     []Workflow `json:"workflows"`
 	NextPageToken string     `json:"next_page_token,omitempty"`
 	TotalCount    int        `json:"total_count"`
+}
+
+// AIWorkflowCandidate is one automation the AI assistant may run, as returned by
+// the AI search. Deliberately narrow: the AI needs to decide *whether* this is
+// the right automation and *what to pass it*, nothing more. The full definition
+// — every task, its rendered params, the canvas layout — would be a large
+// distraction in a chat turn.
+type AIWorkflowCandidate struct {
+	ID string `json:"id"`
+	// Name is the human name, useful both for matching and for naming the
+	// automation back to the user before running it.
+	Name string `json:"name"`
+	// Description is the human-facing summary; LLMDescription says when to reach
+	// for this automation and is the field that actually drives selection.
+	Description    string `json:"description,omitempty"`
+	LLMDescription string `json:"llm_description"`
+	// Inputs is the live version's input declaration, so the model can fill
+	// parameters in without a second round trip to workflow_get.
+	Inputs []Input `json:"inputs,omitempty"`
+}
+
+// AIInvocableWorkflow pairs a workflow's identity with the definition that would
+// actually run — the live version snapshot, not the draft.
+type AIInvocableWorkflow struct {
+	ID          string
+	Name        string
+	Description string
+	// Definition is the LIVE version's definition.
+	Definition WorkflowDefinition
+}
+
+// AIWorkflowSearchResponse is the AI search result set.
+type AIWorkflowSearchResponse struct {
+	Workflows []AIWorkflowCandidate `json:"workflows"`
+	// TotalInvocable is how many automations were eligible before ranking, so a
+	// caller can tell "nothing matched your query" from "nothing is opted in" —
+	// two situations that need very different advice to the user.
+	TotalInvocable int `json:"total_invocable"`
 }
 
 // WorkflowCaller is a lightweight projection returned by ListCallers — just

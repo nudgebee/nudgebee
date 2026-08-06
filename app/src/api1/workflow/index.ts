@@ -19,6 +19,7 @@ query GetWorkflowById($accountId:String!, $workflowId:String!) {
       output
       timeout
       version
+      llm_description
       inputs {
         default
         description
@@ -124,6 +125,8 @@ query GetWorkflowById($accountId:String!, $workflowId:String!) {
     updated_at
     updated_by
     created_from_session_id
+    ai_invocable
+    description
   }
 }
 `;

@@ -35,6 +35,14 @@ export const createWorkflowDefinition = (
     },
   };
 
+  // AI metadata rides the definition so it snapshots with a published version.
+  // Omitted entirely when unset, to avoid writing empty keys into every
+  // automation's definition.
+  const llmDescription = workflowSettings.llmDescription?.trim();
+  if (llmDescription) {
+    definition.llm_description = llmDescription;
+  }
+
   if (viewport && Number.isFinite(viewport.x) && Number.isFinite(viewport.y) && Number.isFinite(viewport.zoom)) {
     definition.layout = {
       viewport: {
@@ -79,6 +87,12 @@ export const createWorkflowRequest = (
     definition: definition,
     tags: workflowTagsToMap(workflowSettings.tags),
     status: workflowSettings.status,
+    // Sent on every save. Omitting it made the server null the column, so the
+    // first canvas save silently erased the automation's description.
+    description: workflowSettings.description || '',
+    // Always sent, including false: this is how the toggle is turned OFF, and
+    // omitting it would leave a previously-enabled automation enabled.
+    ai_invocable: Boolean(workflowSettings.aiInvocable),
     ...(aiSessionId ? { created_from_session_id: aiSessionId } : {}),
   };
 };

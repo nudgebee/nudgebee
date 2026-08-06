@@ -145,4 +145,24 @@ export interface WorkflowSettings {
   outputs: Record<string, string>;
   tags: string[];
   status: WorkflowStatus;
+  /** Human-facing automation description. Carried through settings so a canvas
+   * save round-trips it instead of nulling the column — it also feeds AI search
+   * ranking, so losing it makes the automation harder to find. */
+  description: string;
+  /**
+   * Opt this automation in to being run by the AI assistant. Off by default.
+   *
+   * Saved on the workflow itself rather than inside the definition, so turning
+   * it off takes effect immediately instead of waiting for a publish — the
+   * server enforces the same flag on every AI-originated run.
+   */
+  aiInvocable: boolean;
+  /**
+   * What the AI needs to know: what this automation does and, more importantly,
+   * WHEN to reach for it. Required before aiInvocable can be turned on.
+   *
+   * Lives in the definition, so it is published with a version — the AI reads
+   * what is live, not a description someone is still editing.
+   */
+  llmDescription: string;
 }

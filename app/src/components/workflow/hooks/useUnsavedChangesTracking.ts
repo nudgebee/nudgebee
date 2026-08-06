@@ -165,6 +165,13 @@ export function useUnsavedChangesTracking({
         inputs: workflowSettings.inputs,
         outputs: workflowSettings.outputs,
         tags: workflowSettings.tags,
+        // The AI opt-in and its description are settings like any other, and a
+        // snapshot that omits them leaves the canvas looking clean after the
+        // settings modal applied them. Publish only saves when the canvas is
+        // dirty, so the grant and the description were silently dropped on the
+        // Apply Settings -> Publish path.
+        aiInvocable: workflowSettings.aiInvocable,
+        llmDescription: workflowSettings.llmDescription,
       },
     };
     return JSON.stringify(snapshot);

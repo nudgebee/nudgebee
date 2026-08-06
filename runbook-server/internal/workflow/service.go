@@ -46,6 +46,7 @@ type WorkflowService interface {
 	TriggerWorkflowFromDraft(ctx *security.RequestContext, accountId, id string, inputs map[string]any) (string, error)
 	RetriggerWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) (string, error)
 	ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error)
+	SearchAIInvocableWorkflows(ctx *security.RequestContext, accountId, query string, limit int) (model.AIWorkflowSearchResponse, error)
 	GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error)
 	UpdateWorkflow(ctx *security.RequestContext, accountId, id string, workflow model.Workflow) (model.Workflow, error)
 	DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error
@@ -509,6 +510,15 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 	wf.CreatedBy = ctx.GetSecurityContext().GetUserId()
 	wf.UpdatedBy = ctx.GetSecurityContext().GetUserId()
 	wf.ID = uuid.New().String() // Always generate a new ID for CreateWorkflow
+
+	// An AI-authored automation is never born AI-invocable. Nothing stops the model
+	// putting ai_invocable:true in the definition it composes, and letting that
+	// through would mean the AI granting itself permission to run its own creation
+	// — the opt-in exists precisely so a human decides that, in the settings UI,
+	// after reading what the automation does.
+	if ctx.IsAITriggered() {
+		wf.AIInvocable = false
+	}
 
 	validStatuses := []model.WorkflowStatus{model.WorkflowStatusActive, model.WorkflowStatusPaused, model.WorkflowStatusInactive}
 	isValidStatus := false
@@ -2072,6 +2082,34 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 	}
 	// Always preserve LastExecutionStatus (system managed)
 	workflow.LastExecutionStatus = existingWf.LastExecutionStatus
+
+	// Preserve Description when the payload omits it. It is a *string, so a caller
+	// clearing the description sends "" — an absent key is not the same statement,
+	// and reading it as one wiped the column for every caller that sends the
+	// {name, definition} pair the AI's workflow_update builds.
+	if workflow.Description == nil {
+		workflow.Description = existingWf.Description
+	}
+
+	// ai_invocable is a grant a human makes in the settings UI, so an AI-originated
+	// update never changes it, in either direction. That closes both halves at once:
+	// the AI editing a definition cannot silently revoke the opt-in (the payload it
+	// builds omits the field, and an absent bool is indistinguishable from false),
+	// and it cannot grant itself one either.
+	//
+	// Deliberately keyed on the request being AI-originated rather than on the field
+	// being absent: a plain bool cannot tell absent from false, and of the two
+	// readings, "a non-AI caller that omits it means false" is the safe one — it
+	// revokes rather than grants.
+	//
+	// The one case where the grant does not survive is an edit that leaves the
+	// definition unable to support it — no llm_description, or no manual trigger.
+	// Carrying the flag through then would fail the whole save on struct validation
+	// instead of the edit landing, and dropping it is what the settings UI already
+	// does when those preconditions stop holding.
+	if ctx.IsAITriggered() {
+		workflow.AIInvocable = existingWf.AIInvocable && workflow.Definition.SupportsAIInvocation()
+	}
 
 	if workflow.Definition.Version == "" {
 		workflow.Definition.Version = "v1"
@@ -4746,6 +4784,20 @@ func (s *Service) RestoreWorkflowVersion(ctx *security.RequestContext, accountId
 	// updateWorkflowInternal handles updated_by, validation, webhook side-effects.
 	toApply := *current
 	toApply.Definition = target.Definition
+
+	// Drop the AI-invocation grant if the version being restored cannot carry it.
+	// Every version saved before this feature existed lacks an llm_description, so
+	// carrying the flag through would fail struct validation and make rollback
+	// impossible for any automation that has since been opted in — the common case,
+	// not an edge one. Dropping it matches what an AI edit and the settings UI both
+	// do when the preconditions stop holding: the automation is genuinely no longer
+	// describable to the assistant, so the grant cannot stand.
+	if toApply.AIInvocable && !toApply.Definition.SupportsAIInvocation() {
+		toApply.AIInvocable = false
+		ctx.GetLogger().Info("restore dropped AI invocation: restored version cannot support it",
+			"workflow_id", id, "account_id", accountId, "version_number", versionNumber)
+	}
+
 	updated, err := s.updateWorkflowInternal(ctx, accountId, id, toApply)
 	if err != nil {
 		return updated, err

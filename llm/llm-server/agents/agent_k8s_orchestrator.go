@@ -435,16 +435,23 @@ func getSupportedTools(ctx *security.RequestContext, accountId string, agentName
 		agentSupportedToolsCacheInstance.set(accountId, agentName, staticTools)
 	}
 
-	// Always merge MCP integration tools fresh — they have their own cache
-	// that correctly avoids caching transient failures.
-	mcpTools := toolcore.ListMCPIntegrationTools(accountId)
-	if len(mcpTools) == 0 {
+	// Always merge the per-account sources fresh — MCP integrations and the
+	// account's AI-invocable automations both have dynamic names a static list
+	// cannot carry, and both keep their own caches that correctly avoid caching
+	// transient failures.
+	//
+	// The automations are here because, held only by the automation sub-agent,
+	// one is reachable only after the orchestrator delegates to it — the hop that
+	// registering automations as tools exists to remove. Free on accounts without
+	// the feature flag: the source returns nothing at all.
+	dynamicTools := toolcore.ListAccountSourcedTools(accountId)
+	if len(dynamicTools) == 0 {
 		return staticTools
 	}
 
-	merged := make([]toolcore.NBTool, len(staticTools), len(staticTools)+len(mcpTools))
+	merged := make([]toolcore.NBTool, len(staticTools), len(staticTools)+len(dynamicTools))
 	copy(merged, staticTools)
-	merged = append(merged, mcpTools...)
+	merged = append(merged, dynamicTools...)
 	return lo.UniqBy(merged, func(t toolcore.NBTool) string {
 		return t.Name()
 	})

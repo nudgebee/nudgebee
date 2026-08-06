@@ -466,7 +466,12 @@ func GetEnabledNBTools(context *security.RequestContext, accountId string) []NBT
 	}
 
 	finalTools = append(finalTools, ListCustomNbTool(accountId, ToolStatusEnabled)...)
-	finalTools = append(finalTools, ListMCPIntegrationTools(accountId)...)
+	// Per-account tools with dynamic names: MCP integrations, and the account's
+	// AI-invocable automations. Enumerating the automations here is what makes
+	// them *discoverable* rather than merely resolvable — search_tools and the
+	// agent tool-lists read this function, and a tool nobody can enumerate is a
+	// tool the model never learns exists.
+	finalTools = append(finalTools, ListAccountSourcedTools(accountId)...)
 	enabledToolsCacheInstance.set(accountId, finalTools)
 	return finalTools
 }

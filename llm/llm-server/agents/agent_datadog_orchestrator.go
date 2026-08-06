@@ -241,8 +241,13 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		}
 	}
 
-	// Include MCP integration tools (dynamic names, not in static supportedToolNames list)
-	tools = append(tools, toolcore.ListMCPIntegrationTools(accountId)...)
+	// Per-account tools whose names are dynamic and so cannot appear in the static
+	// supportedToolNames list: MCP integrations, plus the account's AI-invocable
+	// automations. The automations are here because, held only by the automation
+	// sub-agent, one is reachable only after the orchestrator decides to delegate —
+	// the hop that registering automations as tools exists to remove. Free on
+	// accounts without the feature flag: the source returns nothing at all.
+	tools = append(tools, toolcore.ListAccountSourcedTools(accountId)...)
 
 	// Conditionally add think tool for complex investigations
 	if config.Config.LlmServerThinkToolEnabled {

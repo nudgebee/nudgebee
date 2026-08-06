@@ -601,6 +601,68 @@ func (s *WorkflowDao) GetUserNames(ctx context.Context, ids []string) (map[strin
 	return out, nil
 }
 
+// ListAIInvocableWorkflows returns the automations an AI caller may run for an
+// account, each with its LIVE version definition.
+//
+// INNER JOIN on live_version_id is deliberate: a workflow with no published
+// version has nothing an execution could run, so it is not a candidate. The
+// ai_invocable + ACTIVE predicates mirror the run-time gate, so search cannot
+// surface something the gate would then refuse.
+func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]model.AIInvocableWorkflow, error) {
+	if tenantID == "" || accountID == "" {
+		return nil, fmt.Errorf("tenantID and accountID must not be empty")
+	}
+
+	const query = `
+		SELECT w.id::text, w.name, w.description, lv.definition
+		FROM workflows w
+		JOIN workflow_versions lv ON lv.id = w.live_version_id
+		WHERE w.tenant_id = $1 AND w.account_id = $2
+		  AND w.ai_invocable
+		  AND w.status = $3
+		ORDER BY w.name
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, tenantID, accountID, model.WorkflowStatusActive)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list AI-invocable workflows: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("failed to close rows: %v", err)
+		}
+	}()
+
+	var out []model.AIInvocableWorkflow
+	for rows.Next() {
+		var (
+			id, name string
+			desc     sql.NullString
+			defBytes []byte
+		)
+		if err := rows.Scan(&id, &name, &desc, &defBytes); err != nil {
+			return nil, fmt.Errorf("failed to scan AI-invocable workflow: %w", err)
+		}
+		var def model.WorkflowDefinition
+		if err := json.Unmarshal(defBytes, &def); err != nil {
+			// One unreadable definition should not blind the AI to every other
+			// automation in the account.
+			log.Printf("skipping AI-invocable workflow %s: failed to unmarshal live definition: %v", id, err)
+			continue
+		}
+		out = append(out, model.AIInvocableWorkflow{
+			ID:          id,
+			Name:        name,
+			Description: desc.String,
+			Definition:  def,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate AI-invocable workflows: %w", err)
+	}
+	return out, nil
+}
+
 // nullableString maps an optional string field to a NULL-able column value, so
 // "not set" round-trips as SQL NULL rather than an empty string.
 func nullableString(s *string) sql.NullString {

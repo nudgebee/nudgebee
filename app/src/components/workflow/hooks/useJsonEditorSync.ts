@@ -260,6 +260,11 @@ export function useJsonEditorSync({
         outputs: def.output || prev.outputs,
         tags: Object.entries(parsed.tags || {}).map(([key, value]) => (value ? `${key}:${value}` : key)),
         status: parsed.status || prev.status,
+        // Editing the workflow as JSON must not silently drop the AI settings —
+        // ai_invocable is workflow-level, the rest live in the definition.
+        description: parsed.description ?? prev.description,
+        aiInvocable: parsed.ai_invocable ?? prev.aiInvocable,
+        llmDescription: def.llm_description ?? prev.llmDescription,
       }));
 
       // Convert definition back to nodes/edges

@@ -150,8 +150,11 @@ interface WorkflowData {
       backoff_coefficient: number;
     };
     layout?: { viewport?: { x: number; y: number; zoom: number } };
+    llm_description?: string;
   };
   tags: Record<string, any>;
+  description?: string;
+  ai_invocable?: boolean;
   created_from_session_id?: string | null;
   live_version_id?: string | null;
   live_version_number?: number | null;
@@ -384,6 +387,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     outputs: {},
     tags: [],
     status: 'ACTIVE',
+    description: '',
+    aiInvocable: false,
+    llmDescription: '',
   });
   const workflowSettingsRef = useRef(workflowSettings);
   useEffect(() => {
@@ -422,6 +428,11 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           outputs: workflowData.definition.output ?? prev.outputs,
           tags: Object.entries(workflowData.tags || {}).map(([key, value]) => (value ? `${key}:${value}` : key)),
           status: workflowData.status ?? prev.status,
+          description: workflowData.description ?? prev.description,
+          // ai_invocable is a workflow field; the AI description/keywords live in
+          // the definition alongside the rest of the settings above.
+          aiInvocable: workflowData.ai_invocable ?? prev.aiInvocable,
+          llmDescription: workflowData.definition.llm_description ?? prev.llmDescription,
         };
       });
 
@@ -4780,6 +4791,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 onSave={setWorkflowSettings}
                 initialSettings={workflowSettings}
                 taskTimeouts={nodes.filter((n) => n.data?.taskConfig?.timeout).map((n) => n.data.taskConfig.timeout as string)}
+                triggerTypes={extractTriggersFromNodes(nodes).map((t) => t.type)}
+                accountId={accountId}
               />
             </Suspense>
           )}

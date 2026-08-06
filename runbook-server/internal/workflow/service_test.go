@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	commonapi "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/enums/v1"
 	historyapi "go.temporal.io/api/history/v1"
@@ -652,6 +653,14 @@ func (m *MockWorkflowStore) ListByIntegrationName(ctx context.Context, tenantID,
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]model.Workflow), args.Error(1)
+}
+
+func (m *MockWorkflowStore) ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]model.AIInvocableWorkflow, error) {
+	args := m.Called(ctx, tenantID, accountID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.AIInvocableWorkflow), args.Error(1)
 }
 
 func (m *MockWorkflowStore) ListCallers(ctx context.Context, tenantID, accountID, calleeName string) ([]model.WorkflowCaller, error) {
@@ -1833,5 +1842,225 @@ func TestRestoreWorkflowVersion(t *testing.T) {
 		mockStore.AssertExpectations(t)
 		mockStore.AssertNotCalled(t, "PublishVersion")
 		mockStore.AssertNotCalled(t, "SetLiveVersion")
+	})
+}
+
+// TestAIOriginatedWritesCannotMoveTheOptIn covers the write side of the AI
+// boundary: the AI may edit an automation's definition, but ai_invocable is a
+// grant a human makes in the settings UI and an AI-originated call must not be
+// able to move it — in either direction.
+func TestAIOriginatedWritesCannotMoveTheOptIn(t *testing.T) {
+	config.Config.ServiceEndpoint = "http://mock-integration-service"
+	config.Config.ServiceApiServerToken = "test-token"
+
+	newService := func() (*Service, *MockWorkflowStore) {
+		mockTemporalClient := &MockTemporalClient{}
+		mockStore := new(MockWorkflowStore)
+		mockTaskRegistry := tasks.NewInitializedTaskRegistry()
+		mockTaskRegistry.RegisterTask(&scripting.RunScriptTask{})
+		executor := &WorkflowExecutor{
+			temporalClient: mockTemporalClient,
+			workflowStore:  mockStore,
+			dataConverter:  converter.GetDefaultDataConverter(),
+		}
+		// No schedules involved in any of these cases; satisfy the trigger-sync
+		// pass that every save runs through.
+		mockTemporalClient.On("Describe", mock.Anything).Return(nil, serviceerror.NewNotFound("schedule not found"))
+		mockTemporalClient.On("List", mock.Anything, mock.Anything).
+			Return(&MockScheduleListIterator{Schedules: []*client.ScheduleListEntry{}}, nil)
+		return NewService(mockTemporalClient, mockStore, converter.GetDefaultDataConverter(),
+			mockTaskRegistry, executor, new(MockConfigService)), mockStore
+	}
+
+	aiDefinition := func() model.WorkflowDefinition {
+		return model.WorkflowDefinition{
+			LLMDescription: "Restarts the payment consumers.",
+			Triggers:       []model.Trigger{{Type: model.WorkflowTriggerManual}},
+			Tasks:          []model.Task{{ID: "task1", Type: "scripting.run_script", Params: map[string]any{"script": "echo"}}},
+		}
+	}
+
+	optedInWorkflow := func(id string) *model.Workflow {
+		desc := "Restarts payment consumers stuck after a broker failover"
+		return &model.Workflow{
+			ID:          id,
+			Name:        "restart-payment-consumers",
+			Description: &desc,
+			Status:      model.WorkflowStatusActive,
+			AIInvocable: true,
+			Definition:  aiDefinition(),
+		}
+	}
+
+	// The reported bug: workflow_update builds {name, definition} and nothing else,
+	// so description arrived nil and ai_invocable arrived false. Read literally that
+	// wiped the description and silently revoked the opt-in — the automation stopped
+	// being discoverable, with no error and nothing said to the user.
+	t.Run("an AI edit keeps the description and the opt-in", func(t *testing.T) {
+		service, store := newService()
+		existing := optedInWorkflow("wf-ai-edit")
+		store.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ai-edit").Return(existing, nil)
+
+		var saved model.Workflow
+		store.On("Update", mock.Anything, "test-tenant", "test-account", "wf-ai-edit", mock.Anything).
+			Return(nil).Run(func(args mock.Arguments) { saved = args.Get(4).(model.Workflow) })
+
+		// Exactly the payload NormaliseWorkflowUpdatePayload produces.
+		_, err := service.UpdateWorkflow(aiRequestContext(true), "test-account", "wf-ai-edit", model.Workflow{
+			Name:       existing.Name,
+			Definition: aiDefinition(),
+		})
+		require.NoError(t, err)
+		assert.True(t, saved.AIInvocable, "AI edit must not revoke the human's opt-in")
+		require.NotNil(t, saved.Description)
+		assert.Equal(t, *existing.Description, *saved.Description)
+	})
+
+	t.Run("an AI edit cannot grant the opt-in", func(t *testing.T) {
+		service, store := newService()
+		existing := optedInWorkflow("wf-ai-grant")
+		existing.AIInvocable = false
+		store.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ai-grant").Return(existing, nil)
+
+		var saved model.Workflow
+		store.On("Update", mock.Anything, "test-tenant", "test-account", "wf-ai-grant", mock.Anything).
+			Return(nil).Run(func(args mock.Arguments) { saved = args.Get(4).(model.Workflow) })
+
+		_, err := service.UpdateWorkflow(aiRequestContext(true), "test-account", "wf-ai-grant", model.Workflow{
+			Name:        existing.Name,
+			AIInvocable: true, // the AI asking for permission to run its own edit
+			Definition:  aiDefinition(),
+		})
+		require.NoError(t, err)
+		assert.False(t, saved.AIInvocable, "only a human may opt an automation in")
+	})
+
+	// An edit that strips what the opt-in depends on is the one case the grant does
+	// not survive — otherwise the save would fail struct validation outright. This
+	// mirrors the settings UI, which unticks the toggle when its preconditions stop
+	// holding.
+	t.Run("an AI edit that removes what the opt-in depends on drops it rather than failing", func(t *testing.T) {
+		service, store := newService()
+		existing := optedInWorkflow("wf-ai-strip")
+		store.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ai-strip").Return(existing, nil)
+
+		var saved model.Workflow
+		store.On("Update", mock.Anything, "test-tenant", "test-account", "wf-ai-strip", mock.Anything).
+			Return(nil).Run(func(args mock.Arguments) { saved = args.Get(4).(model.Workflow) })
+
+		stripped := aiDefinition()
+		stripped.LLMDescription = ""
+		_, err := service.UpdateWorkflow(aiRequestContext(true), "test-account", "wf-ai-strip", model.Workflow{
+			Name:       existing.Name,
+			Definition: stripped,
+		})
+		require.NoError(t, err)
+		assert.False(t, saved.AIInvocable)
+	})
+
+	// The UI sends ai_invocable on every save including false — that is how the
+	// toggle is turned off, and a human turning it off must still work.
+	t.Run("a human save still owns the toggle", func(t *testing.T) {
+		service, store := newService()
+		existing := optedInWorkflow("wf-human")
+		store.On("Find", mock.Anything, "test-tenant", "test-account", "wf-human").Return(existing, nil)
+
+		var saved model.Workflow
+		store.On("Update", mock.Anything, "test-tenant", "test-account", "wf-human", mock.Anything).
+			Return(nil).Run(func(args mock.Arguments) { saved = args.Get(4).(model.Workflow) })
+
+		_, err := service.UpdateWorkflow(aiRequestContext(false), "test-account", "wf-human", model.Workflow{
+			Name:        existing.Name,
+			AIInvocable: false,
+			Definition:  aiDefinition(),
+		})
+		require.NoError(t, err)
+		assert.False(t, saved.AIInvocable, "a human unticking the toggle must take effect")
+	})
+
+	// Description is a *string, so "absent" and "cleared" are genuinely different
+	// statements and only the first one preserves.
+	t.Run("an explicit empty description still clears it", func(t *testing.T) {
+		service, store := newService()
+		existing := optedInWorkflow("wf-clear")
+		store.On("Find", mock.Anything, "test-tenant", "test-account", "wf-clear").Return(existing, nil)
+
+		var saved model.Workflow
+		store.On("Update", mock.Anything, "test-tenant", "test-account", "wf-clear", mock.Anything).
+			Return(nil).Run(func(args mock.Arguments) { saved = args.Get(4).(model.Workflow) })
+
+		cleared := ""
+		_, err := service.UpdateWorkflow(aiRequestContext(false), "test-account", "wf-clear", model.Workflow{
+			Name:        existing.Name,
+			Description: &cleared,
+			AIInvocable: true,
+			Definition:  aiDefinition(),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, saved.Description)
+		assert.Equal(t, "", *saved.Description)
+	})
+
+	// Every version saved before this feature existed lacks an llm_description, so
+	// carrying the grant into a rollback failed struct validation and surfaced as an
+	// opaque 500 — leaving version rollback dead for exactly the automations someone
+	// had just adopted AI invocation on.
+	t.Run("restoring a pre-AI version drops the grant instead of failing", func(t *testing.T) {
+		service, store := newService()
+		current := optedInWorkflow("wf-restore")
+		store.On("Find", mock.Anything, "test-tenant", "test-account", "wf-restore").Return(current, nil)
+
+		preAI := aiDefinition()
+		preAI.LLMDescription = "" // as anything predating the feature looks
+		store.On("GetWorkflowVersion", mock.Anything, "wf-restore", 1).
+			Return(&model.WorkflowVersion{ID: "ver-1", VersionNumber: 1, Definition: preAI}, nil)
+		store.On("SetDraftVersionID", mock.Anything, "test-tenant", "test-account", "wf-restore", "ver-1").Return(nil)
+
+		var saved model.Workflow
+		store.On("Update", mock.Anything, "test-tenant", "test-account", "wf-restore", mock.Anything).
+			Return(nil).Run(func(args mock.Arguments) { saved = args.Get(4).(model.Workflow) })
+
+		restored, err := service.RestoreWorkflowVersion(aiRequestContext(false), "test-account", "wf-restore", 1)
+		require.NoError(t, err)
+		assert.False(t, saved.AIInvocable)
+		assert.False(t, restored.AIInvocable, "the author must see the grant went off")
+	})
+
+	t.Run("restoring a version that still supports the grant keeps it", func(t *testing.T) {
+		service, store := newService()
+		current := optedInWorkflow("wf-restore-ok")
+		store.On("Find", mock.Anything, "test-tenant", "test-account", "wf-restore-ok").Return(current, nil)
+		store.On("GetWorkflowVersion", mock.Anything, "wf-restore-ok", 2).
+			Return(&model.WorkflowVersion{ID: "ver-2", VersionNumber: 2, Definition: aiDefinition()}, nil)
+		store.On("SetDraftVersionID", mock.Anything, "test-tenant", "test-account", "wf-restore-ok", "ver-2").Return(nil)
+
+		var saved model.Workflow
+		store.On("Update", mock.Anything, "test-tenant", "test-account", "wf-restore-ok", mock.Anything).
+			Return(nil).Run(func(args mock.Arguments) { saved = args.Get(4).(model.Workflow) })
+
+		_, err := service.RestoreWorkflowVersion(aiRequestContext(false), "test-account", "wf-restore-ok", 2)
+		require.NoError(t, err)
+		assert.True(t, saved.AIInvocable)
+	})
+
+	// Nothing stops the model putting ai_invocable:true in a definition it composes.
+	// Letting that through would mean the AI granting itself permission to run its
+	// own creation, which is exactly what the opt-in exists to prevent.
+	t.Run("an AI-authored automation is never born invocable", func(t *testing.T) {
+		service, store := newService()
+		store.On("FindByName", mock.Anything, "test-tenant", "test-account", "ai-authored").Return(nil, sql.ErrNoRows)
+
+		var created model.Workflow
+		store.On("CreateWorkflowWithInitialVersion", mock.Anything, "test-tenant", "test-account", mock.Anything).
+			Return("wf-new", (*model.WorkflowVersion)(nil), nil).
+			Run(func(args mock.Arguments) { created = args.Get(3).(model.Workflow) })
+
+		_, _, err := service.CreateWorkflow(aiRequestContext(true), "test-account", model.Workflow{
+			Name:        "ai-authored",
+			AIInvocable: true,
+			Definition:  aiDefinition(),
+		})
+		require.NoError(t, err)
+		assert.False(t, created.AIInvocable)
 	})
 }

@@ -93,9 +93,13 @@ func TestAssertAIInvocationAllowed(t *testing.T) {
 		assert.Error(t, s.assertAIInvocationAllowed(aiRequestContext(true), "test-account", wf))
 	})
 
-	t.Run("denial message reveals nothing about why", func(t *testing.T) {
-		// An AI-originated caller should not be able to probe workflow state by
-		// reading back distinct refusal reasons.
+	t.Run("denial carries a coarse reason a human can act on", func(t *testing.T) {
+		// Originally every denial returned one opaque message. End-to-end testing
+		// showed the cost landing on a human: told only "not available", the
+		// assistant confidently advised enabling a toggle that was already on,
+		// for an automation whose real problem was that it was PAUSED. These
+		// codes distinguish nothing an AI caller could not learn from
+		// workflow_list, and they save the user a dead end.
 		stubFeatureFlag(t, true, nil)
 		notOptedIn := invocableWorkflow()
 		notOptedIn.AIInvocable = false
@@ -106,7 +110,27 @@ func TestAssertAIInvocationAllowed(t *testing.T) {
 		errPaused := s.assertAIInvocationAllowed(aiRequestContext(true), "test-account", paused)
 		require.Error(t, errNotOptedIn)
 		require.Error(t, errPaused)
-		assert.Equal(t, errNotOptedIn.Error(), errPaused.Error())
+		assert.Contains(t, errNotOptedIn.Error(), "not_opted_in")
+		assert.Contains(t, errPaused.Error(), "not_active")
+
+		// Still no free text: the specific status, name or definition never
+		// reaches the caller.
+		assert.NotContains(t, errPaused.Error(), string(model.WorkflowStatusPaused))
+		assert.NotContains(t, errPaused.Error(), paused.Name)
+	})
+
+	t.Run("denies an AI run with no identified user", func(t *testing.T) {
+		// A missing user id makes runbook-server grant tenant-account-admin, so an
+		// unidentified run would carry more authority than whoever asked for it.
+		// llm-server refuses these too, but a client-side check is exactly what a
+		// future caller can silently miss.
+		stubFeatureFlag(t, true, nil)
+		ctx := security.NewRequestContextForTenantAccountAdmin("test-tenant", security.GetSystemUserId(), []string{"test-account"})
+		ctx.SetAITriggered(true)
+
+		err := s.assertAIInvocationAllowed(ctx, "test-account", invocableWorkflow())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no_user")
 	})
 }
 

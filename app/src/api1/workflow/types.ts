@@ -105,6 +105,9 @@ export interface WorkflowDefinition {
   retry_policy?: WorkflowDefinitionRetryPolicy;
   timeout?: string;
   layout?: WorkflowDefinitionLayout;
+  /** What the automation does and when the AI should reach for it. Versioned
+   * with the definition so the AI reads what is published, not a draft. */
+  llm_description?: string;
 }
 
 export interface WorkflowRequest {
@@ -113,6 +116,12 @@ export interface WorkflowRequest {
   name: string;
   status?: string;
   created_from_session_id?: string;
+  /** Human-facing description. Sent on every save so a canvas save does not
+   * null the column. */
+  description?: string;
+  /** Opt-in for AI invocation. Workflow-level rather than in the definition so
+   * revoking it takes effect immediately, without a publish. */
+  ai_invocable?: boolean;
 }
 
 export interface WorkflowCreateRequest {

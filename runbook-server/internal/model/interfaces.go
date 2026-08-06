@@ -35,6 +35,13 @@ type WorkflowStore interface {
 	// `{{ ... }}`) can't be matched statically and are returned only when the
 	// literal name appears in the field.
 	ListCallers(ctx context.Context, tenantID, accountID, calleeName string) ([]WorkflowCaller, error)
+	// ListAIInvocableWorkflows returns the automations an AI caller is allowed to
+	// run, paired with their LIVE version definition. It reads the live snapshot
+	// rather than workflows.definition (the draft) on purpose: llm_description is
+	// versioned content, so the AI must see what is published, not a half-edited
+	// draft. Callers still filter on the manual-trigger requirement, which lives
+	// inside the returned definition.
+	ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]AIInvocableWorkflow, error)
 	Update(ctx context.Context, tenantID, accountID, id string, wf Workflow) error
 	// UpdateInternal persists a workflow's definition WITHOUT touching the audit
 	// columns (updated_by / updated_at). Use for internal touch-ups that are not

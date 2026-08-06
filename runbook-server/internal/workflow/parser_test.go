@@ -89,9 +89,6 @@ description: "Restarts consumers and drains the stuck queue."
 ai_invocable: true
 definition:
   llm_description: "Use when payment-service pods are crashlooping with RabbitMQ timeouts."
-  llm_keywords:
-    - crashloop
-    - rabbitmq
   triggers:
     - type: manual
   tasks:
@@ -104,7 +101,6 @@ definition:
 		assert.Equal(t, "Restarts consumers and drains the stuck queue.", *wf.Description)
 		assert.True(t, wf.AIInvocable)
 		assert.Equal(t, "Use when payment-service pods are crashlooping with RabbitMQ timeouts.", wf.Definition.LLMDescription)
-		assert.Equal(t, []string{"crashloop", "rabbitmq"}, wf.Definition.LLMKeywords)
 		assert.True(t, wf.Definition.HasManualTrigger())
 	})
 
