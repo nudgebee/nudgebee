@@ -1,10 +1,9 @@
 import * as React from 'react';
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useTenantBranding, DEFAULT_LOGO, DEFAULT_FAVICON } from '@hooks/useTenantBranding';
 import Box from '@mui/material/Box';
-import { Button, Collapse, Container, Typography, Menu, IconButton } from '@mui/material';
+import { Button, Container, Typography, Menu, MenuItem, IconButton, Popover } from '@mui/material';
 import { useRouter } from 'next/router';
-import { KeyboardArrowDownRounded } from '@mui/icons-material';
 import { signOut } from 'next-auth/react';
 import Head from 'next/head';
 import Link from 'next/link';
@@ -12,7 +11,16 @@ import { renderSlot } from '@lib/slots';
 
 // Internal Imports
 import { LayoutHeaderActionSlot } from '@shared/layout/LayoutHeaderActionSlot';
-import { getUserSession, withAuth, hasAdminSurfaceAccess, isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
+import {
+  getUserSession,
+  withAuth,
+  hasAdminSurfaceAccess,
+  hasReadAccess,
+  isGrantsOnlyUser,
+  isUiFeatureEnabled,
+  hasPermission,
+  missingPermissionMessage,
+} from '@lib/auth';
 import {
   homeIcon1,
   KubernetesClusterIcon,
@@ -20,9 +28,26 @@ import {
   troubleshootIcon1,
   AdminIcon,
   ProfileOutlineIcon,
-  CloudAccountIcon,
   WhiteOptimizeIcon,
   WorkflowIconWhite,
+  AllEventsIcon,
+  SearchBlueIcon,
+  ServiceMapsIcon,
+  AutomateBlue,
+  dashboardIcon1,
+  PlayCircleIcon,
+  OptimizeSummaryIcon,
+  RecommendationIcon,
+  RecommendationResolutionIcon,
+  LLMConsumptionIcon,
+  IntegrationsIcon,
+  CloudAccountIcon,
+  TicketBlueIcon,
+  UserIconOutline,
+  User1,
+  UserGroupIcon,
+  AuditIcon,
+  NotificationIcon1,
 } from '@assets';
 import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
@@ -41,6 +66,14 @@ import { ds } from 'src/utils/colors';
 import { isRenderedInIframe } from 'src/utils/common';
 
 const COLLAPSED_WIDTH = 76;
+
+const FLYOUT_CLOSE_DELAY_MS = 150;
+const NAV_ITEM_HIGHLIGHT_BG = `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`;
+const SIDEBAR_FLYOUT_BG = `color-mix(in srgb, var(--ds-sidebar-bg, var(--ds-brand-600)) 65%, ${ds.gray[700]})`;
+const SIDEBAR_FLYOUT_TEXT = `color-mix(in srgb, ${ds.background[100]} 72%, transparent)`;
+const NAV_ITEM_HOVER_BG = SIDEBAR_FLYOUT_BG;
+const FLYOUT_ITEM_HOVER_BG = `color-mix(in srgb, ${ds.background[100]} 14%, transparent)`;
+const FLYOUT_ICON_PX = 20;
 
 /**
  * Utility to calculate dynamic paths based on current route params.
@@ -104,9 +137,102 @@ const getDynamicPath = (path, router) => {
   return path;
 };
 
-const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }) => {
+/**
+ * Resolves a nav entry's `path` to the URL to actually visit. Sub-items already
+ * name their own hash tab (`/troubleshoot#investigations`), so they're taken as
+ * written; hash-less paths go through getDynamicPath to pick up the default tab
+ * and the in-scope accountId.
+ */
+const resolveNavPath = (path, router) => (path.includes('#') ? path : getDynamicPath(path, router));
+
+/**
+ * Navigating out of Troubleshoot's Knowledge Graph tab with next/router is
+ * blocked by the heavy elkjs layout running inside it, so leave that tab with a
+ * full document load instead.
+ */
+const navigateTo = (router, targetPath) => {
+  const onKnowledgeGraphTab = router.pathname === '/troubleshoot' && typeof window !== 'undefined' && window.location.hash === '#kg';
+  if (onKnowledgeGraphTab) {
+    window.location.assign(targetPath);
+    return;
+  }
+  router.push(targetPath);
+};
+
+/** True when the route currently rendered is the one this sub-item points at. */
+const isSubItemActive = (subPath, router) => {
+  const [base, hash] = subPath.split('#');
+  if (!router.pathname.startsWith(base)) {
+    return false;
+  }
+  if (!hash) {
+    return true;
+  }
+  // Compare only the top-level hash segment — `#all-events/triage-rules` is
+  // still the All Events sub-item.
+  return (router.asPath.split('#')[1] || '').split('/')[0] === hash;
+};
+
+const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }) => {
   const router = useRouter();
-  const haveSubItems = !!item?.subItems?.length;
+
+  if (!item || !anchorEl) {
+    return null;
+  }
+
+  return (
+    <Popover
+      id='sidenav-flyout'
+      anchorEl={anchorEl}
+      open
+      onClose={onMouseLeave}
+      anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+      transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+      sx={{ pointerEvents: 'none' }}
+      disableAutoFocus
+      disableEnforceFocus
+      disableRestoreFocus
+      disableScrollLock
+      slotProps={{ paper: { onMouseEnter, onMouseLeave, sx: styles.flyoutPaper } }}
+    >
+      {item.subItems.map((sub) => {
+        const row = (
+          <MenuItem
+            id={sub.id}
+            key={sub.text}
+            component={sub.disabled ? 'div' : Link}
+            href={sub.disabled ? undefined : sub.path}
+            disabled={sub.disabled}
+            selected={isSubItemActive(sub.path, router)}
+            onClick={(e) => {
+              e.preventDefault();
+              if (sub.disabled) {
+                return;
+              }
+              onNavigate(resolveNavPath(sub.path, router));
+            }}
+            sx={styles.flyoutItem}
+          >
+            <Box component='span' className='flyout-item-icon' sx={styles.flyoutItemIcon}>
+              <SafeIcon src={sub.icon} alt='' width={FLYOUT_ICON_PX} height={FLYOUT_ICON_PX} />
+            </Box>
+            {sub.text}
+          </MenuItem>
+        );
+        return sub.disabled && sub.disabledTooltip ? (
+          <Tooltip key={sub.text} title={sub.disabledTooltip} placement='right'>
+            <span style={{ display: 'block' }}>{row}</span>
+          </Tooltip>
+        ) : (
+          row
+        );
+      })}
+    </Popover>
+  );
+};
+
+const SideDrawerButton = ({ item = {}, isFlyoutOpen = false, onHoverOpen, onHoverClose }) => {
+  const router = useRouter();
 
   const isActive = useMemo(() => {
     if (item.path === '') {
@@ -120,59 +246,34 @@ const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }
   // NOTE: destinationPath memoization removed. Logic moved to handleLinkClick.
 
   const handleLinkClick = (e) => {
-    // 0. Permission-disabled item: swallow the click entirely (no navigate, no
-    // drawer-open). The Button also carries pointer-events:none, but a keyboard
-    // Enter still fires onClick, so guard here too.
+    // Permission-disabled item: swallow the click entirely. The Button also
+    // carries pointer-events:none, but a keyboard Enter still fires onClick, so
+    // guard here too.
     if (item.disabled) {
       e.preventDefault();
       return;
     }
-
-    // 1. If sidebar is closed and item has sub-items, just open drawer
-    if (!open && haveSubItems) {
-      e.preventDefault();
-      handleDrawerOpen();
-      return;
-    }
-
-    // 2. Lazy Execution: Calculate dynamic path ONLY when clicked
-    e.preventDefault(); // Stop default Link behavior (which would go to static item.path)
-
-    const targetPath = getDynamicPath(item.path, router);
-
-    // 3. Navigate programmatically
-    const getFragmentFromUrl = () => {
-      if (typeof window === 'undefined') {
-        return null;
-      }
-      return window.location.hash.replace('#', '');
-    };
-
-    const isTroubleshootTab2 = router.pathname === '/troubleshoot' && getFragmentFromUrl() === 'kg';
-    if (isTroubleshootTab2) {
-      // navigation using router is blocked due to heavy library(elkjs) inside troubleshoot tab2
-      window.location.assign(targetPath);
-      return;
-    }
-    router.push(targetPath);
+    e.preventDefault();
+    navigateTo(router, resolveNavPath(item.path, router));
   };
 
-  // Base button. When the item is permission-disabled it's greyed and made
-  // non-interactive; the Tooltip below still fires because the hover is caught
-  // by the wrapping <span> (the Button itself has pointer-events:none).
   const navButton = (
     <Button
       component={Link}
-      // Disabled items shouldn't advertise a real href to assistive tech / hover.
       href={item.disabled ? '#' : item.path || '#'}
       onClick={handleLinkClick}
+      onMouseEnter={(e) => onHoverOpen(item, e.currentTarget)}
+      onMouseLeave={onHoverClose}
       className={isActive ? 'active-nav' : undefined}
       aria-label={item.text}
       aria-disabled={item.disabled || undefined}
       id={item?.id}
-      sx={
-        item.disabled ? { ...(isActive ? styles.activeButton : {}), opacity: 0.4, pointerEvents: 'none' } : isActive ? styles.activeButton : undefined
-      }
+      sx={{
+        ...styles.railButton,
+        ...(isActive ? styles.activeButton : {}),
+        ...(isFlyoutOpen ? styles.railButtonFlyoutOpen : {}),
+        ...(item.disabled ? { opacity: 0.4, pointerEvents: 'none' } : {}),
+      }}
     >
       {isActive && <Box sx={styles.activeIndicator} />}
 
@@ -183,48 +284,17 @@ const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }
 
         <Typography sx={styles.iconLabel}>{item.text}</Typography>
       </Box>
-
-      {open && (
-        <Box component='span' sx={styles.openTextContainer}>
-          <span>{item.text}</span>
-          <span className='sub-text'>{item.subText}</span>
-        </Box>
-      )}
-
-      {open && haveSubItems && <KeyboardArrowDownRounded sx={{ height: 10, transition: 'all 0.2s ease' }} />}
     </Button>
   );
 
-  return (
-    <React.Fragment>
-      {/* We keep item.path here for semantic HTML, but override the click */}
-      {item.disabled && item.disabledTooltip ? (
-        <Tooltip title={item.disabledTooltip} placement='right'>
-          <span style={{ display: 'block' }}>{navButton}</span>
-        </Tooltip>
-      ) : (
-        navButton
-      )}
-      {haveSubItems && (
-        <Collapse in={open}>
-          <Box className='collapsable'>
-            {item.subItems?.map((sub, idx) => (
-              <Button key={`${sub.text}-${idx}`} onClick={() => onClick(sub.path)} className={`menu-item sub-item`}>
-                <Box sx={{ width: ds.space.mul(1, 5), height: ds.space.mul(1, 5), position: 'relative' }}>
-                  <SafeIcon priority={true} src={sub.icon} alt={sub.text} fill style={{ objectFit: 'contain' }} />
-                </Box>
-                {open && (
-                  <Box component='span' sx={{ flexGrow: 1, whiteSpace: 'nowrap' }}>
-                    {sub.text}
-                  </Box>
-                )}
-                {open && sub.haveSubItems && <KeyboardArrowDownRounded />}
-              </Button>
-            ))}
-          </Box>
-        </Collapse>
-      )}
-    </React.Fragment>
+  return item.disabled && item.disabledTooltip ? (
+    <Tooltip title={item.disabledTooltip} placement='right'>
+      <span style={{ display: 'block' }} onMouseEnter={onHoverClose}>
+        {navButton}
+      </span>
+    </Tooltip>
+  ) : (
+    navButton
   );
 };
 
@@ -232,11 +302,15 @@ const PageLayout = ({ children }) => {
   const router = useRouter();
 
   // State
-  const [open, setOpen] = useState(false);
   const [anchorElUser, setAnchorElUser] = useState(null);
   const [openSwitchAccount, setOpenSwitchAccount] = useState(false);
   const [openSettings, setOpenSettings] = useState(false);
   const [openApiTokens, setOpenApiTokens] = useState(false);
+  // Which nav item's sub-section flyout is open, and the rail button it hangs
+  // off. One flyout for the whole rail, re-anchored per item.
+  const [flyout, setFlyout] = useState(null);
+  const flyoutCloseTimer = useRef(null);
+  const userMenuCloseTimer = useRef(null);
 
   // Let any component (e.g. the cross-tenant AccountGuard) request the tenant
   // switcher open without prop-drilling. subscribe() returns its unsubscribe
@@ -244,6 +318,15 @@ const PageLayout = ({ children }) => {
   useEffect(() => {
     return tenantSwitcher.subscribe(() => setOpenSwitchAccount(true));
   }, []);
+
+  // A pending close must not fire after unmount (or navigation away).
+  useEffect(
+    () => () => {
+      clearTimeout(flyoutCloseTimer.current);
+      clearTimeout(userMenuCloseTimer.current);
+    },
+    []
+  );
 
   // Derived Values
   const session = getUserSession();
@@ -265,10 +348,21 @@ const PageLayout = ({ children }) => {
   }, []);
 
   const menuItems = useMemo(() => {
-    // `module` is the dynamic-RBAC permission module (permissionCatalog.ts) that
-    // backs each product area — it drives the disabled-icon gating below. Home is
-    // gated on `insights` (its landing surfaces account insights). b-Cortex/
-    // Settings/Nudgebee (rendered separately) carry none.
+    const isAdmin = !!(session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin'));
+    const canReadAccount = hasReadAccess(selectedCluster?.value);
+    const optimizeSections = [
+      { text: 'Summary', path: '/optimise#summary', id: 'sidenav-optimise-summary', icon: OptimizeSummaryIcon },
+      { text: 'Recommendations', path: '/optimise#recommendations', id: 'sidenav-optimise-recommendations', icon: RecommendationIcon },
+      { text: 'Resolutions', path: '/optimise#resolutions', id: 'sidenav-optimise-resolutions', icon: RecommendationResolutionIcon },
+      { text: 'Auto Optimize', path: '/optimise#auto-optimize', id: 'sidenav-optimise-auto-optimize', icon: AutomateBlue },
+      ...(isUiFeatureEnabled('llmAnalyser') && canReadAccount
+        ? [{ text: 'LLM Analyser', path: '/optimise#cost-analyser', id: 'sidenav-optimise-cost-analyser', icon: LLMConsumptionIcon }]
+        : []),
+      ...(isUiFeatureEnabled('llmGateway') && canReadAccount
+        ? [{ text: 'AI Gateway', path: '/optimise#ai-gateway', id: 'sidenav-optimise-ai-gateway', icon: IntegrationsIcon }]
+        : []),
+    ];
+
     const items = [
       { path: '/home', icon: homeIcon1, text: 'Home', id: 'home-sidenavbutton', module: 'insights' },
       {
@@ -278,38 +372,104 @@ const PageLayout = ({ children }) => {
         text: 'Troubleshoot',
         id: 'troubleshoot-sidenavbutton',
         module: 'events',
+        subItems: [
+          { text: 'All Events', path: '/troubleshoot#all-events', id: 'sidenav-troubleshoot-all-events', icon: AllEventsIcon },
+          { text: 'Investigations', path: '/troubleshoot#investigations', id: 'sidenav-troubleshoot-investigations', icon: SearchBlueIcon },
+          { text: 'Knowledge Graph', path: '/troubleshoot#kg', id: 'sidenav-troubleshoot-kg', icon: ServiceMapsIcon },
+        ],
       },
-      { path: '/automation', icon: WorkflowIconWhite, text: 'Automations', id: 'auto-pilot-sidenavbutton', module: 'workflows' },
-      { path: '/optimise', icon: WhiteOptimizeIcon, text: 'Optimize', id: 'optimize-sidenavbutton', module: 'recommendations' },
-      { path: '/kubernetes', icon: KubernetesClusterIcon, text: 'Clusters', haveSubItems: true, id: 'clusters-sidenavbutton', module: 'k8s' },
-      { path: '/cloud-account', icon: CloudAccountIcon, text: 'Cloud', haveSubItems: true, id: 'cloud-sidenavbutton', module: 'cloud' },
-      { path: '/tickets', icon: ticketsIcon1, text: 'Tickets', id: 'tickets-sidenavbutton', module: 'tickets' },
+      {
+        path: '/automation',
+        icon: WorkflowIconWhite,
+        text: 'Automations',
+        id: 'auto-pilot-sidenavbutton',
+        module: 'workflows',
+        subItems: [
+          { text: 'Automations', path: '/automation#automations', id: 'sidenav-automation-automations', icon: AutomateBlue },
+          { text: 'Executions', path: '/automation#executions', id: 'sidenav-automation-executions', icon: dashboardIcon1 },
+          {
+            text: 'Task Runner',
+            path: '/automation#task-runner',
+            id: 'sidenav-automation-task-runner',
+            icon: PlayCircleIcon,
+            disabled: !(isAdmin || hasPermission('workflows', 'Execute') || hasPermission('workflows', 'Write')),
+            disabledTooltip: missingPermissionMessage('workflows:Execute'),
+          },
+        ],
+      },
+      {
+        path: '/optimise',
+        icon: WhiteOptimizeIcon,
+        text: 'Optimize',
+        id: 'optimize-sidenavbutton',
+        module: 'recommendations',
+        subItems: optimizeSections,
+      },
+      {
+        path: '/kubernetes',
+        activePaths: ['/cloud-account'],
+        icon: KubernetesClusterIcon,
+        text: 'Infra',
+        id: 'infra-sidenavbutton',
+        subItems: [
+          { text: 'K8s', path: '/kubernetes', id: 'sidenav-infra-k8s', module: 'k8s', icon: KubernetesClusterIcon },
+          { text: 'Cloud', path: '/cloud-account', id: 'sidenav-infra-cloud', module: 'cloud', icon: CloudAccountIcon },
+        ],
+      },
+      {
+        path: '/tickets',
+        icon: ticketsIcon1,
+        text: 'Tickets',
+        id: 'tickets-sidenavbutton',
+        module: 'tickets',
+        subItems: [
+          { text: 'All Tickets', path: '/tickets#tickets', id: 'sidenav-tickets-all', icon: TicketBlueIcon },
+          { text: 'Assigned to me', path: '/tickets#assigned-me', id: 'sidenav-tickets-assigned-me', icon: UserIconOutline },
+        ],
+      },
     ];
     if (hasAdminSurfaceAccess()) {
-      items.push({ path: '/user-management', activePaths: ['/accounts'], icon: AdminIcon, text: 'Admin', id: 'admin-sidenav' });
+      items.push({
+        path: '/user-management',
+        activePaths: ['/accounts'],
+        icon: AdminIcon,
+        text: 'Admin',
+        id: 'admin-sidenav',
+        subItems: [
+          { text: 'Users', path: '/user-management#users', id: 'sidenav-admin-users', module: 'users', icon: User1 },
+          { text: 'Groups', path: '/user-management#groups', id: 'sidenav-admin-groups', module: 'usergroups', icon: UserGroupIcon },
+          { text: 'Audits', path: '/user-management#audits', id: 'sidenav-admin-audits', module: 'audits', icon: AuditIcon },
+          {
+            text: 'Notifications',
+            path: '/user-management#notifications',
+            id: 'sidenav-admin-notifications',
+            module: 'notifications',
+            icon: NotificationIcon1,
+          },
+          {
+            text: 'Integrations',
+            path: '/user-management#integrations',
+            id: 'sidenav-admin-integrations',
+            module: 'integrations',
+            icon: IntegrationsIcon,
+          },
+          { text: 'Ownership', path: '/user-management#ownership', id: 'sidenav-admin-ownership', module: 'ownership', icon: UserGroupIcon },
+        ],
+      });
     }
-
-    // Per-module nav gating applies ONLY to grants-only custom-role users — those
-    // whose access comes purely from dynamic-RBAC grants, with no tenant-wide role
-    // and no account access. Tenant admins and any account user keep every icon
-    // (these product areas are account-scoped and theirs by role). For a grants-only
-    // user, an icon they lack `<module>:Read` for renders disabled (greyed) with a
-    // request-access tooltip rather than being hidden, so the capability stays
-    // discoverable. Admin is already gated by its own hasAdminSurfaceAccess() push.
-    //
-    // Demo bypass: the shared `demo` account (`value === 'demo'`) is the
-    // unrestricted product showcase — when it's the selected account, every icon
-    // stays enabled regardless of grants, so the demo is never hobbled. The whole
-    // block is also inert while the tenant's CUSTOM_ROLES feature is off (see
-    // isGrantsOnlyUser), so the nav looks exactly as it did pre-dynamic-RBAC.
     if (!isGrantsOnlyUser(selectedCluster?.value)) return items;
-    return items.map((item) =>
-      item.module && !hasPermission(item.module, 'Read')
-        ? { ...item, disabled: true, disabledTooltip: missingPermissionMessage(`${item.module}:Read`) }
-        : item
-    );
-    // selectedCluster?.value re-evaluates the demo bypass on account switch.
-  }, [selectedCluster?.value]);
+    const gate = (entry) =>
+      entry.module && !hasPermission(entry.module, 'Read')
+        ? { ...entry, disabled: true, disabledTooltip: missingPermissionMessage(`${entry.module}:Read`) }
+        : entry;
+    return items.map((item) => {
+      const subItems = item.subItems?.map(gate);
+      const gated = gate({ ...item, ...(subItems ? { subItems } : {}) });
+      return gated.disabled || !subItems?.length || subItems.some((sub) => !sub.disabled)
+        ? gated
+        : { ...gated, disabled: true, disabledTooltip: subItems[0].disabledTooltip };
+    });
+  }, [selectedCluster?.value, session]);
 
   // Route/Page Type Detection
   const pageFlags = useMemo(
@@ -334,8 +494,36 @@ const PageLayout = ({ children }) => {
   const homeUrl = useMemo(() => getDynamicPath('/home', router), [router]);
 
   // Handlers
-  const handleDrawerOpen = () => setOpen(true);
   const handleSwitchAccountClose = () => setOpenSwitchAccount(false);
+
+  const openFlyout = (item, anchorEl) => {
+    clearTimeout(flyoutCloseTimer.current);
+    setFlyout(item.subItems?.length ? { item, anchorEl } : null);
+  };
+
+  const scheduleFlyoutClose = () => {
+    clearTimeout(flyoutCloseTimer.current);
+    flyoutCloseTimer.current = setTimeout(() => setFlyout(null), FLYOUT_CLOSE_DELAY_MS);
+  };
+
+  const cancelFlyoutClose = () => clearTimeout(flyoutCloseTimer.current);
+
+  const handleFlyoutNavigate = (targetPath) => {
+    setFlyout(null);
+    navigateTo(router, targetPath);
+  };
+
+  const openUserMenu = (e) => {
+    clearTimeout(userMenuCloseTimer.current);
+    setAnchorElUser(e.currentTarget);
+  };
+
+  const scheduleUserMenuClose = () => {
+    clearTimeout(userMenuCloseTimer.current);
+    userMenuCloseTimer.current = setTimeout(() => setAnchorElUser(null), FLYOUT_CLOSE_DELAY_MS);
+  };
+
+  const cancelUserMenuClose = () => clearTimeout(userMenuCloseTimer.current);
 
   const handleSubMenuClick = (subMenu) => {
     setAnchorElUser(null);
@@ -359,15 +547,6 @@ const PageLayout = ({ children }) => {
     setOpenApiTokens,
     handleSubMenuClick,
   });
-
-  const onMenuClick = (path) => {
-    if (path) {
-      router.push(path);
-    }
-    if (open) {
-      setOpen(!open);
-    }
-  };
 
   return (
     <>
@@ -432,10 +611,23 @@ const PageLayout = ({ children }) => {
 
                   {menuItems.map((item, idx) => (
                     <React.Fragment key={item.id || `${item.text}-${idx}`}>
-                      {['Troubleshoot', 'Clusters', 'Tickets'].includes(item.text) && <Box sx={styles.subSeparator} />}
-                      <SideDrawerButton open={open} item={item} onClick={onMenuClick} handleDrawerOpen={handleDrawerOpen} />
+                      {['Troubleshoot', 'Infra', 'Tickets'].includes(item.text) && <Box sx={styles.subSeparator} />}
+                      <SideDrawerButton
+                        item={item}
+                        isFlyoutOpen={!!flyout && flyout.item.id === item.id}
+                        onHoverOpen={openFlyout}
+                        onHoverClose={scheduleFlyoutClose}
+                      />
                     </React.Fragment>
                   ))}
+
+                  <SubNavFlyout
+                    item={flyout?.item}
+                    anchorEl={flyout?.anchorEl}
+                    onMouseEnter={cancelFlyoutClose}
+                    onMouseLeave={scheduleFlyoutClose}
+                    onNavigate={handleFlyoutNavigate}
+                  />
 
                   {/* Auto-launches the first-login sidebar walkthrough once; renders nothing. */}
                   <FirstLoginTour />
@@ -448,7 +640,13 @@ const PageLayout = ({ children }) => {
                       <NubiBrainNav surface='dark' />
                     </Box>
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                      <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
+                      <IconButton
+                        id='account-setting'
+                        onMouseEnter={openUserMenu}
+                        onMouseLeave={scheduleUserMenuClose}
+                        onClick={openUserMenu}
+                        size='small'
+                      >
                         <Box>
                           <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
                         </Box>
@@ -473,16 +671,23 @@ const PageLayout = ({ children }) => {
                       )}
                       <Menu
                         id='menu-appbar'
-                        sx={{ '.css-1xyun6z-MuiPaper-root-MuiPopover-paper-MuiMenu-paper': { left: '62px !important' } }}
+                        sx={{ pointerEvents: 'none' }}
                         anchorEl={anchorElUser}
                         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
                         keepMounted
-                        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
                         open={Boolean(anchorElUser)}
                         onClose={() => setAnchorElUser(null)}
+                        autoFocus={false}
+                        disableAutoFocus
+                        disableEnforceFocus
+                        disableRestoreFocus
                         slotProps={{
                           paper: {
+                            onMouseEnter: cancelUserMenuClose,
+                            onMouseLeave: scheduleUserMenuClose,
                             sx: {
+                              pointerEvents: 'auto',
                               minWidth: 360,
                               maxWidth: 360,
                               maxHeight: 'none',
@@ -514,7 +719,7 @@ const PageLayout = ({ children }) => {
                 sx={{
                   maxWidth: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 45)})`,
                   width: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
-                  px: open ? ds.space.mul(1, 16) : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
+                  px: pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
                   backgroundColor:
                     pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
                       ? ds.background[100]
@@ -548,7 +753,7 @@ const styles = {
     backgroundColor: 'var(--ds-sidebar-bg, var(--ds-brand-600))',
     minHeight: '100vh',
     transition: 'all ease 0.2s',
-    boxShadow: `${ds.space[0]} 0 ${ds.space[0]} 0 color-mix(in srgb, ${ds.gray[700]} 25%, transparent)`,
+    boxShadow: 'none',
     display: 'flex',
     justifyContent: 'start',
     alignItems: 'center',
@@ -568,11 +773,6 @@ const styles = {
       top: 0,
       height: '100vh',
     },
-    '& .collapsable': {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 'var(--ds-space-2)',
-    },
     '& button': {
       py: 'var(--ds-space-4)',
       width: ds.space.mul(1, 19),
@@ -586,35 +786,60 @@ const styles = {
         py: 'var(--ds-space-2)',
         height: ds.space.mul(1, 13),
       },
-      '&:not(.active-nav):hover': {
-        backgroundColor: 'rgba(0, 0, 0, 0.3)',
-      },
-      '&.menu-item': {
-        borderBottom: 'none',
-        justifyContent: 'flex-start',
-        gap: 'var(--ds-space-3)',
-        borderRadius: 'var(--ds-radius-xl)',
-        color: ds.gray[400],
-        fontSize: 'var(--ds-text-small)',
-        lineHeight: ds.space.mul(0, 8),
-        fontWeight: 'var(--ds-font-weight-semibold)',
-        textTransform: 'none',
-        '&.sub-item': { pl: 'var(--ds-space-6)' },
-        '& .sub-text': { fontSize: 'var(--ds-text-caption)', color: ds.gray[600] },
-        svg: {
-          minHeight: ds.space.mul(1, 5),
-          minWidth: ds.space.mul(1, 5),
-          height: ds.space.mul(1, 5),
-          width: ds.space.mul(1, 5),
-          '&.color-switching-icon': { path: { fill: ds.brand[500] } },
-        },
-        '&.selected': {
-          backgroundColor: ds.brand[500],
-          color: ds.background[100],
-          svg: { '&.color-switching-icon': { path: { fill: ds.background[100] } } },
-        },
+      '&:hover': {
+        backgroundColor: NAV_ITEM_HOVER_BG,
       },
     },
+  },
+  flyoutPaper: {
+    pointerEvents: 'auto',
+    minWidth: ds.space.mul(0, 110),
+    backgroundColor: SIDEBAR_FLYOUT_BG,
+    backgroundImage: 'none',
+    color: ds.background[100],
+    borderRadius: '0 var(--ds-overlay-radius) var(--ds-overlay-radius) 0',
+    border: 'none',
+    boxShadow: 'none',
+    overflow: 'hidden',
+    padding: `var(--ds-space-2) 0`,
+    animation: 'sidenavFlyoutEnter var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',
+    '@keyframes sidenavFlyoutEnter': {
+      '0%': { opacity: 0, transform: `translateX(${ds.space.mul(0, -4)})` },
+      '100%': { opacity: 1, transform: 'translateX(0)' },
+    },
+  },
+  flyoutItem: {
+    fontSize: 'var(--ds-text-body)',
+    color: SIDEBAR_FLYOUT_TEXT,
+    minHeight: 'unset',
+    borderRadius: 'var(--ds-radius-md)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 'var(--ds-space-3)',
+    mx: 'var(--ds-space-2)',
+    padding: 'var(--ds-space-2) var(--ds-space-4) var(--ds-space-2) var(--ds-space-3)',
+    transition: `background-color ${ds.motion.micro} ${ds.motion.ease}, color ${ds.motion.micro} ${ds.motion.ease}, border-left-color ${ds.motion.micro} ${ds.motion.ease}`,
+    '&:hover': { backgroundColor: FLYOUT_ITEM_HOVER_BG, color: ds.background[100], '& .flyout-item-icon': { opacity: 1 } },
+    '&.Mui-selected': {
+      backgroundColor: NAV_ITEM_HIGHLIGHT_BG,
+      // blue-400 over blue-500 — the deeper blue muddies against the dark panel.
+      borderLeftColor: ds.blue[400],
+      color: ds.background[100],
+      fontWeight: 'var(--ds-font-weight-semibold)',
+      '& .flyout-item-icon': { opacity: 1 },
+      '&:hover': { backgroundColor: FLYOUT_ITEM_HOVER_BG },
+    },
+  },
+  flyoutItemIcon: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    width: `${FLYOUT_ICON_PX}px`,
+    height: `${FLYOUT_ICON_PX}px`,
+    opacity: 0.72,
+    transition: `opacity ${ds.motion.micro} ${ds.motion.ease}`,
+    '& img, & svg': { filter: 'brightness(0) invert(1)' },
   },
   body: {
     transition: 'ease 0.2s',
@@ -623,8 +848,18 @@ const styles = {
     alignItems: 'center',
     flexDirection: 'column',
   },
+  railButton: {
+    width: `${COLLAPSED_WIDTH}px`,
+    minWidth: 0,
+    borderRadius: 0,
+    px: 0,
+    '&:hover': { backgroundColor: NAV_ITEM_HOVER_BG },
+  },
+  railButtonFlyoutOpen: {
+    backgroundColor: NAV_ITEM_HOVER_BG,
+  },
   activeButton: {
-    background: ds.gray.alpha[200],
+    background: NAV_ITEM_HIGHLIGHT_BG,
   },
   activeIndicator: {
     width: ds.space[1],
@@ -653,6 +888,7 @@ const styles = {
   },
   iconLabel: {
     paddingTop: 'var(--ds-space-3)',
+    paddingBottom: 'var(--ds-space-1)',
     lineHeight: ds.space[1],
     textTransform: 'capitalize',
     fontFamily: 'Roboto',
@@ -662,12 +898,6 @@ const styles = {
     '@media (max-width:1535px)': {
       fontSize: '10px',
     },
-  },
-  openTextContainer: {
-    flexGrow: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    whiteSpace: 'nowrap',
   },
   separator: {
     width: ds.space.mul(0, 23),

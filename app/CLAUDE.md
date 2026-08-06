@@ -264,6 +264,8 @@ Whenever a PR adds, renames, or removes a `fragment` in any page's `filterOption
 
 **This is a HIGH severity finding, not a nitpick** — a tab missing from global search is a silent discoverability regression that won't surface in tests or manual QA of the tab itself. Any AI review pass (Gemini Code Assist, `/create-pr` self-review, `/review-pr`) MUST flag a diff that adds/changes a tab `fragment` without a matching `navSearchPages.ts` change in the same PR, and should treat it as blocking rather than optional cleanup.
 
+The sidebar's hover flyout (`menuItems[].subItems` in [`src/components/common/layout/index.jsx`](src/components/common/layout/index.jsx)) is the second hand-maintained copy of the same tab list — it carries only the **top-level** tabs of each page. Adding, renaming, or removing a top-level `fragment` means updating it too. Sub-tabs never appear there, so a sub-tab-only change doesn't.
+
 ## Key Libraries Reference
 
 | Library                    | Usage                                  |

@@ -391,17 +391,10 @@ const appOverviewTour: TourDef = {
       align: 'start',
     },
     {
-      element: '#clusters-sidenavbutton',
-      title: 'Clusters',
-      description: 'Drill into your Kubernetes clusters — health, workloads, security, and configuration.',
-      side: 'right',
-      align: 'start',
-      optional: true,
-    },
-    {
-      element: '#cloud-sidenavbutton',
-      title: 'Cloud',
-      description: 'Your connected cloud accounts (AWS, Azure, GCP) — spend, inventory, and security posture.',
+      element: '#infra-sidenavbutton',
+      title: 'Infra',
+      description:
+        'Everything you run, in one place — K8s for cluster health, workloads, security, and configuration; Cloud for your connected AWS, Azure, and GCP accounts.',
       side: 'right',
       align: 'start',
       optional: true,
