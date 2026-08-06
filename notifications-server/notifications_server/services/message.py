@@ -1447,7 +1447,11 @@ class MessageService:
                 if not ip:
                     return [failed_response(platform, reason="No installation found")]
 
-                generic_params = get_generic_message_params(message=message_text)
+                # Forward the whole parameter set, as the top-level path does. The
+                # generic template decides an approval purely from approval_token and
+                # renders the buttons (and the message metadata carrying the decision)
+                # from it — narrowing to `message` left threaded approvals unanswerable.
+                generic_params = get_generic_message_params(**parameters)
 
                 template_factories = {
                     PlatformTypes.SLACK.value: get_slack_generic_message_template,
