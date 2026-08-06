@@ -1135,7 +1135,8 @@ class Events:
             )
 
             LOG.info(f"Calling LLM server event analysis API: {url}")
-            result = requests.post(url, headers=headers, json=payload)
+            # 20 minutes is intentional.
+            result = requests.post(url, headers=headers, json=payload, timeout=1200)
             result.raise_for_status()
 
             response_data = result.json()

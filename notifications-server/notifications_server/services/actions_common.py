@@ -1,13 +1,21 @@
+import copy
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import partial
+from typing import Optional
 
 import requests
 from botbuilder.schema import Activity, ActivityTypes
 
 from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, URLRoutes, settings
-from notifications_server.message_templates.slack.finding import FINDING_CALLBACK_ID, SUPPRESS_ACTION_NAME
+from notifications_server.message_templates.slack.finding import (
+    ASK_NUBI_ACTION_NAME,
+    FINDING_CALLBACK_ID,
+    SUPPRESS_ACTION_NAME,
+)
 from notifications_server.models.db_base import BaseDB
 from notifications_server.services.actions import (
     Actions,
@@ -84,7 +92,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 actions[0]["selected_option"] = actions[0]["selected_options"][0]
         return data
 
-    def execute_action(self, data):
+    def execute_action(self, data, background_tasks=None):
         data = self.normalize_legacy_payload(data)
         channel_id = data["channel"]["id"]
         team_id = data["team"]["id"]
@@ -101,14 +109,14 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             if action_type in ("static_select", "select"):
                 self.perform_select_action(channel_id, team_id, user_email, data)
             else:
-                self.perform_click_action(channel_id, team_id, slack_user_id, user_email, data)
+                self.perform_click_action(channel_id, team_id, slack_user_id, user_email, data, background_tasks)
             return None
         except Exception as e:
             LOG.exception(f"Error processing interactive action: {e}")
             message = UNABLE_TO_PROCESS_REQUEST
             return self.reply_with_error(channel_id, team_id, data.get("message", {}).get("ts"), message)
 
-    def perform_click_action(self, channel_id, team_id, slack_user_id, user_email, data):
+    def perform_click_action(self, channel_id, team_id, slack_user_id, user_email, data, background_tasks=None):
         action_data = data["actions"][0]
         # Legacy attachment buttons have no action_id (only name/value).
         action_id = action_data.get("action_id") or ""
@@ -145,12 +153,18 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             action_params = action.get("action_params", {})
             if isinstance(action_params, str):
                 action_params = json.loads(action_params)
-            handler(channel_id, team_id, slack_user_id, user_email, data, action_params)
+            if action_name == "ask_ai":
+                handler(channel_id, team_id, slack_user_id, user_email, data, action_params, background_tasks)
+            else:
+                handler(channel_id, team_id, slack_user_id, user_email, data, action_params)
 
-    def handle_event_analysis_call(self, channel_id, team_id, slack_user_id, user_email, data, action_params):
+    def handle_event_analysis_call(
+        self, channel_id, team_id, slack_user_id, user_email, data, action_params, background_tasks=None
+    ):
         try:
             message = data.get("message", {})
             thread_ts = message.get("thread_ts") or message.get("ts")
+            message_ts = message.get("ts")
 
             tenant_id = action_params.get("tenant_id")
             if not tenant_id:
@@ -178,13 +192,44 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             except Exception as e:
                 LOG.debug("Failed to add magnifying glass reaction: %s", e)
 
-            result = self.event_service.call_event_analysis_api(
-                event_id=event_id, account_id=cluster_id, user_id=user_id, tenant_id=tenant_id
+            # Keep the card itself intact (mirrors how Silence rewrites its own
+            # card instead of leaving Slack to decide). Without this, the LLM
+            # call below runs well past Slack's 3s interactive-action ack
+            # budget and Slack replaces the whole card with a bare "OK".
+            original_attachments = message.get("attachments")
+            base_attachments = _strip_finding_action(original_attachments, ASK_NUBI_ACTION_NAME)
+            if base_attachments and message_ts:
+                self.common_service.update_slack_message_attachments(
+                    channel_id,
+                    team_id,
+                    message_ts,
+                    _attachments_with_status(base_attachments, _analyzing_status_line(slack_user_id)),
+                )
+
+            # The actual analysis has no bound on how long the LLM takes, so it
+            # runs after this handler returns (and Slack has already been ack'd)
+            # instead of blocking the interactive-action response.
+            context = EventAnalysisContext(
+                event_id=event_id,
+                account_id=cluster_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                channel_id=channel_id,
+                team_id=team_id,
+                thread_ts=thread_ts,
+                message_ts=message_ts,
+                slack_user_id=slack_user_id,
+                original_attachments=original_attachments,
+                base_attachments=base_attachments,
+                app_id=self.common_service.app_id,
             )
+            run_analysis = partial(_run_event_analysis_background, self.engine, self.slack_app, self.teams_app, context)
+            if background_tasks is not None:
+                background_tasks.add_task(run_analysis)
+            else:
+                run_analysis()
 
-            self.event_service.send_investigation_result_to_slack(result, channel_id, team_id, thread_ts, slack_user_id)
-
-            return json.dumps({"status": "investigation_completed"})
+            return json.dumps({"status": "investigation_started"})
 
         except Exception as e:
             LOG.exception(f"Error processing event analysis action: {e}")
@@ -439,6 +484,207 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             updated = True
         if updated and message_ts:
             self.common_service.update_slack_message_attachments(channel_id, team_id, message_ts, attachments)
+
+
+def _strip_finding_action(attachments, action_name):
+    """Deep-copies `attachments` with `action_name` removed from the finding
+    card's actions. Returns None if the card isn't in there (defensive; the
+    caller then leaves the message alone rather than guessing at its shape)."""
+    if not attachments:
+        return None
+    updated = copy.deepcopy(attachments)
+    found = False
+    for attachment in updated:
+        if attachment.get("callback_id") != FINDING_CALLBACK_ID:
+            continue
+        attachment["actions"] = [a for a in (attachment.get("actions") or []) if a.get("name") != action_name]
+        found = True
+    return updated if found else None
+
+
+def _attachments_with_status(base_attachments, status_line):
+    """Deep-copies `base_attachments` (already stripped of the ask-nubi action,
+    with its original evidence text) and appends `status_line`. Always starts
+    from the pristine base so successive calls (Analyzing -> Analyzed) replace
+    rather than stack the status line."""
+    attachments = copy.deepcopy(base_attachments)
+    for attachment in attachments:
+        if attachment.get("callback_id") != FINDING_CALLBACK_ID:
+            continue
+        base_text = attachment.get("text") or ""
+        attachment["text"] = "\n".join(part for part in (base_text, status_line) if part)
+    return attachments
+
+
+def _analyzing_status_line(slack_user_id):
+    # ":mag:" (shortcode), not the raw "🔍" character: legacy attachment text
+    # is written and read back through Slack's mrkdwn text field, which
+    # silently rewrites a raw emoji character into its shortcode form on
+    # storage — confirmed live, a written "🔍" round-trips as ":mag:". Writing
+    # the shortcode ourselves means what we write and what a later fetch
+    # returns are byte-identical, so an exact match always finds this line
+    # (Slack renders the shortcode as the icon either way).
+    return f":mag: Analyzing… (requested by <@{slack_user_id}>)"
+
+
+def _analyzed_status_line(slack_user_id):
+    return f":white_check_mark: Analyzed by <@{slack_user_id}> · see thread :mag:"
+
+
+def _replace_status_line(attachments, old_line, new_line):
+    """Deep-copies `attachments` and, in the finding card's text, swaps the
+    exact `old_line` for `new_line` (dropping it if `new_line` is falsy).
+    Every other line — including one a concurrent action (e.g. Suppress)
+    added in the meantime — is left untouched."""
+    updated = copy.deepcopy(attachments)
+    for attachment in updated:
+        if attachment.get("callback_id") != FINDING_CALLBACK_ID:
+            continue
+        lines = (attachment.get("text") or "").split("\n")
+        if new_line:
+            lines = [new_line if line == old_line else line for line in lines]
+        else:
+            lines = [line for line in lines if line != old_line]
+        attachment["text"] = "\n".join(lines)
+    return updated
+
+
+def _restore_action(attachments, action):
+    """Deep-copies `attachments` and re-inserts `action` into the finding
+    card's actions if one with the same name isn't already there (e.g. the
+    ask_nubi button, put back after a failed/incomplete analysis). Inserted
+    right after the first action to match its original position."""
+    if not action:
+        return copy.deepcopy(attachments)
+    updated = copy.deepcopy(attachments)
+    for attachment in updated:
+        if attachment.get("callback_id") != FINDING_CALLBACK_ID:
+            continue
+        actions = attachment.get("actions") or []
+        if action.get("name") not in {a.get("name") for a in actions}:
+            attachment["actions"] = actions[:1] + [action] + actions[1:]
+    return updated
+
+
+def _find_action(attachments, action_name):
+    for attachment in attachments or []:
+        if attachment.get("callback_id") != FINDING_CALLBACK_ID:
+            continue
+        for action in attachment.get("actions") or []:
+            if action.get("name") == action_name:
+                return action
+    return None
+
+
+@dataclass
+class EventAnalysisContext:
+    """Everything `_run_event_analysis_background` needs beyond the Slack
+    app handles, bundled to keep that function's signature manageable."""
+
+    event_id: str
+    account_id: str
+    user_id: str
+    tenant_id: str
+    channel_id: str
+    team_id: str
+    thread_ts: str
+    message_ts: Optional[str]
+    slack_user_id: str
+    original_attachments: Optional[list]
+    base_attachments: Optional[list]
+    app_id: Optional[str]
+
+
+def _attachment_has_line(attachments, line):
+    """True only if the finding-card attachment is present in `attachments`
+    AND its text contains `line` exactly. Used to decide whether a live-fetched
+    card is trustworthy enough to edit: if the card wasn't found (e.g. the
+    fetch returned something callback_id-guarded helpers can't recognize) or
+    the analyzing line isn't there (e.g. text drift), editing it would be a
+    silent no-op that leaves the card stuck on "Analyzing…" forever with no
+    button — better to fall through to the snapshot fallback in that case."""
+    for attachment in attachments or []:
+        if attachment.get("callback_id") != FINDING_CALLBACK_ID:
+            continue
+        if line in (attachment.get("text") or "").split("\n"):
+            return True
+    return False
+
+
+def _finalize_card_after_analysis(service, context, completed):
+    """Applies the final card state after analysis finishes, on top of the
+    message's CURRENT attachments when reachable rather than the click-time
+    snapshot — a background task can finish minutes after the click, and in
+    that window someone may have suppressed the finding; blindly re-applying
+    the snapshot would silently clobber that edit."""
+    if not context.message_ts:
+        return
+    old_line = _analyzing_status_line(context.slack_user_id)
+    live_attachments = service.common_service.get_message_attachments(
+        context.channel_id, context.team_id, context.thread_ts, context.message_ts
+    )
+    if live_attachments and _attachment_has_line(live_attachments, old_line):
+        if completed:
+            updated = _replace_status_line(live_attachments, old_line, _analyzed_status_line(context.slack_user_id))
+        else:
+            ask_nubi_action = _find_action(context.original_attachments, ASK_NUBI_ACTION_NAME)
+            updated = _restore_action(_replace_status_line(live_attachments, old_line, None), ask_nubi_action)
+        service.common_service.update_slack_message_attachments(
+            context.channel_id, context.team_id, context.message_ts, updated
+        )
+        return
+
+    # Couldn't fetch the live message — fall back to the click-time snapshot
+    # rather than leaving the card stuck on "Analyzing…" forever.
+    if completed:
+        if context.base_attachments:
+            service.common_service.update_slack_message_attachments(
+                context.channel_id,
+                context.team_id,
+                context.message_ts,
+                _attachments_with_status(context.base_attachments, _analyzed_status_line(context.slack_user_id)),
+            )
+    elif context.original_attachments:
+        service.common_service.update_slack_message_attachments(
+            context.channel_id, context.team_id, context.message_ts, context.original_attachments
+        )
+
+
+def _run_event_analysis_background(engine, slack_app, teams_app, context: EventAnalysisContext):
+    """Runs after the interactive-action response has already been sent to
+    Slack, so it builds its own DB session/services rather than reusing the
+    request-scoped ones (already closed by then).
+
+    Must carry `app_id` forward: when more than one Slack app is installed to
+    the same team_id, install resolution is ambiguous without it, and Slack
+    rejects a chat.update from any app but the one that posted the message."""
+    service = SlackActionsBaseService(engine, slack_app, teams_app)
+    service.common_service.app_id = context.app_id
+    try:
+        try:
+            result = Events.call_event_analysis_api(
+                event_id=context.event_id,
+                account_id=context.account_id,
+                user_id=context.user_id,
+                tenant_id=context.tenant_id,
+            )
+        except Exception as e:
+            LOG.exception("Event analysis API call failed: %s", e)
+            _finalize_card_after_analysis(service, context, completed=False)
+            service.common_service.slack_reply_in_thread(
+                context.channel_id,
+                context.team_id,
+                context.thread_ts,
+                f"<@{context.slack_user_id}> Hmm, something went wrong while analyzing this. Mind trying again?",
+            )
+            return
+
+        service.event_service.send_investigation_result_to_slack(
+            result, context.channel_id, context.team_id, context.thread_ts, context.slack_user_id
+        )
+        _finalize_card_after_analysis(service, context, completed=(result or {}).get("status") == "COMPLETED")
+    finally:
+        service.close()
 
 
 class SlackEventsService(SlackActionsBaseService):

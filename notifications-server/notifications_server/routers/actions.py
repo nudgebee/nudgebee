@@ -55,7 +55,7 @@ async def handle_slack_events(request: Request):
 
 
 @router.post("/slack/interactive")
-async def handle_slack_interactive_action(request: Request):
+async def handle_slack_interactive_action(request: Request, background_tasks: BackgroundTasks):
     # Interactive arrives only via the edge (token); the HMAC branch is kept for
     # symmetry with /slack/events.
     raw = await request.body()
@@ -84,7 +84,7 @@ async def handle_slack_interactive_action(request: Request):
 
     service = SlackInteractiveActionsService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app)
     try:
-        await run_in_threadpool(service.execute_action, payload)
+        await run_in_threadpool(service.execute_action, payload, background_tasks)
     finally:
         service.close()
 

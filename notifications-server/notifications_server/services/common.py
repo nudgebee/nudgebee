@@ -1164,6 +1164,33 @@ class CommonService:
             LOG.debug(f"Failed to update Slack message attachments: {e}")
             return False
 
+    def get_message_attachments(self, channel_id, team_id, thread_ts, message_ts):
+        """Fetch a message's current attachments straight from Slack.
+
+        Used before a delayed chat.update (e.g. a background task finishing
+        minutes after the click that triggered it) so the update is applied
+        on top of whatever the message actually looks like now, rather than a
+        stale click-time snapshot that would silently clobber a concurrent
+        edit (e.g. someone suppressing the finding in the meantime).
+
+        `thread_ts` must be the actual thread root, not `message_ts`: for a
+        recurring finding posted into an existing thread (message.py's
+        check_if_sent_already path), message_ts is a reply, and
+        conversations.replies always returns the thread *parent* first
+        regardless of which ts you pass — passing message_ts there would
+        silently resolve to a different finding's card. So this fetches the
+        whole thread and picks the message that actually matches message_ts."""
+        try:
+            bot = self.get_slack_installation(team_id)
+            response = self.slack_app.client.conversations_replies(
+                token=bot.token, channel_id=channel_id, thread_ts=thread_ts
+            )
+            message = next((m for m in response.get("messages") or [] if m.get("ts") == message_ts), None)
+            return message.get("attachments") if message else None
+        except Exception as e:
+            LOG.debug(f"Failed to fetch current Slack message attachments: {e}")
+            return None
+
     def update_slack_message_with_blocks(self, channel_id, team_id, message_ts, blocks):
         """Update an existing Slack message with new blocks."""
         try:
