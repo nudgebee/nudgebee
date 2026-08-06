@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
@@ -835,8 +836,13 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 			}
 		}()
 		var resources []K8sResourceInfo
-		// We can further parallelize this inner loop if needed, but grouping by strategy is a good start
 		for _, resourceType := range commonResourceTypes {
+			select {
+			case <-ctx.Done():
+				commonResChan <- searchResult{resources: resources}
+				return
+			default:
+			}
 			res := r.searchResourceType(resourceName, namespace, resourceType, nbRequestContext)
 			resources = append(resources, res...)
 		}
@@ -853,6 +859,12 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 		}()
 		var resources []K8sResourceInfo
 		for _, resourceType := range clusterResourceTypes {
+			select {
+			case <-ctx.Done():
+				clusterResChan <- searchResult{resources: resources}
+				return
+			default:
+			}
 			res := r.searchResourceType(resourceName, namespace, resourceType, nbRequestContext)
 			resources = append(resources, res...)
 		}
@@ -869,6 +881,12 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 		var resources []K8sResourceInfo
 		crdTypes := r.getCustomResourceTypes(nbRequestContext)
 		for _, resourceType := range crdTypes {
+			select {
+			case <-ctx.Done():
+				crdResChan <- searchResult{resources: resources}
+				return
+			default:
+			}
 			res := r.searchResourceType(resourceName, namespace, resourceType, nbRequestContext)
 			resources = append(resources, res...)
 			if len(resources) > 5 {
@@ -888,6 +906,12 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 		var resources []K8sResourceInfo
 		labelKeys := []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance", "k8s-app"}
 		for _, labelKey := range labelKeys {
+			select {
+			case <-ctx.Done():
+				labelResChan <- searchResult{resources: resources}
+				return
+			default:
+			}
 			var cmd string
 			if namespace == "--all-namespaces" || namespace == "-A" {
 				cmd = fmt.Sprintf("kubectl get pods -l '%s=%s' --all-namespaces --no-headers", labelKey, resourceName)
@@ -924,7 +948,7 @@ CollectResults:
 			allResources = append(allResources, res.resources...)
 		case <-timeout:
 			nbRequestContext.Ctx.GetLogger().Warn("resource-search: timeout waiting for strategies to complete")
-			// Proceed with whatever we have found so far
+			cancel() // signal goroutines to exit their inner loops
 			break CollectResults
 		}
 	}

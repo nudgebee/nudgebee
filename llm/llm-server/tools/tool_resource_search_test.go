@@ -4,7 +4,9 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"os"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -957,6 +959,42 @@ func TestFilterResourcesByRelevance(t *testing.T) {
 		got := tool.filterResourcesByRelevance(makeResources("my-api-server"), "llm-server")
 		assert.Empty(t, got, "resource containing only generic term 'server' should be filtered")
 	})
+}
+
+// TestFindActualResources_NoGoroutineLeak verifies that the 4 goroutines spawned by
+// findActualResources (one per search strategy) always exit after the call returns,
+// even when no live cluster is available and they complete quickly.
+//
+// Regression test for the unbuffered-channel goroutine leak: before the fix, a goroutine
+// that tried to send on an unbuffered channel after the collect loop timed out would block
+// forever. The fix uses buffered channels (cap 1) so every goroutine can send and exit
+// regardless of whether the receiver is still alive.
+func TestFindActualResources_NoGoroutineLeak(t *testing.T) {
+	tool := K8sResourceSearchTool{}
+	sc := security.NewRequestContextForSuperAdmin()
+	toolCtx := core.NbToolContext{Ctx: sc, AccountId: ""}
+
+	// Let any goroutines from prior tests settle.
+	runtime.GC()
+	time.Sleep(20 * time.Millisecond)
+	before := runtime.NumGoroutine()
+
+	// Run several iterations to amplify any per-call leak.
+	// Each call spawns 4 goroutines; a leak of 4×5 = 20 goroutines would be
+	// clearly visible above the +5 tolerance below.
+	const iterations = 5
+	for i := 0; i < iterations; i++ {
+		tool.findActualResources("nginx", "--all-namespaces", "", toolCtx)
+	}
+
+	// Give goroutines a moment to exit and let the GC update its bookkeeping.
+	time.Sleep(200 * time.Millisecond)
+	runtime.GC()
+	after := runtime.NumGoroutine()
+
+	assert.LessOrEqual(t, after, before+5,
+		"goroutine count must not grow after findActualResources returns "+
+			"(buffered channels prevent senders from blocking after timeout)")
 }
 
 func TestResourceSearchTool_SearchDbForResources(t *testing.T) {
