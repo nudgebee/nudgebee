@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import SearchInput from '@ui/SearchInput';
@@ -27,6 +27,7 @@ import { hasWriteAccess } from '@lib/auth';
 import LogFileIcon from '@assets/application/logs-new.svg';
 import EditFileIcon from '@assets/application/edit-new.svg';
 import { useRouter } from 'next/router';
+import { useData } from '@context/DataContext';
 import GitSvg from '@assets/application/github-new.svg';
 import SecurityScanSvg from '@assets/security-scan.svg';
 import NumberComponent from '@shared/format/Number';
@@ -91,6 +92,14 @@ const CRITICALITY_VARIANT = { critical: 'criticalRed', high: 'red', medium: 'gre
 
 const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
   const router = useRouter();
+  const { selectedCluster } = useData();
+  // This page is always scoped to a single cluster (`accountId`), so the Auto
+  // Optimize modals' Account field has exactly one valid option — reuse the
+  // header cluster-switcher's label when it matches, else fall back to the id.
+  const workloadAccountOptions = useMemo(
+    () => [{ value: accountId, label: (selectedCluster?.value === accountId && selectedCluster?.label) || accountId }],
+    [accountId, selectedCluster]
+  );
   const [data, setData] = useState([]);
   const [criticalityMap, setCriticalityMap] = useState({});
   const [totalCount, setTotalCount] = useState(0);
@@ -1653,6 +1662,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           >
             <AutoOptimizeHorizontalRightSizingSingleConfiguration
               autoOptimizeData={{
+                accountId,
                 auto_optimize_resource_maps: [
                   {
                     resource_identifier: {
@@ -1667,6 +1677,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               msTeamsData={[]}
               googleChannelList={[]}
               setIsLoading={setLoading}
+              accountOptions={workloadAccountOptions}
             />
           </Modal>
           <Modal
@@ -1677,6 +1688,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           >
             <AutoOptimizeContinuousVerticalRightSizingSingleConfiguration
               autoOptimizeData={{
+                accountId,
                 auto_optimize_resource_maps: [
                   {
                     resource_identifier: {
@@ -1692,6 +1704,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               googleChannelList={[]}
               setIsLoading={setLoading}
               currentData={{}}
+              accountOptions={workloadAccountOptions}
             />
           </Modal>
 

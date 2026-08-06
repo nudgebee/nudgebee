@@ -187,6 +187,8 @@ export interface OverlayItemProps {
   kbd?: React.ReactNode;
   /** Trailing badge (text or count). */
   badge?: React.ReactNode;
+  /** Unstyled trailing icon slot (e.g. a submenu expand chevron). Renders after kbd/badge. */
+  trailingIcon?: React.ReactNode;
   onClick?: () => void;
   id?: string;
 }
@@ -249,6 +251,7 @@ export function OverlayItem({
   icon,
   kbd,
   badge,
+  trailingIcon,
   onClick,
   id,
 }: OverlayItemProps) {
@@ -339,6 +342,11 @@ export function OverlayItem({
           }}
         >
           {kbd}
+        </Box>
+      )}
+      {trailingIcon && (
+        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', color: 'inherit', flexShrink: 0 }}>
+          {trailingIcon}
         </Box>
       )}
     </MenuItem>
