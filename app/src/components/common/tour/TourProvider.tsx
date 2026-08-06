@@ -94,6 +94,33 @@ function ownsArrowKeys(target: EventTarget | null): boolean {
   return role !== null && ARROW_KEY_ROLES.has(role);
 }
 
+// Breathing room below the sticky header so a spotlit element (and the
+// popover pointing at it) doesn't sit flush against its edge.
+const STICKY_HEADER_MARGIN_PX = 8;
+
+/**
+ * `scrollIntoView` has no notion of our sticky global header (`#app-sticky-
+ * header`, Header1.jsx — `position: sticky; top: 0`) — it only asks "is this
+ * element's rect within the scrollport", not "is anything else painted on
+ * top of it". An element that was already technically in-viewport when a
+ * step change lands it back near the top of the page (e.g. switching to a
+ * tab whose bar sits just below the header) can end up counted as visible
+ * by `scrollIntoView` while sitting fully behind the header, since the
+ * header covers that same rect. Call after `scrollIntoView` to nudge the
+ * window the remaining distance if the target is still covered.
+ */
+function clearStickyHeader(el: HTMLElement): void {
+  const header = document.getElementById('app-sticky-header');
+  if (!header) {
+    return;
+  }
+  const headerHeight = header.getBoundingClientRect().height;
+  const covered = headerHeight + STICKY_HEADER_MARGIN_PX - el.getBoundingClientRect().top;
+  if (covered > 0) {
+    window.scrollBy({ top: -covered });
+  }
+}
+
 export function TourProvider({ children }: { children: React.ReactNode }): React.ReactElement {
   const driverRef = React.useRef<DriverInstance | null>(null);
   // Guards against re-entrant navigation: the popover stays clickable while an
@@ -115,7 +142,6 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
     // A welcome card (shown by the launcher) counts as step 1, so offset the
     // popover progress to stay in sync with it.
     const progressOffset = tour.welcome ? 1 : 0;
-    const totalSteps = tour.steps.length + progressOffset;
 
     const d = driver({
       allowClose: true,
@@ -141,6 +167,42 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
     // until the first step renders.
     let currentIndex = -1;
 
+    // Ground truth for progress counting, per step index. Populated by goTo
+    // below as it actually visits (or skips) each step — never by re-reading
+    // the DOM after the fact, which is unreliable for a step whose own
+    // onBeforeNext mutates the DOM (e.g. clearing the "@" it typed to open an
+    // account picker makes that picker's own element disappear again, which
+    // would otherwise make an already-shown step vanish retroactively from
+    // the count). First resolution sticks — later re-visits (Back, then
+    // Next again) reuse it rather than re-querying, so the count can't drift
+    // on repeated navigation either.
+    const resolved = new Map<number, boolean>();
+
+    // For a step not yet visited, we don't have a goTo-confirmed answer yet.
+    // Most such steps are just future content in the flow (e.g. a table that
+    // only mounts after an earlier step's onBeforeNext runs) — assume they'll
+    // show, same as if `optional` weren't there, since that's right far more
+    // often than a live DOM peek would be. `isAvailable` is the escape hatch a
+    // step declares when its own availability is a real, stable,
+    // checkable-anytime condition instead — the engine defers to it rather
+    // than guessing from the DOM.
+    const isCountedVisible = (idx: number): boolean => {
+      const cached = resolved.get(idx);
+      if (cached !== undefined) {
+        return cached;
+      }
+      return steps[idx].isAvailable?.() ?? true;
+    };
+    const countVisibleInRange = (from: number, to: number): number => {
+      let n = 0;
+      for (let k = from; k <= to; k++) {
+        if (isCountedVisible(k)) {
+          n++;
+        }
+      }
+      return n;
+    };
+
     // Show step `target`, skipping over optional steps that aren't on screen.
     // `direction` decides which way to skip so Back also lands on a real step.
     const goTo = async (target: number, direction: 1 | -1): Promise<void> => {
@@ -151,12 +213,19 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
           return;
         }
         const step: TourStepDef = steps[i];
-        const el = await waitForElement(step.element, step.optional ? OPTIONAL_WAIT_MS : REQUIRED_WAIT_MS);
+        if (resolved.get(i) === false) {
+          i += direction;
+          continue;
+        }
+        const el = await waitForElement(step.element, step.waitMs ?? (step.optional ? OPTIONAL_WAIT_MS : REQUIRED_WAIT_MS));
         if (!el) {
           // Optional step that never mounted → skip it. A required step that
           // never mounted means the flow is broken (e.g. modal didn't open), so
           // end the tour cleanly rather than show a detached, centered popover.
           if (step.optional) {
+            if (!resolved.has(i)) {
+              resolved.set(i, false);
+            }
             i += direction;
             continue;
           }
@@ -165,6 +234,9 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
         }
         if (driverRef.current !== d) {
           return;
+        }
+        if (!resolved.has(i)) {
+          resolved.set(i, true);
         }
         renderStep(i, el, step);
         return;
@@ -231,13 +303,23 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
 
     const renderStep = (i: number, el: HTMLElement, step: TourStepDef): void => {
       currentIndex = i;
-      const isLast = i === steps.length - 1;
+      // Both derived from `resolved` (see isCountedVisible above), so they're
+      // stable under repeated Back/Next over the same steps and don't drift
+      // when a later step's own onBeforeNext mutates the DOM.
+      const shownIndex = countVisibleInRange(0, i);
+      const remainingVisible = countVisibleInRange(i + 1, steps.length - 1);
+      const isLast = remainingVisible === 0;
+      const totalSteps = shownIndex + remainingVisible + progressOffset;
+      const isFirstShown = shownIndex === 1;
       // Bring the target into view before highlighting. driver.js scrolls too,
       // but its window-based check misses elements clipped inside a scrollable
       // modal body (e.g. a button below a long form); scrollIntoView walks every
       // scrollable ancestor. 'nearest' is a no-op for already-visible elements,
       // so page-level anchors (sidebar, header) don't scroll unexpectedly.
       el.scrollIntoView({ block: 'nearest' });
+      // scrollIntoView doesn't know our sticky header can cover what it just
+      // decided was "in view" — see clearStickyHeader.
+      clearStickyHeader(el);
       d.highlight({
         element: el,
         popover: {
@@ -249,11 +331,11 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
           // so it must be opted into or progressText never renders.
           showProgress: true,
           // ← / → chips flank the count, each sitting next to the button it
-          // mirrors. No ← on step 1 — Back is hidden there and ArrowLeft is a
-          // no-op.
-          progressText: `${i > 0 ? `${kbdHint('←')} ` : ''}${i + 1 + progressOffset} of ${totalSteps} ${kbdHint('→')}`,
-          // No Back on step 1 — there's nowhere to go back to.
-          showButtons: i === 0 ? ['next', 'close'] : ['next', 'previous', 'close'],
+          // mirrors. No ← on the first shown step — Back is hidden there and
+          // ArrowLeft is a no-op.
+          progressText: `${isFirstShown ? '' : `${kbdHint('←')} `}${shownIndex + progressOffset} of ${totalSteps} ${kbdHint('→')}`,
+          // No Back on the first shown step — there's nowhere to go back to.
+          showButtons: isFirstShown ? ['next', 'close'] : ['next', 'previous', 'close'],
           nextBtnText: isLast ? 'Done' : 'Next',
           prevBtnText: 'Back',
           onPrevClick: () => {

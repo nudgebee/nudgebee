@@ -733,6 +733,7 @@ const Header1 = ({ showBorder = false }) => {
       )}
 
       <Box
+        id='app-sticky-header'
         sx={{
           zIndex: 20,
           boxShadow: `0px ${ds.space[0]} ${ds.space[5]} ${ds.space[0]} ${ds.gray.alpha[100]}`,
