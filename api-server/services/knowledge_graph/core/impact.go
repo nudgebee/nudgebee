@@ -245,8 +245,11 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		relTypes = defaultImpactRelationshipStrings(seed.NodeType)
 	}
 
-	discoveredIDs, _, nodeMinDepth, err := s.discoverDirectional(
-		[]string{nodeID}, TraverseDirectionUpstream, maxDepth, relTypes, nil, nil)
+	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS([]string{nodeID}, traverseOptions{
+		Direction:         TraverseDirectionUpstream,
+		Levels:            maxDepth,
+		RelationshipTypes: relTypes,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("impact traversal for %s: %w", nodeID, err)
 	}
@@ -413,8 +416,11 @@ func (s *Service) accountHasFlowObservedEdges(tenantID, accountID string) (bool,
 // seed, and a depth-1 list hid exactly those roots from the incident cause
 // lane while the depth-2 dependents walk showed the seed from the root's side.
 func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTypes []string, maxDepth int) ([]ImpactedService, error) {
-	discoveredIDs, _, nodeMinDepth, err := s.discoverDirectional(
-		[]string{nodeID}, TraverseDirectionDownstream, maxDepth, relTypes, nil, nil)
+	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS([]string{nodeID}, traverseOptions{
+		Direction:         TraverseDirectionDownstream,
+		Levels:            maxDepth,
+		RelationshipTypes: relTypes,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("downstream traversal for %s: %w", nodeID, err)
 	}

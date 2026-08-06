@@ -167,9 +167,14 @@ func TestDiscoverNeighbors_BFS_MatchesReferenceCTE(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			wantDepth, wantEdges := referenceDiscoverCTE(t, svc, bfsEqTenant, c.seeds, c.levels, c.types)
 
-			gotIDs, gotEdges, gotDepth, err := svc.discoverNeighborNodesRecursive(bfsEqTenant, c.seeds, c.levels, c.types)
+			gotIDs, gotEdges, gotDepth, err := svc.discoverBFS(c.seeds, traverseOptions{
+				Direction:        TraverseDirectionBoth,
+				Levels:           c.levels,
+				IncludeNodeTypes: c.types,
+				TenantID:         bfsEqTenant,
+			})
 			if err != nil {
-				t.Fatalf("discoverNeighborNodesRecursive: %v", err)
+				t.Fatalf("discoverBFS: %v", err)
 			}
 
 			// discoveredIDs must be exactly the keys of the min-depth map.
