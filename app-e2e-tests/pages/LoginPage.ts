@@ -2,7 +2,7 @@ import { Page, Locator } from "@playwright/test";
 import { writeFileSync, mkdirSync } from "fs";
 import { PLAYWRIGHT_REPORT_DIR, TENANT_FILE_PATH } from "../tests/utils/paths";
 import { doDevLogin } from "./devLogin";
-import { doCredentialsLogin } from "./ossLoginHelper";
+import { doCredentialsLogin, selectClusterWithRetries } from "./ossLoginHelper";
 import { registerWelcomeTourAutoDismiss } from "../tests/utils/helpers";
 
 export class LoginPage {
@@ -241,7 +241,7 @@ export class LoginPage {
       await this.waitForLoaderToDisappear();
       const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
       if (explicitCluster) {
-        await this.selectCluster(explicitCluster);
+        await selectClusterWithRetries(this.page, explicitCluster);
         await this.waitForLoaderToDisappear();
       }
       return;
