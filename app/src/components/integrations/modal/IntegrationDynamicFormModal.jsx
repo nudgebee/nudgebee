@@ -34,6 +34,15 @@ const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={
 // (always-apply where-clause filters injected into every log query for the account).
 const LOG_FILTER_INTEGRATIONS = new Set(['pinot', 'ES', 'loki', 'signoz', 'openobserve', 'datadog', 'dynatrace', 'chronosphere']);
 
+// Display labels for enum values whose stored form doesn't title-case into
+// something readable. Values not listed here fall back to snakeToTitleCase.
+const ENUM_VALUE_LABELS = {
+  vm_agent: 'Proxy Agent',
+  cloud_api_token: 'Confluence Cloud — email + API token',
+  datacenter_pat: 'Data Center / Server — personal access token',
+  datacenter_password: 'Data Center / Server — username + password',
+};
+
 const COMMON_WEBHOOK_LABEL_KEYS = [
   'alertname',
   'severity',
@@ -214,7 +223,7 @@ const IntegrationDynamicFormModal = ({
             }
           } else if (field.enum && field.enum.length > 0) {
             updatedConfig.properties[key].possible_values = field.enum.map((value) => ({
-              label: { vm_agent: 'Proxy Agent' }[value] || snakeToTitleCase(value),
+              label: ENUM_VALUE_LABELS[value] || snakeToTitleCase(value),
               value: value,
             }));
           }

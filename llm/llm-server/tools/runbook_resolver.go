@@ -82,7 +82,7 @@ func ResolveRunbook(accountId, rawURL string) (RunbookRef, error) {
 	if u.Host == "" {
 		return RunbookRef{}, fmt.Errorf("runbook: empty host in url %q", rawURL)
 	}
-	switch classifyRunbookSource(strings.ToLower(u.Host), u.Path, rawURL) {
+	switch resolveRunbookSource(accountId, strings.ToLower(u.Hostname()), u.Path, rawURL) {
 	case "confluence":
 		return fetchConfluenceRunbook(accountId, rawURL)
 	case "servicenow":
@@ -100,13 +100,45 @@ func ResolveRunbook(accountId, rawURL string) (RunbookRef, error) {
 // URL stay on the public path instead of failing against an integration that
 // can't resolve them.
 func classifyRunbookSource(host, path, rawURL string) string {
-	hasConfluencePageID := confluencePageIDRe.MatchString(rawURL) || confluencePageQPRe.MatchString(rawURL)
-	if strings.Contains(host, "atlassian.net") || (strings.Contains(path, "/wiki/") && hasConfluencePageID) {
+	if strings.Contains(host, "atlassian.net") || (strings.Contains(path, "/wiki/") && confluenceHasPageID(rawURL)) {
 		return "confluence"
 	}
 	hasServiceNowRef := serviceNowNumberRe.MatchString(rawURL) || serviceNowSysIDRe.MatchString(rawURL)
 	if strings.Contains(host, "service-now.com") || (strings.Contains(host, "servicenow") && hasServiceNowRef) {
 		return "servicenow"
+	}
+	return "public"
+}
+
+func confluenceHasPageID(rawURL string) bool {
+	return confluencePageIDRe.MatchString(rawURL) || confluencePageQPRe.MatchString(rawURL)
+}
+
+// resolveRunbookSource classifies rawURL, falling back to the account's
+// configured Confluence host when the URL shape alone is inconclusive. Data
+// Center instances are served from arbitrary internal hostnames under arbitrary
+// context paths, so the shape heuristics above can only ever recognise Cloud.
+//
+// The integration lookup is deliberately gated behind a page-id check: without
+// one there is nothing for fetchConfluenceRunbook to resolve, so a public
+// runbook never pays for the query.
+func resolveRunbookSource(accountId, host, path, rawURL string) string {
+	if source := classifyRunbookSource(host, path, rawURL); source != "public" {
+		return source
+	}
+	if !confluenceHasPageID(rawURL) {
+		return "public"
+	}
+	configs, err := getConfluenceIntegrationConfig(accountId)
+	if err != nil {
+		return "public"
+	}
+	configured, err := url.Parse(strings.TrimSpace(configs["host"]))
+	if err != nil || configured.Hostname() == "" {
+		return "public"
+	}
+	if strings.EqualFold(configured.Hostname(), host) {
+		return "confluence"
 	}
 	return "public"
 }
@@ -153,14 +185,14 @@ func fetchConfluenceRunbook(accountId, rawURL string) (RunbookRef, error) {
 	if err != nil {
 		return RunbookRef{}, fmt.Errorf("runbook: confluence config: %w", err)
 	}
-	base := strings.TrimSuffix(configs["host"], "/")
-	auth := base64.StdEncoding.EncodeToString([]byte(configs["username"] + ":" + configs["token"]))
-	apiURL := fmt.Sprintf("%s/wiki/rest/api/content/%s?expand=body.view", base, pageID)
+	host := strings.TrimSuffix(configs["host"], "/")
+	mode := confluenceAuthType(configs["auth_type"])
+	apiURL := fmt.Sprintf("%s/content/%s?expand=body.view", confluenceAPIBase(host, mode), pageID)
 
 	resp, err := common.HttpGet(apiURL,
 		common.HttpWithTimeout(runbookFetchTimeout),
 		common.HttpWithHeaders(map[string]string{
-			"Authorization": "Basic " + auth,
+			"Authorization": confluenceAuthHeader(mode, configs["username"], configs["token"]),
 			"Content-Type":  "application/json",
 		}),
 	)
