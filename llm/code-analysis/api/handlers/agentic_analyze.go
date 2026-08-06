@@ -1863,13 +1863,22 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 		// provider-appropriate username) so origin carries auth for the followup
 		// agent's subsequent pushes — the same shared primitive the orchestrator push
 		// path uses, so both PR flows authenticate identically.
-		cloneURL := git.InjectTokenIntoURL(req.GitRepository.URL, gitToken)
+		cloneURL, urlErr := git.InjectTokenIntoURL(req.GitRepository.URL, gitToken)
+		if urlErr != nil {
+			return nil, fmt.Errorf("refusing to clone an invalid repository URL for followup: %w", urlErr)
+		}
+
+		// --branch is passed unconditionally here, so the name has to be a real ref.
+		if branchErr := git.ValidateBranchName(branch); branchErr != nil {
+			return nil, fmt.Errorf("refusing to clone with an invalid branch name for followup: %w", branchErr)
+		}
 
 		cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "50", "--branch", branch, cloneURL, workspaceDir)
 		cloneOutput, cloneErr := cloneCmd.CombinedOutput()
 		if cloneErr != nil {
+			// git echoes the clone URL back, which carries the token.
 			logger.Error(common.EventAnalysisFailure, "Failed to clone repo for followup", cloneErr, map[string]any{
-				"output": string(cloneOutput),
+				"output": git.RedactURLCredentials(string(cloneOutput)),
 			})
 			return nil, fmt.Errorf("failed to clone repo for followup: %w", cloneErr)
 		}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -1104,6 +1105,25 @@ func (a *OrchestratorAgent) extractBuildVerificationResults(sinceStep int) map[s
 	}
 }
 
+// runGit executes a git command as an argv, never as a shell string, and returns its
+// combined output.
+//
+// The CLI tool hands its command to `sh -c` whenever it spots a shell metacharacter,
+// so any untrusted value interpolated into a command string is shell syntax waiting to
+// happen. A repository URL built from an LLM's chain-of-thought reached
+// `git push %s %s` that way and was word-split into stray refspecs and commands
+// (#35703). Passing repository URLs and branch names as arguments removes the shell
+// from the path entirely, and keeps the token-bearing push target out of the tool
+// tracker and the model's observation stream.
+func (a *OrchestratorAgent) runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	// Never block on an interactive credential prompt — fail instead.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 // extractCLIOutput extracts the stdout string from a CLITool or GHTool response,
 // trying Data["result"].Stdout, Data["stdout"], then Observation parsing.
 func (a *OrchestratorAgent) extractCLIOutput(resp core.NBToolResponse) string {
@@ -1820,13 +1840,14 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		baseBranch = "main"
 	}
 
-	// Create and checkout new branch BEFORE committing
-	branchResult := cliTool.Execute(ctx, map[string]any{
-		"command":           fmt.Sprintf("git checkout -b %s", branchName),
-		"working_directory": actualRepoDir,
-	})
-	if branchResult.Status != "success" {
-		return nil, fmt.Errorf("failed to create branch: %s", branchResult.Error)
+	// Create and checkout new branch BEFORE committing. sanitizeBranchRef should already
+	// have made the name ref-safe; this is the backstop that keeps a name git would read
+	// as an option off the argv regardless of how it was generated.
+	if err := git.ValidateBranchName(branchName); err != nil {
+		return nil, fmt.Errorf("refusing to create a branch with an invalid name: %w", err)
+	}
+	if out, err := a.runGit(ctx, actualRepoDir, "checkout", "-b", branchName); err != nil {
+		return nil, fmt.Errorf("failed to create branch: %s: %w", strings.TrimSpace(out), err)
 	}
 
 	// Now commit the changes to the new branch with formatted title
@@ -1861,16 +1882,22 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 			repoURL = sessionCtx.RepoContext.URL
 		}
 		if repoURL == "" {
-			originResult := cliTool.Execute(ctx, map[string]any{
-				"command":           "git remote get-url origin",
-				"working_directory": actualRepoDir,
-			})
-			if originResult.Status == "success" {
-				repoURL = git.StripURLUserinfo(strings.TrimSpace(a.extractCLIOutput(originResult)))
+			if out, err := a.runGit(ctx, actualRepoDir, "remote", "get-url", "origin"); err == nil {
+				repoURL = git.StripURLUserinfo(strings.TrimSpace(out))
 			}
 		}
 		if repoURL != "" {
-			pushTarget = git.InjectTokenIntoURL(repoURL, sessionCtx.Credentials.Token)
+			// Fails closed on a malformed URL. The repo URL can originate in LLM
+			// output, and an unvalidated one used to reach this command line (#35703).
+			authenticated, err := git.InjectTokenIntoURL(repoURL, sessionCtx.Credentials.Token)
+			if err != nil {
+				a.logger.Log(common.EventStepFailure, "Refusing to push to an invalid repository URL", map[string]any{
+					"branch_name": branchName,
+					"error":       err.Error(),
+				})
+				return nil, fmt.Errorf("refusing to push to an invalid repository URL: %w", err)
+			}
+			pushTarget = authenticated
 		}
 	}
 
@@ -1882,25 +1909,22 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		"workspace_dir": a.workspaceDir,
 	})
 
-	pushResult := cliTool.Execute(ctx, map[string]any{
-		"command":           fmt.Sprintf("git push %s %s", pushTarget, branchName),
-		"working_directory": actualRepoDir,
-	})
+	pushOutput, pushErr := a.runGit(ctx, actualRepoDir, "push", pushTarget, branchName)
+	// The output can quote the push target, which carries the token — redact before
+	// it reaches a log line or an error returned to the caller.
+	safePushOutput := git.RedactURLCredentials(strings.TrimSpace(pushOutput))
 
 	a.logger.Log(common.EventStepComplete, "Push operation completed", map[string]any{
-		"status":      pushResult.Status,
-		"error":       pushResult.Error,
-		"observation": pushResult.Observation,
-		"result_type": fmt.Sprintf("%T", pushResult.Result),
-		"result_data": pushResult.Result,
+		"succeeded": pushErr == nil,
+		"output":    safePushOutput,
 	})
 
-	if pushResult.Status != "success" {
+	if pushErr != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to push branch", map[string]any{
 			"branch_name": branchName,
-			"error":       pushResult.Error,
+			"error":       safePushOutput,
 		})
-		return nil, fmt.Errorf("failed to push branch: %s", pushResult.Error)
+		return nil, fmt.Errorf("failed to push branch: %s: %w", safePushOutput, pushErr)
 	}
 
 	a.logger.Log(common.EventStepComplete, "Branch pushed successfully", map[string]any{

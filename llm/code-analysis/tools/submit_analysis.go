@@ -74,11 +74,14 @@ type SubmitAnalysisInput struct {
 	ImplementationInstructions []any `json:"implementation_instructions,omitempty"`
 
 	// CODEFIXER EXECUTION FIELDS - For CodeFixer to report execution status
-	ExecutionStatus     string   `json:"execution_status,omitempty"`     // "success" or "failed"
-	ExecutionSummary    string   `json:"execution_summary,omitempty"`    // Brief summary of changes made
-	FilesModified       []string `json:"files_modified,omitempty"`       // List of files that were changed
-	VerificationPassed  bool     `json:"verification_passed,omitempty"`  // Whether syntax/build verification passed
-	VerificationDetails string   `json:"verification_details,omitempty"` // Details of verification checks performed
+	ExecutionStatus  string   `json:"execution_status,omitempty"`  // "success" or "failed"
+	ExecutionSummary string   `json:"execution_summary,omitempty"` // Brief summary of changes made
+	FilesModified    []string `json:"files_modified,omitempty"`    // List of files that were changed
+	// Pointer so "no verification ran" is distinguishable from "verification failed".
+	// A plain bool made every run that skipped verification report false, and the UI
+	// rendered a spurious "Verification failed" chip.
+	VerificationPassed  *bool  `json:"verification_passed,omitempty"`  // Whether syntax/build verification passed
+	VerificationDetails string `json:"verification_details,omitempty"` // Details of verification checks performed
 }
 
 // UnmarshalJSON handles the line_number field which can be either int or "N/A"
@@ -107,7 +110,7 @@ func (s *SubmitAnalysisInput) UnmarshalJSON(data []byte) error {
 		ExecutionStatus            string         `json:"execution_status,omitempty"`
 		ExecutionSummary           string         `json:"execution_summary,omitempty"`
 		FilesModified              []string       `json:"files_modified,omitempty"`
-		VerificationPassed         bool           `json:"verification_passed,omitempty"`
+		VerificationPassed         *bool          `json:"verification_passed,omitempty"`
 		VerificationDetails        string         `json:"verification_details,omitempty"`
 		RelatedIssues              []string       `json:"related_issues,omitempty"`
 		AlternativeFixes           []any          `json:"alternative_fixes,omitempty"`
@@ -598,7 +601,6 @@ func (t *SubmitAnalysisTool) Execute(ctx context.Context, input map[string]any) 
 		"execution_status":     params.ExecutionStatus,
 		"execution_summary":    params.ExecutionSummary,
 		"files_modified":       params.FilesModified,
-		"verification_passed":  params.VerificationPassed,
 		"verification_details": params.VerificationDetails,
 
 		// EXPLORE-MODE STRUCTURED CONTRACT
@@ -606,6 +608,13 @@ func (t *SubmitAnalysisTool) Execute(ctx context.Context, input map[string]any) 
 		"citations":             params.Citations,
 		"caveats":               params.Caveats,
 		"follow_up_suggestions": params.FollowUpSuggestions,
+	}
+
+	// Only report a verification verdict when verification actually ran. Emitting the
+	// key unconditionally made a skipped check indistinguishable from a failed one, and
+	// the UI rendered a spurious "Verification failed" chip.
+	if params.VerificationPassed != nil {
+		result["verification_passed"] = *params.VerificationPassed
 	}
 
 	// Pass through extra fields from raw input that callers may need

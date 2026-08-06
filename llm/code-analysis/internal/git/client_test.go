@@ -76,6 +76,24 @@ func allBranchRefs(t *testing.T, baseDir string) []string {
 	return refs
 }
 
+// distinctBranchNames collapses refs/heads/<b> and refs/remotes/origin/<b> to the
+// single branch name <b>, preserving order of first appearance. Which namespace a
+// branch lands in is an implementation detail of the bare-clone model; what matters
+// to these tests is the set of branches the agent can see.
+func distinctBranchNames(refs []string) []string {
+	seen := map[string]struct{}{}
+	var names []string
+	for _, ref := range refs {
+		name := strings.TrimPrefix(ref, "origin/")
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
 func TestCloneOrReuseRepository_OnlyFetchesRequestedBranch(t *testing.T) {
 	// Regression for the LLM-drift class of failures: a full clone exposes every
 	// branch on origin (including ~180 stale claude/* exploration branches),
@@ -98,7 +116,11 @@ func TestCloneOrReuseRepository_OnlyFetchesRequestedBranch(t *testing.T) {
 	bareDir := filepath.Join(baseDir, entries[0].Name())
 
 	refs := allBranchRefs(t, bareDir)
-	require.Equal(t, []string{"test"}, refs,
+	// The requested branch legitimately appears in both namespaces: refs/heads/test
+	// from the bare clone, and refs/remotes/origin/test so `origin/<branch>` resolves
+	// for diff and merge. Compare distinct branch NAMES so the guarantee under test —
+	// nothing the request did not ask for — is what is actually asserted.
+	require.Equal(t, []string{"test"}, distinctBranchNames(refs),
 		"only the requested branch should be present in the bare clone")
 
 	// And critically — none of the stale claude/* branches should leak in.
@@ -130,12 +152,13 @@ func TestCloneOrReuseRepository_AddsBranchOnReuse(t *testing.T) {
 	require.Len(t, entries, 1)
 	bareDir := filepath.Join(baseDir, entries[0].Name())
 
-	// After reuse, the bare clone holds:
-	//   refs/heads/test                  (from the initial single-branch clone)
-	//   refs/remotes/origin/main         (added on second analysis)
-	// No other branches should be present.
+	// After reuse, the bare clone holds the two requested branches. "test" appears in
+	// both namespaces — refs/heads/test from the initial single-branch clone, and
+	// refs/remotes/origin/test so `origin/<branch>` resolves — while "main" was added
+	// on the second analysis. Compare distinct branch names: the guarantee under test
+	// is that no branch the requests did not ask for is present.
 	refs := allBranchRefs(t, bareDir)
-	require.ElementsMatch(t, []string{"test", "origin/main"}, refs,
+	require.ElementsMatch(t, []string{"test", "main"}, distinctBranchNames(refs),
 		"only the requested branches should be present")
 
 	// And critically — none of the stale claude/* branches should leak in.

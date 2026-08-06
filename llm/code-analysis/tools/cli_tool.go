@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"nudgebee/code-analysis-agent/internal/git"
 	"nudgebee/code-analysis-agent/tools/core"
 )
 
@@ -303,7 +304,7 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 				observation += "\nNo output captured"
 			}
 			return core.CreateSuccessResponse(
-				fmt.Sprintf("Command executed: %s", commandToExecute),
+				fmt.Sprintf("Command executed: %s", result.Command),
 				observation,
 				response,
 			)
@@ -329,7 +330,7 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 		}
 
 		return core.CreateSuccessResponse(
-			fmt.Sprintf("Command executed: %s", commandToExecute),
+			fmt.Sprintf("Command executed: %s", result.Command),
 			observation,
 			response,
 		)
@@ -340,7 +341,7 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 		// error inflates failure metrics and nudges the agent into needless retries.
 		observation += "\nCommand succeeded (no matches found)"
 		return core.CreateSuccessResponse(
-			fmt.Sprintf("Command executed: %s", commandToExecute),
+			fmt.Sprintf("Command executed: %s", result.Command),
 			observation,
 			response,
 		)
@@ -522,7 +523,12 @@ func stageBinary(stage string) string {
 
 func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string, timeout time.Duration, githubToken string) *CLIOutput {
 	result := &CLIOutput{
-		Command:    command,
+		// Redacted at the point of capture, not at each use. result.Command is echoed
+		// back to the model as an observation, stored on the tool tracker, and spilled
+		// to a temp file; a command carrying an "x-access-token:<token>@" URL would
+		// otherwise put an installation token in all three (#35703). The command
+		// actually executed below is the unredacted one.
+		Command:    git.RedactURLCredentials(command),
 		WorkingDir: workingDir,
 	}
 
@@ -701,7 +707,7 @@ func spillFullOutput(command, stdout, stderr string) string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "# command: %s\n", command)
+	fmt.Fprintf(&b, "# command: %s\n", git.RedactURLCredentials(command))
 	if stdout != "" {
 		b.WriteString("# --- stdout ---\n")
 		b.WriteString(stdout)
