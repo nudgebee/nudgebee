@@ -20,8 +20,9 @@ import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
 import { v4 as uuidv4 } from 'uuid';
 import Box from '@mui/material/Box';
-import { Typography, Popover, InputBase, Fade } from '@mui/material';
+import { Typography, Popover, InputBase, Fade, IconButton } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
+import CloseIcon from '@mui/icons-material/Close';
 import { ds } from '@utils/colors';
 import Chip from '@ui/Chip';
 import Divider from '@ui/Divider';
@@ -1606,6 +1607,7 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
               boxShadow: 'var(--ds-overlay-shadow)',
               width: POPOVER_WIDTH,
               overflow: 'hidden',
+              position: 'relative',
               transformOrigin: 'top left',
               animation: 'globalSearchSlideIn var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',
               '@keyframes globalSearchSlideIn': {
@@ -1617,6 +1619,25 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
         }}
         onKeyDown={handleKeyDown}
       >
+        <CustomTooltip title='Close (Esc/Ctrl/⌘+K)' placement='top'>
+          <IconButton
+            id='global-search-close-btn'
+            data-testid='global-search-close-btn'
+            onClick={() => setAnchorEl(null)}
+            aria-label='Close'
+            sx={{
+              position: 'absolute',
+              top: ds.space.mul(0, 3),
+              right: ds.space.mul(0, 3),
+              padding: ds.space.mul(0, 1),
+              zIndex: 2,
+              color: 'var(--ds-gray-500)',
+            }}
+          >
+            <CloseIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </CustomTooltip>
+
         <Box sx={{ margin: `${ds.space.mul(0, 5)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)}`, position: 'relative' }}>
           <SearchIcon
             sx={{
