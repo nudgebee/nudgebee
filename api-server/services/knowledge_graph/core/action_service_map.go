@@ -7,6 +7,8 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 func init() {
@@ -99,6 +101,14 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	if err != nil || len(nodeIDs) == 0 {
 		// Fall back to tenant-wide search
 		nodeIDs, err = findServiceNodes(dbManager, ctx.GetTenantId(), "", serviceName, namespace)
+	}
+	if err != nil || len(nodeIDs) == 0 {
+		// Last resort: drop the namespace. A cloud event carries the provider's
+		// service code there (AmazonRDS, AWSELB) and cloud nodes carry no
+		// namespace, so the filtered attempts above could never match one. Only
+		// reached when the namespaced lookups found nothing, so a Kubernetes
+		// subject that does exist is still matched with its namespace first.
+		nodeIDs, err = findServiceNodes(dbManager, ctx.GetTenantId(), ctx.GetAccountId(), serviceName, "")
 		if err != nil || len(nodeIDs) == 0 {
 			logger.Info("knowledge_graph_service_map: no matching service nodes found",
 				"service", serviceName, "namespace", namespace)
@@ -150,18 +160,41 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	}, nil
 }
 
+// seedNodeTypeNames is the SQL-facing form of ImpactSeedNodeTypes, built once
+// because the set is static and findServiceNodes runs per event.
+var seedNodeTypeNames = func() []string {
+	seedTypes := ImpactSeedNodeTypes()
+	names := make([]string, 0, len(seedTypes))
+	for _, nodeType := range seedTypes {
+		names = append(names, string(nodeType))
+	}
+	return names
+}()
+
 // findServiceNodes queries the KG for nodes matching a service name and namespace.
+//
+// The node types accepted are those the graph defines a blast-radius traversal
+// for (ImpactSeedNodeTypes) rather than a fixed list, so a cloud resource — a
+// Database, ComputeInstance or LoadBalancer — resolves as readily as a Workload.
+// Restricting to that set still excludes plumbing (SecurityGroup, Subnet, VPC),
+// which shares names with real resources and would otherwise match first.
+//
+// namespace is only applied when the caller supplies one, and cloud events
+// should not: they carry the provider's service code there (AmazonRDS, AWSELB)
+// while cloud nodes carry no namespace at all, so filtering on it can only ever
+// fail. Kubernetes callers must keep passing it — a workload name is unique only
+// within its namespace.
 func findServiceNodes(dbManager *database.DatabaseManager, tenantID, accountID, name, namespace string) ([]string, error) {
 	query := `
 		SELECT id FROM knowledge_graph_node
 		WHERE tenant_id = $1
 		  AND query_attributes->>'name' = $2
-		  AND node_type IN ('Service', 'Workload', 'K8sService')
+		  AND node_type = ANY($3)
 		  AND level = 'Tenant'
 		  AND is_active = true
 	`
-	args := []interface{}{tenantID, name}
-	argIdx := 3
+	args := []interface{}{tenantID, name, pq.Array(seedNodeTypeNames)}
+	argIdx := 4
 
 	if namespace != "" {
 		query += fmt.Sprintf(" AND query_attributes->>'namespace' = $%d", argIdx)
