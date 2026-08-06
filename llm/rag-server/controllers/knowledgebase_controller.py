@@ -26,6 +26,13 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+class DocumentLoader(Protocol):
+    """Minimal loader contract used by KB document ingestion."""
+
+    def load(self) -> list[Document]:
+        """Return documents ready for KB processing."""
+
+
 # Pydantic models
 class KBCreateRequest(BaseModel):
     account_id: str
@@ -53,11 +60,6 @@ class KBRetriggerIntegrationRequest(BaseModel):
     integration_id: str
     kb_source: str
     triggered_by: str = "system"
-
-
-class DocumentLoader(Protocol):
-    def load(self) -> list[Document]:
-        raise NotImplementedError
 
 
 def _create_kb_document_loader(file_path: str, data_format: str) -> DocumentLoader:
