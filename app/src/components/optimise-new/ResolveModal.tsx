@@ -709,6 +709,14 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
   // the "create new rule" path (a present id makes them issue an update instead).
   const autoOptimizeData = { ...autoPilotData, id: undefined };
 
+  // This modal is always scoped to one recommendation's account, so the config
+  // forms' Account field has exactly one valid option — matches the pattern in
+  // KubernetesWorkloadsTable.jsx (PR #35681).
+  const resolveAccountOptions = useMemo(
+    () => (recommendation?.account_id ? [{ value: recommendation.account_id, label: clusterName || recommendation.account_id }] : []),
+    [recommendation?.account_id, clusterName]
+  );
+
   // ── Action buttons (footer) ──
   const ticketExists = !!recommendation?.ticket;
   const actionButtons = (
@@ -1038,6 +1046,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
           currentData={allocatedData}
           additionalInfoCPUAndMem={{ cpuInfo: additionalCpuInfo, memInfo: additionalMemInfo }}
           setIsLoading={setAutoOptimizeLoading}
+          accountOptions={resolveAccountOptions}
         />
       </Modal>
 
@@ -1065,6 +1074,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
           isMsTeamsLoading={isMsTeamsLoading}
           isGoogleChannelsLoading={isGoogleChannelsLoading}
           setIsLoading={setAutoOptimizeLoading}
+          accountOptions={resolveAccountOptions}
         />
       </Modal>
 
