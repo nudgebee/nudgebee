@@ -1,5 +1,54 @@
 import { Page } from "@playwright/test";
 
+const CLUSTER_SELECT_ATTEMPTS = 6;
+const CLUSTER_SELECT_RETRY_DELAY_MS = 2000;
+
+// Pick a cluster from the global cluster dropdown. The dropdown is populated
+// asynchronously and intermittently comes back empty on the first try, so
+// re-type the name and re-check up to CLUSTER_SELECT_ATTEMPTS times with a
+// fixed gap between attempts instead of failing on the first miss.
+export async function selectClusterWithRetries(
+  page: Page,
+  clusterName: string
+): Promise<void> {
+  const clusterInput = page.locator("#auto-complete-global-cluster");
+  const option = page
+    .locator("[role='option']")
+    .filter({ hasText: clusterName })
+    .first();
+
+  for (let attempt = 1; attempt <= CLUSTER_SELECT_ATTEMPTS; attempt++) {
+    await clusterInput.waitFor({ state: "visible", timeout: 10000 });
+    await clusterInput.click({ clickCount: 3 });
+    await clusterInput.press("Control+a");
+    await clusterInput.press("Delete");
+    await clusterInput.fill("");
+    await clusterInput.pressSequentially(clusterName, { delay: 50 });
+    await page.waitForTimeout(500);
+
+    const appeared = await option
+      .waitFor({ state: "visible", timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (appeared) {
+      await option.click();
+      await page.mouse.move(0, 0);
+      console.log(`Selected cluster: ${clusterName} (attempt ${attempt})`);
+      return;
+    }
+
+    console.log(
+      `No option found for '${clusterName}' (attempt ${attempt}/${CLUSTER_SELECT_ATTEMPTS}), retrying...`
+    );
+    await page.waitForTimeout(CLUSTER_SELECT_RETRY_DELAY_MS);
+  }
+
+  throw new Error(
+    `Cluster '${clusterName}' not found in dropdown after ${CLUSTER_SELECT_ATTEMPTS} attempts`
+  );
+}
+
 export async function doCredentialsLogin(page: Page): Promise<void> {
   const baseUrl = process.env.BASE_URL;
   const email = process.env.E2E_EMAIL || "";
