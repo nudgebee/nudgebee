@@ -103,14 +103,37 @@ func matchCondition(condition *monitoring.AlertPolicy_Condition, template provid
 
 	// A template that pins metric labels (e.g. 5xx-only error rate) is not
 	// satisfied by a broader alert on the same metric — every pinned label
-	// must appear in the existing alert's filter.
+	// must appear in the existing alert's filter. metricLabelClause keeps the
+	// expected form identical to what the creator emits (incl. unquoted
+	// numerics for INT64-typed labels).
 	for k, v := range template.Configuration.MetricLabelFilters {
-		if !strings.Contains(metricThreshold.Filter, fmt.Sprintf(`metric.labels.%s="%s"`, k, v)) {
+		if !containsMetricLabelClause(metricThreshold.Filter, metricLabelClause(k, v)) {
 			return false
 		}
 	}
 
 	return true
+}
+
+// containsMetricLabelClause reports whether filter contains the rendered
+// clause as a whole term. Unquoted numeric clauses need a boundary check: a
+// plain substring probe would let a longer number match (…=500 sits inside
+// …=5000), falsely satisfying the template and suppressing a recommendation.
+// The character after the match must therefore not be another digit. Quoted
+// string clauses end with a closing quote, for which the check is a no-op.
+func containsMetricLabelClause(filter, clause string) bool {
+	for from := 0; from <= len(filter)-len(clause); {
+		idx := strings.Index(filter[from:], clause)
+		if idx < 0 {
+			return false
+		}
+		end := from + idx + len(clause)
+		if end >= len(filter) || filter[end] < '0' || filter[end] > '9' {
+			return true
+		}
+		from = from + idx + 1
+	}
+	return false
 }
 
 // getGCPMetricType converts generic metric to GCP metric type

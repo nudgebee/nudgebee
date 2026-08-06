@@ -294,7 +294,7 @@ func buildSimpleCondition(config providers.AlarmCreationConfig) (*monitoringpb.A
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			filter += fmt.Sprintf(` AND metric.labels.%s="%s"`, k, config.MetricLabelFilters[k])
+			filter += " AND " + metricLabelClause(k, config.MetricLabelFilters[k])
 		}
 	}
 
@@ -315,6 +315,31 @@ func buildSimpleCondition(config providers.AlarmCreationConfig) (*monitoringpb.A
 			},
 		},
 	}, nil
+}
+
+// metricLabelClause renders one pinned metric-label comparison for a Cloud
+// Monitoring filter. INT64-typed labels (e.g. the HTTPS load balancer's
+// response_code_class, whose values are 200/300/400/500) must be compared
+// unquoted; string-typed labels stay quoted. The value's shape decides:
+// all-digits renders numeric. Shared by the creator and the checker so both
+// always agree on the rendered form.
+func metricLabelClause(key, value string) string {
+	if isAllDigits(value) {
+		return fmt.Sprintf(`metric.labels.%s=%s`, key, value)
+	}
+	return fmt.Sprintf(`metric.labels.%s="%s"`, key, value)
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // buildMQLCondition builds a condition using Monitoring Query Language for metric math
