@@ -230,6 +230,7 @@ func LoadConfig() (*Config, error) {
 
 	// Bind server environment variables
 	_ = viper.BindEnv("server.port", "SERVER_PORT")
+	_ = viper.BindEnv("server.write_timeout", "SERVER_WRITE_TIMEOUT")
 
 	// Explicitly bind environment variables for LLM config (consistent with llm-server)
 	_ = viper.BindEnv("agent.harness_verify", "AGENT_HARNESS_VERIFY")

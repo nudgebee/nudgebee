@@ -77,7 +77,7 @@ type workspaceManager struct {
 }
 
 func NewWorkspaceManager() WorkspaceManager {
-	return NewWorkspaceManagerWithTimeout(60 * time.Second)
+	return NewWorkspaceManagerWithTimeout(config.WorkspaceHTTPClientTimeout)
 }
 
 func NewWorkspaceManagerWithTimeout(timeout time.Duration) WorkspaceManager {
@@ -470,6 +470,15 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 						{
 							Name:  ENV_NB_RELAY_SERVER_ENDPOINT,
 							Value: config.Config.RelayServerEndpoint,
+						},
+						{
+							// Raises the in-pod command execution deadline (see
+							// LlmServerWorkspaceCommandTimeout doc comment) from
+							// code-analysis's hardcoded 30s fallback. Commands like
+							// `gcloud logging read` over wide time windows routinely
+							// need more than 30s and were getting SIGKILLed mid-flight.
+							Name:  "SERVER_WRITE_TIMEOUT",
+							Value: config.Config.LlmServerWorkspaceCommandTimeout,
 						},
 					},
 				},

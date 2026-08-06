@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"nudgebee/code-analysis-agent/config"
@@ -201,6 +202,22 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", req.Command)
 	cmd.Dir = workDir
+
+	// exec.CommandContext's default cancellation only kills the direct child
+	// (sh) — any grandchildren it spawns (e.g. `sleep 75` in `sleep 75 && x`,
+	// or anything backgrounded) are NOT killed and keep holding the stdout/
+	// stderr pipes open, so Wait() blocks until they exit on their own. That
+	// makes `timeout` above purely cosmetic for any multi-process command:
+	// confirmed live — a command exceeding the deadline still ran to its full
+	// natural duration before the handler returned. Setpgid puts sh in its
+	// own process group; Cancel kills that whole group (negative PID) instead
+	// of just sh; WaitDelay is a bounded safety net in case a descendant
+	// somehow survives the group kill, so Wait() can't block forever either.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 5 * time.Second
 
 	// Apply environment variables — strictly from request, do NOT inherit host env.
 	// The per-conversation isolation contract (see CLAUDE.md, the workspace

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -51,6 +52,20 @@ var SERVICE_NAME = func() string {
 	}
 	return "llm-server"
 }()
+
+// WorkspaceHTTPClientTimeout is the HTTP client timeout every tool uses when
+// calling into a workspace pod (workspace.NewWorkspaceManager). Defined here
+// rather than in the workspace package so both that client timeout and the
+// LlmServerWorkspaceCommandTimeout default below derive from one number,
+// instead of two independently-hardcoded values that would otherwise have to
+// be kept in sync by hand.
+const WorkspaceHTTPClientTimeout = 60 * time.Second
+
+// workspaceCommandTimeoutBuffer is the safety margin left under
+// WorkspaceHTTPClientTimeout for LlmServerWorkspaceCommandTimeout's default,
+// so the workspace pod's failure response has time to travel back before the
+// caller's own HTTP timeout also fires.
+const workspaceCommandTimeoutBuffer = 2 * time.Second
 
 type appConfig struct {
 	Port string `mapstructure:"port"`
@@ -415,6 +430,15 @@ type appConfig struct {
 	LlmServerWorkspaceResourceLimitMemory   string `mapstructure:"llm_server_workspace_resource_limit_memory"`
 	LlmServerWorkspaceResourceRequestCpu    string `mapstructure:"llm_server_workspace_resource_request_cpu"`
 	LlmServerWorkspaceResourceRequestMemory string `mapstructure:"llm_server_workspace_resource_request_memory"`
+	// LlmServerWorkspaceCommandTimeout sets SERVER_WRITE_TIMEOUT on the workspace
+	// pod, which the in-pod execution handler uses (minus its own 2s safety
+	// margin) as the per-command exec.CommandContext deadline. Default is
+	// derived from WorkspaceHTTPClientTimeout minus workspaceCommandTimeoutBuffer
+	// (60s - 2s = 58s) — must stay under that ~60s HTTP client timeout every
+	// tool uses to call into the pod (workspace.NewWorkspaceManager); raising
+	// this past that ceiling buys nothing, since the caller would already have
+	// given up and the result would never reach the LLM.
+	LlmServerWorkspaceCommandTimeout string `mapstructure:"llm_server_workspace_command_timeout"`
 
 	LlmServerShellToolEnabled bool `mapstructure:"llm_server_shell_tool_enabled"`
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
@@ -1136,6 +1160,10 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_limit_memory", "")
 	viper.SetDefault("llm_server_workspace_resource_request_cpu", "250m")
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
+	// 58s: see WorkspaceHTTPClientTimeout / workspaceCommandTimeoutBuffer doc
+	// comments above — this default is computed, not hand-picked, so it can't
+	// silently drift out of sync with the HTTP client timeout it must stay under.
+	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
