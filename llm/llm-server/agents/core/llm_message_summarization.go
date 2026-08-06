@@ -426,6 +426,124 @@ func truncateToTokenLimit(text string, maxTokens int, provider string, model str
 	return truncated
 }
 
+// preflightContextTrimMargin keeps the trimmed prompt below the window, absorbing
+// tokenizer + chat-template overhead (the Qwen3 "32769" off-by-one).
+const preflightContextTrimMargin = 256
+
+// applyPreflightContextWindowCap trims the largest text message(s) — the scratchpad,
+// never the user query — so the whole prompt fits the usable window before the first
+// send, avoiding an over-window 4xx. handleTokenLimitError remains the backstop.
+func applyPreflightContextWindowCap(ctx *security.RequestContext, messages []llms.MessageContent, provider, model string, resolution *LLMConfigResolution, agentName string) []llms.MessageContent {
+	maxContext := ResolveModelMaxContext(resolution, model)
+	if maxContext <= 0 {
+		return messages
+	}
+	budget := summarizationChunkSize(maxContext, model) - preflightContextTrimMargin
+	if budget < 256 {
+		budget = 256
+	}
+
+	// Cheap byte estimate to skip exact counting when clearly under budget (3
+	// bytes/token over-estimates). Non-text parts hide tokens, so don't trust it then.
+	totalBytes := 0
+	hasNonText := false
+	for _, m := range messages {
+		for _, p := range m.Parts {
+			if tp, ok := p.(llms.TextContent); ok {
+				totalBytes += len(tp.Text)
+			} else {
+				hasNonText = true
+			}
+		}
+	}
+	if !hasNonText && totalBytes/scratchpadCharsPerToken <= budget {
+		return messages
+	}
+
+	total, err := CalculateTotalTokens(ctx, messages, provider, model)
+	if err != nil || total <= budget {
+		return messages
+	}
+
+	// Copy so the caller's slice is never mutated.
+	result := make([]llms.MessageContent, len(messages))
+	copy(result, messages)
+
+	ctx.GetLogger().Warn("Pre-flight context-window cap: prompt exceeds usable budget, trimming largest message(s) before send",
+		"totalTokens", total, "budget", budget, "maxContext", maxContext, "agent", agentName)
+
+	// Count once; update only the trimmed message each iteration.
+	counts := make([]int, len(result))
+	for j, msg := range result {
+		t, e := calculateMessageTokens(ctx, msg, provider, model)
+		if e != nil {
+			t = estimateMessageTokens(msg)
+		}
+		counts[j] = t
+	}
+
+	const maxTrimIterations = 12
+	for i := 0; i < maxTrimIterations && total > budget; i++ {
+		idx, idxTokens := largestTextMessageIndex(result, counts)
+		if idx < 0 || idxTokens <= 0 {
+			break // nothing trimmable — hand off to the reactive backstop
+		}
+		// Trim the first text part, wherever it sits (largestTextMessageIndex implies one).
+		textPartIdx, textContent := -1, llms.TextContent{}
+		for pIdx, p := range result[idx].Parts {
+			if tc, ok := p.(llms.TextContent); ok {
+				textPartIdx, textContent = pIdx, tc
+				break
+			}
+		}
+		if textPartIdx < 0 {
+			break
+		}
+		targetTokens := idxTokens - (total - budget)
+		if targetTokens < 256 {
+			targetTokens = 256
+		}
+		trimmed := truncateToTokenLimit(textContent.Text, targetTokens, provider, model)
+		if trimmed == textContent.Text {
+			break // already at/under target — no progress, avoid an infinite loop
+		}
+		newParts := make([]llms.ContentPart, len(result[idx].Parts))
+		copy(newParts, result[idx].Parts)
+		newParts[textPartIdx] = llms.TextContent{Text: trimmed}
+		result[idx].Parts = newParts
+
+		// Exact delta update — total is the sum of per-message counts.
+		newMsgTokens, e := calculateMessageTokens(ctx, result[idx], provider, model)
+		if e != nil {
+			newMsgTokens = estimateMessageTokens(result[idx])
+		}
+		newTotal := total - idxTokens + newMsgTokens
+		if newTotal >= total {
+			break // no progress
+		}
+		total = newTotal
+		counts[idx] = newMsgTokens
+	}
+	return result
+}
+
+// ensureUserMessage appends a minimal user turn for system-only prompts, but only
+// for models whose template rejects them (Qwen3/vLLM) — other providers accept
+// system-only prompts, so leave them untouched. Appended last to keep the cacheable prefix.
+func ensureUserMessage(messages []llms.MessageContent, model string) []llms.MessageContent {
+	if !strings.Contains(strings.ToLower(model), "qwen") {
+		return messages
+	}
+	for _, m := range messages {
+		if m.Role == llms.ChatMessageTypeHuman {
+			return messages
+		}
+	}
+	out := make([]llms.MessageContent, len(messages), len(messages)+1)
+	copy(out, messages)
+	return append(out, llms.TextParts(llms.ChatMessageTypeHuman, "Continue."))
+}
+
 // SummarizeLargeMessageChunked chunks a very large message and summarizes it with context preservation
 // Each chunk is summarized, and subsequent chunks include previous summaries as context
 // ALWAYS checks token limits before processing each chunk to prevent errors

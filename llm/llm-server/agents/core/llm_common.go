@@ -528,6 +528,13 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	// The summarization-loop fallback (Strategy 1) is still the safety net for edge cases.
 	promptMessages = applyPreflightMessageSizeCap(ctx, promptMessages, agentName)
 
+	// Step 3b: bound the TOTAL prompt against the model window (per-message cap above
+	// only bounds individual messages).
+	promptMessages = applyPreflightContextWindowCap(ctx, promptMessages, provider, model, res, agentName)
+
+	// Step 3c: guarantee a user turn (Qwen3/vLLM rejects system-only prompts).
+	promptMessages = ensureUserMessage(promptMessages, model)
+
 	// Step 4: Generate content with retry logic
 	completion, callMetadata, err := generateLLMContentWithRetry(ctx, llm, promptMessages, options, agentName, agentId, accountId, conversationId, messageId, false, userId, res)
 

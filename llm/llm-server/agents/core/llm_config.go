@@ -2637,6 +2637,7 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 	wholeConfig := parsed.Scope == "all"
 
 	var slotFallbacks []string
+	var pinConfig map[string]string // db integration config (nil for env pins)
 	switch parsed.Layer {
 	case "env":
 		var err error
@@ -2649,16 +2650,17 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 			return nil, err
 		}
 	case "db":
-		cfg, err := integrationConfigForPin(ctx, accountId, parsed.IntegrationUuid)
+		var err error
+		pinConfig, err = integrationConfigForPin(ctx, accountId, parsed.IntegrationUuid)
 		if err != nil {
 			return nil, err
 		}
 		if parsed.Scope == "all" {
 			parsed = slotForWholeConfig(parsed, tier, func(t string) bool {
-				return cfg[fmt.Sprintf(llmTierModelFormat, t)] != ""
+				return pinConfig[fmt.Sprintf(llmTierModelFormat, t)] != ""
 			})
 		}
-		if slotFallbacks, err = readDbSlotInto(res, cfg, parsed); err != nil {
+		if slotFallbacks, err = readDbSlotInto(res, pinConfig, parsed); err != nil {
 			return nil, err
 		}
 	}
@@ -2699,6 +2701,12 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 			// Fallback picked — use the request's model with the slot's endpoint.
 			res.Model = reqModel
 		}
+	}
+
+	// Context window for the pinned deployment (db pins: llm_model_context_size;
+	// env pins: config.Config sizes). 0 → model-default fallback, as in the layered path.
+	if mc := resolveModelContextMap(pinConfig)[res.Model]; mc > 0 {
+		res.MaxContext = mc
 	}
 
 	// Populate active layer's provider/model for display.
