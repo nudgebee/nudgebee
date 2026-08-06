@@ -788,6 +788,32 @@ WHERE ksw.is_active IS TRUE
 	return nil
 }
 
+// countActiveAgentsForAccount counts the agents that reported in for an account
+// within the last day.
+//
+// The cursor lives and dies inside this function on purpose. Its callers run
+// multi-minute per-account work (agent poll, log fetch, image scan, an HTTP call
+// to ml-k8s-server) inside a loop over every account, so a defer placed there
+// would only fire when the whole loop is done — pinning one pooled Metastore
+// connection per account for the rest of the run.
+func countActiveAgentsForAccount(ctx *security.RequestContext, dbms *database.DatabaseManager, accountID string) (int, error) {
+	response, err := dbms.Db.Queryx("select id from agent where last_connected_at > now() - interval '1 DAY' and cloud_account_id= $1", accountID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if cerr := response.Close(); cerr != nil {
+			ctx.GetLogger().Error("error closing response", "error", cerr)
+		}
+	}()
+
+	count := 0
+	for response.Next() {
+		count++
+	}
+	return count, nil
+}
+
 func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecommendationRequest) (GenerateRecommendationResponse, error) {
 	t0 := time.Now()
 	defer func() {
@@ -864,24 +890,13 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 			)
 		}
 
-		response, err := dbms.Db.Queryx("select id from agent where last_connected_at > now() - interval '1 DAY' and cloud_account_id= $1", accountId)
+		count, err := countActiveAgentsForAccount(ctx, dbms, accountId)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
 				ctx.GetLogger().Info("No active agent found for account", "account_id", accountId)
 			}
 			return GenerateRecommendationResponse{}, err
-		}
-		defer func() {
-			err := response.Close()
-			if err != nil {
-				ctx.GetLogger().Error("error closing response", "error", err)
-			}
-		}()
-
-		count := 0
-		for response.Next() {
-			count++
 		}
 		if count == 0 {
 			ctx.GetLogger().Info("No active agent found for account", "account_id", accountId)
@@ -1003,24 +1018,13 @@ func GenerateSecurityRecommendation(ctx *security.RequestContext, request Genera
 	}
 
 	for _, accountId := range request.AccountId {
-		response, err := dbms.Db.Queryx("select id from agent where last_connected_at > now() - interval '1 DAY' and cloud_account_id= $1", accountId)
+		count, err := countActiveAgentsForAccount(ctx, dbms, accountId)
 
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				ctx.GetLogger().Debug("No active agent found for account", "account_id", accountId)
 			}
 			return GenerateRecommendationResponse{}, err
-		}
-		defer func() {
-			err := response.Close()
-			if err != nil {
-				ctx.GetLogger().Error("error closing response", "error", err)
-			}
-		}()
-
-		count := 0
-		for response.Next() {
-			count++
 		}
 		if count == 0 {
 			ctx.GetLogger().Info("No active agent found for account", "account_id", accountId)
