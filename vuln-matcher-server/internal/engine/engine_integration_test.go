@@ -1,0 +1,170 @@
+package engine
+
+import (
+	"os"
+	"testing"
+
+	"nudgebee/vuln-matcher-server/internal/api"
+)
+
+// These tests need a real vulnerability database, which is far too large to
+// check in. Point VULN_TEST_DB_ROOT at a grype database root (the directory
+// containing the "6/" schema dir) to run them; they skip otherwise so the unit
+// suite stays hermetic.
+func testEngine(t *testing.T) *Engine {
+	t.Helper()
+	root := os.Getenv("VULN_TEST_DB_ROOT")
+	if root == "" {
+		t.Skip("VULN_TEST_DB_ROOT not set; skipping integration test")
+	}
+	eng, err := New(Config{DBRootDir: root, Update: false})
+	if err != nil {
+		t.Fatalf("load engine: %v", err)
+	}
+	return eng
+}
+
+// The source package is what advisories are keyed on. This is the single most
+// consequential input field: on a real Amazon Linux host, supplying it for a
+// handful of packages took the finding count from 9 to 31. If this ever stops
+// mattering, the collector requirement can be relaxed — until then it is why
+// the API rejects input that omits it.
+func TestMatch_SourceNameChangesResults(t *testing.T) {
+	eng := testEngine(t)
+
+	osCtx := api.OS{Family: "redhat", Version: "9"}
+	withSource := []api.Package{{
+		Key: "t1", Name: "openssl-libs", Type: api.PkgTypeRPM,
+		Version: "3.0.7-24.el9", Arch: "x86_64", Epoch: intPtr(1),
+		SourceName: "openssl", SourceVersion: "3.0.7-24.el9",
+	}}
+	withoutSource := []api.Package{{
+		Key: "t1", Name: "openssl-libs", Type: api.PkgTypeRPM,
+		Version: "3.0.7-24.el9", Arch: "x86_64", Epoch: intPtr(1),
+	}}
+
+	got, err := eng.Match(osCtx, withSource)
+	if err != nil {
+		t.Fatalf("match with source: %v", err)
+	}
+	none, err := eng.Match(osCtx, withoutSource)
+	if err != nil {
+		t.Fatalf("match without source: %v", err)
+	}
+
+	if len(got) == 0 {
+		t.Fatal("expected findings for a known-vulnerable openssl-libs build")
+	}
+	if len(none) >= len(got) {
+		t.Errorf("omitting source_name should lose findings: with=%d without=%d", len(got), len(none))
+	}
+	t.Logf("openssl-libs 3.0.7-24.el9: with source=%d findings, without=%d", len(got), len(none))
+}
+
+// A package upgraded to the vendor's patched build must stop reporting the CVEs
+// that build fixed. This is the backport property that makes distro advisory
+// data trustworthy: the upstream project fixed CVE-2024-6119 in 3.0.8, but Red
+// Hat backported it into 3.0.7-28.el9_4, and comparing against upstream would
+// call a fully patched host vulnerable.
+func TestMatch_BackportedFixClearsFinding(t *testing.T) {
+	eng := testEngine(t)
+	osCtx := api.OS{Family: "redhat", Version: "9"}
+
+	vulnerable, err := eng.Match(osCtx, []api.Package{{
+		Key: "t1", Name: "openssl-libs", Type: api.PkgTypeRPM,
+		Version: "3.0.7-24.el9", Arch: "x86_64", Epoch: intPtr(1), SourceName: "openssl",
+	}})
+	if err != nil {
+		t.Fatalf("match vulnerable: %v", err)
+	}
+	patched, err := eng.Match(osCtx, []api.Package{{
+		Key: "t1", Name: "openssl-libs", Type: api.PkgTypeRPM,
+		Version: "3.0.7-28.el9_4", Arch: "x86_64", Epoch: intPtr(1), SourceName: "openssl",
+	}})
+	if err != nil {
+		t.Fatalf("match patched: %v", err)
+	}
+
+	if len(patched) >= len(vulnerable) {
+		t.Errorf("patched build should report fewer findings: vulnerable=%d patched=%d",
+			len(vulnerable), len(patched))
+	}
+	if has(vulnerable, "CVE-2024-6119") && has(patched, "CVE-2024-6119") {
+		t.Error("CVE-2024-6119 is fixed in 3.0.7-28.el9_4 and must not be reported against it")
+	}
+}
+
+// RHEL 8/9 AppStream packages belong to a module stream, and fixes only apply
+// within the same stream. Without the modularity label a postgresql:12 host is
+// told about fixes shipped in the 13/15/16 streams, which it cannot install.
+func TestMatch_ModularityLabelScopesToStream(t *testing.T) {
+	eng := testEngine(t)
+	osCtx := api.OS{Family: "redhat", Version: "8"}
+
+	base := api.Package{
+		Key: "t1", Name: "postgresql", Type: api.PkgTypeRPM,
+		Version: "12.7-1.module+el8.4.0+11565+d8b0bf24", Arch: "x86_64",
+		Epoch: intPtr(0), SourceName: "postgresql",
+	}
+	withLabel := base
+	withLabel.ModularityLabel = "postgresql:12:8040020210708095149:9f9e2e7e"
+
+	scoped, err := eng.Match(osCtx, []api.Package{withLabel})
+	if err != nil {
+		t.Fatalf("match with modularity: %v", err)
+	}
+	unscoped, err := eng.Match(osCtx, []api.Package{base})
+	if err != nil {
+		t.Fatalf("match without modularity: %v", err)
+	}
+
+	if len(scoped) >= len(unscoped) {
+		t.Errorf("modularity label should narrow results to the installed stream: scoped=%d unscoped=%d",
+			len(scoped), len(unscoped))
+	}
+	t.Logf("postgresql:12 — scoped=%d findings, unscoped=%d", len(scoped), len(unscoped))
+}
+
+// Capabilities must reflect what the database actually carries, since callers
+// use it to refuse distros that would otherwise return an empty, clean-looking
+// result.
+func TestSupportedOS_ReportsRealCoverage(t *testing.T) {
+	eng := testEngine(t)
+
+	supported := eng.SupportedOS()
+	if len(supported) == 0 {
+		t.Fatal("expected the database to report covered operating systems")
+	}
+
+	families := map[string]bool{}
+	for _, s := range supported {
+		families[s.Family] = true
+		if len(s.Versions) == 0 {
+			t.Errorf("family %q reported with no versions", s.Family)
+		}
+	}
+	for _, want := range []string{"ubuntu", "debian", "redhat"} {
+		if !families[want] {
+			t.Errorf("expected %q in database coverage; got %v", want, keys(families))
+		}
+	}
+}
+
+func intPtr(i int) *int { return &i }
+
+func has(fs []api.Finding, id string) bool {
+	for _, f := range fs {
+		if f.VulnID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func keys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

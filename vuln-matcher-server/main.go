@@ -1,0 +1,115 @@
+// Command vuln-matcher-server matches package inventories against vulnerability
+// data.
+//
+// It is deliberately stateless: no database credentials, no tenant awareness,
+// no scheduling. It takes an OS context plus a deduplicated package set and
+// returns findings. services-server owns everything else.
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"nudgebee/vuln-matcher-server/internal/api"
+	"nudgebee/vuln-matcher-server/internal/engine"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	cfg := engine.Config{
+		DBRootDir: env("VULN_DB_ROOT", "/var/lib/vuln-matcher/db"),
+		// Our own mirror. Customers reach this service's database through one
+		// endpoint we host, never the upstream publisher.
+		UpdateURL: os.Getenv("VULN_DB_UPDATE_URL"),
+		// Air-gapped installs disable updating and load a database placed on
+		// disk out of band.
+		Update: envBool("VULN_DB_UPDATE", true),
+	}
+
+	logger.Info("loading vulnerability database", "root", cfg.DBRootDir, "update", cfg.Update)
+	start := time.Now()
+	eng, err := engine.New(cfg)
+	if err != nil {
+		logger.Error("failed to load vulnerability database", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("vulnerability database loaded",
+		"db_version", eng.DBVersion(),
+		"db_built_at", eng.DBBuiltAt().UTC().Format(time.RFC3339),
+		"os_families", len(eng.SupportedOS()),
+		"took", time.Since(start).Round(time.Millisecond).String(),
+	)
+
+	h := api.NewHandler(eng, envDuration("VULN_DB_MAX_AGE", 7*24*time.Hour), engine.Version)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	srv := &http.Server{
+		Addr:              env("LISTEN_ADDR", ":8080"),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		// Matching a large deduplicated package set is CPU-bound and can take
+		// seconds; allow room without letting a request hang forever.
+		WriteTimeout: envDuration("WRITE_TIMEOUT", 120*time.Second),
+		ReadTimeout:  envDuration("READ_TIMEOUT", 120*time.Second),
+	}
+
+	go func() {
+		logger.Info("listening", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+
+	logger.Info("shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Error("graceful shutdown failed", "error", err)
+	}
+}
+
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return b
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
+}

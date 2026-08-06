@@ -1,0 +1,113 @@
+package engine
+
+import (
+	"database/sql"
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"nudgebee/vuln-matcher-server/internal/api"
+)
+
+// The pure-Go "sqlite" driver (modernc.org/sqlite) is already registered by
+// grype's own database layer, which is why this file does not import it: doing
+// so panics with "Register called twice". Relying on grype's registration also
+// guarantees we read the database with the same driver that wrote our
+// expectations of it, and keeps the image CGO_ENABLED=0 like every other Go
+// service here.
+
+// dbFileName is grype's on-disk layout: <root>/<schema major>/vulnerability.db.
+const schemaMajorDir = "6"
+const dbFileName = "vulnerability.db"
+
+// loadSupportedOS reads the operating systems the database actually carries
+// data for.
+//
+// This is the one place we knowingly depend on grype's internal schema, and it
+// lives here because this package is already the grype boundary. It earns that
+// coupling: it is what lets us refuse an unsupported distro instead of
+// returning zero findings that look like a clean host. Grype's database
+// describes its own sources; that is a real advantage over the alternatives and
+// this is where it gets used.
+func loadSupportedOS(dbRootDir string) ([]api.SupportedOS, error) {
+	path := filepath.Join(dbRootDir, schemaMajorDir, dbFileName)
+
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1")
+	if err != nil {
+		return nil, fmt.Errorf("open vulnerability db for capabilities: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Only operating systems that actually have affected-package rows count.
+	// An OS row with no advisories behind it would advertise coverage we
+	// cannot deliver.
+	const q = `
+		SELECT o.name,
+		       o.major_version,
+		       COALESCE(o.minor_version, '')
+		FROM operating_systems o
+		WHERE EXISTS (
+		    SELECT 1 FROM affected_package_handles a
+		    WHERE a.operating_system_id = o.id
+		)`
+
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("query operating systems: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	versionsByFamily := map[string]map[string]struct{}{}
+	for rows.Next() {
+		var name, major, minor string
+		if err := rows.Scan(&name, &major, &minor); err != nil {
+			return nil, fmt.Errorf("scan operating system: %w", err)
+		}
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		if _, ok := versionsByFamily[name]; !ok {
+			versionsByFamily[name] = map[string]struct{}{}
+		}
+		// Rolling releases (wolfi, chainguard, arch...) carry no version at
+		// all, and they hold real data — chainguard alone has hundreds of
+		// thousands of advisory rows. Such a family is recorded with an empty
+		// version set, which callers read as "any version of this family is
+		// covered". Skipping them here would advertise no coverage and get
+		// every one of those hosts refused as unsupported.
+		if major == "" {
+			continue
+		}
+		// Advertise both the major on its own and the full major.minor, since
+		// callers may report either.
+		versionsByFamily[name][major] = struct{}{}
+		if minor != "" {
+			versionsByFamily[name][major+"."+minor] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate operating systems: %w", err)
+	}
+	if len(versionsByFamily) == 0 {
+		return nil, fmt.Errorf("vulnerability db reports no operating systems: refusing to start with a database that can only return empty results")
+	}
+
+	out := make([]api.SupportedOS, 0, len(versionsByFamily))
+	for family, vs := range versionsByFamily {
+		versions := make([]string, 0, len(vs))
+		for v := range vs {
+			versions = append(versions, v)
+		}
+		sort.Strings(versions)
+		out = append(out, api.SupportedOS{Family: family, Versions: versions})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Family < out[j].Family })
+	return out, nil
+}
+
+// SupportedOS returns the allowlist derived from the loaded database.
+func (e *Engine) SupportedOS() []api.SupportedOS {
+	return e.supported
+}

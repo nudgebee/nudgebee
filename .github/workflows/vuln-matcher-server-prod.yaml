@@ -1,0 +1,57 @@
+name: vuln-matcher-server-prod CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["prod"]
+    paths:
+      - vuln-matcher-server/**
+      - .github/workflows/vuln-matcher-server-prod.yaml
+
+jobs:
+  app-build:
+    runs-on: [self-hosted, X64]
+    strategy:
+      matrix:
+        go-version: ["1.26.x"]
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.3
+          working-directory: ./vuln-matcher-server
+          args: --timeout 20m
+
+      # -race needs cgo + a C compiler. The self-hosted ARC runner image is
+      # minimal and ships without gcc, so install it before the race-enabled run.
+      - name: Install C toolchain (for -race)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
+
+      # The engine tests need a real ~1.8GB vulnerability database and skip
+      # without VULN_TEST_DB_ROOT, so what runs here is the guardrail suite:
+      # every input defect that would otherwise return a confident, empty,
+      # clean-looking result. The engine tests are run locally against a real
+      # database until the mirror pipeline can supply CI with a fixture.
+      - name: Run unit tests
+        working-directory: ./vuln-matcher-server
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
+
+      - name: Build
+        working-directory: ./vuln-matcher-server
+        # Matches the Dockerfile: the SQLite driver under grype is pure Go, so
+        # the shipped binary is built without cgo even though tests need it.
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
