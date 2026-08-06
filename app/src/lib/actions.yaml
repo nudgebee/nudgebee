@@ -2369,6 +2369,158 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
+  - name: dashboards_list
+    comment: List the tenant's custom dashboards
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: dashboards_get
+    comment: Get one custom dashboard with its bindings
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: dashboards_list_contextual
+    comment: List dashboards that auto-attach to an entity
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: dashboards_list_versions
+    comment: List revision history for a custom dashboard
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: dashboards_create
+    comment: Create a custom dashboard
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+  - name: dashboards_update
+    comment: Update a custom dashboard
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+  - name: dashboards_execute_query
+    comment: Run one dashboard panel's read-only redis/rabbitmq command against an account (server enforces a read-only command allowlist plus account read access)
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      # Spawns a short-lived pod in the target cluster via the relay, so it is
+      # slower than the observability reads next to it.
+      timeout: 120
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: dashboards_execute_entity_query
+    comment: Run one dashboard panel's query-engine read (events only; server enforces a table allowlist plus account read access)
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: dashboards_delete
+    comment: Delete a custom dashboard
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
   - name: database_performance_insights
     comment: Get database performance insights for a resource
     definition:

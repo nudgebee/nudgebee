@@ -219,6 +219,16 @@ func queryMetrics(c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, log
 		c.JSON(400, buildApiResponse(nil, err))
 		return
 	}
+	// A request selects metrics either structurally (service_name + metric /
+	// dimension fields) or with a provider-native query. Neither means there is
+	// nothing to run — caught here rather than per provider, where it would
+	// surface as an empty result set instead of an error.
+	if request.Query.ServiceName == "" && strings.TrimSpace(request.Query.Query) == "" {
+		err := errors.New("query.service_name or query.query is required")
+		slog.Error("error validating get_metrics", "error", err)
+		c.JSON(400, buildApiResponse(nil, err))
+		return
+	}
 
 	ctx, cancel, err := buildContextFromGin(c, logger, tracer, meter, request.AccountId)
 	if err != nil {

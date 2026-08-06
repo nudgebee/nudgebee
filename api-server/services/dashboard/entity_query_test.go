@@ -1,0 +1,263 @@
+package dashboard
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"nudgebee/services/common"
+	"nudgebee/services/query"
+)
+
+// asMap parses a literal the way the gateway delivers one — as a decoded map,
+// not raw bytes. PanelTarget.Query is a map for exactly that reason.
+func asMap(t *testing.T, body string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("bad test fixture %q: %v", body, err)
+	}
+	return out
+}
+
+func TestValidateEntityQuery(t *testing.T) {
+	if err := ValidateEntityQuery(DatasourceNudgebee, asMap(t, `{"table":"events_v2","columns":[{"name":"title"}]}`)); err != nil {
+		t.Fatalf("expected a valid events query, got %v", err)
+	}
+	if err := ValidateEntityQuery(DatasourceNudgebee, asMap(t, `{"table":"event_groupings_v2","columns":[{"name":"event_count"}]}`)); err != nil {
+		t.Fatalf("expected the grouping table to be allowed, got %v", err)
+	}
+
+	// The shape the frontend actually sends: a filter object nested inside the
+	// query. This is what broke when the field was a []byte.
+	nested := asMap(t, `{"table":"events_v2","columns":[{"name":"title"}],
+		"where":{"_and":[{"_binary":{"priority":{"_in":["P0","P1"]}}}]},
+		"order_by":[{"column":"starts_at","order":"desc"}],"limit":100}`)
+	if err := ValidateEntityQuery(DatasourceNudgebee, nested); err != nil {
+		t.Fatalf("expected a filtered query to decode, got %v", err)
+	}
+
+	// The engine's registry holds ~111 tables. A panel definition is authored by
+	// one user and rendered by every viewer, so anything outside the allowlist —
+	// especially the admin/user tables — must be refused here regardless of what
+	// the engine's own RBAC would do.
+	for _, table := range []string{"admin_get_users_v2", "user_auth_by_username_v2", "tenant_v2", "spends_v2", ""} {
+		q := map[string]any{"table": table, "columns": []map[string]string{{"name": "id"}}}
+		if err := ValidateEntityQuery(DatasourceNudgebee, q); err == nil {
+			t.Errorf("table %q: expected rejection, got nil", table)
+		}
+	}
+
+	if err := ValidateEntityQuery(DatasourceNudgebee, asMap(t, `{"table":"events_v2"}`)); err == nil {
+		t.Error("expected a query with no columns to be rejected")
+	}
+	if err := ValidateEntityQuery(DatasourceNudgebee, nil); err == nil {
+		t.Error("expected a missing query to be rejected")
+	}
+	// A value the engine's own types cannot hold — `columns` is a list of
+	// objects, not a string.
+	if err := ValidateEntityQuery(DatasourceNudgebee, map[string]any{"table": "events_v2", "columns": "title"}); err == nil {
+		t.Error("expected a malformed query to be rejected")
+	}
+}
+
+func TestValidateEntityQuery_TablesAreScopedToTheDatasource(t *testing.T) {
+	traces := asMap(t, `{"table":"traces_groupings_v2","columns":[{"name":"count"}]}`)
+	spans := asMap(t, `{"table":"traces_v2","columns":[{"name":"span_name"}]}`)
+	events := asMap(t, `{"table":"events_v2","columns":[{"name":"title"}]}`)
+	recommendations := asMap(t, `{"table":"recommendations_v2","columns":[{"name":"rule_name"}]}`)
+	recommendationGroups := asMap(t, `{"table":"recommendation_groupings_v2","columns":[{"name":"count"}]}`)
+
+	for _, q := range []map[string]any{traces, spans} {
+		if err := ValidateEntityQuery(DatasourceTraces, q); err != nil {
+			t.Errorf("expected a traces panel to read %v, got %v", q["table"], err)
+		}
+	}
+
+	// Recommendations sit alongside events on the nudgebee datasource — same
+	// row/aggregate pairing, same account scoping.
+	for _, q := range []map[string]any{events, recommendations, recommendationGroups} {
+		if err := ValidateEntityQuery(DatasourceNudgebee, q); err != nil {
+			t.Errorf("expected a nudgebee panel to read %v, got %v", q["table"], err)
+		}
+	}
+	if err := ValidateEntityQuery(DatasourceTraces, recommendations); err == nil {
+		t.Error("expected a traces panel to be refused the recommendations table")
+	}
+
+	// A panel says what it is; the tables it may reach follow from that. Without
+	// this an events panel could quietly read spans and vice versa.
+	if err := ValidateEntityQuery(DatasourceTraces, events); err == nil {
+		t.Error("expected a traces panel to be refused the events table")
+	}
+	if err := ValidateEntityQuery(DatasourceNudgebee, traces); err == nil {
+		t.Error("expected an events panel to be refused the traces table")
+	}
+
+	// Datasources that do not read the query engine at all.
+	for _, datasource := range []string{DatasourceMetrics, DatasourceLogs, DatasourceRedis, ""} {
+		if err := ValidateEntityQuery(datasource, events); err == nil {
+			t.Errorf("datasource %q: expected rejection, got nil", datasource)
+		}
+	}
+}
+
+func TestRowsToQueryResult(t *testing.T) {
+	columns := []query.QueryColumn{{Name: "title"}, {Name: "priority"}, {Name: "count"}}
+	rows := []query.QueryRow{
+		{"title": "OOMKilled", "priority": "P0", "count": float64(3)},
+		{"title": "CrashLoop", "priority": nil, "count": float64(1.5)},
+	}
+	got := rowsToQueryResult(columns, rows)
+
+	// Column order comes from the REQUEST — Go map iteration is random, so
+	// reading it off the row would reshuffle the table on every refresh.
+	if len(got.Columns) != 3 || got.Columns[0] != "title" || got.Columns[2] != "count" {
+		t.Fatalf("columns = %v", got.Columns)
+	}
+	if got.Rows[0][0] != "OOMKilled" || got.Rows[0][1] != "P0" {
+		t.Errorf("first row = %v", got.Rows[0])
+	}
+	// A whole number arrives as float64 through JSON; "3" reads better than "3.0".
+	if got.Rows[0][2] != "3" {
+		t.Errorf("integer cell = %q", got.Rows[0][2])
+	}
+	if got.Rows[1][1] != "" {
+		t.Errorf("null cell = %q, want empty", got.Rows[1][1])
+	}
+	if got.Rows[1][2] != "1.5" {
+		t.Errorf("float cell = %q", got.Rows[1][2])
+	}
+}
+
+func TestFormatCell(t *testing.T) {
+	cases := []struct {
+		value any
+		want  string
+	}{
+		{nil, ""},
+		{"text", "text"},
+		{true, "true"},
+		{float64(42), "42"},
+		{float64(0.25), "0.25"},
+		{[]byte("bytes"), "bytes"},
+		// JSON columns (labels, evidences, score_factors) must not render as
+		// Go's map syntax.
+		{map[string]any{"app": "api"}, `{"app":"api"}`},
+	}
+	for _, tc := range cases {
+		if got := formatCell(tc.value); got != tc.want {
+			t.Errorf("formatCell(%v) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+	if got := formatCell(time.Date(2026, 8, 5, 10, 30, 0, 0, time.UTC)); got != "2026-08-05T10:30:00Z" {
+		t.Errorf("time cell = %q", got)
+	}
+}
+
+// The action layer decodes the gateway's payload with mapstructure, not
+// encoding/json. A nested JSON object arrives as a map, and a json.RawMessage
+// field is a []byte — mapstructure refused it with "source data must be an
+// array or slice, got map", so every save of a nudgebee panel failed. This
+// replays the real payload through the real decoder.
+func TestSaveRequestDecodesAnEntityQuery(t *testing.T) {
+	payload := map[string]any{}
+	body := `{
+      "id": "a55d4536-9824-4304-a5c1-cae6849fe13b",
+      "title": "first",
+      "definition": {"panels": [{
+        "id": 6, "title": "Events", "type": "table", "datasource": "nudgebee",
+        "account_type": "K8s", "grid_pos": {"x":0,"y":0,"w":6,"h":8},
+        "targets": [{
+          "ref_id": "A",
+          "query": {
+            "table": "events_v2",
+            "columns": [{"name":"starts_at"},{"name":"title"}],
+            "order_by": [{"column":"starts_at","order":"desc"}],
+            "limit": 100
+          },
+          "time_column": "starts_at"
+        }]
+      }]}
+    }`
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("bad fixture: %v", err)
+	}
+
+	var req SaveRequest
+	if err := common.UnmarshalMapToStruct(payload, &req); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	target := req.Definition.Panels[0].Targets[0]
+	if target.TimeColumn != "starts_at" {
+		t.Errorf("time_column = %q", target.TimeColumn)
+	}
+	if target.Query["table"] != "events_v2" {
+		t.Fatalf("query did not survive the decode: %#v", target.Query)
+	}
+	// And the decoded query must still satisfy the executor's own rules.
+	if err := ValidateDefinition(req.Definition); err != nil {
+		t.Errorf("expected the decoded definition to validate, got %v", err)
+	}
+}
+
+func TestApplyAccountScope(t *testing.T) {
+	var q query.QueryRequest
+	if err := applyAccountScope(DatasourceNudgebee, []string{"acc-1", "acc-2"}, &q); err != nil {
+		t.Fatalf("scope: %v", err)
+	}
+	ids, ok := q.Where.And[0].Binary["account_id"][query.In].([]string)
+	if !ok || len(ids) != 2 {
+		t.Fatalf("account clause = %v", q.Where.And[0].Binary)
+	}
+
+	// No account means the panel resolved to nothing the viewer can see. Failing
+	// closed beats letting a tenant admin read every account.
+	for _, requested := range [][]string{nil, {}, {""}} {
+		var empty query.QueryRequest
+		if err := applyAccountScope(DatasourceNudgebee, requested, &empty); err == nil {
+			t.Errorf("accounts %v: expected rejection", requested)
+		}
+	}
+}
+
+// The engine's `_between` takes a MAP of bound operators. A [from, to] list
+// panics its SQL generator on an unchecked type assertion, which reaches the
+// browser as a 500 with an empty body.
+func TestTimeRangeClause(t *testing.T) {
+	start := time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC).UnixMilli()
+	end := time.Date(2026, 8, 5, 11, 0, 0, 0, time.UTC).UnixMilli()
+
+	clause, ok := timeRangeClause("starts_at", start, end)
+	if !ok {
+		t.Fatal("expected a clause")
+	}
+	bounds, isMap := clause.Binary["starts_at"][query.Between].(map[string]any)
+	if !isMap {
+		t.Fatalf("_between must be a map, got %T", clause.Binary["starts_at"][query.Between])
+	}
+	if bounds["_gte"] != "2026-08-05 10:00:00" || bounds["_lte"] != "2026-08-05 11:00:00" {
+		t.Errorf("bounds = %v", bounds)
+	}
+
+	// Opted out, or nothing to filter on.
+	for _, tc := range []struct {
+		column     string
+		start, end int64
+	}{
+		{"", start, end},
+		{"starts_at", 0, end},
+		{"starts_at", start, 0},
+	} {
+		if _, ok := timeRangeClause(tc.column, tc.start, tc.end); ok {
+			t.Errorf("timeRangeClause(%q, %d, %d): expected no clause", tc.column, tc.start, tc.end)
+		}
+	}
+}
+
+func TestMsToUTC(t *testing.T) {
+	if got := msToUTC(time.Date(2026, 8, 5, 10, 30, 0, 0, time.UTC).UnixMilli()); got != "2026-08-05 10:30:00" {
+		t.Errorf("msToUTC = %q", got)
+	}
+}

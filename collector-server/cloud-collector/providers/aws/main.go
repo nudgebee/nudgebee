@@ -458,6 +458,12 @@ func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderCont
 }
 
 func (a *awsProvider) QueryMetrices(ctx providers.CloudProviderContext, account providers.Account, filter providers.QueryMetricsRequest) (providers.QueryMetricsResponse, error) {
+	// A Metrics Insights query names its own namespace, metrics and grouping, so
+	// there is no service to resolve — going through the registry would reject it
+	// as an unsupported service and return an empty result.
+	if strings.TrimSpace(filter.Query) != "" {
+		return queryAwsMetricsInsights(ctx, account, filter)
+	}
 	service, ok := GetAwsService(filter.ServiceName)
 	if !ok {
 		// Callers that already know the CloudWatch namespace have no NudgeBee

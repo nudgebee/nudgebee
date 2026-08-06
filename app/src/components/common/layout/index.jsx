@@ -365,6 +365,10 @@ const PageLayout = ({ children }) => {
 
     const items = [
       { path: '/home', icon: homeIcon1, text: 'Home', id: 'home-sidenavbutton', module: 'insights' },
+      // No `module`: a dashboard panel may query any connected account, so the
+      // page itself gates on nothing — each panel's query is authorised per
+      // account by the backend it reads.
+      { path: '/dashboards', icon: dashboardIcon1, text: 'Dashboards', id: 'dashboards-sidenavbutton' },
       {
         path: '/troubleshoot',
         activePaths: ['/investigate', '/agentHealth'],

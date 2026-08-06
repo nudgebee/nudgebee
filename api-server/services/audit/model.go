@@ -34,6 +34,7 @@ const (
 	EventCategoryIntegration EventCategory = "INTEGRATIONS"
 	EventCategoryTriage      EventCategory = "TRIAGE"
 	EventCategoryOwnership   EventCategory = "OWNERSHIP"
+	EventCategoryDashboard   EventCategory = "DASHBOARDS"
 )
 
 type EventType string
@@ -199,6 +200,10 @@ const (
 	EventTypeSLOCreate EventType = "SLO_CREATE"
 	EventTypeSLOUpdate EventType = "SLO_UPDATE"
 	EventTypeSLODelete EventType = "SLO_DELETE"
+
+	EventTypeDashboardCreate EventType = "DASHBOARD_CREATE"
+	EventTypeDashboardUpdate EventType = "DASHBOARD_UPDATE"
+	EventTypeDashboardDelete EventType = "DASHBOARD_DELETE"
 
 	EventTypeSlackCommand     EventType = "NOTIFICATIONS_SLACK_COMMAND"
 	EventTypeSlackEvent       EventType = "NOTIFICATIONS_SLACK_EVENT"

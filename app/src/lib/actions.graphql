@@ -12015,6 +12015,123 @@ type AILlmWatchCancelData {
   status: String
 }
 
+"""
+Custom Dashboards. `definition` and `match_value` stay `Json` — the panel
+document is read and written as a whole and has no fixed field set, so
+enumerating it in SDL would only create a second schema to keep in sync.
+"""
+type Query {
+  dashboards_list(request: DashboardListRequest!): [Dashboard]
+}
+
+type Query {
+  dashboards_get(request: DashboardGetRequest!): DashboardGetResponse
+}
+
+type Query {
+  dashboards_list_contextual(request: DashboardResolveRequest!): [Dashboard]
+}
+
+type Query {
+  dashboards_list_versions(request: DashboardGetRequest!): [DashboardVersion]
+}
+
+type Mutation {
+  dashboards_create(request: DashboardSaveRequest!): Dashboard
+}
+
+type Mutation {
+  dashboards_update(request: DashboardSaveRequest!): Dashboard
+}
+
+type Mutation {
+  dashboards_delete(request: DashboardDeleteRequest!): DashboardDeleteResponse
+}
+
+input DashboardListRequest {
+  search: String
+  limit: Int
+  offset: Int
+}
+
+input DashboardGetRequest {
+  id: String!
+}
+
+input DashboardDeleteRequest {
+  id: String!
+}
+
+input DashboardResolveRequest {
+  account_id: String!
+  scope_type: String!
+  name: String
+  namespace: String
+  app_type: String
+}
+
+input DashboardBindingInput {
+  scope_type: String!
+  match_kind: String!
+  match_value: Json
+  priority: Int
+}
+
+input DashboardSaveRequest {
+  id: String
+  title: String!
+  description: String
+  definition: Json
+  tags: [String]
+  status: String
+  message: String
+  bindings: [DashboardBindingInput]
+}
+
+type Dashboard {
+  id: String!
+  tenant_id: String
+  slug: String
+  title: String
+  description: String
+  definition: Json
+  schema_version: Int
+  tags: Json
+  status: String
+  is_builtin: Boolean
+  created_by: String
+  updated_by: String
+  created_at: Datetime
+  updated_at: Datetime
+  version: Int
+}
+
+type DashboardBinding {
+  id: String
+  dashboard_id: String
+  scope_type: String
+  match_kind: String
+  match_value: Json
+  priority: Int
+}
+
+type DashboardGetResponse {
+  dashboard: Dashboard
+  bindings: [DashboardBinding]
+}
+
+type DashboardVersion {
+  version: Int
+  message: String
+  created_by: String
+  created_at: Datetime
+}
+
+type DashboardDeleteResponse {
+  id: String
+  deleted: Boolean
+}
+
 scalar Datetime
 
 scalar Json

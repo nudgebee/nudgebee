@@ -11,6 +11,10 @@ export const transformClusters = (response) => {
     agent: item.agents?.[0] || {},
     cloud_account_attrs: item?.cloud_account_attrs || {},
     cloud_provider: item.cloud_provider,
+    // `accounts_list` returns integrations alongside real cloud accounts (Slack
+    // arrives as cloud_provider='Slack'), and only account_type tells them
+    // apart. Additive — existing consumers ignore it.
+    account_type: item.account_type || '',
     account_access: item.account_access || '',
     k8s_provider: item.agents?.[0]?.k8s_provider || '',
     k8s_version: item.agents?.[0]?.k8s_version || '',

@@ -152,6 +152,9 @@ const AnchorComponent = ({
     // `integration` is sub-navigation state scoped to the Integrations tab; drop it
     // when building other top-level tab URLs so it doesn't leak across tabs.
     searchParams.delete('integration');
+    // Same for `dashboard` — it names the open custom dashboard on the K8s
+    // Dashboards tab, and leaving it set would reopen that one on return.
+    searchParams.delete('dashboard');
 
     return { path, searchParams };
   };

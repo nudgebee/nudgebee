@@ -399,7 +399,14 @@ const Charts = ({
         textContainer.appendChild(labelSpan);
 
         let series = chart.data.datasets[item.datasetIndex];
-        let sortedSeries = series.data.filter((item) => item !== '').sort((a, b) => a - b);
+        // Gaps are not values. `null` (this file pads single-point series with
+        // it, and callers use it for missing scrapes) survived the old `!== ''`
+        // filter, which pinned Min to null — printed as "-" — and dragged Avg
+        // down by counting the gap as 0.
+        let sortedSeries = series.data
+          .filter((value) => value !== '' && value !== null && value !== undefined && Number.isFinite(Number(value)))
+          .map(Number)
+          .sort((a, b) => a - b);
 
         let min = sortedSeries[0];
         let max = sortedSeries[sortedSeries.length - 1];

@@ -14,18 +14,31 @@ type CloudProviderContext interface {
 	GetSecurityContext() *security.SecurityContext
 }
 
+// QueryMetricsRequest selects metrics one of two ways, and exactly one of them
+// applies per request:
+//
+//   - The STRUCTURED selector — ServiceName plus the metric / dimension /
+//     statistic fields. The provider resolves the namespace from the service.
+//   - Query — a provider-native metrics query the provider runs verbatim
+//     (CloudWatch Metrics Insights SQL). It names its own namespace, metrics and
+//     grouping, so ServiceName and the selector fields are ignored when it is set.
+//
+// ServiceName therefore carries no `validate:"required"` tag: a query-only
+// request legitimately has no service. The "one or the other" rule is enforced
+// at the API boundary (see api/cloud.go), which can say which one is missing.
 type QueryMetricsRequest struct {
 	StartDate       *time.Time          `json:"start_date"`
 	EndDate         *time.Time          `json:"end_date"`
 	ResourceIds     []string            `json:"resource_ids"`
 	ResourceType    string              `json:"resource_type"`
-	ServiceName     string              `json:"service_name" validate:"required"`
+	ServiceName     string              `json:"service_name"`
 	Region          string              `json:"region"`
 	MetricNamespace string              `json:"metric_namespace"`
 	MetricNames     []string            `json:"metric_names"`
 	Step            time.Duration       `json:"step"`
 	Dimensions      []map[string]string `json:"dimensions,omitempty"` // Added field for metric dimensions
 	Statistics      []string            `json:"statistics"`
+	Query           string              `json:"query,omitempty"`
 }
 
 type Account struct {

@@ -215,8 +215,12 @@ func QueryMetrics(ctx *security.RequestContext, metricRequest QueryMetricsReques
 		return response, errors.New("tenant is required")
 	}
 
-	if metricRequest.Query.ServiceName == "" {
-		return response, errors.New("query.service_name is required")
+	// Metrics are selected either structurally (a service, plus metric names and
+	// dimensions) or by a provider-native query that carries its own namespace
+	// and grouping — a CloudWatch Metrics Insights statement. One or the other,
+	// so a query-only request has no service to name.
+	if metricRequest.Query.ServiceName == "" && strings.TrimSpace(metricRequest.Query.Query) == "" {
+		return response, errors.New("query.service_name or query.query is required")
 	}
 
 	resp, err := common.HttpPost(config.Config.CloudCollectorServerUrl+"/v1/cloud/get_metrics", common.HttpWithTimeout(30*time.Second), common.HttpWithJsonBody(map[string]any{

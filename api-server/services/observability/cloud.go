@@ -405,14 +405,20 @@ func (c *cloudMetrics) FetchMetricsQuery(ctx *security.RequestContext, fetchMetr
 		}
 	}
 
+	// One query per request: CloudWatch runs at most one Metrics Insights
+	// statement per GetMetricData call. Which one is picked by REF ID order
+	// rather than by map iteration, which is randomised in Go — a two-target
+	// panel would otherwise chart a different target on every refresh.
 	query := ""
 	queryKey := ""
 	if len(fetchMetricsRequest.Queries) > 0 {
-		for k, q := range fetchMetricsRequest.Queries {
-			query = q
-			queryKey = k
-			break
+		keys := make([]string, 0, len(fetchMetricsRequest.Queries))
+		for k := range fetchMetricsRequest.Queries {
+			keys = append(keys, k)
 		}
+		sort.Strings(keys)
+		queryKey = keys[0]
+		query = fetchMetricsRequest.Queries[queryKey]
 	}
 
 	resp, err := cloud.QueryMetrics(ctx, cloud.QueryMetricsRequest{
@@ -439,12 +445,21 @@ func (c *cloudMetrics) FetchMetricsQuery(ctx *security.RequestContext, fetchMetr
 	//convert cloud metrics to o/p
 	result := []QueryResult{}
 	for _, item := range resp.Items {
-		metric := map[string]string{
+		// Empty fields are left OUT rather than emitted blank: these labels name
+		// the series in a chart legend, and a Metrics Insights query carries
+		// neither a statistic nor a service — `statistics="", service_name=""` on
+		// every series is noise in the one place the label has to be readable.
+		metric := map[string]string{}
+		for k, v := range map[string]string{
 			"name":         item.Name,
 			"statistics":   item.Statistics,
 			"resource_id":  item.ResourceId,
 			"region":       item.Region,
 			"service_name": item.ServiceName,
+		} {
+			if v != "" {
+				metric[k] = v
+			}
 		}
 
 		values := make([]Result, 0, 1)

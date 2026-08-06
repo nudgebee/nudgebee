@@ -107,6 +107,10 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Troubleshoot', label: 'Manual Investigated', path: '/troubleshoot#investigations/manual-investigated' },
   { group: 'Troubleshoot', label: 'Knowledge Graph', path: '/troubleshoot#kg' },
 
+  // A real route now, not a /kubernetes tab: a panel may query any connected
+  // account, so the page moved out from under Kubernetes to the sidebar.
+  { group: 'Dashboards', label: 'Custom Dashboards', path: '/dashboards' },
+
   { group: 'Optimize', label: 'Optimize Summary', path: '/optimise#summary' },
   { group: 'Optimize', label: 'Optimize Recommendations', path: '/optimise#recommendations' },
   { group: 'Optimize', label: 'Optimize Resolutions', path: '/optimise#resolutions' },

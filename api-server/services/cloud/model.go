@@ -21,12 +21,15 @@ type QueryMetricsRequest struct {
 	Query     MetricsQuery `json:"query" validate:"required"`
 }
 type MetricsQuery struct {
-	StartDate       *time.Time          `json:"start_date"`
-	EndDate         *time.Time          `json:"end_date"`
-	ResourceIds     []string            `json:"resource_ids"`
-	ResourceType    string              `json:"resource_type"`
-	ServiceName     string              `json:"service_name" validate:"required"`
-	Region          string              `json:"region" validate:"required"`
+	StartDate    *time.Time `json:"start_date"`
+	EndDate      *time.Time `json:"end_date"`
+	ResourceIds  []string   `json:"resource_ids"`
+	ResourceType string     `json:"resource_type"`
+	// Neither is required on a query-only request: a provider-native query (see
+	// Query below) names its own namespace, and the region falls back to the
+	// account's. QueryMetrics enforces the "selector or query" rule itself.
+	ServiceName     string              `json:"service_name"`
+	Region          string              `json:"region"`
 	MetricNames     []string            `json:"metric_names"`
 	Step            time.Duration       `json:"step"`
 	Dimensions      []map[string]string `json:"dimensions,omitempty"`
