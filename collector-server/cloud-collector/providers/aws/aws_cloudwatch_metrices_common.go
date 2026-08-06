@@ -684,6 +684,103 @@ var metricsFunctions = map[string]func(vals []float64) float64{
 	},
 }
 
+// elbALBConfig / elbNLBConfig hold the CloudWatch namespace, dimension name and
+// metric list for Application and Network load balancers.
+//
+// AWS bills all three load-balancer generations under one service code
+// (AWSELB, see ServiceNameELB) but publishes them to three different CloudWatch
+// namespaces with different metric names. serviceCloudwatchNamespaceMap["awselb"]
+// describes Classic ELB only, so an ALB queried with those defaults asks
+// AWS/ELB for Classic metric names (Latency, HTTPCode_Backend_5XX,
+// SurgeQueueLength) dimensioned by LoadBalancerName — a combination that exists
+// for no ALB, so CloudWatch returns a result per query with zero datapoints.
+//
+// The resource id discriminates: "app/<name>/<id>" is an ALB, "net/<name>/<id>"
+// an NLB, anything else Classic. That id is also the value CloudWatch expects
+// for the LoadBalancer dimension, so no extra lookup is needed.
+var (
+	elbALBConfig = serviceNamespace{
+		Name:                  "AWS/ApplicationELB",
+		ResourceDimensionName: "LoadBalancer",
+		ServiceName:           ServiceNameELB,
+		ResourceType:          "loadbalancer",
+		Metrices: map[string][]string{"loadbalancer": {
+			"RequestCount", "TargetResponseTime",
+			"HTTPCode_Target_2XX_Count", "HTTPCode_Target_4XX_Count", "HTTPCode_Target_5XX_Count",
+			"HTTPCode_ELB_4XX_Count", "HTTPCode_ELB_5XX_Count",
+			"HealthyHostCount", "UnHealthyHostCount",
+			"ActiveConnectionCount", "TargetConnectionErrorCount", "RejectedConnectionCount",
+		}},
+		// Counts must be summed — averaging them reports "1" for a minute that
+		// served 142 errors, which reads as healthy.
+		MetricsStats: map[string][]string{
+			"RequestCount":               {"Sum"},
+			"HTTPCode_Target_2XX_Count":  {"Sum"},
+			"HTTPCode_Target_4XX_Count":  {"Sum"},
+			"HTTPCode_Target_5XX_Count":  {"Sum"},
+			"HTTPCode_ELB_4XX_Count":     {"Sum"},
+			"HTTPCode_ELB_5XX_Count":     {"Sum"},
+			"ActiveConnectionCount":      {"Sum"},
+			"TargetConnectionErrorCount": {"Sum"},
+			"RejectedConnectionCount":    {"Sum"},
+		},
+	}
+	elbNLBConfig = serviceNamespace{
+		Name:                  "AWS/NetworkELB",
+		ResourceDimensionName: "LoadBalancer",
+		ServiceName:           ServiceNameELB,
+		ResourceType:          "loadbalancer",
+		Metrices: map[string][]string{"loadbalancer": {
+			"ActiveFlowCount", "NewFlowCount", "ProcessedBytes",
+			"TCP_Client_Reset_Count", "TCP_ELB_Reset_Count", "TCP_Target_Reset_Count",
+			"HealthyHostCount", "UnHealthyHostCount",
+		}},
+		MetricsStats: map[string][]string{
+			"NewFlowCount":           {"Sum"},
+			"ProcessedBytes":         {"Sum"},
+			"TCP_Client_Reset_Count": {"Sum"},
+			"TCP_ELB_Reset_Count":    {"Sum"},
+			"TCP_Target_Reset_Count": {"Sum"},
+		},
+	}
+)
+
+// refineELBServiceConfig returns the ALB/NLB variant of the Classic-ELB config
+// when the resource id identifies one. Non-ELB configs are returned unchanged.
+// resourceIds and dimensions are both consulted because callers supply the load
+// balancer id through either one.
+func refineELBServiceConfig(config serviceNamespace, resourceIds []string, dimensions []map[string]string) serviceNamespace {
+	if config.ServiceName != ServiceNameELB {
+		return config
+	}
+	for _, id := range elbCandidateIDs(resourceIds, dimensions) {
+		switch {
+		case strings.HasPrefix(id, "app/"):
+			return elbALBConfig
+		case strings.HasPrefix(id, "net/"):
+			return elbNLBConfig
+		}
+	}
+	return config
+}
+
+// elbCandidateIDs collects the strings that might carry a load-balancer id,
+// from explicit resource ids first and then from dimension values.
+func elbCandidateIDs(resourceIds []string, dimensions []map[string]string) []string {
+	candidates := make([]string, 0, len(resourceIds)+len(dimensions))
+	candidates = append(candidates, resourceIds...)
+	for _, dimension := range dimensions {
+		if value, ok := dimension["Value"]; ok {
+			candidates = append(candidates, value)
+			continue
+		}
+		for _, value := range dimension {
+			candidates = append(candidates, value)
+		}
+	}
+	return candidates
+}
+
 // getNamespaceForService returns the CloudWatch namespace for a given service name.
 // Returns empty string if service is not recognized.
 func getNamespaceForService(serviceName string) string {
@@ -869,13 +966,16 @@ func getAwsCloudwatchMetrics(ctx providers.CloudProviderContext, account provide
 		}
 		if filter.ServiceName != "" {
 			if serviceConfig1, ok := serviceCloudwatchNamespaceMap[strings.ToLower(filter.ServiceName)]; ok {
-				serviceConfig = serviceConfig1
+				serviceConfig = refineELBServiceConfig(serviceConfig1, filter.ResourceIds, filter.Dimensions)
 				serviceConfig.Name = filter.MetricNamespace
 			}
 		}
 	} else {
 		// Get base service namespace configuration
-		serviceConfig = serviceCloudwatchNamespaceMap[strings.ToLower(filter.ServiceName)]
+		serviceConfig = refineELBServiceConfig(
+			serviceCloudwatchNamespaceMap[strings.ToLower(filter.ServiceName)],
+			filter.ResourceIds, filter.Dimensions,
+		)
 		if serviceConfig.Name == "" {
 			ctx.GetLogger().Info("cloudwatch: service not supported, skipping metrics", "service", filter.ServiceName)
 			return providers.QueryMetricsResponse{}, nil
@@ -1065,11 +1165,13 @@ func getAwsCloudwatchMetrics(ctx providers.CloudProviderContext, account provide
 					continue
 				}
 				metrics = append(metrics, providers.MetricItem{
-					Name:       meta.metricName,
-					Values:     result.Values,
-					ResourceId: meta.resourceId,
-					Timestamps: result.Timestamps,
-					Statistics: meta.stat,
+					Name:        meta.metricName,
+					Values:      result.Values,
+					ResourceId:  meta.resourceId,
+					Timestamps:  result.Timestamps,
+					Statistics:  meta.stat,
+					Region:      filter.Region,
+					ServiceName: filter.ServiceName,
 				})
 			}
 

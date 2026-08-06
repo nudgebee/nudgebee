@@ -1003,6 +1003,14 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 	metricGroups := map[string][]any{}
 
 	for _, item := range resourceResp.Items {
+		// Drop series CloudWatch returned with no datapoints. It answers with one
+		// result per query whether or not the metric recorded anything, so a metric
+		// that simply never fired (no 5xx, no rejected connections) or that needs a
+		// dimension we don't send arrives as an empty series and renders as a blank
+		// chart. Half the charts on a healthy load balancer were blank this way.
+		if len(item.Values) == 0 {
+			continue
+		}
 		metricObj := map[string]any{
 			"service_name": item.ServiceName,
 			"region":       item.Region,
@@ -1036,10 +1044,14 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 		metricGroups[metricKey] = append(metricGroups[metricKey], data)
 	}
 
-	// Skip storing evidence when no metric series were returned — avoids empty
+	// Skip storing evidence when nothing was actually measured — avoids empty
 	// "prometheus_enricher" cards that mislead the LLM into reporting empty Prometheus data.
+	// Counting series is not enough: CloudWatch returns one result per query even
+	// when the metric matched no data, so a wrong namespace or dimension yields a
+	// full set of series that every one of them is empty.
 	if len(seriesList) == 0 {
-		ctx.GetLogger().Warn("cloud_list_metrics: query returned zero time series",
+		ctx.GetLogger().Warn("cloud_list_metrics: query returned no datapoints",
+			"series_returned", len(resourceResp.Items),
 			"service_name", params.ServiceName,
 			"region", params.Region,
 			"resource_ids", params.ResourceIds,

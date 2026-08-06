@@ -1092,11 +1092,18 @@ func (m EventSummaryTool) InputSchema() toolcore.ToolSchema {
 		Type: toolcore.ToolSchemaTypeObject,
 		Properties: map[string]toolcore.ToolSchemaProperty{
 			"command": {
-				Type:        toolcore.ToolSchemaTypeString,
-				Description: "Events Data",
+				Type: toolcore.ToolSchemaTypeString,
+				Description: "Optional and ignored. Call summarises the event data already " +
+					"carried on the request context; nothing is read from this field.",
 			},
 		},
-		Required: []string{"command"},
+		// Deliberately no Required entry. Call() reads input.Context /
+		// QueryContext and never looks at "command", but the model is only ever
+		// told "Input: events data" — so it called the tool without that field,
+		// validation rejected the call, and the resulting
+		// `Invalid tool input for "event_summary"` text was stored and rendered
+		// as the event's summary. A required field nothing consumes can only
+		// ever fail.
 	}
 }
 

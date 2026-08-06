@@ -1289,6 +1289,20 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 	// an import cycle eventrule -> account -> adapter -> llm -> tenant -> eventrule.)
 	k8sAgentAvailable := isK8sAgentConnected(accountId)
 
+	// Some implementations are registered under more than one action name (e.g.
+	// cloud_metrics is a legacy alias of cloud_list_metrics, kept because
+	// playbooks and event rules in the DB still reference it). Auto-discovery
+	// enumerates names, so without this both aliases pass CanAutoExecute, both
+	// run, and the event ends up with byte-identical duplicate evidence.
+	// AutoExecute never sees the action name, so one run per implementation is
+	// always equivalent.
+	executedImpls := make(map[reflect.Type]bool)
+	for _, actionName := range executedAction {
+		if action, found := playbooks.GetAction(actionName); found {
+			executedImpls[reflect.TypeOf(action)] = true
+		}
+	}
+
 	//run auto discovery actions
 	for _, actionName := range playbooks.ListActions() {
 		if slices.Contains(executedAction, actionName) {
@@ -1315,7 +1329,13 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 		if !ok {
 			continue
 		}
+		implKey := reflect.TypeOf(action)
+		if executedImpls[implKey] {
+			context.GetLogger().Info("eventrule: skipping auto action (same implementation already ran under another name)", "actionName", actionName)
+			continue
+		}
 		if autoAction.CanAutoExecute(playbookEventContext) {
+			executedImpls[implKey] = true
 			result, err := autoAction.AutoExecute(playbookEventContext)
 			if err != nil {
 				context.GetLogger().Warn("eventrule: failed to execute auto action", "actionName", actionName, "error", err)

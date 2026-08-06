@@ -460,6 +460,15 @@ func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderCont
 func (a *awsProvider) QueryMetrices(ctx providers.CloudProviderContext, account providers.Account, filter providers.QueryMetricsRequest) (providers.QueryMetricsResponse, error) {
 	service, ok := GetAwsService(filter.ServiceName)
 	if !ok {
+		// Callers that already know the CloudWatch namespace have no NudgeBee
+		// service name to dispatch on — the alarm-driven aws_get_metric action
+		// passes the namespace taken from the alarm itself (e.g.
+		// "AWS/ApplicationELB") as ServiceName, and no such service exists.
+		// Querying CloudWatch directly honours that namespace; returning an
+		// empty result here silently produced blank evidence cards instead.
+		if filter.MetricNamespace != "" {
+			return getAwsCloudwatchMetrics(ctx, account, filter)
+		}
 		return providers.QueryMetricsResponse{
 			Items: []providers.MetricItem{},
 		}, nil
