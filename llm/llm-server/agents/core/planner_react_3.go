@@ -2440,6 +2440,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 **Previous Conversation Context:** {{.conversation_context}}
 **Previous Messages (History):**
 {{.history}}
+{{.evidence_index}}
 </task_context>
 
 {{if .notebook}}<notebook_content>
@@ -2455,6 +2456,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"today",
 		"conversation_context",
 		"history",
+		"evidence_index",
 		"input",
 		"scratchpad",
 		"notebook",
@@ -2518,9 +2520,14 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"memory_consumption_rules":     memoryConsumptionRules,
 		"async_completion_rules":       asyncCompletionRules(agent),
 		// Human message template vars (dynamic — change per conversation/iteration)
-		"today":                    time.Now().Format("January 02, 2006"),
-		"history":                  previousMessageStr,
-		"conversation_context":     conversationContext,
+		"today":                time.Now().Format("January 02, 2006"),
+		"history":              previousMessageStr,
+		"conversation_context": conversationContext,
+		// FS evidence recall (flag-gated): an always-visible list of the exact
+		// workspace files earlier tool calls saved, so the model greps them by
+		// real name instead of re-fetching or hallucinating a filename. Empty
+		// (renders nothing) when the flag is off or no files exist.
+		"evidence_index":           fetchEvidenceIndex(ctx, request),
 		"scratchpad":               "", // default; overridden per-iteration in fullInputs
 		"global_preferences_block": renderGlobalPreferencesBlock(request.AccountPrompt),
 		"user_context_block":       userContextBlock,

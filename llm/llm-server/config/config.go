@@ -195,6 +195,9 @@ type appConfig struct {
 	LlmCacheTTLMinutes int  `mapstructure:"llm_cache_ttl_minutes"`
 	LlmEnableCaching   bool `mapstructure:"llm_enable_caching"`
 
+	// Observability log provider override escape hatch
+	LLMServerLogProviderOverride string `mapstructure:"llm_server_log_provider_override"`
+
 	// Outbound egressfilter master switch. When false, the LLM factory does NOT
 	// install the egressfilter decorator at all — GetLLMModel returns the raw
 	// provider unchanged, no payload serialization, no metric emission. Per-
@@ -449,6 +452,13 @@ type appConfig struct {
 	LlmServerWorkspaceCommandTimeout string `mapstructure:"llm_server_workspace_command_timeout"`
 
 	LlmServerShellToolEnabled bool `mapstructure:"llm_server_shell_tool_enabled"`
+	// LlmServerFsEvidenceRecallEnabled gates the FS evidence-recall layer: when a
+	// large observation is compressed in the scratchpad, replace the dead-end
+	// truncation marker with a live handle to the workspace file the tool already
+	// saved (its Type:"file" reference), so the model can grep it back instead of
+	// re-running the tool. Default false — feature-flagged for A/B measurement.
+	// See llm/llm-server/WORKSPACE_FS_EVIDENCE_RECALL_SPEC.md.
+	LlmServerFsEvidenceRecallEnabled bool `mapstructure:"llm_server_fs_evidence_recall_enabled"`
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
 	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
 	LogAgentV2Enabled bool `mapstructure:"llm_server_log_agent_v2_enabled"`
@@ -877,9 +887,17 @@ type appConfig struct {
 	MemoryMaintenancePreferencesSchedule     string `mapstructure:"llm_memory_maintenance_preferences_schedule"`
 	MemoryMaintenancePatternsSchedule        string `mapstructure:"llm_memory_maintenance_patterns_schedule"`
 	MemoryMaintenanceEventsRotateSchedule    string `mapstructure:"llm_memory_maintenance_events_rotate_schedule"`
-	MemoryMaintenanceCollectiveSchedule      string `mapstructure:"llm_memory_maintenance_collective_schedule"`
-	MemoryMaintenanceSoulSchedule            string `mapstructure:"llm_memory_maintenance_soul_schedule"`
-	MemoryMaintenanceDecisionsSchedule       string `mapstructure:"llm_memory_maintenance_decisions_schedule"`
+	// MemoryMaintenancePartitionSchedule drives memory_partition_maint, which
+	// creates llm_memory_events partitions ahead of month rollover. Runs
+	// regardless of MemoryMaintenanceEnabled — see maintenance.Register.
+	MemoryMaintenancePartitionSchedule string `mapstructure:"llm_memory_maintenance_partition_schedule"`
+	// MemoryEventsPartitionMonthsAhead is how many months beyond the current
+	// one memory_partition_maint provisions. Doubles as the outage budget:
+	// the job can fail for this many months before a write is rejected.
+	MemoryEventsPartitionMonthsAhead    int    `mapstructure:"llm_memory_events_partition_months_ahead"`
+	MemoryMaintenanceCollectiveSchedule string `mapstructure:"llm_memory_maintenance_collective_schedule"`
+	MemoryMaintenanceSoulSchedule       string `mapstructure:"llm_memory_maintenance_soul_schedule"`
+	MemoryMaintenanceDecisionsSchedule  string `mapstructure:"llm_memory_maintenance_decisions_schedule"`
 	// MemoryMaintenancePatternsExtractSchedule drives the cross-conversation
 	// pattern-extract job. Daily cadence
 	// keeps the LLM bill bounded while still catching new recurrences within
@@ -1173,7 +1191,8 @@ func init() {
 	// silently drift out of sync with the HTTP client timeout it must stay under.
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
-	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
+	viper.SetDefault("llm_server_fs_evidence_recall_enabled", false)
+	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
@@ -1366,6 +1385,10 @@ func init() {
 	viper.SetDefault("llm_memory_maintenance_preferences_schedule", "0 3 * * *")
 	viper.SetDefault("llm_memory_maintenance_patterns_schedule", "0 4 * * *")
 	viper.SetDefault("llm_memory_maintenance_events_rotate_schedule", "0 2 * * *")
+	// 01:00 — ahead of the 02:00 rotate, so a partition is never created and
+	// dropped within the same cycle.
+	viper.SetDefault("llm_memory_maintenance_partition_schedule", "0 1 * * *")
+	viper.SetDefault("llm_memory_events_partition_months_ahead", 3)
 	viper.SetDefault("llm_memory_maintenance_collective_schedule", "0 5 * * *")
 	viper.SetDefault("llm_memory_maintenance_soul_schedule", "0 6 * * 0")
 	viper.SetDefault("llm_memory_maintenance_decisions_schedule", "0 7 * * 0")

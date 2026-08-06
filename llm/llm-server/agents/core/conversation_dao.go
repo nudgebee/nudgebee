@@ -260,6 +260,7 @@ type IConversationDao interface {
 	UpdateConversationMessageConfig(id string, config toolcore.NBQueryConfig) error
 	UpdateConversationMessageFollowupConfig(id string, followupConfig map[string]any) error
 	LoadConversationMessages(accountID, conversationID, userID string, requestType MessageType, k int) ([]map[string]string, error)
+	ListConversationFileRefs(accountId, conversationId string, limit int) ([]FileEvidenceRef, error)
 	GetConversationAgentOutput(agentId, accountId string) (string, error)
 	GetConversationToolResponse(toolId, messageId, conversationId, accountId string) (string, toolcore.NBToolResponseStatus, error)
 	GetConversationToolCallChildAgentId(conversationId, agenId, toolId string) string
