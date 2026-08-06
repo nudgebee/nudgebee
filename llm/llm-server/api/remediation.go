@@ -389,7 +389,7 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 		c.JSON(200, buildApiResponse(plan, nil))
 		return
 	}
-	saved, err := repo.GetEventAnalysis(ctx, info.Fingerprint, info.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
+	saved, err := repo.GetEventAnalysis(ctx, request.EventId, info.Fingerprint, info.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
 	if err != nil || saved == nil || strings.TrimSpace(saved.Analysis) == "" {
 		c.JSON(200, buildApiResponse(plan, nil))
 		return

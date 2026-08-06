@@ -122,7 +122,7 @@ func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) erro
 			// Mark all analysis types as FAILED to prevent stuck IN_PROGRESS state
 			if ctx != nil && accountId != "" && response.EventFingerprint != "" {
 				if dbManager, dbErr := common.GetDatabaseManager(common.Metastore); dbErr == nil {
-					markAllAnalysisFailed(ctx, events.NewEventAnalysisRepository(dbManager), response.EventFingerprint, accountId, response.EventAggregationKey, panicErr.Error())
+					markAllAnalysisFailed(ctx, events.NewEventAnalysisRepository(dbManager), response.EventId, response.EventFingerprint, accountId, response.EventAggregationKey, panicErr.Error())
 				}
 			}
 
@@ -337,7 +337,7 @@ func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) erro
 	if budgetExceeded {
 		ctx.GetLogger().Warn("eventasync: budget limit exceeded, skipping event analysis", "eventId", eventAnalysisRequest.EventId, "message", budgetErrorMsg)
 		// Update status to failed with budget exceeded message for all analysis types
-		markAllAnalysisFailed(ctx, events.NewEventAnalysisRepository(dbManager), response.EventFingerprint, eventAnalysisRequest.AccountId, response.EventAggregationKey, budgetErrorMsg)
+		markAllAnalysisFailed(ctx, events.NewEventAnalysisRepository(dbManager), eventAnalysisRequest.EventId, response.EventFingerprint, eventAnalysisRequest.AccountId, response.EventAggregationKey, budgetErrorMsg)
 		publishState.Status = string(events.AnalysisStatusFailed)
 		publishState.StatusReason = budgetErrorMsg
 		publishState.Error = budgetErrorMsg
@@ -353,7 +353,7 @@ func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) erro
 		ctx.GetLogger().Error("eventasync: unable to analyze event", "eventId", eventAnalysisRequest.EventId, "error", err)
 		common.MetricsEventAnalysisOperationsTotal("mq_investigation", "fail", eventAnalysisRequest.AccountId)
 		// Mark all analysis types as FAILED to prevent stuck IN_PROGRESS state
-		markAllAnalysisFailed(ctx, events.NewEventAnalysisRepository(dbManager), response.EventFingerprint, eventAnalysisRequest.AccountId, response.EventAggregationKey, err.Error())
+		markAllAnalysisFailed(ctx, events.NewEventAnalysisRepository(dbManager), eventAnalysisRequest.EventId, response.EventFingerprint, eventAnalysisRequest.AccountId, response.EventAggregationKey, err.Error())
 		publishState.Status = string(events.AnalysisStatusFailed)
 		publishState.Error = err.Error()
 	} else {

@@ -291,7 +291,7 @@ func syncStuckEventAnalyses() error {
 				"event_id", a.EventId, "session", parentSessionId, "conv_status", conv.Status,
 				"updated_at", a.UpdatedAt, "age", time.Since(a.UpdatedAt).Round(time.Minute))
 			failCtx := security.NewRequestContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), []string{a.AccountId})
-			if updateErr := repo.UpdateEventAnalysisStatus(failCtx, a.EventFingerprint, a.AccountId, a.EventAggregationKey, string(events.AnalysisStatusFailed), "recovery abandoned: analysis stuck for over 24 hours", a.AnalysisType); updateErr != nil {
+			if updateErr := repo.UpdateEventAnalysisStatusById(failCtx, a.ID, string(events.AnalysisStatusFailed), "recovery abandoned: analysis stuck for over 24 hours"); updateErr != nil {
 				slog.Error("sync: failed to mark stale analysis as failed", "error", updateErr, "event_id", a.EventId)
 			}
 			continue
