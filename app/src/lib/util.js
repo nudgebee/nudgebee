@@ -1,13 +1,45 @@
 import MarkDowns from '@shared/viewers/MarkDowns';
-import { Typography } from '@mui/material';
+import Text from '@shared/format/Text';
 import { isMarkdown } from 'src/utils/common';
+import { ds } from '@utils/colors';
+
+// Keys most likely to carry an object's human-readable identity, in priority
+// order (e.g. a gh issue author {id, is_bot, login, name} reads as its name).
+const SUMMARY_KEYS = ['name', 'login', 'title', 'displayName', 'message', 'id'];
+
+export const summarizeValue = (value) => {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => summarizeValue(v))
+      .filter((s) => s !== undefined && s !== '')
+      .join(', ');
+  }
+  if (typeof value === 'object') {
+    for (const key of SUMMARY_KEYS) {
+      const v = value[key];
+      if ((typeof v === 'string' && v) || typeof v === 'number') {
+        return String(v);
+      }
+    }
+    return JSON.stringify(value);
+  }
+  return String(value);
+};
 
 export const getTableDataFromArrayOfObject = (t) => {
-  const dataArray = Array.isArray(t) ? t : [t];
+  // Drop nullish/primitive rows — Object.keys/entries on a non-object throws.
+  const dataArray = (Array.isArray(t) ? t : [t]).filter((item) => item && typeof item === 'object');
   if (dataArray.length === 0) {
     return { headers: [], tableData: [] };
   }
-  const headers = Object.keys(dataArray[0]).map((val) => ({ name: val, width: '120px' }));
+  // CustomTable defaults any header without a width to 20%, so 6+ columns
+  // over-constrain the row and the last column collapses to a sliver.
+  // Divide the row evenly instead so the widths always sum to 100%.
+  const keys = Object.keys(dataArray[0]);
+  const headers = keys.map((val) => ({ name: val, width: `${(100 / keys.length).toFixed(2)}%` }));
   const tableData = dataArray.map((item) =>
     Object.entries(item).map(([_key, value]) => ({
       component: (
@@ -19,14 +51,8 @@ export const getTableDataFromArrayOfObject = (t) => {
               }}
               data={value}
             />
-          ) : Array.isArray(value) && value.every((v) => typeof v === 'object') ? (
-            value.map((v, index) => <div key={index}>{JSON.stringify(v)}</div>)
-          ) : Array.isArray(value) ? (
-            value.join(', ')
-          ) : typeof value === 'object' ? (
-            JSON.stringify(value)
           ) : (
-            <Typography>{value}</Typography>
+            <Text value={summarizeValue(value)} showAutoEllipsis lineClamp={2} sx={{ minWidth: ds.space.mul(0, 40) }} />
           )}
         </>
       ),
