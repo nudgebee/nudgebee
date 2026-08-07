@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"net"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/llms/huggingface/huggingfaceclient"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
@@ -2367,9 +2369,12 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 		if len(fallbackModels) > 0 {
 			return handleQuotaError(rc, fallbackModels, false) // circuit already open — do not extend cooldown
 		}
-		// No fallbacks available, try anyway (circuit may have recovered)
-		ctx.GetLogger().Warn("No fallback models available despite open circuit breaker, trying primary model anyway",
+		// No fallback: fail fast rather than hammer a known-down endpoint. Cooldown is
+		// still active here — IsModelCircuitOpen half-opens once it expires, so a later
+		// request probes recovery.
+		ctx.GetLogger().Warn("Circuit open and no fallback configured — failing fast",
 			"provider", rc.currentProvider, "model", rc.currentModel)
+		return nil, buildCallMetadata(rc, false), ErrLLMServiceUnavailable
 	}
 
 	ctx.GetLogger().Info("Starting LLM content generation",
@@ -2505,6 +2510,20 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 			"model", rc.currentModel, "agentId", agentId)
 		return nil, buildCallMetadata(rc, false), ErrLlmUnableToGenerate(rc.lastErr)
 
+	} else if isCircuitTrippingError(rc.lastErr) {
+		// Endpoint down/unreachable (503, connection refused, timeout): open the
+		// breaker so every pod backs off, then reuse the fallback path. Trip here (not
+		// via handleQuotaError's recordPrimaryHit) so the breaker metric fires, not the
+		// rate-limit one.
+		ctx.GetLogger().Warn("Endpoint unavailable — tripping circuit and routing to fallbacks",
+			"model", rc.currentModel, "provider", rc.currentProvider, "error", safeError(rc.lastErr))
+		// The HF client trips the breaker itself after repeated failures and surfaces a
+		// sentinel error; don't re-record here or the cooldown double-escalates.
+		if !errors.Is(rc.lastErr, huggingfaceclient.ErrCircuitOpen) && !errors.Is(rc.lastErr, huggingfaceclient.ErrCircuitTripped) {
+			RecordModelFailure(rc.currentProvider, rc.currentModel)
+		}
+		return handleQuotaError(rc, fallbackModels, false)
+
 	} else if isTransientError(rc.lastErr) {
 		// STRATEGY 3: Transient Error → Retry with Exponential Backoff
 		ctx.GetLogger().Info("Routing to STRATEGY 3: Transient Error Handling")
@@ -2623,6 +2642,50 @@ func isTransientError(err error) bool {
 		strings.Contains(errMsg, "network") ||
 		strings.Contains(errMsg, "streaming error") ||
 		strings.Contains(errMsg, "model has timed out") ||
+		strings.Contains(errMsg, "deadline exceeded")
+}
+
+// fourxxStatusRe matches a 4xx code only in HTTP-status positions — at the message start
+// or right after a status keyword. This deliberately ignores bare 4xx-looking numbers
+// elsewhere (a model name like "claude-401", a duration like "400 ms", or the ":443"
+// HTTPS port in a connection error) so those never suppress a genuine outage trip.
+var fourxxStatusRe = regexp.MustCompile(`(^|(?:status|code|http|resp|response|returned)\s*:?\s*)4\d{2}\b`)
+
+// isCircuitTrippingError reports whether the error means the endpoint itself is down
+// or unreachable — open the breaker so all pods back off instead of retrying into a
+// dead endpoint. Narrower than isTransientError (a 500/502 proxy blip is not the
+// endpoint being down) and excludes all 4xx client/config/quota errors.
+func isCircuitTrippingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// The HF client's own breaker already decided the endpoint is down — route to fallback
+	// regardless of the wrapped status (it can wrap a 503 or a repeated 429), so check the
+	// sentinels before the 4xx exclusion below.
+	if errors.Is(err, huggingfaceclient.ErrCircuitOpen) || errors.Is(err, huggingfaceclient.ErrCircuitTripped) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	errMsg := strings.ToLower(safeError(err))
+	// Exclude any 4xx (400/401/403/404/409/429…) even when the message carries a trip
+	// substring like "timed out" — a client/quota error must never trip the breaker.
+	if fourxxStatusRe.MatchString(errMsg) {
+		return false
+	}
+	return strings.Contains(errMsg, "503") ||
+		strings.Contains(errMsg, "service unavailable") ||
+		strings.Contains(errMsg, "service_unavailable") ||
+		strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "no such host") ||
+		strings.Contains(errMsg, "i/o timeout") ||
+		strings.Contains(errMsg, "timed out") ||
 		strings.Contains(errMsg, "deadline exceeded")
 }
 

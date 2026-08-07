@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from rag.core.types import Document, LLM
 
 from rag.core.embeddings.generator import get_llm
+from rag.core.llm import circuit_breaker
 from rag.core.llm.prompts import get_prompt_for_module
 from rag.core.utils.db_query import get_live_kb_collection_names, get_tenant_id_for_account
 from rag.qdrant.client import list_collections_optimized
@@ -328,10 +329,20 @@ def rerank_with_llm(user_question: str, module: str | None, docs: list, llm: LLM
         "stop_reason": "FinishReasonStop",
     }
 
+    # Fail fast if the per-pod breaker is open — the endpoint is known not-ready, so skip
+    # the LLM call and return the docs unranked rather than hanging on client retries.
+    cb_provider = get_provider_name(llm.__class__.__name__)
+    cb_model = llm.model
+    if circuit_breaker.is_open(cb_provider, cb_model):
+        logger.warning("rerank: circuit open for %s/%s — skipping LLM rerank", cb_provider, cb_model)
+        token_usage["request_status"] = "circuit_open"
+        return docs, token_usage
+
     start_time = time.time()
 
     try:
         result = llm.generate(llm_input)
+        circuit_breaker.record_success(cb_provider, cb_model)
         latency = time.time() - start_time
 
         response_content = result.text
@@ -366,6 +377,8 @@ def rerank_with_llm(user_question: str, module: str | None, docs: list, llm: LLM
         return [(doc[0], score) for doc, score in ranked_docs_with_scores], token_usage
 
     except Exception as e:
+        if circuit_breaker.is_tripping_error(e):
+            circuit_breaker.record_failure(cb_provider, cb_model)
         logger.warning(f"LLM failed to rank documents: {e}, using original order")
         token_usage["request_status"] = "failure"
         token_usage["error_message"] = str(e)
