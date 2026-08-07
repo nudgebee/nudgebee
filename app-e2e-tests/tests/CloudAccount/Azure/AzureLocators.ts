@@ -158,47 +158,13 @@ export class AzureLocators extends CommonLocators {
       return;
     }
 
-    const cloudSidenavBtn = this.page.locator("#cloud-sidenavbutton");
-    await cloudSidenavBtn.click();
-    await this.page.waitForURL(/cloud-account/, { timeout: 15000 });
-    await this.page.waitForLoadState("networkidle");
-    await this.page.mouse.move(0, 0);
+    await this.openCloudAccountsFromSidenav();
     console.log("Navigated to cloud account via sidenav");
 
     const azureSearchTerm = process.env.AZURE_CLUSTER_NAME || "iteration-azure";
     await this.page.waitForTimeout(500);
-    const clusterInput = this.page.locator("#auto-complete-global-cluster");
+    await this.selectCloudAccount(azureSearchTerm);
 
-    const typeInCluster = async () => {
-      await clusterInput.click({ clickCount: 3 });
-      await clusterInput.press("Control+a");
-      await clusterInput.press("Delete");
-      await clusterInput.fill("");
-      await clusterInput.pressSequentially(azureSearchTerm, { delay: 50 });
-    };
-
-    await typeInCluster();
-    console.log(`Typed '${azureSearchTerm}' in global cluster autocomplete`);
-
-    const azureOption = this.page
-      .locator("[role='option']")
-      .filter({ hasText: azureSearchTerm })
-      .first();
-
-    const optionVisible = await azureOption.isVisible().catch(() => false);
-    if (!optionVisible) {
-      console.log(`No option found for '${azureSearchTerm}', retrying...`);
-      await typeInCluster();
-      await this.page.waitForTimeout(500);
-    }
-
-    await azureOption.waitFor({ state: "visible", timeout: 10000 });
-
-    await this.page.keyboard.press("ArrowDown");
-    await this.page.keyboard.press("Enter");
-    console.log("Selected Azure cloud account option via keyboard");
-
-    await this.page.mouse.move(0, 0);
     await this.page.waitForURL(/cloud-account/, { timeout: 15000 });
     await this.page.waitForLoadState("networkidle");
     console.log("Azure cloud account detail page loaded");

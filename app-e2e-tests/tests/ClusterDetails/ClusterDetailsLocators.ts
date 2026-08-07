@@ -46,9 +46,8 @@ export class ClusterDetailsLocators extends CommonLocators {
     if (!clusterName) throw new Error("CLUSTER_NAME or CLUSTER env variable is not set");
     console.log(`Opening cluster: ${clusterName}`);
 
-    await expect(this.ClusterBtn).toBeVisible();
-    await this.ClusterBtn.click();
-    console.log("Clicked on Cluster button");
+    await this.openClustersFromSidenav();
+    console.log("Navigated to K8s clusters via Infra sidenav");
 
     const clusterLocator = this.page.getByText(clusterName, { exact: true });
     await expect(clusterLocator).toBeVisible();
