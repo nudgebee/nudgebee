@@ -41,16 +41,9 @@
     {% set _ = NORMALIZED_CRITICAL_KEYS.update({norm_key: label}) %}
   {% endfor %}
 
-  {#- Compute totals for AI summary -#}
-  {% set ns = namespace(total_events=0, total_high=0, account_count=0) %}
-  {% for account in accounts.data.accounts %}
-    {% set account_event_rows = event_counts.data.event_groupings.rows | selectattr('account_id','equalto',account.id) | list %}
-    {% if account_event_rows|length > 0 %}
-      {% set ns.account_count = ns.account_count + 1 %}
-      {% set ns.total_events = ns.total_events + (account_event_rows | map(attribute='event_count') | sum) %}
-      {% set ns.total_high = ns.total_high + (account_event_rows | map(attribute='count_priority_high') | sum) %}
-    {% endif %}
-  {% endfor %}
+  {#- total_events / total_high_events / event_account_count are computed once
+     in Go (report_service.go) and reused for both the email subject and this
+     summary, so the two never drift. -#}
 
   <!-- AI SUMMARY OPENING -->
   <h1 class="subject-h" style="font-family:'DM Serif Display',Georgia,serif; font-size:26px; color:#0D1B2A; line-height:1.25; margin:0 0 20px; letter-spacing:-0.3px; font-weight:400;">
@@ -58,9 +51,9 @@
   </h1>
 
   <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 24px;">
-    I detected <strong style="color:#0D1B2A;">{{ ns.total_events }}</strong> events across your clusters in the last 24 hours.
-    {% if ns.total_high > 0 %}
-      <strong style="color:#EF4444;">{{ ns.total_high }}</strong> are high priority — here's what I'd investigate first.
+    I detected <strong style="color:#0D1B2A;">{{ total_events|default(0) }}</strong> events across your clusters in the last 24 hours.
+    {% if total_high_events|default(0) > 0 %}
+      <strong style="color:#EF4444;">{{ total_high_events|default(0) }}</strong> are high priority — here's what I'd investigate first.
     {% else %}
       Nothing high priority — here's the overview.
     {% endif %}

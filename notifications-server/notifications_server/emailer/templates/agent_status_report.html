@@ -3,25 +3,9 @@
 {% block title %}Agent Status — {{ _brand_name }}{% endblock %}
 
 {% block content %}
-  {#- Compute totals for AI summary -#}
-  {% set ns = namespace(total=0, disconnected=0, partial=0) %}
-  {% for account in accounts %}
-    {% set ns.total = ns.total + 1 %}
-    {% set agent_details = account.agent_details.data.agent[0] %}
-    {% set status = agent_details.connection_status %}
-    {% set is_running = agent_details.status | lower in ['running', 'connected', 'active'] %}
-    {% set connected_count = 0 %}
-    {% if status.alertManagerConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
-    {% if status.grafanaEnabled %}{% set connected_count = connected_count + 1 %}{% endif %}
-    {% if status.karpenterEnabled %}{% set connected_count = connected_count + 1 %}{% endif %}
-    {% if status.logsConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
-    {% if status.opencostConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
-    {% if not is_running %}
-      {% set ns.disconnected = ns.disconnected + 1 %}
-    {% elif connected_count < 5 %}
-      {% set ns.partial = ns.partial + 1 %}
-    {% endif %}
-  {% endfor %}
+  {#- agent_total / agent_disconnected / agent_partial are computed once in Go
+     (report_service.go) and reused for both the email subject and this
+     summary, so the two never drift. -#}
 
   <!-- AI SUMMARY OPENING -->
   <h1 class="subject-h" style="font-family:'DM Serif Display',Georgia,serif; font-size:26px; color:#0D1B2A; line-height:1.25; margin:0 0 20px; letter-spacing:-0.3px; font-weight:400;">
@@ -29,9 +13,9 @@
   </h1>
 
   <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 24px;">
-    I checked <strong style="color:#0D1B2A;">{{ ns.total }}</strong> account{{ 's' if ns.total != 1 else '' }}.
-    {% if ns.disconnected > 0 or ns.partial > 0 %}
-      {% if ns.disconnected > 0 %}<strong style="color:#EF4444;">{{ ns.disconnected }}</strong> agent{{ 's' if ns.disconnected != 1 else '' }} disconnected{% endif %}{% if ns.disconnected > 0 and ns.partial > 0 %} and {% endif %}{% if ns.partial > 0 %}<strong style="color:#F59E0B;">{{ ns.partial }}</strong> ha{{ 've' if ns.partial != 1 else 's' }} partial connectivity{% endif %} — details below.
+    I checked <strong style="color:#0D1B2A;">{{ agent_total|default(0) }}</strong> account{{ 's' if agent_total|default(0) != 1 else '' }}.
+    {% if agent_disconnected|default(0) > 0 or agent_partial|default(0) > 0 %}
+      {% if agent_disconnected|default(0) > 0 %}<strong style="color:#EF4444;">{{ agent_disconnected|default(0) }}</strong> agent{{ 's' if agent_disconnected|default(0) != 1 else '' }} disconnected{% endif %}{% if agent_disconnected|default(0) > 0 and agent_partial|default(0) > 0 %} and {% endif %}{% if agent_partial|default(0) > 0 %}<strong style="color:#F59E0B;">{{ agent_partial|default(0) }}</strong> ha{{ 've' if agent_partial|default(0) != 1 else 's' }} partial connectivity{% endif %} — details below.
     {% else %}
       All agents are running healthy.
     {% endif %}
