@@ -129,12 +129,21 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	// focused. Storage is included so collapsed CALLS edges pointing at
 	// Storage nodes (S3, Cloud Storage buckets, etc.) surface in the
 	// neighborhood after core.CollapseEnrichedExternalServices runs.
-	serviceNodeTypes := []NodeType{
-		NodeTypeService, NodeTypeExternalService, NodeTypeDatabase,
-		NodeTypeMessageQueue, NodeTypeCache, NodeTypeStorage,
-		NodeTypeWorkload, NodeTypeK8sService,
-	}
-	graph, err := kgService.GetMultipleNodeNeighbors(reqCtx, nodeIDs, 1, serviceNodeTypes, true)
+	//
+	// ComputeInstance, LoadBalancer and ServerlessFunction are here because on a
+	// VM or serverless deployment they ARE the application — there is no Workload
+	// or Pod layer above them. Without them the neighbourhood of an AWS resource
+	// came back with the resource alone and no edges, even when the graph held
+	// `api instance --CALLS--> database`, because the only node that could sit on
+	// the other end of that edge was filtered out. An empty neighbourhood also
+	// starves event correlation, which walks this evidence: with no edges to
+	// traverse, dependency_distance is always 0 and no cross-tier correlation can
+	// ever be produced.
+	//
+	// Plumbing (VPC, Subnet, SecurityGroup) stays out on purpose: an AWS resource
+	// is attached to several of them, and they would crowd out the services an
+	// operator is looking for while adding no dependency information.
+	graph, err := kgService.GetMultipleNodeNeighbors(reqCtx, nodeIDs, 1, serviceMapNeighbourTypes, true)
 	if err != nil {
 		logger.Warn("knowledge_graph_service_map: failed to get neighbors", "error", err)
 		return nil, nil
@@ -179,6 +188,16 @@ var seedNodeTypeNames = func() []string {
 	}
 	return names
 }()
+
+// serviceMapNeighbourTypes are the node types worth showing around an alerting
+// resource: things that carry or serve traffic, not the infrastructure a
+// resource merely sits in.
+var serviceMapNeighbourTypes = []NodeType{
+	NodeTypeService, NodeTypeExternalService, NodeTypeDatabase,
+	NodeTypeMessageQueue, NodeTypeCache, NodeTypeStorage,
+	NodeTypeWorkload, NodeTypeK8sService,
+	NodeTypeComputeInstance, NodeTypeLoadBalancer, NodeTypeServerlessFunction,
+}
 
 // findServiceNodes queries the KG for nodes matching a service name and namespace.
 //

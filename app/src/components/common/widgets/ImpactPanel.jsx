@@ -318,7 +318,14 @@ const ImpactPanel = ({ eventId, prefetched }) => {
     // is the difference between "nothing alerted" and "nothing was affected".
     // Split by distance: a direct caller is the one worth checking, while almost anything
     // is two hops from a shared datastore, so listing both as equals overstates the second.
-    const possible = (Array.isArray(data.impacted) ? data.impacted : []).filter((s) => !s.alerting);
+    // Infrastructure dependents belong here too. The API reports them separately so they
+    // cannot inflate dependent_count (which feeds recommendation safety scoring), but for
+    // "what might this have hit" they are the same question — and on a VM stack they are
+    // the only answer there is.
+    const possible = [
+      ...(Array.isArray(data.impacted) ? data.impacted : []).filter((s) => !s.alerting),
+      ...(Array.isArray(data.infrastructure_impacted) ? data.infrastructure_impacted : []),
+    ];
     const directDeps = possible.filter((s) => Number(s.hops_away) <= 1);
     const indirectDeps = possible.filter((s) => Number(s.hops_away) > 1);
     // The workload, not the pod that reported the alert — nothing depends on a pod, and
@@ -484,6 +491,12 @@ const ImpactPanel = ({ eventId, prefetched }) => {
   const dependsOn = Array.isArray(data.depends_on) ? data.depends_on : [];
   const correlated = impacted.filter((s) => s.alerting);
   const potential = impacted.filter((s) => !s.alerting);
+  // Dependents that are not application-level types. They are reported separately by the
+  // API so they cannot inflate dependent_count, which feeds recommendation safety scoring
+  // — but they must still be shown: on a VM or serverless stack the instance calling this
+  // resource IS the application, and hiding it makes a real blast radius read as "nothing
+  // was affected".
+  const infrastructure = Array.isArray(data.infrastructure_impacted) ? data.infrastructure_impacted : [];
   const lowCoverage = data.coverage_confidence === 'none' || data.coverage_confidence === 'low';
   const goTo = (evId) => evId && router.push(`/investigate?id=${evId}&accountId=${accountId}`);
 
@@ -499,7 +512,8 @@ const ImpactPanel = ({ eventId, prefetched }) => {
       </Box>
       <Typography sx={{ fontSize: 12, color: 'var(--ds-gray-500)', mb: 1.5 }}>
         Blast radius: <b style={{ color: 'var(--ds-red-500)' }}>{correlated.length} impacted &amp; alerting</b>
-        {potential.length > 0 ? ` · ${potential.length} potential` : ''} — grouped into one incident, root cause above.
+        {potential.length > 0 ? ` · ${potential.length} potential` : ''}
+        {infrastructure.length > 0 ? ` · ${infrastructure.length} infrastructure` : ''} — grouped into one incident, root cause above.
       </Typography>
 
       {/* Correlated (alerting) */}
@@ -508,7 +522,7 @@ const ImpactPanel = ({ eventId, prefetched }) => {
       </Typography>
       {correlated.length === 0 && (
         <Typography sx={{ fontSize: 13, color: 'var(--ds-gray-500)', mb: 1 }}>
-          {impacted.length === 0
+          {impacted.length === 0 && infrastructure.length === 0
             ? `No in-cluster services depend on ${seed.name} — it may be an edge/entry service, or lack trace coverage.`
             : 'None of its dependents are currently alerting.'}
         </Typography>
@@ -568,6 +582,26 @@ const ImpactPanel = ({ eventId, prefetched }) => {
                 key={`p${i}`}
                 size='small'
                 label={`${s.name} · ${s.hops_away}-hop`}
+                sx={{ height: 22, fontSize: 12, bgcolor: 'transparent', color: 'var(--ds-gray-600)', border: '1px dashed var(--ds-brand-150)' }}
+              />
+            ))}
+          </Box>
+        </>
+      )}
+
+      {infrastructure.length > 0 && (
+        <>
+          <Typography
+            sx={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ds-gray-600)', mt: 2, mb: 0.75 }}
+          >
+            Infrastructure impacted — {infrastructure.length}
+          </Typography>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+            {infrastructure.map((s, i) => (
+              <Chip
+                key={`i${i}`}
+                size='small'
+                label={`${s.name} · ${s.node_type} · ${s.hops_away}-hop`}
                 sx={{ height: 22, fontSize: 12, bgcolor: 'transparent', color: 'var(--ds-gray-600)', border: '1px dashed var(--ds-brand-150)' }}
               />
             ))}
