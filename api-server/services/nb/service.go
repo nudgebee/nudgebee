@@ -211,58 +211,44 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 					config.Config.NBRetentionDaysKGInactiveEdges, cleanupBatchSize),
 			},
 			{
-				// Node retention is shorter than edge retention, so a tombstoned edge
-				// can outlive the node it points at. The two NOT EXISTS guards keep
-				// any node with a still-*active* edge alive; they are separate
-				// subqueries so each can use its own index (source_node_id /
-				// destination_node_id) — an OR inside one would force a seq scan.
-				// Edges left dangling by this delete are reclaimed by the
-				// knowledge_graph_orphan_edges job immediately below.
-				Name:      "knowledge_graph_nodes",
+				// event_log_analysis grew unbounded once the unique constraint on
+				// (fingerprint, account, aggregation key, analysis type) was dropped
+				// in V850 to allow historical runs per event. Nothing reclaims it,
+				// so age out whole event identities that have gone quiet.
+				//
+				// The trigger is the age of the *newest* run for an identity, not each
+				// row's own age: trimming old rows out of a still-active identity would
+				// cascade-delete the event_analysis_mapping rows pointing at them and
+				// silently drop live events back to the fingerprint fallback, where they
+				// would surface a different event's analysis. Deleting only identities
+				// where nothing is recent avoids that entirely.
+				//
+				// Expressed as "old row with no recent sibling" rather than a GROUP BY
+				// with HAVING max(...): this query re-runs once per batch, and measured
+				// on 300k rows across 30k identities the aggregate form costs 133ms per
+				// batch against 29ms for this one, because it re-aggregates the whole
+				// table every time.
+				//
+				// COALESCE(updated_at, recorded_at) on both sides: updated_at is nullable
+				// with no default (V443), and a bare `updated_at < cutoff` is NULL for
+				// legacy rows, so they would never age out and would accumulate silently.
+				Name:      "event_log_analysis",
 				Metastore: database.Metastore,
 				Batched:   true,
 				Query: fmt.Sprintf(`WITH to_del AS (
-					SELECT n.id FROM knowledge_graph_node n
-					WHERE n.is_active = false
-					  AND n.updated_at < now() - interval '%d days'
-					  AND NOT EXISTS (
-						SELECT 1 FROM knowledge_graph_edge e
-						WHERE e.source_node_id = n.id AND e.is_active = true
-					  )
-					  AND NOT EXISTS (
-						SELECT 1 FROM knowledge_graph_edge e
-						WHERE e.destination_node_id = n.id AND e.is_active = true
-					  )
-					LIMIT %d
-				) DELETE FROM knowledge_graph_node WHERE id IN (SELECT id FROM to_del)`,
-					config.Config.NBRetentionDaysKGInactiveNodes, cleanupBatchSize),
-			},
-			{
-				// Reclaims edges whose endpoint node has been deleted, so the shorter
-				// node retention never leaves a dangling row behind. Must run after
-				// knowledge_graph_nodes to catch the ones that job just orphaned.
-				// Restricted to is_active = false on purpose: an *active* edge can
-				// only reach a missing node through a bug, and the node job's guards
-				// exist precisely to prevent that — silently deleting such an edge
-				// here would hide it. Complements knowledge_graph_edges, which
-				// reclaims by age rather than by orphanhood.
-				Name:      "knowledge_graph_orphan_edges",
-				Metastore: database.Metastore,
-				Batched:   true,
-				Query: fmt.Sprintf(`WITH to_del AS (
-					SELECT e.id FROM knowledge_graph_edge e
-					WHERE e.is_active = false
-					  AND (
-						NOT EXISTS (
-							SELECT 1 FROM knowledge_graph_node n WHERE n.id = e.source_node_id
+					SELECT e.id FROM event_log_analysis e
+					WHERE COALESCE(e.updated_at, e.recorded_at) < now() - interval '%d days'
+						AND NOT EXISTS (
+							SELECT 1 FROM event_log_analysis n
+							WHERE n.cloud_account_id = e.cloud_account_id
+								AND n.event_fingerprint = e.event_fingerprint
+								AND n.event_aggregation_key = e.event_aggregation_key
+								AND n.analysis_type = e.analysis_type
+								AND COALESCE(n.updated_at, n.recorded_at) >= now() - interval '%d days'
 						)
-						OR NOT EXISTS (
-							SELECT 1 FROM knowledge_graph_node n WHERE n.id = e.destination_node_id
-						)
-					  )
 					LIMIT %d
-				) DELETE FROM knowledge_graph_edge WHERE id IN (SELECT id FROM to_del)`,
-					cleanupBatchSize),
+				) DELETE FROM event_log_analysis WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysEventAnalysis, config.Config.NBRetentionDaysEventAnalysis, cleanupBatchSize),
 			},
 			{
 				Name:      "recommendations_archive",

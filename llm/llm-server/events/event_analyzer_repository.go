@@ -10,7 +10,76 @@ import (
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+
+	"github.com/jmoiron/sqlx"
 )
+
+// findCurrentAnalysisID resolves, and locks, the event_log_analysis row a write
+// should land on, returning "" when there is none yet.
+//
+// An event owns a specific analysis run via event_analysis_mapping, so that is
+// the authoritative lookup. Without an eventId there is nothing to look up and
+// we fall back to the newest row for the fingerprint identity.
+//
+// Both lookups take FOR UPDATE: the row is about to be written, and the lock is
+// what serialises concurrent writers for the same event.
+//
+// The fallback orders on COALESCE(updated_at, recorded_at). updated_at is
+// nullable with no default (V443) and NULLs sort first on a plain DESC, so
+// ordering on the bare column ranks legacy rows as the newest. Every caller
+// needs that ordering, which is exactly why it lives here and not at each site.
+func findCurrentAnalysisID(tx *sqlx.Tx, eventId, fingerprint, accountId, aggKey string, analysisType EventAnalysisType) (string, error) {
+	var (
+		analysisID string
+		err        error
+	)
+	if eventId != "" {
+		err = tx.QueryRowx(
+			`SELECT analysis_id FROM event_analysis_mapping WHERE event_id=$1 AND analysis_type=$2 FOR UPDATE`,
+			eventId, analysisType,
+		).Scan(&analysisID)
+	} else {
+		err = tx.QueryRowx(
+			`SELECT id FROM event_log_analysis WHERE event_fingerprint = $1 AND cloud_account_id = $2 AND event_aggregation_key = $3 AND analysis_type = $4 ORDER BY COALESCE(updated_at, recorded_at) DESC LIMIT 1 FOR UPDATE`,
+			fingerprint, accountId, aggKey, analysisType,
+		).Scan(&analysisID)
+	}
+	if err != nil {
+		// No row yet is the ordinary first-write case, not a failure. Return the
+		// empty id explicitly rather than falling through on the assumption that
+		// Scan left the target untouched.
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return analysisID, nil
+}
+
+// upsertAnalysisMapping points (eventId, analysisType) at analysisID and reports
+// how many rows that affected.
+//
+// repoint decides how a pre-existing mapping row is treated, and the two modes
+// are not interchangeable:
+//
+//   - repoint == true: the caller already holds this event's mapping row and is
+//     moving it to a newer analysis run (a forced regenerate). DO NOTHING here
+//     would affect zero rows and, for callers that gate on the count, silently
+//     abandon the write.
+//   - repoint == false: a fresh claim, where the mapping primary key is the
+//     concurrency gate. A conflict means a racing dispatcher registered the
+//     event first, so zero rows affected is the signal to back out.
+func upsertAnalysisMapping(tx *sqlx.Tx, eventId, analysisID string, analysisType EventAnalysisType, repoint bool) (int64, error) {
+	query := `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO NOTHING`
+	if repoint {
+		query = `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO UPDATE SET analysis_id = EXCLUDED.analysis_id`
+	}
+	res, err := tx.Exec(query, eventId, analysisID, analysisType)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
 
 // EventAnalysisRepository handles database operations for event analysis.
 type EventAnalysisRepository struct {
@@ -208,47 +277,30 @@ func (r *EventAnalysisRepository) UpsertEventAnalysisInProgress(ctx *security.Re
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if eventId != "" {
-		var existingId string
-		err = tx.QueryRowx(
-			`SELECT analysis_id FROM event_analysis_mapping WHERE event_id=$1 AND analysis_type=$2 FOR UPDATE`,
-			eventId, analysisType,
-		).Scan(&existingId)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
+	existingId, err := findCurrentAnalysisID(tx, eventId, fingerprint, accountId, aggKey, analysisType)
+	if err != nil {
+		return err
+	}
 
-		if existingId != "" {
-			var dbEventId any = eventId
-			_, err := tx.Exec(
+	if existingId != "" {
+		// Stamp event_id only when we got here through the mapping; the
+		// fingerprint fallback has no event to attribute the row to.
+		if eventId != "" {
+			_, err = tx.Exec(
 				`UPDATE event_log_analysis SET status=$2, status_reason=NULL, event_id=$3, updated_at=NOW() WHERE id=$1`,
-				existingId, AnalysisStatusInProgress, dbEventId,
+				existingId, AnalysisStatusInProgress, eventId,
 			)
-			if err != nil {
-				ctx.GetLogger().Warn("analyzer: failed to update analysis in progress by id", "error", err, "analysis_id", existingId)
-				return err
-			}
-			return tx.Commit()
-		}
-	} else {
-		var existingId string
-		err = tx.QueryRowx(
-			`SELECT id FROM event_log_analysis WHERE event_fingerprint = $1 AND cloud_account_id = $2 AND event_aggregation_key = $3 AND analysis_type = $4 ORDER BY COALESCE(updated_at, recorded_at) DESC LIMIT 1 FOR UPDATE`,
-			fingerprint, accountId, aggKey, analysisType,
-		).Scan(&existingId)
-		if err == nil && existingId != "" {
-			_, err := tx.Exec(
+		} else {
+			_, err = tx.Exec(
 				`UPDATE event_log_analysis SET status=$2, status_reason=NULL, updated_at=NOW() WHERE id=$1`,
 				existingId, AnalysisStatusInProgress,
 			)
-			if err != nil {
-				ctx.GetLogger().Warn("analyzer: failed to update latest analysis in progress by fingerprint", "error", err, "analysis_id", existingId)
-				return err
-			}
-			return tx.Commit()
-		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		}
+		if err != nil {
+			ctx.GetLogger().Warn("analyzer: failed to update analysis in progress", "error", err, "analysis_id", existingId)
 			return err
 		}
+		return tx.Commit()
 	}
 
 	var dbEventId any = eventId
@@ -265,9 +317,7 @@ func (r *EventAnalysisRepository) UpsertEventAnalysisInProgress(ctx *security.Re
 	}
 
 	if eventId != "" {
-		mappingQuery := `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO UPDATE SET analysis_id = EXCLUDED.analysis_id`
-		_, err = tx.Exec(mappingQuery, eventId, analysisId, analysisType)
-		if err != nil {
+		if _, err = upsertAnalysisMapping(tx, eventId, analysisId, analysisType, true); err != nil {
 			return err
 		}
 	}
@@ -360,11 +410,7 @@ func (r *EventAnalysisRepository) ClaimEventAnalysis(ctx *security.RequestContex
 				// active run. The mapping still points at this event's previous,
 				// now-superseded analysis, so repoint it at the run that is actually
 				// live — DO NOTHING would leave the regenerate showing stale output.
-				mappingQuery := `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO NOTHING`
-				if hadMapping {
-					mappingQuery = `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO UPDATE SET analysis_id = EXCLUDED.analysis_id`
-				}
-				if _, err = tx.Exec(mappingQuery, eventId, existingAnalysisId, analysisType); err != nil {
+				if _, err = upsertAnalysisMapping(tx, eventId, existingAnalysisId, analysisType, hadMapping); err != nil {
 					return false, err
 				}
 			}
@@ -391,30 +437,20 @@ func (r *EventAnalysisRepository) ClaimEventAnalysis(ctx *security.RequestContex
 	}
 
 	if eventId != "" {
-		if hadMapping {
-			// Forced regenerate on an event that already had a mapping: repoint it at
-			// the new historical row. DO NOTHING here would affect zero rows and back
-			// the whole claim out, silently turning every regenerate into a no-op.
-			mappingQuery := `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO UPDATE SET analysis_id = EXCLUDED.analysis_id`
-			if _, err := tx.Exec(mappingQuery, eventId, analysisId, analysisType); err != nil {
-				return false, err
-			}
-		} else {
-			// Fresh claim: the mapping PK is the concurrency gate. A conflict means a
-			// racing dispatcher inserted it first, so back out and let that one run.
-			mappingQuery := `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO NOTHING`
-			res, err := tx.Exec(mappingQuery, eventId, analysisId, analysisType)
-			if err != nil {
-				return false, err
-			}
-			affected, err := res.RowsAffected()
-			if err != nil {
-				return false, err
-			}
-			if affected == 0 {
-				_ = tx.Rollback()
-				return false, nil
-			}
+		// Forced regenerate on an event that already had a mapping repoints it at
+		// the new historical row; DO NOTHING there would affect zero rows and back
+		// the whole claim out, silently turning every regenerate into a no-op.
+		//
+		// A fresh claim instead uses the mapping primary key as the concurrency
+		// gate: zero rows affected means a racing dispatcher inserted it first, so
+		// back out and let that one run.
+		affected, err := upsertAnalysisMapping(tx, eventId, analysisId, analysisType, hadMapping)
+		if err != nil {
+			return false, err
+		}
+		if !hadMapping && affected == 0 {
+			_ = tx.Rollback()
+			return false, nil
 		}
 	}
 
@@ -432,47 +468,28 @@ func (r *EventAnalysisRepository) SaveEventRCAAnalysis(ctx *security.RequestCont
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if eventId != "" {
-		var existingId string
-		err = tx.QueryRowx(
-			`SELECT analysis_id FROM event_analysis_mapping WHERE event_id=$1 AND analysis_type=$2 FOR UPDATE`,
-			eventId, AnalysisTypeRCA,
-		).Scan(&existingId)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
+	existingId, err := findCurrentAnalysisID(tx, eventId, fingerprint, accountId, aggKey, AnalysisTypeRCA)
+	if err != nil {
+		return err
+	}
 
-		if existingId != "" {
-			var dbEventId any = eventId
-			_, err := tx.Exec(
+	if existingId != "" {
+		if eventId != "" {
+			_, err = tx.Exec(
 				`UPDATE event_log_analysis SET analysis=$2, status=$3, status_reason=NULL, event_id=$4, updated_at=NOW() WHERE id=$1`,
-				existingId, analysisResult, AnalysisStatusCompleted, dbEventId,
+				existingId, analysisResult, AnalysisStatusCompleted, eventId,
 			)
-			if err != nil {
-				ctx.GetLogger().Warn("analyzer: failed to update rca analysis row", "error", err, "analysis_id", existingId)
-				return err
-			}
-			return tx.Commit()
-		}
-	} else {
-		var existingId string
-		err = tx.QueryRowx(
-			`SELECT id FROM event_log_analysis WHERE event_fingerprint = $1 AND cloud_account_id = $2 AND event_aggregation_key = $3 AND analysis_type = $4 ORDER BY COALESCE(updated_at, recorded_at) DESC LIMIT 1 FOR UPDATE`,
-			fingerprint, accountId, aggKey, AnalysisTypeRCA,
-		).Scan(&existingId)
-		if err == nil && existingId != "" {
-			_, err := tx.Exec(
+		} else {
+			_, err = tx.Exec(
 				`UPDATE event_log_analysis SET analysis=$2, status=$3, status_reason=NULL, updated_at=NOW() WHERE id=$1`,
 				existingId, analysisResult, AnalysisStatusCompleted,
 			)
-			if err != nil {
-				ctx.GetLogger().Warn("analyzer: failed to update latest rca analysis row", "error", err, "analysis_id", existingId)
-				return err
-			}
-			return tx.Commit()
-		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		}
+		if err != nil {
+			ctx.GetLogger().Warn("analyzer: failed to update rca analysis row", "error", err, "analysis_id", existingId)
 			return err
 		}
+		return tx.Commit()
 	}
 
 	var dbEventId any = eventId
@@ -489,9 +506,7 @@ func (r *EventAnalysisRepository) SaveEventRCAAnalysis(ctx *security.RequestCont
 	}
 
 	if eventId != "" {
-		mappingQuery := `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO UPDATE SET analysis_id = EXCLUDED.analysis_id`
-		_, err = tx.Exec(mappingQuery, eventId, analysisId, AnalysisTypeRCA)
-		if err != nil {
+		if _, err = upsertAnalysisMapping(tx, eventId, analysisId, AnalysisTypeRCA, true); err != nil {
 			return err
 		}
 	}
@@ -618,47 +633,28 @@ func (r *EventAnalysisRepository) UpsertEventAnalysis(ctx *security.RequestConte
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if eventId != "" {
-		var existingId string
-		err = tx.QueryRowx(
-			`SELECT analysis_id FROM event_analysis_mapping WHERE event_id=$1 AND analysis_type=$2 FOR UPDATE`,
-			eventId, analysisType,
-		).Scan(&existingId)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
+	existingId, err := findCurrentAnalysisID(tx, eventId, fingerprint, accountId, aggKey, analysisType)
+	if err != nil {
+		return err
+	}
 
-		if existingId != "" {
-			var dbEventId any = eventId
-			_, err := tx.Exec(
+	if existingId != "" {
+		if eventId != "" {
+			_, err = tx.Exec(
 				`UPDATE event_log_analysis SET analysis=$2, summary=$3, status=$4, status_reason=NULL, event_id=$5, updated_at=NOW() WHERE id=$1`,
-				existingId, analysis, summary, status, dbEventId,
+				existingId, analysis, summary, status, eventId,
 			)
-			if err != nil {
-				ctx.GetLogger().Warn("analyzer: failed to update analysis row in database", "error", err, "analysis_id", existingId)
-				return err
-			}
-			return tx.Commit()
-		}
-	} else {
-		var existingId string
-		err = tx.QueryRowx(
-			`SELECT id FROM event_log_analysis WHERE event_fingerprint = $1 AND cloud_account_id = $2 AND event_aggregation_key = $3 AND analysis_type = $4 ORDER BY COALESCE(updated_at, recorded_at) DESC LIMIT 1 FOR UPDATE`,
-			fingerprint, accountId, aggKey, analysisType,
-		).Scan(&existingId)
-		if err == nil && existingId != "" {
-			_, err := tx.Exec(
+		} else {
+			_, err = tx.Exec(
 				`UPDATE event_log_analysis SET analysis=$2, summary=$3, status=$4, status_reason=NULL, updated_at=NOW() WHERE id=$1`,
 				existingId, analysis, summary, status,
 			)
-			if err != nil {
-				ctx.GetLogger().Warn("analyzer: failed to update latest analysis row in database", "error", err, "analysis_id", existingId)
-				return err
-			}
-			return tx.Commit()
-		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		}
+		if err != nil {
+			ctx.GetLogger().Warn("analyzer: failed to update analysis row in database", "error", err, "analysis_id", existingId)
 			return err
 		}
+		return tx.Commit()
 	}
 
 	var dbEventId any = eventId
@@ -675,9 +671,7 @@ func (r *EventAnalysisRepository) UpsertEventAnalysis(ctx *security.RequestConte
 	}
 
 	if eventId != "" {
-		mappingQuery := `INSERT INTO event_analysis_mapping (event_id, analysis_id, analysis_type) VALUES ($1, $2, $3) ON CONFLICT (event_id, analysis_type) DO UPDATE SET analysis_id = EXCLUDED.analysis_id`
-		_, err = tx.Exec(mappingQuery, eventId, analysisId, analysisType)
-		if err != nil {
+		if _, err = upsertAnalysisMapping(tx, eventId, analysisId, analysisType, true); err != nil {
 			return err
 		}
 	}
