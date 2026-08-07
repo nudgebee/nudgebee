@@ -280,11 +280,14 @@ func NewTemplatedEventBridgeProcessor(rules EventRuleSet, api awsProviderAPI) *T
 			continue
 		}
 		if !r.ActionsOnly {
-			// Non-ActionsOnly dedup would also need to coalesce event
-			// emissions, which isn't supported yet. Skip silently —
-			// rendering an error here would prevent startup; leaving
-			// the rule un-deduped degrades gracefully to current
-			// behavior.
+			// Emitting rules get suppress-only dedup (nil onFire): the first
+			// delivery in a window emits normally, repeats within the TTL are
+			// dropped, and the entry dies at the deadline so the next delivery
+			// emits again — at most one emission per fingerprint per window.
+			// No trailing fire: re-emitting the coalesced payload would need
+			// the SQS consumer's event handler, which the processor doesn't
+			// hold.
+			p.dedupers[r.Name] = newRuleDeduper(time.Duration(r.DedupTTLSeconds)*time.Second, nil)
 			continue
 		}
 		// Capture rule by value so the closure binds to the right one.

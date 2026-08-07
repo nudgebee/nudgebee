@@ -15,6 +15,13 @@ import (
 // payload. The captured event then starts a new TTL window — if more events
 // arrive, another trailing fire happens; otherwise the entry is removed.
 //
+// A nil onFire selects suppress-only mode: repeats within the TTL are
+// dropped without a trailing fire, and the entry always dies at the
+// deadline so the next event after it starts a fresh window — i.e. at most
+// one execution per fingerprint per TTL. Used for emitting rules, where a
+// trailing fire would need to re-emit through the SQS consumer's event
+// handler, which the processor doesn't hold.
+//
 // Concurrency contract: Allow may be called from many goroutines. Each
 // (rule, fingerprint) entry has its own mutex; entry removal uses a dead
 // flag to close the race with concurrent callers who would otherwise write
@@ -125,7 +132,7 @@ func (d *ruleDeduper) trailingFire(fingerprint string, entry *dedupEntry) {
 			}
 		}
 		entry.mu.Lock()
-		if !entry.pending {
+		if !entry.pending || d.onFire == nil {
 			entry.dead = true
 			entry.mu.Unlock()
 			d.entries.Delete(fingerprint)

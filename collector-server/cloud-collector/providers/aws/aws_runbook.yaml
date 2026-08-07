@@ -575,6 +575,13 @@ rules:
 
 # Rule for all ECS Task State Change events
   - name: "ECS_Task_All_Events_EventBridge"
+    # Service-level fingerprint + TTL: a service's tasks emit 5-7 lifecycle
+    # events each, so per-delivery execution flooded events (tens of thousands
+    # per week on busy clusters). Dedup runs before enrichment, so suppressed
+    # deliveries cost nothing; at most one emission per service+status per
+    # window, and a status change starts a new dedup key so transitions always
+    # emit immediately.
+    dedup_ttl_seconds: 900
     triggers:
       source: "AWS_EventBridge"
       alert_name: "aws.ecs"
@@ -588,7 +595,7 @@ rules:
     event_template:
       title:
         template: |
-          ECS Task Event: {{ (index .Detail "lastStatus") }} for {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          ECS Task Event: {{ (index .Detail "lastStatus") }} for {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
       severity: "Info" # Default severity for all events
       description:
         template: |
@@ -598,12 +605,12 @@ rules:
           Detail: {{ toJson .Detail }}
       status: "CLOSED" # Default status for all events
       fingerprint:
-        # Task-level (taskArn) so each task lifecycle is one event with N
-        # state-change occurrences. Cluster-level (group + clusterArn) made
-        # every task in a cluster collapse to a single fingerprint, which
-        # produced ~99% wasted enrichment work for noisy clusters and lost
-        # per-task visibility in the UI.
-        template: "ecs-task:{{ (index .Detail \"taskArn\") }}"
+        # Service-level (cluster + group + status), NOT taskArn: task-level
+        # fingerprints are unique on every run, so replacement tasks of the
+        # same service never dedup and each one becomes a fresh event. The
+        # earlier concern about wasted enrichment on a shared fingerprint is
+        # gone now that dedup_ttl_seconds suppresses repeats before actions run.
+        template: "ecs-task:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}:{{ (index .Detail \"lastStatus\") }}"
       resource_id:
         template: |
           {{ $taskIdentifier := "" }}
@@ -655,6 +662,10 @@ rules:
       # the ELB-health-check stop rule.
 
   - name: "ECS_Task_Stopped_Unexpectedly_EventBridge"
+    # A crash-looping service otherwise fires (and enriches) once per
+    # replacement task. At most one event per service+exit-code per window;
+    # a different exit code is a different dedup key and emits immediately.
+    dedup_ttl_seconds: 900
     triggers:
       source: "AWS_EventBridge"
       alert_name: "aws.ecs" # This is the EventBridge event source
@@ -669,14 +680,15 @@ rules:
           description: "Container 0 exitCode is non-zero"
     event_template:
       title:
-        template: "ECS Task {{ (index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last }} Stopped Unexpectedly (Exit Code: {{ safeIndex .Detail \"containers\" 0 \"exitCode\" }})"
+        template: "ECS Task Stopped Unexpectedly: {{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }} (Exit Code: {{ safeIndex .Detail \"containers\" 0 \"exitCode\" }})"
       severity: "HIGH" # Or Critical
       fingerprint:
-        # Task-level (taskArn). Cluster-level dedup grouped every distinct
-        # task's stop into one fingerprint, so a cluster with N crashing tasks
-        # produced 1 alert covering N independent failures — and we kept
-        # enriching every duplicate delivery before discarding it.
-        template: "ecs-task-stopped:{{ (index .Detail \"taskArn\") }}"
+        # Service-level (cluster + group + exit code), NOT taskArn: replacement
+        # tasks get a new taskArn every run, so task-level fingerprints never
+        # dedup and a crash loop produces one fresh event per stop. Exit code
+        # is in the key so distinct failure modes stay separate events.
+        # dedup_ttl_seconds suppresses repeats before enrichment runs.
+        template: "ecs-task-stopped:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}:{{ safeIndex .Detail \"containers\" 0 \"exitCode\" }}"
       description:
         template: >-
           ECS Task {{ .Detail.taskArn }} in cluster {{ .Detail.clusterArn | str | default "" | splitList "/" | last }} (account: {{ .Event.account }}, region: {{ .Event.region }})
@@ -773,6 +785,7 @@ rules:
       #     end_time_offset: "0m"
 
   - name: "ECS_Task_Stuck_In_Pending_EventBridge"
+    dedup_ttl_seconds: 900
     triggers:
       source: "AWS_EventBridge"
       alert_name: "aws.ecs"
@@ -789,11 +802,11 @@ rules:
     event_template:
       title:
         template: |
-          ECS Task {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }} is PENDING
+          ECS Task PENDING: {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
       severity: "Warning"
       fingerprint:
-        # Task-level (taskArn). See note on ecs-task-stopped fingerprint above.
-        template: "ecs-task-pending:{{ (index .Detail \"taskArn\") }}"
+        # Service-level (cluster + group). See note on ecs-task-stopped fingerprint above.
+        template: "ecs-task-pending:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}"
       description:
         template: >-
           ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
@@ -832,6 +845,7 @@ rules:
         description: "Check recent CPU reservation for the cluster."
 
   - name: "ECS_Task_Stopped_OutOfMemory_EventBridge"
+    dedup_ttl_seconds: 900
     triggers:
       source: "AWS_EventBridge"
       alert_name: "aws.ecs"
@@ -845,11 +859,11 @@ rules:
     event_template:
       title:
         template: |
-          ECS Task {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }} Stopped: OutOfMemory
+          ECS Task Stopped: OutOfMemory: {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
       severity: "Critical"
       fingerprint:
-        # Task-level (taskArn). See note on ecs-task-stopped fingerprint above.
-        template: "ecs-task-oom:{{ (index .Detail \"taskArn\") }}"
+        # Service-level (cluster + group). See note on ecs-task-stopped fingerprint above.
+        template: "ecs-task-oom:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}"
       description:
         template: |
           ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
@@ -926,6 +940,7 @@ rules:
 
   # Rule for tasks stopped due to CannotPullContainerError
   - name: "ECS_Task_Stopped_CannotPullContainerError_EventBridge"
+    dedup_ttl_seconds: 900
     triggers:
       source: "AWS_EventBridge"
       alert_name: "aws.ecs"
@@ -939,11 +954,11 @@ rules:
     event_template:
       title:
         template: |
-          ECS Task {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }} Stopped: CannotPullContainerError
+          ECS Task Stopped: CannotPullContainerError: {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
       severity: "Error"
       fingerprint:
-        # Task-level (taskArn). See note on ecs-task-stopped fingerprint above.
-        template: "ecs-task-pull-error:{{ (index .Detail \"taskArn\") }}"
+        # Service-level (cluster + group). See note on ecs-task-stopped fingerprint above.
+        template: "ecs-task-pull-error:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}"
       description:
         template: |
           ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
@@ -1081,6 +1096,9 @@ rules:
 ## fallback rules
   # Rule for all ECS Service or Deployment State Change events
   - name: "ECS_Service_All_Events_EventBridge"
+    # SERVICE_STEADY_STATE alone fires thousands of times per week per busy
+    # account; one event per service per window is plenty for an Info fallback.
+    dedup_ttl_seconds: 900
     triggers:
       source: "AWS_EventBridge"
       alert_name: "aws.ecs"

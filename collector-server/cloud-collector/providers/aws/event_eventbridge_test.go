@@ -279,12 +279,13 @@ func TestAwsEvenBridge_Mock_ECS(t *testing.T) {
 	// catch-all is ordered BEFORE the specific rules in the runbook: the
 	// specific, higher-severity ECS_Task_Stopped_Unexpectedly (HIGH/FIRING) wins
 	// and the crash is not masked by the generic Info/CLOSED event. Its EventId
-	// is the rule's task-level fingerprint; the source-native id is preserved on
-	// FindingId.
-	assert.Equal(t, "ecs-task-stopped:arn:aws:ecs:us-east-1:123456789012:task/my-cluster/abcdef1234567890", processedEvent.EventId)
+	// is the rule's service-level fingerprint (cluster + group + exit code, so
+	// replacement tasks of the same crashing service dedup instead of minting a
+	// fresh event per run); the source-native id is preserved on FindingId.
+	assert.Equal(t, "ecs-task-stopped:my-cluster:service:my-ecs-service:137", processedEvent.EventId)
 	assert.Equal(t, "evt-id-ecs-stopped-unexpectedly", processedEvent.FindingId)
 	assert.Equal(t, "ECS Task State Change", processedEvent.EventName)
-	assert.Equal(t, "ECS Task abcdef1234567890 Stopped Unexpectedly (Exit Code: 137)", processedEvent.Title)
+	assert.Equal(t, "ECS Task Stopped Unexpectedly: service:my-ecs-service (Exit Code: 137)", processedEvent.Title)
 	assert.Equal(t, providers.EventSeverityHigh, processedEvent.EventSeverity)
 	assert.Contains(t, processedEvent.Description, "ECS Task arn:aws:ecs:us-east-1:123456789012:task/my-cluster/abcdef1234567890")
 	assert.Contains(t, processedEvent.Description, "stopped unexpectedly")
