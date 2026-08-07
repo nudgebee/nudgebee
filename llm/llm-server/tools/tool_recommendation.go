@@ -39,6 +39,7 @@ const recommendationView = `
 			r.rule_name,
 			r.dismissed_reason,
 			r.is_dismissed,
+			r.snoozed_until,
 			r.account_object_id,
 			r.updated_by::text
 		FROM recommendation r
@@ -61,7 +62,7 @@ func (m RecommendationExecuteTool) GetType() core.NBToolType {
 }
 
 func (m RecommendationExecuteTool) Description() string {
-	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, resource_name, estimated_saving, category, severity, status, rule_name, recommendation."
+	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, resource_name, estimated_saving, category, severity, status, rule_name, is_dismissed, dismissed_reason, snoozed_until, recommendation."
 }
 
 func (m RecommendationExecuteTool) InputSchema() core.ToolSchema {

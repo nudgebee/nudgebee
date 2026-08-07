@@ -8,8 +8,9 @@ import (
 )
 
 func init() {
-	toolDescription := `Returns recommendations for RightSizing(pod, pv, replica, abandoned_resource), Security(image, CIS), InfraUpgrade(helm chart, k8s api), K8sSpotRecommendation(Spot instance), Configuration(misconfigurations, certificate_expiry, ...) based on the given question. 
-	Recommendations can be related to identifying unused/abandoned k8s services/resources/deployments/pv/pvc, security vulnerabilities, or performance optimizations in Kubernetes clusters and cloud infrastructure.`
+	toolDescription := `Returns recommendations for RightSizing(pod, pv, replica, abandoned_resource), Security(image, CIS), InfraUpgrade(helm chart, k8s api), K8sSpotRecommendation(Spot instance), Configuration(misconfigurations, certificate_expiry, ...) based on the given question.
+	Recommendations can be related to identifying unused/abandoned k8s services/resources/deployments/pv/pvc, security vulnerabilities, or performance optimizations in Kubernetes clusters and cloud infrastructure.
+	Also answers resolution questions — what was done or attempted about a recommendation: pull requests, tickets, deployment changes, workflow runs, who initiated them, and whether they succeeded or failed.`
 	toolInput := "Provide question related to recommendations in natural language."
 	toolOutput := "The tool will return return the response based on the user question."
 
@@ -39,7 +40,7 @@ func (l RecommendationsAgent) GetNameAliases() []string {
 }
 
 func (l RecommendationsAgent) GetDescription() string {
-	return `Returns Nudgebee recommendations for RightSizing, Security, InfraUpgrade, K8sSpotRecommendation, Configuration,K8sVersionUpgrade based on the given question.`
+	return `Returns Nudgebee recommendations for RightSizing, Security, InfraUpgrade, K8sSpotRecommendation, Configuration,K8sVersionUpgrade based on the given question, and the resolution history of those recommendations (PRs, tickets, deployment changes, attempt outcomes).`
 }
 
 func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
@@ -50,7 +51,8 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 
 	instructions := []string{
 		"**Understand the Question Precisely:** Parse user's natural-language question to identify filters: category, severity, status, rule_name, namespace, name/resource_name, controller_name, date ranges, numeric thresholds. Normalize synonyms (e.g., 'prod' -> '%prod%', 'last 30 days' -> INTERVAL '30 days').",
-		"**MANDATORY: Use recommendation_execute:** Always call the 'recommendation_execute' tool to retrieve data. Do NOT include the executed SQL in the final response — focus on presenting the results clearly.",
+		"**MANDATORY: Use recommendation_execute:** Always call the 'recommendation_execute' tool to retrieve recommendation data ('recommendation_resolution_execute' for resolution history). Do NOT include the executed SQL in the final response — focus on presenting the results clearly.",
+		"**Resolution history questions:** When the user asks what happened to a recommendation — whether it was resolved, who or what resolved it, PR/ticket references, or failed attempts — query `recommendation_resolution_view` via the 'recommendation_resolution_execute' tool. When only a resource or rule is named, filter the view by resource_name/rule_name directly, or find the recommendation's id in recommendation_view first and filter by recommendation_id.",
 		"**Default status behavior (important):**\n  - If the user asks to *see/get/list/retrieve recommendations* without qualification, assume they want actionable items and **add `status = 'Open'` by default**.\n  - If the user explicitly asks for **all** recommendations (phrases like 'all recommendations', 'include closed', 'show everything'), do **not** add a status filter.\n  - If the user explicitly requests 'closed', 'archived', 'inprogress', or similar, use that status filter exactly as requested.\n  - If the user asks for aggregates (counts, sums) or historical analysis and does not specify status, do NOT assume open unless the user said 'open' or the phrasing implies actionable items (e.g., 'show me recommendations to act on').",
 		"**ALWAYS use explicit columns, NEVER SELECT *:** Default to selecting: `" + defaultColumns + "`. If the user explicitly asks for recommendation details or raw JSON, add only the `recommendation` column to the explicit list — it contains large JSON blobs that slow down responses.",
 		"**Name vs resource_name vs controller_name:** Treat `name` as the primary workload name (alias for `resource_name`). Only filter by `controller_name` when user clearly refers to controller type (Deployment, StatefulSet, DaemonSet) or explicitly mentions controller. If ambiguous, prefer `name` and document the assumption.",
@@ -62,12 +64,12 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 		"**Category mapping & disambiguation:** If user says 'persistent volume' prefer rule_name IN ('pv_rightsize','unused_pvc') OR category `K8sPersistentVolumeRecommendation` depending on wording; when ambiguous include both or ask for clarification.",
 		"**Summarize JSON:** Summarize `recommendation` JSON to a 1–2 line excerpt by default. Return full JSON only if the user explicitly requests raw JSON output.",
 		"**Zero results & errors:** If zero rows or an error, include the executed SQL, explain why (e.g., overly strict filters), and propose one or two alternative broader queries.",
-		"**Read-only & Safety:** This agent is read-only for `recommendation_view`. Refuse any DML/DDL (INSERT/UPDATE/DELETE). If user asks for changes, explain that only SELECT is allowed and suggest safe SELECT-based checks.",
+		"**Read-only & Safety:** This agent is read-only for `recommendation_view` and `recommendation_resolution_view`. Refuse any DML/DDL (INSERT/UPDATE/DELETE). If user asks for changes, explain that only SELECT is allowed and suggest safe SELECT-based checks.",
 	}
 
 	constraints := []string{
-		"You are a PostgreSQL expert for `recommendation_view` and MUST ONLY run read-only SELECT queries.",
-		"You MUST ONLY use the `recommendation_execute` tool for data access.",
+		"You are a PostgreSQL expert for `recommendation_view` and `recommendation_resolution_view` and MUST ONLY run read-only SELECT queries.",
+		"You MUST ONLY use the `recommendation_execute` and `recommendation_resolution_execute` tools for data access.",
 		"Apply the default `status='Open'` behavior unless user explicitly asks for 'all', or a different status.",
 		"NEVER use SELECT * — always use explicit column lists. Only add the `recommendation` column when the user explicitly asks for details/raw JSON.",
 		"Enforce a hard maximum row limit of 100 unless user explicitly requests more and the system allows it.",
@@ -81,6 +83,11 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 			"Input: a safe SELECT query; Output: rows returned by the query or an error.",
 			"On error, capture the error message and return an explanation + a non-destructive fallback query suggestion.",
 			"Output: the data returned by the sql query.",
+		},
+		tools.ToolRecommendationResolutionExecuteSql: {
+			"Use this tool for resolution history — what was attempted or done about a recommendation: pull requests, tickets, deployment changes, workflow runs, their outcomes and references.",
+			"Query `recommendation_resolution_view` with read-only SELECTs; filter by recommendation_id, resource_name, rule_name, type, resolver_type, or status.",
+			"Input: a safe SELECT query; Output: resolution attempt rows or an error.",
 		},
 	}
 	outputFormat := "Output a Markdown table as the primary format. Columns: Namespace | Resource | Category | Severity | Est. Saving ($/mo) | Rule | Status | Age. " +
@@ -108,7 +115,8 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 		"**Classification Fields:**",
 		"- category (ENUM): Type of recommendation - Configuration, RightSizing, InfraUpgrade, Security, K8sSpotRecommendation",
 		"- severity (ENUM): Impact level - Critical, High, Medium, Low, Info (ordered by priority)",
-		"- status (ENUM): Current state - Open (actionable), InProgress (being worked on), Closed (resolved), Archive (no longer relevant)",
+		"- status (ENUM): Current state - Open (actionable), InProgress (being worked on), Closed (resolved), Dismissed (user-suppressed), Archive (no longer relevant)",
+		"- is_dismissed (BOOLEAN), dismissed_reason (STRING), snoozed_until (TIMESTAMP): Dismissal details. A snoozed recommendation is Dismissed with snoozed_until set and returns to Open automatically when the timestamp passes; snoozed_until NULL means a permanent dismissal.",
 		"",
 		"**Rule Classifications:**",
 		"- category and rule_name mapping for specific recommendation types",
@@ -124,6 +132,18 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 		"- Order by created_at DESC for latest recommendations",
 		"- Use severity filtering for prioritization (Critical > High > Medium > Low > Info)",
 		"- Combine category and rule_name for precise filtering",
+		"",
+		"**recommendation_resolution_view:** One row per resolution attempt on a recommendation (how it is being, or was, resolved). Queried via the 'recommendation_resolution_execute' tool.",
+		"- recommendation_id (STRING): The recommendation the attempt belongs to (join key with recommendation_view id)",
+		"- type (ENUM): Artifact created - PullRequest, Ticket, DeploymentChange, CloudResource, WorkflowExecution, EventResolution",
+		"- type_reference_id (STRING): Reference to that artifact - PR URL, ticket id, change id",
+		"- resolver_type (ENUM): Who initiated it - User, AutoOptimize, AutoRunbook, NBLLM (the AI agent)",
+		"- status (ENUM): Attempt state - InProgress (artifact open, work ongoing), Success (completed), Failed (rejected or errored)",
+		"- status_message (STRING): Human-readable outcome detail (failure reason, close note)",
+		"- pr_lifecycle_state (STRING): For PullRequest attempts, the PR's lifecycle state if tracked",
+		"- recommendation_status (ENUM): Current status of the parent recommendation",
+		"- resource_name, rule_name, category, severity (STRING/ENUM): Context from the parent recommendation",
+		"- created_at, updated_at (TIMESTAMP): When the attempt was registered and last updated",
 	}
 	// Four structurally-distinct examples, one per query shape. They teach the
 	// patterns (explicit columns, status filter, aggregation, financial threshold,
@@ -154,6 +174,12 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category = 'RightSizing' AND status = 'Open' AND rule_name IN ('pv_rightsize', 'unused_pvc', 'abandoned_resource') ORDER BY estimated_saving DESC NULLS LAST LIMIT 20",
 			Explanation: "Storage rightsizing via rule_name; NULLS LAST keeps unquantified rows from sorting above real savings.",
 		},
+		// 5. Resolution history — the resolution view, filtered by resource + rule.
+		{
+			Question:    "Was anything done about the pod rightsizing for checkout-service?",
+			Answer:      "SELECT type, type_reference_id, resolver_type, status, status_message, recommendation_status, updated_at FROM recommendation_resolution_view WHERE resource_name = 'checkout-service' AND rule_name = 'pod_right_sizing' ORDER BY updated_at DESC LIMIT 10",
+			Explanation: "Resolution attempts for one workload's recommendation via recommendation_resolution_execute; latest attempts first, with artifact references and outcomes.",
+		},
 	}
 	return core.NBAgentPrompt{
 		Role:         "a PostgreSQL database expert",
@@ -171,7 +197,7 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 }
 
 func (p RecommendationsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	tools := []toolcore.NBTool{tools.RecommendationExecuteTool{}}
+	tools := []toolcore.NBTool{tools.RecommendationExecuteTool{}, tools.RecommendationResolutionExecuteTool{}}
 	return tools
 }
 
