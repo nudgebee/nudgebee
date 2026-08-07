@@ -44,6 +44,14 @@ type LLMRequest struct {
 	// on llm-server. Use for arbitrary per-run metadata that doesn't deserve a
 	// typed slot (e.g. task_id, workflow_name).
 	Labels map[string]any `json:"labels,omitempty"`
+	// ToolConfirmations pre-answers llm-server's per-call write confirmation for
+	// the named tools (tool name -> "yes"), forwarded into
+	// NBQueryConfig.ToolConfirmations. llm-server otherwise stops the agent and
+	// asks a human before every create/update/delete tool call, which a workflow
+	// has no way to answer - the run just hangs. A workflow that has already
+	// established authority for this run (an approved ticket, an approval task)
+	// names the tools that authority covers. Tools not listed still prompt.
+	ToolConfirmations map[string]string `json:"tool_confirmations,omitempty"`
 }
 
 type LLMEventRequest struct {
@@ -135,7 +143,7 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 	}
 
 	var configOverride map[string]any
-	if request.LlmProvider != "" || request.LlmModelName != "" || request.WorkflowId != "" || request.ExecutionId != "" || len(request.Labels) > 0 {
+	if request.LlmProvider != "" || request.LlmModelName != "" || request.WorkflowId != "" || request.ExecutionId != "" || len(request.Labels) > 0 || len(request.ToolConfirmations) > 0 {
 		configOverride = map[string]any{}
 		if request.LlmProvider != "" {
 			configOverride["llm_provider"] = request.LlmProvider
@@ -151,6 +159,9 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 		}
 		if len(request.Labels) > 0 {
 			configOverride["labels"] = request.Labels
+		}
+		if len(request.ToolConfirmations) > 0 {
+			configOverride["tool_confirmations"] = request.ToolConfirmations
 		}
 	}
 
