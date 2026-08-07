@@ -57,6 +57,7 @@ const ExecutionDashboard: React.FC = () => {
     loading,
     error,
     aggregate,
+    aggregateLoading,
     automationOptions,
     userOptions,
     accounts,
@@ -216,10 +217,11 @@ const ExecutionDashboard: React.FC = () => {
           // ragged bottom edge reads as a rendering bug.
         }}
       >
-        <ExecutionSummaryCards aggregate={aggregate} loading={loading} retentionDays={retentionDays} />
+        <ExecutionSummaryCards aggregate={aggregate} loading={aggregateLoading} retentionDays={retentionDays} />
 
         <MostFailedAutomations
           entries={aggregate?.top_failed || []}
+          loading={aggregateLoading}
           approximate={!!aggregate?.top_failed_is_approximate}
           totalFailures={aggregate?.failed || 0}
           onSelectAutomation={(workflowId) => updateFilters({ workflowIds: [workflowId] })}

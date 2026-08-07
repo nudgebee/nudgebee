@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import MostFailedAutomations from '@components/workflow/execution-dashboard/MostFailedAutomations';
+import { TOP_FAILED_LIMIT } from '@components/workflow/execution-dashboard/constants';
 import type { FailedAutomationCount } from '@api1/workflow/types';
 
 const entries: FailedAutomationCount[] = [
@@ -55,6 +56,26 @@ describe('MostFailedAutomations', () => {
   it('drops the caveat when the ranking is exact', () => {
     render(<MostFailedAutomations entries={entries} approximate={false} totalFailures={1000} onSelectAutomation={jest.fn()} />);
     expect(screen.queryByText(/ranked over the first/)).not.toBeInTheDocument();
+  });
+
+  // This card shares a grid row with the summary, so rendering nothing while
+  // the aggregate loads leaves half a row of empty page that then pops in.
+  it('holds the row with a skeleton panel while the aggregate is in flight', () => {
+    render(<MostFailedAutomations entries={[]} loading approximate={false} totalFailures={0} onSelectAutomation={jest.fn()} />);
+    expect(screen.getByTestId('execution-dashboard-most-failed-loading')).toBeInTheDocument();
+    expect(screen.getByText('Where the failures are')).toBeInTheDocument();
+    // Four skeleton blocks per placeholder row: name, bar, count, badge.
+    expect(screen.getAllByRole('status')).toHaveLength(TOP_FAILED_LIMIT * 4);
+    // Nothing to aim at yet, so the placeholder rows are not click targets.
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+  });
+
+  // A refresh with rows already on screen must not flash back to skeletons.
+  it('keeps the real rows when a refetch starts with data already loaded', () => {
+    render(<MostFailedAutomations entries={entries} loading approximate={false} totalFailures={1000} onSelectAutomation={jest.fn()} />);
+    expect(screen.queryByTestId('execution-dashboard-most-failed-loading')).not.toBeInTheDocument();
+    expect(screen.getByTestId('execution-dashboard-most-failed-wf-1')).toBeInTheDocument();
+    expect(screen.queryAllByRole('status')).toHaveLength(0);
   });
 
   // An empty panel is worse than no panel.

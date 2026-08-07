@@ -4,11 +4,15 @@ import { Card } from '@ui/Card';
 import { Label } from '@ui/Label';
 import { List } from '@ui/List';
 import { ProgressBar } from '@ui/ProgressBar';
+import { Skeleton } from '@ui/Skeleton';
 import Tooltip from '@ui/Tooltip';
 import type { FailedAutomationCount } from '@api1/workflow/types';
+import { TOP_FAILED_LIMIT } from './constants';
 
 interface MostFailedAutomationsProps {
   entries: FailedAutomationCount[];
+  /** The aggregate call is in flight. Only meaningful while there is nothing to show. */
+  loading?: boolean;
   /** True when more failures matched than the server could scan in one pass. */
   approximate: boolean;
   /** Every failure in the window — what each row's share is taken of. */
@@ -29,6 +33,61 @@ const shareTone = (pct: number): 'critical' | 'warning' | 'neutral' => {
   return 'neutral';
 };
 
+const panelTitle = (
+  <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>
+    Where the failures are
+  </Typography>
+);
+
+/** Row metrics shared by the real rows and their skeletons, so neither shifts into the other. */
+const ROW_SX = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--ds-space-3)',
+  width: '100%',
+  minWidth: 0,
+  padding: 'var(--ds-space-1) var(--ds-space-2)',
+};
+
+/**
+ * The panel while the aggregate is in flight.
+ *
+ * Rendered rather than the `null` below, because this card shares a grid row
+ * with the summary: returning nothing leaves half a row of empty page that
+ * then pops full-width when the response lands. Row geometry is the real
+ * geometry — 38% name, flexible bar at ProgressBar md's 8px track, 48px count,
+ * 58px badge — so nothing moves on swap.
+ */
+const LoadingPanel: React.FC = () => (
+  <Card
+    variant='outlined'
+    size='md'
+    id='execution-dashboard-most-failed'
+    data-testid='execution-dashboard-most-failed-loading'
+    sx={{ minWidth: 0 }}
+    header={panelTitle}
+  >
+    <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+      {Array.from({ length: TOP_FAILED_LIMIT }, (_, index) => (
+        <Box key={index} sx={ROW_SX}>
+          <Box sx={{ width: '38%', minWidth: 0 }}>
+            <Skeleton shape='text' width='70%' height={16} />
+          </Box>
+          <Box sx={{ flex: 1, minWidth: 0, display: 'flex' }}>
+            <Skeleton shape='rect' width='100%' height={8} />
+          </Box>
+          <Box sx={{ minWidth: '48px', display: 'flex', justifyContent: 'flex-end' }}>
+            <Skeleton shape='text' width={40} height={16} />
+          </Box>
+          <Box sx={{ minWidth: '58px', display: 'flex', justifyContent: 'flex-end' }}>
+            <Skeleton shape='rect' width={44} height={20} />
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  </Card>
+);
+
 /**
  * Which automations the failures are coming from.
  *
@@ -45,7 +104,10 @@ const shareTone = (pct: number): 'critical' | 'warning' | 'neutral' => {
  * While the ranking is approximate the badge is a floor rather than an exact
  * share — hence the header caption. (Exact counts: #35307.)
  */
-const MostFailedAutomations: React.FC<MostFailedAutomationsProps> = ({ entries, approximate, totalFailures, onSelectAutomation }) => {
+const MostFailedAutomations: React.FC<MostFailedAutomationsProps> = ({ entries, loading, approximate, totalFailures, onSelectAutomation }) => {
+  // Only while there is nothing to show: a refresh with rows already on screen
+  // keeps the rows rather than flashing back to skeletons.
+  if (loading && !entries.length) return <LoadingPanel />;
   // An empty panel is worse than no panel.
   if (!entries.length) return null;
 
@@ -92,13 +154,8 @@ const MostFailedAutomations: React.FC<MostFailedAutomationsProps> = ({ entries, 
           }
         }}
         sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--ds-space-3)',
-          width: '100%',
-          minWidth: 0,
+          ...ROW_SX,
           cursor: 'pointer',
-          padding: 'var(--ds-space-1) var(--ds-space-2)',
           borderRadius: 'var(--ds-radius-sm)',
           '&:hover': { backgroundColor: 'var(--ds-gray-100)' },
           '&:focus-visible': { outline: '2px solid var(--ds-blue-500)', outlineOffset: '2px' },
@@ -142,9 +199,7 @@ const MostFailedAutomations: React.FC<MostFailedAutomationsProps> = ({ entries, 
       sx={{ minWidth: 0 }}
       header={
         <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 'var(--ds-space-3)' }}>
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>
-            Where the failures are
-          </Typography>
+          {panelTitle}
           {approximate && (
             <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', whiteSpace: 'nowrap' }}>
               ranked over the first 1,000 failures

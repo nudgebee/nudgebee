@@ -61,6 +61,15 @@ describe('ExecutionSummaryCards', () => {
     expect(screen.getByText('of ≈ 412 total')).toBeInTheDocument();
   });
 
+  // Zeros are a real reading of an empty window, so they must never stand in
+  // for "not loaded yet" — the card is fed the aggregate's own loading flag.
+  it('renders a skeleton, not zeros, while the aggregate is in flight', () => {
+    render(<ExecutionSummaryCards aggregate={null} loading={true} retentionDays={0} />);
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.queryByText('Failed executions')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('execution-dashboard-share-succeeded')).not.toBeInTheDocument();
+  });
+
   // A percentage of zero executions is 0%, not NaN%.
   it('survives an empty window', () => {
     const empty: ExecutionAggregateResponse = { ...aggregate, total: 0, succeeded: 0, failed: 0, timed_out: 0 };

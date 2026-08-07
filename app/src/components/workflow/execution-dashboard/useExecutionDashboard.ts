@@ -102,6 +102,10 @@ export function useExecutionDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aggregate, setAggregate] = useState<ExecutionAggregateResponse | null>(null);
+  // Tracked apart from `loading`, which follows the table request: the two
+  // cards above the table are fed by the aggregate alone, and gating them on
+  // the table let a fast table resolve into a card full of zeros.
+  const [aggregateLoading, setAggregateLoading] = useState(true);
   const [automationOptions, setAutomationOptions] = useState<FilterOption[]>([]);
   const [automationOptionsLoaded, setAutomationOptionsLoaded] = useState(false);
   const [tenantUserOptions, setTenantUserOptions] = useState<FilterOption[]>([]);
@@ -271,9 +275,11 @@ export function useExecutionDashboard() {
    * depend on `filterRequest`, so filtering the table costs zero extra calls.
    */
   const fetchAggregate = useCallback(async () => {
+    setAggregateLoading(true);
     const response = await apiWorkflow.aggregateExecutions(filters.accountIds, { top_failed_limit: TOP_FAILED_LIMIT });
     if (!isMountedRef.current) return;
     setAggregate(response?.data?.executions_aggregate || null);
+    setAggregateLoading(false);
   }, [filters.accountIds]);
 
   useEffect(() => {
@@ -461,6 +467,7 @@ export function useExecutionDashboard() {
     loading,
     error,
     aggregate,
+    aggregateLoading,
     automationOptions,
     userOptions,
     accounts,
