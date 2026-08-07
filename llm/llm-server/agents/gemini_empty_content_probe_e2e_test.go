@@ -5,6 +5,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	nbprompts "nudgebee/llm/prompts"
 	"os"
 	"regexp"
 	"strings"
@@ -187,7 +188,7 @@ func TestGemini25FlashRealPromptReproducer(t *testing.T) {
 	}
 
 	// The actual ReAct planner system prompt the agent uses.
-	systemBytes, err := os.ReadFile("prompts_repo/planner_react_3_base.txt")
+	systemBytes, err := readReact3BaseForProbe()
 	require.NoError(t, err, "read planner_react_3_base.txt")
 
 	// The live human message captured from the failing run (see
@@ -258,7 +259,7 @@ func TestGemini25FlashBisectSystemPrompt(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("LLM_PROVIDER_API_KEY required")
 	}
-	bytes, err := os.ReadFile("prompts_repo/planner_react_3_base.txt")
+	bytes, err := readReact3BaseForProbe()
 	require.NoError(t, err)
 	full := string(bytes)
 	half := len(full) / 2
@@ -307,7 +308,7 @@ func TestGemini25FlashAutoBisect(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("LLM_PROVIDER_API_KEY required")
 	}
-	bytes, err := os.ReadFile("prompts_repo/planner_react_3_base.txt")
+	bytes, err := readReact3BaseForProbe()
 	require.NoError(t, err)
 	full := string(bytes)
 
@@ -366,7 +367,7 @@ func TestGemini25FlashStopWordHypothesis(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("LLM_PROVIDER_API_KEY required")
 	}
-	bytes, err := os.ReadFile("prompts_repo/planner_react_3_base.txt")
+	bytes, err := readReact3BaseForProbe()
 	require.NoError(t, err)
 	full := string(bytes)
 	liveHuman := `<question>Hi there, what can you help me with?</question>`
@@ -408,7 +409,7 @@ func TestGemini25FlashContentMutations(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("LLM_PROVIDER_API_KEY required")
 	}
-	bytes, err := os.ReadFile("prompts_repo/planner_react_3_base.txt")
+	bytes, err := readReact3BaseForProbe()
 	require.NoError(t, err)
 	full := string(bytes)
 	liveHuman := `<question>Hi there, what can you help me with?</question>`
@@ -468,7 +469,7 @@ func TestGemini25FlashSizeVsContent(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("LLM_PROVIDER_API_KEY required")
 	}
-	bytes, err := os.ReadFile("prompts_repo/planner_react_3_base.txt")
+	bytes, err := readReact3BaseForProbe()
 	require.NoError(t, err)
 	full := string(bytes)
 	liveHuman := `<question>Hi there, what can you help me with?</question>`
@@ -512,4 +513,16 @@ func TestGemini25FlashSizeVsContent(t *testing.T) {
 		reversed[i], reversed[j] = reversed[j], reversed[i]
 	}
 	run("F_first_4319_reversed", string(reversed))
+}
+
+// readReact3BaseForProbe resolves the ReAct3 base prompt from the versioned tree.
+// It replaces a direct os.ReadFile of prompts_repo/planner_react_3_base.txt, which
+// no longer exists.
+func readReact3BaseForProbe() ([]byte, error) {
+	nbprompts.SetGlobalLoaderForTesting(nbprompts.NewLoaderForTesting())
+	body := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact3Base, "")
+	if body == "" {
+		return nil, fmt.Errorf("react_3_base prompt resolved empty")
+	}
+	return []byte(body), nil
 }

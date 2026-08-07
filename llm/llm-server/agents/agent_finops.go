@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -74,12 +74,18 @@ func (a *FinOpsAgent) GetCacheScope() core.CacheScope {
 }
 
 func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentFinops)
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptFinops, query.AccountId)
+	if promptErr != nil {
+		// An empty system prompt would silently degrade the agent, so surface the
+		// failure. MustResolveAll covers default/v1 at startup; this catches a
+		// malformed provider- or version-specific override added later.
+		ctx.GetLogger().Error("finops: system prompt failed to load", "error", promptErr)
+	}
 
 	tmplData := map[string]any{
-		"data_protection_rules": prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
-		"code_analysis_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
-		"time_handling_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
+		"data_protection_rules": prompts.GetPrompt(ctx.GetContext(), prompts.PromptDataProtectionRules, ""),
+		"code_analysis_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptCodeAnalysisRules, ""),
+		"time_handling_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptTimeHandlingRules, ""),
 		"account_context":       a.fetchFinOpsAccountContext(ctx),
 	}
 	if t, err := template.New("finops").Option("missingkey=zero").Parse(promptText); err == nil {

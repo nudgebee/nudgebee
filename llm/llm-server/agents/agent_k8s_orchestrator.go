@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
@@ -207,13 +206,17 @@ func (l *K8sOrchestratorAgent) UpdateToolResponseForPlanner(toolRequest core.NBA
 // prompt file (gated by that flag), not appended here in Go, so the two orchestrators
 // cannot drift apart.
 func renderK8sDebugReactPrompt(ctx *security.RequestContext, query core.NBAgentRequest, useKubectlDirect bool) core.NBAgentPrompt {
-	promptKey := prompts.PromptAgentK8sDebugReact
-	promptRepoKey := prompts_repo.PromptAgentK8sDebugReact
+	promptKey := prompts.PromptK8sOrchestrator
 
-	// The versioned prompt system (prompts pkg) is tried first; legacy repo is the fallback.
-	promptText := prompts.GetPrompt(ctx.GetContext(), promptKey, query.AccountId)
-	if promptText == "" {
-		promptText = prompts_repo.GetPrompt(promptRepoKey)
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), promptKey, query.AccountId)
+	if promptErr != nil {
+		// Return nothing rather than continue: this whole NBAgentPrompt is derived
+		// from promptText by ParsePromptToNBAgentPrompt below, so an empty load
+		// yields an empty prompt either way — returning here just says so plainly.
+		// MustResolveAll covers default/v1 at startup; this catches a malformed
+		// provider- or version-specific override added later.
+		ctx.GetLogger().Error("k8s orchestrator: system prompt failed to load", "error", promptErr)
+		return core.NBAgentPrompt{}
 	}
 
 	// Resolve all template placeholders in a single pass.
@@ -224,9 +227,9 @@ func renderK8sDebugReactPrompt(ctx *security.RequestContext, query core.NBAgentR
 		"remediation_enabled":   config.Config.RemediationAgentEnabled,
 		"shell_tool_enabled":    config.Config.LlmServerShellToolEnabled,
 		"watch_enabled":         config.Config.WatchEnabled,
-		"data_protection_rules": prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
-		"code_analysis_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
-		"time_handling_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
+		"data_protection_rules": prompts.GetPrompt(ctx.GetContext(), prompts.PromptDataProtectionRules, ""),
+		"code_analysis_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptCodeAnalysisRules, ""),
+		"time_handling_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptTimeHandlingRules, ""),
 		"use_kubectl_direct":    useKubectlDirect,
 		"memory_nudge":          memoryNudgeIfEnabled(),
 	}

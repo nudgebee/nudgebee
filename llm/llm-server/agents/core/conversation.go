@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
@@ -51,8 +50,12 @@ func init() {
 
 // generateConversationTitle uses an LLM to generate a concise title for a conversation based on the initial query.
 func generateConversationTitle(ctx *security.RequestContext, accountId string, conversationId string, messageId string, query string, userId string) (string, error) {
+	titlePrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptTitleGeneration, accountId)
+	if err != nil {
+		return "", fmt.Errorf("generateConversationTitle: loading prompt: %w", err)
+	}
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, prompts_repo.GetPrompt(prompts_repo.PromptTitleGeneration)),
+		llms.TextParts(llms.ChatMessageTypeSystem, titlePrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, query),
 	}
 
@@ -247,9 +250,9 @@ func computeProductivityMetricsAsync(ctx *security.RequestContext, userId, accou
 
 // generateCompactResponse generates a compact version of the response optimized for Slack using an LLM.
 func generateCompactResponse(ctx *security.RequestContext, accountId, conversationId, messageId, userId, query, response string) (string, error) {
-	systemPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptResponseFormatterSlack, accountId)
-	if systemPrompt == "" {
-		systemPrompt = prompts_repo.GetPrompt(prompts_repo.PromptExecutorResponseFormatterSlack)
+	systemPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptResponseFormatterSlack, accountId)
+	if err != nil {
+		return "", fmt.Errorf("generateCompactResponse: loading slack formatter prompt: %w", err)
 	}
 
 	userPrompt := fmt.Sprintf(`

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	nbprompts "nudgebee/llm/prompts"
@@ -592,7 +591,14 @@ func (o *NBReActPlanner3) llmCompressScratchpad(scratchpad string, maxChars int,
 
 	targetLen := targetSummaryLen
 
-	prompt := prompts_repo.GetPrompt(prompts_repo.PromptScratchpadContextSummarizer, len(olderPortion), olderPortion, targetLen)
+	// Fail safe rather than silently: compressing under an empty instruction would
+	// return junk in place of real scratchpad history, so keep the uncompressed
+	// portion instead. The caller's char budget still applies downstream.
+	prompt, promptErr := nbprompts.GetPromptStrict(o.ctx.GetContext(), nbprompts.PromptScratchpadContextSummarizer, o.request.AccountId, len(olderPortion), olderPortion, targetLen)
+	if promptErr != nil {
+		o.ctx.GetLogger().Error("reactagent3: scratchpad summarizer prompt failed to load, leaving scratchpad uncompressed", "error", promptErr)
+		return scratchpad
+	}
 
 	timeoutCtx, cancel := context.WithTimeout(
 		context.WithValue(context.WithoutCancel(o.ctx.GetContext()), ContextKeyModelTier, ModelTierSummary),
@@ -2102,8 +2108,16 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	Error(msg string, args ...any)
 	Debug(msg string, args ...any)
 }) (string, string) {
+	// Same fail-safe as the format error below: critiquing under an empty instruction
+	// would reject or accept answers on no basis at all, so skip the gate and accept
+	// rather than let a missing prompt silently decide quality.
+	critiquerPrompt, critiquerErr := nbprompts.GetPromptStrict(o.ctx.GetContext(), nbprompts.PromptReactCritiquer, o.request.AccountId)
+	if critiquerErr != nil {
+		logger.Error("reactagent3: critiquer prompt failed to load, accepting answer", "error", critiquerErr)
+		return "", ""
+	}
 	critiquePrompt := prompts.NewPromptTemplate(
-		prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer),
+		critiquerPrompt,
 		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled", "sdg_grounding_enabled", "notebook", "today"},
 	)
 	critiquePromptStr, promptErr := critiquePrompt.Format(map[string]any{
@@ -2267,13 +2281,15 @@ func resolveReact3RoleModes(request NBAgentRequest) (orchestratorMode, executorM
 }
 
 // reActCreatePrompt3 builds the chat prompt template for the react_3 planner.
-func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsIn []toolcore.NBTool, conversationContext string, previousMessages []prompts.MessageFormatter, request NBAgentRequest, agent NBAgent) (prompts.ChatPromptTemplate, []toolcore.NBTool) {
+func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsIn []toolcore.NBTool, conversationContext string, previousMessages []prompts.MessageFormatter, request NBAgentRequest, agent NBAgent) (prompts.ChatPromptTemplate, []toolcore.NBTool, error) {
 	tools := make([]toolcore.NBTool, len(toolsIn))
 	copy(tools, toolsIn)
 
-	reactBasePrompt := nbprompts.GetPrompt(ctx.GetContext(), nbprompts.PromptReact3Base, request.AccountId)
-	if reactBasePrompt == "" {
-		reactBasePrompt = prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
+	reactBasePrompt, reactBaseErr := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptReact3Base, request.AccountId)
+	if reactBaseErr != nil {
+		// This prompt backs every ReAct agent. Planning with an empty base is not a
+		// degraded run, it is a broken one — fail construction instead.
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading base prompt: %w", reactBaseErr)
 	}
 
 	// hypothesis_mode_enabled fences the heavier hypothesis-driven investigation
@@ -2335,7 +2351,6 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 				"data_protection_rules",
 				"code_analysis_rules",
 				"security_rules",
-				"memory_consumption_rules",
 				"async_completion_rules",
 			},
 		),
@@ -2455,6 +2470,33 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	tmpl := prompts.NewChatPromptTemplate(messageFormatters)
 
 	previousMessageStr := messageFormatterToString(previousMessages)
+	// Shared fragments are spliced into every planner prompt, so a missing one
+	// silently removes a whole rules block from the system message. This function
+	// returns an error, so load them strictly and refuse to build a partial prompt.
+	contextContinuity, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptContextContinuity, "")
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptContextContinuity fragment: %w", err)
+	}
+	timeHandlingRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptTimeHandlingRules, "")
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptTimeHandlingRules fragment: %w", err)
+	}
+	dataProtectionRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptDataProtectionRules, "")
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptDataProtectionRules fragment: %w", err)
+	}
+	codeAnalysisRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptCodeAnalysisRules, "")
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptCodeAnalysisRules fragment: %w", err)
+	}
+	securityRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptSecurityRules, "")
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptSecurityRules fragment: %w", err)
+	}
+	memoryConsumptionRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptMemoryConsumptionRules, "")
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptMemoryConsumptionRules fragment: %w", err)
+	}
 	tmpl.PartialVariables = map[string]any{
 		// System message template vars (stable — cached across conversations)
 		"tool_names":                   reActPromptToolNames(tools),
@@ -2468,12 +2510,12 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"executor_mode":                executorMode,
 		"is_investigation":             isInvestigation,
 		"conversation_context_enabled": config.Config.ConversationContextEnabled,
-		"context_management_rules":     prompts_repo.GetPrompt(prompts_repo.PromptContextContinuity),
-		"time_handling_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
-		"data_protection_rules":        prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
-		"code_analysis_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
-		"security_rules":               prompts_repo.GetPrompt(prompts_repo.PromptSharedSecurityRules),
-		"memory_consumption_rules":     "",
+		"context_management_rules":     contextContinuity,
+		"time_handling_rules":          timeHandlingRules,
+		"data_protection_rules":        dataProtectionRules,
+		"code_analysis_rules":          codeAnalysisRules,
+		"security_rules":               securityRules,
+		"memory_consumption_rules":     memoryConsumptionRules,
 		"async_completion_rules":       asyncCompletionRules(agent),
 		// Human message template vars (dynamic — change per conversation/iteration)
 		"today":                    time.Now().Format("January 02, 2006"),
@@ -2491,7 +2533,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		// before the model reads what it is meant to be grounded in.
 		"channel_context_block": renderChannelContextBlock(request.ChannelContext),
 	}
-	return tmpl, tools
+	return tmpl, tools, nil
 }
 
 // NewReActAgent3 initializes a new instance of the react_3 planner.
@@ -2513,7 +2555,10 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		},
 	}
 
-	prompt, tools := reActCreatePrompt3(ctx, systemMessage, SupportedToolsForRequest(ctx, nbAgent, request), request.ConversationContext, extraMessages, request, nbAgent)
+	prompt, tools, err := reActCreatePrompt3(ctx, systemMessage, SupportedToolsForRequest(ctx, nbAgent, request), request.ConversationContext, extraMessages, request, nbAgent)
+	if err != nil {
+		return nil, err
+	}
 
 	// Lean turn: read the same ContextKeyPromptVariant the prompt build and cache
 	// key use, so the runtime notebook/hypothesis gating stays consistent with the

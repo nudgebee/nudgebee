@@ -1,11 +1,12 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -38,7 +39,11 @@ func WatchAsyncCompletionRulesPrompt() string {
 	if !config.Config.WatchEnabled {
 		return ""
 	}
-	return prompts_repo.GetPrompt(prompts_repo.PromptSharedAsyncCompletionRules)
+	// context.Background() and an empty accountID are correct here rather than a
+	// convenience: fragments are include-only and cannot carry a DB config row
+	// (V658's CHECK excludes _fragments), so there is no per-account version to
+	// resolve and no query for a request context to scope.
+	return prompts.GetPrompt(context.Background(), prompts.PromptAsyncCompletionRules, "")
 }
 
 func isWatchToolName(name string) bool {

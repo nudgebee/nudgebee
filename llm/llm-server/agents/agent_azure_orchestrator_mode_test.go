@@ -1,11 +1,12 @@
 package agents
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"text/template"
 
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/tools"
 
 	"github.com/stretchr/testify/assert"
@@ -16,7 +17,7 @@ import (
 // renderAzureDebugReactPrompt does, without needing a RequestContext.
 func renderAzurePromptForTest(t *testing.T, useDirect bool) string {
 	t.Helper()
-	raw := prompts_repo.GetPrompt(prompts_repo.PromptAgentAzureDebugReact)
+	raw := prompts.GetPrompt(context.Background(), prompts.PromptAzureOrchestrator, "")
 	require.NotEmpty(t, raw)
 	tmpl, err := template.New("azure_debug").Option("missingkey=zero").Parse(raw)
 	require.NoError(t, err)
@@ -70,7 +71,7 @@ func TestAzureLeanAgent(t *testing.T) {
 	primary := newAzureLeanAgentNamed("acct", AgentAzureOrchestratorName)
 	assert.Contains(t, primary.GetNameAliases(), "azure_debug")
 
-	p := prompts_repo.GetPrompt(prompts_repo.PromptAgentAzureLean)
+	p := prompts.GetPrompt(context.Background(), prompts.PromptAzureLean, "")
 	assert.NotEmpty(t, p)
 	assert.Contains(t, p, "azure_execute")                    // direct CLI
 	assert.Contains(t, p, "search_tools")                     // on-demand specialist discovery

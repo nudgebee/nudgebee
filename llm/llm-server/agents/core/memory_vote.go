@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
 	"github.com/tmc/langchaingo/llms"
@@ -33,8 +33,12 @@ func DeriveVoteSubject(ctx *security.RequestContext, accountID, conversationID, 
 		return "", fmt.Errorf("DeriveVoteSubject: no security context")
 	}
 
+	votePrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptVoteSubject, accountID)
+	if err != nil {
+		return "", fmt.Errorf("DeriveVoteSubject: loading prompt: %w", err)
+	}
 	messages := []llms.MessageContent{
-		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: prompts_repo.GetPrompt(prompts_repo.PromptVoteSubject)}}},
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: votePrompt}}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: finalAnswer}}},
 	}
 

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
+	"nudgebee/llm/security"
 	"nudgebee/llm/watch"
 )
 
@@ -68,7 +69,7 @@ func TestLoadConversationFraming_UsesGenerationRowColumns(t *testing.T) {
 		PredicateKind:  "regex",
 		PredicateExpr:  "successfully rolled out",
 	}
-	prompt, perr := s.renderPrompt(w, watch.StatusCompleted, "successfully rolled out", "", gotQuery, gotReply, "- kubectl_execute :: rollout restart")
+	prompt, perr := s.renderPrompt(security.NewRequestContextForSuperAdmin(), w, watch.StatusCompleted, "successfully rolled out", "", gotQuery, gotReply, "- kubectl_execute :: rollout restart")
 	require.NoError(t, perr)
 	require.Contains(t, prompt, "restart the slow-rollout-app",
 		"rendered prompt must contain the user query — empty user_query was the original bug")

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
 	"github.com/tmc/langchaingo/llms"
@@ -765,8 +765,12 @@ func GenerateConversationOptimization(ctx *security.RequestContext, sessionID, a
 		return ConversationOptimization{}, fmt.Errorf("GenerateConversationOptimization marshal: %w", err)
 	}
 
+	optimizerPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptCostOptimizationAnalysis, accountID)
+	if err != nil {
+		return ConversationOptimization{}, fmt.Errorf("GenerateConversationOptimization: loading prompt: %w", err)
+	}
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, prompts_repo.GetPrompt(prompts_repo.PromptCostOptimization)),
+		llms.TextParts(llms.ChatMessageTypeSystem, optimizerPrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, string(profileJSON)),
 	}
 	// Track this analysis call's token usage against the OPTIMIZER conversation

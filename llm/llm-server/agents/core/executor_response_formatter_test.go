@@ -1,9 +1,10 @@
 package core
 
 import (
+	"context"
 	"testing"
 
-	"nudgebee/llm/agents/prompts_repo"
+	nbprompts "nudgebee/llm/prompts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tmc/langchaingo/llms"
@@ -234,7 +235,7 @@ func TestBuildStepReferenceParts_GuideForReAct3ExecutedAgents(t *testing.T) {
 // query/generation turns — so a query-type response is never even told how to build
 // a Causality Chain.
 func TestFormatterTemplate_GatesCausalityOnQuery(t *testing.T) {
-	raw := prompts_repo.GetPrompt(prompts_repo.PromptExecutor_response_formatter)
+	raw := nbprompts.GetPrompt(context.Background(), nbprompts.PromptResponseFormatter, "")
 	inv := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": true})
 	qry := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": false})
 
@@ -257,7 +258,7 @@ func TestFormatterTemplate_GatesCausalityOnQuery(t *testing.T) {
 // first place (the formatter's query-branch can prevent adding one but not reliably
 // strip one already generated). Gated on the same is_investigation signal.
 func TestBasePromptTemplate_GatesRcaFrameworkOnQuery(t *testing.T) {
-	raw := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
+	raw := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact3Base, "")
 	inv := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": true})
 	qry := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": false})
 

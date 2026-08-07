@@ -2,8 +2,8 @@ package aws
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -49,7 +49,13 @@ func (a AwsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBT
 func (a AwsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
 	// Load prompt from prompts repository
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAws)
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptAws, query.AccountId)
+	if promptErr != nil {
+		// An empty system prompt would silently degrade the agent, so surface the
+		// failure. MustResolveAll covers default/v1 at startup; this catches a
+		// malformed provider- or version-specific override added later.
+		ctx.GetLogger().Error("aws: system prompt failed to load", "error", promptErr)
+	}
 	instructions := strings.Split(promptText, "\n")
 	constraints := []string{
 		"Syntax: --group-by = Type=DIMENSION,Key=<KEY>; --filters = Name=<filter>,Values=<value>; use plurals (--filters, --group-ids)",

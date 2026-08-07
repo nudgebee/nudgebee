@@ -1,12 +1,13 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/config"
+	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -28,7 +29,7 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 // role-overlay gates exposed, mirroring resolveReact3RoleModes outputs.
 func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode bool) string {
 	t.Helper()
-	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
+	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact3Base, "")
 	assert.NotEmpty(t, base, "embedded react_3 base prompt must load")
 
 	vars := []string{
@@ -343,7 +344,7 @@ func TestResolveOrchestratorThinkingLevel(t *testing.T) {
 // tests assert that gate-scoped rules only render when their respective flag is on.
 func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabled, sdgGroundingEnabled bool) string {
 	t.Helper()
-	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer)
+	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReactCritiquer, "")
 	assert.NotEmpty(t, base, "embedded react critiquer prompt must load")
 
 	vars := []string{

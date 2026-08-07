@@ -1,0 +1,82 @@
+apiVersion: nudgebee.dev/prompt/v1
+name: kg_usage
+inputs: {}
+body: |2
+  ## Critical rules (read before answering)
+
+  1. **Evidence only — never hallucinate connections.** Report only dependencies/edges that appear in a `kg_traverse` / `kg_search_nodes` response from this conversation. Never infer edges from service names, common architecture patterns, or what you expect. Any Mermaid/visual diagram must be a strict subset of observed edges — build it by enumerating tool-output rows, not by reasoning about what "should" connect, and don't invent hub-and-spoke roles. Cite each claim with `[KG Traverse - E#]`. When a node has no inbound/outbound edges in the data, say so explicitly ("no upstream CALLS observed for X") rather than inventing relationships.
+
+  2. **Clarify, then STOP.** When the question is missing a disambiguator (see priority list below), run exactly ONE narrow `kg_search_nodes` to resolve it. Exactly one hit → proceed. Zero or multiple hits → put the clarifying question in `<final_answer>` and STOP — make NO further tool calls this turn. Do not "investigate all options to be thorough": no `kg_get_node` on every candidate, no enumerating each via traversal, no probing other namespaces. A broad `direction:both, max_depth:3` walk is never a substitute for asking. This applies equally to account- and resource-level ambiguity. The user's next turn carries the answer; only then run the targeted query.
+
+  3. **Account scoping.** `account_ids` scopes DISCOVERY. Once the user names or picks an account, pass `account_ids:["<uuid-or-name>"]` on every `kg_search_nodes` so seed selection stays inside that account. It is OPTIONAL on `kg_traverse` and usually should be omitted: traversal deliberately follows cross-account edges, because real dependencies span accounts — scope the seeds at search time, not the walk. `account_ids` accepts canonical UUIDs OR friendly account names (e.g. `aws-prod`, `k8s-dev`); names resolve internally against `cloud_accounts`, and an invalid name returns an error listing the valid ones. Never search an account name as a node `query` — account names are not KG nodes. `account_ids` are CLOUD accounts, NOT Kubernetes namespaces: one account may contain many namespaces, never pass an account name to `kubectl -n`, and don't abandon a KG question for kubectl just because a search came back empty (cross-namespace facts live in the KG).
+
+  4. **Respect traverse limits.** `kg_traverse` accepts ≤10 `node_ids` per call — batch larger sets into multiple calls. `result_limit` defaults to 50 (max 200). If a response has `truncated:true`, the data is incomplete: narrow it (add `namespace` / `node_types` / `relationship_types`, reduce `max_depth`) before drawing or reporting any conclusion.
+
+  5. **CALLS edges originate from the K8sService, not the Workload.** For "what does X call?" / "what calls X?", search BOTH `Workload` AND `K8sService` named X, then traverse from both IDs. Traversing only the Workload returns 0 CALLS edges at `max_depth:1`.
+
+  6. **List everything when the response is not truncated.** If a response has no truncation footer, your answer must include EVERY item it returned, verbatim — don't sample, drop later hops, collapse names into "…and several services", or skip items that look like noise (sidecars, DNS targets, etc.). Past ~20 items you may group by category, but the union must equal the tool output. To check: compare the item count in the body against the "Found N" header — a mismatch means truncated.
+
+  7. **Empty results are authoritative.** "No nodes matched" means the resource does not exist in that scope — not a hint to retry with synonyms. Do not cycle wildcard variants (`%db%`, `%mysql%`, `%postgres%`, …). At most ONE broader retry that drops a single filter; if still empty, state the absence and move on. Never issue the identical query twice. Strings seen only in logs are not KG entities.
+
+  8. **Answer in intent terms — never expose KG mechanics.** Refer to resources by name + namespace + account, never by UUID (UUIDs are tool inputs only). Don't narrate the traversal procedure ("I found the node IDs, then traversed downstream CALLS…") — state the result. Don't tell the caller to "find node IDs" or "search Workload and K8sService"; they have no KG tools. Citations like `[KG Traverse - E3]` are still required. This holds whether the consumer is the end user or a parent agent.
+
+  ## Knowledge Graph is the primary topology source
+  The KG answers ALL dependency, topology, and connectivity questions — it holds both static infrastructure AND service-call (`CALLS`) edges. "What does X call / depend on", "what calls X", "what namespace/cluster hosts X", "what does this load balancer route to", "what configures X" → KG. Use the runtime `service_dependency_graph` metrics tool ONLY for latency / error-rate / traffic-volume; the KG carries no metrics.
+
+  ## Which disambiguator to clarify (priority order)
+  Ask about the single highest-priority missing item, one question per turn:
+  1. **Account** — exploration finds the resource/namespace in more than one cloud account. Resolve account first; it determines which workloads you analyze. (A namespace alone is NOT enough when that namespace exists in multiple accounts.)
+  2. **Resource ambiguity** — a generic name (`redis`, `db`, `api`, `worker`) resolves to >1 node, across namespaces/clusters/sources or within one scope.
+  3. **Cloud source** — multi-cloud questions ("our databases", "all load balancers") whose answer differs by `source` (k8s/aws/gcp/azure).
+  4. **Cluster** — the same namespace name runs in multiple clusters in the account.
+  5. **Direction** — "what's connected to X" only when "what calls X" vs "what X calls" return materially different subgraphs.
+
+  Do NOT clarify when: the resource is fully qualified to a single node; account AND namespace/cluster are both given; the question is genuinely open-ended ("show me everything around X" → answer with a broader traversal); or the one narrow search returns exactly one hit.
+
+  **Format of the clarifying question:** lead with the question, not a presumed default — "`redis` exists in `prod`, `staging`, `dev` — which one?", never "I'll check prod unless you'd prefer…" (that reads as already proceeding). List the real values using human-readable identifiers: account names from the Account column, literal namespace/cluster/source names, resource `name` fields. For genuinely unnamed resources use ordinals ("Option 1, 2, …") and map back to IDs internally; never put raw UUIDs in user-facing prose.
+
+  ## kg_search_nodes — discovery
+  Find resources by name/type/namespace/source/account/labels and get node IDs to chain into `kg_traverse`. Parameters:
+  - `query` — name, exact or ILIKE pattern with `%` (empty string lists everything matching the other filters)
+  - `node_types` — e.g. `["Workload"]`, `["Database"]`
+  - `namespace` — Kubernetes namespace
+  - `source` — cloud PLATFORM type: `k8s` / `aws` / `gcp` / `azure` (NOT an account)
+  - `account_ids` — cloud account UUIDs or names (see rule 3); use THIS, not `source`, to narrow by account
+  - `labels` — JSON, e.g. `{"app":"kibana"}`
+  - `limit` — max rows (default 20, max 100). If the header reads "Found N (showing M)" with N>M, the list is CAPPED — raise `limit`, add filters, or summarize by category; never present a capped page as the complete set.
+
+  ## kg_traverse — dependencies, topology, connectivity
+  Seed with `query` (name or `%`-pattern) OR `node_id` / `node_ids` from a prior search (IDs skip re-resolution and win if both are given). A `CALLS` edge may terminate at any cloud-resource type (`Database`, `Storage`, `Cache`, `MessageQueue`, `LoadBalancer`, `APIGateway`, `CDN`, `ServerlessFunction`), not just Service/Workload/ExternalService — treat these as data dependencies. When the edge carries an `original_hostname` property, cite it as the breadcrumb from the observed traffic to the resource.
+
+  ### Direction Guide
+  - `downstream` = what X calls / depends on / runs on
+  - `upstream` = what calls / depends on X
+  - `both` = bidirectional
+
+  ### Relationship Types (exact spelling — wrong values silently return 0 edges)
+  - Service flow: CALLS, PUBLISHES_TO, SUBSCRIBES_TO, RUNS_ON
+  - Deploy/build: IS_DEPLOYED_FROM, IS_CONFIGURED_BY, REFERENCES_IMAGE, USES_IMAGE, PULLS_FROM, BUILT_FROM
+  - Ownership: BELONGS_TO, RUNS_IN, MANAGES, OWNS
+  - Config/secrets: USES_CONFIG, USES_SECRET, STORES_IN, IS_ENCRYPTED_BY
+  - Storage: MOUNTS, IS_BOUND_TO, PROVIDES_STORAGE
+  - Networking: EXPOSES, ROUTES_TO_SERVICE, ROUTES_TO_BACKEND, PROTECTS, IS_ACCESSED_VIA
+  - Cloud/generic: ROUTES_THROUGH, ROUTES_TO, HOSTED_ON, RESOLVES_TO, ASSOCIATED_WITH
+  - Observability: EMITS_LOGS_TO, EMITS_METRICS_TO, EMITS_TRACES_TO
+  - Identity: RUNS_AS, ASSUMES
+
+  Node types (exact spelling) — common: Service, Workload, K8sService, Database, Cache, MessageQueue, ExternalService, Namespace, Cluster, Pod, Node, Ingress, LoadBalancer, VPC, Subnet, SecurityGroup, Storage, ComputeInstance, ServerlessFunction, HelmChart, ContainerImage. Full enum: `api-server/services/knowledge_graph/core/types.go`.
+
+  **Set `relationship_types`** whenever the question implies an edge type — the filter runs inside the DB query, cutting both server cost and response size. Omit only for open-ended "everything around X" questions.
+
+  **Progressive refinement:** start `max_depth:1` with a tight `relationship_types` filter; raise to `max_depth:2`, then drop filters or use `direction:both`, only if the immediate neighborhood is insufficient; `max_depth:3` is a last resort. A `direction:both, max_depth:3` walk on a busy node returns 5–10× more data, almost all irrelevant.
+
+  **exclude_node_types:** for `direction:both` LoadBalancer queries, `SecurityGroup` / `NetworkInterface` / `Subnet` are auto-excluded as noise; pass `exclude_node_types:[]` to see them for security-group, subnet, or NIC investigations.
+
+  ### Common Patterns
+  - "What does X call / what calls X?" → search `["Workload","K8sService"]` named X (rule 5), then `kg_traverse(node_ids:[both], direction:downstream|upstream, relationship_types:["CALLS"], max_depth:1)`.
+  - "Full dependency map of X" → `kg_traverse(query:"X", direction:downstream, max_depth:1)`; raise depth only if incomplete.
+  - "What runs in / lives in namespace Y?" → `kg_search_nodes(query:"", namespace:"Y", node_types:["Workload","K8sService"])`. A Namespace node has NO outgoing `CALLS` edges, so do not `kg_traverse` CALLS from it (returns 0). For "what cluster hosts Y?" use `kg_traverse(query:"Y", node_types:["Namespace"], relationship_types:["RUNS_ON"])`.
+  - "Find all databases / RDS" → `kg_search_nodes(query:"", node_types:["Database"], source:"aws")`.
+  - "Ingress path to workload X" → `kg_traverse(node_id:"X", direction:upstream, max_depth:1, relationship_types:["EXPOSES"])` to find the K8sService(s), then from each `relationship_types:["ROUTES_TO_SERVICE","ROUTES_TO_BACKEND"]` for the Ingress/LB.
+  - "Map all communication in namespace Y" → `kg_search_nodes(query:"", node_types:["Workload","K8sService","Service"], namespace:"Y", account_ids:["<uuid>"])`, then traverse the IDs in batches of ≤10 with `direction:both, max_depth:1, relationship_types:["CALLS"]`; combine the edge lists (every diagram edge must come from these responses, rule 1).
+  - "Check LB connectivity" → `kg_traverse(query:"lb-name", node_types:["LoadBalancer"], direction:both)`.

@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -2541,8 +2541,10 @@ func (e *plannerExecutor) selectConfigUsingLLM(userQuery string, configs []toolc
 	questionText = fmt.Sprintf("Based on the user's input%s, which configuration should be used?\n\n", contextPart)
 
 	// Use the prompt template
-	promptText := prompts_repo.GetPrompt(
-		prompts_repo.PromptToolConfigAutoSelection,
+	promptText := prompts.GetPrompt(
+		e.ctx.GetContext(),
+		prompts.PromptConfigAutoSelection,
+		e.agentRequest.AccountId,
 		headerText,
 		userQuery,
 		toolName,
@@ -4038,7 +4040,10 @@ func (e *plannerExecutor) rewriteToolInput(action NBAgentPlannerToolAction, quer
 	_, span := e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:RewriteInput")
 	defer span.End()
 
-	promptTemplate := prompts_repo.GetPrompt(prompts_repo.PromptPlannerAgentRewriteToolInput)
+	promptTemplate, promptErr := prompts.GetPromptStrict(e.ctx.GetContext(), prompts.PromptAgentRewriteToolInput, e.agentRequest.AccountId)
+	if promptErr != nil {
+		return "", fmt.Errorf("rewriteToolInput: loading prompt: %w", promptErr)
+	}
 
 	// Using a simple string replacement for the template here for clarity.
 	// In a real implementation, use a proper template engine if it gets more complex.
@@ -4179,8 +4184,16 @@ func generateAsyncAgentSummary(ctx *security.RequestContext, request NBAgentRequ
 	// "%!(EXTRA ...)" overflow, inflating summary inputs past 200k tokens. The
 	// response is also capped, since a one-sentence summary needs only the gist.
 	truncatedResponse := SmartTruncateToolOutput(response, maxSummaryInputBytes)
+	// Fail safe rather than silently: this function has no error return, and summarizing
+	// under an empty instruction yields a bare "User request: ..." blob that reads like a
+	// real summary. Skipping the async summary is the honest outcome.
+	summarySystemPrompt, summaryPromptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptAgentResponseSummary, request.AccountId)
+	if summaryPromptErr != nil {
+		ctx.GetLogger().Error("plannerexecutor: response-summary prompt failed to load, skipping async summary", "error", summaryPromptErr)
+		return
+	}
 	summaryPrompt := fmt.Sprintf("%s\n\nUser request: %s\n\nResponse to summarize:\n%s",
-		prompts_repo.GetPrompt(prompts_repo.PromptAgentResponseSummary), request.Query, truncatedResponse)
+		summarySystemPrompt, request.Query, truncatedResponse)
 	summaryMessages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, summaryPrompt),
 	}

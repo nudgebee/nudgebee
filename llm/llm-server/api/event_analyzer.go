@@ -9,12 +9,12 @@ import (
 	"log/slog"
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	_ "nudgebee/llm/agents/signoz"
 	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/events"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -1597,7 +1597,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	// Arg order must match the %s placeholders in event_investigation.txt:
 	// id, definition, title, description, labels, time, window start, window
 	// end, source, summary.
-	eventAnalsysisPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEventInvestigation, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), common.FormatPresentationTime(event.StartsAt), formatWindowEnd(event.EndsAt), event.Source, response.Summary)
+	eventAnalsysisPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptEventInvestigation, request.AccountId, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), common.FormatPresentationTime(event.StartsAt), formatWindowEnd(event.EndsAt), event.Source, response.Summary)
 
 	// Add account context (cloud provider) to help the LLM tailor its output
 	if cloudProvider := agents.GetCloudProviderForAccount(request.AccountId); cloudProvider != "" {
@@ -2939,7 +2939,10 @@ func synthesizeDetailedResponse(ctx *security.RequestContext, request EventAnaly
 		return "", fmt.Errorf("synthesizeDetailedResponse: unable to create message record: %w", err)
 	}
 
-	systemPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEventDetailedResponseSynthesis)
+	systemPrompt, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptEventDetailedResponseSynthesis, request.AccountId)
+	if promptErr != nil {
+		return "", fmt.Errorf("synthesizeDetailedResponse: loading prompt: %w", promptErr)
+	}
 
 	userPrompt := fmt.Sprintf("## Event Summary\n%s", summary)
 	if investigation != "" {

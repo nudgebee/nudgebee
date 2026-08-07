@@ -2,7 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -62,7 +62,10 @@ func (l *K8sLeanAgent) GetNameAliases() []string {
 	if l.name == AgentK8sOrchestratorName {
 		return []string{"Debugger", "k8s_debug"}
 	}
-	return []string{"k8s_debug_lean"}
+	// aliases[0] is what the app/@-picker shows as the friendly display name
+	// (useAgentConfiguration.ts:98). Put the human label first, technical
+	// short-form second so @-invocation still works.
+	return []string{"Debugger (Lean)", "k8s_debug_lean"}
 }
 
 func (l *K8sLeanAgent) GetDescription() string {
@@ -95,7 +98,19 @@ func (l *K8sLeanAgent) GetSupportedTools(ctx *security.RequestContext) []toolcor
 }
 
 func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentK8sLean)
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptK8sLean, query.AccountId)
+	if promptErr != nil {
+		// Return nothing rather than continue: everything appended below is
+		// decoration, so carrying on yields a "system prompt" that is just a memory
+		// nudge — worse than empty, because it looks like a prompt. MustResolveAll
+		// covers default/v1 at startup; this catches a malformed provider- or
+		// version-specific override added later.
+		ctx.GetLogger().Error("k8s lean: system prompt failed to load", "error", promptErr)
+		return core.NBAgentPrompt{}
+	}
+	if nudge := memoryNudgeIfEnabled(); nudge != "" {
+		promptText += "\n\n" + nudge
+	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
 }
 

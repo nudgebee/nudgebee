@@ -2,9 +2,9 @@ package tools
 
 import (
 	"fmt"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -114,16 +114,18 @@ func (r RemediationGenerateTool) Call(nbRequestContext core.NbToolContext, input
 		}, fmt.Errorf("investigation context is required")
 	}
 
-	// Load the system prompt from the embedded prompt file rather than inlining it here.
-	// This allows the prompt to be version-controlled, reviewed, and updated independently
-	// of the tool's execution logic. See agents/prompts_repo/tool_remediation_generate.txt.
-	systemPrompt := prompts_repo.GetPrompt(prompts_repo.PromptToolRemediationGenerate)
-	if strings.TrimSpace(systemPrompt) == "" {
-		logger.Error("remediation_generate: system prompt not found — embed may be broken")
+	// Load the system prompt from prompts/default/v1/tools/remediation_generate.yaml.
+	// Keeping it out of Go source lets it be versioned, A/B tested and rolled back per
+	// account independently of this tool's execution logic. There is deliberately no
+	// fallback to an older copy: the file is embedded and validated at build time, so a
+	// failure here means a real defect and must surface as one.
+	systemPrompt, err := prompts.GetPromptStrict(nbRequestContext.Ctx.GetContext(), prompts.PromptRemediationGenerate, nbRequestContext.AccountId)
+	if err != nil {
+		logger.Error("remediation_generate: system prompt could not be loaded", "error", err)
 		return core.NBToolResponse{
 			Data:   "Remediation system prompt is not configured",
 			Status: core.NBToolResponseStatusError,
-		}, fmt.Errorf("remediation system prompt is missing")
+		}, fmt.Errorf("remediation_generate: loading system prompt: %w", err)
 	}
 
 	userPrompt := investigationContext

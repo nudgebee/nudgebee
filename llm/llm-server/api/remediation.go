@@ -12,10 +12,10 @@ import (
 	"time"
 
 	agentcore "nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/audit"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -312,7 +312,12 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		return
 	}
 
-	systemPrompt := prompts_repo.GetPrompt(prompts_repo.PromptToolRemediationGenerateJson)
+	systemPrompt, promptErr := prompts.GetPromptStrict(c.Request.Context(), prompts.PromptRemediationGenerateJson, request.AccountId)
+	if promptErr != nil {
+		ctx.GetLogger().Error("processRemediationGenerate: loading prompt failed", "error", promptErr)
+		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to load remediation prompt"}}))
+		return
+	}
 	resp, err := agentcore.GenerateAndTrackLLMContent(ctx, sc.GetUserId(), request.AccountId, "", "", "", false, []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: systemPrompt}}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: investigationContext}}},

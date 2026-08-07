@@ -7,31 +7,26 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestPromptMappingsNoLeadingTrailingSpaces(t *testing.T) {
-	// Verify that all prompt mappings don't have leading or trailing spaces
-	// in their filename strings, which would cause file resolution to fail
-
-	for constant, mapping := range promptMapping {
-		trimmed := strings.TrimSpace(mapping.name)
-		assert.Equal(t, trimmed, mapping.name,
-			"Mapping %s has leading or trailing spaces in filename: '%s'",
-			constant, mapping.name)
-
-		// Also ensure the name doesn't have any other whitespace issues
-		assert.NotContains(t, mapping.name, "  ",
-			"Mapping %s has double spaces: '%s'", constant, mapping.name)
+// TestPromptNamesAreCleanIdentifiers verifies registered prompt names are usable as
+// both a filename stem and a DB prompt_name. The name is the single identifier now —
+// there is no separate filename field that could carry stray whitespace.
+func TestPromptNamesAreCleanIdentifiers(t *testing.T) {
+	for name := range promptCategories {
+		assert.Equal(t, strings.TrimSpace(name), name, "prompt %q has surrounding whitespace", name)
+		for _, bad := range []string{"/", "\\", "..", "\n", "\t", " "} {
+			assert.NotContains(t, name, bad, "prompt %q contains invalid character %q", name, bad)
+		}
 	}
 }
 
-func TestPromptMappingsFileNamesValid(t *testing.T) {
-	// Verify that all prompt names are valid filenames (no path separators, etc.)
-	invalidChars := []string{"/", "\\", "..", "\n", "\t"}
-
-	for constant, mapping := range promptMapping {
-		for _, char := range invalidChars {
-			assert.NotContains(t, mapping.name, char,
-				"Mapping %s contains invalid character '%s' in filename: '%s'",
-				constant, char, mapping.name)
-		}
+// TestPromptCategoriesAreValid verifies every registered prompt names a real category
+// directory, since resolution builds the path from it.
+func TestPromptCategoriesAreValid(t *testing.T) {
+	valid := map[PromptCategory]bool{
+		CategoryAgents: true, CategoryPlanners: true,
+		CategoryTools: true, CategoryUtilities: true, CategoryFragments: true,
+	}
+	for name, category := range promptCategories {
+		assert.True(t, valid[category], "prompt %q has unknown category %q", name, category)
 	}
 }

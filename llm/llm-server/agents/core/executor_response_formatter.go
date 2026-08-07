@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"fmt"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"regexp"
@@ -137,9 +136,14 @@ func FormatAgentResponse(ctx *security.RequestContext, request NBAgentRequest, r
 	// reliable than the prose "if query, do NOT add" it was observed ignoring (a
 	// "generate dashboard" turn came back with a `### Causality Chain (5-Whys)`).
 	tmplData := map[string]interface{}{"is_investigation": questionType == "investigation"}
-	systemPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptResponseFormatter, request.AccountId)
-	if systemPrompt == "" {
-		systemPrompt = prompts_repo.GetPrompt(prompts_repo.PromptExecutor_response_formatter)
+	systemPrompt, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptResponseFormatter, request.AccountId)
+	if promptErr != nil {
+		// Formatting with an empty system prompt would silently mangle the answer.
+		// Returning the response unformatted is the safe outcome: the content is
+		// intact and merely un-prettified, where proceeding would ship the user a
+		// garbled answer produced under no instruction.
+		ctx.GetLogger().Error("formatter: system prompt failed to load, returning response unformatted", "error", promptErr)
+		return response
 	}
 	systemPrompt = renderFormatterTemplate(systemPrompt, tmplData)
 

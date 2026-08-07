@@ -149,6 +149,20 @@ func main() {
 	common.InitMetrics()
 	core.InitMetrics()
 	prompts.InitializeGlobalLoader()
+	// Every registered prompt must resolve against the embedded FS. Prompts ship
+	// inside the binary, so a miss is a build defect, not a runtime condition —
+	// failing here is what lets callers use the prompt loader with no fallback to
+	// an older copy. The previous versioning attempt kept such a fallback and
+	// silently served stale prompts for months.
+	//
+	// Exits non-zero rather than returning: a bare return from main is exit status 0,
+	// which Kubernetes reads as a successful completion, so a broken catalog would go
+	// green through the deployment gates instead of triggering a restart or rollback.
+	// A gate that fails silently is the thing this package exists to remove.
+	if err := prompts.MustResolveAll(); err != nil {
+		slog.Error("main: prompt catalog is incomplete", "error", err)
+		os.Exit(1)
+	}
 	if err := core.InitTokenizers(); err != nil {
 		slog.Error("main: failed to init tokenizers", "error", err)
 		return

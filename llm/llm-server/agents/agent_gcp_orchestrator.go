@@ -3,8 +3,8 @@ package agents
 import (
 	"log/slog"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -117,7 +117,7 @@ func (a *GcpOrchestratorAgent) GetCacheScope() core.CacheScope {
 // resource work through the `gcp` sub-agent (v1). All routing guidance lives in the prompt
 // file (gated by that flag), not appended here, so the two variants can't drift.
 func (a *GcpOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	promptText := renderGcpDebugReactPrompt(a.useGcpCliDirect)
+	promptText := renderGcpDebugReactPrompt(ctx, query, a.useGcpCliDirect)
 	instructions := strings.Split(promptText, "\n")
 
 	if !a.clusterSnapshotFound {
@@ -215,10 +215,22 @@ Answer the user's question directly in clear markdown. Do NOT use the investigat
 // orchestrators. useGcpCliDirect drives the {{if .use_gcp_cli_direct}} blocks in the prompt
 // file: false = delegate GCP resource CLI to the `gcp` sub-agent (v1), true = hold and run
 // gcloud_execute directly (v2). Keeping all routing guidance in the prompt (gated by that
-// flag) means the two variants cannot drift apart. On any parse/execute error the raw prompt
-// is returned so the agent retains its full instructions.
-func renderGcpDebugReactPrompt(useGcpCliDirect bool) string {
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentGcpDebugReact)
+// flag) means the two variants cannot drift apart. On a template parse/execute error the
+// unrendered prompt is returned so the agent keeps its instructions; a prompt-load failure
+// is logged and leaves the prompt empty, which MustResolveAll makes unreachable for a
+// registered name.
+func renderGcpDebugReactPrompt(ctx *security.RequestContext, query core.NBAgentRequest, useGcpCliDirect bool) string {
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptGcpOrchestrator, query.AccountId)
+	if promptErr != nil {
+		// An empty system prompt would silently degrade the agent. MustResolveAll
+		// covers default/v1 at startup; this catches a malformed provider- or
+		// version-specific override added later.
+		// Returning early is equivalent to falling through — promptText is already
+		// "" and the template round-trip below would yield "" — but it says so
+		// without running a parse whose only possible output is the empty string.
+		ctx.GetLogger().Error("gcp orchestrator: system prompt failed to load", "error", promptErr)
+		return ""
+	}
 	tmplData := map[string]any{"use_gcp_cli_direct": useGcpCliDirect}
 	t, err := template.New("gcp_debug").Option("missingkey=zero").Parse(promptText)
 	if err != nil {

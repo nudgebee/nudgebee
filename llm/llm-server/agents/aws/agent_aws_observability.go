@@ -2,8 +2,8 @@ package aws
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -77,7 +77,13 @@ func (a *AwsObservabilityAgent) GetSupportedTools(ctx *security.RequestContext) 
 
 func (a *AwsObservabilityAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	// Load prompt from prompts repository
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAwsObservability)
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptAwsObservability, query.AccountId)
+	if promptErr != nil {
+		// An empty system prompt would silently degrade the agent, so surface the
+		// failure. MustResolveAll covers default/v1 at startup; this catches a
+		// malformed provider- or version-specific override added later.
+		ctx.GetLogger().Error("aws observability: system prompt failed to load", "error", promptErr)
+	}
 	instructions := strings.Split(promptText, "\n")
 
 	constraints := []string{

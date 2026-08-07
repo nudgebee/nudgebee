@@ -3,8 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/watch"
 	"strings"
@@ -60,7 +60,7 @@ func (s *llmSummarizer) Summarize(ctx *security.RequestContext, w watch.Watch, s
 		ctx.GetLogger().Warn("watch.summarizer: load agent actions failed; continuing with empty actions", "error", err, "watch_id", w.ID.String())
 	}
 
-	prompt, err := s.renderPrompt(w, status, rawSummary, rawError, userQuery, agentReply, agentActions)
+	prompt, err := s.renderPrompt(ctx, w, status, rawSummary, rawError, userQuery, agentReply, agentActions)
 	if err != nil {
 		return "", fmt.Errorf("watch.summarizer: render prompt: %w", err)
 	}
@@ -103,10 +103,10 @@ func (s *llmSummarizer) Summarize(ctx *security.RequestContext, w watch.Watch, s
 	return strings.TrimSpace(resp.Choices[0].Content), nil
 }
 
-func (s *llmSummarizer) renderPrompt(w watch.Watch, status watch.Status, rawSummary, rawError, userQuery, agentReply, agentActions string) (string, error) {
-	tmplText := prompts_repo.GetPrompt(prompts_repo.PromptWatchCompletionSummary)
-	if tmplText == "" {
-		return "", fmt.Errorf("watch.summarizer: empty prompt template")
+func (s *llmSummarizer) renderPrompt(ctx *security.RequestContext, w watch.Watch, status watch.Status, rawSummary, rawError, userQuery, agentReply, agentActions string) (string, error) {
+	tmplText, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptWatchCompletionSummary, w.AccountID.String())
+	if err != nil {
+		return "", fmt.Errorf("watch.summarizer: loading prompt template: %w", err)
 	}
 	tmpl, err := template.New("watch_summary").Option("missingkey=zero").Parse(tmplText)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -32,7 +33,7 @@ func TestAwsObservabilityAgent_PlannerType(t *testing.T) {
 
 func TestAwsObservabilityAgent_ExampleCount(t *testing.T) {
 	agent := &AwsObservabilityAgent{accountId: "test-account"}
-	prompt := agent.GetSystemPrompt(nil, core.NBAgentRequest{})
+	prompt := agent.GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{})
 	assert.LessOrEqual(t, len(prompt.Examples), 12,
 		"examples should be consolidated to reduce prompt size and latency")
 	assert.GreaterOrEqual(t, len(prompt.Examples), 8,

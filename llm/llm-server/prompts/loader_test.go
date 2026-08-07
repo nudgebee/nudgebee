@@ -22,26 +22,12 @@ func newTestLoader() *PromptLoader {
 	}
 }
 
-// skipCatalogConsistency gates the prompt-catalog invariant tests. The embedded
-// prompt catalog under prompts/default is currently out of sync with promptMapping
-// and the tests' expectations: some registered prompts have no file
-// (react_3_base, k8s_debug_react), some files are unregistered
-// (k8s_debug_with_remediation, _persona/*), and the v2 utilities set referenced by
-// the include tests (e.g. react_base) is incomplete. Reconciling this requires the
-// prompt owners to decide whether to add the missing prompt content or trim the
-// registry, so these consistency checks are skipped (not deleted) to keep the
-// suite runnable in CI. See the tracking note in the PR description.
-func skipCatalogConsistency(t *testing.T) {
-	t.Helper()
-	t.Skip("prompt catalog (promptMapping vs embedded files) is out of sync; needs owner reconciliation — see PR notes")
-}
-
 // --- Basic loading ---
 
 func TestGetPrompt_BasicLoad(t *testing.T) {
 	loader := newTestLoader()
 	resp, err := loader.GetPrompt(context.Background(), PromptRequest{
-		Name:     "k8s_debug",
+		Name:     "k8s_orchestrator",
 		Category: CategoryAgents,
 		Provider: "default",
 	})
@@ -67,7 +53,7 @@ func TestGetPrompt_MissingName(t *testing.T) {
 func TestGetPrompt_MissingCategory(t *testing.T) {
 	loader := newTestLoader()
 	_, err := loader.GetPrompt(context.Background(), PromptRequest{
-		Name:     "k8s_debug",
+		Name:     "k8s_orchestrator",
 		Category: "",
 		Provider: "default",
 	})
@@ -77,7 +63,7 @@ func TestGetPrompt_MissingCategory(t *testing.T) {
 func TestGetPrompt_InvalidCategory(t *testing.T) {
 	loader := newTestLoader()
 	_, err := loader.GetPrompt(context.Background(), PromptRequest{
-		Name:     "k8s_debug",
+		Name:     "k8s_orchestrator",
 		Category: PromptCategory("invalid"),
 		Provider: "default",
 	})
@@ -99,7 +85,7 @@ func TestGetPrompt_UnknownPromptName(t *testing.T) {
 func TestGetPrompt_EmptyProviderNormalizesToDefault(t *testing.T) {
 	loader := newTestLoader()
 	resp, err := loader.GetPrompt(context.Background(), PromptRequest{
-		Name:     "k8s_debug",
+		Name:     "k8s_orchestrator",
 		Category: CategoryAgents,
 		Provider: "", // should normalize to "default"
 	})
@@ -116,7 +102,7 @@ func TestGetPrompt_ProviderFallsBackToDefault(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			resp, err := loader.GetPrompt(context.Background(), PromptRequest{
-				Name:     "k8s_debug",
+				Name:     "k8s_orchestrator",
 				Category: CategoryAgents,
 				Provider: provider,
 			})
@@ -125,7 +111,7 @@ func TestGetPrompt_ProviderFallsBackToDefault(t *testing.T) {
 
 			// Content should match the default file
 			defaultResp, _ := loader.GetPrompt(context.Background(), PromptRequest{
-				Name:     "k8s_debug",
+				Name:     "k8s_orchestrator",
 				Category: CategoryAgents,
 				Provider: "default",
 			})
@@ -139,7 +125,7 @@ func TestGetPrompt_ProviderFallsBackToDefault(t *testing.T) {
 
 func TestCache_HitOnSecondLoad(t *testing.T) {
 	loader := newTestLoader()
-	req := PromptRequest{Name: "k8s_debug", Category: CategoryAgents, Provider: "default"}
+	req := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default"}
 
 	resp1, err := loader.GetPrompt(context.Background(), req)
 	require.NoError(t, err)
@@ -153,8 +139,8 @@ func TestCache_HitOnSecondLoad(t *testing.T) {
 
 func TestCache_AccountIsolation(t *testing.T) {
 	loader := newTestLoader()
-	req1 := PromptRequest{Name: "k8s_debug", Category: CategoryAgents, Provider: "default", AccountID: "acc-1"}
-	req2 := PromptRequest{Name: "k8s_debug", Category: CategoryAgents, Provider: "default", AccountID: "acc-2"}
+	req1 := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default", AccountID: "acc-1"}
+	req2 := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default", AccountID: "acc-2"}
 
 	loader.GetPrompt(context.Background(), req1) //nolint
 	loader.GetPrompt(context.Background(), req2) //nolint
@@ -170,13 +156,13 @@ func TestCache_AccountIsolation(t *testing.T) {
 
 func TestCache_PromptIsolation(t *testing.T) {
 	loader := newTestLoader()
-	req1 := PromptRequest{Name: "k8s_debug", Category: CategoryAgents, Provider: "default"}
-	req2 := PromptRequest{Name: "k8s_debug_with_remediation", Category: CategoryAgents, Provider: "default"}
+	req1 := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default"}
+	req2 := PromptRequest{Name: "k8s_native", Category: CategoryAgents, Provider: "default"}
 
 	loader.GetPrompt(context.Background(), req1) //nolint
 	loader.GetPrompt(context.Background(), req2) //nolint
 
-	loader.ClearCacheForPrompt("k8s_debug", CategoryAgents)
+	loader.ClearCacheForPrompt("k8s_orchestrator", CategoryAgents)
 
 	r1, _ := loader.GetPrompt(context.Background(), req1)
 	r2, _ := loader.GetPrompt(context.Background(), req2)
@@ -186,7 +172,7 @@ func TestCache_PromptIsolation(t *testing.T) {
 
 func TestCache_ClearAll(t *testing.T) {
 	loader := newTestLoader()
-	req := PromptRequest{Name: "k8s_debug", Category: CategoryAgents, Provider: "default"}
+	req := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default"}
 
 	loader.GetPrompt(context.Background(), req) //nolint
 	loader.ClearCache()
@@ -202,7 +188,7 @@ func TestCache_Expiration(t *testing.T) {
 		cache: NewPromptCache(100 * time.Millisecond),
 		fs:    embeddedFS,
 	}
-	req := PromptRequest{Name: "k8s_debug", Category: CategoryAgents, Provider: "default"}
+	req := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default"}
 
 	loader.GetPrompt(context.Background(), req) //nolint
 	time.Sleep(150 * time.Millisecond)
@@ -215,15 +201,16 @@ func TestCache_Expiration(t *testing.T) {
 // --- All categories load correctly ---
 
 func TestAllCategories_SampleLoad(t *testing.T) {
-	skipCatalogConsistency(t)
 	loader := newTestLoader()
 	tests := []struct {
 		name     string
 		category PromptCategory
 	}{
-		{"k8s_debug", CategoryAgents},
-		{"kubectl_classify", CategoryTools},
-		{"event_analyzer", CategoryUtilities},
+		{"k8s_orchestrator", CategoryAgents},
+		{"react_3_base", CategoryPlanners},
+		{"remediation_generate", CategoryTools},
+		{"response_formatter", CategoryUtilities},
+		{"time_handling_rules", CategoryFragments},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s/%s", tt.category, tt.name), func(t *testing.T) {
@@ -274,65 +261,11 @@ func TestPromptContent_NoTODOMarkers(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// --- Registry completeness ---
-
-// TestAllRegisteredPromptsHaveFiles verifies every promptMapping entry resolves to a real file.
-func TestAllRegisteredPromptsHaveFiles(t *testing.T) {
-	skipCatalogConsistency(t)
-	loader := newTestLoader()
-	for constant, mapping := range promptMapping {
-		constant, mapping := constant, mapping
-		t.Run(string(constant), func(t *testing.T) {
-			resp, err := loader.GetPrompt(context.Background(), PromptRequest{
-				Name:     mapping.name,
-				Category: mapping.category,
-				Provider: "default",
-			})
-			require.NoError(t, err,
-				"prompt %q (file: default/v1/%s/%s.txt) not found", constant, mapping.category, mapping.name)
-			assert.NotEmpty(t, resp.Content, "prompt %q has empty content", constant)
-		})
-	}
-}
-
-// TestAllFilesHaveRegistration verifies every .txt file in default/v1/ is registered in promptMapping.
-func TestAllFilesHaveRegistration(t *testing.T) {
-	skipCatalogConsistency(t)
-	// Build reverse map: "category/name" -> constant
-	registered := make(map[string]string)
-	for constant, mapping := range promptMapping {
-		key := fmt.Sprintf("%s/%s", mapping.category, mapping.name)
-		registered[key] = string(constant)
-	}
-
-	err := fs.WalkDir(embeddedFS, "default/v1", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".txt") {
-			return err
-		}
-		// path = "default/v1/{category}/{name}.txt"
-		parts := strings.Split(path, "/")
-		if len(parts) < 4 {
-			return nil
-		}
-		category := parts[2]
-		name := strings.TrimSuffix(parts[3], ".txt")
-		key := fmt.Sprintf("%s/%s", category, name)
-
-		t.Run(path, func(t *testing.T) {
-			_, exists := registered[key]
-			assert.True(t, exists,
-				"file %q has no entry in promptMapping (key: %q)", path, key)
-		})
-		return nil
-	})
-	require.NoError(t, err)
-}
-
 // --- GetAvailableVersions ---
 
 func TestGetAvailableVersions(t *testing.T) {
 	loader := newTestLoader()
-	versions := loader.GetAvailableVersions("k8s_debug", CategoryAgents, "default")
+	versions := loader.GetAvailableVersions("k8s_orchestrator", CategoryAgents, "default")
 	assert.NotEmpty(t, versions)
 	assert.Contains(t, versions, "v1")
 }
@@ -487,7 +420,6 @@ func TestProcessIncludes_ProviderSpecificOverridesDefault(t *testing.T) {
 }
 
 func TestProcessIncludes_V2PromptFilesResolve(t *testing.T) {
-	skipCatalogConsistency(t)
 	// Verify that actual embedded v2 prompt files with includes resolve successfully
 	loader := newTestLoader()
 
@@ -495,8 +427,8 @@ func TestProcessIncludes_V2PromptFilesResolve(t *testing.T) {
 		name     string
 		contains string
 	}{
-		{"react_base", "You are Nubi"},
-		{"response_formatter", "You are Nubi"},
+		// response_formatter/react_base v2 were stale forks removed during the prompts_repo
+		// migration; the slack formatter is the remaining v2 carrying an include.
 		{"response_formatter_slack", "teammate on Slack"},
 	}
 
@@ -552,4 +484,25 @@ func TestValidateRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLoadPromptFile_KeepsMostDescriptiveError pins the error the resolution chain
+// reports when nothing loads. Paths are walked most-specific first, so a malformed
+// override explains the failure while the "does not exist" misses that follow are
+// noise; reporting the latter sends whoever is debugging to the wrong file.
+func TestLoadPromptFile_KeepsMostDescriptiveError(t *testing.T) {
+	// Only a malformed googleai/v1 override exists — every other path in the chain misses.
+	testFS := fstest.MapFS{
+		"googleai/v1/agents/broken.yaml": &fstest.MapFile{
+			Data: []byte("apiVersion: nudgebee.dev/prompt/v1\nname: broken\n  bad: indentation\n"),
+		},
+	}
+	loader := &PromptLoader{fs: testFS, cache: NewPromptCache(1 * time.Hour)}
+
+	_, err := loader.loadPromptFile("broken", CategoryAgents, "googleai", "v1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decoding prompt file",
+		"the malformed override must be reported, not the later file-not-found misses")
+	assert.NotContains(t, err.Error(), "file does not exist",
+		"a generic miss must not mask the parse failure")
 }

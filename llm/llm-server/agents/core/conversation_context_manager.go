@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 
 	"nudgebee/llm/security"
 	"sort"
@@ -1146,7 +1146,9 @@ TASK:
 		prevFactsSection,
 	)
 
-	return prompts_repo.GetPrompt(prompts_repo.PromptUnifiedContextMemory), userPrompt
+	// Fragment: include-only, no per-account version to resolve (V658's CHECK
+	// excludes _fragments), so context.Background() and an empty accountID are exact.
+	return prompts.GetPrompt(context.Background(), prompts.PromptUnifiedContextMemory, ""), userPrompt
 }
 
 // WorkingContext holds domain-specific key-value properties for the current

@@ -1,11 +1,12 @@
 package agents
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"text/template"
 
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/tools"
 
 	"github.com/stretchr/testify/assert"
@@ -16,7 +17,7 @@ import (
 // renderGcpDebugReactPrompt does, without needing a RequestContext.
 func renderGcpPromptForTest(t *testing.T, useDirect bool) string {
 	t.Helper()
-	raw := prompts_repo.GetPrompt(prompts_repo.PromptAgentGcpDebugReact)
+	raw := prompts.GetPrompt(context.Background(), prompts.PromptGcpOrchestrator, "")
 	require.NotEmpty(t, raw)
 	tmpl, err := template.New("gcp_debug").Option("missingkey=zero").Parse(raw)
 	require.NoError(t, err)
@@ -70,7 +71,7 @@ func TestGcpLeanAgent(t *testing.T) {
 	primary := newGcpLeanAgentNamed("acct", AgentGcpOrchestratorName)
 	assert.Contains(t, primary.GetNameAliases(), "gcp_debug")
 
-	p := prompts_repo.GetPrompt(prompts_repo.PromptAgentGcpLean)
+	p := prompts.GetPrompt(context.Background(), prompts.PromptGcpLean, "")
 	assert.NotEmpty(t, p)
 	assert.Contains(t, p, "gcloud_execute")                   // direct CLI
 	assert.Contains(t, p, "search_tools")                     // on-demand specialist discovery

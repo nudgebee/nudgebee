@@ -10,8 +10,8 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -85,7 +85,7 @@ func (l ServiceDependencyGraphAgent) GetSystemPrompt(ctx *security.RequestContex
 	instructions := []string{
 		"**Resource Discovery:** If the user provides a partial or ambiguous resource name, use the `resource_search` tool to find the correct resource name.",
 		"**Dependency & Topology:** Use `kg_traverse` for dependency chains, CALLS relationships, hosting topology, connectivity (K8s and cloud). Use `kg_search_nodes` for discovery (finding what exists by name/type/namespace/source).",
-		prompts_repo.GetPrompt(prompts_repo.PromptAgentKgUsage),
+		prompts.GetPrompt(ctx.GetContext(), prompts.PromptKgUsage, ""),
 	}
 	if config.Config.KGGetNodeEnabled {
 		instructions = append(instructions,

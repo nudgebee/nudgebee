@@ -3,6 +3,7 @@ package prompts
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -174,6 +175,7 @@ func (l *PromptLoader) validateRequest(req PromptRequest) error {
 		CategoryPlanners:  true,
 		CategoryTools:     true,
 		CategoryUtilities: true,
+		CategoryFragments: true,
 	}
 	if !validCategories[req.Category] {
 		return fmt.Errorf("invalid category: %s", req.Category)
@@ -276,33 +278,84 @@ var includeRegex = regexp.MustCompile(`\{\{@include\s+([^}]+)\}\}`)
 // maxIncludeDepth is the maximum recursion depth for nested includes.
 const maxIncludeDepth = 3
 
+// promptFileExtensions are tried at each resolution base. Only .yaml remains —
+// every prompt is now defined by the schema in schema.go. The list is kept as a
+// slice so an include can be written without an extension.
+var promptFileExtensions = []string{".yaml"}
+
 // loadPromptFile loads a prompt file from embedded FS with fallback logic
 func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, provider string, version string) (string, error) {
-	// Try paths in order:
-	// 1. {provider}/{version}/{category}/{name}.txt
-	// 2. default/{version}/{category}/{name}.txt
-	// 3. {provider}/v1/{category}/{name}.txt
-	// 4. default/v1/{category}/{name}.txt
+	// Try bases in order:
+	// 1. {provider}/{version}/{category}/{name}
+	// 2. default/{version}/{category}/{name}
+	// 3. {provider}/v1/{category}/{name}
+	// 4. default/v1/{category}/{name}
 
-	paths := []string{
-		fmt.Sprintf("%s/%s/%s/%s.txt", provider, version, category, name),
-		fmt.Sprintf("default/%s/%s/%s.txt", version, category, name),
-		fmt.Sprintf("%s/v1/%s/%s.txt", provider, category, name),
-		fmt.Sprintf("default/v1/%s/%s.txt", category, name),
+	bases := []string{
+		fmt.Sprintf("%s/%s/%s/%s", provider, version, category, name),
+		fmt.Sprintf("default/%s/%s/%s", version, category, name),
+		fmt.Sprintf("%s/v1/%s/%s", provider, category, name),
+		fmt.Sprintf("default/v1/%s/%s", category, name),
 	}
 
+	// recordErr keeps the most useful failure rather than the most recent one. Paths are
+	// walked most-specific first, so a malformed override or a broken include explains the
+	// problem; the "does not exist" errors that follow from probing the rest of the chain
+	// are expected noise and must not overwrite it.
 	var lastErr error
-	for _, path := range paths {
-		rawContent, err := fs.ReadFile(l.fs, path)
-		if err == nil {
+	recordErr := func(err error) {
+		if lastErr == nil || errors.Is(lastErr, fs.ErrNotExist) {
+			lastErr = err
+		}
+	}
+
+	for _, base := range bases {
+		for _, ext := range promptFileExtensions {
+			path := base + ext
+			rawContent, err := fs.ReadFile(l.fs, path)
+			if err != nil {
+				recordErr(err)
+				continue
+			}
+
 			slog.Debug("prompts: loaded file",
 				"prompt", name,
 				"path", path)
 
-			// Process {{@include ...}} directives before returning
-			content, err := l.processIncludes(string(rawContent), provider, version, 0)
+			var body string
+			{
+				promptFile, parseErr := ParsePromptFile(rawContent)
+				if parseErr != nil {
+					// Treat a malformed file the same as a missing one and keep walking
+					// the resolution chain, which ends at default/v1 — the baseline
+					// MustResolveAll validated at startup.
+					//
+					// The alternative is returning "" to the caller, which hands an agent
+					// an empty system prompt: strictly worse than serving the validated
+					// baseline. This is not the silent fallback this package was built to
+					// remove — that one hid a whole dead system behind a Debug line. This
+					// logs at ERROR with the offending path so a broken override is
+					// visible while the service keeps answering.
+					slog.Error("prompts: malformed prompt file, falling through to the next resolution path",
+						"prompt", name, "path", path, "error", parseErr)
+					recordErr(parseErr)
+					continue
+				}
+				body = promptFile.Body
+			}
+
+			// Process {{@include ...}} directives before returning. A broken include
+			// makes the file as unusable as a malformed one above, so it falls through
+			// the same way rather than failing the whole load: an override pointing at
+			// a missing fragment must not take down a prompt whose default/v1 baseline
+			// is intact. MustResolveAll runs this same path over default/v1 at startup,
+			// so the end of the chain is guaranteed include-clean.
+			content, err := l.processIncludes(body, provider, version, 0)
 			if err != nil {
-				return "", fmt.Errorf("processing includes for %s: %w", path, err)
+				slog.Error("prompts: failed to process includes, falling through to the next resolution path",
+					"prompt", name, "path", path, "error", err)
+				recordErr(err)
+				continue
 			}
 
 			// Replace identity placeholders with configured values
@@ -310,7 +363,6 @@ func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, prov
 
 			return content, nil
 		}
-		lastErr = err
 	}
 
 	return "", fmt.Errorf("prompt not found: %s (category: %s, provider: %s, version: %s): %w",
@@ -351,34 +403,61 @@ func (l *PromptLoader) processIncludes(content string, provider string, version 
 
 		includePath := strings.TrimSpace(submatches[1])
 
-		// Try paths in order: provider/version, then default/version
-		paths := []string{
+		// Try bases in order: provider/version, then default/version. Each is tried
+		// verbatim first (legacy includes such as `_persona/nubi_persona.txt` carry
+		// their own extension) and then with the prompt-file extensions appended, so
+		// a fragment can be referenced as `_fragments/time_handling_rules`.
+		var paths []string
+		for _, base := range []string{
 			fmt.Sprintf("%s/%s/%s", provider, version, includePath),
 			fmt.Sprintf("default/%s/%s", version, includePath),
+		} {
+			paths = append(paths, base)
+			for _, ext := range promptFileExtensions {
+				paths = append(paths, base+ext)
+			}
 		}
 
-		var includeContent []byte
+		var includeBody string
+		var found bool
 		var lastErr error
 		for _, path := range paths {
 			data, err := fs.ReadFile(l.fs, path)
-			if err == nil {
-				includeContent = data
-				slog.Debug("prompts: resolved include",
-					"include", includePath,
-					"path", path)
-				break
+			if err != nil {
+				lastErr = err
+				continue
 			}
-			lastErr = err
+
+			// Include paths are tried verbatim before extensions are appended, so this
+			// path is not guaranteed to be YAML and the raw bytes are the right value
+			// when it is not. Detect the YAML case case-insensitively and accept .yml:
+			// misclassifying a prompt file as raw text leaks its apiVersion/name header
+			// into the rendered prompt and ships it to the model.
+			includeBody = string(data)
+			if lower := strings.ToLower(path); strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
+				fragment, parseErr := ParsePromptFile(data)
+				if parseErr != nil {
+					processErr = fmt.Errorf("parsing include %s: %w", path, parseErr)
+					return match
+				}
+				includeBody = fragment.Body
+			}
+
+			found = true
+			slog.Debug("prompts: resolved include",
+				"include", includePath,
+				"path", path)
+			break
 		}
 
-		if includeContent == nil {
+		if !found {
 			processErr = fmt.Errorf("include file not found: %s (tried: %v): %w",
 				includePath, paths, lastErr)
 			return match
 		}
 
 		// Recursively process includes in the included content
-		resolved, err := l.processIncludes(string(includeContent), provider, version, depth+1)
+		resolved, err := l.processIncludes(includeBody, provider, version, depth+1)
 		if err != nil {
 			processErr = err
 			return match
@@ -508,10 +587,13 @@ func (l *PromptLoader) GetAvailableVersions(name string, category PromptCategory
 	if err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() && strings.HasPrefix(entry.Name(), "v") {
-				// Check if the prompt file exists in this version
-				filePath := fmt.Sprintf("%s/%s/%s/%s.txt", providerPath, entry.Name(), category, name)
-				if _, err := fs.Stat(l.fs, filePath); err == nil {
-					versions[entry.Name()] = true
+				// Check if the prompt file exists in this version, in any supported format
+				for _, ext := range promptFileExtensions {
+					filePath := fmt.Sprintf("%s/%s/%s/%s%s", providerPath, entry.Name(), category, name, ext)
+					if _, err := fs.Stat(l.fs, filePath); err == nil {
+						versions[entry.Name()] = true
+						break
+					}
 				}
 			}
 		}
@@ -523,10 +605,13 @@ func (l *PromptLoader) GetAvailableVersions(name string, category PromptCategory
 	if err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() && strings.HasPrefix(entry.Name(), "v") {
-				// Check if the prompt file exists in this version
-				filePath := fmt.Sprintf("%s/%s/%s/%s.txt", defaultPath, entry.Name(), category, name)
-				if _, err := fs.Stat(l.fs, filePath); err == nil {
-					versions[entry.Name()] = true
+				// Check if the prompt file exists in this version, in any supported format
+				for _, ext := range promptFileExtensions {
+					filePath := fmt.Sprintf("%s/%s/%s/%s%s", defaultPath, entry.Name(), category, name, ext)
+					if _, err := fs.Stat(l.fs, filePath); err == nil {
+						versions[entry.Name()] = true
+						break
+					}
 				}
 			}
 		}

@@ -2,7 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	tocore "nudgebee/llm/tools/core"
@@ -95,7 +95,16 @@ func (l *GcpLeanAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.
 }
 
 func (l *GcpLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentGcpLean)
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptGcpLean, query.AccountId)
+	if promptErr != nil {
+		// Return nothing rather than continue: everything appended below is
+		// decoration, so carrying on yields a "system prompt" that is just a memory
+		// nudge — worse than empty, because it looks like a prompt. MustResolveAll
+		// covers default/v1 at startup; this catches a malformed provider- or
+		// version-specific override added later.
+		ctx.GetLogger().Error("gcp lean: system prompt failed to load", "error", promptErr)
+		return core.NBAgentPrompt{}
+	}
 	if n := memoryNudgeIfEnabled(); n != "" {
 		promptText += "\n\n" + n
 	}

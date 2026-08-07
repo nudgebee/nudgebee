@@ -1,11 +1,12 @@
 package agents
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"text/template"
 
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +16,7 @@ import (
 // renderAwsDebugReactPrompt does, without needing a RequestContext.
 func renderAwsPromptForTest(t *testing.T, useDirect bool) string {
 	t.Helper()
-	raw := prompts_repo.GetPrompt(prompts_repo.PromptAgentAwsDebugReact)
+	raw := prompts.GetPrompt(context.Background(), prompts.PromptAwsOrchestrator, "")
 	require.NotEmpty(t, raw)
 	tmpl, err := template.New("aws_debug").Option("missingkey=zero").Parse(raw)
 	require.NoError(t, err)
@@ -73,7 +74,7 @@ func TestAwsLeanAgent(t *testing.T) {
 	primary := newAwsLeanAgentNamed("acct", AgentAwsOrchestratorName)
 	assert.Contains(t, primary.GetNameAliases(), "aws_debug")
 
-	p := prompts_repo.GetPrompt(prompts_repo.PromptAgentAwsLean)
+	p := prompts.GetPrompt(context.Background(), prompts.PromptAwsLean, "")
 	assert.NotEmpty(t, p)
 	assert.Contains(t, p, "aws_execute")                      // direct CLI
 	assert.Contains(t, p, "MECHANISM")                        // don't stop at surface value
