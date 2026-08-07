@@ -57,6 +57,11 @@ type FollowupRequest struct {
 	AgentId         uuid.UUID      `json:"agentId"`
 	ToolName        string         `json:"toolName"`
 	ToolId          string         `json:"toolId"`
+	// ConfirmationKey is the key a tool_confirmation answer is recorded under in
+	// QueryConfig.ToolConfirmations. Empty means the tool name (the historical
+	// per-tool behavior); tools implementing toolcore.ToolConfirmationScope get
+	// a per-action key here so each invocation is approved separately.
+	ConfirmationKey string `json:"confirmationKey,omitempty"`
 }
 
 const PROMPT_IDENTIFY_MISSING_INFORMATION = `
@@ -157,7 +162,7 @@ func FollowupRequestForMissingInformation(ctx *security.RequestContext, query NB
 	return FollowupRequest{}, nil
 }
 
-func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, query NBAgentRequest, agent NBAgent, action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType) (FollowupRequest, error) {
+func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, query NBAgentRequest, agent NBAgent, action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string) (FollowupRequest, error) {
 	input := action.ToolInput
 	if strings.Contains(input, `"query"`) {
 		commandMap := map[string]any{}
@@ -180,10 +185,11 @@ func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, q
 			"yes",
 			"no",
 		},
-		AgentName: agent.GetName(),
-		AgentId:   uuid.MustParse(query.AgentId),
-		ToolName:  action.Tool,
-		ToolId:    action.ToolID,
+		AgentName:       agent.GetName(),
+		AgentId:         uuid.MustParse(query.AgentId),
+		ToolName:        action.Tool,
+		ToolId:          action.ToolID,
+		ConfirmationKey: confirmationKey,
 	}
 	return followUpRequest, nil
 }
@@ -492,6 +498,9 @@ func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, follow
 		"followupOptions": followupRequest.FollowupOptions,
 		"toolName":        followupRequest.ToolName,
 		"toolId":          followupRequest.ToolId,
+	}
+	if followupRequest.ConfirmationKey != "" {
+		followupRequestConfig["confirmationKey"] = followupRequest.ConfirmationKey
 	}
 	if followupRequest.FollowupData != nil {
 		followupRequestConfig["followupData"] = followupRequest.FollowupData

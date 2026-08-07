@@ -1724,20 +1724,6 @@ func truncateToolResponse(ctx *security.RequestContext, data string, status Tool
 	return truncated, originalLen
 }
 
-// writeConfirmationRequired reports whether a write (create/update/delete) tool needs user confirmation.
-// watch_resource is exempt: it's Create only for the access gate and mutates nothing (source is read-only).
-func writeConfirmationRequired(requestType *toolcore.ToolRequestType, toolName string) bool {
-	if requestType == nil {
-		return false
-	}
-	switch *requestType {
-	case toolcore.ToolRequestTypeCreate, toolcore.ToolRequestTypeUpdate, toolcore.ToolRequestTypeDelete:
-		return !strings.EqualFold(toolName, tools.ToolWatchResource)
-	default:
-		return false
-	}
-}
-
 // recordFailedActionStep converts an action-level error (auth rejection,
 // condition-evaluation failure, input parsing, panic recovery) into a
 // ToolStatusFailure step instead of an iteration-aborting error. The error
@@ -1758,6 +1744,45 @@ func (e *plannerExecutor) recordFailedActionStep(action NBAgentPlannerToolAction
 		Action:      action,
 		Observation: observation,
 		Status:      ToolStatusFailure,
+	}
+}
+
+// confirmationKeyForAction returns the key a write-confirmation is recorded and
+// checked under. Default is the tool name — one approval covers every later
+// call to that tool in the conversation. Tools implementing
+// toolcore.ToolConfirmationScope get a per-action key (varying with the
+// input), so each distinct invocation pauses for its own approval.
+func confirmationKeyForAction(tool toolcore.NBTool, action NBAgentPlannerToolAction) string {
+	if scoped, ok := tool.(toolcore.ToolConfirmationScope); ok {
+		if key := scoped.ConfirmationKey(action.ToolInput); key != "" {
+			return key
+		}
+	}
+	return action.Tool
+}
+
+// confirmationApprovedForAction mirrors isToolConfirmationApproved but resolves
+// the per-action confirmation key when the tool is available, so resume paths
+// agree with the doAction gate about which entry an approval lives under.
+func confirmationApprovedForAction(confirmations map[string]string, nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction) bool {
+	key := action.Tool
+	if tool, ok := nameToTool[strings.ToUpper(strings.TrimSpace(action.Tool))]; ok && tool != nil {
+		key = confirmationKeyForAction(tool, action)
+	}
+	return isToolConfirmationApproved(confirmations, key)
+}
+
+// writeConfirmationRequired reports whether a write (create/update/delete) tool needs user confirmation.
+// watch_resource is exempt: it's Create only for the access gate and mutates nothing (source is read-only).
+func writeConfirmationRequired(requestType *toolcore.ToolRequestType, toolName string) bool {
+	if requestType == nil {
+		return false
+	}
+	switch *requestType {
+	case toolcore.ToolRequestTypeCreate, toolcore.ToolRequestTypeUpdate, toolcore.ToolRequestTypeDelete:
+		return !strings.EqualFold(toolName, tools.ToolWatchResource)
+	default:
+		return false
 	}
 }
 
@@ -1977,9 +2002,10 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	// confirmation if tehre is write operation
 	if tool.GetType() == toolcore.NBToolTypeTool {
 		if writeConfirmationRequired(requestType, action.Tool) {
+			confirmationKey := confirmationKeyForAction(tool, action)
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
-				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[action.Tool]; exists {
+				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[confirmationKey]; exists {
 					isFollowupFound = true
 					previousData = strings.TrimSpace(previousData)
 					if !slices.Contains([]string{"ok", "yes", "true"}, strings.ToLower(previousData)) {
@@ -1993,7 +2019,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 			if !isFollowupFound {
 				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
-				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType)
+				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey)
 				if err != nil {
 					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool, "error", err)
 					return NBAgentPlannerToolActionStep{}, nil, err
@@ -2392,8 +2418,8 @@ func (e *plannerExecutor) countTrivialResultsForTool(action NBAgentPlannerToolAc
 // and shouldn't fire).
 const trivialResultThreshold = 3
 
-func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
-	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType)
+func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType, confirmationKey)
 	if err != nil {
 		e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
 		return nil, nil, err
@@ -3681,6 +3707,10 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 
 		// read tool followup o/p as observation
 		if len(executor.currentAction) > 0 {
+			// Resolved once for the whole resume pass: the confirmation checks below
+			// must look under the same per-action key doAction recorded under, which
+			// requires the tool instance (confirmationApprovedForAction).
+			resumeNameToTool := getNameToTool(nbAgentPlanner.GetTools())
 			// read all current actions as steps
 			for _, action := range executor.currentAction {
 				toolId := action.ToolID
@@ -3695,7 +3725,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					executor.steps = append(executor.steps, step)
 					executor.stepKeys[action.ToolID] = true
 					ctx.GetLogger().Info("plannerexecutor: recovered tool result from DB", "toolId", toolId)
-				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) && !isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool) {
+				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) && !confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action) {
 					// No row found in DB for this tool AND neither a config nor a write-confirmation
 					// was resolved. This means the tool was waiting for a config selection that never
 					// arrived. A confirmation-gated tool whose confirmation was just approved is NOT
@@ -3749,7 +3779,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					}
 					ctx.GetLogger().Info("plannerexecutor: using completed child agent response for WAITING parent tool_call",
 						"toolId", toolId, "tool", action.Tool, "childStatus", childOut.status)
-				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && (isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) || isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool)))) {
+				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && (isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) || confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action)))) {
 					// [Changed for TicketV2] Tool is still waiting — execute it IMMEDIATELY so the planner starts with the result.
 					// Previously, the user's response always replaced tool input. But for tool_config followups
 					// (e.g., user selecting a Jira integration), the user's response is the config choice, not
@@ -3765,7 +3795,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					// we ensure doAction runs again with the newly resolved config — triggering the next
 					// config step (e.g., project selection after integration selection).
 					isConfigResolved := isToolConfigResolved(request.QueryConfig.ToolConfigs, action.Tool)
-					isConfirmationApproved := isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool)
+					isConfirmationApproved := confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action)
 					if isConfigResolved || isConfirmationApproved {
 						// The user's answer was a config/confirmation choice, not the tool input — keep the original command.
 						ctx.GetLogger().Info("plannerexecutor: resuming tool after config/confirmation, keeping original input",
@@ -3776,11 +3806,8 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 						action.ToolInput = request.Query
 					}
 
-					// We need to call doAction directly. We'll use the existing nameToTool mapping.
-					nameToTool := getNameToTool(nbAgentPlanner.GetTools())
-
 					// Build query context (for resumption, we use the request's query context).
-					stepResponse, finishAct, errAct := executor.doAction(nameToTool, action, request.QueryContext)
+					stepResponse, finishAct, errAct := executor.doAction(resumeNameToTool, action, request.QueryContext)
 					if errAct == nil && finishAct == nil {
 						executor.steps = append(executor.steps, stepResponse)
 						executor.stepKeys[action.ToolID] = true
@@ -3972,13 +3999,24 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			ctx.GetLogger().Info("agentexecutor: triggering long-term memory extraction", "notebook_len", len(notebook), "has_notebook", notebook != "")
 
 			err := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
-				_ = extractLongTermMemory(bgCtx, request, response, notebook)
+				_ = extractLongTermMemory(bgCtx, agent, request, response, notebook, len(toolInvocations))
 			})
 			if err != nil {
 				ctx.GetLogger().Error("agentexecutor: failed to submit memory extraction task", "error", err)
 			}
 		} else {
 			ctx.GetLogger().Info("agentexecutor: skipping long-term memory extraction (trivial query, no notebook)", "query_len", len(queryForClassification))
+		}
+
+		// Session working memory — refresh the typed blob the next turn's
+		// Compose will inject under <session_working_memory>. Internal gating
+		// (module on + tenant allowlist + session layer enabled + non-empty
+		// SessionId) lives inside the extractor; submission is unconditional
+		// so the gate can be flipped without redeploying.
+		if serr := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
+			extractSessionWorkingMemory(bgCtx, request, response, notebook)
+		}); serr != nil {
+			ctx.GetLogger().Error("agentexecutor: failed to submit session-extractor task", "error", serr)
 		}
 	} else {
 		ctx.GetLogger().Info("agentexecutor: skipping memory extraction - conditions not met",

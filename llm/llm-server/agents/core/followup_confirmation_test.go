@@ -49,7 +49,7 @@ func TestFollowupRequestForToolOperationConfirmation_QuerySubstring(t *testing.T
 			var err error
 			assert.NotPanics(t, func() {
 				fr, err = FollowupRequestForToolOperationConfirmation(
-					llmOverrideContext(), query, agent, action, toolcore.ToolRequestTypeUpdate)
+					llmOverrideContext(), query, agent, action, toolcore.ToolRequestTypeUpdate, action.Tool)
 			})
 			assert.NoError(t, err)
 			assert.Contains(t, fr.Question, tc.wantContains)

@@ -109,8 +109,10 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"Follow the FinOps Investigation Model layers: Spend Context -> Anomaly & Change -> Optimization -> Resource Verification. Do not skip layers.",
 		"For spike/increase questions, NEVER guess the cause. After identifying the top cost driver from spend_summary, use delegate_agent with cloud-specific tools (gcp/aws/azure) to investigate WHAT changed -- new resources, scaling events, usage increases, config changes. An answer like 'likely due to increased usage' without tool-verified evidence is insufficient.",
 		"Only count recommendations with status='Open' as actionable savings. Archive/Closed recommendations were already handled. If total savings exceeds current spend, flag this and verify the numbers.",
-		"To help a user act on a recommendation, ALWAYS first present its safety band (safe/review/risky/unknown), its blast radius (dependent services / production dependents), and the estimated monthly savings, read from the recommendation data; then use propose_recommendation_apply to give the user a review-and-apply link. You do not apply changes yourself -- the user applies in the UI.",
-		"For a recommendation whose safety band is 'risky' or 'unknown', call out the impact explicitly before handing off. Never imply a recommendation has been applied; you only propose and link.",
+		"To help a user act on a recommendation, ALWAYS first present its safety band (safe/review/risky/unknown), its blast radius (dependent services / production dependents), and the estimated monthly savings, read from the recommendation data. Then either hand off with propose_recommendation_apply (a review-and-apply link) or, when the user asks you to do it, resolve it directly with the typed write tools.",
+		"Resolution tool selection: recommendation_apply for the platform apply flow (deployment change, pull request, or cloud alarm — pass the recommendation_id and, for rightsizing, the per-container data payload); recommendation_execute_cli for recommendations resolved by cloud CLI commands (always pass recommendation_id so the run lands in its resolution history); ticket_master_v2 to create a tracking ticket, followed by recommendation_record_ticket_resolution to link that ticket to the recommendation.",
+		"Every write tool pauses for the user's explicit confirmation before running — state what you are about to do, then call the tool and let the platform ask. Never claim a recommendation was applied, executed, or ticketed unless the tool returned success; report failures verbatim.",
+		"For a recommendation whose safety band is 'risky' or 'unknown', call out the impact explicitly and prefer the propose_recommendation_apply hand-off; use the direct write tools only when the user insists after seeing the risk.",
 	}
 
 	schema := []string{
@@ -337,8 +339,19 @@ func (a *FinOpsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore
 		tools.ToolAnomalyExecuteSql,
 
 		// Hand-off tool (read-only): returns a deep link to the optimise UI's
-		// review-and-apply flow. The agent proposes; the user applies in the UI.
+		// review-and-apply flow for users who prefer applying there.
 		tools.ToolProposeRecommendationApply,
+
+		// Typed resolution write tools: each funnels through an api-server RPC
+		// under the requesting user's role (the agent holds no credentials),
+		// classifies as a write so the executor pauses for confirmation, and
+		// keys that confirmation per action (ToolConfirmationScope) so every
+		// distinct apply/execution/linkage is approved individually.
+		tools.ToolRecommendationApply,
+		tools.ToolRecommendationExecuteCli,
+		tools.ToolRecommendationRecordTicketResolution,
+		// Ticket creation itself: the existing config-aware ticket tool.
+		tools.TicketMasterToolNameV2,
 	}
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, a.accountId)

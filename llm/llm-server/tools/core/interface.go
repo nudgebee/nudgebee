@@ -205,6 +205,17 @@ type ToolRequestInferencePrompt interface {
 	InferToolRequestTypePrompt(ctx *security.RequestContext, toolName, input string) (string, error)
 }
 
+// ToolConfirmationScope is an optional interface for write tools whose user
+// confirmation must be per-action rather than per-tool. By default a
+// write-confirmation is recorded under the tool name, so the first "yes"
+// covers every later call to the same tool in the conversation. A tool
+// implementing this interface returns a key that varies with the input
+// (e.g. name + input hash), making each distinct invocation pause for its
+// own approval.
+type ToolConfirmationScope interface {
+	ConfirmationKey(toolInput string) string
+}
+
 type ToolConfigSource string
 
 const (

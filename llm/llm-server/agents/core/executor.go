@@ -1086,6 +1086,7 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 
 		followupMessageType := string(FollowupTypeSingleSelect)
 		toolName := ""
+		confirmationKey := ""
 		existingToolConfigs := map[string]string{}
 		existingToolConfirmations := map[string]string{}
 		if request.QueryConfig.ToolConfigs != nil {
@@ -1141,6 +1142,12 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 			if followupConfig["toolName"] != nil {
 				toolName = followupConfig["toolName"].(string)
 			}
+			// Per-action confirmations record under the key the doAction gate
+			// computed (tool + input scope), carried on the followup; absent —
+			// the historical per-tool key (the tool name).
+			if key, ok := followupConfig["confirmationKey"].(string); ok && key != "" {
+				confirmationKey = key
+			}
 		}
 
 		updateRequestMessageConfig := false
@@ -1150,7 +1157,10 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 			request.Query = previousQuery
 			updateRequestMessageConfig = true
 		} else if followupMessageType == string(FollowupTypeToolConfirmation) {
-			existingToolConfirmations[toolName] = followupMessage.Response
+			if confirmationKey == "" {
+				confirmationKey = toolName
+			}
+			existingToolConfirmations[confirmationKey] = followupMessage.Response
 			request.Query = previousQuery
 			updateRequestMessageConfig = true
 		} else {
