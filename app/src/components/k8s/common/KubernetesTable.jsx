@@ -1528,6 +1528,149 @@ KubernetesNetwork.propTypes = {
   query: PropTypes.object,
 };
 
+// Disk I/O throughput. Pod/workload/namespace scopes resolve to cAdvisor's
+// container_fs_* counters and the node scope to node-exporter's node_disk_*;
+// both are rendered by the backend (buildPrometheusWorkloadQueries /
+// buildPrometheusNodeQueries) from the disk_read_bytes / disk_write_bytes keys.
+// Writes are plotted negative so reads and writes mirror around zero, matching
+// how KubernetesNetwork presents receive vs transmit.
+export const KubernetesDiskIO = ({ accountId, query }) => {
+  const [showLoading, setShowLoading] = useState(false);
+  const [data, setData] = useState([]);
+  const [labels, setLabels] = useState([]);
+  const [promQueries, setPromQueries] = useState({});
+  const [dateTimeRange, setDateTimeRange] = useState({
+    startDate: getSpecificTime(60),
+    endDate: new Date().getTime(),
+  });
+
+  const fetchData = async () => {
+    setShowLoading(true);
+    setData([]);
+    setLabels([]);
+
+    try {
+      const response = await apiKubernetes1.utilisationApi({
+        ...query,
+        accountId,
+        startDate: dateTimeRange.startDate,
+        endDate: dateTimeRange.endDate,
+        metrics: ['disk_read_bytes', 'disk_write_bytes'],
+      });
+
+      setPromQueries(buildPromQueries(response));
+
+      const getSeriesData = (key) => {
+        const found = response.find((r) => r.query_key === key);
+        return found?.payload?.[0] || null;
+      };
+
+      const readPayload = getSeriesData('disk_read_bytes');
+      const writePayload = getSeriesData('disk_write_bytes');
+      const rawTimestamps = readPayload?.timestamps || writePayload?.timestamps || [];
+
+      if (rawTimestamps.length > 0) {
+        const formattedLabels = rawTimestamps.map((ts) => convertNumberToTimestamp(ts * 1000));
+        setLabels(formattedLabels);
+      }
+      const newDataset = [];
+      if (readPayload?.values?.length) {
+        newDataset.push({
+          label: 'Read',
+          borderWidth: 1,
+          data: readPayload.values.map((v) => v / (1024 * 1024)),
+          borderColor: 'orange',
+          backgroundColor: 'white',
+          pointRadius: 0,
+        });
+      }
+
+      if (writePayload?.values?.length) {
+        newDataset.push({
+          label: 'Write',
+          borderWidth: 1,
+          data: writePayload.values.map((v) => -(v / (1024 * 1024))),
+          borderColor: 'red',
+          backgroundColor: 'white',
+          pointRadius: 0,
+        });
+      }
+
+      setData(newDataset);
+    } catch (error) {
+      console.error('Error fetching Kubernetes disk I/O metrics:', error);
+    } finally {
+      setShowLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, [dateTimeRange, query, accountId]);
+
+  const handleDateRangeChange = (passedSelectedDateTime) => {
+    updateDateRange(setDateTimeRange, passedSelectedDateTime);
+  };
+
+  return (
+    <ListingLayout id='disk-io-chart'>
+      <ListingLayout.Toolbar
+        actions={
+          <>
+            <CustomDateTimeRangePicker
+              passedSelectedDateTime={{
+                startTime: dateTimeRange.startDate,
+                endTime: dateTimeRange.endDate,
+              }}
+              onChange={({ selection }) => handleDateRangeChange(selection)}
+            />
+            <DsButton
+              tone='secondary'
+              size='sm'
+              composition='icon-only'
+              icon={<RefreshIcon />}
+              aria-label='Refresh'
+              tooltip='Refresh'
+              onClick={() => void fetchData()}
+              loading={showLoading}
+            />
+          </>
+        }
+      />
+      <ListingLayout.Body>
+        <Grid
+          container
+          spacing={ds.space[4]}
+          pt={ds.space.mul(0, 10)}
+          mb={ds.space.mul(0, 10)}
+          sx={{
+            borderRadius: '0 0 var(--ds-radius-lg) var(--ds-radius-lg)',
+          }}
+        >
+          <Grid item xs={12}>
+            <Grid container sx={chartContainerStyle}>
+              <Grid item xs={12}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+                    Disk I/O - Throughput (MB/s)
+                  </Typography>
+                  <MetricQueryInfo queries={promQueries} />
+                </Box>
+                <Chart.Line dataset={data} labels={labels} chartLabel={['Read', 'Write']} loading={showLoading} />
+              </Grid>
+            </Grid>
+          </Grid>
+        </Grid>
+      </ListingLayout.Body>
+    </ListingLayout>
+  );
+};
+
+KubernetesDiskIO.propTypes = {
+  accountId: PropTypes.string,
+  query: PropTypes.object,
+};
+
 export const KubernetesDiskTrend = ({ accountId, query }) => {
   const [showLoading, setShowLoading] = useState(false);
   const [data, setData] = useState([]);
@@ -2037,6 +2180,9 @@ export const KubernetesUtilizationCharts3 = ({ accountId, query }) => {
       <Heading value={'Network'} borderWidth='md' borderColor={ds.blue[500]} />
       <Box mb={ds.space[2]} />
       <KubernetesNetwork accountId={accountId} query={query} />
+      <Heading value={'Disk I/O'} borderWidth='md' />
+      <Box mb={ds.space[2]} />
+      <KubernetesDiskIO accountId={accountId} query={query} />
     </>
   );
 };
@@ -2566,6 +2712,7 @@ const KubernetesTable = ({
       security: () => <KubernetesSecurityDrilldown accountId={accountId} query={query} />,
       slo: () => <KubernetesSLOConfig accountId={accountId} query={query} />,
       network: () => <KubernetesNetwork accountId={accountId} query={query} />,
+      disk_io: () => <KubernetesDiskIO accountId={accountId} query={query} />,
       pvc_utilization: () => <KubernetesPVCUtilization accountId={accountId} query={query} />,
       'node-storage': () => <KubernetesNodeStorageUtilization accountId={accountId} query={query} />,
       profilers: () => <KubernetesPodProfilerHistory accountId={accountId} query={query} />,
