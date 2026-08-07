@@ -57,6 +57,8 @@ import {
   lastSeenBucketToParams,
   formatRuleName,
   ruleNameSearchText,
+  makeRuleFilterValue,
+  parseRuleFilterValue,
   getRecommendationBrief,
   getResourceDisplayName,
   safeParseJSON,
@@ -591,6 +593,42 @@ const OptimizeNewPage = () => {
       });
   }, []);
 
+  // The Rules filter selects (rule_name, category) pairs (see makeRuleFilterValue).
+  // Collapse the selection back to the axes the API and the client-side facet
+  // narrowing actually consume: a rule_name list; an optional category list (set
+  // only when every selected rule is category-scoped, so it can tighten the table
+  // to the categories the dropdown showed); and a row matcher for the severity
+  // chips. A legacy bare value (no category, from an old ?rules= URL) stays
+  // unscoped on every axis, preserving the old rule_name-only behaviour.
+  const ruleFilter = useMemo(() => {
+    const ruleNames = new Set<string>();
+    const categories = new Set<string>();
+    const exact = new Set<string>();
+    const unscoped = new Set<string>();
+    let everyRuleScoped = filters.rules.length > 0;
+    for (const value of filters.rules) {
+      exact.add(value);
+      const { ruleName, category } = parseRuleFilterValue(value);
+      ruleNames.add(ruleName);
+      if (category) {
+        categories.add(category);
+      } else {
+        everyRuleScoped = false;
+        unscoped.add(ruleName);
+      }
+    }
+    return {
+      ruleNames: Array.from(ruleNames),
+      categories: everyRuleScoped ? Array.from(categories) : [],
+      matchesRow: (row: any) => {
+        if (!row?.rule_name) {
+          return false;
+        }
+        return exact.has(makeRuleFilterValue(row.rule_name, row.category || '')) || unscoped.has(row.rule_name);
+      },
+    };
+  }, [filters.rules]);
+
   // Build filter query for the API
   const buildFilterQuery = useCallback(
     (extraFilters?: Partial<FilterState>) => {
@@ -733,9 +771,9 @@ const OptimizeNewPage = () => {
   // Severity chip counts — the raw aggregate narrowed client-side by the Rules
   // selection, so the chips always predict what clicking them will show.
   const summaryData = useMemo(() => {
-    const rows = filters.rules.length > 0 ? summaryRows.filter((r: any) => filters.rules.includes(r.rule_name)) : summaryRows;
+    const rows = filters.rules.length > 0 ? summaryRows.filter((r: any) => ruleFilter.matchesRow(r)) : summaryRows;
     return processSummaryResults(rows);
-  }, [summaryRows, filters.rules, processSummaryResults]);
+  }, [summaryRows, filters.rules, ruleFilter, processSummaryResults]);
 
   // Fetch safety chip counts — same scope as the summary above PLUS the rules
   // selection, minus the safety facet itself.
@@ -744,14 +782,17 @@ const OptimizeNewPage = () => {
     setSafetyLoading(true);
 
     const accountId = filters.account.length > 0 ? filters.account : '';
-    const activeCategories = filters.category.length > 0 ? filters.category : NON_SECURITY_CATEGORIES;
+    // Same category scoping as the table (buildTableQuery): the card wins; else a
+    // category-scoped rule selection tightens the bands to those categories.
+    const activeCategories =
+      filters.category.length > 0 ? filters.category : ruleFilter.categories.length > 0 ? ruleFilter.categories : NON_SECURITY_CATEGORIES;
 
     const fetchSafetyRows = async () => {
       try {
         const rows = await recommendationApi.getK8sRecommendationSafetyGroups({
           accountId,
           category: activeCategories,
-          ruleName: filters.rules.length > 0 ? filters.rules : undefined,
+          ruleName: ruleFilter.ruleNames.length > 0 ? ruleFilter.ruleNames : undefined,
           excludeRuleName: UPGRADE_PLANNER_RULES,
           accountObjectId: filters.search || undefined,
           status: filters.status.length > 0 ? filters.status : DEFAULT_STATUS,
@@ -787,7 +828,7 @@ const OptimizeNewPage = () => {
     filters.category,
     filters.search,
     filters.severity,
-    filters.rules,
+    ruleFilter,
     filters.status,
     filters.savings,
     filters.lastSeen,
@@ -812,14 +853,19 @@ const OptimizeNewPage = () => {
       // An explicit rule selection replaces the UPGRADE_PLANNER_RULES exclusion
       // inside the API (`_in` and `_not_in` cannot coexist) — safe, because the
       // Rules options are sourced from an aggregate that already excludes them.
-      ...(filters.rules.length > 0 ? { ruleName: filters.rules } : {}),
+      ...(ruleFilter.ruleNames.length > 0 ? { ruleName: ruleFilter.ruleNames } : {}),
+      // When rules are picked by their category-scoped entry (e.g. "Missing
+      // Resource Requests") and no category card is narrowing the view, tighten
+      // the query to those categories so the table matches the per-category
+      // counts the Rules dropdown showed. The card, when set, still wins.
+      ...(filters.category.length === 0 && ruleFilter.categories.length > 0 ? { category: ruleFilter.categories } : {}),
       orderBy: sortField,
       orderAsc: sortDirection === 'asc',
       limit: rowsPerPage,
       offset: page * rowsPerPage,
       fetchTicket: true,
     };
-  }, [buildFilterQuery, filters.rules, sortField, sortDirection, rowsPerPage, page]);
+  }, [buildFilterQuery, ruleFilter, filters.category.length, sortField, sortDirection, rowsPerPage, page]);
 
   const applyTableResult = useCallback((result: any) => {
     const recs = result?.data?.recommendation || [];
@@ -912,27 +958,33 @@ const OptimizeNewPage = () => {
   // ─── Computed: Rules filter (grouped by category, sorted by open count) ───
 
   // Options come from the same aggregate as the severity chips, merged across
-  // the selected severities (all severities when none are selected), grouped
-  // under their category — the Account-dropdown treatment. The open count rides
-  // in the label; `searchText` keeps the built-in search matching on the name.
+  // the selected severities (all severities when none are selected). Keyed on
+  // (rule_name, category), not rule_name alone, so a rule that spans categories
+  // (pod_right_sizing: Configuration when a workload declares no requests,
+  // RightSizing otherwise) becomes one row per category — each under its own
+  // group, with the category-scoped label the table uses ("Missing Resource
+  // Requests" vs "Pod Right Sizing") and that category's own count. The open
+  // count rides in the label; `searchText` keeps search matching either name.
   const rulesFilterOptions = useMemo(() => {
     const targetSeverities: string[] = filters.severity.length > 0 ? filters.severity : [...SEVERITY_ORDER];
-    const agg: Record<string, { count: number; category: string }> = {};
+    const agg: Record<string, { count: number; ruleName: string; category: string }> = {};
     for (const r of summaryRows) {
       if (!r.rule_name || !targetSeverities.includes(r.severity)) {
         continue;
       }
-      const entry = agg[r.rule_name] || { count: 0, category: r.category || '' };
+      const category = r.category || '';
+      const value = makeRuleFilterValue(r.rule_name, category);
+      const entry = agg[value] || { count: 0, ruleName: r.rule_name, category };
       entry.count += r.count || 0;
-      agg[r.rule_name] = entry;
+      agg[value] = entry;
     }
     return Object.entries(agg)
       .sort((a, b) => b[1].count - a[1].count)
-      .map(([ruleName, entry]) => ({
-        label: `${formatRuleName(ruleName)} (${entry.count})`,
-        value: ruleName,
+      .map(([value, entry]) => ({
+        label: `${formatRuleName(entry.ruleName, entry.category)} (${entry.count})`,
+        value,
         group: CATEGORY_LABELS[entry.category] || entry.category || 'Other',
-        searchText: ruleNameSearchText(ruleName),
+        searchText: ruleNameSearchText(entry.ruleName),
       }));
   }, [summaryRows, filters.severity]);
 
@@ -942,15 +994,19 @@ const OptimizeNewPage = () => {
   // filter the table with an idle-looking control).
   const rulesFilterValue = useMemo(
     () =>
-      filters.rules.map(
-        (ruleName) =>
-          rulesFilterOptions.find((o) => o.value === ruleName) || {
-            label: formatRuleName(ruleName),
-            value: ruleName,
-            group: 'Selected',
-            searchText: ruleNameSearchText(ruleName),
-          }
-      ),
+      filters.rules.map((value) => {
+        const found = rulesFilterOptions.find((o) => o.value === value);
+        if (found) {
+          return found;
+        }
+        const { ruleName, category } = parseRuleFilterValue(value);
+        return {
+          label: formatRuleName(ruleName, category),
+          value,
+          group: category ? CATEGORY_LABELS[category] || category : 'Selected',
+          searchText: ruleNameSearchText(ruleName),
+        };
+      }),
     [filters.rules, rulesFilterOptions]
   );
 
@@ -1072,7 +1128,18 @@ const OptimizeNewPage = () => {
       const isActive = filters.category.length === 1 && filters.category[0] === category;
       const nextCategory = isActive ? [] : [category];
       const nextRules =
-        nextCategory.length > 0 ? filters.rules.filter((rule) => !ruleCategoryMap[rule] || ruleCategoryMap[rule].has(category)) : filters.rules;
+        nextCategory.length > 0
+          ? filters.rules.filter((value) => {
+              const { ruleName, category: ruleCategory } = parseRuleFilterValue(value);
+              // A category-scoped selection is pruned unless it belongs to the
+              // clicked card; a legacy unscoped one falls back to the rule's
+              // known categories (kept when unknown — over-show beats drop).
+              if (ruleCategory) {
+                return ruleCategory === category;
+              }
+              return !ruleCategoryMap[ruleName] || ruleCategoryMap[ruleName].has(category);
+            })
+          : filters.rules;
       handleFiltersChange({ ...filters, category: nextCategory, rules: nextRules });
     },
     [filters, handleFiltersChange, ruleCategoryMap]
@@ -1109,7 +1176,17 @@ const OptimizeNewPage = () => {
   const handleRulesChange = useCallback(
     (nextRules: string[]) => {
       const activeCategory = filters.category.length === 1 ? filters.category[0] : '';
-      const crossesCategory = activeCategory && nextRules.some((rule) => ruleCategoryMap[rule] && !ruleCategoryMap[rule].has(activeCategory));
+      const crossesCategory =
+        activeCategory &&
+        nextRules.some((value) => {
+          const { ruleName, category } = parseRuleFilterValue(value);
+          // A category-scoped pick that isn't the active card crosses it; a
+          // legacy unscoped pick crosses only when the rule can't appear here.
+          if (category) {
+            return category !== activeCategory;
+          }
+          return ruleCategoryMap[ruleName] && !ruleCategoryMap[ruleName].has(activeCategory);
+        });
       handleFiltersChange({ ...filters, rules: nextRules, ...(crossesCategory ? { category: [] } : {}) });
     },
     [filters, handleFiltersChange, ruleCategoryMap]

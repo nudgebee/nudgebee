@@ -192,13 +192,38 @@ export const formatRuleName = (ruleName: string, category?: string): string => {
 };
 
 // Every label a rule can carry, for search matching. The Rules filter shows one
-// option per rule_name, so a rule with a category-scoped label would otherwise
-// be unfindable by the name the table actually renders.
+// option per (rule_name, category), so a rule with a category-scoped label would
+// otherwise be unfindable by the name the table actually renders (and vice versa).
 export const ruleNameSearchText = (ruleName: string): string => {
   const aliases = Object.values(CATEGORY_RULE_LABELS)
     .map((byRule) => byRule[ruleName])
     .filter(Boolean);
   return Array.from(new Set([formatRuleName(ruleName), ...aliases])).join(' ');
+};
+
+// ─── Rules filter values (rule_name + category) ───
+//
+// A rule can land under more than one category — pod_right_sizing is
+// Configuration when a workload declares no requests at all, RightSizing
+// otherwise — and the table labels each framing differently ("Missing Resource
+// Requests" vs "Pod Right Sizing"). The Rules filter therefore keys its options
+// on (rule_name, category), not rule_name alone, so each framing is its own
+// row with the right label, group and count. The option value carries both so
+// the two rows select independently.
+//
+// A bare value (no separator) means "this rule, any category" — the legacy
+// shape, still produced by old shared ?rules= URLs, and treated as unscoped.
+const RULE_FILTER_SEP = '::';
+
+export const makeRuleFilterValue = (ruleName: string, category?: string): string =>
+  category ? `${ruleName}${RULE_FILTER_SEP}${category}` : ruleName;
+
+export const parseRuleFilterValue = (value: string): { ruleName: string; category?: string } => {
+  const idx = value.indexOf(RULE_FILTER_SEP);
+  if (idx === -1) {
+    return { ruleName: value };
+  }
+  return { ruleName: value.slice(0, idx), category: value.slice(idx + RULE_FILTER_SEP.length) };
 };
 
 export const daysSince = (dateStr: string | null): string => {
