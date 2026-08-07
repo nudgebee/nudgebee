@@ -610,16 +610,23 @@ rules:
         # gone now that dedup_ttl_seconds suppresses repeats before actions run.
         template: "ecs-task:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}:{{ (index .Detail \"lastStatus\") }}"
       resource_id:
+        # Attach the event to the durable ECS service when the task belongs
+        # to one (group "service:<name>") — the ephemeral task is usually
+        # gone minutes after the event fires, leaving the subject pointing
+        # at a dead resource. Standalone/scheduled (family:) tasks keep the
+        # task id.
         template: |
-          {{ $taskIdentifier := "" }}
-          {{ if (index .Event "resources") }}
-            {{ $taskIdentifier = (index .Event "resources" 0) | str | default "" | splitList "/" | last }}
-          {{ else if (index .Detail "taskArn") }}
-            {{ $taskIdentifier = (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          {{ $group := (index .Detail "group") | str }}
+          {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          {{ if and (hasPrefix $group "service:") $cluster }}
+            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
+          {{ else if (index .Event "resources") }}
+            {{ (index .Event "resources" 0) | str | default "" | splitList "/" | last }}
+          {{ else }}
+            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last | default "N/A" }}
           {{ end }}
-          {{ $taskIdentifier | default "N/A" }}
       resource_type:
-        value: "task"
+        template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
       resource_service_name:
         value: "ecs"
       resource_region:
@@ -700,10 +707,18 @@ rules:
           Stopped Reason (Task): {{ .Detail.stoppedReason | default "N/A" }} (Event ID: {{ .Event.id }}).
       status: "FIRING" # Or your equivalent for "Open"
       resource_id:
+        # Durable ECS service when the task belongs to one; see the note on
+        # the same block in ECS_Task_All_Events_EventBridge.
         template: |
-          {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          {{ $group := (index .Detail "group") | str }}
+          {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          {{ if and (hasPrefix $group "service:") $cluster }}
+            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
+          {{ else }}
+            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          {{ end }}
       resource_type:
-        value: "task"
+        template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
       resource_service_name: # Default from 'aws.ecs' source is 'ecs', this explicitly sets it.
         value: "ecs"
       resource_region: # Default from event.region, this explicitly sets it.
@@ -821,13 +836,21 @@ rules:
           Task Definition: {{ (index .Detail "taskDefinitionArn") }}.
       status: "FIRING"
       resource_id:
+        # Durable ECS service when the task belongs to one; see the note on
+        # the same block in ECS_Task_All_Events_EventBridge.
         template: |
-          {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
-      resource_type: 
-        value: "task"
-      resource_service_name: 
+          {{ $group := (index .Detail "group") | str }}
+          {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          {{ if and (hasPrefix $group "service:") $cluster }}
+            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
+          {{ else }}
+            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          {{ end }}
+      resource_type:
+        template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
+      resource_service_name:
         value: "ecs"
-      resource_region: 
+      resource_region:
         template: "{{ (index .Event \"region\") }}"
     actions:
       - name: "get_task_definition_for_oom"
@@ -917,11 +940,19 @@ rules:
           Container: {{ safeIndex .Detail "containers" 0 "name" }}.
           Image: {{ safeIndex .Detail "containers" 0 "image" }}.
       status: "FIRING"
-      resource_id: 
+      resource_id:
+        # Durable ECS service when the task belongs to one; see the note on
+        # the same block in ECS_Task_All_Events_EventBridge.
         template: |
-          {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
-      resource_type: 
-        value: "task"
+          {{ $group := (index .Detail "group") | str }}
+          {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          {{ if and (hasPrefix $group "service:") $cluster }}
+            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
+          {{ else }}
+            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          {{ end }}
+      resource_type:
+        template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
       resource_service_name: 
         value: "ecs"
       resource_region: 

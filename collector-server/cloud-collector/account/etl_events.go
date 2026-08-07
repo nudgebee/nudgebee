@@ -236,6 +236,15 @@ func prepareEventForDB(ctx *security.RequestContext, event providers.Event, orig
 	if event.Description != "" {
 		description = &event.Description
 	}
+	// The events "cluster" field is a generic scoping key; the other cloud
+	// producers (k8s-collector cloud findings, spend anomalies) fill it with
+	// the account NAME, so using the number here made the same account show
+	// up twice in the Cluster facet.
+	cluster := originatingAccount.AccountName
+	if cluster == "" {
+		cluster = originatingAccount.AccountNumber
+	}
+
 	subjectName := event.ResourceId
 	if subjectName == "" {
 		subjectName = event.EventName
@@ -263,7 +272,7 @@ func prepareEventForDB(ctx *security.RequestContext, event providers.Event, orig
 		"ends_at":           eventDateFormatted,
 		"description":       description,
 		"created_at":        currentTime,
-		"cluster":           originatingAccount.AccountNumber,
+		"cluster":           cluster,
 		"cloud_resource_id": nilString,
 		"cloud_account_id":  internalDBAccountID,
 		"account_id":        internalDBAccountID,

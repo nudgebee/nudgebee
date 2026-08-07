@@ -292,8 +292,10 @@ func TestAwsEvenBridge_Mock_ECS(t *testing.T) {
 	assert.Contains(t, processedEvent.Description, "stopped unexpectedly")
 	assert.Equal(t, providers.EventStatusFiring, processedEvent.EventStatus)
 	assert.Equal(t, "AmazonECS", processedEvent.ResourceServiceName)
-	assert.Equal(t, "abcdef1234567890", processedEvent.ResourceId)
-	assert.Equal(t, "task", processedEvent.ResourceType)
+	// The task belongs to a service (group "service:my-ecs-service"), so the
+	// event attaches to the durable service resource, not the ephemeral task.
+	assert.Equal(t, "arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-ecs-service", processedEvent.ResourceId)
+	assert.Equal(t, "service", processedEvent.ResourceType)
 
 	require.NotNil(t, processedEvent.Raw, "processedEvent.Raw should not be nil")
 	rawMap := processedEvent.Raw
