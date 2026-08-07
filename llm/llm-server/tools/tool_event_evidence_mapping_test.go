@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"nudgebee/llm/events"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // buildEvidencesRow marshals evidence blocks into the row shape
@@ -72,6 +74,59 @@ func TestProcessRowWithMessages_MapsTracesActionName(t *testing.T) {
 	if len(ev.Traces.Insight) == 0 {
 		t.Errorf("expected traces insights carried")
 	}
+}
+
+func TestProcessRowWithMessages_MapsPodEnricherActionName(t *testing.T) {
+	podData, _ := json.Marshal([]any{map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "checkout-6c54595687-cjp9x"}}})
+	row := buildEvidencesRow(t, []map[string]any{
+		{
+			"type":            "json",
+			"data":            string(podData),
+			"additional_info": map[string]any{"action_name": "pod_enricher", "title": "Pod details", "pod_name": "checkout-6c54595687-cjp9x"},
+			"insight":         []any{},
+		},
+	})
+	ev := processedEvidence(t, EventsExecuteTool{}.processRowWithMessages(row, 0, 1, nil))
+	if ev.PodData.Data == nil {
+		t.Fatalf("expected pod_enricher block to map into PodData slot, got Others=%v", ev.Others)
+	}
+	pods, ok := ev.PodData.Data.([]any)
+	if !ok || len(pods) != 1 {
+		t.Errorf("expected parsed pod list with 1 entry, got %#v", ev.PodData.Data)
+	}
+	if len(ev.Others) != 0 {
+		t.Errorf("expected pod_enricher block not to fall into Others, got %v", ev.Others)
+	}
+}
+
+// A non-string action_name (malformed/unexpected upstream JSON) must not
+// panic the type assertion that gates the pod_enricher branch.
+func TestProcessRowWithMessages_PodEnricherNonStringActionName(t *testing.T) {
+	row := buildEvidencesRow(t, []map[string]any{
+		{
+			"type":            "json",
+			"data":            "{}",
+			"additional_info": map[string]any{"action_name": []any{"pod_enricher"}},
+		},
+	})
+	assert.NotPanics(t, func() {
+		EventsExecuteTool{}.processRowWithMessages(row, 0, 1, nil)
+	})
+}
+
+func TestBuildEvidenceManifest_MapsPodEnricherToPodData(t *testing.T) {
+	data := map[string]any{"id": "test-event"}
+	evidences := []events.Evidence{
+		{Type: "json", AdditionalInfo: map[string]any{"action_name": "pod_enricher"}},
+	}
+	EventsExecuteTool{}.buildEvidenceManifest(data, evidences)
+	manifest, ok := data["evidences"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected manifest map, got %T", data["evidences"])
+	}
+	types, _ := manifest["available_evidence_types"].([]string)
+	assert.Contains(t, types, "pod_data")
+	assert.NotContains(t, types, "json_other")
 }
 
 func TestProcessRowWithMessages_LogsEvidence(t *testing.T) {

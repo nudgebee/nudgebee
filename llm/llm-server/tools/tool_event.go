@@ -508,6 +508,23 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 				investigateData.Traces.Insight = evidence.Insights
 				investigateData.Traces.AdditionalInfo = evidence.AdditionalInfo
 				investigateData.Traces.Title = evidence.Type
+			} else if actionName, ok := evidence.AdditionalInfo["action_name"].(string); evidence.Type == "json" && ok && actionName == "pod_enricher" {
+				// pod_enricher's payload is a JSON array, not an object — the
+				// generic json branch below would fail to match it and drop it
+				// into Others. Route it to PodData directly instead.
+				var podData any
+				if stringData, ok := evidence.Data.(string); ok {
+					if err := common.UnmarshalJson([]byte(stringData), &podData); err != nil {
+						slog.Error("unmarshaling pod_enricher JSON", "error", err)
+						podData = nil
+					}
+				} else {
+					podData = evidence.Data
+				}
+				investigateData.PodData.Data = podData
+				investigateData.PodData.Insight = evidence.Insights
+				investigateData.PodData.AdditionalInfo = evidence.AdditionalInfo
+				investigateData.PodData.Title = evidence.Type
 			} else if evidence.Type == "json" {
 				evidenceDataJson := map[string]any{}
 				additionalInfo := evidence.AdditionalInfo
@@ -981,7 +998,7 @@ func (m EventsExecuteTool) buildEvidenceManifest(data map[string]any, evidences 
 			case actionName == "signoz_logs_enricher" || actionName == "logs_enricher" || actionName == "cloud_logs" || actionName == "logs":
 				hasLogs = true
 				availableTypes = append(availableTypes, "logs")
-			case actionName == "pod_details":
+			case actionName == "pod_details", actionName == "pod_enricher":
 				availableTypes = append(availableTypes, "pod_data")
 			case strings.Contains(actionName, "api_failure_enricher"):
 				availableTypes = append(availableTypes, "api_failures")
