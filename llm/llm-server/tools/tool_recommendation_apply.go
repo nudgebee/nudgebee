@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"nudgebee/llm/security"
@@ -42,7 +43,7 @@ func (m RecommendationApplyTool) InputSchema() core.ToolSchema {
 			},
 			"data": {
 				Type:        core.ToolSchemaTypeObject,
-				Description: "Per-rule apply payload. For pod_right_sizing: {\"<container>\": {\"cpu\": {\"request\": \"0.25\", \"limit\": \"0.3\"}, \"memory\": {\"request\": \"512Mi\", \"limit\": \"600Mi\"}}}. Omit to apply the recommendation's own proposed values where the backend supports it.",
+				Description: "Per-rule apply payload — the backend applies EXACTLY this, there is no fallback to the recommendation's own values. For pod_right_sizing it is REQUIRED: {\"<container>\": {\"cpu\": {\"request\": \"0.25\", \"limit\": \"0.3\"}, \"memory\": {\"request\": \"512Mi\", \"limit\": \"600Mi\"}}} built from the recommendation's proposed values (fetch them first); an empty payload changes nothing.",
 			},
 			"summary": {
 				Type:        core.ToolSchemaTypeString,
@@ -74,8 +75,39 @@ func (m RecommendationApplyTool) ConfirmationKey(toolInput string) string {
 	return perActionConfirmationKey(ToolRecommendationApply, toolInput)
 }
 
+// applyDataValueLines renders the data payload — the values api-server will
+// actually apply — as per-container lines for the approval card. This is the
+// deterministic truth of the change; the model's summary is narrative on top.
+func applyDataValueLines(data map[string]any) string {
+	containers := make([]string, 0, len(data))
+	for name := range data {
+		containers = append(containers, name)
+	}
+	sort.Strings(containers)
+	lines := make([]string, 0, len(containers))
+	for _, name := range containers {
+		values, ok := data[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		parts := []string{}
+		for _, resource := range []string{"cpu", "memory"} {
+			sub, _ := values[resource].(map[string]any)
+			for _, field := range []string{"request", "limit"} {
+				if v, exists := sub[field]; exists && v != nil && v != "" {
+					parts = append(parts, fmt.Sprintf("%s %s → %v", resource, field, v))
+				}
+			}
+		}
+		if len(parts) > 0 {
+			lines = append(lines, fmt.Sprintf("- %s: %s", name, strings.Join(parts, ", ")))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // ConfirmationQuestion renders the approval card in operator terms — the
-// concrete change (from the summary the model fills off the recommendation)
+// concrete values being applied (from the data payload), the model's summary,
 // and the channel, not a raw recommendation id.
 func (m RecommendationApplyTool) ConfirmationQuestion(toolInput string) string {
 	args := confirmationArgs(toolInput)
@@ -92,12 +124,22 @@ func (m RecommendationApplyTool) ConfirmationQuestion(toolInput string) string {
 	case "aws", "azure", "gcp":
 		channel = "the cloud alarm apply flow"
 	}
+
+	sections := []string{}
 	if summary, _ := args["summary"].(string); strings.TrimSpace(summary) != "" {
-		return fmt.Sprintf("Apply this change via %s?\n%s\n(Recommendation %s — the change registers as its resolution attempt.) Do you want to continue?",
-			channel, strings.TrimSpace(summary), recommendationId)
+		sections = append(sections, strings.TrimSpace(summary))
 	}
-	return fmt.Sprintf("Apply recommendation %s via %s?\nThe change registers as this recommendation's resolution attempt. Do you want to continue?",
-		recommendationId, channel)
+	if data, ok := args["data"].(map[string]any); ok {
+		if valueLines := applyDataValueLines(data); valueLines != "" {
+			sections = append(sections, "Values to apply:\n"+valueLines)
+		}
+	}
+	if len(sections) == 0 {
+		return fmt.Sprintf("Apply recommendation %s via %s?\nThe change registers as this recommendation's resolution attempt. Do you want to continue?",
+			recommendationId, channel)
+	}
+	return fmt.Sprintf("Apply this change via %s?\n%s\n(Recommendation %s — the change registers as its resolution attempt.) Do you want to continue?",
+		channel, strings.Join(sections, "\n"), recommendationId)
 }
 
 func (m RecommendationApplyTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {

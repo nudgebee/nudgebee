@@ -278,6 +278,17 @@ func TestRecommendationWriteToolConfirmationQuestions(t *testing.T) {
 		assert.Contains(t, q, "resolution attempt")
 	})
 
+	t.Run("apply renders the exact values from data", func(t *testing.T) {
+		q := RecommendationApplyTool{}.ConfirmationQuestion(
+			`{"recommendation_id":"rec-1","data":{"web":{"cpu":{"request":"0.1"},"memory":{"request":"300Mi","limit":"350Mi"}},"sidecar":{"memory":{"request":"64Mi"}}}}`)
+		assert.Contains(t, q, "Values to apply:")
+		assert.Contains(t, q, "- web: cpu request → 0.1, memory request → 300Mi, memory limit → 350Mi")
+		assert.Contains(t, q, "- sidecar: memory request → 64Mi")
+		// Sorted container order keeps the card (and the confirmation key's
+		// input) stable across renders.
+		assert.Less(t, strings.Index(q, "- sidecar"), strings.Index(q, "- web"))
+	})
+
 	t.Run("apply falls back to default rendering on unparseable input", func(t *testing.T) {
 		assert.Equal(t, "", RecommendationApplyTool{}.ConfirmationQuestion("not-json"))
 	})

@@ -77,3 +77,27 @@ func TestFollowupRequestForToolOperationConfirmation_QuestionOverride(t *testing
 	assert.Contains(t, fr.Question, "Tool(recommendation_apply) is trying to update cluster resources")
 	assert.Contains(t, fr.Question, `{"recommendation_id":"rec-1"}`)
 }
+
+// The create path and the already-active-followup update path persist the same
+// config — the update path silently dropping confirmationKey recorded the
+// user's approval under the bare tool name, which a per-action-scoped tool's
+// resume could never match (approval invisible → fail-fast on a confirmed run).
+func TestFollowupMessageConfig_CarriesConfirmationKey(t *testing.T) {
+	withKey := followupMessageConfig(FollowupRequest{
+		Question:        "q",
+		FollowupType:    FollowupTypeToolConfirmation,
+		ToolName:        "recommendation_apply",
+		ToolId:          "recommendation_apply-1",
+		ConfirmationKey: "recommendation_apply:abc123",
+	})
+	assert.Equal(t, "recommendation_apply:abc123", withKey["confirmationKey"])
+	assert.Equal(t, "recommendation_apply", withKey["toolName"])
+
+	withoutKey := followupMessageConfig(FollowupRequest{
+		Question:     "q",
+		FollowupType: FollowupTypeToolConfirmation,
+		ToolName:     "kubectl_execute",
+	})
+	_, present := withoutKey["confirmationKey"]
+	assert.False(t, present, "per-tool confirmations must not gain an empty key entry")
+}

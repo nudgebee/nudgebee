@@ -382,6 +382,28 @@ func unwrapCommand(s string) string {
 	return trimmed
 }
 
+// followupMessageConfig builds the persisted message_config for a followup.
+// Both the create path and the already-active-followup update path MUST build
+// it here: a config missing confirmationKey records the user's answer under
+// the bare tool name, which a per-action-scoped tool's resume can never match
+// — the approval becomes invisible and the resume fails fast.
+func followupMessageConfig(followupRequest FollowupRequest) map[string]any {
+	cfg := map[string]any{
+		"question":        followupRequest.Question,
+		"followupType":    followupRequest.FollowupType,
+		"followupOptions": followupRequest.FollowupOptions,
+		"toolName":        followupRequest.ToolName,
+		"toolId":          followupRequest.ToolId,
+	}
+	if followupRequest.ConfirmationKey != "" {
+		cfg["confirmationKey"] = followupRequest.ConfirmationKey
+	}
+	if followupRequest.FollowupData != nil {
+		cfg["followupData"] = followupRequest.FollowupData
+	}
+	return cfg
+}
+
 func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, followupRequest FollowupRequest) (uuid.UUID, error) {
 	// store followup question in context
 
@@ -478,17 +500,7 @@ func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, follow
 				ctx.GetLogger().Info("followup: agent already has an active followup message, updating config",
 					"agentId", followupRequest.AgentId.String(),
 					"followupMessageId", existingAgent.FollowupMessageID)
-				newConfig := map[string]any{
-					"question":        followupRequest.Question,
-					"followupType":    followupRequest.FollowupType,
-					"followupOptions": followupRequest.FollowupOptions,
-					"toolName":        followupRequest.ToolName,
-					"toolId":          followupRequest.ToolId,
-				}
-				if followupRequest.FollowupData != nil {
-					newConfig["followupData"] = followupRequest.FollowupData
-				}
-				if updateErr := dao.UpdateConversationMessageFollowupConfig(existingAgent.FollowupMessageID.String(), newConfig); updateErr != nil {
+				if updateErr := dao.UpdateConversationMessageFollowupConfig(existingAgent.FollowupMessageID.String(), followupMessageConfig(followupRequest)); updateErr != nil {
 					ctx.GetLogger().Error("followup: failed to update followup config", "error", updateErr)
 				}
 				return existingAgent.FollowupMessageID, nil
@@ -496,19 +508,7 @@ func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, follow
 		}
 	}
 
-	followupRequestConfig := map[string]any{
-		"question":        followupRequest.Question,
-		"followupType":    followupRequest.FollowupType,
-		"followupOptions": followupRequest.FollowupOptions,
-		"toolName":        followupRequest.ToolName,
-		"toolId":          followupRequest.ToolId,
-	}
-	if followupRequest.ConfirmationKey != "" {
-		followupRequestConfig["confirmationKey"] = followupRequest.ConfirmationKey
-	}
-	if followupRequest.FollowupData != nil {
-		followupRequestConfig["followupData"] = followupRequest.FollowupData
-	}
+	followupRequestConfig := followupMessageConfig(followupRequest)
 
 	followUpContextJson, err := common.MarshalJson(query)
 	if err != nil {
