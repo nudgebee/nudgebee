@@ -20,6 +20,15 @@ func TestProbe_VertexStructuralOK(t *testing.T) {
 	}
 }
 
+// TestProbe_BedrockStructuralOK: a well-formed Bedrock config passes the (structural) probe
+// — static access + secret + region all present.
+func TestProbe_BedrockStructuralOK(t *testing.T) {
+	cfg := map[string]string{"provider": "bedrock", "access_key": "AKIA", "secret_key": "sk", "region": "us-east-1"}
+	if err := probe(context.Background(), cfg); err != nil {
+		t.Fatalf("valid bedrock config should pass structural probe, got %v", err)
+	}
+}
+
 // TestNormalizeBaseURL: a base URL works with or without a trailing /v1 (the vLLM lane
 // appends /v1/... itself), so both forms normalize to the same host.
 func TestNormalizeBaseURL(t *testing.T) {
@@ -48,7 +57,7 @@ func TestProbe_ConfigValidation(t *testing.T) {
 		wantErr string
 	}{
 		{"missing provider", map[string]string{}, "provider is required"},
-		{"unsupported provider", map[string]string{"provider": "bedrock"}, "unsupported provider"},
+		{"unsupported provider", map[string]string{"provider": "groq"}, "unsupported provider"},
 		{"openai without key", map[string]string{"provider": "openai"}, "api_key is required"},
 		{"anthropic without key", map[string]string{"provider": "anthropic"}, "api_key is required"},
 		{"gemini without key", map[string]string{"provider": "gemini"}, "api_key is required"},
@@ -57,6 +66,8 @@ func TestProbe_ConfigValidation(t *testing.T) {
 		{"custom private base_url shape ok", map[string]string{"provider": "custom", "base_url": "not a url"}, "valid URL"},
 		{"vertex missing project/region", map[string]string{"provider": "vertex", "service_account_json": `{"client_email":"a","private_key":"b"}`}, "project_id and region"},
 		{"vertex malformed SA JSON", map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": "nope"}, "service_account_json"},
+		{"bedrock missing creds", map[string]string{"provider": "bedrock", "region": "us-east-1"}, "access_key and secret_key"},
+		{"bedrock missing region", map[string]string{"provider": "bedrock", "access_key": "AKIA", "secret_key": "sk"}, "region is required for Bedrock"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

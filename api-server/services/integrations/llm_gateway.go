@@ -58,6 +58,7 @@ const (
 	llmGatewayProviderAnthropic = "anthropic"
 	llmGatewayProviderGemini    = "gemini"
 	llmGatewayProviderVertex    = "vertex"
+	llmGatewayProviderBedrock   = "bedrock"
 )
 
 func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
@@ -76,7 +77,7 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 			"provider": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Which provider this credential is for. Choose 'custom' for a self-hosted / OpenAI-compatible endpoint.",
-				Enum:        []any{llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini, llmGatewayProviderVertex, llmGatewayProviderCustom},
+				Enum:        []any{llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini, llmGatewayProviderVertex, llmGatewayProviderBedrock, llmGatewayProviderCustom},
 				Priority:    8,
 			},
 			"api_key": {
@@ -117,12 +118,13 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 				ShowWhen:     map[string]any{"provider": llmGatewayProviderVertex},
 				RequiredWhen: map[string]any{"provider": llmGatewayProviderVertex},
 			},
+			// region is shared by Vertex (a GCP region) and Bedrock (an AWS region).
 			"region": {
 				Type:         core.ToolSchemaTypeString,
-				Description:  "GCP region for Vertex AI (e.g. us-central1) — a GCP region, not an AWS one.",
+				Description:  "Provider region — a GCP region for Vertex (e.g. us-central1) or an AWS region for Bedrock (e.g. us-east-1).",
 				Priority:     3,
-				ShowWhen:     map[string]any{"provider": llmGatewayProviderVertex},
-				RequiredWhen: map[string]any{"provider": llmGatewayProviderVertex},
+				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderBedrock}},
+				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderBedrock}},
 			},
 			"service_account_json": {
 				Type:         core.ToolSchemaTypeString,
@@ -132,6 +134,31 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 				Multiline:    true, // it's a multi-line JSON blob
 				ShowWhen:     map[string]any{"provider": llmGatewayProviderVertex},
 				RequiredWhen: map[string]any{"provider": llmGatewayProviderVertex},
+			},
+			// Bedrock (provider=bedrock): STATIC AWS creds — a tenant must supply access +
+			// secret together (a keyless config would borrow the pod's IAM role, an
+			// operator-only path). session_token is optional; region is the shared field above.
+			"access_key": {
+				Type:         core.ToolSchemaTypeString,
+				Description:  "AWS access key ID with Bedrock access.",
+				Priority:     6,
+				ShowWhen:     map[string]any{"provider": llmGatewayProviderBedrock},
+				RequiredWhen: map[string]any{"provider": llmGatewayProviderBedrock},
+			},
+			"secret_key": {
+				Type:         core.ToolSchemaTypeString,
+				Description:  "AWS secret access key.",
+				Priority:     5,
+				IsEncrypted:  true, // encrypted at rest + redacted from UI reads
+				ShowWhen:     map[string]any{"provider": llmGatewayProviderBedrock},
+				RequiredWhen: map[string]any{"provider": llmGatewayProviderBedrock},
+			},
+			"session_token": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "AWS session token — only for temporary (STS) credentials; leave blank for long-lived keys.",
+				Priority:    4,
+				IsEncrypted: true, // encrypted at rest + redacted from UI reads
+				ShowWhen:    map[string]any{"provider": llmGatewayProviderBedrock},
 			},
 		},
 	}
@@ -197,10 +224,23 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 				errs = append(errs, fmt.Errorf("service_account_json %s", err))
 			}
 		}
+	case llmGatewayProviderBedrock:
+		// Bedrock: STATIC AWS creds (access + secret together) + an AWS region. secret_key is
+		// encrypted, so on edit an unchanged value arrives as the mask/ciphertext — that's a
+		// non-empty string, so the required check passes without needing to parse it.
+		if cfg["access_key"] == "" {
+			errs = append(errs, fmt.Errorf("access_key is required for Bedrock"))
+		}
+		if cfg["secret_key"] == "" {
+			errs = append(errs, fmt.Errorf("secret_key is required for Bedrock"))
+		}
+		if cfg["region"] == "" {
+			errs = append(errs, fmt.Errorf("region is required for Bedrock (an AWS region, e.g. us-east-1)"))
+		}
 	case "":
 		errs = append(errs, fmt.Errorf("provider is required"))
 	default:
-		errs = append(errs, fmt.Errorf("unsupported provider %q (expected openai, anthropic, gemini, vertex, or custom)", provider))
+		errs = append(errs, fmt.Errorf("unsupported provider %q (expected openai, anthropic, gemini, vertex, bedrock, or custom)", provider))
 	}
 	return errs
 }

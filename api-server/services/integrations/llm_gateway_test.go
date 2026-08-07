@@ -25,7 +25,7 @@ func TestLLMGateway_ConfigSchema(t *testing.T) {
 	assert.Equal(t, []string{"provider"}, schema.Required)
 
 	// provider is the umbrella selector.
-	assert.Equal(t, []any{"openai", "anthropic", "gemini", "vertex", "custom"}, schema.Properties["provider"].Enum)
+	assert.Equal(t, []any{"openai", "anthropic", "gemini", "vertex", "bedrock", "custom"}, schema.Properties["provider"].Enum)
 
 	// api_key is encrypted; required (shows *) for the known providers, optional for custom.
 	assert.True(t, schema.Properties["api_key"].IsEncrypted, "api_key must be encrypted")
@@ -42,10 +42,18 @@ func TestLLMGateway_ConfigSchema(t *testing.T) {
 
 	// Vertex structured fields — shown only for vertex; SA JSON encrypted + multiline.
 	assert.Equal(t, map[string]any{"provider": "vertex"}, schema.Properties["project_id"].ShowWhen)
-	assert.Equal(t, map[string]any{"provider": "vertex"}, schema.Properties["region"].ShowWhen)
 	assert.Equal(t, map[string]any{"provider": "vertex"}, schema.Properties["service_account_json"].ShowWhen)
 	assert.True(t, schema.Properties["service_account_json"].IsEncrypted, "SA JSON must be encrypted")
 	assert.True(t, schema.Properties["service_account_json"].Multiline, "SA JSON should render multiline")
+
+	// region is shared by Vertex + Bedrock.
+	assert.Equal(t, map[string]any{"provider": []any{"vertex", "bedrock"}}, schema.Properties["region"].ShowWhen)
+
+	// Bedrock structured fields — shown only for bedrock; secret + session encrypted.
+	assert.Equal(t, map[string]any{"provider": "bedrock"}, schema.Properties["access_key"].ShowWhen)
+	assert.Equal(t, map[string]any{"provider": "bedrock"}, schema.Properties["secret_key"].ShowWhen)
+	assert.True(t, schema.Properties["secret_key"].IsEncrypted, "secret_key must be encrypted")
+	assert.True(t, schema.Properties["session_token"].IsEncrypted, "session_token must be encrypted")
 }
 
 func TestLLMGateway_ValidateConfig(t *testing.T) {
@@ -85,7 +93,13 @@ func TestLLMGateway_ValidateConfig(t *testing.T) {
 	// Edit flow: an unchanged SA JSON arrives as the redaction mask — must NOT fail format validation.
 	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": "*********************************"}), ""), "masked SA JSON must skip format validation")
 
+	// Bedrock: static access + secret + region.
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "bedrock", "access_key": "AKIA", "secret_key": "sk", "region": "us-east-1"}), ""))
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "bedrock", "secret_key": "sk", "region": "us-east-1"}), ""), "bedrock without access_key must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "bedrock", "access_key": "AKIA", "region": "us-east-1"}), ""), "bedrock without secret_key must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "bedrock", "access_key": "AKIA", "secret_key": "sk"}), ""), "bedrock without region must error")
+
 	// Missing / unsupported provider.
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"api_key": "sk-x"}), ""), "missing provider must error")
-	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "bedrock", "api_key": "x"}), ""), "unsupported provider must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "groq", "api_key": "x"}), ""), "unsupported provider must error")
 }

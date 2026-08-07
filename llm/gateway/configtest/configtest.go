@@ -117,6 +117,17 @@ func probe(ctx context.Context, cfg map[string]string) error {
 			return fmt.Errorf("service_account_json %s", err)
 		}
 		return nil
+	case "bedrock":
+		// Structural validation only (this cut): a live probe would need AWS SigV4 signing.
+		// Confirm static access+secret and a region are present so an incomplete config is
+		// caught here; real connectivity is proven on the first routed request.
+		if strings.TrimSpace(cfg["access_key"]) == "" || strings.TrimSpace(cfg["secret_key"]) == "" {
+			return fmt.Errorf("access_key and secret_key are required for Bedrock")
+		}
+		if strings.TrimSpace(cfg["region"]) == "" {
+			return fmt.Errorf("region is required for Bedrock (an AWS region, e.g. us-east-1)")
+		}
+		return nil
 	case "custom":
 		base := strings.TrimSpace(cfg["base_url"])
 		if base == "" {
