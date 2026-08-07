@@ -60,7 +60,7 @@ func (m ShellTool) Description() string {
 
 	**Stateless shell:** Each call is a fresh ` + "`sh -c`" + `, so ` + "`cd`" + ` and unexported variables do NOT persist. Files do (they live on disk). For env vars that must survive across calls, append to ` + "`.nb_profile`" + ` (` + "`echo 'export FOO=bar' >> .nb_profile`" + `).
 
-	**Credentials auto-injected:** AWS / GCP / Azure credentials and ` + "`GITHUB_TOKEN`" + ` are injected automatically when the command invokes the corresponding CLI. You do NOT need to plan an ` + "`aws configure`, `gcloud auth`, or `gh auth login`" + ` step.
+	**Credentials auto-injected:** AWS / GCP / Azure credentials, ` + "`GITHUB_TOKEN`" + ` and ` + "`GITLAB_TOKEN`" + ` are injected automatically when the command invokes the corresponding CLI. You do NOT need to plan an ` + "`aws configure`, `gcloud auth`, `gh auth login`, or `glab auth login`" + ` step.
 
 	**Large Data Redirection:** Identify large output by command intent (log dumps, metric time-series, multi-resource JSON, or queries expecting >50 records). Redirect stdout to a relative workspace file (` + "`command > data.json`" + `). Then inspect using ` + "`jq`, `grep`, `awk`, or `head` (`jq .key data.json | head -n 50`)" + ` to keep context usage bounded.
 
@@ -188,6 +188,16 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 			slog.Warn("shell: github auth injection skipped", "account_id", m.AccountId, "error", err)
 		} else if ghAuth != nil {
 			for k, v := range ghAuth.Env {
+				env[k] = v
+			}
+		}
+
+		// Same shape for `glab`: GITLAB_TOKEN, plus GITLAB_HOST when the tenant
+		// runs a self-hosted GitLab.
+		if glAuth, err := m.buildGitlabAuthEnv(nbRequestContext, command); err != nil {
+			slog.Warn("shell: gitlab auth injection skipped", "account_id", m.AccountId, "error", err)
+		} else if glAuth != nil {
+			for k, v := range glAuth.Env {
 				env[k] = v
 			}
 		}
@@ -430,7 +440,7 @@ func shellErrorHint(rawError, originalCommand string) string {
 		return "File not found. The workspace pod is per-account and persists across turns in the same conversation, but files created in a different conversation will NOT exist here. Recreate the file with the upstream command (e.g. `kubectl get ... > /tmp/...`) before grepping/catting it."
 	case strings.Contains(lower, "command not found"),
 		looksLikeShellNotFound(rawError):
-		return "Command not found in the workspace pod. Available CLIs include kubectl, aws, gcloud, az, gh, helm, jq, curl, python3. If a specialized *_execute tool exists for this CLI (kubectl_execute, aws_execute, gcloud_execute, azure_execute, github_execute), prefer that tool."
+		return "Command not found in the workspace pod. Available CLIs include kubectl, aws, gcloud, az, gh, glab, helm, jq, curl, python3. If a specialized *_execute tool exists for this CLI (kubectl_execute, aws_execute, gcloud_execute, azure_execute, github_execute, gitlab_execute), prefer that tool."
 	}
 	return ""
 }
@@ -714,11 +724,11 @@ func resolveSoleAccount(sc *security.SecurityContext, provider string) (string, 
 	return ids[0], nil
 }
 
-// detectGithubCLI returns true if the command invokes the `gh` CLI as a
-// distinct token (i.e. not a substring of an unrelated word like `ghost`).
-func detectGithubCLI(command string) bool {
+// detectCLIToken returns true if the command invokes `kw` as a distinct token
+// (i.e. not a substring of an unrelated word like `ghost` for `gh`).
+func detectCLIToken(command, kw string) bool {
 	lowerCmd := strings.ToLower(command)
-	if !strings.Contains(lowerCmd, "gh") {
+	if !strings.Contains(lowerCmd, kw) {
 		return false
 	}
 	tokens, err := shlex.Split(command)
@@ -727,7 +737,6 @@ func detectGithubCLI(command string) bool {
 	}
 	for _, token := range tokens {
 		lowerToken := strings.ToLower(token)
-		const kw = "gh"
 		if strings.HasPrefix(lowerToken, kw) {
 			if len(lowerToken) == len(kw) || !isAlphaNum(lowerToken[len(kw)]) {
 				return true
@@ -735,6 +744,55 @@ func detectGithubCLI(command string) bool {
 		}
 	}
 	return false
+}
+
+// detectGithubCLI returns true if the command invokes the `gh` CLI as a
+// distinct token (i.e. not a substring of an unrelated word like `ghost`).
+func detectGithubCLI(command string) bool { return detectCLIToken(command, "gh") }
+
+// detectGitlabCLI returns true if the command invokes the `glab` CLI as a
+// distinct token. No overlap with detectGithubCLI: `glab` does not start with
+// `gh`, so a glab command never trips the github matcher and vice versa.
+func detectGitlabCLI(command string) bool { return detectCLIToken(command, "glab") }
+
+// resolveScmToolConfig picks the tool config to use for credential injection:
+// the planner-supplied hint when it names one, otherwise the tenant's sole
+// config. Returns (nil, nil) when nothing usable exists or the choice would be
+// ambiguous — injection is skipped rather than guessed at.
+func (m ShellTool) resolveScmToolConfig(nbRequestContext core.NbToolContext, toolName string) (*core.ToolConfig, error) {
+	if m.AccountId == "" {
+		return nil, nil
+	}
+
+	scmTool, ok := core.GetNBTool(m.AccountId, toolName)
+	if !ok {
+		return nil, nil
+	}
+
+	configs, err := core.ListToolConfigs(nbRequestContext.Ctx, m.AccountId, scmTool)
+	if err != nil {
+		return nil, fmt.Errorf("shell: %s tool config lookup failed: %w", toolName, err)
+	}
+	if len(configs) == 0 {
+		return nil, nil
+	}
+
+	// Strategy 1: planner-supplied hint.
+	if hint := nbRequestContext.QueryConfig.ToolConfigs[toolName]; hint != "" {
+		for i := range configs {
+			if configs[i].Name == hint {
+				return &configs[i], nil
+			}
+		}
+	}
+
+	// Strategy 2: sole config in the tenant.
+	if len(configs) != 1 {
+		slog.Info("shell: multiple scm configs, skipping injection (no hint)",
+			"account_id", m.AccountId, "tool", toolName, "count", len(configs))
+		return nil, nil
+	}
+	return &configs[0], nil
 }
 
 // buildGithubAuthEnv resolves the github tool config available to this tenant
@@ -745,45 +803,31 @@ func (m ShellTool) buildGithubAuthEnv(nbRequestContext core.NbToolContext, comma
 	if !detectGithubCLI(command) {
 		return nil, nil
 	}
-	if m.AccountId == "" {
-		return nil, nil
-	}
 
-	githubTool, ok := core.GetNBTool(m.AccountId, ToolExecuteGithubCliCommand)
-	if !ok {
-		return nil, nil
-	}
-
-	configs, err := core.ListToolConfigs(nbRequestContext.Ctx, m.AccountId, githubTool)
-	if err != nil {
-		return nil, fmt.Errorf("shell: github tool config lookup failed: %w", err)
-	}
-	if len(configs) == 0 {
-		return nil, nil
-	}
-
-	// Strategy 1: planner-supplied hint.
-	var chosen *core.ToolConfig
-	if hint := nbRequestContext.QueryConfig.ToolConfigs[ToolExecuteGithubCliCommand]; hint != "" {
-		for i := range configs {
-			if configs[i].Name == hint {
-				chosen = &configs[i]
-				break
-			}
-		}
-	}
-
-	// Strategy 2: sole config in the tenant.
-	if chosen == nil {
-		if len(configs) != 1 {
-			slog.Info("shell: multiple github configs, skipping injection (no hint)",
-				"account_id", m.AccountId, "count", len(configs))
-			return nil, nil
-		}
-		chosen = &configs[0]
+	chosen, err := m.resolveScmToolConfig(nbRequestContext, ToolExecuteGithubCliCommand)
+	if err != nil || chosen == nil {
+		return nil, err
 	}
 
 	return BuildGithubAuth(nbRequestContext.Ctx.GetContext(), *chosen)
+}
+
+// buildGitlabAuthEnv resolves the gitlab tool config available to this tenant
+// and returns the env (GITLAB_TOKEN, plus GITLAB_HOST for self-hosted) needed to
+// run `glab` commands. Returns (nil, nil) when the command isn't a `glab`
+// invocation or no usable config exists. Non-`glab` shell commands incur only
+// the lightweight detect step.
+func (m ShellTool) buildGitlabAuthEnv(nbRequestContext core.NbToolContext, command string) (*CloudAuthResult, error) {
+	if !detectGitlabCLI(command) {
+		return nil, nil
+	}
+
+	chosen, err := m.resolveScmToolConfig(nbRequestContext, ToolExecuteGitlabCliCommand)
+	if err != nil || chosen == nil {
+		return nil, err
+	}
+
+	return BuildGitlabAuth(*chosen)
 }
 
 // buildAuthForAccount builds cloud auth for a specific account ID.

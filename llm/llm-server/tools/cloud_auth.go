@@ -19,6 +19,7 @@ var sensitiveEnvKeys = []string{
 	"AZURE_CLIENT_SECRET",
 	"GCP_SA_KEY",
 	"GITHUB_TOKEN",
+	"GITLAB_TOKEN",
 }
 
 // ScrubCredentials replaces any occurrence of sensitive credential values in

@@ -40,6 +40,20 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
     go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
 
+# Install the GitLab CLI (glab) from source rather than `apk add glab`.
+# Two reasons: (1) Alpine v3.22 community pins glab at 1.58.0-r5, which is far
+# behind, and (2) llm-server's base image has no glab apt package and builds it
+# from source too — building both from the same pinned version keeps the
+# workspace pod and llm-server's local-exec fallback on identical glab, so a
+# prompt that works in one works in the other. `gh` is the counter-example to
+# avoid: apk `github-cli` here vs a source build there, free to drift.
+# Consumed by llm-server's gitlab_execute tool (tools/tool_gitlab.go) and by
+# this service's own glab tool (tools/glab_tool.go).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
+    go install gitlab.com/gitlab-org/cli/cmd/glab@v1.112.0
+
 # Final stage
 FROM alpine:3.22
 
@@ -193,6 +207,7 @@ RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH=/usr/local/go/bin:$PATH
 COPY --from=builder /usr/local/bin/golangci-lint /usr/local/bin/golangci-lint
+COPY --from=builder /usr/local/bin/glab /usr/local/bin/glab
 
 # Create a non-root user
 RUN adduser -D -g '' appuser

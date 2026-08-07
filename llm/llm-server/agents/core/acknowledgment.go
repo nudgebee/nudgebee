@@ -146,7 +146,7 @@ func generateFallbackIntent(query, agentName string) string {
 		}
 		return "Log data investigation"
 
-	case "github":
+	case "github", "gitlab":
 		return "Source code and repository analysis"
 
 	case "security":
@@ -184,7 +184,7 @@ func estimateProcessingTime(agentName, query string) string {
 		return "20-45 seconds"
 	case "prometheus", "logs", "loki":
 		return "15-30 seconds"
-	case "github", "security":
+	case "github", "gitlab", "security":
 		return "20-40 seconds"
 	default:
 		return "15-30 seconds"
