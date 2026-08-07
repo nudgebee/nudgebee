@@ -1161,7 +1161,11 @@ class CommonService:
             )
             return True
         except Exception as e:
-            LOG.debug(f"Failed to update Slack message attachments: {e}")
+            # Was DEBUG: a failure here (e.g. the resolved bot isn't the one
+            # that posted the message, so Slack rejects the edit) used to
+            # disappear silently, leaving a caller's card stuck with no clue
+            # why. Warn level so it actually surfaces in normal operation.
+            LOG.warning(f"Failed to update Slack message attachments: {e}")
             return False
 
     def get_message_attachments(self, channel_id, team_id, thread_ts, message_ts):

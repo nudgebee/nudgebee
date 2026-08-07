@@ -310,9 +310,70 @@ def _ask_nubi_service_with(common_service, event_service):
     service.common_service = common_service
     service.event_service = event_service
     service.engine = "fake-engine"
+    service.session = "fake-session"
     service.slack_app = None
     service.teams_app = None
     return service
+
+
+def _run_background(
+    monkeypatch,
+    *,
+    analysis_result=None,
+    analysis_error=None,
+    get_message_attachments=None,
+    context_kwargs=None,
+):
+    """Drives _run_event_analysis_background with sensible defaults for the
+    user_id lookup / cache write / reaction that now happen inside it (moved
+    there so the interactive-action ack isn't blocked on them). Returns the
+    `calls` dict recording what got invoked, plus the common_service used."""
+    calls = {"update": []}
+    common_service = SimpleNamespace(
+        update_slack_message_attachments=lambda ch, team, ts, atts: calls["update"].append(atts)
+        or calls.setdefault("update_last", atts),
+        get_message_attachments=get_message_attachments or (lambda *a, **k: None),
+        add_slack_reactions=lambda *a, **k: None,
+        slack_reply_in_thread=lambda ch, team, ts, msg: calls.setdefault("thread", msg),
+        app_id=(context_kwargs or {}).get("app_id", "A0BMNEUDJMA"),
+    )
+    event_service = SimpleNamespace(
+        cache=SimpleNamespace(cache_event_entry=lambda **k: calls.setdefault("cached", k)),
+        send_investigation_result_to_slack=lambda *a, **k: calls.setdefault("sent", True),
+    )
+    fake_service = SimpleNamespace(
+        common_service=common_service, event_service=event_service, close=lambda: calls.setdefault("closed", True)
+    )
+    monkeypatch.setattr(actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service)
+    monkeypatch.setattr(actions_common, "validate_and_get_user_id", lambda email: "user-9")
+    if analysis_error is not None:
+        monkeypatch.setattr(
+            actions_common.Events,
+            "call_event_analysis_api",
+            staticmethod(lambda **k: (_ for _ in ()).throw(analysis_error)),
+        )
+    else:
+        monkeypatch.setattr(actions_common.Events, "call_event_analysis_api", staticmethod(lambda **k: analysis_result))
+
+    defaults = dict(
+        event_id="find-77",
+        account_id="acc-1",
+        user_email="u@x.com",
+        tenant_id="tenant-1",
+        channel_id="C1",
+        team_id="T1",
+        thread_ts="111.222",
+        message_ts="111.222",
+        slack_user_id="U1",
+        original_attachments=None,
+        base_attachments=None,
+        app_id="A0BMNEUDJMA",
+    )
+    defaults.update(context_kwargs or {})
+    context = actions_common.EventAnalysisContext(**defaults)
+
+    actions_common._run_event_analysis_background(None, None, None, context)
+    return calls, common_service
 
 
 class TestAskNubiAnalyse:
@@ -321,7 +382,13 @@ class TestAskNubiAnalyse:
     card with a bare "OK", because the handler never re-sent the card's
     content and ran the LLM call synchronously past Slack's ack window."""
 
-    def test_click_marks_card_analyzing_and_defers_analysis(self):
+    def test_click_marks_card_analyzing_and_defers_analysis(self, monkeypatch):
+        # user_id lookup / cache write / reaction are deliberately NOT done
+        # here (they moved into the background task) -- this handler's only
+        # job before returning is pinning the card, as fast as possible.
+        monkeypatch.setattr(
+            actions_common, "load_installation", lambda session, tenant_id, platform: SimpleNamespace(app_id=None)
+        )
         _, _, (attachment,) = _render(_finding())
         message = {"ts": "111.222", "thread_ts": "111.222", "attachments": [json.loads(json.dumps(attachment))]}
         data = {"message": message}
@@ -329,11 +396,9 @@ class TestAskNubiAnalyse:
         calls = {}
         common_service = SimpleNamespace(
             update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
-            add_slack_reactions=lambda *a, **k: None,
             app_id="A0BMNEUDJMA",
         )
-        event_service = SimpleNamespace(cache=SimpleNamespace(cache_event_entry=lambda **k: None))
-        service = _ask_nubi_service_with(common_service, event_service)
+        service = _ask_nubi_service_with(common_service, event_service=None)
 
         scheduled = {}
         background_tasks = SimpleNamespace(add_task=lambda fn: scheduled.setdefault("fn", fn))
@@ -342,19 +407,121 @@ class TestAskNubiAnalyse:
         service.handle_event_analysis_call("C1", "T1", "U1", "u@x.com", data, action_params, background_tasks)
 
         (updated,) = calls["update"]
-        assert all(a.get("name") != "ask_nubi" for a in updated["actions"])
-        assert "Analyzing" in updated["text"] and "<@U1>" in updated["text"]
+        assert any(a.get("name") == "ask_nubi" for a in updated["actions"])  # button never hidden, even mid-analysis
+        assert "Analyzing" in updated["text"]
         # The card is never left for Slack's default fallback to replace with "OK",
         # and the slow LLM call is deferred rather than run synchronously.
         assert "fn" in scheduled
 
-    def test_background_task_restores_card_and_replies_on_failure(self, monkeypatch):
+    def test_resolves_app_id_from_tenant_id_when_click_gave_none(self, monkeypatch):
+        # Regression: a real legacy interactive_message click never carries
+        # api_app_id at all, so common_service.app_id (set from the click
+        # payload in execute_action) is None when multiple Slack apps share
+        # a team_id -- every chat.update below would then silently fail
+        # against whatever the ambiguous default resolves to. The handler
+        # must resolve app_id from the installation matching the signed
+        # tenant_id in that case, instead of leaving it unset.
+        installations = {}
+
+        def fake_load_installation(session, tenant_id, platform):
+            installations["queried"] = (tenant_id, platform)
+            return SimpleNamespace(app_id="A_CORRECT_APP")
+
+        monkeypatch.setattr(actions_common, "load_installation", fake_load_installation)
+        _, _, (attachment,) = _render(_finding())
+        message = {"ts": "111.222", "thread_ts": "111.222", "attachments": [json.loads(json.dumps(attachment))]}
+        data = {"message": message}
+
+        common_service = SimpleNamespace(
+            update_slack_message_attachments=lambda ch, team, ts, atts: None,
+            app_id=None,
+        )
+        service = _ask_nubi_service_with(common_service, event_service=None)
+        background_tasks = SimpleNamespace(add_task=lambda fn: None)
+        action_params = {"tenant_id": "tenant-1", "event_id": "find-77", "cluster_id": "acc-1"}
+
+        service.handle_event_analysis_call("C1", "T1", "U1", "u@x.com", data, action_params, background_tasks)
+
+        assert installations["queried"] == ("tenant-1", "slack")
+        assert common_service.app_id == "A_CORRECT_APP"
+
+    def test_falls_back_to_team_id_lookup_when_tenant_id_lookup_is_empty(self, monkeypatch):
+        # If the tenant_id lookup can't resolve an app_id at all (no install
+        # found, or found but app_id unset), fall back to the ambiguous
+        # team_id lookup rather than leaving app_id untouched -- some
+        # resolution attempt beats none.
+        monkeypatch.setattr(actions_common, "load_installation", lambda session, tenant_id, platform: None)
+        team_lookups = {}
+
+        def fake_load_installation_by_team(session, team_id, platform):
+            team_lookups["queried"] = (team_id, platform)
+            return SimpleNamespace(app_id="A_FALLBACK_APP")
+
+        monkeypatch.setattr(actions_common, "load_installation_by_team", fake_load_installation_by_team)
+        _, _, (attachment,) = _render(_finding())
+        message = {"ts": "111.222", "thread_ts": "111.222", "attachments": [json.loads(json.dumps(attachment))]}
+        data = {"message": message}
+
+        common_service = SimpleNamespace(
+            update_slack_message_attachments=lambda ch, team, ts, atts: None,
+            app_id=None,
+        )
+        service = _ask_nubi_service_with(common_service, event_service=None)
+        background_tasks = SimpleNamespace(add_task=lambda fn: None)
+        action_params = {"tenant_id": "tenant-1", "event_id": "find-77", "cluster_id": "acc-1"}
+
+        service.handle_event_analysis_call("C1", "T1", "U1", "u@x.com", data, action_params, background_tasks)
+
+        assert team_lookups["queried"] == ("T1", "slack")
+        assert common_service.app_id == "A_FALLBACK_APP"
+
+    def test_skips_installation_lookup_when_app_id_already_known(self, monkeypatch):
+        # A payload that already carried a real api_app_id shouldn't pay for
+        # (or risk being overridden by) the tenant_id/team_id DB lookups at
+        # all -- only the ambiguous None case needs resolving.
+        def fail(*a, **k):
+            raise AssertionError("should not be called when app_id is already known")
+
+        monkeypatch.setattr(actions_common, "load_installation", fail)
+        monkeypatch.setattr(actions_common, "load_installation_by_team", fail)
+        _, _, (attachment,) = _render(_finding())
+        message = {"ts": "111.222", "thread_ts": "111.222", "attachments": [json.loads(json.dumps(attachment))]}
+        data = {"message": message}
+
+        common_service = SimpleNamespace(
+            update_slack_message_attachments=lambda ch, team, ts, atts: None,
+            app_id="A_ALREADY_KNOWN",
+        )
+        service = _ask_nubi_service_with(common_service, event_service=None)
+        background_tasks = SimpleNamespace(add_task=lambda fn: None)
+        action_params = {"tenant_id": "tenant-1", "event_id": "find-77", "cluster_id": "acc-1"}
+
+        service.handle_event_analysis_call("C1", "T1", "U1", "u@x.com", data, action_params, background_tasks)
+
+        assert common_service.app_id == "A_ALREADY_KNOWN"
+
+    def test_background_task_resolves_user_id_caches_and_reacts(self, monkeypatch):
+        # The work moved out of the synchronous handler (user_id lookup,
+        # cache write, reaction) must still actually happen, just later.
+        calls, _ = _run_background(monkeypatch, analysis_result={"status": "COMPLETED"})
+        assert calls["cached"]["event_entry"]["user_id"] == "user-9"
+        assert calls.get("sent") is True
+
+    def test_background_task_recovers_when_user_id_lookup_fails(self, monkeypatch):
+        # Regression: the "Analyzing..." stamp is already on the card by the
+        # time the background task runs, so a failure BEFORE the LLM call
+        # (e.g. resolving user_id) must still restore the card and reply --
+        # not propagate uncaught and leave "Analyzing..." stuck forever with
+        # nothing watching it.
+        original_attachments = [
+            {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}
+        ]
         calls = {}
         common_service = SimpleNamespace(
             update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
-            slack_reply_in_thread=lambda ch, team, ts, msg: calls.setdefault("thread", msg),
             get_message_attachments=lambda *a, **k: None,  # live fetch unavailable -> falls back to the snapshot
-            app_id=None,
+            slack_reply_in_thread=lambda ch, team, ts, msg: calls.setdefault("thread", msg),
+            app_id="A0BMNEUDJMA",
         )
         fake_service = SimpleNamespace(
             common_service=common_service, event_service=None, close=lambda: calls.setdefault("closed", True)
@@ -363,16 +530,15 @@ class TestAskNubiAnalyse:
             actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service
         )
         monkeypatch.setattr(
-            actions_common.Events,
-            "call_event_analysis_api",
-            staticmethod(lambda **k: (_ for _ in ()).throw(RuntimeError("llm-server unavailable"))),
+            actions_common,
+            "validate_and_get_user_id",
+            lambda email: (_ for _ in ()).throw(RuntimeError("db unavailable")),
         )
 
-        original_attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "actions": [{"name": "ask_nubi"}]}]
         context = actions_common.EventAnalysisContext(
             event_id="find-77",
             account_id="acc-1",
-            user_id="user-9",
+            user_email="u@x.com",
             tenant_id="tenant-1",
             channel_id="C1",
             team_id="T1",
@@ -383,38 +549,43 @@ class TestAskNubiAnalyse:
             base_attachments=None,
             app_id="A0BMNEUDJMA",
         )
+
         actions_common._run_event_analysis_background(None, None, None, context)
 
-        # app_id carried into the fresh background-task service so it resolves
-        # the same Slack app that posted the card, not an ambiguous default.
-        assert common_service.app_id == "A0BMNEUDJMA"
         assert calls["update"] == original_attachments  # ask_nubi button restored so the user can retry
         assert "trying again" in calls["thread"].lower()
         assert calls.get("closed") is True
 
-    def test_background_task_marks_card_analyzed_on_success(self, monkeypatch):
+    def test_background_task_recovery_itself_failing_does_not_propagate(self, monkeypatch):
+        # Regression: the except block that recovers from an analysis
+        # failure makes its own live Slack calls (card restore, thread
+        # reply). If one of those ALSO fails (e.g. a transient Slack API
+        # error), that must not propagate out of the background task
+        # uncaught -- that would re-leak the exact stuck-on-"Analyzing..."
+        # bug this whole function exists to prevent.
         calls = {}
         common_service = SimpleNamespace(
             update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
-            get_message_attachments=lambda *a, **k: None,  # live fetch unavailable -> falls back to the snapshot
-            app_id=None,
+            get_message_attachments=lambda *a, **k: None,
+            slack_reply_in_thread=lambda ch, team, ts, msg: (_ for _ in ()).throw(RuntimeError("slack unavailable")),
+            app_id="A0BMNEUDJMA",
         )
-        event_service = SimpleNamespace(
-            send_investigation_result_to_slack=lambda *a, **k: calls.setdefault("sent", True)
+        fake_service = SimpleNamespace(
+            common_service=common_service, event_service=None, close=lambda: calls.setdefault("closed", True)
         )
-        fake_service = SimpleNamespace(common_service=common_service, event_service=event_service, close=lambda: None)
         monkeypatch.setattr(
             actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service
         )
         monkeypatch.setattr(
-            actions_common.Events, "call_event_analysis_api", staticmethod(lambda **k: {"status": "COMPLETED"})
+            actions_common,
+            "validate_and_get_user_id",
+            lambda email: (_ for _ in ()).throw(RuntimeError("db unavailable")),
         )
 
-        base_attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": []}]
         context = actions_common.EventAnalysisContext(
             event_id="find-77",
             account_id="acc-1",
-            user_id="user-9",
+            user_email="u@x.com",
             tenant_id="tenant-1",
             channel_id="C1",
             team_id="T1",
@@ -422,61 +593,95 @@ class TestAskNubiAnalyse:
             message_ts="111.222",
             slack_user_id="U1",
             original_attachments=None,
-            base_attachments=base_attachments,
+            base_attachments=None,
             app_id="A0BMNEUDJMA",
         )
-        actions_common._run_event_analysis_background(None, None, None, context)
+
+        actions_common._run_event_analysis_background(None, None, None, context)  # must not raise
+
+        assert calls.get("closed") is True
+
+    def test_background_task_restores_card_and_replies_on_failure(self, monkeypatch):
+        original_attachments = [
+            {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}
+        ]
+        calls, common_service = _run_background(
+            monkeypatch,
+            analysis_error=RuntimeError("llm-server unavailable"),
+            context_kwargs={"original_attachments": original_attachments, "app_id": "A0BMNEUDJMA"},
+        )
+
+        # app_id carried into the fresh background-task service so it resolves
+        # the same Slack app that posted the card, not an ambiguous default.
+        assert common_service.app_id == "A0BMNEUDJMA"
+        assert calls["update_last"] == original_attachments  # ask_nubi button restored so the user can retry
+        assert "trying again" in calls["thread"].lower()
+        assert calls.get("closed") is True
+
+    def test_background_task_marks_card_analyzed_on_success(self, monkeypatch):
+        base_attachments = [
+            {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}
+        ]
+        calls, _ = _run_background(
+            monkeypatch,
+            analysis_result={"status": "COMPLETED"},
+            context_kwargs={"base_attachments": base_attachments},
+        )
 
         assert calls["sent"] is True
-        (updated,) = calls["update"]
+        updated = calls["update_last"][0]
         assert "Analyzed" in updated["text"]
+        assert any(a.get("name") == "ask_nubi" for a in updated["actions"])  # button never hidden, even on success
 
     def test_background_task_restores_card_when_result_is_not_completed(self, monkeypatch):
-        # A 2xx response with status IN_PROGRESS/CREATED/UNKNOWN is not a
-        # failure (no exception), but it's also not done — the card must not
-        # be stamped "Analyzed" with the retry button gone.
-        calls = {}
-        common_service = SimpleNamespace(
-            update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
-            get_message_attachments=lambda *a, **k: None,  # live fetch unavailable -> falls back to the snapshot
-            app_id=None,
+        # A 2xx response with status UNKNOWN is not a failure (no exception),
+        # but it's also not a real in-progress status — the card must not be
+        # stamped "Analyzed" with the retry button gone.
+        original_attachments = [
+            {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}
+        ]
+        calls, _ = _run_background(
+            monkeypatch,
+            analysis_result={"status": "SOMETHING_UNEXPECTED"},
+            context_kwargs={
+                "original_attachments": original_attachments,
+                "base_attachments": [
+                    {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": []}
+                ],
+            },
         )
-        event_service = SimpleNamespace(
-            send_investigation_result_to_slack=lambda *a, **k: calls.setdefault("sent", True)
-        )
-        fake_service = SimpleNamespace(common_service=common_service, event_service=event_service, close=lambda: None)
-        monkeypatch.setattr(
-            actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service
-        )
-        monkeypatch.setattr(
-            actions_common.Events, "call_event_analysis_api", staticmethod(lambda **k: {"status": "IN_PROGRESS"})
-        )
-
-        original_attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "actions": [{"name": "ask_nubi"}]}]
-        context = actions_common.EventAnalysisContext(
-            event_id="find-77",
-            account_id="acc-1",
-            user_id="user-9",
-            tenant_id="tenant-1",
-            channel_id="C1",
-            team_id="T1",
-            thread_ts="111.222",
-            message_ts="111.222",
-            slack_user_id="U1",
-            original_attachments=original_attachments,
-            base_attachments=[{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": []}],
-            app_id="A0BMNEUDJMA",
-        )
-        actions_common._run_event_analysis_background(None, None, None, context)
 
         assert calls["sent"] is True
-        assert calls["update"] == original_attachments  # button restored, not stamped "Analyzed"
+        assert calls["update_last"] == original_attachments  # button restored, not stamped "Analyzed"
+
+    def test_background_task_marks_card_analyzing_again_when_in_progress(self, monkeypatch):
+        # llm-server can genuinely still be working asynchronously (not a
+        # failure) -- there's no follow-up mechanism here to catch the
+        # eventual result (possibly not even in this thread, if the
+        # in-flight run was kicked off elsewhere), so the card just reads
+        # the same as a fresh click rather than stamping "Analyzed" or
+        # resetting to pristine as if nothing happened. The button stays
+        # available so any user can click again to check whether it's done.
+        base_attachments = [
+            {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}
+        ]
+        for status in ("IN_PROGRESS", "CREATED"):
+            calls, _ = _run_background(
+                monkeypatch,
+                analysis_result={"status": status},
+                context_kwargs={"base_attachments": base_attachments},
+            )
+            assert calls["sent"] is True
+            updated = calls["update_last"][0]
+            assert "Analyzing" in updated["text"]
+            assert "Analyzed" not in updated["text"]
+            assert any(a.get("name") == "ask_nubi" for a in updated["actions"])  # button never hidden
 
     def test_background_task_preserves_concurrent_suppress_edit_on_success(self, monkeypatch):
         # Regression guard: a suppress click landing while analysis is still
         # running must not be silently overwritten by the background task's
         # final update, which used to blindly re-apply its click-time snapshot.
-        analyzing_line = actions_common._analyzing_status_line("U1")
+        analyzing_line = actions_common._analyzing_status_line()
         live_attachments = [
             {
                 "callback_id": actions_common.FINDING_CALLBACK_ID,
@@ -484,93 +689,64 @@ class TestAskNubiAnalyse:
                 "actions": [{"name": "other"}],
             }
         ]
-        calls = {}
-        common_service = SimpleNamespace(
-            update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
+        calls, _ = _run_background(
+            monkeypatch,
+            analysis_result={"status": "COMPLETED"},
             get_message_attachments=lambda ch, team, thread_ts, ts: live_attachments,
-            app_id=None,
-        )
-        event_service = SimpleNamespace(
-            send_investigation_result_to_slack=lambda *a, **k: calls.setdefault("sent", True)
-        )
-        fake_service = SimpleNamespace(common_service=common_service, event_service=event_service, close=lambda: None)
-        monkeypatch.setattr(
-            actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service
-        )
-        monkeypatch.setattr(
-            actions_common.Events, "call_event_analysis_api", staticmethod(lambda **k: {"status": "COMPLETED"})
+            context_kwargs={
+                "base_attachments": [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": []}]
+            },
         )
 
-        context = actions_common.EventAnalysisContext(
-            event_id="find-77",
-            account_id="acc-1",
-            user_id="user-9",
-            tenant_id="tenant-1",
-            channel_id="C1",
-            team_id="T1",
-            thread_ts="111.222",
-            message_ts="111.222",
-            slack_user_id="U1",
-            original_attachments=None,
-            base_attachments=[{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": []}],
-            app_id="A0BMNEUDJMA",
-        )
-        actions_common._run_event_analysis_background(None, None, None, context)
-
-        (updated,) = calls["update"]
+        updated = calls["update_last"][0]
         assert "Suppressed" in updated["text"]  # concurrent edit survived
         assert analyzing_line not in updated["text"]  # replaced, not left dangling
         assert "Analyzed" in updated["text"]
 
     def test_background_task_preserves_concurrent_suppress_edit_on_failure(self, monkeypatch):
-        analyzing_line = actions_common._analyzing_status_line("U1")
+        analyzing_line = actions_common._analyzing_status_line()
         live_attachments = [
             {
                 "callback_id": actions_common.FINDING_CALLBACK_ID,
                 "text": f"orig\n{analyzing_line}\nSuppressed (this alert · 4h) by <@U2> until <!date^1^{{date}}|later>",
-                "actions": [{"name": "other"}],
+                "actions": [{"name": "other"}, {"name": "ask_nubi"}],
             }
         ]
-        calls = {}
-        common_service = SimpleNamespace(
-            update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
+        calls, _ = _run_background(
+            monkeypatch,
+            analysis_error=RuntimeError("llm-server unavailable"),
             get_message_attachments=lambda ch, team, thread_ts, ts: live_attachments,
-            slack_reply_in_thread=lambda ch, team, ts, msg: calls.setdefault("thread", msg),
-            app_id=None,
-        )
-        fake_service = SimpleNamespace(common_service=common_service, event_service=None, close=lambda: None)
-        monkeypatch.setattr(
-            actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service
-        )
-        monkeypatch.setattr(
-            actions_common.Events,
-            "call_event_analysis_api",
-            staticmethod(lambda **k: (_ for _ in ()).throw(RuntimeError("llm-server unavailable"))),
         )
 
-        original_attachments = [
-            {"callback_id": actions_common.FINDING_CALLBACK_ID, "actions": [{"name": "ask_nubi"}, {"name": "other"}]}
-        ]
-        context = actions_common.EventAnalysisContext(
-            event_id="find-77",
-            account_id="acc-1",
-            user_id="user-9",
-            tenant_id="tenant-1",
-            channel_id="C1",
-            team_id="T1",
-            thread_ts="111.222",
-            message_ts="111.222",
-            slack_user_id="U1",
-            original_attachments=original_attachments,
-            base_attachments=None,
-            app_id="A0BMNEUDJMA",
-        )
-        actions_common._run_event_analysis_background(None, None, None, context)
-
-        (updated,) = calls["update"]
+        updated = calls["update_last"][0]
         assert "Suppressed" in updated["text"]  # concurrent edit survived
         assert analyzing_line not in updated["text"]
-        assert [a["name"] for a in updated["actions"]] == ["other", "ask_nubi"]  # button restored, suppress untouched
+        assert [a["name"] for a in updated["actions"]] == [
+            "other",
+            "ask_nubi",
+        ]  # button never removed, suppress untouched
+
+    def test_background_task_keeps_button_on_in_progress_via_live_fetch(self, monkeypatch):
+        # Same button-availability guarantee as the failure path above, but
+        # on the in_progress outcome and via the live-refetch branch
+        # specifically (not just the click-time-snapshot fallback).
+        analyzing_line = actions_common._analyzing_status_line()
+        live_attachments = [
+            {
+                "callback_id": actions_common.FINDING_CALLBACK_ID,
+                "text": f"orig\n{analyzing_line}",
+                "actions": [{"name": "other"}, {"name": "ask_nubi"}],
+            }
+        ]
+        calls, _ = _run_background(
+            monkeypatch,
+            analysis_result={"status": "IN_PROGRESS"},
+            get_message_attachments=lambda ch, team, thread_ts, ts: live_attachments,
+        )
+
+        updated = calls["update_last"][0]
+        assert "Analyzing" in updated["text"]
+        assert [a["name"] for a in updated["actions"]] == ["other", "ask_nubi"]  # button never removed
 
     def test_background_task_falls_back_to_snapshot_when_live_fetch_lacks_the_analyzing_line(self, monkeypatch):
         # If the live-fetched card doesn't actually contain the analyzing
@@ -581,71 +757,17 @@ class TestAskNubiAnalyse:
         live_attachments_missing_the_line = [
             {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig (no analyzing line here)", "actions": []}
         ]
-        calls = {}
-        common_service = SimpleNamespace(
-            update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
-            get_message_attachments=lambda ch, team, thread_ts, ts: live_attachments_missing_the_line,
-            app_id=None,
-        )
-        event_service = SimpleNamespace(
-            send_investigation_result_to_slack=lambda *a, **k: calls.setdefault("sent", True)
-        )
-        fake_service = SimpleNamespace(common_service=common_service, event_service=event_service, close=lambda: None)
-        monkeypatch.setattr(
-            actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service
-        )
-        monkeypatch.setattr(
-            actions_common.Events, "call_event_analysis_api", staticmethod(lambda **k: {"status": "COMPLETED"})
-        )
-
         base_attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": []}]
-        context = actions_common.EventAnalysisContext(
-            event_id="find-77",
-            account_id="acc-1",
-            user_id="user-9",
-            tenant_id="tenant-1",
-            channel_id="C1",
-            team_id="T1",
-            thread_ts="111.222",
-            message_ts="111.222",
-            slack_user_id="U1",
-            original_attachments=None,
-            base_attachments=base_attachments,
-            app_id="A0BMNEUDJMA",
+        calls, _ = _run_background(
+            monkeypatch,
+            analysis_result={"status": "COMPLETED"},
+            get_message_attachments=lambda ch, team, thread_ts, ts: live_attachments_missing_the_line,
+            context_kwargs={"base_attachments": base_attachments},
         )
-        actions_common._run_event_analysis_background(None, None, None, context)
 
         # Fell back to the base_attachments snapshot (stamped "Analyzed"),
         # not a no-op copy of the live-fetched text.
-        (updated,) = calls["update"]
-        assert "Analyzed" in updated["text"]
-
-    def test_attachment_has_line_requires_both_the_card_and_the_exact_line(self):
-        card_with_line = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig\ntarget\nkept"}]
-        card_without_line = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig\nkept"}]
-        no_finding_card = [{"callback_id": "other", "text": "target"}]
-
-        assert actions_common._attachment_has_line(card_with_line, "target") is True
-        assert actions_common._attachment_has_line(card_without_line, "target") is False
-        assert actions_common._attachment_has_line(no_finding_card, "target") is False
-        assert actions_common._attachment_has_line(None, "target") is False
-
-    def test_replace_status_line_swaps_only_the_matching_line(self):
-        attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig\nold\nkept"}]
-        result = actions_common._replace_status_line(attachments, "old", "new")
-        assert result[0]["text"] == "orig\nnew\nkept"
-
-    def test_replace_status_line_drops_line_when_new_line_is_falsy(self):
-        attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig\nold\nkept"}]
-        result = actions_common._replace_status_line(attachments, "old", None)
-        assert result[0]["text"] == "orig\nkept"
-
-    def test_replace_status_line_preserves_unrelated_blank_lines(self):
-        # A blank line that's part of the evidence text itself (paragraph
-        # spacing) must survive — only the exact old_line match is dropped.
-        attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "para one\n\npara two\nold"}]
-        result = actions_common._replace_status_line(attachments, "old", None)
-        assert result[0]["text"] == "para one\n\npara two"
+        assert "Analyzed" in calls["update_last"][0]["text"]
 
     def test_analyzing_status_line_uses_shortcode_not_raw_emoji(self):
         # Root-cause guard for a real bug found via live testing: Slack
@@ -655,45 +777,53 @@ class TestAskNubiAnalyse:
         # built with the raw character never matches what a later live
         # fetch returns. Writing the shortcode ourselves keeps write and
         # read forms identical -- Slack renders the icon either way.
-        assert "🔍" not in actions_common._analyzing_status_line("U1")
-        assert ":mag:" in actions_common._analyzing_status_line("U1")
-        assert "✅" not in actions_common._analyzed_status_line("U1")
-        assert ":white_check_mark:" in actions_common._analyzed_status_line("U1")
+        assert "🔍" not in actions_common._analyzing_status_line()
+        assert ":mag:" in actions_common._analyzing_status_line()
+        assert "✅" not in actions_common._analyzed_status_line()
+        assert ":white_check_mark:" in actions_common._analyzed_status_line()
 
-    def test_restore_action_reinserts_after_first_action_when_missing(self):
-        attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "actions": [{"name": "details"}]}]
-        action = {"name": "ask_nubi", "text": "Ask Nubi to Analyse!"}
-        result = actions_common._restore_action(attachments, action)
-        assert [a["name"] for a in result[0]["actions"]] == ["details", "ask_nubi"]
+    def test_has_finding_attachment_true_only_when_card_present(self):
+        finding = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "actions": []}]
+        assert actions_common._has_finding_attachment(finding) is True
+        assert actions_common._has_finding_attachment([{"callback_id": "other"}]) is False
+        assert actions_common._has_finding_attachment(None) is False
+        assert actions_common._has_finding_attachment([]) is False
 
-    def test_restore_action_is_a_noop_when_already_present(self):
-        attachments = [
-            {"callback_id": actions_common.FINDING_CALLBACK_ID, "actions": [{"name": "details"}, {"name": "ask_nubi"}]}
-        ]
-        result = actions_common._restore_action(attachments, {"name": "ask_nubi"})
-        assert [a["name"] for a in result[0]["actions"]] == ["details", "ask_nubi"]
-
-    def test_find_action_locates_by_name(self):
-        attachments = [
-            {"callback_id": actions_common.FINDING_CALLBACK_ID, "actions": [{"name": "details"}, {"name": "ask_nubi"}]}
-        ]
-        assert actions_common._find_action(attachments, "ask_nubi") == {"name": "ask_nubi"}
-        assert actions_common._find_action(attachments, "missing") is None
-
-    def test_strip_finding_action_removes_only_named_action(self):
-        attachments = [
-            {"callback_id": actions_common.FINDING_CALLBACK_ID, "actions": [{"name": "ask_nubi"}, {"name": "other"}]}
-        ]
-        stripped = actions_common._strip_finding_action(attachments, "ask_nubi")
-        assert [a["name"] for a in stripped[0]["actions"]] == ["other"]
-        assert len(attachments[0]["actions"]) == 2  # original left untouched
-
-    def test_strip_finding_action_returns_none_when_card_not_present(self):
-        assert actions_common._strip_finding_action([{"callback_id": "other"}], "ask_nubi") is None
-        assert actions_common._strip_finding_action(None, "ask_nubi") is None
-
-    def test_attachments_with_status_appends_without_mutating_base(self):
+    def test_with_status_line_appends_when_none_present(self):
         base = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig"}]
-        result = actions_common._attachments_with_status(base, "status line")
+        result = actions_common._with_status_line(base, "status line")
         assert result[0]["text"] == "orig\nstatus line"
         assert base[0]["text"] == "orig"  # base left untouched for reuse across states
+
+    def test_with_status_line_replaces_any_prior_known_status_line_instead_of_stacking(self):
+        # Regression: re-clicking Ask Nubi while a status line is already
+        # showing (now always possible, since the button is never hidden)
+        # must swap it, not stack a second one underneath.
+        for old_line in (actions_common._analyzing_status_line(), actions_common._analyzed_status_line()):
+            attachments = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": f"orig\n{old_line}\nkept"}]
+            result = actions_common._with_status_line(attachments, "new status")
+            assert result[0]["text"] == "orig\nkept\nnew status"
+
+    def test_with_status_line_drops_status_line_when_falsy(self):
+        attachments = [
+            {
+                "callback_id": actions_common.FINDING_CALLBACK_ID,
+                "text": f"orig\n{actions_common._analyzing_status_line()}\nkept",
+            }
+        ]
+        result = actions_common._with_status_line(attachments, None)
+        assert result[0]["text"] == "orig\nkept"
+
+    def test_with_status_line_preserves_unrelated_lines_including_blank_ones(self):
+        # A blank line that's part of the evidence text itself (paragraph
+        # spacing), and a concurrent edit like a Suppress note, must both
+        # survive -- only a line that's exactly one of our known status
+        # lines is ever touched.
+        attachments = [
+            {
+                "callback_id": actions_common.FINDING_CALLBACK_ID,
+                "text": f"para one\n\npara two\n{actions_common._analyzing_status_line()}\nSuppressed by <@U2>",
+            }
+        ]
+        result = actions_common._with_status_line(attachments, None)
+        assert result[0]["text"] == "para one\n\npara two\nSuppressed by <@U2>"

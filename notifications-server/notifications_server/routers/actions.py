@@ -88,6 +88,15 @@ async def handle_slack_interactive_action(request: Request, background_tasks: Ba
     finally:
         service.close()
 
+    # An empty ack, not FastAPI's default (a JSON "null" body): for legacy
+    # interactive_message actions, Slack treats a non-empty response body
+    # that isn't a valid replacement-message payload as an ack it can't use,
+    # and falls back to its own bare "OK" placeholder -- exactly the failure
+    # mode this endpoint exists to avoid. The actual update happens via
+    # chat.update above (or the background task); Slack shouldn't apply
+    # this response as a message replacement at all.
+    return Response(status_code=200)
+
 
 @router.api_route("/msteams/events", methods=["POST", "OPTIONS"])
 async def handle_ms_teams_events(request: Request, background_tasks: BackgroundTasks):
