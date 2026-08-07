@@ -18,9 +18,8 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
 import RateReviewOutlinedIcon from '@mui/icons-material/RateReviewOutlined';
-import CustomTabs from '@shared/CustomTabs';
+import CustomTabs from '@shared/navigation/Tabs';
 import { Banner } from '@ui/Banner';
-import { Chip } from '@ui/Chip';
 import { Modal } from '@ui/Modal';
 import FilterBar from './FilterBar';
 import OverviewView from './views/OverviewView';
@@ -86,6 +85,13 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   } | null>(null);
   // Account scope picked in the filter bar ('' = all accounts the tenant can read).
   const [selectedAccountId, setSelectedAccountId] = React.useState<string>('');
+  // Bumped only when the date range is set programmatically (a cost-over-time bar
+  // click). The filter bar keys its date picker on this so the picker re-derives
+  // its trigger label from the new range instead of keeping a stale shortcut
+  // label ("Current Week") — the picker only seeds from props on mount, and a
+  // click on the picker's own shortcuts leaves this untouched, so their labels
+  // stay put.
+  const [dateResetNonce, setDateResetNonce] = React.useState(0);
 
   const effectiveAccountId = selectedAccountId || accountId;
 
@@ -95,14 +101,7 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
     setSelectedAccountId('');
   };
 
-  // The Conversations tab pages the list itself (server-side), so the shared
-  // top-200 window — which only backs Overview's "most expensive" table — isn't
-  // fetched while that tab is open.
-  const { loading, error, usageFilters, metrics, prevTotals, conversations, listCap } = useCostData(
-    effectiveAccountId,
-    filters,
-    tab === 'conversations'
-  );
+  const { loading, error, usageFilters, metrics, prevTotals, conversations, listCap } = useCostData(effectiveAccountId, filters, tab);
 
   // Adapt the API rows into the UI's Run shape (already cost-desc from the list call).
   const runs = React.useMemo(() => (conversations?.rows ?? []).map(rowToRun), [conversations]);
@@ -118,16 +117,14 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const detailAccountId = selected?.accountId || effectiveAccountId;
   const detail = useConversationTree(detailAccountId, selected?.sessionId ?? null);
 
-  // `acct` comes straight from the clicked row; the `runs` lookup is the fallback
-  // for callers that don't carry it.
-  const openRun = (sessionId: string, acct?: string) => {
+  const openRun = (sessionId: string) => {
     const row = runs.find((r) => r.runId === sessionId);
-    setSelected({ sessionId, accountId: acct ?? row?.accountId });
+    setSelected({ sessionId, accountId: row?.accountId });
   };
   // "Analyse" — open straight on the Optimize tab and analyze (cached or fresh).
-  const openAnalyse = (sessionId: string, acct?: string) => {
+  const openAnalyse = (sessionId: string) => {
     const row = runs.find((r) => r.runId === sessionId);
-    setSelected({ sessionId, accountId: acct ?? row?.accountId, initialTab: 'optimize', autoRunOptimize: true });
+    setSelected({ sessionId, accountId: row?.accountId, initialTab: 'optimize', autoRunOptimize: true });
   };
   // Cross-link from the Agents tab: the session + account come from the agent row
   // (the conversation isn't necessarily in the loaded list page). agentId, when
@@ -165,9 +162,6 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
           behavior='filter'
           ariaLabel='Cost Analyser screens'
         />
-        <Chip size='xs' variant='tag' tone='info'>
-          Live data
-        </Chip>
       </Box>
 
       {/* Hidden for Critiques — that tab has its own cross-tenant filter bar, no account concept. */}
@@ -179,7 +173,7 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
           options={usageFilters}
           accountId={selectedAccountId}
           onAccountChange={setSelectedAccountId}
-          anchorDate={anchorToday()}
+          dateResetNonce={dateResetNonce}
           // The Agents tab owns local include/exclude agent controls (with a curated
           // default exclude), so the shared Agent filter would be a redundant, no-op
           // third control there — hide it and let that tab's own filters stand.
@@ -221,13 +215,17 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
                     accountNameById={accountNameById}
                     onSelectModel={(model) => patch({ models: [model] })}
                     onSelectSource={(source) => patch({ sources: [source] })}
-                    onSelectPeriod={(startDate, endDate) => patch({ startDate, endDate })}
+                    onSelectPeriod={(startDate, endDate) => {
+                      patch({ startDate, endDate });
+                      setDateResetNonce((n) => n + 1);
+                    }}
                   />
                 ))}
               {tab === 'conversations' && (
                 <ConversationsView
-                  accountId={effectiveAccountId}
-                  filters={filters}
+                  loading={loading}
+                  runs={runs}
+                  total={conversations?.page?.total ?? runs.length}
                   listCap={listCap}
                   accountNameById={accountNameById}
                   onSelectRun={openRun}

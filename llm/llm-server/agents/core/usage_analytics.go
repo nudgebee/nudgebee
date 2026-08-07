@@ -246,8 +246,9 @@ type UsageMetrics struct {
 	Breakdowns map[string][]UsageGroupRow `json:"breakdowns"`
 	TimeSeries *UsageTimeSeries           `json:"time_series,omitempty"`
 	// Storage is the cache-lifecycle storage cost (separate from token cost),
-	// prorated to the report window. Always populated for the account-wide
-	// aggregation; nil only on error-free empty-scope calls.
+	// prorated to the report window. Populated for the account-wide aggregation
+	// unless the caller opted out via skipStorage (GetUsageMetrics); nil only on
+	// error-free empty-scope calls or when skipped.
 	Storage *CacheStorage `json:"storage,omitempty"`
 }
 
@@ -325,8 +326,10 @@ func cacheHitPct(cached, input int64) float64 {
 // breakdown (<= 0 = unlimited, capped at maxUsageTopN). Pass several dims for the
 // Overview screen, one for a single cut, none for KPI cards only. When
 // granularity is non-empty (a member of usageGranularities) the over-time series
-// is computed too, in its own concurrent scan.
-func (chat *ConversationDao) GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string) (UsageMetrics, error) {
+// is computed too, in its own concurrent scan. skipStorage skips the (separate)
+// cache-lifecycle storage-cost scan for callers that only read totals/breakdowns —
+// e.g. a totals-only comparison window whose result.Storage would be discarded.
+func (chat *ConversationDao) GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error) {
 	result := UsageMetrics{Breakdowns: map[string][]UsageGroupRow{}}
 	if len(filter.AccountIDs) == 0 {
 		return result, nil
@@ -440,19 +443,22 @@ func (chat *ConversationDao) GetUsageMetrics(filter UsageMetricsFilter, dims []s
 	}
 
 	// Cache-lifecycle storage cost (prorated, by scope) — separate table/grain,
-	// own scan, concurrent. Account+date(+model/provider) scoped only.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		st, err := chat.runCacheStorageCost(filter)
-		if err != nil {
-			fail(err)
-			return
-		}
-		mu.Lock()
-		result.Storage = st
-		mu.Unlock()
-	}()
+	// own scan, concurrent. Account+date(+model/provider) scoped only. Skipped
+	// when the caller has no use for it (see skipStorage doc above).
+	if !skipStorage {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st, err := chat.runCacheStorageCost(filter)
+			if err != nil {
+				fail(err)
+				return
+			}
+			mu.Lock()
+			result.Storage = st
+			mu.Unlock()
+		}()
+	}
 
 	wg.Wait()
 	if firstErr != nil {
@@ -819,7 +825,8 @@ type UsageMetricsRequest struct {
 	Statuses    []string `json:"statuses,omitempty"`
 	GroupBy     []string `json:"group_by,omitempty"` // model|provider|source|agent|status|user|account
 	TopN        int      `json:"top_n,omitempty"`
-	Granularity string   `json:"granularity,omitempty"` // day|week|month (empty = no over-time series)
+	Granularity string   `json:"granularity,omitempty"`  // day|week|month (empty = no over-time series)
+	SkipStorage bool     `json:"skip_storage,omitempty"` // true = skip the cache-storage scan (response.storage stays nil)
 }
 
 // UsageMetricsResponse echoes the resolved dimensions alongside the metrics.
@@ -867,7 +874,7 @@ func HandleUsageMetricsApi(ctx *security.RequestContext, request UsageMetricsReq
 		UserID:     request.UserId,
 	}
 
-	metrics, err := GetConversationDao().GetUsageMetrics(filter, request.GroupBy, request.TopN, request.Granularity)
+	metrics, err := GetConversationDao().GetUsageMetrics(filter, request.GroupBy, request.TopN, request.Granularity, request.SkipStorage)
 	if err != nil {
 		return UsageMetricsResponse{}, err
 	}

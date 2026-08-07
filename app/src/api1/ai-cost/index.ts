@@ -400,6 +400,9 @@ export interface AggregateUsageRequest extends UsageFilterRequest {
   topN?: number;
   /** day|week|month — when set, the response includes the over-time `time_series`. */
   granularity?: string;
+  /** Skip the cache-lifecycle storage-cost scan (`storage` in the response) when the
+   * caller only needs totals/breakdowns — e.g. a totals-only comparison window. */
+  skipStorage?: boolean;
 }
 
 export interface ListConversationCostsRequest extends UsageFilterRequest {
@@ -448,12 +451,12 @@ export async function aggregateUsageMetrics(req: AggregateUsageRequest, signal?:
   const query = `mutation AggregateUsageMetrics(
     $accountIds: [String!], $startDate: String!, $endDate: String!, $userId: String,
     $sources: [String!], $models: [String!], $providers: [String!], $agents: [String!], $statuses: [String!],
-    $groupBy: [String!], $topN: Int, $granularity: String
+    $groupBy: [String!], $topN: Int, $granularity: String, $skipStorage: Boolean
   ) {
     ai_aggregate_usage_metrics(request: {
       account_ids: $accountIds, start_date: $startDate, end_date: $endDate, user_id: $userId,
       sources: $sources, models: $models, providers: $providers, agents: $agents, statuses: $statuses,
-      group_by: $groupBy, top_n: $topN, granularity: $granularity
+      group_by: $groupBy, top_n: $topN, granularity: $granularity, skip_storage: $skipStorage
     }) {
       data
     }
@@ -474,6 +477,7 @@ export async function aggregateUsageMetrics(req: AggregateUsageRequest, signal?:
       groupBy: req.groupBy ?? [],
       topN: req.topN ?? 0,
       granularity: req.granularity ?? null,
+      skipStorage: req.skipStorage ?? false,
     },
     undefined,
     signal
