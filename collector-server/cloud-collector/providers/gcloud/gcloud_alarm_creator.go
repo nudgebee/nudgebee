@@ -321,13 +321,20 @@ func buildSimpleCondition(config providers.AlarmCreationConfig) (*monitoringpb.A
 // Monitoring filter. INT64-typed labels (e.g. the HTTPS load balancer's
 // response_code_class, whose values are 200/300/400/500) must be compared
 // unquoted; string-typed labels stay quoted. The value's shape decides:
-// all-digits renders numeric. Shared by the creator and the checker so both
-// always agree on the rendered form.
+// all-digits renders numeric. A leading "!" marks negation (e.g. "!OK" for
+// GCS request errors renders response_code!="OK") — safe as a convention
+// because GCP label values never begin with "!". Shared by the creator and
+// the checker so both always agree on the rendered form.
 func metricLabelClause(key, value string) string {
-	if isAllDigits(value) {
-		return fmt.Sprintf(`metric.labels.%s=%s`, key, value)
+	op := "="
+	if strings.HasPrefix(value, "!") {
+		op = "!="
+		value = value[1:]
 	}
-	return fmt.Sprintf(`metric.labels.%s="%s"`, key, value)
+	if isAllDigits(value) {
+		return fmt.Sprintf(`metric.labels.%s%s%s`, key, op, value)
+	}
+	return fmt.Sprintf(`metric.labels.%s%s"%s"`, key, op, value)
 }
 
 func isAllDigits(s string) bool {

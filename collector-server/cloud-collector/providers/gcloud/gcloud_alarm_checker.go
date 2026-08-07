@@ -219,6 +219,8 @@ func GetResourceFilterForService(serviceName, resourceID string) string {
 		return fmt.Sprintf(`resource.type="pubsub_subscription" AND resource.labels.subscription_id="%s"`, resourceID)
 	case ServiceNameFunctions:
 		return fmt.Sprintf(`resource.type="cloud_function" AND resource.labels.function_name="%s"`, resourceID)
+	case ServiceNameStorage:
+		return fmt.Sprintf(`resource.type="gcs_bucket" AND resource.labels.bucket_name="%s"`, resourceID)
 	case ServiceNameMemorystore:
 		// resourceID must be the full instance path (projects/.../instances/...) —
 		// redis_instance's instance_id label carries the full resource name

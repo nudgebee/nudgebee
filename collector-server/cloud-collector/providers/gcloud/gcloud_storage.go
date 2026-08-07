@@ -119,9 +119,64 @@ func normalizeGCPLocation(location string) string {
 func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
+	// Load GCP alarm templates for Cloud Storage
+	storageAlarmTemplates, err := LoadGCPAlarmTemplates(ServiceNameStorage)
+	if err != nil {
+		ctx.GetLogger().Warn("Failed to load GCP Cloud Storage alarm templates", "error", err)
+		storageAlarmTemplates = []providers.AlarmTemplate{} // Continue with other recommendations
+	}
+
 	for _, resource := range existingResources {
 		if resource.ServiceName != ServiceNameStorage {
 			continue
+		}
+
+		// Check for missing Cloud Monitoring alert policies. resource.Id is the
+		// plain bucket name, matching GCP Monitoring's bucket_name label.
+		resourceFilter := GetResourceFilterForService(ServiceNameStorage, resource.Id)
+		for _, template := range storageAlarmTemplates {
+			isMissing, err := IsAlarmMissing(resource, template, resourceFilter)
+			if err != nil {
+				ctx.GetLogger().Warn("Failed to check if alarm is missing", "error", err, "template", template.Name)
+				continue
+			}
+
+			if !isMissing {
+				// Alarm already exists, skip
+				continue
+			}
+
+			// All Cloud Storage thresholds are static
+			threshold := template.ThresholdRules.Default
+
+			alarmConfig := buildGCPAlarmConfig(resource, template, threshold, []providers.AlarmDimension{
+				{Name: "bucket_name", Value: resource.Id},
+			})
+
+			recommendations = append(recommendations, providers.Recommendation{
+				CategoryName: providers.RecommendationCategoryConfiguration,
+				RuleName:     template.Name,
+				Severity:     providers.RecommendationSeverityFromString(template.Severity),
+				Savings:      0,
+				Data: map[string]any{
+					"bucket_id":     resource.Id,
+					"bucket_name":   resource.Name,
+					"bucket_region": resource.Region,
+					"storage_class": resource.Meta["StorageClass"],
+					"metric_name":   template.Configuration.MetricName,
+					"threshold":     threshold,
+					"alarm_config":  alarmConfig,
+					"alarm_type":    template.AlarmType,
+					"reason":        template.Description,
+					"metric_type":   template.MetricType,
+					"project_id":    account.AccountNumber,
+				},
+				Action:              providers.RecommendationActionModify,
+				ResourceServiceName: resource.ServiceName,
+				ResourceId:          resource.Id,
+				ResourceType:        resource.Type,
+				ResourceRegion:      resource.Region,
+			})
 		}
 
 		// Recommendation 1: Check for buckets without labels
