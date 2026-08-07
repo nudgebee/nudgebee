@@ -2401,6 +2401,13 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		messageFormatters = append(messageFormatters, LiteralSystemMessage{Content: agentPrompt})
 	}
 
+	// First name for greeting personalisation, top-level turns only (sub-agents
+	// don't greet). Human-message → per-user, cache-safe. "" when name unknown.
+	userContextBlock := ""
+	if request.ParentAgentId == "" || request.ParentAgentId == request.AgentId {
+		userContextBlock = renderUserContextBlock(ctx)
+	}
+
 	// Move all dynamic context to the final Human message so the system prefix is stable.
 	// today is placed here (not in the system message) so the cached system prefix
 	// does not expire on date rollover.
@@ -2413,6 +2420,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 {{.kb_prestep_content}}
 {{.skill_lists_menu}}
 {{.global_preferences_block}}
+{{.user_context_block}}
 <task_context>
 **Previous Conversation Context:** {{.conversation_context}}
 **Previous Messages (History):**
@@ -2436,6 +2444,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"scratchpad",
 		"notebook",
 		"global_preferences_block",
+		"user_context_block",
 		"kb_prestep_content",
 		"skill_lists_menu",
 		"channel_context_block",
@@ -2472,6 +2481,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"conversation_context":     conversationContext,
 		"scratchpad":               "", // default; overridden per-iteration in fullInputs
 		"global_preferences_block": renderGlobalPreferencesBlock(request.AccountPrompt),
+		"user_context_block":       userContextBlock,
 		// KB pre-step output — empty on the legacy path; populated into the human
 		// message (above the scratchpad, so compression never drops it) when the
 		// KB pre-step is enabled.

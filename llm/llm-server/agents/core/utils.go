@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
@@ -454,6 +455,21 @@ func renderGlobalPreferencesBlock(accountPrompt string) string {
 		return ""
 	}
 	return "<global_preferences>" + accountPrompt + "</global_preferences>"
+}
+
+// renderUserContextBlock surfaces the caller's first name (from the security-context
+// display name) so the greeting instruction can address them by name. "" when unknown
+// → generic greeting. Human-message only: per-user → must stay out of the cached prefix.
+func renderUserContextBlock(ctx *security.RequestContext) string {
+	sc := ctx.GetSecurityContext()
+	if sc == nil {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimSpace(sc.GetDisplayName()))
+	if len(fields) == 0 {
+		return ""
+	}
+	return "<user_context>The user you are assisting is " + fields[0] + ".</user_context>"
 }
 
 // promptStructureTagPattern matches any tag the ReAct3 prompt uses to delimit

@@ -46,10 +46,11 @@ const (
 )
 
 type SecurityContext struct {
-	tenantId   string
-	accountIds []string
-	userId     string
-	roles      []string
+	tenantId    string
+	accountIds  []string
+	userId      string
+	displayName string
+	roles       []string
 	// scopedEntityIds maps a role -> the account ids it is scoped to (for k8s
 	// namespace roles the value is the account-id half of "<accountId>:<ns>").
 	// Mirrors the api-server's security_context_v2 wire shape
@@ -83,6 +84,7 @@ type scPub struct {
 	TenantId                string
 	AccountIds              []string
 	UserId                  string
+	DisplayName             string
 	Roles                   []string
 	ScopedEntityIds         map[string][]string
 	K8sUser                 map[string]string
@@ -98,6 +100,7 @@ func (sc *SecurityContext) MarshalJSON() ([]byte, error) {
 		TenantId:                sc.tenantId,
 		AccountIds:              sc.accountIds,
 		UserId:                  sc.userId,
+		DisplayName:             sc.displayName,
 		Roles:                   sc.roles,
 		ScopedEntityIds:         sc.scopedEntityIds,
 		K8sUser:                 sc.k8sUser,
@@ -124,6 +127,7 @@ func (sc *SecurityContext) UnmarshalJSON(data []byte) error {
 	sc.tenantId = scPub1.TenantId
 	sc.accountIds = scPub1.AccountIds
 	sc.userId = scPub1.UserId
+	sc.displayName = scPub1.DisplayName
 	sc.roles = scPub1.Roles
 	sc.scopedEntityIds = scPub1.ScopedEntityIds
 	sc.k8sUser = scPub1.K8sUser
@@ -142,6 +146,11 @@ func (sc *SecurityContext) GetTenantId() string {
 
 func (sc *SecurityContext) GetAccountIds() []string {
 	return sc.accountIds
+}
+
+// User display name from the context (best-effort; "" for synthetic/stale contexts).
+func (sc *SecurityContext) GetDisplayName() string {
+	return sc.displayName
 }
 
 func (sc *SecurityContext) GetUserId() string {

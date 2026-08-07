@@ -54,6 +54,7 @@ type SecurityContext struct {
 	tenantId        string
 	accountIds      []string
 	userId          string
+	displayName     string
 	roles           []string
 	scopedEntityIds map[string][]string
 	k8sUser         map[string]string
@@ -84,6 +85,7 @@ type scPub struct {
 	TenantId                string
 	AccountIds              []string
 	UserId                  string
+	DisplayName             string
 	Roles                   []string
 	ScopedEntityIds         map[string][]string
 	K8sUser                 map[string]string
@@ -99,6 +101,7 @@ func (sc *SecurityContext) MarshalJSON() ([]byte, error) {
 		TenantId:                sc.tenantId,
 		AccountIds:              sc.accountIds,
 		UserId:                  sc.userId,
+		DisplayName:             sc.displayName,
 		Roles:                   sc.roles,
 		ScopedEntityIds:         sc.scopedEntityIds,
 		K8sUser:                 sc.k8sUser,
@@ -125,6 +128,7 @@ func (sc *SecurityContext) UnmarshalJSON(data []byte) error {
 	sc.tenantId = scPub1.TenantId
 	sc.accountIds = scPub1.AccountIds
 	sc.userId = scPub1.UserId
+	sc.displayName = scPub1.DisplayName
 	sc.roles = scPub1.Roles
 	sc.scopedEntityIds = scPub1.ScopedEntityIds
 	sc.k8sUser = scPub1.K8sUser
@@ -152,6 +156,11 @@ func (sc *SecurityContext) GetUserId() string {
 // the PermissionModule tenant-wide skip in the query engine.
 func (sc *SecurityContext) GetAccountIds() []string {
 	return sc.accountIds
+}
+
+// User display name (best-effort; "" for synthetic/stale contexts). Callers tolerate "".
+func (sc *SecurityContext) GetDisplayName() string {
+	return sc.displayName
 }
 
 func (sc *SecurityContext) GetRoles() []string {
@@ -764,7 +773,13 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 		}
 	}
 
-	sc := SecurityContext{tenantId: tenantId, userId: userId, roles: roles, accountIds: accountIds, scopedEntityIds: scopedEntityIds, k8sUser: k8sUsers, k8sGroup: k8sGroups, k8sNamespaces: k8sNamespaces, customPermissions: customPermissions, scopedCustomPermissions: scopedCustomPermissions}
+	// Display name for personalisation → best-effort, never fails auth; cached 30m with the ctx.
+	var displayName string
+	if derr := dbms.Db.QueryRowx(`SELECT COALESCE(display_name, '') FROM users WHERE id = $1::uuid`, userId).Scan(&displayName); derr != nil {
+		slog.Debug("NewSecurityContext: no display_name for user", "user_id", userId, "error", derr)
+	}
+
+	sc := SecurityContext{tenantId: tenantId, userId: userId, displayName: displayName, roles: roles, accountIds: accountIds, scopedEntityIds: scopedEntityIds, k8sUser: k8sUsers, k8sGroup: k8sGroups, k8sNamespaces: k8sNamespaces, customPermissions: customPermissions, scopedCustomPermissions: scopedCustomPermissions}
 	scdata, err := common.MarshalJson(&sc)
 	if err != nil {
 		slog.Error("Failed to marshal security context", "error", err)
