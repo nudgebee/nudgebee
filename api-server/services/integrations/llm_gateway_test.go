@@ -25,7 +25,7 @@ func TestLLMGateway_ConfigSchema(t *testing.T) {
 	assert.Equal(t, []string{"provider"}, schema.Required)
 
 	// provider is the umbrella selector.
-	assert.Equal(t, []any{"openai", "anthropic", "gemini", "custom"}, schema.Properties["provider"].Enum)
+	assert.Equal(t, []any{"openai", "anthropic", "gemini", "vertex", "custom"}, schema.Properties["provider"].Enum)
 
 	// api_key is encrypted; required (shows *) for the known providers, optional for custom.
 	assert.True(t, schema.Properties["api_key"].IsEncrypted, "api_key must be encrypted")
@@ -39,6 +39,13 @@ func TestLLMGateway_ConfigSchema(t *testing.T) {
 
 	// No account binding — the gateway resolves per tenant, not per account.
 	assert.NotContains(t, schema.Properties, "account_id")
+
+	// Vertex structured fields — shown only for vertex; SA JSON encrypted + multiline.
+	assert.Equal(t, map[string]any{"provider": "vertex"}, schema.Properties["project_id"].ShowWhen)
+	assert.Equal(t, map[string]any{"provider": "vertex"}, schema.Properties["region"].ShowWhen)
+	assert.Equal(t, map[string]any{"provider": "vertex"}, schema.Properties["service_account_json"].ShowWhen)
+	assert.True(t, schema.Properties["service_account_json"].IsEncrypted, "SA JSON must be encrypted")
+	assert.True(t, schema.Properties["service_account_json"].Multiline, "SA JSON should render multiline")
 }
 
 func TestLLMGateway_ValidateConfig(t *testing.T) {
@@ -68,6 +75,15 @@ func TestLLMGateway_ValidateConfig(t *testing.T) {
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
 		"provider": "custom", "base_url": "http://localhost/v1", "models": "m",
 	}), ""), "http/loopback base_url must be rejected")
+
+	// Vertex: project + region + a well-formed service-account JSON.
+	validSA := `{"type":"service_account","client_email":"x@y.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"}`
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": validSA}), ""))
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "vertex", "service_account_json": validSA}), ""), "vertex without project/region must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": "not json"}), ""), "malformed SA JSON must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": `{"type":"service_account"}`}), ""), "SA JSON missing client_email/private_key must error")
+	// Edit flow: an unchanged SA JSON arrives as the redaction mask — must NOT fail format validation.
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": "*********************************"}), ""), "masked SA JSON must skip format validation")
 
 	// Missing / unsupported provider.
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"api_key": "sk-x"}), ""), "missing provider must error")

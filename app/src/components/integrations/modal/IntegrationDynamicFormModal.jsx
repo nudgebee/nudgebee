@@ -2062,7 +2062,10 @@ const IntegrationDynamicFormModal = ({
                                     id={toKebabCase(field.display_name || key)}
                                     label={field.display_name || snakeToTitleCase(key)}
                                     type={
-                                      field.is_encrypted
+                                      // Password masking (with the eye toggle) applies to SINGLE-LINE secrets only —
+                                      // a multiline encrypted field (e.g. a service-account JSON) can't be a password
+                                      // input, so it renders as a textarea (still encrypted at rest + masked on edit).
+                                      field.is_encrypted && !field.multiline
                                         ? // Reveal only applies to a freshly-typed value. A stored secret is
                                           // never sent to the UI — on edit the field holds the mask, which stays
                                           // masked (and offers no eye), so a saved key can't be exposed.
@@ -2076,8 +2079,9 @@ const IntegrationDynamicFormModal = ({
                                     value={formValues[key] || ''}
                                     onChange={(value) => handleChange(key, value)}
                                     trailingIcon={
-                                      // Eye toggle only while inserting a new value (not for the stored-secret mask).
-                                      field.is_encrypted && formValues[key] && formValues[key] !== ENCRYPTED_MASK ? (
+                                      // Eye toggle only while inserting a new single-line value (not for the stored
+                                      // mask, and not for multiline secrets which render as a textarea).
+                                      field.is_encrypted && !field.multiline && formValues[key] && formValues[key] !== ENCRYPTED_MASK ? (
                                         <Box
                                           component='button'
                                           type='button'

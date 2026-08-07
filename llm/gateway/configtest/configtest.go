@@ -8,6 +8,7 @@ package configtest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,22 @@ func RegisterRoutes(r *gin.Engine, token string) {
 
 type testConnectionRequest struct {
 	Config map[string]string `json:"config"`
+}
+
+// validateServiceAccountJSON checks a pasted GCP service-account key is well-formed JSON
+// carrying the fields Vertex auth needs — catching a truncated paste or wrong file.
+func validateServiceAccountJSON(raw string) error {
+	var sa struct {
+		ClientEmail string `json:"client_email"`
+		PrivateKey  string `json:"private_key"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &sa); err != nil {
+		return fmt.Errorf("must be valid JSON (paste the full service-account key)")
+	}
+	if sa.ClientEmail == "" || sa.PrivateKey == "" {
+		return fmt.Errorf("does not look like a service-account key (missing client_email/private_key)")
+	}
+	return nil
 }
 
 // normalizeBaseURL trims a trailing slash and an optional trailing /v1, so a base URL works
@@ -84,6 +101,22 @@ func probe(ctx context.Context, cfg map[string]string) error {
 		// Gemini (Google AI Studio) takes the key as a query param, not a header.
 		probeURL = "https://generativelanguage.googleapis.com/v1beta/models?key=" + url.QueryEscape(apiKey)
 		endpointLabel = "Gemini"
+	case "vertex":
+		// Structural validation only (this cut): a live probe would need an OAuth token
+		// minted from the service-account JSON. Confirm project/region are set and the SA
+		// JSON is well-formed so a truncated/wrong paste is caught here; real connectivity
+		// is proven on the first routed request.
+		if strings.TrimSpace(cfg["project_id"]) == "" || strings.TrimSpace(cfg["region"]) == "" {
+			return fmt.Errorf("project_id and region are required for Vertex")
+		}
+		sa := strings.TrimSpace(cfg["service_account_json"])
+		if sa == "" {
+			return fmt.Errorf("service_account_json is required for Vertex")
+		}
+		if err := validateServiceAccountJSON(sa); err != nil {
+			return fmt.Errorf("service_account_json %s", err)
+		}
+		return nil
 	case "custom":
 		base := strings.TrimSpace(cfg["base_url"])
 		if base == "" {

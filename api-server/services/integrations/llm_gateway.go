@@ -57,6 +57,7 @@ const (
 	llmGatewayProviderOpenAI    = "openai"
 	llmGatewayProviderAnthropic = "anthropic"
 	llmGatewayProviderGemini    = "gemini"
+	llmGatewayProviderVertex    = "vertex"
 )
 
 func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
@@ -75,7 +76,7 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 			"provider": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Which provider this credential is for. Choose 'custom' for a self-hosted / OpenAI-compatible endpoint.",
-				Enum:        []any{llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini, llmGatewayProviderCustom},
+				Enum:        []any{llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini, llmGatewayProviderVertex, llmGatewayProviderCustom},
 				Priority:    8,
 			},
 			"api_key": {
@@ -105,6 +106,32 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 				Priority:     5,
 				ShowWhen:     map[string]any{"provider": llmGatewayProviderCustom},
 				RequiredWhen: map[string]any{"provider": llmGatewayProviderCustom},
+			},
+			// Vertex (provider=vertex): structured GCP creds — the endpoint is derived from
+			// project + region, and auth is a service-account JSON. Shown only for vertex; api_key
+			// is not used (its ShowWhen excludes vertex).
+			"project_id": {
+				Type:         core.ToolSchemaTypeString,
+				Description:  "GCP project ID that hosts the Vertex AI models.",
+				Priority:     4,
+				ShowWhen:     map[string]any{"provider": llmGatewayProviderVertex},
+				RequiredWhen: map[string]any{"provider": llmGatewayProviderVertex},
+			},
+			"region": {
+				Type:         core.ToolSchemaTypeString,
+				Description:  "GCP region for Vertex AI (e.g. us-central1) — a GCP region, not an AWS one.",
+				Priority:     3,
+				ShowWhen:     map[string]any{"provider": llmGatewayProviderVertex},
+				RequiredWhen: map[string]any{"provider": llmGatewayProviderVertex},
+			},
+			"service_account_json": {
+				Type:         core.ToolSchemaTypeString,
+				Description:  "Service-account key JSON with Vertex AI access — paste the full JSON.",
+				Priority:     2,
+				IsEncrypted:  true, // encrypted at rest + redacted from UI reads
+				Multiline:    true, // it's a multi-line JSON blob
+				ShowWhen:     map[string]any{"provider": llmGatewayProviderVertex},
+				RequiredWhen: map[string]any{"provider": llmGatewayProviderVertex},
 			},
 		},
 	}
@@ -144,12 +171,61 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 				}
 			}
 		}
+	case llmGatewayProviderVertex:
+		// Vertex: project + GCP region + a well-formed service-account JSON.
+		if cfg["project_id"] == "" {
+			errs = append(errs, fmt.Errorf("project_id is required for Vertex"))
+		}
+		if cfg["region"] == "" {
+			errs = append(errs, fmt.Errorf("region is required for Vertex (a GCP region, e.g. us-central1)"))
+		}
+		// On EDIT, an unchanged SA JSON arrives as the UI redaction mask or as ciphertext
+		// (is_encrypted) — neither is parseable JSON. Only format-check a freshly-typed
+		// plaintext value; the "required" check still applies in every case.
+		sa, saOpaque := "", false
+		for _, v := range values {
+			if v.Name == "service_account_json" {
+				sa = strings.TrimSpace(v.Value)
+				saOpaque = v.IsEncrypted || isRedactionMask(sa)
+				break
+			}
+		}
+		if sa == "" {
+			errs = append(errs, fmt.Errorf("service_account_json is required for Vertex"))
+		} else if !saOpaque {
+			if err := validateServiceAccountJSON(sa); err != nil {
+				errs = append(errs, fmt.Errorf("service_account_json %s", err))
+			}
+		}
 	case "":
 		errs = append(errs, fmt.Errorf("provider is required"))
 	default:
-		errs = append(errs, fmt.Errorf("unsupported provider %q (expected openai, anthropic, gemini, or custom)", provider))
+		errs = append(errs, fmt.Errorf("unsupported provider %q (expected openai, anthropic, gemini, vertex, or custom)", provider))
 	}
 	return errs
+}
+
+// isRedactionMask reports whether a value is the UI's "secret unchanged" placeholder — a
+// run of asterisks — so validation never tries to parse it as a real value.
+func isRedactionMask(s string) bool {
+	return s != "" && strings.Trim(s, "*") == ""
+}
+
+// validateServiceAccountJSON checks a pasted GCP service-account key is well-formed JSON
+// carrying the fields Vertex auth needs — catching a truncated paste or wrong file at save
+// time rather than at request time.
+func validateServiceAccountJSON(raw string) error {
+	var sa struct {
+		ClientEmail string `json:"client_email"`
+		PrivateKey  string `json:"private_key"`
+	}
+	if err := json.Unmarshal([]byte(raw), &sa); err != nil {
+		return fmt.Errorf("must be valid JSON (paste the full service-account key)")
+	}
+	if sa.ClientEmail == "" || sa.PrivateKey == "" {
+		return fmt.Errorf("does not look like a service-account key (missing client_email/private_key)")
+	}
+	return nil
 }
 
 // TestConnection delegates the connectivity probe to the GATEWAY — the service that

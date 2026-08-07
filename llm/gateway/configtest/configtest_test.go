@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+// TestProbe_VertexStructuralOK: a well-formed Vertex config passes the (structural) probe
+// — project + region present and the service-account JSON parses with the needed fields.
+func TestProbe_VertexStructuralOK(t *testing.T) {
+	cfg := map[string]string{
+		"provider":             "vertex",
+		"project_id":           "p",
+		"region":               "us-central1",
+		"service_account_json": `{"type":"service_account","client_email":"x@y.iam.gserviceaccount.com","private_key":"k"}`,
+	}
+	if err := probe(context.Background(), cfg); err != nil {
+		t.Fatalf("valid vertex config should pass structural probe, got %v", err)
+	}
+}
+
 // TestNormalizeBaseURL: a base URL works with or without a trailing /v1 (the vLLM lane
 // appends /v1/... itself), so both forms normalize to the same host.
 func TestNormalizeBaseURL(t *testing.T) {
@@ -41,6 +55,8 @@ func TestProbe_ConfigValidation(t *testing.T) {
 		{"custom without base_url", map[string]string{"provider": "custom"}, "base_url is required"},
 		{"custom http base_url", map[string]string{"provider": "custom", "base_url": "http://localhost/v1"}, "https"},
 		{"custom private base_url shape ok", map[string]string{"provider": "custom", "base_url": "not a url"}, "valid URL"},
+		{"vertex missing project/region", map[string]string{"provider": "vertex", "service_account_json": `{"client_email":"a","private_key":"b"}`}, "project_id and region"},
+		{"vertex malformed SA JSON", map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": "nope"}, "service_account_json"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
