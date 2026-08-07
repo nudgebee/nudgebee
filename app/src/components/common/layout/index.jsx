@@ -48,6 +48,7 @@ import {
   UserGroupIcon,
   AuditIcon,
   NotificationIcon1,
+  ApplicationsIcon,
 } from '@assets';
 import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
@@ -368,7 +369,16 @@ const PageLayout = ({ children }) => {
       // No `module`: a dashboard panel may query any connected account, so the
       // page itself gates on nothing — each panel's query is authorised per
       // account by the backend it reads.
-      { path: '/dashboards', icon: dashboardIcon1, text: 'Dashboards', id: 'dashboards-sidenavbutton' },
+      {
+        path: '/dashboards',
+        icon: dashboardIcon1,
+        text: 'Dashboards',
+        id: 'dashboards-sidenavbutton',
+        subItems: [
+          { text: 'Dashboard List', path: '/dashboards#list', id: 'sidenav-dashboards-list', icon: dashboardIcon1 },
+          { text: 'Application Grouping', path: '/dashboards#groups', id: 'sidenav-dashboards-groups', icon: ApplicationsIcon },
+        ],
+      },
       {
         path: '/troubleshoot',
         activePaths: ['/investigate', '/agentHealth'],

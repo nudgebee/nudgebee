@@ -109,7 +109,8 @@ export const navSearchPages: NavSearchPage[] = [
 
   // A real route now, not a /kubernetes tab: a panel may query any connected
   // account, so the page moved out from under Kubernetes to the sidebar.
-  { group: 'Dashboards', label: 'Custom Dashboards', path: '/dashboards' },
+  { group: 'Dashboards', label: 'Custom Dashboards', path: '/dashboards#list' },
+  { group: 'Dashboards', label: 'Application Grouping', path: '/dashboards#groups' },
 
   { group: 'Optimize', label: 'Optimize Summary', path: '/optimise#summary' },
   { group: 'Optimize', label: 'Optimize Recommendations', path: '/optimise#recommendations' },
@@ -459,13 +460,14 @@ export const navSearchIgnoredFragments: string[] = [
   'gcp/security',
   'gcp/tools',
 
-  // /kubernetes — the K8s accounts landing page (distinct from a single
-  // cluster's /kubernetes/details/{id}, already covered by
-  // k8sDetailsSearchFragments above). src/pages/kubernetes/index.jsx.
-  // NOT confirmed intentional — no `disabled` flag on either tab; likely just
-  // never added when this page was built.
+  // /kubernetes#overview — the K8s accounts landing page (distinct from a
+  // single cluster's /kubernetes/details/{id}, already covered by
+  // k8sDetailsSearchFragments above). src/pages/kubernetes/index.jsx, which is
+  // now a redirector to the in-scope cluster's detail page: the overview only
+  // renders for this explicit hash or when no cluster is connected, so it has
+  // no sidebar entry to mirror. Its former second tab, Application Grouping,
+  // moved to /dashboards#groups and IS registered above.
   '/kubernetes#overview',
-  '/kubernetes#groups',
 
   // /auto-pilot/task/{taskId} — src/pages/auto-pilot/task/[TaskDetails].jsx.
   // Needs a runtime taskId like the provider detail pages above, so it would

@@ -13,7 +13,9 @@ import Link from 'next/link';
 
 const AnchorComponent = ({
   p = `${ds.space.mul(0, 3)} ${ds.space[6]} 0 ${ds.space[6]}`,
-  filterOptions = [],
+  // Cast so TypeScript callers aren't inferred against the empty default's
+  // `never[]` — the shape is documented by propTypes below, not by this default.
+  filterOptions = /** @type {any[]} */ ([]),
   marginTop = 0,
   onChangeFilter,
   boxShadow = `0px ${ds.space[0]} ${ds.space[5]} ${ds.space[0]} ${ds.gray.alpha[200]}`,
