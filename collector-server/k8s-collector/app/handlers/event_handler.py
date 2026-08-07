@@ -1476,7 +1476,7 @@ def archive_existing_recommendation(cloud_account_id, tenant):
     # cannot leave a stale Open row behind under the old category.
     update_to_archieve = (
         "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and"
-        " category = ANY(%s) and rule_name = %s and status not in  ('Closed', 'InProgress')"
+        " category = ANY(%s) and rule_name = %s and status = 'Open'"
     )
     database.run_query(
         update_to_archieve, ["Archive", tenant, cloud_account_id, ["RightSizing", "Configuration"], "pod_right_sizing"]
@@ -2051,9 +2051,12 @@ def handle_existing_resource_best_practices(
 
 
 def archive_existing_with_rule(cloud_account_id, tenant, category, rule_name):
+    # Tombstone Open rows only, so a re-scan never overwrites a user-owned state
+    # (Dismissed/snoozed, InProgress, Closed). The upsert's CASE guard resurrects
+    # a still-present Open finding; a user decision must outlive the scan.
     update_to_archieve = (
         "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and category = %s and"
-        " rule_name = %s"
+        " rule_name = %s and status = 'Open'"
     )
     database.run_query(update_to_archieve, ["Archive", tenant, cloud_account_id, category, rule_name])
 
@@ -2064,7 +2067,7 @@ def archive_existing_with_rules(cloud_account_id, tenant, category, rule_names):
     placeholders = ",".join(["%s"] * len(rule_names))
     update_to_archieve = (
         "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and"
-        f" category = %s and rule_name in ({placeholders})"
+        f" category = %s and rule_name in ({placeholders}) and status = 'Open'"
     )
     database.run_query(update_to_archieve, ["Archive", tenant, cloud_account_id, category] + list(rule_names))
 
@@ -2078,10 +2081,14 @@ def archive_existing_with_object_id(cloud_account_id, tenant, category, account_
 
 
 def archive_image_scan_recommendations(cloud_account_id, tenant, image_name):
+    # Tombstone Open rows only. A user-set state (Dismissed/snoozed, InProgress,
+    # Closed) must survive the rescan so the upsert's CASE guard can preserve it;
+    # `status != 'Archive'` used to flip a Dismissed row to Archive first, which
+    # let the finding reappear as Open.
     query = (
         "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s "
         "and category = 'Security' and rule_name = 'image_scan' "
-        "and recommendation->>'image_name' = %s and status != 'Archive'"
+        "and recommendation->>'image_name' = %s and status = 'Open'"
     )
     database.run_query(query, ["Archive", tenant, cloud_account_id, image_name])
 

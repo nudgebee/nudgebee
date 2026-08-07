@@ -46,12 +46,18 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 	//   2. popeye writes per-linter rule_names ("deployments_misconfigurations",
 	//      "clusterroles_misconfigurations", ...). Exact-match archive can't
 	//      cover all of them up-front, so we archive by LIKE pattern instead.
+	//
+	// Every archive below tombstones status = 'Open' rows ONLY. Open is the sole
+	// scanner-owned live state; the archive must never overwrite a user-owned
+	// state (Dismissed/snoozed, InProgress, Closed). A rescan of a still-present
+	// finding resurrects Open below via the upsert; a user decision must survive
+	// it. Pairs with the CASE guard on the upsert's status column.
 	switch scannerName {
 	case "popeye_scan":
 		_, err = dbms.Db.Exec(
 			`UPDATE recommendation SET status = 'Archive', updated_at = $1
 			 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = 'Configuration'
-			   AND rule_name LIKE '%_misconfigurations' AND status != 'Archive'`,
+			   AND rule_name LIKE '%_misconfigurations' AND status = 'Open'`,
 			time.Now(), account.TenantID, account.AccountID,
 		)
 		if err != nil {
@@ -70,7 +76,7 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 		_, err = dbms.Db.Exec(
 			`UPDATE recommendation SET status = 'Archive', updated_at = $1
 			 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = 'Security'
-			   AND rule_name = $4 AND recommendation->>'image_name' = $5 AND status != 'Archive'`,
+			   AND rule_name = $4 AND recommendation->>'image_name' = $5 AND status = 'Open'`,
 			time.Now(), account.TenantID, account.AccountID, scanner.RuleName, account.TargetImage,
 		)
 		if err != nil {
@@ -89,7 +95,7 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 		for k := range archiveKeys {
 			_, err = dbms.Db.Exec(
 				`UPDATE recommendation SET status = 'Archive', updated_at = $1
-				 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = $4 AND rule_name = $5 AND status != 'Archive'`,
+				 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = $4 AND rule_name = $5 AND status = 'Open'`,
 				time.Now(), account.TenantID, account.AccountID, k.category, k.ruleName,
 			)
 			if err != nil {
@@ -119,6 +125,12 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 	// (k8s_recommendation_service.go:43-61); the on-conflict tuple is the
 	// recommendation table's unique index on
 	// (rule_name, cloud_account_id, resource_id, category, account_object_id).
+	//
+	// The status column is guarded by a CASE (below): a re-scan may move a row
+	// between the scanner-owned Open/Archive states, but never OUT of a
+	// user-owned state (Dismissed/snoozed, InProgress, Closed). Without it a
+	// rescan reopened a finding the user had dismissed. Matches the legacy
+	// collector's upsert (event_handler.py upsert_recommendations).
 	now := time.Now()
 	rows := make([]map[string]any, 0, len(recs))
 	for _, r := range recs {
@@ -158,7 +170,8 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 		    :finops_score, :finops_band, :finops_score_breakdown)
 		 ON CONFLICT (rule_name, cloud_account_id, resource_id, category, account_object_id)
 		 DO UPDATE SET recommendation = EXCLUDED.recommendation,
-		               status = EXCLUDED.status,
+		               status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive')
+		                             THEN recommendation.status ELSE EXCLUDED.status END,
 		               updated_at = EXCLUDED.updated_at,
 		               estimated_savings = EXCLUDED.estimated_savings,
 		               severity = EXCLUDED.severity,
