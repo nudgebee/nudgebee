@@ -4,6 +4,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	tocore "nudgebee/llm/tools/core"
 )
 
@@ -67,9 +68,20 @@ func (l *AwsLeanAgent) IsWatchCapable() bool             { return true }
 // by the standard gate (LlmServerReActCritiqueEnabled && top-level && investigation).
 
 func (l *AwsLeanAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
-	// Same direct (v2) tool set: aws_execute + aws_observability + the shared specialists,
-	// with the `aws` sub-agent dropped. Distinct name → distinct tool cache key.
-	return getAwsPlannerSupportedTools(ctx, l.accountId, l.GetName(), true)
+	// Lean reach pattern (parity with azure_lean / gcp_lean / k8s_lean): preload
+	// only aws_execute + the small cross-cutting investigation set, drop every
+	// specialist (aws_observability, tickets, github, visualizer, dbs, kubectl,
+	// workflow, incident_assembly, sub-agents like `aws`). Specialists are
+	// reached on-demand via search_tools + delegate_agent — same contract the
+	// other three lean orchestrators follow.
+	//
+	// This replaces the previous shortcut that returned getAwsPlannerSupportedTools(true)
+	// (the FULL direct-orchestrator tool set, ~25 tools). That left aws_lean lean
+	// in prompt only, not in tool surface — while the other three leans are lean in
+	// BOTH. See PR that landed this: aws_lean was the odd one out; consolidating
+	// aligns the four leans so a single "reduced core" concept applies everywhere.
+	// Distinct name → distinct tool cache key (unchanged).
+	return getCloudLeanSupportedTools(ctx, l.accountId, l.GetName(), tools.ToolExecuteAwsCliCommand)
 }
 
 func (l *AwsLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {

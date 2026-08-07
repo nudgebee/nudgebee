@@ -31,6 +31,12 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 		EventsAgentName,
 		ResourceSearchAgentName,
 		RecommendationsAgentName,
+		// websearch is preloaded so the model can ground cloud-specific
+		// error-message / API-version investigation questions ("what does
+		// gcloud error X mean", "which region supports Y service") without
+		// routing through search_tools + delegate_agent first. Parity with
+		// aws_lean which has had websearch preloaded from day one.
+		WebSearchAgentName,
 		DelegateAgentToolName,
 		SearchToolsToolName,
 	}
@@ -50,6 +56,13 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 // getCloudLeanSupportedTools resolves the reduced cloud core name list to enabled NBTools
 // (account-authorized + configured via GetEnabledNBTools) and merges MCP tools fresh.
 // Cached per (accountId, agentName), so each lean handle gets an isolated cache slot.
+//
+// ALWAYS returns a fresh slice — never the raw cached backing array. Downstream
+// planner code appends to this slice (`FilterAndInjectDefaultTools` calls
+// `toolList = append(toolList, ...)` at utils.go:122, and other injection paths
+// do the same). Returning the cached slice directly would let an in-place append
+// mutate the cached entry across concurrent requests / accounts. The MCP-merge
+// branch already returned a fresh slice; this makes the no-MCP branch match.
 func getCloudLeanSupportedTools(ctx *security.RequestContext, accountId, agentName, cliToolName string) []toolcore.NBTool {
 	var staticTools []toolcore.NBTool
 	if cached, ok := agentSupportedToolsCacheInstance.get(accountId, agentName); ok {
@@ -72,7 +85,10 @@ func getCloudLeanSupportedTools(ctx *security.RequestContext, accountId, agentNa
 
 	mcpTools := toolcore.ListMCPIntegrationTools(accountId)
 	if len(mcpTools) == 0 {
-		return staticTools
+		// Defensive copy: downstream may append; never hand out the cached slice.
+		out := make([]toolcore.NBTool, len(staticTools))
+		copy(out, staticTools)
+		return out
 	}
 	merged := make([]toolcore.NBTool, len(staticTools)+len(mcpTools))
 	copy(merged, staticTools)
