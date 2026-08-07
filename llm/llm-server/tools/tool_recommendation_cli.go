@@ -2,6 +2,8 @@ package tools
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -55,6 +57,38 @@ func (m RecommendationCliTool) InferToolRequestType(_ *security.RequestContext, 
 // ConfirmationKey makes the write confirmation per-action.
 func (m RecommendationCliTool) ConfirmationKey(toolInput string) string {
 	return perActionConfirmationKey(ToolRecommendationExecuteCli, toolInput)
+}
+
+// ConfirmationQuestion lists the exact commands the approval covers.
+func (m RecommendationCliTool) ConfirmationQuestion(toolInput string) string {
+	args := confirmationArgs(toolInput)
+	rawCommands, _ := args["commands"].([]any)
+	commands := make([]string, 0, len(rawCommands))
+	for _, c := range rawCommands {
+		if s, ok := c.(string); ok && s != "" {
+			commands = append(commands, s)
+		}
+	}
+	if len(commands) == 0 {
+		return ""
+	}
+	const maxShown = 5
+	shown := commands
+	more := ""
+	if len(shown) > maxShown {
+		more = fmt.Sprintf("\n…and %d more", len(shown)-maxShown)
+		shown = shown[:maxShown]
+	}
+	plural := ""
+	if len(commands) > 1 {
+		plural = "s"
+	}
+	linkage := ""
+	if recommendationId, _ := args["recommendation_id"].(string); recommendationId != "" {
+		linkage = fmt.Sprintf("\n(Registers as recommendation %s's resolution attempt.)", recommendationId)
+	}
+	return fmt.Sprintf("Execute %d cloud CLI command%s against this account?\n- %s%s\nExecution stops at the first failure.%s Do you want to continue?",
+		len(commands), plural, strings.Join(shown, "\n- "), more, linkage)
 }
 
 func (m RecommendationCliTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {

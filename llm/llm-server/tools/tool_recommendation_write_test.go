@@ -259,3 +259,49 @@ func TestRecommendationTicketResolutionTool(t *testing.T) {
 			RecommendationTicketResolutionTool{}.ConfirmationKey(`{"ticket_id":"OPS-2"}`))
 	})
 }
+
+// The approval card must describe the actual change in operator terms — a raw
+// recommendation id tells the approver nothing.
+func TestRecommendationWriteToolConfirmationQuestions(t *testing.T) {
+	t.Run("apply shows the summary and channel", func(t *testing.T) {
+		q := RecommendationApplyTool{}.ConfirmationQuestion(
+			`{"recommendation_id":"rec-1","provider":"git","summary":"Right-size deployment product-catalog (demo): memory request 512Mi → 300Mi"}`)
+		assert.Contains(t, q, "Right-size deployment product-catalog (demo): memory request 512Mi → 300Mi")
+		assert.Contains(t, q, "a pull request")
+		assert.Contains(t, q, "rec-1")
+		assert.Contains(t, q, "Do you want to continue?")
+	})
+
+	t.Run("apply without summary still names the action, not just raw JSON", func(t *testing.T) {
+		q := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1"}`)
+		assert.Contains(t, q, "Apply recommendation rec-1")
+		assert.Contains(t, q, "resolution attempt")
+	})
+
+	t.Run("apply falls back to default rendering on unparseable input", func(t *testing.T) {
+		assert.Equal(t, "", RecommendationApplyTool{}.ConfirmationQuestion("not-json"))
+	})
+
+	t.Run("cli lists the exact commands and caps long batches", func(t *testing.T) {
+		q := RecommendationCliTool{}.ConfirmationQuestion(
+			`{"commands":["aws cloudwatch put-metric-alarm --alarm-name a","aws s3 ls"],"recommendation_id":"rec-9"}`)
+		assert.Contains(t, q, "Execute 2 cloud CLI commands")
+		assert.Contains(t, q, "- aws cloudwatch put-metric-alarm --alarm-name a")
+		assert.Contains(t, q, "- aws s3 ls")
+		assert.Contains(t, q, "rec-9")
+
+		long := RecommendationCliTool{}.ConfirmationQuestion(
+			`{"commands":["c1","c2","c3","c4","c5","c6","c7"]}`)
+		assert.Contains(t, long, "Execute 7 cloud CLI commands")
+		assert.Contains(t, long, "…and 2 more")
+		assert.NotContains(t, long, "- c6")
+	})
+
+	t.Run("ticket linkage states the status effect", func(t *testing.T) {
+		q := RecommendationTicketResolutionTool{}.ConfirmationQuestion(
+			`{"recommendation_id":"rec-1","ticket_id":"OPS-42"}`)
+		assert.Contains(t, q, "Record ticket OPS-42")
+		assert.Contains(t, q, "recommendation rec-1")
+		assert.Contains(t, q, "settles automatically when the ticket closes")
+	})
+}

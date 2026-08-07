@@ -1,6 +1,9 @@
 package tools
 
 import (
+	"fmt"
+	"strings"
+
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 )
@@ -41,6 +44,10 @@ func (m RecommendationApplyTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeObject,
 				Description: "Per-rule apply payload. For pod_right_sizing: {\"<container>\": {\"cpu\": {\"request\": \"0.25\", \"limit\": \"0.3\"}, \"memory\": {\"request\": \"512Mi\", \"limit\": \"600Mi\"}}}. Omit to apply the recommendation's own proposed values where the backend supports it.",
 			},
+			"summary": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "One line describing the exact change, shown on the user's approval card — ALWAYS fill it from the recommendation's data, e.g. 'Right-size deployment product-catalog (demo): CPU request 250m → 100m, memory request 512Mi → 300Mi (est. $41/mo saving)'. Never leave the approver guessing what will change.",
+			},
 			"provider": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Resolution channel: '' (infer from account), 'kubernetes' (direct deployment change), 'git'/'github'/'gitlab' (pull request), or 'aws'/'azure'/'gcp' (cloud alarm apply).",
@@ -65,6 +72,32 @@ func (m RecommendationApplyTool) InferToolRequestType(_ *security.RequestContext
 // input re-prompts the user instead of riding an earlier approval.
 func (m RecommendationApplyTool) ConfirmationKey(toolInput string) string {
 	return perActionConfirmationKey(ToolRecommendationApply, toolInput)
+}
+
+// ConfirmationQuestion renders the approval card in operator terms — the
+// concrete change (from the summary the model fills off the recommendation)
+// and the channel, not a raw recommendation id.
+func (m RecommendationApplyTool) ConfirmationQuestion(toolInput string) string {
+	args := confirmationArgs(toolInput)
+	recommendationId, _ := args["recommendation_id"].(string)
+	if recommendationId == "" {
+		return ""
+	}
+	channel := "the platform apply flow (deployment change, pull request, or cloud alarm)"
+	switch provider, _ := args["provider"].(string); provider {
+	case "git", "github", "gitlab":
+		channel = "a pull request"
+	case "kubernetes":
+		channel = "a direct deployment change"
+	case "aws", "azure", "gcp":
+		channel = "the cloud alarm apply flow"
+	}
+	if summary, _ := args["summary"].(string); strings.TrimSpace(summary) != "" {
+		return fmt.Sprintf("Apply this change via %s?\n%s\n(Recommendation %s — the change registers as its resolution attempt.) Do you want to continue?",
+			channel, strings.TrimSpace(summary), recommendationId)
+	}
+	return fmt.Sprintf("Apply recommendation %s via %s?\nThe change registers as this recommendation's resolution attempt. Do you want to continue?",
+		recommendationId, channel)
 }
 
 func (m RecommendationApplyTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {

@@ -2003,6 +2003,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	if tool.GetType() == toolcore.NBToolTypeTool {
 		if writeConfirmationRequired(requestType, action.Tool) {
 			confirmationKey := confirmationKeyForAction(tool, action)
+			// Operator-readable card text, when the tool can provide it — the
+			// default rendering shows the raw tool input, which for id-driven
+			// tools describes nothing the approver can judge.
+			confirmationQuestion := ""
+			if prompter, ok := tool.(toolcore.ToolConfirmationPrompt); ok {
+				confirmationQuestion = strings.TrimSpace(prompter.ConfirmationQuestion(action.ToolInput))
+			}
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
 				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[confirmationKey]; exists {
@@ -2019,7 +2026,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 			if !isFollowupFound {
 				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
-				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey)
+				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion)
 				if err != nil {
 					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool, "error", err)
 					return NBAgentPlannerToolActionStep{}, nil, err
@@ -2418,8 +2425,8 @@ func (e *plannerExecutor) countTrivialResultsForTool(action NBAgentPlannerToolAc
 // and shouldn't fire).
 const trivialResultThreshold = 3
 
-func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
-	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType, confirmationKey)
+func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string, questionOverride string) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType, confirmationKey, questionOverride)
 	if err != nil {
 		e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
 		return nil, nil, err

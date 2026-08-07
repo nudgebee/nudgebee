@@ -2,6 +2,7 @@ package tools
 
 import (
 	"errors"
+	"fmt"
 
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -62,6 +63,18 @@ func (m RecommendationTicketResolutionTool) InferToolRequestType(_ *security.Req
 // ConfirmationKey makes the write confirmation per-action.
 func (m RecommendationTicketResolutionTool) ConfirmationKey(toolInput string) string {
 	return perActionConfirmationKey(ToolRecommendationRecordTicketResolution, toolInput)
+}
+
+// ConfirmationQuestion states the linkage and its status effect plainly.
+func (m RecommendationTicketResolutionTool) ConfirmationQuestion(toolInput string) string {
+	args := confirmationArgs(toolInput)
+	ticketId, _ := args["ticket_id"].(string)
+	recommendationId, _ := args["recommendation_id"].(string)
+	if ticketId == "" || recommendationId == "" {
+		return ""
+	}
+	return fmt.Sprintf("Record ticket %s as the resolution attempt for recommendation %s?\nThe recommendation moves to In Progress and settles automatically when the ticket closes. Do you want to continue?",
+		ticketId, recommendationId)
 }
 
 func (m RecommendationTicketResolutionTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {

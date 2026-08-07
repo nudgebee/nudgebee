@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -113,6 +114,16 @@ func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionNa
 func perActionConfirmationKey(toolName, toolInput string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(toolInput)))
 	return toolName + ":" + hex.EncodeToString(sum[:])[:12]
+}
+
+// confirmationArgs parses a write tool's raw input for approval-card
+// rendering. Card text must never break the confirmation itself, so a parse
+// failure just yields an empty map and the caller falls back to the default
+// rendering.
+func confirmationArgs(toolInput string) map[string]any {
+	args := map[string]any{}
+	_ = json.Unmarshal([]byte(toolInput), &args)
+	return args
 }
 
 // errNBLLMToolResponse surfaces a write-tool failure to the ReAct loop as a

@@ -162,7 +162,7 @@ func FollowupRequestForMissingInformation(ctx *security.RequestContext, query NB
 	return FollowupRequest{}, nil
 }
 
-func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, query NBAgentRequest, agent NBAgent, action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string) (FollowupRequest, error) {
+func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, query NBAgentRequest, agent NBAgent, action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string, questionOverride string) (FollowupRequest, error) {
 	input := action.ToolInput
 	if strings.Contains(input, `"query"`) {
 		commandMap := map[string]any{}
@@ -178,8 +178,12 @@ func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, q
 			}
 		}
 	}
+	question := fmt.Sprintf("Tool(%s) is trying to %s cluster resources. Do you want to continue?\nCommand - %s", action.Tool, toolRequestType, input)
+	if questionOverride != "" {
+		question = questionOverride
+	}
 	followUpRequest := FollowupRequest{
-		Question:     fmt.Sprintf("Tool(%s) is trying to %s cluster resources. Do you want to continue?\nCommand - %s", action.Tool, toolRequestType, input),
+		Question:     question,
 		FollowupType: FollowupTypeToolConfirmation,
 		FollowupOptions: []string{
 			"yes",

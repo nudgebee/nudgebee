@@ -216,6 +216,16 @@ type ToolConfirmationScope interface {
 	ConfirmationKey(toolInput string) string
 }
 
+// ToolConfirmationPrompt is an optional interface for write tools that can
+// express a pending action in operator terms. The confirmation card shows the
+// returned question instead of the default "Tool(x) is trying to <type>
+// cluster resources / Command - <raw input>" rendering — raw tool input is
+// often just ids, which tells the approver nothing about the actual change.
+// Return "" to fall back to the default rendering.
+type ToolConfirmationPrompt interface {
+	ConfirmationQuestion(toolInput string) string
+}
+
 type ToolConfigSource string
 
 const (
