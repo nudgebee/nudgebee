@@ -132,6 +132,9 @@ func resolveEventSubjectNodeID(kg *core.Service, tenantID, accountID, name, name
 		add(podHashSuffix.ReplaceAllString(name, ""))
 		add(rsHashSuffix.ReplaceAllString(name, ""))
 	}
+	// A load-balancer alarm names its subject with the CloudWatch dimension
+	// ("app/my-lb/1a2b3c") while the node is "my-lb".
+	add(core.ELBV2LoadBalancerName(name))
 	add(name)
 
 	// Try node types in priority order (Workload first). A workload and its K8sService /

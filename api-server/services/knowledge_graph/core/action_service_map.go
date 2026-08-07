@@ -109,6 +109,15 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 		// reached when the namespaced lookups found nothing, so a Kubernetes
 		// subject that does exist is still matched with its namespace first.
 		nodeIDs, err = findServiceNodes(dbManager, ctx.GetTenantId(), ctx.GetAccountId(), serviceName, "")
+	}
+	if err != nil || len(nodeIDs) == 0 {
+		// A load-balancer alarm identifies its subject by the CloudWatch
+		// dimension ("app/my-lb/1a2b3c"); the node is named "my-lb". Recover the
+		// name and retry. Returns "" for anything that is not such a dimension,
+		// so this is a no-op for every other subject.
+		if lbName := ELBV2LoadBalancerName(serviceName); lbName != "" {
+			nodeIDs, err = findServiceNodes(dbManager, ctx.GetTenantId(), ctx.GetAccountId(), lbName, "")
+		}
 		if err != nil || len(nodeIDs) == 0 {
 			logger.Info("knowledge_graph_service_map: no matching service nodes found",
 				"service", serviceName, "namespace", namespace)
