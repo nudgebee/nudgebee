@@ -659,6 +659,10 @@ const helmManagedByLabel = "app.kubernetes.io/managed-by"
 type workloadSpecRefs struct {
 	ConfigMaps []string
 	Secrets    []string
+	// SecretRefKinds maps a Secret name from Secrets to the sorted set of
+	// forms the spec consumed it in — "volume", "env", "env_from". See
+	// refsFromPodSpec.
+	SecretRefKinds map[string][]string
 }
 
 // K8sCRDMetadata captures the operator-CRD metadata shape we care about
