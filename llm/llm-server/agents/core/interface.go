@@ -508,6 +508,26 @@ type NBAgentCacheScopeProvider interface {
 	GetCacheScope() CacheScope
 }
 
+// NBAgentRequestAwareToolProvider is an optional interface for agents whose
+// toolset depends on the request — e.g. the remediation agent drops its
+// execute tool when serving a recommendation-resolution request. The canonical
+// GetSupportedTools stays the superset shown by listing surfaces.
+type NBAgentRequestAwareToolProvider interface {
+	GetSupportedToolsForRequest(ctx *security.RequestContext, request NBAgentRequest) []toolcore.NBTool
+}
+
+// SupportedToolsForRequest resolves an agent's toolset for a specific request,
+// preferring the request-aware variant when the agent implements it. Both the
+// planner (which tools the prompt advertises) and the dispatch-time auth check
+// (which tools may actually run) resolve through this, so a request-mode
+// restriction holds even if the model emits a tool outside the advertised set.
+func SupportedToolsForRequest(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) []toolcore.NBTool {
+	if provider, ok := agent.(NBAgentRequestAwareToolProvider); ok {
+		return provider.GetSupportedToolsForRequest(ctx, request)
+	}
+	return agent.GetSupportedTools(ctx)
+}
+
 type NBAgentExecutorLlmResponseHandler interface {
 	UpdateExecutorLlmResponse([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error)
 }

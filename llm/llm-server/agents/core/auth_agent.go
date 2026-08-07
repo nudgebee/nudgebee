@@ -15,7 +15,10 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 	toolName := action.Tool
 	var tool toolcore.NBTool
 	found := false
-	for _, tool1 := range agent.GetSupportedTools(ctx) {
+	// Resolve request-aware so a mode-restricted tool (absent from this
+	// request's set) is rejected here even though the agent's canonical
+	// toolset contains it.
+	for _, tool1 := range SupportedToolsForRequest(ctx, agent, request) {
 		if strings.EqualFold(tool1.Name(), toolName) {
 			found = true
 			tool = tool1

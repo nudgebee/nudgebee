@@ -2503,7 +2503,7 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		},
 	}
 
-	prompt, tools := reActCreatePrompt3(ctx, systemMessage, nbAgent.GetSupportedTools(ctx), request.ConversationContext, extraMessages, request, nbAgent)
+	prompt, tools := reActCreatePrompt3(ctx, systemMessage, SupportedToolsForRequest(ctx, nbAgent, request), request.ConversationContext, extraMessages, request, nbAgent)
 
 	// Lean turn: read the same ContextKeyPromptVariant the prompt build and cache
 	// key use, so the runtime notebook/hypothesis gating stays consistent with the
