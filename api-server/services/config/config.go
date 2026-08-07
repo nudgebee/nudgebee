@@ -147,6 +147,14 @@ type appConfig struct {
 	LLMServerToken       string `mapstructure:"llm_server_token"`
 	LLMServerTokenHeader string `mapstructure:"llm_server_token_header"`
 
+	// AI Gateway (llm-gateway): reuses the SAME env convention the app already uses to
+	// reach the gateway (LLM_GATEWAY_URL / LLM_GATEWAY_ACTION_TOKEN), so ops configures one
+	// gateway URL + token across services. Used to delegate LLM Gateway integration "Test
+	// Connection" to the gateway (probe runs from its network); the token is sent as
+	// X-ACTION-TOKEN and must match the gateway's gateway_action_token.
+	LLMGatewayURL         string `mapstructure:"llm_gateway_url"`
+	LLMGatewayActionToken string `mapstructure:"llm_gateway_action_token"`
+
 	ServicesServerLLMRetryAttempts         int `mapstructure:"services_server_llm_retry_attempts"`
 	ServicesServerLLMInitialBackoffSeconds int `mapstructure:"services_server_llm_initial_backoff_seconds"`
 
@@ -379,6 +387,8 @@ func init() {
 	viper.SetDefault("llm_server_endpoint", "http://llm-server:8000")
 	viper.SetDefault("llm_server_token", "")
 	viper.SetDefault("llm_server_token_header", "X-ACTION-TOKEN")
+	viper.SetDefault("llm_gateway_url", "http://llm-gateway:8000")
+	viper.SetDefault("llm_gateway_action_token", "")
 	viper.SetDefault("services_server_llm_retry_attempts", 180)
 	viper.SetDefault("services_server_llm_initial_backoff_seconds", 5)
 

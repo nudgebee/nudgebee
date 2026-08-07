@@ -32,6 +32,12 @@ type RequestContext struct {
 
 	Streaming bool
 
+	// DirectKey, when non-nil, is a per-request provider credential resolved BEFORE the
+	// pipeline (e.g. a custom-upstream vLLM key built from the tenant's llm_gateway
+	// integration, carrying its base URL). The resolver stage injects it verbatim,
+	// bypassing the normal per-tenant/operator credential lookup.
+	DirectKey *schemas.Key
+
 	// Set by the route stage; consumed by metering as the routing decision record.
 	Decision routing.Decision
 

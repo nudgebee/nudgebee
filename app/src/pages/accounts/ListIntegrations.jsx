@@ -39,6 +39,9 @@ const getDisplayName = (name) => {
   if (name === 'ssh') {
     return 'SSH';
   }
+  if (name === 'llm_gateway') {
+    return 'LLM Gateway';
+  }
   return snakeToTitleCase(name);
 };
 
@@ -86,7 +89,18 @@ const integrationConnectionKey = {
   argocd: 'server',
 };
 
+// LLM Gateway rows have no single fixed connection key — surface the provider (and the
+// endpoint for a custom one, since a well-known provider has no base_url).
+const LLM_GATEWAY_PROVIDER_LABELS = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini', custom: 'Custom' };
+
 const getConnectionInfo = (integrationName, configValues) => {
+  if (integrationName === 'llm_gateway') {
+    const val = (name) => configValues?.find((c) => c.name === name)?.value || '';
+    const provider = val('provider');
+    if (!provider) return '-';
+    if (provider === 'custom') return val('base_url') || 'Custom';
+    return LLM_GATEWAY_PROVIDER_LABELS[provider] || snakeToTitleCase(provider);
+  }
   const key = integrationConnectionKey[integrationName];
   if (!key || !configValues) return '-';
   const entry = configValues.find((c) => c.name === key);
@@ -139,9 +153,12 @@ const ListIntegrations = ({ integrationName }) => {
     integrationWebhooks.includes(integrationName);
   // This page passes the LLM type as 'LLM' while other types are lowercase.
   const isLLMIntegration = String(integrationName || '').toLowerCase() === 'llm';
+  // LLM Gateway is tenant-scoped (no account concept) — it drops the Account column.
+  const isLLMGateway = integrationName === 'llm_gateway';
+  const accountCols = isLLMGateway ? [] : ['Account'];
   const headers = hideConnectionInfo
-    ? ['Name', 'Account', 'Created By', 'Updated By', 'Status', '']
-    : ['Name', 'Connection Info', 'Account', 'Created By', 'Updated By', 'Status', ''];
+    ? ['Name', ...accountCols, 'Created By', 'Updated By', 'Status', '']
+    : ['Name', 'Connection Info', ...accountCols, 'Created By', 'Updated By', 'Status', ''];
 
   const { data: session } = useSession();
   const router = useRouter();
@@ -479,7 +496,7 @@ const ListIntegrations = ({ integrationName }) => {
     };
     const baseRow = [
       nameCell(item),
-      isLLMIntegration ? { component: accountChips(item) } : { text: accountNamesText(item) },
+      ...(isLLMGateway ? [] : [isLLMIntegration ? { component: accountChips(item) } : { text: accountNamesText(item) }]),
       { text: item?.source == 'agent' ? 'agent' : item?.created_by_display_name || '-' },
       { text: item?.source == 'agent' ? 'agent' : item?.updated_by_display_name || '-' },
       { component: <Label text={item.status || '-'} /> },

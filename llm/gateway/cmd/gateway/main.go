@@ -20,6 +20,7 @@ import (
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/common"
 	"nudgebee/llm-gateway/config"
+	"nudgebee/llm-gateway/configtest"
 	"nudgebee/llm-gateway/engine"
 	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/proxy"
@@ -237,6 +238,12 @@ func main() {
 	// clear 403 (rather than a keyless upstream error) when no credential is available.
 	proxy.RegisterOperatorCreds(eng.HasProviderCred)
 	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer)
+
+	// Connectivity-probe plane (POST /rpc/config/test-connection): the api-server delegates
+	// LLM Gateway "Test Connection" here so the probe runs from the gateway's own network
+	// (real reachability + SSRF guard), guarded by the action token. No DB needed — the
+	// config to test arrives in the request body.
+	configtest.RegisterRoutes(r, config.Config.GatewayActionToken)
 
 	// Read-only usage query plane (POST /rpc/usage/aggregate) for the AI Gateway
 	// dashboard — app → gateway service-to-service, guarded by the action token.

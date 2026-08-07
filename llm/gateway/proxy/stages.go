@@ -126,6 +126,26 @@ func credResolver() CredResolver {
 	return credResolverHook
 }
 
+// customProviderHook resolves a tenant's custom OpenAI-compatible upstream (an
+// llm_gateway integration) for an addressed model: the lane to route it on (vLLM) and a
+// per-request DirectKey carrying the upstream's base URL + token. ok=false means the
+// model is not a configured custom upstream. Registered by the EE providers package;
+// nil on the OSS build (no custom upstreams).
+var customProviderHook func(tenantID, model string) (schemas.ModelProvider, schemas.Key, bool)
+
+// RegisterCustomProviderResolver registers the custom-upstream resolver (EE).
+func RegisterCustomProviderResolver(fn func(tenantID, model string) (schemas.ModelProvider, schemas.Key, bool)) {
+	customProviderHook = fn
+}
+
+// resolveCustomProvider consults the registered custom-upstream resolver, if any.
+func resolveCustomProvider(tenantID, model string) (schemas.ModelProvider, schemas.Key, bool) {
+	if customProviderHook == nil {
+		return "", schemas.Key{}, false
+	}
+	return customProviderHook(tenantID, model)
+}
+
 // resolverStage injects the tenant's provider credential for THIS request. When one
 // is found it is set on the Bifrost context under BifrostContextKeyDirectKey, which
 // core honors directly (bypassing the operator key pool); otherwise the request
@@ -135,6 +155,12 @@ type resolverStage struct{ creds CredResolver }
 func (resolverStage) Name() string { return "resolver" }
 
 func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
+	// A custom-upstream key resolved before the pipeline (llm_gateway integration) wins:
+	// inject it verbatim (it carries its own base URL) and skip the normal lookup.
+	if rc.DirectKey != nil {
+		rc.Bctx.SetValue(schemas.BifrostContextKeyDirectKey, *rc.DirectKey)
+		return false, nil
+	}
 	if key, ok := s.creds.Resolve(rc.Ctx, rc.Provider, rc.Identity); ok {
 		rc.Bctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		return false, nil

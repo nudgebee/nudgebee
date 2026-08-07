@@ -76,7 +76,7 @@ const PROVIDERS = {
     'HIVE',
     'SOLARWINDS',
   ],
-  LLM: ['LLM'],
+  LLM: ['LLM', 'LLM_GATEWAY'],
   SERVER: ['SSH', 'VM_AGENT'],
 };
 
@@ -199,7 +199,7 @@ const SECTIONS_CONFIG = [
     id: 'llm',
     label: 'LLM',
     icon: TroubleshootIconBlue,
-    providers: ['LLM', 'MCP'],
+    providers: ['LLM', 'LLM_GATEWAY', 'MCP'],
     tab: 12,
   },
   {

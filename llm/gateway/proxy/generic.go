@@ -55,13 +55,20 @@ func (h *handler) handleChat(c *gin.Context) {
 
 	requestedModel, streaming := parseBody(body)
 	provider, model, ok := resolveModelProvider(requestedModel)
+	// customKey, when set, is a per-request credential for a tenant's custom OpenAI-
+	// compatible upstream (an llm_gateway integration) — it carries the upstream's base
+	// URL, so it's injected as a DirectKey and the request routes on the vLLM lane.
+	var customKey *schemas.Key
 	if !ok {
 		// Not a "provider/model" or a known bare name — but it may be a tier alias
-		// (e.g. "nb-fast") that a routing rule maps to a provider. Adopt that provider
-		// as the lane and keep the tier token as the model, so the route stage does the
-		// authoritative resolution + records reason=alias (metering keeps requested=tier).
+		// (e.g. "nb-fast") that a routing rule maps to a provider, or a model served by
+		// one of the tenant's custom upstreams. Adopt that provider as the lane and keep
+		// the model token, so the route stage does the authoritative resolution.
 		if lane, isTier := h.tierLane(identity, requestedModel); isTier {
 			provider, model = lane, requestedModel
+		} else if cp, key, isCustom := resolveCustomProvider(identity.TenantID, requestedModel); isCustom {
+			provider, model = cp, requestedModel
+			customKey = &key
 		} else {
 			msg := `unknown or missing model; address it as "provider/model" (e.g. "anthropic/claude-opus-4-8") or a known model name`
 			if config.Config.TiersEnabled {
@@ -80,6 +87,7 @@ func (h *handler) handleChat(c *gin.Context) {
 		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,
 		Identity: identity, Provider: provider,
 		Model: model, Path: chatCompletionsPath, Body: body, Streaming: streaming,
+		DirectKey: customKey,
 	}
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()

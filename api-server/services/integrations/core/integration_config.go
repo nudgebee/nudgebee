@@ -86,6 +86,20 @@ type IntegrationDto struct {
 	Type    string                   `json:"type"`
 }
 
+// isTenantScoped reports whether an integration needs NO cloud-account mapping — either
+// its category is tenant-scoped (ticketing/messaging) or it opts into
+// TenantScopedIntegration (e.g. llm_gateway). Integrations that implement neither are
+// account-scoped (the default), so existing types are unaffected.
+func isTenantScoped(integration Integration) bool {
+	if integration.Category().IsTenantScoped() {
+		return true
+	}
+	if ts, ok := integration.(TenantScopedIntegration); ok {
+		return ts.TenantScoped()
+	}
+	return false
+}
+
 func CreateIntegrationConfig(
 	ctx *security.RequestContext,
 	integrationId string,
@@ -112,9 +126,10 @@ func CreateIntegrationConfig(
 
 	isUpdate := integrationId != ""
 
-	// Tenant-scoped categories (ticketing, messaging) bind to a tenant directly
-	// and may be created with no cloud-account mappings.
-	if !integration.Category().IsTenantScoped() && len(accountIds) == 0 {
+	// A cloud-account mapping is required unless the integration is tenant-scoped — either
+	// by category (ticketing, messaging) or by opting into TenantScopedIntegration (e.g.
+	// llm_gateway, which resolves credentials per-tenant and has no account concept).
+	if !isTenantScoped(integration) && len(accountIds) == 0 {
 		return IntegrationDto{}, errors.New("integrations: accountId is required")
 	}
 
@@ -1889,7 +1904,13 @@ func TestIntegrationConnectionByConfig(
 		}
 	}
 
-	if len(accountIds) == 0 {
+	// Tenant-scoped integrations (e.g. llm_gateway) have no account concept, so they don't
+	// require an account_id nor index into one below.
+	accountID := ""
+	if len(accountIds) > 0 {
+		accountID = accountIds[0]
+	}
+	if !isTenantScoped(integration) && accountID == "" {
 		return errors.New("at least one account_id is required for connection test")
 	}
 
@@ -1902,7 +1923,7 @@ func TestIntegrationConnectionByConfig(
 		if buildErr != nil {
 			return fmt.Errorf("failed to build datasource config: %w", buildErr)
 		}
-		if testErr := relay.TestProxyDatasourceConfig(accountIds[0], dsConfig); testErr != nil {
+		if testErr := relay.TestProxyDatasourceConfig(accountID, dsConfig); testErr != nil {
 			return fmt.Errorf("connection test failed: %w", testErr)
 		}
 		return nil
@@ -1915,7 +1936,7 @@ func TestIntegrationConnectionByConfig(
 		slog.Warn("integrations: dual-mode type routed to K8s validation instead of proxy test",
 			"type", integrationType, "source", source)
 	}
-	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, accountIds[0])
+	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, accountID)
 	if len(validationErrors) > 0 {
 		return validationErrors[0]
 	}
@@ -1925,7 +1946,7 @@ func TestIntegrationConnectionByConfig(
 	// Today only LLM uses this — for everything else this is a no-op cast and
 	// we keep the prior "validation == success" behaviour.
 	if testable, ok := integration.(TestableIntegration); ok {
-		if testErr := testable.TestConnection(ctx, configValues, accountIds[0]); testErr != nil {
+		if testErr := testable.TestConnection(ctx, configValues, accountID); testErr != nil {
 			return testErr
 		}
 	}

@@ -175,6 +175,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'redis'} />;
           case 'llm':
             return <ListIntegrations integrationName={'LLM'} />;
+          case 'llm_gateway':
+            return <ListIntegrations integrationName={'llm_gateway'} />;
           case 'loggly':
             return <ListIntegrations integrationName={'loggly'} />;
           case 'loki':

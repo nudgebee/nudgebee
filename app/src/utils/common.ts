@@ -240,6 +240,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'LLM':
       label = 'LLM';
       break;
+    case 'LLM_GATEWAY':
+      label = 'LLM Gateway';
+      break;
     case 'MCP':
       label = 'MCP';
       break;

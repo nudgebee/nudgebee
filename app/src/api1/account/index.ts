@@ -468,6 +468,7 @@ const apiAccount = {
         'datadog',
         'argocd',
         'llm',
+        'llm_gateway',
         'mcp',
         'loggly',
         'loki',

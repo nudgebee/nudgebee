@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { FormControlLabel, Box, Typography, Grid, Collapse } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import { Switch } from '@ui/Switch';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
@@ -124,6 +126,8 @@ const IntegrationDynamicFormModal = ({
   const [vmAgentCredentials, setVmAgentCredentials] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
   const [connectionVerified, setConnectionVerified] = useState(!!editData);
+  // Which encrypted secret fields are currently revealed (eye toggle), keyed by field key.
+  const [revealedSecrets, setRevealedSecrets] = useState({});
   // Cluster indices for the ES per-account index picker; fetched once the
   // connection is verified. Cleared when a testable field changes (handleChange).
   const [esIndexes, setEsIndexes] = useState([]);
@@ -2057,9 +2061,46 @@ const IntegrationDynamicFormModal = ({
                                     key={key}
                                     id={toKebabCase(field.display_name || key)}
                                     label={field.display_name || snakeToTitleCase(key)}
-                                    type={field.multiline ? 'textarea' : 'text'}
+                                    type={
+                                      field.is_encrypted
+                                        ? // Reveal only applies to a freshly-typed value. A stored secret is
+                                          // never sent to the UI — on edit the field holds the mask, which stays
+                                          // masked (and offers no eye), so a saved key can't be exposed.
+                                          revealedSecrets[key] && formValues[key] && formValues[key] !== ENCRYPTED_MASK
+                                          ? 'text'
+                                          : 'password'
+                                        : field.multiline
+                                        ? 'textarea'
+                                        : 'text'
+                                    }
                                     value={formValues[key] || ''}
                                     onChange={(value) => handleChange(key, value)}
+                                    trailingIcon={
+                                      // Eye toggle only while inserting a new value (not for the stored-secret mask).
+                                      field.is_encrypted && formValues[key] && formValues[key] !== ENCRYPTED_MASK ? (
+                                        <Box
+                                          component='button'
+                                          type='button'
+                                          aria-label={revealedSecrets[key] ? 'Hide value' : 'Show value'}
+                                          onClick={() => setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }))}
+                                          sx={{
+                                            cursor: 'pointer',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            padding: 0,
+                                            border: 'none',
+                                            background: 'none',
+                                            color: ds.gray[500],
+                                          }}
+                                        >
+                                          {revealedSecrets[key] ? (
+                                            <VisibilityOffIcon sx={{ fontSize: 16 }} />
+                                          ) : (
+                                            <VisibilityIcon sx={{ fontSize: 16 }} />
+                                          )}
+                                        </Box>
+                                      ) : undefined
+                                    }
                                     size='sm'
                                     error={errorText || undefined}
                                     minRows={field.multiline ? 3 : undefined}

@@ -131,6 +131,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = ClickhouseIcon;
   } else if (cloud_provider.toUpperCase() === 'LLM') {
     Icon = LlmIcon;
+  } else if (cloud_provider.toUpperCase() === 'LLM_GATEWAY') {
+    Icon = LlmIcon;
   } else if (cloud_provider.toUpperCase() === 'MCP') {
     Icon = McpIcon;
   } else if (cloud_provider.toUpperCase() === 'LOGGLY') {
