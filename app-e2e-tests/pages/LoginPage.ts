@@ -2,8 +2,8 @@ import { Page, Locator } from "@playwright/test";
 import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { AUTH_STATE_DIR, TENANT_FILE_PATH } from "../tests/utils/paths";
 import { doDevLogin } from "./devLogin";
-import { doCredentialsLogin, selectClusterWithRetries } from "./ossLoginHelper";
-import { registerWelcomeTourAutoDismiss } from "../tests/utils/helpers";
+import { registerWelcomeTourAutoDismiss, registerTourOverlayGuard } from "../tests/utils/helpers";
+import { suppressTourPopups } from "../tests/utils/tourSuppression";
 
 // Pages whose login (session + tenant, and optionally cluster) is already
 // established. Playwright gives every test a fresh page, so this never matches
@@ -438,18 +438,10 @@ export class LoginPage {
       return;
     }
 
+    // storageState already carries the tour flags; re-seeded here for specs that build their own context.
+    await suppressTourPopups(this.page);
     await registerWelcomeTourAutoDismiss(this.page);
-
-    if (process.env.E2E_ENVIRONMENT === "oss") {
-      await doCredentialsLogin(this.page);
-      await this.waitForLoaderToDisappear();
-      const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
-      if (explicitCluster) {
-        await selectClusterWithRetries(this.page, explicitCluster);
-        await this.waitForLoaderToDisappear();
-      }
-      return;
-    }
+    await registerTourOverlayGuard(this.page);
 
     if (process.env.E2E_ENVIRONMENT === "dev") {
       await doDevLogin(this.page, { selectCluster });

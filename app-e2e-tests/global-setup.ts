@@ -4,6 +4,7 @@ import * as path from "path";
 import * as dotenv from "dotenv";
 import { LoginPage } from "./pages/LoginPage";
 import { AUTH_STATE_PATH } from "./tests/utils/paths";
+import { suppressTourPopups } from "./tests/utils/tourSuppression";
 
 // Runs once before the whole suite: logs in a single time and persists the
 // authenticated session to AUTH_STATE_PATH. Every test then loads that state
@@ -24,6 +25,9 @@ async function globalSetup(_config: FullConfig) {
   try {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const context = await browser.newContext({ baseURL: process.env.BASE_URL });
+      // Seeded before the first page load so the tour flags land in the storageState saved below,
+      // which every test context restores — that is what suppresses the popups suite-wide.
+      await suppressTourPopups(context);
       const page = await context.newPage();
       try {
         // Select the cluster here too. ClusterDropDown persists the choice to

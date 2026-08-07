@@ -1,6 +1,44 @@
 import { Page, Locator } from "@playwright/test";
 
 const pagesWithTourHandler = new WeakSet<Page>();
+const pagesWithOverlayGuard = new WeakSet<Page>();
+
+// Backstop for a driver.js tour a test action itself launches (a "How to ..." button, the Guides
+// catalog) — its overlay swallows every click outside the spotlit element. Idempotent per page.
+export async function registerTourOverlayGuard(page: Page): Promise<void> {
+  if (pagesWithOverlayGuard.has(page)) return;
+  pagesWithOverlayGuard.add(page);
+
+  const overlay = page.locator(".driver-overlay, .driver-popover").first();
+
+  await page.addLocatorHandler(overlay, async () => {
+    // Escape is driver.js's own close path, so it tears the tour down cleanly when it lands.
+    await page.keyboard.press("Escape").catch(() => {});
+    if (await overlay.isHidden().catch(() => true)) {
+      console.log("Auto-closed active tour overlay via Escape");
+      return;
+    }
+
+    const closeBtn = page.locator(".driver-popover-close-btn").first();
+    if (await closeBtn.count()) {
+      await closeBtn.click({ timeout: 3000, force: true }).catch(() => {});
+      if (await overlay.isHidden().catch(() => true)) {
+        console.log("Auto-closed active tour overlay via close button");
+        return;
+      }
+    }
+
+    // Last resort: strip the overlay out of the DOM so it can't intercept pointer events.
+    await page
+      .evaluate(() => {
+        document.querySelectorAll(".driver-overlay, .driver-popover").forEach((el) => el.remove());
+        document.documentElement.classList.remove("driver-active", "driver-fade");
+        document.body.classList.remove("driver-active", "driver-fade");
+      })
+      .catch(() => {});
+    console.log("Auto-closed active tour overlay via DOM removal");
+  });
+}
 
 /**
  * Register a page-wide auto-dismiss for the "Welcome to <brand>" first-login
