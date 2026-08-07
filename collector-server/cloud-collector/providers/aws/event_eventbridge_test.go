@@ -239,6 +239,7 @@ func TestAwsEvenBridge_Mock_ECS(t *testing.T) {
 			"taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/my-app-task-def:1",
 			"lastStatus": "STOPPED",
 			"desiredStatus": "STOPPED",
+			"stopCode": "EssentialContainerExited",
 			"stoppedReason": "Essential container in task exited due to an error.",
 			"containers": [
 				{
