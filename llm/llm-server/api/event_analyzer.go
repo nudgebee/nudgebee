@@ -1392,6 +1392,24 @@ const maxErrorLogLinesBytes = 4096
 // rendered into the prompt digest.
 const maxLogPatternCount = 10
 
+// maxEventLabelValueBytes caps the rendered size of any single event-label
+// value injected into the investigation prompt. This is a generic, key-agnostic
+// guard: any value larger than this — from any provider, under any key — is
+// moved to the conversation workspace and replaced inline with a pointer to that
+// file (grep-retrievable, not discarded). It has no knowledge of which key or
+// provider produced the bloat (the motivating case, an internal series array
+// carrying hundreds of KB under one label, is caught purely by its size).
+const maxEventLabelValueBytes = 2048
+
+// maxInvestigationPromptBytes is a last-resort ceiling on the FULLY assembled
+// event-investigation prompt. Per-field guards (sanitizeEventLabelsForPrompt,
+// the 12KB evidence cap) bound the known inputs; this backstop catches ANY
+// future field or provider that slips an oversized value through, so no single
+// RCA prompt can ever again re-bill hundreds of KB on every planner iteration.
+// Set well above a healthy RCA prompt (~20-30KB); when it fires it is a signal
+// (logged) that some input needs its own per-field bound.
+const maxInvestigationPromptBytes = 64000
+
 // buildInvestigationEvidenceContext renders the evidence already collected on
 // the event into a compact markdown block for the investigation prompt.
 // Sections are ordered dense-signal-first with per-section budgets: insights,
@@ -1583,7 +1601,123 @@ func collectEvidenceInsights(ev events.InvestigateData) []string {
 	return out
 }
 
-func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository) (string, string, bool, string, *tools.RunbookRef, error) {
+// saveOverflowToWorkspace persists content too large to inline into the analysis
+// conversation's workspace and returns the filename to point the agent at (""=
+// disabled or on failure). The event-RCA orchestrator has shell_execute in this
+// same workspace, so capped content is offloaded and grep-retrievable rather
+// than discarded. Mirrors saveEvidenceLogsToWorkspace. sessionId is the analysis
+// session ("event-<fingerprint>"); the conversation (and its workspace) exists
+// by prompt-build time (Step 1 created it). An empty sessionId disables offload.
+func saveOverflowToWorkspace(ctx *security.RequestContext, accountId, sessionId, filename, content string) string {
+	if sessionId == "" {
+		return ""
+	}
+	// This is a best-effort offload; degrade gracefully instead of panicking if
+	// the DAO is unavailable (GetConversationDao returns nil when the metastore
+	// DB manager can't be resolved).
+	dao := core.GetConversationDao()
+	if dao == nil {
+		ctx.GetLogger().Warn("analyzer: conversation DAO unavailable for workspace overflow", "session_id", sessionId)
+		return ""
+	}
+	conv, err := dao.GetConversationBySession(accountId, sessionId)
+	if err != nil || conv.ID == uuid.Nil {
+		ctx.GetLogger().Warn("analyzer: cannot resolve conversation for workspace overflow", "error", err, "session_id", sessionId)
+		return ""
+	}
+	if err := workspace.NewWorkspaceManager().SaveFile(ctx, accountId, conv.ID.String(), filename, content); err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to save overflow to workspace", "error", err, "file", filename)
+		return ""
+	}
+	return filename
+}
+
+// sanitizeEventLabelsForPrompt returns a copy of the event's labels safe to
+// render into the investigation prompt: any single value larger than
+// maxEventLabelValueBytes is replaced inline with a pointer to a workspace file,
+// and its full content is recorded in pending (filename -> content) for the
+// caller to persist ON THE RUN BRANCH ONLY. Deferring the write keeps this
+// function pure (no I/O) and ensures recovered / re-polled investigations —
+// which build the prompt but never run the agent — do not touch the workspace,
+// mirroring saveEvidenceLogsToWorkspace. The guard is generic and key-agnostic:
+// it bounds values by size alone, with no knowledge of which key or provider
+// produced them. It never mutates the stored event or the parsedLabels map used
+// for workload resolution. Input is event.Labels (an `any` normally a
+// JSON-object string); non-string or unparseable input is returned unchanged.
+func sanitizeEventLabelsForPrompt(ctx *security.RequestContext, labels any, eventId string, pending map[string]string) any {
+	labelsStr, ok := labels.(string)
+	if !ok || labelsStr == "" {
+		return labels
+	}
+	// Decode only the top level — values stay as raw JSON bytes (json.RawMessage),
+	// so a huge nested value (e.g. a 460KB series array) is never recursively
+	// decoded into Go structures just to measure and re-emit it. len(raw) is the
+	// serialized size directly, and re-marshaling a RawMessage emits it verbatim
+	// (no double-encoding).
+	parsed := map[string]json.RawMessage{}
+	if err := common.UnmarshalJson([]byte(labelsStr), &parsed); err != nil {
+		// Not a JSON object we can filter key-by-key; bound the whole blob and
+		// offload the full value.
+		if len(labelsStr) > maxEventLabelValueBytes {
+			file := fmt.Sprintf("event_labels_%s.txt", eventId)
+			pending[file] = labelsStr
+			return core.TruncateHead(labelsStr, maxEventLabelValueBytes) + fmt.Sprintf("\n…[%d bytes truncated — full labels in workspace file %s; if relevant, grep it, e.g. grep -i \"<keyword>\" %s | head -40]", len(labelsStr), file, file)
+		}
+		return labels
+	}
+	overflow := map[string]json.RawMessage{}
+	sizes := map[string]int{}
+	for k, raw := range parsed {
+		if len(raw) > maxEventLabelValueBytes {
+			overflow[k] = raw
+			sizes[k] = len(raw)
+		}
+	}
+	if len(overflow) == 0 {
+		return labels
+	}
+	// Collect all oversized values into one workspace file, keyed by label name;
+	// point each label at a bounded grep of it. The write happens on the run branch.
+	blob, err := common.MarshalJsonIndent(overflow, "", "  ")
+	if err != nil {
+		return labels // can't offload safely; the total-prompt backstop still bounds it
+	}
+	file := fmt.Sprintf("event_labels_overflow_%s.txt", eventId)
+	pending[file] = string(blob)
+	for k := range overflow {
+		ptr := fmt.Sprintf("[%d bytes — moved to workspace file %s (label %q); if relevant, inspect with a bounded grep, e.g. grep -i \"<keyword>\" %s | head -40]", sizes[k], file, k, file)
+		if b, err := common.MarshalJson(ptr); err == nil {
+			parsed[k] = b // replace the oversized value with the pointer string
+		}
+	}
+	ctx.GetLogger().Warn("analyzer: offloaded oversized event-label values", "labels", sizes, "workspace_file", file)
+	cleaned, err := common.MarshalJson(parsed)
+	if err != nil {
+		return labels
+	}
+	return string(cleaned)
+}
+
+// capInvestigationPrompt bounds the fully assembled investigation prompt to
+// maxInvestigationPromptBytes. When over budget the FULL text is recorded in
+// pending (for the caller to persist on the run branch) and the inline prompt is
+// condensed to the head (event context) and tail (required output-section
+// instructions) with a pointer to that file — nothing is lost, the agent can
+// grep the full context on demand, yet the per-iteration prompt stays bounded.
+// Returns the input unchanged when within budget; logs when it fires.
+func capInvestigationPrompt(ctx *security.RequestContext, prompt, eventId string, pending map[string]string) string {
+	if len(prompt) <= maxInvestigationPromptBytes {
+		return prompt
+	}
+	file := fmt.Sprintf("event_investigation_context_%s.txt", eventId)
+	pending[file] = prompt
+	ctx.GetLogger().Warn("analyzer: assembled investigation prompt exceeded cap",
+		"original_bytes", len(prompt), "cap", maxInvestigationPromptBytes, "workspace_file", file)
+	truncated := core.TruncateMiddle(prompt, maxInvestigationPromptBytes*3/4, maxInvestigationPromptBytes/4)
+	return truncated + fmt.Sprintf("\n\n[The investigation context above was condensed from %d bytes; the full context is in workspace file %s. If you need a detail truncated above, grep it, e.g. grep -in \"<keyword>\" %s | head -40.]", len(prompt), file, file)
+}
+
+func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository, pending map[string]string) (string, string, bool, string, *tools.RunbookRef, error) {
 	// runbookRef holds the runbook resolved from the event's runbook_url label
 	// (if any), so the caller can cite it in the synthesized analysis.
 	var runbookRef *tools.RunbookRef
@@ -1597,7 +1731,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	// Arg order must match the %s placeholders in event_investigation.txt:
 	// id, definition, title, description, labels, time, window start, window
 	// end, source, summary.
-	eventAnalsysisPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptEventInvestigation, request.AccountId, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), common.FormatPresentationTime(event.StartsAt), formatWindowEnd(event.EndsAt), event.Source, response.Summary)
+	eventAnalsysisPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptEventInvestigation, request.AccountId, request.EventId, eventDefinition, event.Title, event.Description, sanitizeEventLabelsForPrompt(ctx, event.Labels, request.EventId, pending), common.FormatPresentationTime(event.UpdatedAt), common.FormatPresentationTime(event.StartsAt), formatWindowEnd(event.EndsAt), event.Source, response.Summary)
 
 	// Add account context (cloud provider) to help the LLM tailor its output
 	if cloudProvider := agents.GetCloudProviderForAccount(request.AccountId); cloudProvider != "" {
@@ -1698,7 +1832,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			eventAnalsysisPrompt = "## Troubleshooting Steps For Investigation (CRITICAL) -\n" + userPrompt + "\n\n" + eventAnalsysisPrompt
 		}
 	}
-	return eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugAnalysisSkipReason, runbookRef, err
+	return capInvestigationPrompt(ctx, eventAnalsysisPrompt, request.EventId, pending), accountPrompt, debugAnalysisEnabled, debugAnalysisSkipReason, runbookRef, err
 }
 
 // saveEventRunbookReference persists the runbook resolved for this event as a
@@ -1956,7 +2090,12 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	initialSummary := response.Summary
 
 	// Register or retrieve our custom event analyzer agent
-	eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugSkipReason, runbookRef, err := generateEventAnalysisPrompt(ctx, eventData, request, response, parsedLabels, eventAnalysisRepo)
+	// pendingWorkspaceWrites collects oversized prompt inputs (labels / the whole
+	// assembled prompt) that the guardrail condensed to a workspace-file pointer.
+	// They are persisted below only on the branch that actually runs the agent, so
+	// recovered / re-polled investigations never touch the workspace.
+	pendingWorkspaceWrites := map[string]string{}
+	eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugSkipReason, runbookRef, err := generateEventAnalysisPrompt(ctx, eventData, request, response, parsedLabels, eventAnalysisRepo, pendingWorkspaceWrites)
 	if err != nil {
 		return EventAnalysisResponse{}, err
 	}
@@ -2017,6 +2156,12 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			// investigations never touch the workspace.
 			if fileNote := saveEvidenceLogsToWorkspace(ctx, request.AccountId, parentConversationId, request.EventId, eventData); fileNote != "" {
 				eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n" + fileNote
+			}
+			// Persist any oversized prompt inputs the guardrail condensed to a
+			// workspace-file pointer. Best-effort: on failure the pointer simply
+			// resolves to a missing file (an empty grep), never a hard error.
+			for fn, content := range pendingWorkspaceWrites {
+				saveOverflowToWorkspace(ctx, request.AccountId, parentConversationId, fn, content)
 			}
 			rootcauseAnalysis, err := core.HandleConversationSessionRequest(ctx, rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true))
 
