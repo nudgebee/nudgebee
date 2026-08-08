@@ -4,7 +4,7 @@
 >
 > - **[Architecture Decisions](docs/architecture-decisions.md)** — the living "why-behind-X" log; reasoning behind structural choices we don't want to re-litigate.
 > - **[RPC action naming convention](docs/rpc-action-naming.md)** — the verb taxonomy every new action in `app/src/lib/actions.yaml` must follow.
-> - **[Database Migrations & RPC Actions](#database-migrations--rpc-actions)** — the migration scaffolding script and `CREATE INDEX CONCURRENTLY` gotcha.
+> - **[Database Migrations & RPC Actions](#database-migrations--rpc-actions)** — Atlas engine, the migration scaffolding script, and `CREATE INDEX CONCURRENTLY` via `-- atlas:txmode none`.
 > - **Build commands** — the per-service `make validate` / `npm run lint2` flows.
 >
 > Everything else (AI principles, skills, slash commands, parallel-session patterns) is AI-workflow scaffolding — safe to skip if you're not driving an agent.
@@ -41,7 +41,18 @@
 
 These principles apply to every agent (Claude, Gemini, human) working in this repo. They exist because the dominant failure mode of AI-assisted coding is not bad code — it is code that exactly matches a *wrong* request. The goal of this section is to make the agent **less wrong**, not just faster.
 
-### 1. Argue Before You Accept (Adversarial Pre-Implementation)
+### 1. Baseline Behavioral Rules (Every Change, Including Small Ones)
+
+These four rules govern **every individual edit** — including the small ones where the `/challenge` pass is skipped, which is exactly where over-editing happens (principles 2–5 below govern the *process* around a change). They bias toward caution over speed; for trivial tasks, use judgment.
+
+1. **Think before coding — don't assume, don't hide confusion.** State assumptions explicitly. If multiple interpretations of the request exist, present them — don't pick one silently. If a simpler approach exists, say so. If something is unclear, stop and ask. (For non-trivial changes, this escalates into the full adversarial pass in principle 2.)
+2. **Simplicity first.** Write the minimum code that solves the stated problem. No features beyond what was asked, no abstractions for single-use code, no unrequested "flexibility" or configurability, no error handling for impossible scenarios. Ask: *"Would a senior engineer say this is overcomplicated?"* If yes, simplify.
+3. **Surgical changes.** Touch only what the request requires. Don't "improve" adjacent code, comments, or formatting; don't refactor what isn't broken; match existing style even where you'd do it differently. If you notice unrelated dead code, mention it — don't delete it. **Do** remove imports/variables/functions that *your own change* orphaned. The test: every changed line traces directly to the user's request.
+4. **Goal-driven execution.** Turn the task into a verifiable goal before starting: "fix the bug" → "write a test that reproduces it, then make it pass"; "refactor X" → "tests pass before and after". Loop until verified — in this repo the closing check is the affected service's validation command (`make validate` / `make lint && make test` / `npm run lint2 && npm run test`, see [Build Commands](#build-commands-by-service-type)).
+
+**These rules are working if:** diffs contain fewer unnecessary changes, fewer rewrites are caused by overcomplication, and clarifying questions come *before* implementation rather than after mistakes.
+
+### 2. Argue Before You Accept (Adversarial Pre-Implementation)
 
 Before implementing any non-trivial change, run an adversarial pass **first**:
 
@@ -56,11 +67,11 @@ Before implementing any non-trivial change, run an adversarial pass **first**:
 
 The `/challenge` skill runs this pass on demand. For larger changes, run it explicitly before editing any code.
 
-### 2. AI First-Pass Review Before Human Review
+### 3. AI First-Pass Review Before Human Review
 
 Every PR gets an AI self-review pass *before* a human reviewer ever sees it. `/create-pr` performs this automatically: it reads the diff, flags correctness / security / performance / over-engineering risks, fixes what it can, and surfaces residual risks in the PR body under **Review Notes → Risks & Counterarguments**. Human reviewers should start from that list, not from zero.
 
-### 3. Parallel Session Patterns
+### 4. Parallel Session Patterns
 
 Parallel AI sessions are a workforce, not arbitrary task-splitting. Different tabs do different *kinds of thinking*, not different chunks of the same task. Recommended layout for any non-trivial change:
 
@@ -74,7 +85,7 @@ Parallel AI sessions are a workforce, not arbitrary task-splitting. Different ta
 
 **Minimum: two tabs.** Sweet spot: three. You do **not** need ten.
 
-### 4. Decisions & Lessons Learned (Living Constitution)
+### 5. Decisions & Lessons Learned (Living Constitution)
 
 This file is not a static reference — it is a **living constitution**. When a decision is made about architecture, tooling, or patterns, record **why**, not just **what**. When an approach is tried and abandoned, record it here so we never waste cycles re-trying it.
 
@@ -198,8 +209,7 @@ cd app
 npm ci --legacy-peer-deps     # Clean install (use in CI/CD)
 npm install                   # Install locally
 
-npm run dev                   # Dev server (port 3000, webpack)
-npm run dev:turbo             # Dev server (port 3000, Turbopack — faster; breaks /api/auth/* on cold boot, see docs/architecture-decisions.md)
+npm run dev                   # Dev server (port 3000, turbo)
 npm run build                 # Production build
 npm run lint2                 # oxlint + prettier check
 npm run lint2:fix             # Auto-fix linting
@@ -232,112 +242,28 @@ git checkout -b feature/description
 
 ### 3. Validate Locally (BEFORE COMMIT)
 
-**Go services with Makefile:**
-```bash
-cd {service}
-make validate    # This must pass
-```
-
-**Python services with Makefile:**
-```bash
-cd {service}
-make lint && make test
-```
-
-**Python services WITHOUT Makefile:**
-```bash
-cd {service}
-poetry install
-poetry run black --check .
-poetry run flake8 .
-poetry run pytest
-```
-
-**TypeScript:**
-```bash
-cd app
-npm run lint2
-npm run test
-npm run build --legacy-peer-deps
-```
+Run the affected service's validation command from [Build Commands by Service Type](#build-commands-by-service-type) — `make validate` (Go), `make lint && make test` (Python with Makefile), the direct `poetry run` commands (Python without), or `npm run lint2 && npm run test` (TypeScript). It must pass before you commit.
 
 ### 4. Commit & Push
 ```bash
 git add .
-git commit -m "type(scope): description"
-# Types: feat, fix, docs, style, refactor, perf, test, chore, revert, ci, infra, release
-# Scopes: autopilot, workflow, ml, llm, notifications, ui, tickets, relay, collector, deps
-# Examples:
-# fix(llm): handle null pointer in config
-# feat(ui): add user settings page
-# refactor(ml): update scaling algorithm
+git commit -m "type(scope): description"   # e.g. fix(llm): handle null pointer in config
 git push origin feature/description
 ```
 
+Allowed commit/PR-title types and scopes live in [`.github/semantic.yml`](.github/semantic.yml) — CI validates PR titles against it, so read that file rather than a copy here. Gotcha: the `label-prs` check only accepts **lowercase** scopes in practice (`nb-1234`, not `NB-1234`).
+
 ### 5. Create PR to `main`
 
-**GitHub Issue Required:** Every PR targeting `main` MUST link to a GitHub issue. Before creating a new issue, check if there's an existing issue (open or closed) related to the work — if so, link to that. Only create a new issue if no related issue exists and the user confirms. This does NOT apply to PRs targeting `test` or `prod` (cherry-picks / promotions).
+**GitHub Issue Required:** Every PR targeting `main` MUST link to the **original ticket** that motivated the work (`Fixes #<number>`, or `Part of #<number>` when the ticket spans multiple PRs). Search for the existing ticket first — the user's sprint tickets, then open **and** closed issues by keyword. **Never auto-create a new issue to satisfy this rule** — a fresh unlinked issue per PR destroys traceability and litters the tracker with unassigned orphans. A new issue is a last resort, requires explicit user confirmation, goes through `/create-issue` (which assigns it and adds it to the sprint board), and must reference the parent/original ticket if one exists. This does NOT apply to PRs targeting `test` or `prod` (cherry-picks / promotions).
 
-When creating a PR, use the following template format (from `.github/pull_request_template.md`):
-
-```markdown
-# Description
-
-[Summary of changes and motivation. Include relevant issue link.]
-
-Fixes #<issue_number>
-
-## Type of change
-
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] Enhancement (non-breaking change which adds functionality)
-- [ ] Refactor (non-breaking change which improves code structure)
-- [ ] Documentation (non-breaking change which improves documentation)
-- [ ] Performance (non-breaking change which improves performance)
-- [ ] Chore (non-breaking change which does not modify src or test files)
-- [ ] Build / CI (non-breaking change which does not modify src or test files)
-- [ ] Security (non-breaking change which improves security)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-
-# How Has This Been Tested?
-
-[Describe tests run to verify changes. Provide reproduction instructions.]
-
-- [ ] Test A
-- [ ] Test B
-```
-
-**PR Creation via CLI:**
-```bash
-gh pr create --title "fix(llm): handle null pointer in config" --body "$(cat <<'EOF'
-# Description
-
-[Summary of changes]
-
-Fixes #123
-
-## Type of change
-
-- [x] Bug fix (non-breaking change which fixes an issue)
-
-# How Has This Been Tested?
-
-- [x] Unit tests pass locally
-- [x] Manual testing in dev environment
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
-```
+Use the PR body template at [`.github/pull_request_template.md`](.github/pull_request_template.md) — keep only the applicable "Type of change" options, checked. The `/create-pr` skill automates the full flow (validation, self-review, template, issue link).
 
 **PR Guidelines:**
-- **PRs to `main` must include `Fixes #<issue>` linking to a GitHub issue.** Search for existing issues first and ask the user before creating a new one. PRs to `test`/`prod` are exempt.
-- CI automatically runs validation
-- All checks must pass
-- Get code review
-- Delete irrelevant "Type of change" options, keep only applicable ones checked
-- Merge to `main`
+- CI automatically runs validation; all checks must pass
+- Get code review, then merge to `main`
+
+**Opening the PR is not the end of the task.** After opening **any** PR — by whatever means, not only via `/create-pr` — watch it to a settled state: poll CI checks AND review comments (bot reviewers like Gemini post within minutes), fix actionable findings, push, and repeat until every check is green and every actionable comment is fixed or answered. The full loop lives in `/create-pr` Step 11; follow it even when the PR was created manually. Bound the loop (≤ ~4 fix-and-push cycles) and surface anything that needs a human decision instead of looping.
 
 ### 6. Automated → Test Environment
 - After merge to `main` → Automated PR `main` → `test`
@@ -364,34 +290,6 @@ Each service has its own CLAUDE.md where one exists:
 
 **Always read service-specific CLAUDE.md before working on a service.**
 
-## Quick Commands Reference
-
-### Status Checks
-```bash
-git status                  # Current status
-git diff main              # Changes vs main
-git log --oneline -10      # Recent commits
-```
-
-### Local Validation
-```bash
-# Go
-make validate
-
-# Python with Makefile
-make lint && make test
-
-# Python without Makefile
-poetry run black --check .
-poetry run flake8 .
-poetry run pytest
-
-# TypeScript
-npm run lint2
-npm run test
-npm run build
-```
-
 ## Testing Strategy
 
 - **Unit tests:** Alongside source code, run before commit
@@ -401,7 +299,6 @@ npm run build
 ## Deployment Checklist
 
 Before merging to production:
-- [ ] PR to `main` links to a GitHub issue (`Fixes #<number>`)
 - [ ] Local validation passes
 - [ ] All tests pass
 - [ ] No linting errors
@@ -418,7 +315,7 @@ Before merging to production:
 | `.github/workflows/` | CI/CD automation for all services |
 | `deploy/kubernetes/` | Helm charts & values files for each service |
 | `deploy/containers/` | Base Dockerfiles (clickhouse, rabbitmq) |
-| `api-server/migrations/` | Database migrations — Postgres (`app/`) applied by **Atlas**; RabbitMQ by shell scripts. ClickHouse SQL lives here but is **not** auto-applied in OSS. See [`api-server/migrations/README.md`](api-server/migrations/README.md). |
+| `api-server/migrations/` | Database migrations — Postgres (`app/`), Clickhouse, RabbitMQ — applied by golang-migrate. See [`api-server/migrations/README.md`](api-server/migrations/README.md). |
 | Each service `Dockerfile` | Container image build configuration |
 | Each service `Makefile` | Build automation (if service has one) |
 | Each service `go.mod`/`pyproject.toml`/`package.json` | Dependencies |
@@ -426,16 +323,18 @@ Before merging to production:
 ## Database Migrations & RPC Actions
 
 ### Postgres migrations (`api-server/migrations/migrations/app/`)
-- **Engine: Atlas** (community edition, Apache 2.0). Atlas keeps a per-file ledger in `nudgebee.atlas_schema_revisions` and applies out-of-order arrivals natively (`--exec-order non-linear` in `atlas.hcl`) — replacing golang-migrate's single-row high-water tracker that silently skipped any file numbered below the applied version. On first run against an existing DB, `run-migrations.sh` auto-seeds the Atlas ledger from the legacy `nudgebee.schema_migrations` tracker (one-time cutover); on a fresh DB it applies from scratch.
-- **Flat layout** — files are named `{ts_ms}_V{N}_{snake_case_description}.up.sql` and `.down.sql`, no enclosing directory.
-- **Use the scaffold script** — `./api-server/migrations/new-migration.sh <snake_case_name>` creates both files with a fresh unix-ms timestamp and the next `V<N>`, **and regenerates `migrations/app/atlas.sum`** (Atlas's integrity manifest) via `atlas migrate hash`. If you ever add/edit/remove a migration by hand, re-run `(cd api-server/migrations && atlas migrate hash --dir 'file://migrations/app?format=golang-migrate')` or the migration Job will refuse with a `checksum mismatch`. CI (`.github/workflows/migrations-validate.yaml`) fails the PR when `atlas.sum` is stale.
-- `.down.sql` is optional but recommended (Atlas does not use it for apply; it exists for manual rollback). Write idempotent SQL (`IF EXISTS` / `IF NOT EXISTS`).
-- **NEVER use `CREATE INDEX CONCURRENTLY` or `DROP INDEX CONCURRENTLY`** — the apply runs `--tx-mode file`, so each migration executes inside a transaction and a `CONCURRENTLY` statement fails mid-statement. (Atlas *does* support a per-file `-- atlas:txmode none` directive that would allow it, but OSS CI still rejects `\bCONCURRENTLY\b` outright — `.github/workflows/migrations-lint.yaml` — so keep to that rule for now.) If you genuinely need to add/drop a large-table index without the brief `ACCESS EXCLUSIVE` lock a plain statement takes, apply the `CONCURRENTLY` form manually via `psql` against the live DB *before* opening the migration PR, then write the migration with plain `CREATE INDEX IF NOT EXISTS` / `DROP INDEX IF EXISTS` so it's a no-op where you pre-applied it and a quick locked statement where you haven't.
-- Full details on the cutover, recovery flows, and local apply commands: [`api-server/migrations/README.md`](api-server/migrations/README.md).
+- **Engine: Atlas Community.** Per-file revisions tracked in `nudgebee.atlas_schema_revisions`. golang-migrate was removed (PR #33008 / Fixes #33007) — its single-row tracker kept producing silent-skip / phantom-version / CONCURRENTLY-in-tx incidents (V752, V756, V758, V760).
+- **Flat layout** — files named `{ts_ms}_V{N}_{snake_case_description}.up.sql` and `.down.sql`, no enclosing directory.
+- **Use the scaffold script** — `./api-server/migrations/new-migration.sh <snake_case_name>` creates both files with a fresh unix-ms timestamp + next `V<N>` AND regenerates `migrations/app/atlas.sum`. Requires `brew install atlas`; the script refuses without it (atlas.sum staleness fails the migration Job at deploy).
+- **Out-of-order arrivals are first-class.** `--exec-order non-linear` (in `atlas.hcl`) applies files with ts < tracker normally. Cherry-picks and HF backmerges no longer silently skip — that incident class is structurally impossible. `validate_migrations.py` now warns (not errors) on out-of-order ts.
+- `.down.sql` is optional but recommended. Write idempotent SQL (`IF EXISTS` / `IF NOT EXISTS`).
+- **`CREATE INDEX CONCURRENTLY` etc. now work** — put `-- atlas:txmode none` as the first line of the `.up.sql`. Atlas honors the directive (golang-migrate ignored the equivalent `-- migrate:no-transaction` hint, which is why it produced the V752 wedge). `.github/workflows/migrations-lint.yaml` still rejects `CONCURRENTLY` in files that lack the directive.
+- **`atlas.sum`** is the integrity manifest. Committed. Edits to applied files cause `atlas migrate apply` to refuse with `checksum mismatch` (desired). Regenerated automatically by `new-migration.sh`; PR-time CI gate (`migrations-validate.yaml`) catches drift.
+- Full details on cutover, recovery, and local apply commands: [`api-server/migrations/README.md`](api-server/migrations/README.md).
 
 ### Other migration trees
-- `migrations/clickhouse/` — **NOT auto-applied by Atlas in OSS.** The `.sql` files (numeric `NN_*.up.sql` prefix) are kept in the tree, but `run-migrations.sh` does not apply them. If you run with `clickhouse.enabled=true`, apply the ClickHouse migrations manually against your ClickHouse instance.
-- `migrations/rabbitmq/` — shell scripts (`NNN_*.sh`) run sequentially by `run-migrations.sh` after RabbitMQ is healthy.
+- `migrations/clickhouse/` — kept for historical reference but not applied (CLICKHOUSE_ENABLED has been `false` on every env since cluster setup; the code path was dead and was removed from run-migrations.sh).
+- `migrations/rabbitmq/` — shell scripts (`NNN_*.sh`) run sequentially after RabbitMQ is healthy.
 
 ### RPC action naming convention
 Actions are HTTP RPC handlers registered in [`app/src/lib/actions.yaml`](app/src/lib/actions.yaml) — the routing table the in-app gateway (`@lib/rpcGateway`) uses to dispatch each operation to its upstream handler (mounted under `/rpc/*` on each backend service). When adding a new action, follow this naming pattern:
@@ -463,20 +362,7 @@ The dev server fails fast on a malformed `actions.yaml`. Type errors in upstream
 
 ## Troubleshooting
 
-**Format/Lint Failures:**
-```bash
-# Go
-make fmt
-git add . && git commit
-
-# Python
-make fmt          # If Makefile exists
-poetry run black . # If no Makefile
-
-# TypeScript
-npm run lint2:fix
-git add . && git commit
-```
+**Format/Lint Failures:** run the service's auto-format command (`make fmt` / `poetry run black .` / `npm run lint2:fix` — see [Build Commands](#build-commands-by-service-type)), then re-commit.
 
 **Test Failures:**
 - Run locally first to reproduce
@@ -512,27 +398,6 @@ npm ci --legacy-peer-deps
 - **Makefiles are optional:** Some services use direct commands (poetry run, go test, npm run)
 - **Docker as source of truth:** If unsure about build process, check the Dockerfile
 - **CI as automation:** GitHub Actions workflows show actual build steps
-
-## Module Build Status Summary
-
-| Module | Type | Has Makefile | Build Command |
-|--------|------|--------------|----------------|
-| api-server/services | Go | ✓ | make validate |
-| ticket-server | Go | ✓ | make validate |
-| collector-server/cloud-collector | Go | ✓ | make validate |
-| collector-server/k8s-collector/relay-server | Go | ✓ | make validate |
-| llm/code-analysis | Go | ✓ | make check |
-| llm/llm-server | Go | ✓ | make validate |
-| app-e2e-tests | Go | ✗ | go test ./... |
-| api-server/test_servicemap | Go | ✗ | go test ./... |
-| ml-k8s-server | Python | ✓ | make lint && make test |
-| llm/rag-server | Python | ✓ | make lint && make test |
-| collector-server/k8s-collector/app | Python | ✓ | make lint && make test |
-| auto-pilot | Python | ✗ | poetry run black --check . && poetry run flake8 . |
-| notifications-server | Python | ✗ | poetry run black --check . && poetry run flake8 . |
-| auto-pilot/sidecar | Python | ✗ | poetry run black --check . && poetry run flake8 . |
-| llm/benchmark | Python | ✗ | poetry run pytest |
-| app | TypeScript | ✗ | npm run lint2 && npm run test |
 
 ---
 

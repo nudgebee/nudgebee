@@ -34,26 +34,34 @@ git diff main...HEAD
 
 If `$ARGUMENTS` specifies a different base branch (e.g., `test` or `prod`), use that instead of `main`.
 
-## Step 2: Require GitHub Issue (main branch only)
+## Step 2: Link the Original Ticket (main branch only)
 
 **This step applies ONLY when the base branch is `main`.** Skip this step entirely for PRs targeting `test` or `prod` (cherry-picks / promotions).
 
-Check if the user has provided a GitHub issue number (e.g., in the branch name like `fix/NB-1234-description`, in `$ARGUMENTS`, or mentioned in conversation). If an issue number is present, verify it exists:
+**Goal: traceability.** The PR must link back to the ticket that *motivated* this work — the sprint ticket or existing issue — NOT a freshly minted issue. Creating a new issue per PR destroys traceability and litters the tracker with unassigned orphans. **Never create a new issue in this step.**
 
-```bash
-gh issue view <issue_number> --json number,title,state 2>&1
-```
+Find the original ticket, in this order — stop at the first hit:
 
-**If no issue number is found or provided:**
-
-1. Search for potentially related open issues based on the branch name and commit messages:
+1. **Explicit reference.** Issue number in `$ARGUMENTS`, the branch name (`fix/nb-1234-description`), commit messages, or mentioned anywhere in the conversation (including the ticket the session started from, e.g. via `/my-tickets`). Verify it exists:
    ```bash
-   gh issue list --state open --search "<keywords from branch/commits>" --limit 5 --json number,title
+   gh issue view <issue_number> --json number,title,state 2>&1
    ```
-2. If matching issues are found, present them to the user and ask which one to link (or none).
-3. If no matching issues exist, **stop and ask the user to create a GitHub issue first** before proceeding with the PR. Suggest using the `/create-issue` skill. Do NOT proceed with PR creation until the user provides an issue number.
+2. **My sprint tickets.** Check the user's assigned issues for one this work belongs to:
+   ```bash
+   gh issue list --assignee "@me" --state open --limit 30 --json number,title
+   ```
+3. **Keyword search — open AND closed.** The original ticket may already be closed or filed by someone else:
+   ```bash
+   gh issue list --state all --search "<keywords from branch/commits>" --limit 10 --json number,title,state
+   ```
 
-**Once an issue number is confirmed**, store it for use in the PR body (`Fixes #<number>` or `Closes #<number>`).
+**If candidates are found**, present them and ask the user which one to link (or none). A closed issue is still a valid link target for follow-up work.
+
+**If no related ticket exists**, stop and ask the user how to proceed. Do NOT run `gh issue create` and do NOT invoke `/create-issue` on your own — only the user can decide a new ticket is warranted. If they confirm one, create it via `/create-issue` (which assigns it and adds it to the sprint board) and reference the motivating context in its body.
+
+**Once an issue number is confirmed**, store it for the PR body:
+- `Fixes #<number>` if this PR fully resolves the ticket (auto-closes it on merge).
+- `Part of #<number>` if this PR is one piece of a larger ticket that must stay open.
 
 ## Step 3: Identify Affected Services
 
@@ -219,7 +227,7 @@ Based on the commits and diff, generate:
 {Summary of the changes and the related issue. Include relevant motivation and context.
 List any dependencies that are required for this change.}
 
-Fixes #{issue_number}   ← MANDATORY for PRs to main (from Step 2). Remove this line ONLY for PRs to test/prod.
+Fixes #{issue_number}   ← MANDATORY for PRs to main (from Step 2; use "Part of #N" if the ticket stays open). Remove this line ONLY for PRs to test/prod.
 
 ## Type of change
 
@@ -262,7 +270,7 @@ Fixes #{issue_number}   ← MANDATORY for PRs to main (from Step 2). Remove this
 - Mark applicable types with `[x]` — only include the checked types, delete all unchecked options
 - The Description should explain **why** the change was made, not just what changed
 - Testing section should list concrete verification steps
-- For PRs to `main`: the `Fixes #` line is **mandatory** — the issue number comes from Step 2
+- For PRs to `main`: the issue link is **mandatory** — the number comes from Step 2; `Fixes #` closes the ticket on merge, `Part of #` keeps it open for multi-PR tickets
 - For PRs to `test`/`prod`: remove the `Fixes #` line entirely
 - Review Notes sections should be concise — one-liners per item, no filler
 - The Files & Functions table should cover every modified file

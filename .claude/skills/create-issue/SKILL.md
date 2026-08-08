@@ -69,6 +69,20 @@ Reproduction steps should be something a tester, support engineer, or PM could f
 
 ---
 
+## Step 0: Check for an Existing Ticket First (mandatory)
+
+Before drafting anything, search for an existing issue that already covers this — open **and** closed:
+
+```bash
+gh issue list --state all --search "<keywords>" --limit 10 --json number,title,state
+gh issue list --assignee "@me" --state open --limit 30 --json number,title
+```
+
+- **A related issue exists** → propose linking or commenting on it instead of creating a duplicate. Only proceed to create if the user confirms the existing one doesn't cover this.
+- **This work stems from a parent/original ticket** (sprint ticket, epic, prior bug) → carry that number forward; it MUST appear in the new issue's body (`Reference Issues` section or `Part of #<n>` in the description) AND be linked as a native sub-issue in Step 6.5, so traceability is preserved.
+
+Never skip this step — orphan issues with no link to the work that spawned them are the failure mode this skill must avoid.
+
 ## Step 1: Determine Issue Type
 
 If `$ARGUMENTS` specifies a type (`feature`, `bug`, `spike`), use that. Otherwise, ask the user:
@@ -247,6 +261,26 @@ EOF
   --label "{labels}"  # Only if labels exist
 ```
 
+## Step 6.5: Link to the Parent Ticket (native sub-issue)
+
+If Step 0 identified a parent/original ticket (epic, sprint ticket, or the bug this work spun out of), create a **native sub-issue link** — not just a body mention. The body reference is for readers; the native link is what makes the relationship visible on the parent, the board, and in tracking views.
+
+```bash
+PARENT_NUMBER={parent_issue_number}
+REPO_OWNER=nudgebee
+REPO_NAME=$(gh repo view --json name -q .name)
+
+ISSUE_ID_QUERY='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { id } } }'
+PARENT_ID=$(gh api graphql -f query="$ISSUE_ID_QUERY" -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F number="$PARENT_NUMBER" --jq '.data.repository.issue.id')
+CHILD_ID=$(gh api graphql -f query="$ISSUE_ID_QUERY" -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F number="$ISSUE_NUMBER" --jq '.data.repository.issue.id')
+
+gh api graphql \
+  -f query='mutation($parentId: ID!, $childId: ID!) { addSubIssue(input: {issueId: $parentId, subIssueId: $childId}) { subIssue { number } } }' \
+  -f parentId="$PARENT_ID" -f childId="$CHILD_ID"
+```
+
+A closed parent is a valid link target (follow-up work). If the parent is a PR rather than an issue, skip the native link — sub-issues only accept issues — and keep the body reference. If the mutation fails, report it in Step 8; do not drop the link silently.
+
 ## Step 7: Add to Project, set Iteration + Story Point
 
 After creating the issue, add it to the org-level `nudgebee` project (#1) and set the **current iteration** and **Story Point**.
@@ -267,8 +301,12 @@ SP_FIELD_ID="PVTSSF_lADOCG7t1c4ATt4GzgPeoDE"
 # Add to project
 gh project item-add 1 --owner nudgebee --url "https://github.com/${ISSUE_REPO}/issues/${ISSUE_NUMBER}"
 
-ITEM_ID=$(gh project item-list 1 --owner nudgebee --format json --limit 1000 \
-  | jq -r ".items[] | select(.content.number == ${ISSUE_NUMBER}) | .id")
+# The board has >1000 items and new items land at the end, so `gh project item-list`
+# with any --limit never finds a fresh item. Resolve the item id via the issue itself:
+ITEM_ID=$(gh api graphql \
+  -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { projectItems(first: 5) { nodes { id project { number } } } } } }' \
+  -f owner="${ISSUE_REPO%/*}" -f name="${ISSUE_REPO#*/}" -F number="$ISSUE_NUMBER" \
+  --jq '.data.repository.issue.projectItems.nodes[] | select(.project.number == 1) | .id')
 
 # Resolve the CURRENT iteration id (gh does NOT support an "@current" token —
 # it requires a literal iteration node id). Pick the latest iteration whose
@@ -300,7 +338,22 @@ if [ -n "$STORY_POINT" ]; then
 fi
 ```
 
-**Note**: If the project commands fail (e.g., project not found or permissions), the issue is still created successfully. The iteration/story-point assignment is best-effort. Assignee is set on the issue itself in Step 6 (`--assignee "@me"`), not as a project field — the project's Assignees column mirrors the issue's assignees automatically.
+**Verify — this is NOT best-effort.** An unassigned issue with no iteration is invisible on the sprint board, which defeats the point of filing it. After the commands above, confirm all three fields actually landed:
+
+```bash
+gh issue view "$ISSUE_NUMBER" --json assignees --jq '.assignees | length'   # must be >= 1
+
+# Do NOT use `gh project item-list --limit 1000` here — the board has >1000 items and
+# fresh items are appended at the end, so a new issue never shows up in the first page.
+# Query the issue's own project items instead:
+gh api graphql \
+  -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { projectItems(first: 5) { nodes { project { number } fieldValueByName(name: "Iteration") { ... on ProjectV2ItemFieldIterationValue { title } } } } } } }' \
+  -f owner="${ISSUE_REPO%/*}" -f name="${ISSUE_REPO#*/}" -F number="$ISSUE_NUMBER" \
+  --jq '.data.repository.issue.projectItems.nodes[] | select(.project.number == 1) | {iteration: (.fieldValueByName.title // null)}'
+```
+
+- Assignee count 0 → fix immediately: `gh issue edit "$ISSUE_NUMBER" --add-assignee "@me"`.
+- Item missing or `iteration` null → re-run the item-add / item-edit commands once; if it still fails, **report the failure explicitly in Step 8** with the error text so the user can fix it — do not silently declare success.
 
 ## Step 8: Output Result
 
