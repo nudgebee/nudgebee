@@ -2135,6 +2135,59 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		c.JSON(http.StatusOK, buildApiResponse(data, nil))
 	})
 
+	// event-analysis-digests backs the weekly digest tab: the account's digest
+	// history (list) and one week's full briefing including per-class findings.
+	groupV2.POST("/event-analysis-digests", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_event_analysis_digests_list")
+		var request ListEventAnalysisDigestsRequest
+		reqCtx, ok := bindDigestRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		data, err := HandleListEventAnalysisDigestsApi(reqCtx, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	groupV2.POST("/event-analysis-digest", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_event_analysis_digest_get")
+		var request GetEventAnalysisDigestRequest
+		reqCtx, ok := bindDigestRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		data, err := HandleGetEventAnalysisDigestApi(reqCtx, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	groupV2.POST("/event-analysis-digest-generate", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_event_analysis_digest_generate")
+		var request GenerateEventAnalysisDigestRequest
+		reqCtx, ok := bindDigestRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		data, err := HandleGenerateEventAnalysisDigestApi(reqCtx, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
 	// usage-agents is the Cost Analyser "Agents" leaderboard: top agent invocations
 	// across conversations ranked by cost / latency / errors, each linked to its
 	// conversation for cross-navigation.

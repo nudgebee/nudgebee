@@ -248,6 +248,12 @@ func main() {
 		slog.Warn("main: failed to register workspace stale sweep job", "error", err)
 	}
 
+	// Weekly event-analysis digest. Convergent + leader-elected: the job fills
+	// whichever (account, week) slots have no row, so a missed tick self-heals.
+	if err := api.RegisterEventAnalysisDigestJob(); err != nil {
+		slog.Warn("main: failed to register event analysis digest job", "error", err)
+	}
+
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)
 

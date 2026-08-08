@@ -52,6 +52,8 @@ const (
 	PromptEvaluatorSystem                    = "evaluator_system"
 	PromptEvaluatorToolCalls                 = "evaluator_tool_calls"
 	PromptEventDetailedResponseSynthesis     = "event_detailed_response_synthesis"
+	PromptEventDigestBriefing                = "event_digest_briefing"
+	PromptEventDigestClassSummary            = "event_digest_class_summary"
 	PromptEventGeneralSummary                = "event_general_summary"
 	PromptEventInvestigation                 = "event_investigation"
 	PromptEventSummary                       = "event_summary"
@@ -113,6 +115,8 @@ var promptCategories = map[string]PromptCategory{
 	PromptEvaluatorSystem:                    CategoryUtilities,
 	PromptEvaluatorToolCalls:                 CategoryUtilities,
 	PromptEventDetailedResponseSynthesis:     CategoryUtilities,
+	PromptEventDigestBriefing:                CategoryUtilities,
+	PromptEventDigestClassSummary:            CategoryUtilities,
 	PromptEventGeneralSummary:                CategoryUtilities,
 	PromptEventInvestigation:                 CategoryUtilities,
 	PromptEventSummary:                       CategoryUtilities,
