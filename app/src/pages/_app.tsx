@@ -76,7 +76,10 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
           refetchWhenOffline={false}
         >
           <GlobalFilterContextProvider>
-            {router.pathname.indexOf('signin') >= 0 ||
+            {/* Exact match: the substring checks below would also strip chrome from
+                any future route containing 'status' (e.g. /kubernetes/status). */}
+            {router.pathname === '/status' ||
+            router.pathname.indexOf('signin') >= 0 ||
             router.pathname.indexOf('signup') >= 0 ||
             router.pathname.indexOf('signup_verify') >= 0 ||
             router.pathname.indexOf('ready') >= 0 ||

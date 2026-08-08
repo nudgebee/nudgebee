@@ -55,6 +55,11 @@ spec:
             - configMapRef:
                 name: {{ include "app.fullname" . }}-extra-env
             {{- end }}
+          {{- if .Values.statusNotice.configMapName }}
+          env:
+            - name: STATUS_NOTICE_FILE
+              value: /etc/nudgebee/status/notice.json
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.serverPort }}
@@ -71,7 +76,15 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: nextjs-static
-              mountPath: /nextjs-static            
+              mountPath: /nextjs-static
+            {{- if .Values.statusNotice.configMapName }}
+            # Directory mount, deliberately NOT subPath: subPath mounts do not
+            # receive ConfigMap updates, which would force a pod restart to
+            # publish an incident notice.
+            - name: status-notice
+              mountPath: /etc/nudgebee/status
+              readOnly: true
+            {{- end }}
         - name: nginx  # Nginx sidecar container
           image: {{ .Values.nginx.image.registry }}/{{ .Values.nginx.image.repository }}:{{ .Values.nginx.image.tag }}
           imagePullPolicy: {{ .Values.nginx.image.pullPolicy }}
@@ -101,6 +114,14 @@ spec:
       volumes:
         - name: nextjs-static
           emptyDir: {}
+        {{- if .Values.statusNotice.configMapName }}
+        # `optional` so the pod still starts when no notice ConfigMap exists —
+        # the normal state. No notice simply means no banner.
+        - name: status-notice
+          configMap:
+            name: {{ .Values.statusNotice.configMapName | quote }}
+            optional: true
+        {{- end }}
         - name: nginx-config
           configMap:
             name: {{ include "app.fullname" $ }}-nginx-config        
