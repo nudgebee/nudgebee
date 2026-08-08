@@ -199,19 +199,48 @@ var commonAcks = []string{
 	"I'll help you with that. Just a moment while I gather the data.",
 }
 
+// isUserConversationSource reports whether a conversation source is a live user
+// chat — i.e. someone is watching for the acknowledgment. System/automated
+// sources (event RCA, automation, workflows, notifications, optimize, single
+// query endpoints) are not, so a tailored LLM acknowledgment is wasted on them.
+func isUserConversationSource(source ConversationSource) bool {
+	switch source {
+	case ConversationSourceUserInvestigation, ConversationSourceUserInvestigationCLI:
+		return true
+	}
+	return false
+}
+
+// useStaticAcknowledgment reports whether to skip the LLM and return a fast
+// static acknowledgment instead of generating a tailored one. True for:
+//   - non-user conversations (event RCA / automation / etc. — no user is
+//     watching a chat for the ack; the query is also often a huge system prompt
+//     that would balloon the ack LLM call to tens of thousands of tokens), and
+//   - short / small-talk user queries (hi / hello / how are you), which don't
+//     warrant an LLM round-trip.
+//
+// The tailored LLM acknowledgment is reserved for substantial user questions,
+// where the latency/cost is worth it.
+func useStaticAcknowledgment(query string, source ConversationSource) bool {
+	if !isUserConversationSource(source) {
+		return true
+	}
+	// wordCount == 0 (empty / whitespace / punctuation- or emoji-only) also → static:
+	// never spend an LLM call on a query with nothing to acknowledge.
+	return common.GetWordCount(query) <= common.ShortQueryWordCountThreshold
+}
+
 // CreateAcknowledgmentResponse creates a complete acknowledgment response
-func CreateAcknowledgmentResponse(ctx *security.RequestContext, userId, accountId, query, agentName, conversationId, messageId string) AcknowledgmentResponse {
+func CreateAcknowledgmentResponse(ctx *security.RequestContext, userId, accountId, query, agentName, conversationId, messageId string, source ConversationSource) AcknowledgmentResponse {
 	var acknowledgment, intent string
 	var err error
 
-	// Optimization: For short queries, use a random common acknowledgment and skip LLM
-	wordCount := common.GetWordCount(query)
-	if wordCount > 0 && wordCount <= common.ShortQueryWordCountThreshold {
+	if useStaticAcknowledgment(query, source) {
 		intent = generateFallbackIntent(query, agentName)
 		// Pick a random common acknowledgment
 		acknowledgment = commonAcks[rand.Intn(len(commonAcks))]
 
-		ctx.GetLogger().Info("acknowledgment: using static random acknowledgment (short query optimization)", "conversation_id", conversationId)
+		ctx.GetLogger().Info("acknowledgment: using static acknowledgment (no LLM)", "conversation_id", conversationId, "source", source)
 		return AcknowledgmentResponse{
 			Status:            "acknowledged",
 			Acknowledgment:    acknowledgment,

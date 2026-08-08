@@ -141,7 +141,7 @@ func generateConversationTitleAsync(ctx *security.RequestContext, conversationId
 }
 
 // processAcknowledgmentAsync handles creating and saving an acknowledgment using the worker pool
-func processAcknowledgmentAsync(ctx *security.RequestContext, accountId, query, agentName, conversationId, messageId, userId string) {
+func processAcknowledgmentAsync(ctx *security.RequestContext, accountId, query, agentName, conversationId, messageId, userId string, source ConversationSource) {
 	bgCtx := security.NewRequestContext(
 		context.Background(),
 		ctx.GetSecurityContext(),
@@ -160,6 +160,7 @@ func processAcknowledgmentAsync(ctx *security.RequestContext, accountId, query, 
 			agentName,
 			conversationId,
 			messageId,
+			source,
 		)
 		err := GetConversationDao().UpdateMessageAcknowledgement(messageId, accountId, ackResp.Acknowledgment)
 		if err != nil {
@@ -1302,7 +1303,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	// Single-shot internal classifiers have no user watching for an acknowledgment,
 	// so skip the acknowledgment_agent call for them.
 	if messageStatus != ConversationStatusWaiting && messageType != MessageTypeFollowup && agent.GetName() != RouterAgentName && agent.GetName() != ToolLlm && request.Query != "" && !isSingleShotClassifier(agent) {
-		processAcknowledgmentAsync(ctx, request.AccountId, request.Query, agent.GetName(), conversation.ID.String(), request.MessageId, request.UserId)
+		processAcknowledgmentAsync(ctx, request.AccountId, request.Query, agent.GetName(), conversation.ID.String(), request.MessageId, request.UserId, request.ConversationSource)
 	}
 
 	// Add context-aware query processing before executing the agent
