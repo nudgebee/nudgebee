@@ -1146,6 +1146,9 @@ func GetK8sCloudAccountMapping(ctx *security.RequestContext, tenantID string, cl
 		}
 		mapping[k8sAccountID] = append(mapping[k8sAccountID], cloudAccountID)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating cloud account mapping rows: %w", err)
+	}
 
 	return mapping, nil
 }
@@ -1235,6 +1238,9 @@ func GetK8sAccountsForTenant(tenantID string, cloudAccountIDs []string) ([]K8sAc
 			continue
 		}
 		k8sAccounts = append(k8sAccounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating K8s account rows: %w", err)
 	}
 
 	return k8sAccounts, nil
