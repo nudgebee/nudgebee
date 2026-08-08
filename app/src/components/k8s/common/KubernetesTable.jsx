@@ -1308,7 +1308,7 @@ KubernetesSecurityDrilldown.propTypes = {
   query: PropTypes.object,
 };
 
-const KubernetesSLOConfig = ({ query }) => {
+const KubernetesSLOConfig = ({ accountId, query }) => {
   const [availability, setAvailability] = useState({});
   const [latency, setLatency] = useState({});
   const [isSLOReportExists, setIsSLOReportExists] = useState(false);
@@ -1316,6 +1316,7 @@ const KubernetesSLOConfig = ({ query }) => {
   useEffect(() => {
     apiKubernetes1
       .getSLOReport({
+        account_id: accountId,
         workload_namespace: query.namespaceName,
         workload_name: query.workloadName,
         start_date: new Date(new Date().getTime() - 24 * 60 * 60 * 1000).toISOString(),
@@ -1388,6 +1389,7 @@ const KubernetesSLOConfig = ({ query }) => {
 };
 
 KubernetesSLOConfig.propTypes = {
+  accountId: PropTypes.string,
   query: PropTypes.object,
 };
 

@@ -4387,7 +4387,7 @@ var table_metadata = map[string]TableDefinition{
 				good_events_count,
 				RANK() OVER (
 					PARTITION BY config_id
-					ORDER BY sr.created_at
+					ORDER BY sr.created_at DESC
 				) rn
 			FROM
 				slo_report sr

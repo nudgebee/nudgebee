@@ -405,7 +405,11 @@ const apiKubernetes1 = {
     }
   },
   async getSLOReport(sloReportParams: any) {
-    if (sloReportParams.account_id === 'demo') return null;
+    // Callers have passed the account under both spellings; reading only
+    // `account_id` silently dropped the filter, so a tenant with the same
+    // workload name in two clusters got whichever row sorted first.
+    const accountId = sloReportParams?.account_id ?? sloReportParams?.accountId;
+    if (accountId === 'demo') return null;
     const query: any = {};
     if (sloReportParams?.workload_namespace) {
       if (Array.isArray(sloReportParams?.workload_namespace)) {
@@ -427,8 +431,8 @@ const apiKubernetes1 = {
     if (sloReportParams?.config_id) {
       query['config_id'] = { _eq: sloReportParams.config_id };
     }
-    if (sloReportParams?.account_id) {
-      query['cloud_account_id'] = { _eq: sloReportParams.account_id };
+    if (accountId) {
+      query['cloud_account_id'] = { _eq: accountId };
     }
     if (sloReportParams?.status) {
       query['status'] = { _eq: sloReportParams.status };

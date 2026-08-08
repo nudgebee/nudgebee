@@ -435,7 +435,7 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		FindingId:        slo.Id,
 		AggregationKey:   "SLOViolation",
 		Description:      fmt.Sprintf("%s SLO violation for %s in namespace %s", sloConfig.Name, slo.WorkloadName, slo.WorkloadNamespace),
-		SubjectType:      "deployment",
+		SubjectType:      resolveSubjectType(dbms, sloConfig),
 		SubjectNode:      "",
 		Status:           "FIRING",
 		StartsAt:         slo.Timestamp,
@@ -448,6 +448,33 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		return err
 	}
 	return err
+}
+
+// resolveSubjectType returns the workload's real kind, lower-cased to match the
+// subject_type convention used elsewhere ("deployment", "statefulset", …).
+//
+// SLO events hardcoded "deployment", which mislabelled every StatefulSet,
+// DaemonSet and Rollout and broke drilldown and correlation by subject type.
+// Falls back to the old value when the workload cannot be resolved, so an event
+// is still emitted rather than dropped.
+func resolveSubjectType(dbms *database.DatabaseManager, sloConfig DBSLOConfig) string {
+	const fallback = "deployment"
+	var kind string
+	err := dbms.Db.Get(&kind, `SELECT kind FROM k8s_workloads
+		WHERE tenant_id=$1 AND cloud_account_id=$2 AND "name"=$3 AND namespace=$4
+		ORDER BY is_active DESC LIMIT 1`,
+		sloConfig.TenantId, sloConfig.CloudAccountId, sloConfig.WorkloadName, sloConfig.Namespace)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("slo: error resolving workload kind", "error", err,
+				"workload", sloConfig.WorkloadName, "namespace", sloConfig.Namespace)
+		}
+		return fallback
+	}
+	if kind == "" {
+		return fallback
+	}
+	return strings.ToLower(kind)
 }
 
 func collectEvidences(slo DBSLOReport, sloConfig DBSLOConfig) ([]any, error) {

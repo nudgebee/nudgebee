@@ -458,6 +458,7 @@ export const SLOReport = ({
       ? apiKubernetes1
           .getSLOReport({
             config_id: drilldownQuery.latencyConfig.id,
+            account_id: accountId,
             start_date: new Date(selectedDateRange.startDate).toISOString(),
             end_date: new Date(selectedDateRange.endDate).toISOString(),
           })
