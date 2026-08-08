@@ -297,6 +297,22 @@ export function hasPermission(module: string, permissionClass: 'Read' | 'Write' 
   return userData?.permissions?.includes(`${module}:${permissionClass}`) ?? false;
 }
 
+// Dynamic-RBAC: may the current user READ the tenant's custom roles? Mirrors
+// ee/customrole/service.go canReadCustomRoles — tenant-wide roles (including the
+// read-only flavors, which isTenantAdmin() deliberately excludes) plus the
+// `customroles:Read` grant. There is no Write counterpart: authoring and
+// assigning roles is privilege administration and stays tenant-admin-only, so
+// the customroles write actions are non-grantable (@lib/permissionCatalog).
+//
+// Use it to decide whether to CALL listCustomRoles() at all — the action 403s
+// for everyone else, and 400s tenant-wide when the CUSTOM_ROLES feature is off.
+export function canReadCustomRoles(): boolean {
+  if (!isCustomRolesEnabled()) {
+    return false;
+  }
+  return isTenantWideRole() || hasPermission('customroles', 'Read');
+}
+
 // Standard message for a disabled/greyed control the current user lacks the grant
 // for. Names the exact `<module>:<Class>` permission so the user can ask an admin
 // for precisely that grant (e.g. `tickets:Write`, `k8s:Read`). Use as the tooltip

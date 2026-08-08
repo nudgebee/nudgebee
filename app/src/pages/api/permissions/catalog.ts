@@ -62,7 +62,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
   const roles = (auth.jwt.roles as string[]) || [];
   const isTenantAdmin = roles.includes('tenant_admin') || roles.includes('tenant_admin_readonly');
-  if (!auth.jwt.isSuperAdmin && !auth.jwt.isSuperAdminReadonly && !isTenantAdmin) {
+  // `customroles:Read` holders reach the Roles tab read-only (see
+  // ee/customrole/service.go canReadCustomRoles), and the tab is unreadable
+  // without this catalog — it supplies module → scope and the module labels the
+  // grants are rendered with. Read-only either way: the response is derived from
+  // actions.yaml and carries no tenant data.
+  const permissions = (auth.jwt.permissions as string[]) || [];
+  const canReadRoles = isTenantAdmin || permissions.includes('customroles:Read');
+  if (!auth.jwt.isSuperAdmin && !auth.jwt.isSuperAdminReadonly && !canReadRoles) {
     return res.status(403).json({ error: 'forbidden' });
   }
   return res.status(200).json(getCatalog());

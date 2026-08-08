@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Typography, Switch, FormControlLabel, Alert } from '@mui/material';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import apiWorkflow from '@api1/workflow';
-import FilterDropdownButton from '@shared/FilterDropdownButton';
+import FilterDropdown from '@ui/FilterDropdown';
 import TemplateTextField from './TemplateTextField';
 import { JsonEditor } from './WorkflowFieldComponents';
 
@@ -56,7 +56,7 @@ interface CallWorkflowFieldsProps {
 const LABEL_COL_SX = {
   fontSize: 'var(--ds-text-body)',
   fontWeight: 'var(--ds-font-weight-medium)',
-  color: colors.text.secondary,
+  color: ds.gray[700],
   minWidth: '120px',
   maxWidth: '120px',
   pt: 1,
@@ -167,7 +167,7 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
     };
   }, [accountId]);
 
-  // Build picker options for FilterDropdownButton. Each option exposes the workflow name as the
+  // Build picker options for FilterDropdown. Each option exposes the workflow name as the
   // value (matches backend `workflow_name` lookup), the input list inline in the label so users
   // can pick the right workflow at a glance, and the status chip via the `type` slot.
   const pickerOptions = useMemo(
@@ -315,7 +315,7 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, mb: 1 }}>
+      <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], mb: 1 }}>
         Run another workflow by name and return its result. Inputs are forwarded to the called workflow; outputs are available as{' '}
         <code>Tasks[&apos;this-task-id&apos;].output</code>.
       </Typography>
@@ -323,10 +323,10 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
       {/* Workflow picker */}
       <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
         <Typography sx={LABEL_COL_SX}>
-          Workflow<span style={{ color: colors.border.error }}> *</span>
+          Workflow<span style={{ color: ds.red[500] }}> *</span>
         </Typography>
         <Box sx={FIELD_COL_SX}>
-          <FilterDropdownButton
+          <FilterDropdown
             id='call-workflow-name-picker'
             freeSolo
             disabled={viewOnlyMode}
@@ -338,13 +338,13 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
               const raw = next && typeof next === 'object' ? next.value ?? '' : next ?? '';
               setWorkflowName(typeof raw === 'string' ? raw : '');
             }}
-            placeholder='Select a workflow or type a name / {{ template }}'
-            searchPlaceholder='Search workflows...'
+            placeholder='Select an automation or type a name / {{ template }}'
+            searchPlaceholder='Search automations...'
             sx={{ width: '100%' }}
           />
           {(() => {
             if (nameError) {
-              return <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.border.error, mt: 0.5 }}>{nameError}</Typography>;
+              return <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.red[500], mt: 0.5 }}>{nameError}</Typography>;
             }
             const helper = isTemplated
               ? 'Templated workflow name — inputs cannot be auto-detected; use raw JSON below.'
@@ -354,7 +354,7 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
               ? 'No workflow with this name in the current account.'
               : '';
             if (!helper) return null;
-            return <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary, mt: 0.5 }}>{helper}</Typography>;
+            return <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[700], mt: 0.5 }}>{helper}</Typography>;
           })()}
           {loadError ? (
             <Alert severity='warning' sx={{ mt: 1, py: 0 }}>
@@ -369,7 +369,7 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
         <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
           <Typography sx={LABEL_COL_SX}>Version</Typography>
           <Box sx={FIELD_COL_SX}>
-            <FilterDropdownButton
+            <FilterDropdown
               id='call-workflow-version-picker'
               disabled={viewOnlyMode}
               isOptionsLoading={versionsLoading}
@@ -388,7 +388,7 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
                 {`Pinned version v${pinnedVersion} no longer exists in this workflow's history. The run will fail unless you pick another version or switch back to Live.`}
               </Alert>
             ) : (
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary, mt: 0.5 }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[700], mt: 0.5 }}>
                 {pinnedVersion !== undefined
                   ? `Pinned to v${pinnedVersion} — callee edits won't affect this call until you re-pin.`
                   : 'Follows the callee’s latest published version on every run.'}
@@ -401,9 +401,7 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
       {/* Inputs */}
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}>
-            Inputs
-          </Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}>Inputs</Typography>
           <FormControlLabel
             control={
               <Switch
@@ -435,8 +433,8 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
             />
           </>
         ) : targetInputs.length === 0 ? (
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, fontStyle: 'italic' }}>
-            This workflow takes no inputs.
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], fontStyle: 'italic' }}>
+            This automation takes no inputs.
           </Typography>
         ) : (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
@@ -446,8 +444,8 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
                 <Box key={input.id} sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
                   <Typography sx={LABEL_COL_SX}>
                     {input.id}
-                    {input.default === undefined ? <span style={{ color: colors.border.error }}> *</span> : null}
-                    <Typography component='span' sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark, ml: 0.5 }}>
+                    {input.default === undefined ? <span style={{ color: ds.red[500] }}> *</span> : null}
+                    <Typography component='span' sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400], ml: 0.5 }}>
                       ({input.type || 'string'})
                     </Typography>
                   </Typography>

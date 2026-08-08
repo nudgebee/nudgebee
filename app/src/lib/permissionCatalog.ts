@@ -43,10 +43,17 @@ const VERB_CLASS: Record<string, PermissionClass> = {
   record: 'Write',
   pin: 'Write',
   assign: 'Write',
+  // ai_memory_confirm / _unconfirm flip a stored memory's confirmed flag — a
+  // state mutation on an existing row, same shape as `pin`.
+  confirm: 'Write',
+  unconfirm: 'Write',
   // Execute
   apply: 'Execute', // apply = execute already-prepared changes (e.g. recommendations_apply)
   execute: 'Execute',
   replay: 'Execute',
+  // recommendation_resolution_retry re-runs a failed resolution attempt — the
+  // same "run it again" shape as `replay`.
+  retry: 'Execute',
   cancel: 'Execute',
   pause: 'Execute',
   resume: 'Execute',
@@ -193,9 +200,10 @@ const MODULE_OVERRIDES: Record<string, string> = {
 //               Deliberately NARROWER than "all identity modules": `users` stays
 //               grantable because `users:Write` is a supported delegation (profile
 //               edits + user creation via canAdministerUsers), with the privilege
-//               half carved out by mayAssignTenantRole. `usergroups`/`customroles`
-//               stay classifiable but are inert — every one of their handlers is
-//               IsTenantAdmin()-only.
+//               half carved out by mayAssignTenantRole. `usergroups` stays
+//               classifiable but is inert — every one of its handlers is
+//               IsTenantAdmin()-only. `customroles` stays grantable at READ only;
+//               its write actions are excluded by name (NON_GRANTABLE_ACTIONS).
 //   roles      — the read-only built-in role catalog shares the privilege-admin
 //               surface; nothing here is meant to be delegated.
 //   relay      — the default (fail-closed) module for any future `relay_*` action.
@@ -222,7 +230,25 @@ const NON_GRANTABLE_MODULES = new Set<string>(['auth', 'nudgebee', 'relay', 'rol
 //     keeps tenants:Read to the tenant-scoped reads it actually covers.
 //     Built-in super_admin_readonly is unaffected — it passes on the
 //     `permissions:` role match, which does not go through classifyAction.
-const NON_GRANTABLE_ACTIONS = new Set<string>(['tenant_list_all']);
+//
+//   customroles_* WRITES — role authoring and role ASSIGNMENT are privilege
+//     administration. A `customroles:Write` grant would let its holder edit the
+//     very role that carries it and tick every module in the matrix, i.e. grant
+//     themselves the whole tenant. The handlers are already IsTenantAdmin()-only
+//     (ee/customrole/service.go), so the grant was inert — but the role editor
+//     still advertised a Write checkbox that silently did nothing. Excluding the
+//     write actions by name removes that checkbox while keeping the module
+//     grantable at Read, which IS honoured (canReadCustomRoles) and gives a
+//     read-only view of the Roles tab.
+const NON_GRANTABLE_ACTIONS = new Set<string>([
+  'tenant_list_all',
+  'customroles_create',
+  'customroles_update',
+  'customroles_delete',
+  'customroles_update_user_assignments',
+  'customroles_update_group_assignments',
+  'customroles_update_group_account_assignments',
+]);
 
 export function normalizeModule(rawModule: string): string {
   return MODULE_ALIASES[rawModule] || rawModule;

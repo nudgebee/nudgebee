@@ -51,15 +51,26 @@ describe('permissionCatalog', () => {
     // handlers write user_roles / group_roles rows from the request, so a grant
     // here is a grant to mint tenant_admin for yourself. Non-grantable by module
     // so the gate fails closed and the role editor stops offering them. Note
-    // `users`/`usergroups`/`customroles` are deliberately NOT here: `users:Write`
-    // is a supported delegation (with the privilege half carved out by
-    // mayAssignTenantRole), and the other two are inert because every handler is
+    // `users`/`usergroups` are deliberately NOT here: `users:Write` is a
+    // supported delegation (with the privilege half carved out by
+    // mayAssignTenantRole), and `usergroups` is inert because every handler is
     // IsTenantAdmin()-only.
     'roles_list',
     'userroles_sync',
     'userroles_upsert_account_group',
     'userroles_upsert_group',
     'userroles_upsert_k8s_namespace_group',
+    // customroles WRITES: authoring a role and assigning it are the same
+    // privilege administration as the userroles_* actions above — a
+    // customroles:Write grant would let its holder tick every module on the very
+    // role that carries it. Excluded by NAME so the module stays grantable at
+    // Read, which IS honoured (canReadCustomRoles) and gives a read-only Roles tab.
+    'customroles_create',
+    'customroles_update',
+    'customroles_delete',
+    'customroles_update_user_assignments',
+    'customroles_update_group_assignments',
+    'customroles_update_group_account_assignments',
     // tenant_list_all: cross-tenant enumeration, super-admin only. Excluded by
     // name (its module `tenants` stays grantable for tenant-scoped reads).
     'tenant_list_all',
@@ -80,6 +91,28 @@ describe('permissionCatalog', () => {
     const tenants = buildCatalog(ACTION_NAMES).find((e) => e.module === 'tenants');
     expect(tenants).toBeDefined();
     expect((tenants!.actions.Read ?? []).map((a) => a.name)).not.toContain('tenant_list_all');
+  });
+
+  // A `customroles:Write` grant would be self-escalating (edit the role you
+  // hold, tick every module). Read must stay grantable — it is what backs the
+  // delegated read-only Roles tab — and Write must not exist at all, so the role
+  // editor never renders a Write checkbox that silently does nothing.
+  it('keeps customroles grantable at Read only', () => {
+    expect(classifyAction('customroles_list')).toEqual({ module: 'customroles', class: 'Read' });
+    expect(classifyAction('customroles_get')).toEqual({ module: 'customroles', class: 'Read' });
+    for (const write of [
+      'customroles_create',
+      'customroles_update',
+      'customroles_delete',
+      'customroles_update_user_assignments',
+      'customroles_update_group_assignments',
+      'customroles_update_group_account_assignments',
+    ]) {
+      expect(classifyAction(write)).toBeNull();
+    }
+    const customroles = buildCatalog(ACTION_NAMES).find((e) => e.module === 'customroles');
+    expect(customroles).toBeDefined();
+    expect(customroles!.classes).toEqual(['Read']);
   });
 
   it('keeps non-grantable modules out of the catalog', () => {

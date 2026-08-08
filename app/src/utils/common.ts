@@ -301,7 +301,7 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
       label = 'SolarWinds Webhook';
       break;
     case 'WORKFLOW_WEBHOOK':
-      label = 'Workflow Webhook';
+      label = 'Automation Webhook';
       break;
     case 'BITBUCKET':
       label = 'Bitbucket';

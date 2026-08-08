@@ -30,7 +30,7 @@ import Tooltip, { TooltipBody, OverflowTooltip } from '@ui/Tooltip';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import DismissModal from './DismissModal';
 import TicketLink from '@shared/links/TicketLink';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasPermission } from '@lib/auth';
 import { formatMemory } from '@lib/formatter';
 import ResolveModal from './ResolveModal';
 import CliCommandModal from './CliCommandModal';
@@ -357,6 +357,10 @@ const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onRes
   // reactivate from Dismissed. Other statuses (InProgress, Closed, Archive) get
   // no menu entry rather than a guaranteed error toast.
   const canDismiss = hasWriteAccess(rec.account_id) && (!rec.status || rec.status === 'Open' || rec.status === 'Dismissed');
+  // Creating a ticket needs write access to the row's account OR the
+  // tickets:Write custom-role grant (tickets_create → tickets:Write). Disabled
+  // rather than dropped so an existing ticket id stays readable.
+  const canCreateTicket = hasWriteAccess(rec.account_id) || hasPermission('tickets', 'Write');
 
   const menuItems: Array<{ label: string; icon: React.ReactNode; onSelect: () => void; disabled?: boolean; id?: string }> = [
     {
@@ -364,7 +368,7 @@ const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onRes
       label: ticketId ? `Ticket: ${ticketId}` : 'Create ticket',
       icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
       onSelect: () => onCreateTicket(rec),
-      disabled: !!ticketId,
+      disabled: !!ticketId || !canCreateTicket,
     },
     ...(canDismiss
       ? [

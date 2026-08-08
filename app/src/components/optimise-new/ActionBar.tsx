@@ -13,7 +13,7 @@ import { Button } from '@ui/Button';
 import { toast } from '@ui/Toast';
 import AlarmCreationModal from '@components/cloudaccount/AlarmCreationModal';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasPermission, missingPermissionMessage } from '@lib/auth';
 import { safeParseJSON } from './utils';
 
 interface ActionBarProps {
@@ -48,6 +48,12 @@ const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolv
   const recData = safeParseJSON(rec.recommendation);
   const hasAlarmConfig = recData?.alarm_config != null;
   const canWrite = hasWriteAccess(accountId);
+  // Creating a ticket needs write access to the recommendation's account OR the
+  // tickets:Write custom-role grant (tickets_create → tickets:Write). Without
+  // this the button was the one unconditional action in the bar: a read-only
+  // viewer could open the modal and only learn they couldn't when the create
+  // 403'd. Same gate as the events tables (KubernetesGroupedEventsTable).
+  const canCreateTicket = canWrite || hasPermission('tickets', 'Write');
   const isDismissed = rec.status === 'Dismissed';
   // Only offer what the backend legality matrix accepts: dismiss from Open,
   // reactivate from Dismissed. Other statuses (InProgress, Closed, Archive)
@@ -96,8 +102,17 @@ const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolv
             iconPlacement='start'
             onClick={() => onCreateTicket?.(rec)}
             id='action-bar-create-ticket'
-            disabled={!!rec.ticket?.ticket_id}
-            tooltip={rec.ticket?.ticket_id ? `Ticket already created: ${rec.ticket.ticket_id}` : undefined}
+            disabled={!!rec.ticket?.ticket_id || !canCreateTicket}
+            // Disabled rather than hidden, matching the events tables: a
+            // read-only viewer still needs to see that a ticket exists (and
+            // which one), and why the action isn't available to them.
+            tooltip={
+              rec.ticket?.ticket_id
+                ? `Ticket already created: ${rec.ticket.ticket_id}`
+                : !canCreateTicket
+                ? missingPermissionMessage('tickets:Write')
+                : undefined
+            }
           >
             Create Ticket
           </Button>

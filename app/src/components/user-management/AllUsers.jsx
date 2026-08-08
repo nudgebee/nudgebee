@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import PropTypes from 'prop-types';
 import { Box } from '@mui/material';
 import { writeIcon } from '@assets';
 import { TourLauncher } from '@components/common/tour';
 import apiUserManagement from '@api1/user';
 import { useSession } from 'next-auth/react';
-import { canManage, isTenantWideRole, hasPermission } from '@lib/auth';
+import { canManage, isTenantWideRole, hasPermission, canReadCustomRoles } from '@lib/auth';
+import { listCustomRoles } from '@api1/roles';
 import UserModal from './modal/UserModal';
 import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
@@ -20,10 +22,37 @@ import UserGroup from './UserGroup';
 import IntegrationProfiles from './IntegrationProfiles';
 import { toast as snackbar } from '@ui/Toast';
 import { safeJSONParse } from 'src/utils/common';
+import { ds } from 'src/utils/colors';
+
+// The Role cell: the built-in role on the first line, any directly-assigned
+// custom roles under it. Custom roles were previously only visible by opening
+// the Edit User modal, so the list read as "this user has one role" when they
+// could hold several.
+function UserRoleCell({ user, customRoleNames }) {
+  const builtIn = user?.user_roles?.[0]?.role_display_name || user?.user_roles?.[0]?.role || '-';
+  if (!customRoleNames.length) {
+    return <Text value={builtIn} />;
+  }
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+      <Text value={builtIn} />
+      <Text value={`Custom: ${customRoleNames.join(', ')}`} sx={{ color: ds.gray[600] }} />
+    </Box>
+  );
+}
+
+UserRoleCell.propTypes = {
+  user: PropTypes.object.isRequired,
+  customRoleNames: PropTypes.arrayOf(PropTypes.string).isRequired,
+};
 
 const AllUsers = () => {
   const [loading, setLoading] = useState(false);
-  const [allUserTableData, setAllUserTableData] = useState();
+  // Raw rows, not built cells: the Role column also renders dynamic-RBAC custom
+  // roles, which load on their own clock. Deriving the table from both keeps a
+  // late custom-roles response from needing a second users fetch to show up.
+  const [users, setUsers] = useState([]);
+  const [customRoles, setCustomRoles] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [editUserModalVisible, setEditUserModalVisible] = useState(false);
@@ -47,7 +76,7 @@ const AllUsers = () => {
     'Status',
     {
       name: 'Role',
-      info: 'Your effective role is determined by your assigned roles but may change if you belong to a group with a role for a specific namespace or account.',
+      info: 'Built-in role plus any custom roles assigned to the user. Your effective role is determined by your assigned roles but may change if you belong to a group with a role for a specific namespace or account.',
     },
     { name: 'Email', sortEnabled: true },
     'Group',
@@ -118,62 +147,17 @@ const AllUsers = () => {
       statusSearch: selectedStatus,
     };
     setLoading(true);
-    setAllUserTableData([]);
+    setUsers([]);
     setTotalCount(0);
     getUsersByTenant(data)
       .then((res) => {
-        let result = res?.users_list_by_tenant?.rows;
-        const totalParticipants = res?.users_aggregate_by_tenant?.rows?.[0]?.count ?? 0;
-        let tableComponentsList = [];
-        for (let user of result || []) {
+        const result = res?.users_list_by_tenant?.rows ?? [];
+        for (let user of result) {
           user.user_groups = safeJSONParse(user.user_groups) || [];
           user.user_roles = safeJSONParse(user.user_roles) || [];
-          tableComponentsList.push([
-            {
-              component: <Text value={user.display_name} showAutoEllipsis />,
-              drilldownQuery: { groupNames: user.user_groups.map((group) => group.name), userId: user.id },
-            },
-            {
-              component: <Label margin='auto' text={user.status} />,
-            },
-            {
-              component: <Text value={user?.user_roles[0]?.role_display_name || user?.user_roles[0]?.role} />,
-            },
-            {
-              component: <Text value={user.username} />,
-            },
-            {
-              component: <Text value={showGroupNames(user?.user_groups) || '-'} />,
-            },
-            {
-              component: <Datetime value={user?.last_accessed_at} baseDate={new Date()} maxLevel={1} />,
-            },
-            {
-              component: (
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                  {canManage('users', 'Write') && currentUser.user.email != user.username ? (
-                    <DsButton
-                      tone='ghost'
-                      composition='icon-only'
-                      size='sm'
-                      icon={<SafeIcon src={writeIcon} alt='edit' width={16} height={16} />}
-                      aria-label='Edit user'
-                      id='edit-user-button'
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleEditUserModal(e, user);
-                      }}
-                    />
-                  ) : (
-                    <></>
-                  )}
-                </Box>
-              ),
-            },
-          ]);
         }
-        setAllUserTableData(tableComponentsList);
-        setTotalCount(totalParticipants);
+        setUsers(result);
+        setTotalCount(res?.users_aggregate_by_tenant?.rows?.[0]?.count ?? 0);
       })
       .finally(() => {
         setLoading(false);
@@ -182,6 +166,90 @@ const AllUsers = () => {
   useEffect(() => {
     fetchUsers();
   }, [currentPage, selectedStatus, sortObject, perPage, selectedName]);
+
+  // Gated on canReadCustomRoles: customroles_list 403s for a plain users:Read
+  // holder and 400s tenant-wide when CUSTOM_ROLES is off. The Role column is an
+  // enrichment, so a failure here must leave the built-in role rendering rather
+  // than break the page.
+  useEffect(() => {
+    if (!canReadCustomRoles()) {
+      return;
+    }
+    listCustomRoles()
+      .then((roles) => setCustomRoles(roles ?? []))
+      .catch((err) => {
+        console.error('Failed to load custom roles for the users list:', err);
+      });
+  }, []);
+
+  // user id → names of the custom roles assigned directly to them. Group-derived
+  // custom roles are deliberately NOT folded in: they belong to the group and
+  // are shown on the Groups tab, and merging them here would read as a direct
+  // assignment that the Edit User modal doesn't show.
+  const customRoleNamesByUser = useMemo(() => {
+    const map = new Map();
+    for (const role of customRoles) {
+      for (const userId of role.user_ids ?? []) {
+        if (!map.has(userId)) map.set(userId, []);
+        map.get(userId).push(role.name);
+      }
+    }
+    return map;
+  }, [customRoles]);
+
+  const allUserTableData = useMemo(
+    () =>
+      users.map((user) => [
+        {
+          component: <Text value={user.display_name} showAutoEllipsis />,
+          drilldownQuery: { groupNames: user.user_groups.map((group) => group.name), userId: user.id },
+        },
+        {
+          component: <Label margin='auto' text={user.status} />,
+        },
+        {
+          component: <UserRoleCell user={user} customRoleNames={customRoleNamesByUser.get(user.id) ?? []} />,
+        },
+        {
+          component: <Text value={user.username} />,
+        },
+        {
+          component: <Text value={showGroupNames(user?.user_groups) || '-'} />,
+        },
+        {
+          component: <Datetime value={user?.last_accessed_at} baseDate={new Date()} maxLevel={1} />,
+        },
+        {
+          component: (
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+              {/* The email must be present before it is compared: this cell is
+                  now built during render (it used to be built inside the fetch
+                  callback, by which time the session had resolved), so an
+                  unresolved `currentUser` would make `undefined !== username`
+                  true and flash an Edit button on the user's own row. */}
+              {canManage('users', 'Write') && currentUser?.user?.email && currentUser.user.email !== user.username ? (
+                <DsButton
+                  tone='ghost'
+                  composition='icon-only'
+                  size='sm'
+                  icon={<SafeIcon src={writeIcon} alt='edit' width={16} height={16} />}
+                  aria-label='Edit user'
+                  id='edit-user-button'
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEditUserModal(e, user);
+                  }}
+                />
+              ) : (
+                <></>
+              )}
+            </Box>
+          ),
+        },
+      ]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [users, customRoleNamesByUser, currentUser]
+  );
 
   const handleEditUserModalClose = (updated) => {
     setEditUserModalVisible(false);
