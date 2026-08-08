@@ -276,6 +276,21 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   // ownership: handlers gate on requireTenantAdmin()/requireTenant(), no
   // HasAccountAccess — tenant-wide governance, not per-account data.
   ownership: 'tenant',
+  // billing_* route to /rpc/tenant — tenant subscription/usage costs, no account.
+  billing: 'tenant',
+  // egressfilter_* (llm-server /v1/egressfilter/config) resolve the tenant from
+  // the security context and never take an account — tenant-wide DLP policy.
+  egressfilter: 'tenant',
+  // llm_* is the AI Gateway admin plane (routing rules, tier mappings, rate
+  // limits, data-privacy settings). Every handler forces the tenant from the
+  // session-injected x-tenant-id and has no account dimension, so an
+  // account-scoped binding for it would be inert (its handlers are neither
+  // /rpc/query nor on the gateway's ACCOUNT_ENFORCED_ACTIONS ledger, so the
+  // scoped grant fails closed). Filing it under 'tenant' is what stops an admin
+  // binding it to a group+account and believing it took effect.
+  llm: 'tenant',
+  // product_updates_list is the platform changelog — no account dimension.
+  product: 'tenant',
   // Per-account / per-cluster operational data.
   accounts: 'account',
   aws: 'account',
@@ -283,7 +298,12 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   gcp: 'account',
   cloud: 'account',
   clusters: 'account',
+  // critiques_* read per-account critique series (the LLM-server completions
+  // family resolves the provider per account).
+  critiques: 'account',
   database: 'account',
+  // executions_* are workflow runs — same per-account surface as `workflows`.
+  executions: 'account',
   k8s: 'account',
   agents: 'account',
   anomalies: 'account',
@@ -312,6 +332,8 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   upgrade: 'account',
   upgradeplans: 'account',
   workflows: 'account',
+  // workload_*_criticality route to /rpc/triage — per-cluster workload metadata.
+  workload: 'account',
 };
 
 // Default unknown modules to 'account' — the more conservative bucket (an

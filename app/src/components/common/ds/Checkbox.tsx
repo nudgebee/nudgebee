@@ -43,6 +43,13 @@ export interface CheckboxProps {
   id?: string;
   name?: string;
   value?: string;
+  /**
+   * Automation hook, forwarded to the native input. Declared explicitly because
+   * this component destructures a fixed prop list and does NOT spread the rest —
+   * without it a `data-testid` passed by a caller is silently dropped, which is
+   * how the Roles permission matrix ended up with 114 untargetable checkboxes.
+   */
+  'data-testid'?: string;
 }
 
 const SIZE_TOKENS: Record<CheckboxSize, { box: string; fontSize: string; gap: string; iconSize: number }> = {
@@ -63,6 +70,7 @@ export function Checkbox({
   id,
   name,
   value,
+  'data-testid': dataTestId,
 }: CheckboxProps) {
   const tokens = SIZE_TOKENS[size];
   const reactId = React.useId();
@@ -135,6 +143,7 @@ export function Checkbox({
       id={inputId}
       name={name}
       value={value}
+      data-testid={dataTestId}
       checked={checked}
       disabled={disabled}
       aria-label={!hasLabel ? ariaLabel : undefined}

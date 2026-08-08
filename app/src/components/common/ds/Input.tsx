@@ -59,6 +59,13 @@ export interface InputProps {
   onKeyDown?: React.KeyboardEventHandler<HTMLInputElement | HTMLTextAreaElement>;
   className?: string;
   id?: string;
+  /**
+   * Automation hook, forwarded to the native input/textarea. Declared explicitly
+   * because this component destructures a fixed prop list and does NOT spread the
+   * rest — without it a caller's `data-testid` is silently dropped. Same fix as
+   * ds/Checkbox.
+   */
+  'data-testid'?: string;
 }
 
 type SizeToken = {
@@ -127,6 +134,7 @@ export function Input({
   onKeyDown,
   className,
   id,
+  'data-testid': dataTestId,
 }: InputProps) {
   const tokens = SIZE_TOKENS[size];
   const reactId = React.useId();
@@ -252,6 +260,7 @@ export function Input({
   const sharedInputProps = {
     id: inputId,
     name,
+    'data-testid': dataTestId,
     value,
     placeholder: effectivePlaceholder,
     required,
