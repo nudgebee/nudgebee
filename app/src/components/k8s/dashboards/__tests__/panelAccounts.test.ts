@@ -171,6 +171,18 @@ describe('panelQueryAccounts', () => {
   it('has nothing to select when the panel has no accounts at all', () => {
     expect(panelQueryAccounts([], [])).toEqual({ accounts: [], autoSelected: false });
   });
+
+  it('keeps every account for a datasource that takes them in one call', () => {
+    // The query engine answers an account_id LIST in a single request, so the
+    // two reasons for auto-selecting — cost per call, and N identical series —
+    // do not apply. Slicing there would show one account's rows under a title
+    // that claims the whole estate, which is the rollup widgets' entire job.
+    const scoped = resolvePanelAccounts({ account_type: 'K8S' }, ACCOUNTS);
+    expect(panelQueryAccounts(scoped, [], true)).toEqual({ accounts: scoped, autoSelected: false });
+
+    // An explicit filter still wins, exactly as it does for every other panel.
+    expect(panelQueryAccounts(scoped, ['a2'], true)).toEqual({ accounts: [ACCOUNTS[1]], autoSelected: false });
+  });
 });
 
 describe('describePanelScope', () => {

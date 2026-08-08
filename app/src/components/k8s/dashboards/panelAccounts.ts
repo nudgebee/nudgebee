@@ -152,12 +152,21 @@ export interface PanelQueryAccounts {
  * render (Datadog bills per call), and waiting for a choice left the panel
  * showing nothing at all, which reads as broken.
  *
+ * `singleCall` is the exception, and it is the query engine: it takes an
+ * account_id LIST and answers in one request, so the two reasons for the rule —
+ * cost per call, and a chart with N series of the same line — do not apply.
+ * Slicing there is not a safeguard but a silent wrong answer: a "spend by
+ * account" table scoped to five accounts would show one account's spend under a
+ * title that claims all five. Rollup widgets are the whole point of the summary
+ * dashboards, so they must see every account they were scoped to.
+ *
  * `filterIds` is a list even though the panel picker is single-select, so the
  * multi-account fan-out in usePanelData stays exercised by a one-account panel
  * and this rule does not have to change if the picker ever gains multi-select.
  */
-export function panelQueryAccounts(scoped: AccountOption[], filterIds?: string[]): PanelQueryAccounts {
+export function panelQueryAccounts(scoped: AccountOption[], filterIds?: string[], singleCall = false): PanelQueryAccounts {
   if (!filterIds || filterIds.length === 0) {
+    if (singleCall) return { accounts: scoped, autoSelected: false };
     // Authoring order, so every viewer of the dashboard auto-lands on the same
     // account rather than on whichever one the account list happened to sort
     // first.

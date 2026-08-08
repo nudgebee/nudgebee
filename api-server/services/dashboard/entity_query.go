@@ -36,6 +36,36 @@ var entityQueryTables = map[string]map[string]bool{
 		"recommendations_v2": true,
 		// The aggregate twin, for counts and summed savings.
 		"recommendation_groupings_v2": true,
+
+		// Spend, for the cost widgets. Recommendations say what could be saved;
+		// only this says what was actually billed, which is the difference
+		// between a waste dashboard and a cost dashboard.
+		"spend_groupings_v2": true,
+		// Per-cluster capacity and pod/workload counts, one row per account.
+		"k8s_cluster_groupings_v2": true,
+		// Node rows behind that summary — capacity, flavor, spot, pod count.
+		// Scopes on `cloud_account_id`, not `account_id`; see accountColumn.
+		"k8s_nodes_v2": true,
+		// Ticket inflow and backlog, grouped by status / assignee / platform.
+		"ticket_groupings_v2": true,
+		// Metric and spend anomalies: the grouped feed and the rows behind it.
+		"anomaly_grouping_v2": true,
+		"anomaly_v2":          true,
+		// Posture: CIS rule violations grouped by rule, and the image/workload
+		// vulnerability rows.
+		"recommendation_security_cis_groupings_v2": true,
+		"recommendation_security_v2":               true,
+		// Automation: autopilot task runs by state, and the approvals waiting on
+		// a human.
+		"auto_pilot_task_groupings_v2": true,
+		"auto_pilot_approvals_v2":      true,
+		// Governance: who changed what, and whether the agents are still talking
+		// to us. Both carry their own PermissionModule / account scoping in the
+		// engine, so a viewer sees only the tenant and accounts they may read.
+		"audits_v2":           true,
+		"get_agent_health_v2": true,
+		// AI investigation throughput, grouped by source and status.
+		"llm_conversation_groupings_v2": true,
 	},
 	DatasourceTraces: {
 		// One span per row.
@@ -128,7 +158,7 @@ func ExecuteEntityQuery(ctx *security.RequestContext, req EntityQueryRequest) (*
 		q.Limit = defaultEntityQueryLimit
 	}
 
-	if err := applyAccountScope(req.Datasource, req.AccountIds, &q); err != nil {
+	if err := applyAccountScope(req.AccountIds, &q); err != nil {
 		return nil, err
 	}
 
@@ -154,7 +184,7 @@ applyAccountScope narrows the query to the accounts the panel resolved to.
 This narrows; it never widens. The engine appends its own account restriction
 from the caller's RBAC regardless of what arrives here.
 */
-func applyAccountScope(datasource string, requested []string, q *query.QueryRequest) error {
+func applyAccountScope(requested []string, q *query.QueryRequest) error {
 	// An empty account list is NOT "every account": the panel resolved to
 	// nothing the viewer can see, and the engine would answer tenant-wide for a
 	// tenant admin. Refuse rather than widen.
@@ -162,10 +192,33 @@ func applyAccountScope(datasource string, requested []string, q *query.QueryRequ
 	if len(accountIds) == 0 {
 		return fmt.Errorf("no account is in scope for this panel")
 	}
+	column, err := accountColumn(q.Table)
+	if err != nil {
+		return err
+	}
 	q.Where.And = append(q.Where.And, query.QueryWhereClause{
-		Binary: query.BinaryWhereClause{"account_id": {query.In: accountIds}},
+		Binary: query.BinaryWhereClause{column: {query.In: accountIds}},
 	})
 	return nil
+}
+
+/*
+accountColumn is the column a table names its owning account with.
+
+Most of the allowlist says `account_id`, but the K8s and agent tables say
+`cloud_account_id` — and the engine compares against the column NAME, so
+assuming `account_id` fails SQL generation with "column not found" rather than
+returning the wrong rows. Read off the registry so the two can never drift.
+*/
+func accountColumn(table string) (string, error) {
+	def, ok := query.GetTableMetadata(table)
+	if !ok {
+		return "", fmt.Errorf("%q is not a table the query engine knows", table)
+	}
+	if def.AccountIdColumnName == "" {
+		return "", fmt.Errorf("%q has no account column, so a panel cannot be scoped to one", table)
+	}
+	return def.AccountIdColumnName, nil
 }
 
 /*

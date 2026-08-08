@@ -31,14 +31,28 @@ import { nextPanelId } from './panelDefaults';
  *    an empty chart rather than a mistake.
  */
 
-export type TemplateRole = 'cto' | 'manager' | 'sre' | 'devops' | 'developer';
+/**
+ * Who a widget is for.
+ *
+ * A persona, NOT an RBAC role: it decides which templates a picker offers, and
+ * nothing else. Access is still decided per query by the engine, so seeding a
+ * finance persona with cost widgets does not hand anyone cost data — a viewer
+ * without the grant sees the panel refuse rather than the number.
+ *
+ * `cfo` and `cloudops` exist because the cost side of the org splits in two
+ * that the engineering roles do not cover: someone who owns the bill and
+ * someone who works the resources it comes from.
+ */
+export type TemplateRole = 'cto' | 'cfo' | 'manager' | 'sre' | 'devops' | 'cloudops' | 'developer';
 
 /** Roles in seniority order, which is also the order the filters read in. */
 export const TEMPLATE_ROLES: { value: TemplateRole; label: string }[] = [
   { value: 'cto', label: 'CTO' },
+  { value: 'cfo', label: 'CFO' },
   { value: 'manager', label: 'Manager' },
   { value: 'sre', label: 'SRE' },
   { value: 'devops', label: 'DevOps' },
+  { value: 'cloudops', label: 'Cloud Ops' },
   { value: 'developer', label: 'Developer' },
 ];
 
@@ -46,7 +60,38 @@ export function roleLabel(role: TemplateRole): string {
   return TEMPLATE_ROLES.find((r) => r.value === role)?.label || role;
 }
 
-export type WidgetCategory = 'Cost' | 'Issues' | 'Reliability' | 'Capacity' | 'Performance' | 'Workload';
+export type WidgetCategory =
+  | 'Cost'
+  | 'Issues'
+  | 'Reliability'
+  | 'Capacity'
+  | 'Performance'
+  | 'Workload'
+  | 'Security'
+  | 'Automation'
+  | 'AI'
+  | 'Governance';
+
+/**
+ * Categories in the order the picker groups them: money, then what is broken,
+ * then how it is running, then what is watching it.
+ *
+ * The picker iterates THIS rather than the widgets, so a category missing here
+ * hides every widget in it — the list and the union have to be maintained
+ * together, which is why they live side by side and a test compares them.
+ */
+export const WIDGET_CATEGORIES: WidgetCategory[] = [
+  'Cost',
+  'Issues',
+  'Reliability',
+  'Capacity',
+  'Performance',
+  'Workload',
+  'Security',
+  'Automation',
+  'AI',
+  'Governance',
+];
 
 /** A widget's panel body — everything except the identity a dashboard gives it. */
 export type TemplatePanel = Pick<Panel, 'title' | 'description' | 'type' | 'datasource' | 'targets' | 'unit' | 'grid_pos'>;
@@ -60,8 +105,14 @@ export type TemplatePanel = Pick<Panel, 'title' | 'description' | 'type' | 'data
  * recommendations live against cloud accounts, K8s events against the cluster.
  * A CloudWatch-native metrics widget, when one is written, declares `cloud` for
  * the same reason.
+ *
+ * `any` is for the tables where the split does not exist — audits, anomalies,
+ * approvals — whose rows belong to whichever account the change or detection
+ * touched, cluster or cloud. Narrowing those to one kind hides half the answer,
+ * so they open on every connected account. Only the query engine can be scoped
+ * that way: every other datasource resolves ONE provider's integration.
  */
-export type WidgetAccountKind = 'cluster' | 'cloud';
+export type WidgetAccountKind = 'cluster' | 'cloud' | 'any';
 
 export interface PanelTemplate {
   id: string;
@@ -222,6 +273,106 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     }),
   },
 
+  {
+    id: 'cost-by-service',
+    category: 'Cost',
+    accountKind: 'cloud',
+    roles: ['cto', 'cfo', 'manager', 'cloudops'],
+    summary: 'What the cloud actually billed, by service.',
+    panel: entityPanel({
+      title: 'Spend by cloud service',
+      description:
+        'Billed spend grouped by cloud service. Credits, refunds and tax lines are excluded, so this matches the invoice rather than the raw line items.',
+      draft: {
+        table: 'spend_groupings_v2',
+        columns: ['resource_service_name', 'spend_amount', 'resource_count', 'currency_type'],
+        filters: [{ column: 'exclude_aggregate', operator: '_eq', value: 'false' }],
+        sortColumn: 'spend_amount',
+        limit: 15,
+      },
+    }),
+  },
+  {
+    id: 'cost-by-resource',
+    category: 'Cost',
+    accountKind: 'cloud',
+    roles: ['cfo', 'cloudops', 'manager'],
+    summary: 'The individual resources the bill is made of — the chargeback view.',
+    panel: entityPanel({
+      title: 'Top spending resources',
+      description: 'Billed spend per resource, biggest first. The row-level detail behind a service total, for showback and chargeback.',
+      draft: {
+        table: 'spend_groupings_v2',
+        columns: ['resource_id', 'resource_service_name', 'resource_type', 'resource_region', 'spend_amount'],
+        filters: [{ column: 'exclude_aggregate', operator: '_eq', value: 'false' }],
+        sortColumn: 'spend_amount',
+        limit: 20,
+      },
+      width: 12,
+    }),
+  },
+  {
+    id: 'cost-by-region',
+    category: 'Cost',
+    accountKind: 'cloud',
+    roles: ['cfo', 'cloudops'],
+    summary: 'Where the money is being spent geographically.',
+    panel: entityPanel({
+      title: 'Spend by region',
+      description: 'Billed spend per region. A region nobody remembers deploying to is usually the cheapest saving on the page.',
+      draft: {
+        table: 'spend_groupings_v2',
+        columns: ['resource_region', 'spend_amount', 'resource_count'],
+        filters: [{ column: 'exclude_aggregate', operator: '_eq', value: 'false' }],
+        sortColumn: 'spend_amount',
+        limit: 15,
+      },
+    }),
+  },
+  {
+    id: 'daily-spend-trend',
+    category: 'Cost',
+    accountKind: 'cloud',
+    roles: ['cto', 'cfo', 'manager'],
+    summary: 'Spend day by day — is the bill going up, and when did it turn.',
+    panel: entityPanel({
+      title: 'Daily spend',
+      description: 'Billed spend per day over the dashboard’s window, oldest first, so a step change is visible as a step rather than as a total.',
+      draft: {
+        table: 'spend_groupings_v2',
+        columns: ['spend_date', 'spend_amount', 'resource_count'],
+        filters: [{ column: 'exclude_aggregate', operator: '_eq', value: 'false' }],
+        sortColumn: 'spend_date',
+        sortDesc: false,
+        limit: 60,
+      },
+    }),
+  },
+  {
+    id: 'rightsizing-recommendations',
+    category: 'Cost',
+    accountKind: 'cloud',
+    roles: ['cloudops', 'devops', 'manager'],
+    summary: 'Pods, replicas and volumes proposed for a smaller size.',
+    panel: entityPanel({
+      title: 'Right-sizing proposals',
+      description:
+        'Open right-sizing recommendations with what each is worth. Filtered to primary revisions so one proposal is counted once rather than once per refresh.',
+      draft: {
+        table: 'recommendations_v2',
+        columns: ['resource_name', 'resource_type', 'rule_name', 'estimated_savings', 'severity', 'safety_band'],
+        filters: [
+          { column: 'category', operator: '_eq', value: 'RightSizing' },
+          { column: 'status', operator: '_in', value: 'Open, InProgress' },
+          { column: 'is_primary_recommendation', operator: '_eq', value: 'true' },
+        ],
+        sortColumn: 'estimated_savings',
+        limit: 20,
+      },
+      width: 12,
+    }),
+  },
+
   // ── Issues ──────────────────────────────────────────────────────────────
   {
     id: 'noisiest-issues',
@@ -290,6 +441,131 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
         limit: 25,
       },
       width: 12,
+    }),
+  },
+
+  {
+    id: 'alert-triage-summary',
+    category: 'Issues',
+    roles: ['cto', 'manager', 'sre'],
+    summary: 'Alert volume split by priority and status — the triage picture in one table.',
+    panel: entityPanel({
+      title: 'Alert triage summary',
+      description:
+        'Issues grouped by priority, status and category, with how many events sit behind each and how many are new. Read it top-down: the biggest count that is still open is the queue.',
+      draft: {
+        table: 'event_groupings_v2',
+        columns: ['priority', 'status', 'category', 'event_count', 'count_new_issues'],
+        sortColumn: 'event_count',
+        limit: 20,
+      },
+      width: 12,
+    }),
+  },
+  {
+    id: 'active-incident-queue',
+    category: 'Issues',
+    roles: ['sre', 'devops', 'manager'],
+    summary: 'What is open right now and still needs someone.',
+    panel: entityPanel({
+      title: 'Active incident queue',
+      description: 'Events Nudgebee still considers open or needing action, newest first — the on-call working list rather than a history.',
+      draft: {
+        table: 'events_v2',
+        columns: ['starts_at', 'title', 'priority', 'subject_type', 'subject_name', 'subject_namespace', 'nb_status'],
+        filters: [{ column: 'nb_status', operator: '_in', value: 'OPEN, ACTION_REQUIRED' }],
+        sortColumn: 'starts_at',
+        limit: 25,
+      },
+      width: 12,
+    }),
+  },
+  {
+    id: 'issues-by-cluster',
+    category: 'Issues',
+    roles: ['cto', 'manager', 'sre'],
+    summary: 'Which cluster is generating the noise — the cross-estate view.',
+    panel: entityPanel({
+      title: 'Issues by cluster',
+      description: 'Event volume per cluster and namespace, with the P0 and P1 split. The answer to "is this everywhere, or is it one account".',
+      draft: {
+        table: 'event_groupings_v2',
+        columns: ['cluster', 'subject_namespace', 'event_count', 'count_priority_p0', 'count_priority_p1'],
+        sortColumn: 'event_count',
+        limit: 15,
+      },
+      width: 12,
+    }),
+  },
+  {
+    id: 'anomalies-by-type',
+    category: 'Issues',
+    accountKind: 'any',
+    roles: ['cto', 'cfo', 'manager', 'sre'],
+    summary: 'Unusual behaviour across every account — metric and spend together.',
+    panel: entityPanel({
+      title: 'Anomalies by type',
+      description:
+        'Detections grouped by type and subject, most frequent first. Spans cloud and cluster accounts, because an anomaly belongs to whatever it was detected on.',
+      draft: {
+        table: 'anomaly_grouping_v2',
+        columns: ['anomaly_type', 'namespace', 'name', 'count'],
+        filters: [{ column: 'is_anomaly', operator: '_eq', value: 'true' }],
+        sortColumn: 'count',
+        limit: 15,
+      },
+    }),
+  },
+  {
+    id: 'recent-anomalies',
+    category: 'Issues',
+    accountKind: 'any',
+    roles: ['sre', 'cloudops', 'devops'],
+    summary: 'The detections themselves, with observed against expected.',
+    panel: entityPanel({
+      title: 'Recent anomalies',
+      description: 'Each detection as it fired: what it is about, what the value was, and what was expected. The rows behind the grouped feed.',
+      draft: {
+        table: 'anomaly_v2',
+        columns: ['evaluated_at', 'anomaly_type', 'namespace', 'name', 'current_value', 'reference_value'],
+        filters: [{ column: 'is_anomaly', operator: '_eq', value: 'true' }],
+        sortColumn: 'evaluated_at',
+        limit: 25,
+      },
+      width: 12,
+    }),
+  },
+  {
+    id: 'ticket-volume-by-status',
+    category: 'Issues',
+    roles: ['manager', 'devops', 'cloudops'],
+    summary: 'The ticket backlog, by status and severity.',
+    panel: entityPanel({
+      title: 'Ticket volume',
+      description: 'Tickets raised from Nudgebee grouped by status and severity — how much work this is creating, and how much of it is still open.',
+      draft: {
+        table: 'ticket_groupings_v2',
+        columns: ['status', 'severity', 'count'],
+        sortColumn: 'count',
+        limit: 15,
+      },
+    }),
+  },
+  {
+    id: 'ticket-load-by-assignee',
+    category: 'Issues',
+    roles: ['manager', 'cto', 'sre'],
+    summary: 'Who is carrying the work — the closest thing to on-call load.',
+    panel: entityPanel({
+      title: 'Ticket load by assignee',
+      description:
+        'Open ticket count per assignee, with the status split. A stand-in for responder load: it measures the work that got filed, not every page.',
+      draft: {
+        table: 'ticket_groupings_v2',
+        columns: ['assignee', 'status', 'count'],
+        sortColumn: 'count',
+        limit: 15,
+      },
     }),
   },
 
@@ -417,6 +693,48 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
       description: 'Scheduled pods per node, top ten.',
       expr: 'topk(10, count by (node) (kube_pod_info))',
       unit: 'pods',
+    }),
+  },
+
+  {
+    id: 'cluster-health-overview',
+    category: 'Capacity',
+    roles: ['cto', 'manager', 'devops', 'sre'],
+    summary: 'Every cluster on one row: size, spot share and what its pods are doing.',
+    panel: entityPanel({
+      title: 'Cluster overview',
+      description:
+        'One row per connected cluster — nodes, how many are spot, CPU and memory capacity, and the pod count by status. The fleet view a PromQL panel cannot give, because it spans clusters.',
+      draft: {
+        table: 'k8s_cluster_groupings_v2',
+        columns: ['account_id', 'node_count', 'node_spot_count', 'node_cpu_capacity', 'node_memory_capacity', 'pod_status_counts'],
+        sortColumn: 'node_count',
+        limit: 25,
+      },
+      width: 12,
+    }),
+  },
+  {
+    id: 'node-inventory',
+    category: 'Capacity',
+    roles: ['devops', 'sre', 'cloudops'],
+    summary: 'Every node with its size, its pods and what it costs.',
+    panel: entityPanel({
+      title: 'Node inventory',
+      description:
+        'Active nodes with instance type, spot or on-demand, capacity, pod count and cost — the table to read before cordoning one or changing a node group.',
+      draft: {
+        table: 'k8s_nodes_v2',
+        columns: ['name', 'node_type', 'node_flavor', 'node_region', 'cpu_capacity', 'memory_capacity', 'pod_count', 'cost'],
+        filters: [{ column: 'is_active', operator: '_eq', value: 'true' }],
+        sortColumn: 'pod_count',
+        // Nodes are current state, not events. Filtering them by the
+        // dashboard's window would hide every node created before it — which is
+        // all of them, on a 24h dashboard.
+        applyTimeRange: false,
+        limit: 25,
+      },
+      width: 12,
     }),
   },
 
@@ -699,6 +1017,161 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
       unit: 'replicas',
     }),
   },
+
+  // ── Security ────────────────────────────────────────────────────────────
+  {
+    id: 'cis-compliance-findings',
+    category: 'Security',
+    roles: ['devops', 'manager', 'cloudops'],
+    summary: 'Which benchmark rules the cluster fails, and how widely.',
+    panel: entityPanel({
+      title: 'CIS compliance findings',
+      description:
+        'CIS benchmark results by rule, with how many resources are behind each verdict. The posture list to work down, worst-covered first.',
+      draft: {
+        table: 'recommendation_security_cis_groupings_v2',
+        columns: ['rule_name', 'severity', 'status', 'count'],
+        sortColumn: 'count',
+        limit: 20,
+      },
+      width: 12,
+    }),
+  },
+  {
+    id: 'image-vulnerabilities',
+    category: 'Security',
+    roles: ['devops', 'developer', 'sre'],
+    summary: 'CVEs in images that are actually running.',
+    panel: entityPanel({
+      title: 'Image vulnerabilities',
+      description:
+        'Vulnerabilities found in deployed images, newest first, with the workload running each. Restricted to active findings — an image nobody runs is not a risk.',
+      draft: {
+        table: 'recommendation_security_v2',
+        columns: ['created_at', 'severity', 'workload_name', 'namespace', 'image', 'vulnerability_id'],
+        filters: [{ column: 'is_active', operator: '_eq', value: 'true' }],
+        sortColumn: 'created_at',
+        limit: 25,
+      },
+      width: 12,
+    }),
+  },
+
+  // ── Automation ──────────────────────────────────────────────────────────
+  {
+    id: 'automation-task-health',
+    category: 'Automation',
+    roles: ['cto', 'manager', 'devops', 'cloudops'],
+    summary: 'How much autopilot ran, and how much of it worked.',
+    panel: entityPanel({
+      title: 'Autopilot task health',
+      description:
+        'Autopilot tasks grouped by category and state — what ran, what is queued and what failed. The coverage number behind "is this automated yet".',
+      draft: {
+        table: 'auto_pilot_task_groupings_v2',
+        columns: ['auto_pilot_category', 'status', 'count'],
+        sortColumn: 'count',
+        limit: 20,
+      },
+    }),
+  },
+  {
+    id: 'pending-approvals',
+    category: 'Automation',
+    accountKind: 'any',
+    roles: ['manager', 'sre', 'cloudops', 'devops'],
+    summary: 'Automated actions waiting on a human decision.',
+    panel: entityPanel({
+      title: 'Approval queue',
+      description:
+        'Proposed automated actions and what was decided, oldest at the bottom. A panel shows the queue and its age; approving is still done on the Autopilot page.',
+      draft: {
+        table: 'auto_pilot_approvals_v2',
+        columns: ['created_at', 'auto_pilot_type', 'status', 'reviewer_display_name', 'approval_status_description'],
+        sortColumn: 'created_at',
+        limit: 25,
+      },
+      width: 12,
+    }),
+  },
+
+  // ── AI ──────────────────────────────────────────────────────────────────
+  {
+    id: 'ai-investigation-activity',
+    category: 'AI',
+    roles: ['cto', 'manager', 'sre'],
+    summary: 'How many investigations the AI ran, and how they ended.',
+    panel: entityPanel({
+      title: 'AI investigation activity',
+      description:
+        'Investigations grouped by where they came from — an alert, a person, a workflow — and how they finished. Throughput, and whether they complete.',
+      draft: {
+        table: 'llm_conversation_groupings_v2',
+        columns: ['source', 'status', 'count'],
+        sortColumn: 'count',
+        limit: 15,
+      },
+    }),
+  },
+  {
+    id: 'recent-ai-investigations',
+    category: 'AI',
+    roles: ['sre', 'manager', 'developer'],
+    summary: 'The most recent RCAs, to open one.',
+    panel: entityPanel({
+      title: 'Recent AI investigations',
+      description: 'Investigations started in the window, newest first, with their source and state.',
+      draft: {
+        table: 'llm_conversation_groupings_v2',
+        columns: ['created_at', 'title', 'source', 'status'],
+        sortColumn: 'created_at',
+        limit: 25,
+      },
+      width: 12,
+    }),
+  },
+
+  // ── Governance ──────────────────────────────────────────────────────────
+  {
+    id: 'agent-health',
+    category: 'Governance',
+    roles: ['devops', 'manager', 'cloudops'],
+    summary: 'Whether the collectors are still talking to us.',
+    panel: entityPanel({
+      title: 'Agent health',
+      description:
+        'Every collector agent with its version, cluster version and when it last checked in. A stale Last seen is why a dashboard went quiet — check here before believing an empty panel.',
+      draft: {
+        table: 'get_agent_health_v2',
+        columns: ['type', 'version', 'status', 'k8s_version', 'last_connected_at'],
+        // The point of this panel is the agent that STOPPED reporting. Filtering
+        // by last-seen inside the dashboard's window would hide exactly those.
+        applyTimeRange: false,
+        sortColumn: 'last_connected_at',
+        limit: 25,
+      },
+      width: 12,
+    }),
+  },
+  {
+    id: 'audit-log',
+    category: 'Governance',
+    accountKind: 'any',
+    roles: ['cto', 'manager'],
+    summary: 'Who changed what, and whether it worked.',
+    panel: entityPanel({
+      title: 'Audit log',
+      description:
+        'Configuration and access changes in the window, newest first. Readable only by a tenant admin or a role holding the audits grant — the engine decides that per viewer, not per dashboard.',
+      draft: {
+        table: 'audits_v2',
+        columns: ['event_time', 'username', 'event_category', 'event_action', 'event_target', 'event_status'],
+        sortColumn: 'event_time',
+        limit: 25,
+      },
+      width: 12,
+    }),
+  },
 ];
 
 export function findPanelTemplate(id: string): PanelTemplate | undefined {
@@ -728,8 +1201,9 @@ export function widgetAccountKind(widget: PanelTemplate): WidgetAccountKind {
  * better than pre-selecting an account that will not answer.
  */
 export function defaultWidgetScope(widget: PanelTemplate, accounts: AccountOption[]): PanelScope {
-  const wanted = widgetAccountKind(widget) === 'cloud' ? 'cloud' : 'kubernetes';
-  const providers = [...new Set(accounts.filter((a) => a.kind === wanted).map((a) => a.cloud_provider))].filter(Boolean);
+  const kind = widgetAccountKind(widget);
+  const matching = kind === 'any' ? accounts : accounts.filter((a) => a.kind === (kind === 'cloud' ? 'cloud' : 'kubernetes'));
+  const providers = [...new Set(matching.map((a) => a.cloud_provider))].filter(Boolean);
 
   // A findings widget reads the query engine, which is the one datasource that
   // spans providers — so a cost widget opens on EVERY cloud provider rather than

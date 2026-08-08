@@ -27,6 +27,137 @@ export interface DashboardTemplate {
 }
 
 export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
+  /*
+   * The role dashboards.
+   *
+   * One per persona, in the order the org chart reads: what a CTO, a CFO, the
+   * two directors and the three ICs each land on. The rule they follow is
+   * altitude — a summary dashboard groups (by account, by cluster, by category)
+   * and an IC dashboard lists rows, so the same table can serve both without
+   * either being the wrong shape.
+   *
+   * They deliberately overlap: an incident on the CTO's triage summary is the
+   * same incident on the SRE's queue, one counted and one listed. That is the
+   * point — the conversation between the two is easier when they are looking at
+   * the same data at different depths.
+   *
+   * What a panel CANNOT do is act. Approving a remediation, applying a fix or
+   * acknowledging an alert stays on the feature page; the approval and
+   * recommendation widgets here show the queue and its age, which is the half a
+   * dashboard is good at.
+   */
+  {
+    id: 'cto-overview',
+    title: 'CTO / VP Engineering',
+    description:
+      'The estate on one page: what is anomalous, what is on fire, what it costs, and how much of the response was automated. Grouped by account and cluster, because at this altitude the row is a team, not a pod.',
+    roles: ['cto'],
+    panels: [
+      { widget: 'anomalies-by-type' },
+      { widget: 'alert-triage-summary' },
+      { widget: 'daily-spend-trend' },
+      { widget: 'cost-by-service' },
+      { widget: 'cluster-health-overview' },
+      { widget: 'automation-task-health' },
+      { widget: 'ai-investigation-activity' },
+    ],
+  },
+  {
+    id: 'cfo-cloud-cost',
+    title: 'CFO / VP Finance',
+    description:
+      'The bill, and the part of it that is waste. Billed spend by service, region and resource next to the open savings opportunities, so the budget conversation and the fix list are the same page.',
+    roles: ['cfo'],
+    panels: [
+      { widget: 'daily-spend-trend' },
+      { widget: 'cost-by-service' },
+      { widget: 'cost-by-region' },
+      { widget: 'cost-by-resource' },
+      { widget: 'savings-by-account' },
+      { widget: 'savings-by-rule' },
+      { widget: 'automation-task-health' },
+    ],
+  },
+  {
+    id: 'director-sre',
+    title: 'Director / VP — SRE',
+    description:
+      'The reliability review pack: what fired and where, which cluster is the noisy one, who is carrying the tickets, and whether the AI and the automation are actually closing things.',
+    roles: ['manager', 'sre'],
+    panels: [
+      { widget: 'alert-triage-summary' },
+      { widget: 'issues-by-cluster' },
+      { widget: 'ticket-load-by-assignee' },
+      { widget: 'automation-task-health' },
+      { widget: 'ai-investigation-activity' },
+      { widget: 'recent-ai-investigations' },
+      { widget: 'pending-approvals' },
+    ],
+  },
+  {
+    id: 'director-cloud-ops',
+    title: 'Director — Cloud Ops',
+    description:
+      'Spend, waste and posture for the accounts you own — narrower than the CFO view and closer to the resources. Ends with the two things that quietly break the rest: compliance drift and an agent that stopped reporting.',
+    roles: ['manager', 'cloudops'],
+    panels: [
+      { widget: 'cost-by-service' },
+      { widget: 'cost-by-region' },
+      { widget: 'savings-by-rule' },
+      { widget: 'rightsizing-recommendations' },
+      { widget: 'cis-compliance-findings' },
+      { widget: 'automation-task-health' },
+      { widget: 'agent-health' },
+    ],
+  },
+  {
+    id: 'sre-on-call',
+    title: 'SRE — On-call',
+    description:
+      'The working list for a shift: what is open, what the AI has already looked at, what is waiting on your approval, and what started misbehaving in the last window.',
+    roles: ['sre'],
+    panels: [
+      { widget: 'active-incident-queue' },
+      { widget: 'recent-ai-investigations' },
+      { widget: 'pending-approvals' },
+      { widget: 'noisiest-issues' },
+      { widget: 'recent-anomalies' },
+      { widget: 'issues-by-namespace' },
+      { widget: 'pod-restarts-by-namespace' },
+    ],
+  },
+  {
+    id: 'devops-platform',
+    title: 'DevOps / Platform Engineer',
+    description:
+      'The cluster as an operator sees it: fleet summary, the nodes underneath, what is failing compliance or carrying CVEs, and what is proposed for right-sizing — with the open incidents in your namespaces at the end.',
+    roles: ['devops'],
+    panels: [
+      { widget: 'cluster-health-overview' },
+      { widget: 'node-inventory' },
+      { widget: 'cis-compliance-findings' },
+      { widget: 'image-vulnerabilities' },
+      { widget: 'rightsizing-recommendations' },
+      { widget: 'active-incident-queue' },
+      { widget: 'ticket-volume-by-status' },
+    ],
+  },
+  {
+    id: 'cloud-ops-engineer',
+    title: 'Cloud Ops Engineer',
+    description:
+      'The detail behind the cost dashboards: which resources cost the most, which are worth resizing, what looks anomalous, and what is queued for approval — the work list, not the summary.',
+    roles: ['cloudops'],
+    panels: [
+      { widget: 'cost-by-resource' },
+      { widget: 'savings-by-rule' },
+      { widget: 'rightsizing-recommendations' },
+      { widget: 'top-savings-resources' },
+      { widget: 'recent-anomalies' },
+      { widget: 'pending-approvals' },
+      { widget: 'agent-health' },
+    ],
+  },
   {
     id: 'executive-overview',
     title: 'Executive Overview',

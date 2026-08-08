@@ -32,15 +32,43 @@ describe('tablesFor', () => {
   it('offers each datasource only its own tables', () => {
     // The server refuses a cross-datasource table, so the picker must not
     // offer one — a traces panel reading events would fail at render.
+    // This list is the mirror of `entityQueryTables` in
+    // api-server/services/dashboard/entity_query.go. A table offered here but
+    // absent there is a panel that saves and then fails at render.
     expect(tablesFor('nudgebee').map((t) => t.value)).toEqual([
       'events_v2',
       'event_groupings_v2',
       'recommendations_v2',
       'recommendation_groupings_v2',
+      'spend_groupings_v2',
+      'k8s_cluster_groupings_v2',
+      'k8s_nodes_v2',
+      'ticket_groupings_v2',
+      'anomaly_grouping_v2',
+      'anomaly_v2',
+      'recommendation_security_cis_groupings_v2',
+      'recommendation_security_v2',
+      'auto_pilot_task_groupings_v2',
+      'auto_pilot_approvals_v2',
+      'audits_v2',
+      'get_agent_health_v2',
+      'llm_conversation_groupings_v2',
     ]);
     expect(tablesFor('traces').map((t) => t.value)).toEqual(['traces_groupings_v2', 'traces_v2']);
     expect(tablesFor('metrics')).toEqual([]);
     expect(tablesFor('logs')).toEqual([]);
+  });
+
+  it('opens a table with no filterable timestamp with the time range off', () => {
+    // Clusters are a current-state snapshot and carry no date column at all;
+    // leaving the switch on would filter the panel against nothing.
+    const clusters = defaultDraft('k8s_cluster_groupings_v2');
+    expect(clusters.applyTimeRange).toBe(false);
+    expect(clusters.timeColumn).toBe('');
+
+    const events = defaultDraft('events_v2');
+    expect(events.applyTimeRange).toBe(true);
+    expect(events.timeColumn).toBe('starts_at');
   });
 
   it('starts a traces panel on the grouping table', () => {

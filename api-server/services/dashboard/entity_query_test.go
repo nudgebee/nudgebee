@@ -203,8 +203,8 @@ func TestSaveRequestDecodesAnEntityQuery(t *testing.T) {
 }
 
 func TestApplyAccountScope(t *testing.T) {
-	var q query.QueryRequest
-	if err := applyAccountScope(DatasourceNudgebee, []string{"acc-1", "acc-2"}, &q); err != nil {
+	q := query.QueryRequest{Table: "events_v2"}
+	if err := applyAccountScope([]string{"acc-1", "acc-2"}, &q); err != nil {
 		t.Fatalf("scope: %v", err)
 	}
 	ids, ok := q.Where.And[0].Binary["account_id"][query.In].([]string)
@@ -212,12 +212,57 @@ func TestApplyAccountScope(t *testing.T) {
 		t.Fatalf("account clause = %v", q.Where.And[0].Binary)
 	}
 
+	// The K8s and agent tables name the account `cloud_account_id`. Filtering on
+	// `account_id` there fails SQL generation with "column not found", so the
+	// column is read off the registry rather than assumed.
+	nodes := query.QueryRequest{Table: "k8s_nodes_v2"}
+	if err := applyAccountScope([]string{"acc-1"}, &nodes); err != nil {
+		t.Fatalf("scope k8s_nodes_v2: %v", err)
+	}
+	if _, ok := nodes.Where.And[0].Binary["cloud_account_id"]; !ok {
+		t.Errorf("k8s_nodes_v2 clause = %v, want cloud_account_id", nodes.Where.And[0].Binary)
+	}
+
 	// No account means the panel resolved to nothing the viewer can see. Failing
 	// closed beats letting a tenant admin read every account.
 	for _, requested := range [][]string{nil, {}, {""}} {
-		var empty query.QueryRequest
-		if err := applyAccountScope(DatasourceNudgebee, requested, &empty); err == nil {
+		empty := query.QueryRequest{Table: "events_v2"}
+		if err := applyAccountScope(requested, &empty); err == nil {
 			t.Errorf("accounts %v: expected rejection", requested)
+		}
+	}
+
+	// A table with no account column cannot be scoped, and must fail rather than
+	// run unscoped.
+	unknown := query.QueryRequest{Table: "not_a_table_v2"}
+	if err := applyAccountScope([]string{"acc-1"}, &unknown); err == nil {
+		t.Error("expected an unregistered table to be refused")
+	}
+}
+
+// Every table an entity panel may reach has to be scopable to an account: the
+// executor appends that filter to EVERY query it runs, so a table without an
+// account column would 500 at render rather than at save.
+//
+// Checked across every datasource, not just the executable one. Only nudgebee
+// reaches applyAccountScope today — entityQueryExecutable refuses traces, which
+// the browser reads through the traces service instead — so the traces rows are
+// a guard rather than live coverage: the day that gate opens, a table that
+// cannot be scoped should fail here and not in production.
+func TestEveryAllowedTableCanBeScopedToAnAccount(t *testing.T) {
+	for datasource, tables := range entityQueryTables {
+		for table := range tables {
+			column, err := accountColumn(table)
+			if err != nil {
+				t.Errorf("%s/%s: %v", datasource, table, err)
+				continue
+			}
+			def, _ := query.GetTableMetadata(table)
+			// The engine compares against a column KEY, not the physical column, so
+			// naming one that is not in Columns silently drops the account filter.
+			if _, ok := def.Columns[column]; !ok {
+				t.Errorf("%s/%s: account column %q is not one of its columns", datasource, table, column)
+			}
 		}
 	}
 }

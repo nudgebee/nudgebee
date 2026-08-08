@@ -136,6 +136,194 @@ const RECOMMENDATION_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'updated_at', label: 'Updated at', type: 'datetime' },
 ];
 
+const SPEND_GROUPING_COLUMNS: EntityColumn[] = [
+  { name: 'spend_date', label: 'Date', type: 'datetime' },
+  { name: 'resource_service_name', label: 'Cloud service', type: 'string' },
+  { name: 'resource_type', label: 'Resource type', type: 'string' },
+  { name: 'resource_region', label: 'Region', type: 'string' },
+  { name: 'resource_id', label: 'Resource id', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+  { name: 'spend_amount', label: 'Spend', type: 'number' },
+  { name: 'spend_count', label: 'Line items', type: 'number' },
+  { name: 'resource_count', label: 'Resources', type: 'number' },
+  { name: 'account_count', label: 'Accounts', type: 'number' },
+  { name: 'currency_type', label: 'Currency', type: 'string' },
+  // Rows the biller excludes from a total — credits, refunds, tax lines. Every
+  // spend figure in the product filters these out; a panel that forgets to
+  // over-reports the bill.
+  { name: 'exclude_aggregate', label: 'Excluded from total', type: 'boolean' },
+];
+
+const CLUSTER_COLUMNS: EntityColumn[] = [
+  { name: 'account_id', label: 'Cluster account', type: 'string' },
+  { name: 'node_count', label: 'Nodes', type: 'number' },
+  { name: 'node_spot_count', label: 'Spot nodes', type: 'number' },
+  { name: 'node_cpu_capacity', label: 'CPU capacity', type: 'number' },
+  { name: 'node_cpu_allocatable', label: 'CPU allocatable', type: 'number' },
+  { name: 'node_memory_capacity', label: 'Memory capacity', type: 'number' },
+  { name: 'node_memory_allocatable', label: 'Memory allocatable', type: 'number' },
+  { name: 'workload_type_counts', label: 'Workloads by kind', type: 'json' },
+  { name: 'pod_status_counts', label: 'Pods by status', type: 'json' },
+];
+
+const NODE_COLUMNS: EntityColumn[] = [
+  { name: 'name', label: 'Node', type: 'string' },
+  { name: 'is_active', label: 'Is active', type: 'boolean' },
+  { name: 'node_type', label: 'Node type', type: 'string' },
+  { name: 'node_flavor', label: 'Instance type', type: 'string' },
+  { name: 'node_region', label: 'Region', type: 'string' },
+  { name: 'node_zone', label: 'Zone', type: 'string' },
+  { name: 'cpu_capacity', label: 'CPU capacity', type: 'number' },
+  { name: 'cpu_allocatable', label: 'CPU allocatable', type: 'number' },
+  { name: 'cpu_limits', label: 'CPU limits', type: 'number' },
+  { name: 'memory_capacity', label: 'Memory capacity', type: 'number' },
+  { name: 'memory_allocatable', label: 'Memory allocatable', type: 'number' },
+  { name: 'memory_limits', label: 'Memory limits', type: 'number' },
+  { name: 'pod_count', label: 'Pods', type: 'number' },
+  { name: 'cost', label: 'Cost', type: 'number' },
+  { name: 'node_creation_time', label: 'Created at', type: 'datetime' },
+  { name: 'updated_at', label: 'Updated at', type: 'datetime' },
+  { name: 'cloud_account_id', label: 'Cluster account', type: 'string' },
+  { name: 'cloud_resource_id', label: 'Cloud resource id', type: 'string' },
+  { name: 'internal_ip', label: 'Internal IP', type: 'string' },
+  { name: 'external_ip', label: 'External IP', type: 'string' },
+  { name: 'labels', label: 'Labels', type: 'json' },
+  { name: 'taints', label: 'Taints', type: 'json' },
+  { name: 'conditions', label: 'Conditions', type: 'json' },
+];
+
+const TICKET_GROUPING_COLUMNS: EntityColumn[] = [
+  { name: 'created_at', label: 'Created at', type: 'datetime' },
+  { name: 'status', label: 'Status', type: 'string' },
+  { name: 'severity', label: 'Severity', type: 'string' },
+  { name: 'assignee', label: 'Assignee', type: 'string' },
+  { name: 'created_by', label: 'Created by', type: 'string' },
+  { name: 'platform', label: 'Platform', type: 'string' },
+  { name: 'ticket_type', label: 'Ticket type', type: 'string' },
+  { name: 'title', label: 'Title', type: 'string' },
+  { name: 'reference_id', label: 'Reference', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+  { name: 'count', label: 'Tickets', type: 'number' },
+];
+
+const ANOMALY_COLUMNS: EntityColumn[] = [
+  { name: 'evaluated_at', label: 'Evaluated at', type: 'datetime' },
+  { name: 'created_at', label: 'Created at', type: 'datetime' },
+  { name: 'updated_at', label: 'Updated at', type: 'datetime' },
+  { name: 'anomaly_type', label: 'Anomaly type', type: 'string' },
+  { name: 'name', label: 'Subject', type: 'string' },
+  { name: 'namespace', label: 'Namespace', type: 'string' },
+  { name: 'is_anomaly', label: 'Is anomaly', type: 'boolean' },
+  // Strings on the engine, not numbers — a metric anomaly and a spend anomaly
+  // carry different units, so they are stored as written rather than coerced.
+  { name: 'current_value', label: 'Current value', type: 'string' },
+  { name: 'reference_value', label: 'Expected value', type: 'string' },
+  { name: 'config_id', label: 'Detector', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+  { name: 'insights', label: 'Insights', type: 'json' },
+];
+
+const ANOMALY_GROUPING_COLUMNS: EntityColumn[] = [
+  { name: 'anomaly_type', label: 'Anomaly type', type: 'string' },
+  { name: 'name', label: 'Subject', type: 'string' },
+  { name: 'namespace', label: 'Namespace', type: 'string' },
+  { name: 'is_anomaly', label: 'Is anomaly', type: 'boolean' },
+  { name: 'count', label: 'Occurrences', type: 'number' },
+  { name: 'evaluated_at', label: 'Evaluated at', type: 'datetime' },
+  { name: 'created_at', label: 'Created at', type: 'datetime' },
+  { name: 'updated_at', label: 'Updated at', type: 'datetime' },
+  { name: 'config_id', label: 'Detector', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+];
+
+const CIS_GROUPING_COLUMNS: EntityColumn[] = [
+  { name: 'rule_name', label: 'Rule', type: 'string' },
+  { name: 'rule_description', label: 'Description', type: 'string' },
+  { name: 'rule_id', label: 'Rule id', type: 'string' },
+  { name: 'severity', label: 'Severity', type: 'string' },
+  { name: 'severity_weight', label: 'Severity weight', type: 'number' },
+  { name: 'status', label: 'Status', type: 'string' },
+  { name: 'count', label: 'Findings', type: 'number' },
+  { name: 'updated_at', label: 'Last checked', type: 'datetime' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+];
+
+const VULNERABILITY_COLUMNS: EntityColumn[] = [
+  { name: 'created_at', label: 'Created at', type: 'datetime' },
+  { name: 'updated_at', label: 'Updated at', type: 'datetime' },
+  { name: 'severity', label: 'Severity', type: 'string' },
+  { name: 'severity_weight', label: 'Severity weight', type: 'number' },
+  { name: 'status', label: 'Status', type: 'string' },
+  { name: 'is_active', label: 'Is active', type: 'boolean' },
+  { name: 'image', label: 'Image', type: 'string' },
+  { name: 'vulnerability_id', label: 'CVE', type: 'string' },
+  { name: 'package_id', label: 'Package', type: 'string' },
+  { name: 'workload_name', label: 'Workload', type: 'string' },
+  { name: 'workload_type', label: 'Workload type', type: 'string' },
+  { name: 'namespace', label: 'Namespace', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+];
+
+const AUTOPILOT_TASK_GROUPING_COLUMNS: EntityColumn[] = [
+  { name: 'auto_pilot_category', label: 'Category', type: 'string' },
+  { name: 'status', label: 'Status', type: 'string' },
+  { name: 'count', label: 'Tasks', type: 'number' },
+  { name: 'scheduled_time', label: 'Scheduled for', type: 'datetime' },
+  { name: 'auto_pilot_id', label: 'Autopilot id', type: 'string' },
+  { name: 'auto_pilot_account_id', label: 'Autopilot account', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+];
+
+const APPROVAL_COLUMNS: EntityColumn[] = [
+  { name: 'created_at', label: 'Requested at', type: 'datetime' },
+  { name: 'updated_at', label: 'Updated at', type: 'datetime' },
+  { name: 'status', label: 'Status', type: 'string' },
+  { name: 'auto_pilot_type', label: 'Action type', type: 'string' },
+  { name: 'approval_status_description', label: 'Decision', type: 'string' },
+  { name: 'reviewer_display_name', label: 'Reviewer', type: 'string' },
+  { name: 'reviewer_comments', label: 'Comments', type: 'string' },
+  { name: 'autopilot_id', label: 'Autopilot id', type: 'string' },
+  { name: 'policy_id', label: 'Policy', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+];
+
+const AUDIT_COLUMNS: EntityColumn[] = [
+  { name: 'event_time', label: 'When', type: 'datetime' },
+  { name: 'username', label: 'User', type: 'string' },
+  { name: 'event_category', label: 'Category', type: 'string' },
+  { name: 'event_type', label: 'Type', type: 'string' },
+  { name: 'event_action', label: 'Action', type: 'string' },
+  { name: 'event_status', label: 'Status', type: 'string' },
+  { name: 'event_target', label: 'Target', type: 'string' },
+  { name: 'event_actor', label: 'Actor', type: 'string' },
+  { name: 'transaction_id', label: 'Transaction', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+  { name: 'event_attr', label: 'Attributes', type: 'json' },
+];
+
+const AGENT_HEALTH_COLUMNS: EntityColumn[] = [
+  { name: 'type', label: 'Agent type', type: 'string' },
+  { name: 'version', label: 'Version', type: 'string' },
+  { name: 'status', label: 'Status', type: 'string' },
+  { name: 'status_message', label: 'Status message', type: 'string' },
+  { name: 'last_connected_at', label: 'Last seen', type: 'datetime' },
+  { name: 'created_at', label: 'Registered at', type: 'datetime' },
+  { name: 'k8s_version', label: 'K8s version', type: 'string' },
+  { name: 'k8s_provider', label: 'K8s provider', type: 'string' },
+  { name: 'cloud_account_id', label: 'Account id', type: 'string' },
+  { name: 'connection_status', label: 'Connection status', type: 'json' },
+];
+
+const AI_CONVERSATION_GROUPING_COLUMNS: EntityColumn[] = [
+  { name: 'source', label: 'Source', type: 'string' },
+  { name: 'status', label: 'Status', type: 'string' },
+  { name: 'title', label: 'Title', type: 'string' },
+  { name: 'count', label: 'Investigations', type: 'number' },
+  { name: 'created_at', label: 'Started at', type: 'datetime' },
+  { name: 'updated_at', label: 'Updated at', type: 'datetime' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
+];
+
 const TRACE_COLUMNS: EntityColumn[] = [
   { name: 'timestamp', label: 'Timestamp', type: 'datetime' },
   { name: 'trace_id', label: 'Trace id', type: 'string', filterable: true },
@@ -237,6 +425,180 @@ export const ENTITY_TABLES: EntityTable[] = [
     timeColumns: ['timestamp', 'updated_at'],
     defaultColumns: ['rule_name', 'category', 'count', 'sum_estimated_savings', 'account_name'],
     defaultSort: 'sum_estimated_savings',
+  },
+  {
+    value: 'spend_groupings_v2',
+    datasource: 'nudgebee',
+    label: 'Cloud spend',
+    description: 'One row per spend dimension, with the amount billed.',
+    detail:
+      'What the cloud actually charged, grouped by whichever of service, resource type, region, resource or day you select, with the amount, the ' +
+      'number of resources behind it and the currency. Recommendations say what COULD be saved; this says what was spent. Filter Excluded from ' +
+      'total to false — credits and tax lines are stored alongside real charges and every spend figure in the product leaves them out.',
+    columns: SPEND_GROUPING_COLUMNS,
+    timeColumns: ['spend_date'],
+    defaultColumns: ['resource_service_name', 'spend_amount', 'resource_count', 'currency_type'],
+    defaultSort: 'spend_amount',
+  },
+  {
+    value: 'k8s_cluster_groupings_v2',
+    datasource: 'nudgebee',
+    label: 'Clusters',
+    description: 'One row per cluster: capacity, workloads and pod states.',
+    detail:
+      'Every connected cluster with its node count, spot share, CPU and memory capacity and allocatable, plus workload counts by kind and pod ' +
+      'counts by status. The fleet-level answer to "how big is this and is it healthy" — the nodes behind it are in Nodes.',
+    columns: CLUSTER_COLUMNS,
+    // A snapshot of what is running right now: it carries no timestamp, so a
+    // dashboard's time picker has nothing to filter it on.
+    timeColumns: [],
+    defaultColumns: ['account_id', 'node_count', 'node_spot_count', 'node_cpu_capacity', 'node_memory_capacity', 'pod_status_counts'],
+    defaultSort: 'node_count',
+  },
+  {
+    value: 'k8s_nodes_v2',
+    datasource: 'nudgebee',
+    label: 'Nodes',
+    description: 'One row per node.',
+    detail:
+      'Individual nodes: instance type, region and zone, spot or on-demand, CPU and memory capacity against what is reserved, how many pods are on ' +
+      'it and what it costs. Use this for capacity and node right-sizing; use Clusters for the fleet summary.',
+    columns: NODE_COLUMNS,
+    timeColumns: ['node_creation_time', 'updated_at'],
+    defaultColumns: ['name', 'node_type', 'node_flavor', 'cpu_capacity', 'memory_capacity', 'pod_count'],
+    defaultSort: 'pod_count',
+  },
+  {
+    value: 'ticket_groupings_v2',
+    datasource: 'nudgebee',
+    label: 'Ticket groups',
+    description: 'Ticket counts by status, severity or assignee.',
+    detail:
+      'Tickets raised from Nudgebee collapsed by whichever of status, severity, assignee, platform or type you select. This is the backlog and ' +
+      'inflow view — how much work is open, who holds it and where it was filed.',
+    columns: TICKET_GROUPING_COLUMNS,
+    timeColumns: ['created_at'],
+    defaultColumns: ['status', 'severity', 'assignee', 'count'],
+    defaultSort: 'count',
+  },
+  {
+    value: 'anomaly_grouping_v2',
+    datasource: 'nudgebee',
+    label: 'Anomaly groups',
+    description: 'Anomaly counts by type, subject or namespace.',
+    detail:
+      'Detected anomalies — metric and spend — collapsed by type, subject or namespace, with how many times each fired. The ranked feed for "what ' +
+      'is behaving unusually across the estate"; the individual detections are in Anomalies.',
+    columns: ANOMALY_GROUPING_COLUMNS,
+    timeColumns: ['evaluated_at', 'created_at', 'updated_at'],
+    defaultColumns: ['anomaly_type', 'namespace', 'name', 'count'],
+    defaultSort: 'count',
+  },
+  {
+    value: 'anomaly_v2',
+    datasource: 'nudgebee',
+    label: 'Anomalies',
+    description: 'One row per detection, with observed vs expected.',
+    detail:
+      'Each anomaly as detected: what it is about, which detector fired, what the value was and what was expected. Use this to read the detections ' +
+      'behind a spike; use Anomaly groups to rank them.',
+    columns: ANOMALY_COLUMNS,
+    timeColumns: ['evaluated_at', 'created_at', 'updated_at'],
+    defaultColumns: ['evaluated_at', 'anomaly_type', 'namespace', 'name', 'current_value', 'reference_value'],
+    defaultSort: 'evaluated_at',
+  },
+  {
+    value: 'recommendation_security_cis_groupings_v2',
+    datasource: 'nudgebee',
+    label: 'CIS compliance',
+    description: 'One row per benchmark rule, with how many resources fail it.',
+    detail:
+      'CIS benchmark results grouped by rule: what the rule checks, how severe it is, whether it passes and how many resources are behind that ' +
+      'verdict. The compliance-posture table; container CVEs are in Vulnerabilities.',
+    columns: CIS_GROUPING_COLUMNS,
+    // `Last checked` is a max() over the group, so the engine cannot filter on
+    // it — it is readable as a column, not as a time range.
+    timeColumns: [],
+    defaultColumns: ['rule_name', 'severity', 'status', 'count'],
+    defaultSort: 'count',
+  },
+  {
+    value: 'recommendation_security_v2',
+    datasource: 'nudgebee',
+    label: 'Vulnerabilities',
+    description: 'One row per CVE found in a running image.',
+    detail:
+      'Container image vulnerabilities as scanned: the CVE, the package, the image and the workload and namespace running it. Filter Is active to ' +
+      'true to exclude findings on images that are no longer deployed.',
+    columns: VULNERABILITY_COLUMNS,
+    timeColumns: ['created_at', 'updated_at'],
+    defaultColumns: ['created_at', 'severity', 'workload_name', 'namespace', 'image', 'vulnerability_id'],
+    defaultSort: 'created_at',
+  },
+  {
+    value: 'auto_pilot_task_groupings_v2',
+    datasource: 'nudgebee',
+    label: 'Autopilot task groups',
+    description: 'Autopilot task counts by state and category.',
+    detail:
+      'What automation actually did, collapsed by category and state — how many tasks ran, how many are queued and how many failed. The coverage ' +
+      'view behind "how much of this is automated".',
+    columns: AUTOPILOT_TASK_GROUPING_COLUMNS,
+    timeColumns: ['scheduled_time'],
+    defaultColumns: ['auto_pilot_category', 'status', 'count'],
+    defaultSort: 'count',
+  },
+  {
+    value: 'auto_pilot_approvals_v2',
+    datasource: 'nudgebee',
+    label: 'Autopilot approvals',
+    description: 'One row per action waiting on, or decided by, a human.',
+    detail:
+      'The human-in-the-loop queue: which automated action was proposed, under which policy, who reviewed it and what they decided. A panel shows ' +
+      'the queue and its age — approving is still done on the Autopilot page.',
+    columns: APPROVAL_COLUMNS,
+    timeColumns: ['created_at', 'updated_at'],
+    defaultColumns: ['created_at', 'auto_pilot_type', 'status', 'reviewer_display_name'],
+    defaultSort: 'created_at',
+  },
+  {
+    value: 'audits_v2',
+    datasource: 'nudgebee',
+    label: 'Audit log',
+    description: 'One row per configuration or access change.',
+    detail:
+      'Who changed what, when, and whether it succeeded — integrations, users, roles, policies. Readable only by a tenant admin or a role holding ' +
+      'the audits grant, which the engine enforces per viewer rather than per dashboard.',
+    columns: AUDIT_COLUMNS,
+    timeColumns: ['event_time'],
+    defaultColumns: ['event_time', 'username', 'event_category', 'event_action', 'event_target', 'event_status'],
+    defaultSort: 'event_time',
+  },
+  {
+    value: 'get_agent_health_v2',
+    datasource: 'nudgebee',
+    label: 'Agent health',
+    description: 'One row per collector agent, with when it last checked in.',
+    detail:
+      'The agents feeding Nudgebee: their type, version, cluster version and when each last connected. A stale Last seen is why a dashboard has ' +
+      'gone quiet, and it is the first thing to check before believing an empty panel.',
+    columns: AGENT_HEALTH_COLUMNS,
+    timeColumns: ['last_connected_at', 'created_at'],
+    defaultColumns: ['type', 'version', 'status', 'k8s_version', 'last_connected_at'],
+    defaultSort: 'last_connected_at',
+  },
+  {
+    value: 'llm_conversation_groupings_v2',
+    datasource: 'nudgebee',
+    label: 'AI investigations',
+    description: 'Investigation counts by source and status.',
+    detail:
+      'AI investigations and RCAs collapsed by where they came from (an alert, a user, a workflow) and how they ended. The throughput view for ' +
+      '"how much is the AI actually doing, and does it finish".',
+    columns: AI_CONVERSATION_GROUPING_COLUMNS,
+    timeColumns: ['created_at', 'updated_at'],
+    defaultColumns: ['source', 'status', 'count'],
+    defaultSort: 'count',
   },
   {
     value: 'traces_groupings_v2',
@@ -383,8 +745,12 @@ export function defaultDraft(tableOrDatasource = ENTITY_TABLES[0].value): Entity
     table: table.value,
     columns: [...table.defaultColumns],
     filters: [],
-    timeColumn: table.timeColumns[0],
-    applyTimeRange: true,
+    // Some tables carry no filterable timestamp at all — a current-state
+    // snapshot, or a grouping whose only date column is a max() the engine
+    // cannot put in a WHERE. Those open with the time range OFF rather than
+    // with a switch that is on and filtering against nothing.
+    timeColumn: table.timeColumns[0] || '',
+    applyTimeRange: table.timeColumns.length > 0,
     sortColumn: table.defaultSort,
     sortDesc: true,
     limit: 100,

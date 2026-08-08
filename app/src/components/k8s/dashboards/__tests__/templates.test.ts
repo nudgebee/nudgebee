@@ -1,4 +1,4 @@
-import { defaultWidgetScope, PANEL_TEMPLATES, panelFromTemplate, widgetAccountKind } from '../panelTemplates';
+import { defaultWidgetScope, PANEL_TEMPLATES, panelFromTemplate, TEMPLATE_ROLES, WIDGET_CATEGORIES, widgetAccountKind } from '../panelTemplates';
 import { buildTemplateDocument, convertTemplate, DASHBOARD_TEMPLATES, templateWidgets } from '../dashboardTemplates';
 import { draftFromQuery, findTable } from '../entityQuery';
 import { referencedVariables } from '../templating';
@@ -28,6 +28,14 @@ describe('widget library', () => {
     // dropped the first time someone opened the panel.
     for (const template of PANEL_TEMPLATES) {
       expect(template.panel.targets).toHaveLength(1);
+    }
+  });
+
+  it('puts every widget in a category the picker actually renders', () => {
+    // The picker iterates WIDGET_CATEGORIES, not the widgets — a category left
+    // out of that list hides every widget in it, silently and with no error.
+    for (const template of PANEL_TEMPLATES) {
+      expect(WIDGET_CATEGORIES).toContain(template.category);
     }
   });
 
@@ -102,11 +110,40 @@ describe('widget library', () => {
     expect(defaultWidgetScope(template, [])).toEqual({ account_type: undefined, account_ids: [] });
   });
 
-  it('puts only the cost widgets on cloud accounts', () => {
+  it('puts the cost widgets on cloud accounts, and nothing else', () => {
     for (const template of PANEL_TEMPLATES) {
-      // What a widget is ABOUT decides this, not its datasource — savings live
-      // against cloud accounts, K8s events and PromQL against the cluster.
-      expect(widgetAccountKind(template)).toBe(template.category === 'Cost' ? 'cloud' : 'cluster');
+      // What a widget is ABOUT decides this, not its datasource — savings and
+      // spend live against cloud accounts, K8s events and PromQL against the
+      // cluster. `any` is the third case: audits, anomalies and approvals belong
+      // to whichever account the change or detection touched.
+      const kind = widgetAccountKind(template);
+      if (template.category === 'Cost') expect(kind).toBe('cloud');
+      else expect(kind).not.toBe('cloud');
+    }
+  });
+
+  it('spans every account only where the query engine can', () => {
+    // `any` resolves to accounts of several providers at once, which only the
+    // query engine accepts — every other datasource resolves ONE provider's
+    // integration, and would silently take whichever came first.
+    for (const template of PANEL_TEMPLATES) {
+      if (widgetAccountKind(template) === 'any') expect(template.panel.datasource).toBe('nudgebee');
+    }
+
+    const audit = PANEL_TEMPLATES.find((t) => t.id === 'audit-log')!;
+    expect(defaultWidgetScope(audit, ACCOUNTS)).toEqual({ account_type: undefined, account_ids: ['k1', 'a1', 'g1'] });
+  });
+
+  it('leaves the time range off for a table with nothing to filter it on', () => {
+    // A current-state snapshot (clusters) and a grouping whose only date column
+    // is a max() (CIS) cannot take a WHERE on time. Shipping them with the range
+    // on would filter every row out.
+    for (const template of PANEL_TEMPLATES) {
+      const query = template.panel.targets?.[0]?.query as any;
+      if (!query) continue;
+      if (findTable(query.table).timeColumns.length === 0) {
+        expect(template.panel.targets?.[0]?.time_column || '').toBe('');
+      }
     }
   });
 });
@@ -120,6 +157,17 @@ describe('dashboard templates', () => {
       // templateWidgets drops what it cannot resolve, so a shortfall IS the
       // missing-widget failure.
       expect(templateWidgets(template)).toHaveLength(template.panels.length);
+    }
+  });
+
+  it('gives every role somewhere to land', () => {
+    // The gallery filters by role. A role with no dashboard is a persona that
+    // opens the picker and is told there is nothing for them.
+    for (const role of TEMPLATE_ROLES) {
+      const forRole = DASHBOARD_TEMPLATES.filter((t) => t.roles.includes(role.value));
+      expect(forRole.length).toBeGreaterThan(0);
+      // And every widget in it must be one that role would recognise as theirs.
+      for (const template of forRole) expect(template.panels.length).toBeGreaterThanOrEqual(5);
     }
   });
 

@@ -14,6 +14,7 @@ import {
   PANEL_TEMPLATES,
   roleLabel,
   TEMPLATE_ROLES,
+  WIDGET_CATEGORIES,
   type PanelTemplate,
   type TemplateRole,
   type WidgetCategory,
@@ -36,9 +37,6 @@ interface Props {
 
 /** Role filter value meaning "every widget". */
 const ALL_ROLES = 'all';
-
-/** Reading order: money, then what is broken, then how it is running. */
-const CATEGORY_ORDER: WidgetCategory[] = ['Cost', 'Issues', 'Reliability', 'Capacity', 'Performance', 'Workload'];
 
 /**
  * Picks one widget out of the library.
@@ -74,7 +72,7 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
 
   const byCategory = useMemo(() => {
     const groups: { category: WidgetCategory; widgets: PanelTemplate[] }[] = [];
-    for (const category of CATEGORY_ORDER) {
+    for (const category of WIDGET_CATEGORIES) {
       const widgets = matches.filter((t) => t.category === category);
       if (widgets.length > 0) groups.push({ category, widgets });
     }

@@ -94,7 +94,9 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
   const [warning, setWarning] = useState<string | null>(null);
 
   const scoped = resolvePanelAccounts(panel, accounts);
-  const { accounts: resolved } = panelQueryAccounts(scoped, accountFilter);
+  // `nudgebee` panels reach the query engine, which takes every account in one
+  // call — so they query all of them rather than the first. See panelQueryAccounts.
+  const { accounts: resolved } = panelQueryAccounts(scoped, accountFilter, panel.datasource === 'nudgebee');
   // Distinguishes "the filter hid everything" from "this panel has no accounts",
   // which need different messages.
   const filteredOut = scoped.length > 0 && resolved.length === 0;
