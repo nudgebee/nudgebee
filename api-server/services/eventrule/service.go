@@ -1147,6 +1147,13 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 										continue
 									}
 								}
+								// _series holds every matched Prometheus series — an internal structure used
+								// only by playbook for_each templates (resolved from extractedLabels, not from
+								// event.Labels). It must never be merged onto the event: stringified it is
+								// hundreds of KB and rode into the RCA prompt on every planner iteration.
+								if k == "_series" {
+									continue
+								}
 								switch v := v.(type) {
 								case string:
 									pendingLabels[k] = v
@@ -1367,6 +1374,13 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 							continue
 						}
 						if _, ok := event.Labels[k]; ok {
+							continue
+						}
+						// _series holds every matched Prometheus series — an internal structure used
+						// only by playbook for_each templates (resolved from extractedLabels, not from
+						// event.Labels). It must never be merged onto the event: stringified it is
+						// hundreds of KB and rode into the RCA prompt on every planner iteration.
+						if k == "_series" {
 							continue
 						}
 						switch v := v.(type) {
