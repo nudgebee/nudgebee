@@ -172,9 +172,14 @@ func (f UsageMetricsFilter) buildToolWhere() (string, []any) {
 	if len(f.Sources) > 0 {
 		clauses = append(clauses, fmt.Sprintf("c.source = ANY($%d)", n))
 		args = append(args, pq.Array(f.Sources))
+		n++
 	} else {
 		// Hide the cost_optimizer's own runs by default (parity with buildWhere).
 		clauses = append(clauses, "c.source IS DISTINCT FROM 'Optimize'")
+	}
+	if f.UserID != "" {
+		clauses = append(clauses, fmt.Sprintf("c.user_id = $%d", n))
+		args = append(args, f.UserID)
 	}
 	return strings.Join(clauses, " AND "), args
 }

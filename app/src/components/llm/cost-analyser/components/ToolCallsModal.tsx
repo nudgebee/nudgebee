@@ -35,6 +35,7 @@ interface ToolCallsModalProps {
 
 const STATUS_OPTIONS: { value: ToolStatusGroup; label: string }[] = [
   { value: 'all', label: 'All' },
+  { value: 'success', label: 'Success' },
   { value: 'errors', label: 'Errors' },
   { value: 'in_progress', label: 'In-progress' },
 ];
@@ -176,6 +177,7 @@ export function ToolCallsModal({
         startDate: `${filters.startDate}T00:00:00Z`,
         endDate: `${filters.endDate}T23:59:59Z`,
         sources: filters.sources ?? [],
+        userId: filters.userId,
         toolName,
         statuses: toolStatusesFor(status),
         limit: 200,
@@ -192,7 +194,7 @@ export function ToolCallsModal({
       cancelled = true;
       controller.abort();
     };
-  }, [open, toolName, accountId, filters.startDate, filters.endDate, sourcesKey, status]);
+  }, [open, toolName, accountId, filters.startDate, filters.endDate, sourcesKey, status, filters.userId]);
 
   const openRun = (r: ToolCallRow) => {
     onSelectRun(r.conversation_id, r.account_id, r.agent_id);

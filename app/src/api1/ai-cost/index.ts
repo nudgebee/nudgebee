@@ -777,11 +777,12 @@ export async function listToolUsage(req: ListToolUsageRequest, signal?: AbortSig
 
 /** Tool statuses, grouped for the drill-in toggle (lowercased on write). */
 export const TOOL_STATUS_GROUPS = {
+  success: ['success'],
   errors: ['fail', 'error', 'terminated'],
   in_progress: ['in_progress', 'waiting', 'waiting_for_client'],
 } as const;
 
-export type ToolStatusGroup = 'all' | 'errors' | 'in_progress';
+export type ToolStatusGroup = 'all' | 'success' | 'errors' | 'in_progress';
 
 /** Resolve a UI status group to the status values the API filters on ([] = all). */
 export function toolStatusesFor(group: ToolStatusGroup): string[] {
