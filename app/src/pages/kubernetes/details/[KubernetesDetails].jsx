@@ -5,7 +5,7 @@ import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import k8sApi from '@api1/kubernetes';
 import { useData } from '@context/DataContext';
-import { hasWriteAccess, isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
+import { hasReadAccess, isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
 import LogsIcon from '@assets/kubernetes/logs-icon.svg';
 import { Box, Typography } from '@mui/material';
 import { ToggleGroup } from '@ui/ToggleGroup';
@@ -441,12 +441,12 @@ const KubernetesDetails = () => {
     const init = async () => {
       const grafana = selectedCluster?.agent?.connection_status?.grafanaEnabled || false;
       const isJaeger = selectedCluster?.cloud_provider === 'jaeger';
-      // Grafana embeds a full query/explore surface, so restrict it to users
-      // with write access on this cluster — read-only roles get the tab hidden.
+      // Grafana is a read-only dashboard view, so grant it to any user with
+      // read access on this cluster — read-only roles included.
       // Gate on the sub-tab inside Monitoring (same place trace-grouping is
       // hidden for jaeger): Grafana is not a top-level option, so an
       // `option.name === 'Grafana'` branch here would never match.
-      const canAccessGrafana = grafana && kubeId && hasWriteAccess(kubeId);
+      const canAccessGrafana = grafana && kubeId && hasReadAccess(kubeId);
       setTabOptions((prevOptions) =>
         prevOptions.map((option) => {
           if (option.name === 'Monitoring') {
@@ -1122,7 +1122,7 @@ const KubernetesDetails = () => {
               {selectedSubTab == 6 && <KubernetesTracesGroupListing accountId={kubeId} />}
               {selectedSubTab == 7 && <KubernetesTracesCrossZoneListing accountId={kubeId} />}
               {selectedSubTab == 8 && <KubernetesSLOConfigs accountId={kubeId} />}
-              {selectedSubTab == 9 && kubeId && hasWriteAccess(kubeId) && <GrafanaIframe accountId={kubeId} />}
+              {selectedSubTab == 9 && kubeId && hasReadAccess(kubeId) && <GrafanaIframe accountId={kubeId} />}
               {selectedSubTab == 10 && <KubernetesGithubRunners accountId={kubeId} />}
             </>
           )}
