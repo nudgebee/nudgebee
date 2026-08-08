@@ -202,6 +202,12 @@ export function ToolCallsModal({
   const tableData = React.useMemo(() => state.rows.map((r) => toRow(r, openRun)), [state.rows]);
   const showEmpty = !state.loading && !state.error && state.rows.length === 0;
 
+  // The count reflects the active status filter — on the Errors tab these are the
+  // tool's failures, not its total invocations, so label them as such (otherwise
+  // "N invocations" reads as the tool's whole call count and contradicts the card).
+  const countNoun = status === 'errors' ? 'error' : status === 'in_progress' ? 'in-progress invocation' : 'invocation';
+  const countLabel = `${state.rows.length} ${countNoun}${state.rows.length === 1 ? '' : 's'}`;
+
   return (
     <Modal
       open={open}
@@ -214,7 +220,7 @@ export function ToolCallsModal({
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
           <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-            {state.rows.length} invocation{state.rows.length === 1 ? '' : 's'} · newest first · click a conversation to open the full run
+            {countLabel} · newest first · click a conversation to open the full run
           </Box>
           <ToggleGroup
             selection='single'
