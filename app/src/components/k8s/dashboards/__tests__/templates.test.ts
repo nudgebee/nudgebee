@@ -1,6 +1,5 @@
-import { PANEL_TEMPLATES, panelFromTemplate } from '../panelTemplates';
-import { buildTemplateDocument, DASHBOARD_TEMPLATES, templateVariableDefaults, templateWidgets, variablesUsedBy } from '../dashboardTemplates';
-import { convertNativeDashboard } from '../nativeImport';
+import { defaultWidgetScope, PANEL_TEMPLATES, panelFromTemplate, widgetAccountKind } from '../panelTemplates';
+import { buildTemplateDocument, convertTemplate, DASHBOARD_TEMPLATES, templateWidgets } from '../dashboardTemplates';
 import { draftFromQuery, findTable } from '../entityQuery';
 import { referencedVariables } from '../templating';
 
@@ -11,7 +10,12 @@ import { referencedVariables } from '../templating';
  * declares — which would ship a dashboard querying the literal text `$namespace`.
  */
 
-const SCOPE = { account_type: 'K8S', account_ids: [] };
+/** A tenant with one cluster and two cloud accounts — enough to tell the kinds apart. */
+const ACCOUNTS = [
+  { label: 'prod-cluster', value: 'k1', cloud_provider: 'K8S', kind: 'kubernetes' },
+  { label: 'prod-aws', value: 'a1', cloud_provider: 'AWS', kind: 'cloud' },
+  { label: 'prod-gcp', value: 'g1', cloud_provider: 'GCP', kind: 'cloud' },
+];
 
 describe('widget library', () => {
   it('has unique ids', () => {
@@ -51,16 +55,59 @@ describe('widget library', () => {
     }
   });
 
-  it('copies a widget without an account, and without sharing state with the library', () => {
-    const template = PANEL_TEMPLATES.find((t) => t.panel.datasource === 'nudgebee')!;
-    const copy = panelFromTemplate(template, [{ id: 7 } as any]);
+  it('copies a widget pre-scoped, and shares no state with the library', () => {
+    const template = PANEL_TEMPLATES.find((t) => t.id === 'noisiest-issues')!;
+    const copy = panelFromTemplate(template, [{ id: 7 } as any], ACCOUNTS);
 
     expect(copy.id).toBe(8);
-    expect(copy.account_type).toBeUndefined();
-    expect(copy.account_ids).toEqual([]);
+    // An events widget is about the cluster, and one provider is a type.
+    expect(copy).toMatchObject({ account_type: 'K8S', account_ids: [] });
 
     (copy.targets![0].query as any).table = 'mutated';
     expect((template.panel.targets![0].query as any).table).not.toBe('mutated');
+  });
+
+  it('scopes a PromQL widget to the cluster provider, by kind rather than by name', () => {
+    const template = PANEL_TEMPLATES.find((t) => t.panel.datasource === 'metrics')!;
+    expect(panelFromTemplate(template, [], ACCOUNTS)).toMatchObject({ account_type: 'K8S', account_ids: [] });
+
+    // Renaming the provider must not break the rule — `kind` is what identifies
+    // a cluster, and 'K8S' is backend vocabulary we do not own.
+    const renamed = ACCOUNTS.map((a) => (a.kind === 'kubernetes' ? { ...a, cloud_provider: 'KUBERNETES' } : a));
+    expect(panelFromTemplate(template, [], renamed)).toMatchObject({ account_type: 'KUBERNETES' });
+  });
+
+  it('spans every cloud provider for a cost widget, which only the query engine can do', () => {
+    const template = PANEL_TEMPLATES.find((t) => t.id === 'savings-by-account')!;
+    // Two cloud providers cannot be one `account_type`, so this is the one case
+    // that resolves to ids — and it covers ALL of them, not the first connected.
+    expect(defaultWidgetScope(template, ACCOUNTS)).toEqual({ account_type: undefined, account_ids: ['a1', 'g1'] });
+
+    // One cloud provider still fits in a type, which keeps resolving at render.
+    const awsOnly = ACCOUNTS.filter((a) => a.cloud_provider !== 'GCP');
+    expect(defaultWidgetScope(template, awsOnly)).toEqual({ account_type: 'AWS', account_ids: [] });
+  });
+
+  it('never pins individual accounts for a single-provider widget', () => {
+    for (const template of PANEL_TEMPLATES) {
+      const scope = defaultWidgetScope(template, ACCOUNTS);
+      if (scope.account_type) expect(scope.account_ids).toEqual([]);
+    }
+  });
+
+  it('leaves a widget unscoped when nothing fits, rather than guessing', () => {
+    const template = PANEL_TEMPLATES.find((t) => t.panel.datasource === 'metrics')!;
+    const cloudOnly = ACCOUNTS.filter((a) => a.kind !== 'kubernetes');
+    expect(defaultWidgetScope(template, cloudOnly)).toEqual({ account_type: undefined, account_ids: [] });
+    expect(defaultWidgetScope(template, [])).toEqual({ account_type: undefined, account_ids: [] });
+  });
+
+  it('puts only the cost widgets on cloud accounts', () => {
+    for (const template of PANEL_TEMPLATES) {
+      // What a widget is ABOUT decides this, not its datasource — savings live
+      // against cloud accounts, K8s events and PromQL against the cluster.
+      expect(widgetAccountKind(template)).toBe(template.category === 'Cost' ? 'cloud' : 'cluster');
+    }
   });
 });
 
@@ -76,38 +123,67 @@ describe('dashboard templates', () => {
     }
   });
 
-  it('declares every variable its panels reference', () => {
+  it('ships no template variables at all', () => {
+    // A `$name` token is only substituted when a dashboard is opened from a page
+    // that supplies one. A template has no such page, so a token here would run
+    // as literal text and the panel would quietly find nothing.
     for (const template of DASHBOARD_TEMPLATES) {
-      const declared = new Set((template.variables || []).map((v) => v.name));
-      for (const used of variablesUsedBy(template)) {
-        expect(declared.has(used)).toBe(true);
+      for (const widget of templateWidgets(template)) {
+        expect(referencedVariables(widget.panel.targets?.[0]?.expr || '')).toEqual([]);
       }
     }
   });
 
   it('converts every panel through the importer, with no warnings', () => {
     for (const template of DASHBOARD_TEMPLATES) {
-      const document = buildTemplateDocument(template, templateVariableDefaults(template));
-      const converted = convertNativeDashboard(document, SCOPE);
+      const scopes = templateWidgets(template).map((w) => defaultWidgetScope(w, ACCOUNTS));
+      const converted = convertTemplate(template, '', scopes);
 
       expect(converted.warnings).toEqual([]);
       expect(converted.definition.panels).toHaveLength(template.panels.length);
       expect(converted.title).toBe(template.title);
       for (const panel of converted.definition.panels) {
-        expect(panel.account_type).toBe('K8S');
+        // Every panel is scoped, and none was silently given the empty default.
+        expect(Boolean(panel.account_type) || Boolean(panel.account_ids?.length)).toBe(true);
         // Nothing may reach the server still holding a template token.
         expect(referencedVariables(panel.targets?.[0]?.expr || '')).toEqual([]);
       }
     }
   });
 
-  it('substitutes variable values into the queries', () => {
-    const template = DASHBOARD_TEMPLATES.find((t) => (t.variables || []).some((v) => v.name === 'namespace'))!;
-    const document = buildTemplateDocument(template, { ...templateVariableDefaults(template), namespace: 'payments' });
-    const exprs = document.definition.panels.map((p: any) => p.targets?.[0]?.expr || '').join(' ');
+  it('keeps each panel on its own scope instead of collapsing onto one', () => {
+    // The whole point of per-panel scope: a template mixing PromQL with findings
+    // must come out with a cluster-scoped chart NEXT TO a tenant-wide table.
+    const template = DASHBOARD_TEMPLATES.find((t) => t.id === 'executive-overview')!;
+    const widgets = templateWidgets(template);
+    const converted = convertTemplate(
+      template,
+      '',
+      widgets.map((w) => defaultWidgetScope(w, ACCOUNTS))
+    );
 
-    expect(exprs).toContain('payments');
-    expect(exprs).not.toContain('$namespace');
+    const byTitle = new Map(converted.definition.panels.map((p) => [p.title, p]));
+    const promql = converted.definition.panels.find((p) => p.datasource === 'metrics')!;
+    const findings = converted.definition.panels.find((p) => p.datasource === 'nudgebee')!;
+
+    expect(byTitle.size).toBe(converted.definition.panels.length);
+    expect(promql).toMatchObject({ account_type: 'K8S' });
+    // The findings panel here is a cost table, so it spans both cloud providers.
+    expect(findings.account_type).toBeUndefined();
+    expect(findings.account_ids).toEqual(['a1', 'g1']);
+  });
+
+  it('honours a hand-picked scope over the derived one', () => {
+    const template = DASHBOARD_TEMPLATES.find((t) => t.id === 'executive-overview')!;
+    const widgets = templateWidgets(template);
+    // Everything onto one AWS account, which is what a row-by-row override does.
+    const scopes = widgets.map(() => ({ account_type: undefined, account_ids: ['a1'] }));
+    const converted = convertTemplate(template, '', scopes);
+
+    expect(converted.warnings).toEqual([]);
+    for (const panel of converted.definition.panels) {
+      expect(panel.account_ids).toEqual(['a1']);
+    }
   });
 
   it('hands out a document that shares no query object with the library', () => {
@@ -115,20 +191,45 @@ describe('dashboard templates', () => {
     // object hanging off a module-level constant escapes to the caller and the
     // library is corrupted for the rest of the session.
     const template = DASHBOARD_TEMPLATES.find((t) => templateWidgets(t).some((w) => w.panel.targets?.[0]?.query))!;
-    const document = buildTemplateDocument(template, templateVariableDefaults(template));
+    const document = buildTemplateDocument(template);
     const panel = document.definition.panels.find((p: any) => p.targets?.[0]?.query)!;
 
     (panel as any).targets[0].query.table = 'mutated';
-    expect(
-      buildTemplateDocument(template, templateVariableDefaults(template)).definition.panels.some(
-        (p: any) => p.targets?.[0]?.query?.table === 'mutated'
-      )
-    ).toBe(false);
+    expect(buildTemplateDocument(template).definition.panels.some((p: any) => p.targets?.[0]?.query?.table === 'mutated')).toBe(false);
+  });
+
+  it('keeps scopes aligned with panels when a widget id does not resolve', () => {
+    // `templateWidgets` drops what it cannot resolve, so a caller's scopes array
+    // is indexed by RESOLVED panel. Indexing the raw panel list instead shifts
+    // every scope after the gap onto the wrong panel and leaves the last one
+    // unscoped — which the server rejects.
+    const template = {
+      id: 'test-gap',
+      title: 'Gap',
+      description: '',
+      roles: [] as any,
+      panels: [{ widget: 'savings-by-rule' }, { widget: 'no-such-widget' }, { widget: 'cluster-cpu-utilisation' }],
+    };
+    const scopes = [
+      { account_type: undefined, account_ids: ['first'] },
+      { account_type: undefined, account_ids: ['second'] },
+    ];
+
+    const panels = buildTemplateDocument(template, '', scopes).definition.panels as any[];
+
+    expect(panels).toHaveLength(2);
+    expect(panels[0].title).toBe('Savings opportunity by rule');
+    expect(panels[0].account_ids).toEqual(['first']);
+    // The panel AFTER the gap takes the second scope, not the third slot.
+    expect(panels[1].title).toBe('Cluster CPU utilisation');
+    expect(panels[1].account_ids).toEqual(['second']);
+    // Ids stay unique and contiguous over the resolved panels.
+    expect(panels.map((p) => p.id)).toEqual([1, 2]);
   });
 
   it('takes an overridden title, and falls back to the template’s own', () => {
     const template = DASHBOARD_TEMPLATES[0];
-    expect(buildTemplateDocument(template, {}, ' Q3 review ').title).toBe('Q3 review');
-    expect(buildTemplateDocument(template, {}, '   ').title).toBe(template.title);
+    expect(buildTemplateDocument(template, ' Q3 review ').title).toBe('Q3 review');
+    expect(buildTemplateDocument(template, '   ').title).toBe(template.title);
   });
 });

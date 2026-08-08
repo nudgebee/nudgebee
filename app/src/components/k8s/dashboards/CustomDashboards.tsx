@@ -60,7 +60,10 @@ const CustomDashboards: React.FC = () => {
         // missing account_type (older transformClusters) hides nothing rather
         // than emptying the whole picker.
         .filter((c: any) => !c.account_type || QUERYABLE_ACCOUNT_TYPES.has(c.account_type))
-        .map((c: any) => ({ label: c.label || c.value, value: c.value, cloud_provider: c.cloud_provider || '' })),
+        // `kind` is what lets the template gallery pre-select a scope per panel:
+        // a PromQL widget needs a kubernetes account, and only this field says
+        // which of the connected accounts is one.
+        .map((c: any) => ({ label: c.label || c.value, value: c.value, cloud_provider: c.cloud_provider || '', kind: c.account_type || '' })),
     [allCluster]
   );
 
@@ -73,6 +76,15 @@ const CustomDashboards: React.FC = () => {
   const [deleting, setDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  /**
+   * An unsaved dashboard built from a template, waiting for the editor.
+   *
+   * Held here rather than on `Mode` because the editor reads it through the same
+   * `dashboard` prop a real one arrives on — a draft is just a dashboard without
+   * an id, and giving it a separate route through the editor would fork every
+   * behaviour that follows.
+   */
+  const [templateDraft, setTemplateDraft] = useState<Dashboard | null>(null);
 
   // Mirrors the backend gate: anyone who can write to at least one account may
   // author dashboards, and the panels they may point at are checked per account
@@ -245,9 +257,16 @@ const CustomDashboards: React.FC = () => {
     return (
       <DashboardEditor
         accountOptions={accountOptions}
-        dashboard={mode.id ? selected?.dashboard || null : null}
-        onCancel={() => setMode({ name: 'list' })}
+        // A template hands over an unsaved draft, which the editor treats as a
+        // new dashboard because it carries no id — same screen, same Save, so
+        // there is no template-shaped variant of the editor to maintain.
+        dashboard={mode.id ? selected?.dashboard || null : templateDraft}
+        onCancel={() => {
+          setTemplateDraft(null);
+          setMode({ name: 'list' });
+        }}
         onSaved={(saved) => {
+          setTemplateDraft(null);
           setSelected({ dashboard: saved, bindings: selected?.bindings || [] });
           setMode({ name: 'view', id: saved.id });
           setRouteId(saved.id);
@@ -397,19 +416,14 @@ const CustomDashboards: React.FC = () => {
         open={templatesOpen}
         accountOptions={accountOptions}
         onClose={() => setTemplatesOpen(false)}
-        // Straight into the dashboard, not the editor: the panels were authored
-        // here and already carry the account the creator chose, so the useful
-        // next thing to see is the data. Import goes to the editor instead,
-        // because its panels are someone else's and may have been dropped.
-        //
-        // Mode is set alongside the route so the URL effect recognises this
-        // dashboard as already open and does not fetch back what the create
-        // just returned.
-        onCreated={(saved) => {
+        // Into the editor, not straight onto a saved dashboard. A template is a
+        // starting point, and the first thing anyone does with one is change a
+        // panel — creating it first would mean editing something that already
+        // exists, and abandoning it would leave a dashboard to delete.
+        onDraft={(draft) => {
           setTemplatesOpen(false);
-          setSelected({ dashboard: saved, bindings: [] });
-          setMode({ name: 'view', id: saved.id });
-          setRouteId(saved.id);
+          setTemplateDraft(draft);
+          setMode({ name: 'edit', id: null });
         }}
       />
 

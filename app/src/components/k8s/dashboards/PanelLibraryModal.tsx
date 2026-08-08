@@ -8,7 +8,7 @@ import { EmptyState } from '@ui/EmptyState';
 import SearchInput from '@ui/SearchInput';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { ds } from '@utils/colors';
-import type { Panel } from '@api1/dashboards';
+import type { AccountOption, Panel } from '@api1/dashboards';
 import {
   panelFromTemplate,
   PANEL_TEMPLATES,
@@ -23,6 +23,12 @@ interface Props {
   open: boolean;
   /** The dashboard's current panels — the copy takes the next free id from them. */
   existingPanels: Panel[];
+  /**
+   * Every account the author may point the copy at. The picker never asks — it
+   * pre-scopes the copy from the widget's datasource and lets the panel editor
+   * show the result.
+   */
+  accountOptions: AccountOption[];
   onClose: () => void;
   /** Handed a ready-to-edit copy; the caller opens the panel editor on it. */
   onPick: (panel: Panel) => void;
@@ -37,13 +43,14 @@ const CATEGORY_ORDER: WidgetCategory[] = ['Cost', 'Issues', 'Reliability', 'Capa
 /**
  * Picks one widget out of the library.
  *
- * The chosen widget is copied, not referenced, and the copy goes straight to
- * the panel editor rather than onto the dashboard — a widget carries no account
- * scope, and the account is the one thing only the author can supply. That also
- * means the query is in front of them before anything is saved, which is the
- * point: a library panel is a starting point to edit, not a black box.
+ * The chosen widget is copied, not referenced, and the copy goes to the panel
+ * editor rather than straight onto the dashboard. Not because the account is
+ * unknown — the datasource settles that, and the copy arrives already scoped —
+ * but because a library panel should be a starting point someone has read, not
+ * a black box that appears fully formed. The editor puts the query and the
+ * chosen account in front of them while both are still free to change.
  */
-const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, onClose, onPick }) => {
+const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptions, onClose, onPick }) => {
   const [role, setRole] = useState<TemplateRole | typeof ALL_ROLES>(ALL_ROLES);
   const [search, setSearch] = useState('');
 
@@ -81,7 +88,7 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, onClose, onP
   };
 
   const pick = (template: PanelTemplate) => {
-    onPick(panelFromTemplate(template, existingPanels));
+    onPick(panelFromTemplate(template, existingPanels, accountOptions));
     setSearch('');
     setRole(ALL_ROLES);
   };
@@ -91,7 +98,7 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, onClose, onP
       open={open}
       handleClose={close}
       title='Add a panel from the library'
-      subtitle='Pick one to open it in the panel editor, where you choose the account it queries.'
+      subtitle='Pick one to open it in the panel editor. Its account is pre-filled from what the widget queries — change it there if that is not the one you want.'
       width='md'
       actionButtons={
         <Stack direction='row' gap='12px' sx={{ button: { minWidth: '140px' } }}>

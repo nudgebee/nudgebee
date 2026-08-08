@@ -155,9 +155,10 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   };
 
   /**
-   * A library widget opens in the panel editor rather than going straight onto
-   * the dashboard: it carries a query but no account, and the account is the one
-   * field only the author can fill in.
+   * A library widget opens in the panel editor rather than landing directly:
+   * it arrives with its account already pre-filled from the datasource, and the
+   * editor is where that choice — and the query behind it — is visible while
+   * both are still free to change.
    */
   const openLibraryPanel = (panel: Panel) => {
     setLibraryOpen(false);
@@ -387,7 +388,13 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           )}
         </Box>
 
-        <PanelLibraryModal open={libraryOpen} existingPanels={panels} onClose={() => setLibraryOpen(false)} onPick={openLibraryPanel} />
+        <PanelLibraryModal
+          open={libraryOpen}
+          existingPanels={panels}
+          accountOptions={accounts}
+          onClose={() => setLibraryOpen(false)}
+          onPick={openLibraryPanel}
+        />
 
         <PanelEditorModal
           open={panelModalOpen}

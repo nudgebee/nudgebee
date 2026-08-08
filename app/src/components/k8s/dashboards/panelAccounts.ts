@@ -57,6 +57,65 @@ export function panelScope(accountType: string, accountIds: string[]): PanelScop
   return { account_type: accountType || undefined, account_ids: [] };
 }
 
+/** Every account belonging to any of these providers, in account-list order. */
+export function accountsOfTypes(types: string[], accounts: AccountOption[]): AccountOption[] {
+  const wanted = new Set(types.filter(Boolean));
+  return accounts.filter((a) => wanted.has(a.cloud_provider));
+}
+
+/**
+ * The same normalisation for a panel that may span SEVERAL providers.
+ *
+ * A `nudgebee` panel reads the internal query engine, which takes a list of
+ * account ids and does not care what provider they came from — so "AWS and GCP"
+ * is a scope that means something there, and only there. Every other datasource
+ * resolves one provider's integration and gets the single-type control.
+ *
+ * `account_type` names exactly ONE provider, so a multi-provider choice can only
+ * be stored as the accounts themselves. That is a real trade-off: an id list is
+ * pinned at authoring time and will not pick up an account connected later,
+ * where a single type keeps resolving at render. It is the price of the scope
+ * being expressible at all; `deriveAccountTypes` reads the types back out so the
+ * editor still shows providers rather than a wall of account names.
+ */
+export function panelScopeFromTypes(accountTypes: string[], accountIds: string[], accounts: AccountOption[]): PanelScope {
+  const ids = accountIds.filter(Boolean);
+  if (ids.length > 0) return { account_type: undefined, account_ids: ids };
+
+  const types = accountTypes.filter(Boolean);
+  if (types.length === 0) return { account_type: undefined, account_ids: [] };
+  if (types.length === 1) return { account_type: types[0], account_ids: [] };
+  return { account_type: undefined, account_ids: accountsOfTypes(types, accounts).map((a) => a.value) };
+}
+
+/**
+ * The account types to show in the editor for an existing panel — the plural of
+ * `deriveAccountType`, for the multi-provider control.
+ */
+export function deriveAccountTypes(panel: PanelScope, accounts: AccountOption[]): string[] {
+  if (panel.account_type) return [panel.account_type];
+  const providers = resolvePanelAccounts(panel, accounts)
+    .map((a) => a.cloud_provider)
+    .filter(Boolean);
+  return [...new Set(providers)];
+}
+
+/**
+ * Whether a panel names EVERY account of the providers it spans.
+ *
+ * That is what `panelScopeFromTypes` writes for a multi-provider choice, and it
+ * has to be told apart from a genuine hand-picked subset: the first should
+ * reopen as "these providers, all accounts" with the account picker empty, the
+ * second as the exact accounts that were ticked.
+ */
+export function coversAllOfTypes(panel: PanelScope, accounts: AccountOption[]): boolean {
+  if (panel.account_type) return true;
+  const ids = new Set((panel.account_ids || []).filter(Boolean));
+  if (ids.size === 0) return false;
+  const inTypes = accountsOfTypes(deriveAccountTypes(panel, accounts), accounts);
+  return inTypes.length > 0 && inTypes.every((a) => ids.has(a.value));
+}
+
 /**
  * Labels describing what a panel is scoped to, one per chip: the provider for a
  * type-scoped panel, or every account name for an id-scoped one. Empty when

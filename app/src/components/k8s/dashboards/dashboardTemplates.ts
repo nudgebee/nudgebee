@@ -1,5 +1,6 @@
+import { convertNativeDashboard, panelSourceKey, type ScopeMapping } from './nativeImport';
 import { findPanelTemplate, type PanelTemplate, type TemplateRole } from './panelTemplates';
-import { referencedVariables, renderTemplate, type VariableValues } from './templating';
+import { panelScope, type PanelScope } from './panelAccounts';
 
 /**
  * Ready-made dashboards, composed from the widget library.
@@ -12,21 +13,8 @@ import { referencedVariables, renderTemplate, type VariableValues } from './temp
  *
  * Panels are named by widget id rather than re-declared, so a query lives in
  * exactly one place. `templates.test.ts` fails the build if an id here has no
- * widget, or if a query references a variable the template does not declare.
+ * widget, and if a widget's scope or query stops matching what it claims.
  */
-
-export interface TemplateVariable {
-  /** Token used in the panels' PromQL, without the `$`. */
-  name: string;
-  label: string;
-  /**
-   * Prefilled value. Every variable is used as a regex matcher, so the default
-   * is `.*` — the dashboard shows everything until it is narrowed, rather than
-   * opening on an empty chart and looking broken.
-   */
-  defaultValue: string;
-  help: string;
-}
 
 export interface DashboardTemplate {
   id: string;
@@ -34,24 +22,9 @@ export interface DashboardTemplate {
   /** One or two sentences: who this is for and what decision it supports. */
   description: string;
   roles: TemplateRole[];
-  variables?: TemplateVariable[];
   /** Widget ids in display order; `width` overrides the widget's own. */
   panels: { widget: string; width?: number }[];
 }
-
-const NAMESPACE_VARIABLE: TemplateVariable = {
-  name: 'namespace',
-  label: 'Namespace',
-  defaultValue: '.*',
-  help: 'Regular expression. Leave as .* for every namespace, or narrow to one — payments, or checkout|cart.',
-};
-
-const WORKLOAD_VARIABLE: TemplateVariable = {
-  name: 'workload',
-  label: 'Workload',
-  defaultValue: '.*',
-  help: 'Regular expression matching the deployment name. Leave as .* to chart everything in the namespace.',
-};
 
 export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
   {
@@ -92,7 +65,6 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
     description:
       'The weekly or monthly service-review pack: what fired, whose namespace it was in, what is new, and whether error rate and rollout health moved with it.',
     roles: ['manager', 'sre'],
-    variables: [NAMESPACE_VARIABLE],
     panels: [
       { widget: 'noisiest-issues' },
       { widget: 'issues-by-namespace' },
@@ -109,7 +81,6 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
     description:
       'Traffic, errors and latency for every service, then the traces underneath them. Start here when something is slow and you do not yet know what.',
     roles: ['sre', 'developer'],
-    variables: [NAMESPACE_VARIABLE],
     panels: [
       { widget: 'request-rate-by-service' },
       { widget: 'error-rate-percent' },
@@ -166,7 +137,6 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
     description:
       'One service, end to end: its pods’ CPU and memory, its restarts, its traffic and latency, and the calls it makes that are slow. Set the namespace and workload when you create it.',
     roles: ['developer', 'sre'],
-    variables: [NAMESPACE_VARIABLE, WORKLOAD_VARIABLE],
     panels: [
       { widget: 'workload-cpu-usage' },
       { widget: 'workload-memory-usage' },
@@ -191,11 +161,6 @@ export function templateWidgets(template: DashboardTemplate): PanelTemplate[] {
   return template.panels.map((p) => findPanelTemplate(p.widget)).filter((w): w is PanelTemplate => Boolean(w));
 }
 
-/** Default values for a template's variables, keyed by name. */
-export function templateVariableDefaults(template: DashboardTemplate): VariableValues {
-  return Object.fromEntries((template.variables || []).map((v) => [v.name, v.defaultValue]));
-}
-
 /**
  * The template rendered as a file in this app's own export format, which the
  * native importer then validates and scopes to the chosen accounts.
@@ -205,35 +170,47 @@ export function templateVariableDefaults(template: DashboardTemplate): VariableV
  * would fail server validation is dropped with a warning the gallery can show,
  * instead of being rejected as a whole dashboard on save.
  *
- * Variables are substituted into query expressions only. An entity or trace
- * filter is a literal the backend compares against a typed column, so a
- * `.*` default would filter it down to nothing rather than open it up.
+ * Queries are copied verbatim. Templates carry no variables: a `$name` token is
+ * only substituted when a dashboard is opened from a page that supplies one, so
+ * a template that shipped them would run the literal text everywhere else. A
+ * query meant to be narrowed writes `=~".*"` and is edited in the panel editor.
  */
-export function buildTemplateDocument(template: DashboardTemplate, values: VariableValues, title?: string) {
-  const panels = template.panels
-    .map((entry, index) => {
-      const widget = findPanelTemplate(entry.widget);
-      if (!widget) return null;
-      return {
-        ...widget.panel,
-        id: index + 1,
-        // `query` is deep-copied for the same reason `panelFromTemplate` does
-        // it: the spread is shallow, so without this the object hanging off a
-        // module-level constant escapes into the converted document and on into
-        // whatever the caller does with it. Nothing mutates it on today's path —
-        // the created dashboard is re-read from the save response — but the
-        // library would be corrupted for the rest of the session by the first
-        // caller that did, and that is not a failure anyone would trace back
-        // here.
-        targets: (widget.panel.targets || []).map((t) => ({
-          ...t,
-          ...(t.expr ? { expr: renderTemplate(t.expr, values) } : {}),
-          ...(t.query ? { query: JSON.parse(JSON.stringify(t.query)) } : {}),
-        })),
-        grid_pos: { ...widget.panel.grid_pos, ...(entry.width ? { w: entry.width } : {}) },
-      };
-    })
-    .filter(Boolean);
+export function buildTemplateDocument(template: DashboardTemplate, title?: string, scopes: PanelScope[] = []) {
+  // Unresolvable ids are dropped FIRST, so `index` below counts resolved panels
+  // — the same thing `templateWidgets` counts, and therefore the same thing the
+  // caller indexed its `scopes` by. Reading `scopes[index]` off the raw
+  // `template.panels` instead would shift every scope after a missing widget
+  // onto the wrong panel, and the last one onto nothing at all.
+  const resolved = template.panels
+    .map((entry) => ({ entry, widget: findPanelTemplate(entry.widget) }))
+    .filter((r): r is { entry: DashboardTemplate['panels'][number]; widget: PanelTemplate } => Boolean(r.widget));
+
+  const panels = resolved.map(({ entry, widget }, index) => {
+    return {
+      ...widget.panel,
+      id: index + 1,
+      // Scope is PER PANEL, not per dashboard: a savings table reads the query
+      // engine across every account while the chart beside it reads one
+      // cluster's Prometheus, and forcing both onto one account type would
+      // break whichever of the two lost. The panel model has always allowed
+      // this — `account_type` / `account_ids` live on the Panel — so a
+      // dashboard mixing providers needs no new concept.
+      ...(scopes[index] || {}),
+      // `query` is deep-copied for the same reason `panelFromTemplate` does
+      // it: the spread is shallow, so without this the object hanging off a
+      // module-level constant escapes into the converted document and on into
+      // whatever the caller does with it. Nothing mutates it on today's path —
+      // the created dashboard is re-read from the save response — but the
+      // library would be corrupted for the rest of the session by the first
+      // caller that did, and that is not a failure anyone would trace back
+      // here.
+      targets: (widget.panel.targets || []).map((t) => ({
+        ...t,
+        ...(t.query ? { query: JSON.parse(JSON.stringify(t.query)) } : {}),
+      })),
+      grid_pos: { ...widget.panel.grid_pos, ...(entry.width ? { w: entry.width } : {}) },
+    };
+  });
 
   return {
     title: (title || '').trim() || template.title,
@@ -242,13 +219,28 @@ export function buildTemplateDocument(template: DashboardTemplate, values: Varia
   };
 }
 
-/** Variable names a template's panels actually reference. Used by its test. */
-export function variablesUsedBy(template: DashboardTemplate): string[] {
-  const found = new Set<string>();
-  for (const widget of templateWidgets(template)) {
-    for (const target of widget.panel.targets || []) {
-      for (const name of referencedVariables(target.expr || '')) found.add(name);
-    }
+/**
+ * A template and its per-panel scopes, converted into the panels a save takes.
+ *
+ * The conversion goes through the native importer so a template is held to the
+ * same rules as a pasted export — a panel that would fail server validation is
+ * dropped with a warning the caller can show, rather than rejecting the whole
+ * dashboard on save.
+ *
+ * That importer applies ONE default scope to every panel, which is right for a
+ * Grafana file and the opposite of what a template needs now that scope is per
+ * panel. Its mapping table is the supported way to say "this panel keeps the
+ * scope it arrived with" — the same path a same-tenant re-import takes — so
+ * panels naming different providers survive conversion intact. The default is
+ * therefore unreachable, and deliberately empty: a panel with no scope at all
+ * should be caught by the caller, not silently given someone else's account.
+ */
+export function convertTemplate(template: DashboardTemplate, title: string, scopes: PanelScope[]) {
+  const document = buildTemplateDocument(template, title, scopes);
+  const mappings: ScopeMapping = {};
+  for (const panel of document.definition.panels as any[]) {
+    const key = panelSourceKey(panel);
+    if (key) mappings[key] = panelScope(panel.account_type || '', panel.account_ids || []);
   }
-  return [...found];
+  return convertNativeDashboard(document, { account_type: undefined, account_ids: [] }, mappings);
 }

@@ -11,7 +11,7 @@ import { ds } from '@utils/colors';
 import { isCommandDatasource, type AccountOption, type Panel, type PanelDatasource, type PanelType } from '@api1/dashboards';
 import EntityQueryBuilder from './EntityQueryBuilder';
 import { buildEntityQuery, defaultDraft, draftFromQuery, tablesFor, type EntityQueryDraft } from './entityQuery';
-import { deriveAccountType, panelScope } from './panelAccounts';
+import { accountsOfTypes, coversAllOfTypes, deriveAccountTypes, panelScopeFromTypes } from './panelAccounts';
 import { referencedVariables } from './templating';
 
 interface Props {
@@ -75,12 +75,17 @@ const WIDTHS = [3, 4, 6, 8, 12].map((w) => ({ label: `${w} / 12`, value: String(
 const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClose, onSave }) => {
   const [draft, setDraft] = useState<Panel | null>(panel);
   /**
-   * Account type is editor-local, not panel state. It does double duty — it
-   * filters the account picker AND, on its own, means "every account of this
-   * provider". `panelScope` collapses the two controls into the one-or-the-other
-   * shape the backend stores, so the panel never holds both.
+   * Account types are editor-local, not panel state. They do double duty — they
+   * filter the account picker AND, on their own, mean "every account of these
+   * providers". `panelScopeFromTypes` collapses the two controls into the shape
+   * the backend stores, so the panel never holds both.
+   *
+   * A list rather than a string because a `nudgebee` panel may legitimately span
+   * providers: the query engine takes account ids and does not resolve a
+   * per-provider integration the way metrics, logs and the command datasources
+   * do. Every other datasource renders this same state as a single select.
    */
-  const [accountType, setAccountType] = useState('');
+  const [accountTypes, setAccountTypes] = useState<string[]>([]);
   const [accountIds, setAccountIds] = useState<string[]>([]);
   /**
    * The entity builder's own state. Editor-local like the account controls: the
@@ -98,12 +103,15 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClos
   // Re-seed when a different panel is opened.
   React.useEffect(() => {
     setDraft(panel);
-    setAccountType(panel ? deriveAccountType(panel, accountOptions) : '');
-    setAccountIds(panel?.account_ids || []);
+    setAccountTypes(panel ? deriveAccountTypes(panel, accountOptions) : []);
+    // A panel naming every account of its providers IS "all of those providers",
+    // which the types control already says. Echoing it in the account picker
+    // would read as a hand-picked list nobody chose.
+    setAccountIds(panel && coversAllOfTypes(panel, accountOptions) ? [] : panel?.account_ids || []);
     setEntityDraft(draftFromQuery(panel?.targets?.[0]?.query));
   }, [panel, accountOptions]);
 
-  const accountTypes = useMemo(() => {
+  const accountTypeOptions = useMemo(() => {
     const seen = new Set<string>();
     for (const o of accountOptions) {
       if (o.cloud_provider) seen.add(o.cloud_provider);
@@ -111,11 +119,17 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClos
     return [...seen].sort().map((t) => ({ label: t, value: t }));
   }, [accountOptions]);
 
-  // The account picker lists only the chosen provider's accounts — an unfiltered
+  // The account picker lists only the chosen providers' accounts — an unfiltered
   // list mixes clusters with cloud accounts and is unreadable past a handful.
-  const accountsForType = useMemo(
-    () => accountOptions.filter((o) => o.cloud_provider === accountType).map((o) => ({ label: o.label, value: o.value })),
-    [accountOptions, accountType]
+  // Across several providers the label carries the provider too, since two
+  // accounts called "prod" in different clouds are otherwise the same row twice.
+  const accountsForTypes = useMemo(
+    () =>
+      accountsOfTypes(accountTypes, accountOptions).map((o) => ({
+        label: accountTypes.length > 1 && o.cloud_provider ? `${o.label} (${o.cloud_provider})` : o.label,
+        value: o.value,
+      })),
+    [accountOptions, accountTypes]
   );
 
   const expr = draft?.targets?.[0]?.expr || '';
@@ -137,11 +151,12 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClos
         : prev
     );
 
-  const changeAccountType = (next: string) => {
-    setAccountType(next);
-    // Selections from the previous provider would be invisible in the filtered
-    // list yet still scope the panel, so drop them.
-    setAccountIds((prev) => prev.filter((id) => accountOptions.some((o) => o.value === id && o.cloud_provider === next)));
+  const changeAccountTypes = (next: string[]) => {
+    setAccountTypes(next);
+    // Selections from a provider that is no longer chosen would be invisible in
+    // the filtered list yet still scope the panel, so drop them.
+    const kept = new Set(accountsOfTypes(next, accountOptions).map((o) => o.value));
+    setAccountIds((prev) => prev.filter((id) => kept.has(id)));
   };
 
   /**
@@ -165,6 +180,10 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClos
     // stored query held the defaults.
     const entityStart = defaultDraft(datasource);
     if (entity) setEntityDraft(entityStart);
+    // Only `nudgebee` reads across providers, so leaving a second one selected
+    // on the way out would save a scope the single control cannot show — the
+    // field would read "AWS" while the panel quietly queried AWS and GCP.
+    if (datasource !== 'nudgebee') changeAccountTypes(accountTypes.slice(0, 1));
     setDraft((prev) =>
       prev
         ? {
@@ -188,7 +207,14 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClos
   const isEntity = entityTables.length > 0;
   const isLogs = draft.datasource === 'logs';
   const isText = draft.type === 'text';
-  const hasScope = Boolean(accountType) || accountIds.length > 0;
+  /**
+   * Only a `nudgebee` panel may name several providers at once. The query engine
+   * takes a list of account ids and resolves nothing per-provider; metrics, logs,
+   * traces and the command datasources each resolve ONE integration from the
+   * account, so a second provider there is not a wider query, it is a broken one.
+   */
+  const multiType = draft.datasource === 'nudgebee';
+  const hasScope = accountTypes.length > 0 || accountIds.length > 0;
   const canSave = draft.title.trim().length > 0 && (isText || (hasScope && (isEntity ? Boolean(draft.targets?.[0]?.query) : expr.trim().length > 0)));
   // A panel that has been saved always carries a title (`canSave` demands one),
   // so a titled panel is one being edited rather than a blank being authored.
@@ -197,7 +223,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClos
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onSave({ ...draft, ...panelScope(accountType, accountIds) });
+      await onSave({ ...draft, ...panelScopeFromTypes(accountTypes, accountIds, accountOptions) });
     } finally {
       // Also on failure: the parent keeps the modal open so the author can fix
       // whatever the server rejected, and a stuck loader would block that.
@@ -238,49 +264,6 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClos
 
         {!isText && (
           <>
-            {/* Accounts are per panel, not per dashboard — two panels on one
-                dashboard may query different accounts. Type picks the provider
-                and filters the account list; leaving Accounts empty charts every
-                account of that provider. */}
-            <Form.Section title='Accounts' description='Choose a provider to chart all of its accounts, or narrow to specific ones.' divider>
-              <Form.Row ratio={[1, 1]}>
-                <Form.Field label='Account type' required>
-                  <Select
-                    value={accountType}
-                    options={accountTypes}
-                    onChange={changeAccountType}
-                    placeholder='Select…'
-                    id='panel-account-type-select'
-                  />
-                </Form.Field>
-                {/* The guidance is an info icon, not a description line: a
-                    description under one field of a Form.Row pushes its control
-                    down and misaligns it against the other. */}
-                <Form.Field
-                  label={
-                    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      Accounts
-                      <Tooltip title='Leave empty for all accounts of this type'>
-                        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}>
-                          <InfoOutlinedIcon sx={{ fontSize: 13 }} />
-                        </Box>
-                      </Tooltip>
-                    </Box>
-                  }
-                >
-                  <Select
-                    multiple
-                    value={accountIds}
-                    options={accountsForType}
-                    onChange={setAccountIds}
-                    disabled={!accountType}
-                    placeholder={accountType ? `All ${accountType} accounts` : 'Select…'}
-                    id='panel-account-select'
-                  />
-                </Form.Field>
-              </Form.Row>
-            </Form.Section>
-
             <Form.Section title='Query' divider>
               <Form.Field label='Data source'>
                 <Select value={draft.datasource} options={DATASOURCES} onChange={changeDatasource} />
@@ -351,6 +334,79 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, onClos
                   </Typography>
                 </Box>
               )}
+            </Form.Section>
+
+            {/* After the query, not before it: the data source decides whether
+                this asks for one provider or several, so the question does not
+                exist until it has been answered. It also reads in the order the
+                panel is actually authored — what to fetch, then from where.
+
+                Accounts are per panel, not per dashboard: two panels on one
+                dashboard may query different accounts. The type filters the
+                account list, and leaving Accounts empty charts every account of
+                that provider. */}
+            <Form.Section
+              title='Accounts'
+              description={
+                multiType
+                  ? 'Choose the providers to read across, or narrow to specific accounts. Findings are one query over whatever you pick, so several providers is a wider answer rather than a broken one.'
+                  : 'Choose a provider to chart all of its accounts, or narrow to specific ones.'
+              }
+              divider
+            >
+              <Form.Row ratio={[1, 1]}>
+                <Form.Field label={multiType ? 'Account types' : 'Account type'} required>
+                  {/* Single vs multiple is the datasource's call, not the
+                      author's: only the query engine reads across providers. The
+                      single case wraps the same list state so nothing else has
+                      to know which control is on screen. */}
+                  {multiType ? (
+                    <Select
+                      multiple
+                      value={accountTypes}
+                      options={accountTypeOptions}
+                      onChange={changeAccountTypes}
+                      placeholder='Select…'
+                      id='panel-account-type-select'
+                    />
+                  ) : (
+                    <Select
+                      value={accountTypes[0] || ''}
+                      options={accountTypeOptions}
+                      onChange={(next: string) => changeAccountTypes(next ? [next] : [])}
+                      placeholder='Select…'
+                      id='panel-account-type-select'
+                    />
+                  )}
+                </Form.Field>
+                {/* The guidance is an info icon, not a description line: a
+                    description under one field of a Form.Row pushes its control
+                    down and misaligns it against the other. */}
+                <Form.Field
+                  label={
+                    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      Accounts
+                      <Tooltip
+                        title={multiType ? 'Leave empty for all accounts of the chosen providers' : 'Leave empty for all accounts of this type'}
+                      >
+                        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}>
+                          <InfoOutlinedIcon sx={{ fontSize: 13 }} />
+                        </Box>
+                      </Tooltip>
+                    </Box>
+                  }
+                >
+                  <Select
+                    multiple
+                    value={accountIds}
+                    options={accountsForTypes}
+                    onChange={setAccountIds}
+                    disabled={accountTypes.length === 0}
+                    placeholder={accountTypes.length > 0 ? `All ${accountTypes.join(', ')} accounts` : 'Select…'}
+                    id='panel-account-select'
+                  />
+                </Form.Field>
+              </Form.Row>
             </Form.Section>
           </>
         )}

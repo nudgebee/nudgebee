@@ -1,5 +1,6 @@
-import type { Panel, PanelTarget, PanelType } from '@api1/dashboards';
+import type { AccountOption, Panel, PanelTarget, PanelType } from '@api1/dashboards';
 import { buildEntityQuery, defaultDraft, findTable, type EntityQueryDraft } from './entityQuery';
+import { panelScopeFromTypes, type PanelScope } from './panelAccounts';
 import { nextPanelId } from './panelDefaults';
 
 /**
@@ -10,20 +11,24 @@ import { nextPanelId } from './panelDefaults';
  * ordinary panel the author owns. Nothing links back, so editing a copy never
  * changes the library and a library change never rewrites someone's dashboard.
  *
- * A widget deliberately carries NO account scope. Accounts are per panel and
- * only the author knows which of theirs this should query, so the picker hands
- * the copy straight to the panel editor with the account field empty.
+ * A widget carries no account scope of its own, because accounts are per panel
+ * and belong to the tenant, not the catalogue. It does carry enough to derive
+ * one: `accountKind` says what the query is about, and `defaultWidgetScope`
+ * turns that into the account TYPES it can run against, so a copy opens
+ * pre-scoped rather than on an empty account field. Types, never a pinned list
+ * of somebody's accounts — that is a choice the author makes, not the library.
  *
  * Two rules the whole catalogue keeps:
  *
  *  - ONE target per panel. The panel editor rewrites target A in place, so a
  *    two-target widget would silently lose its second query the first time
  *    someone opened it.
- *  - Variables (`$namespace`, `$workload`) appear only in PromQL, and only as
- *    regex matchers defaulting to `.*`. An entity filter is a literal value the
- *    query engine compares against a typed column, and a trace filter is a
- *    comma-separated list — neither has a "matches everything" value, so a
- *    substituted-in default would narrow the panel to nothing instead.
+ *  - NO template variables. A query that narrows to a namespace or a workload
+ *    writes the matcher as `=~".*"` and the author edits it in the panel editor.
+ *    `$name` tokens are only substituted when a dashboard is opened from a page
+ *    that supplies them, so anywhere else they run as literal text — a panel
+ *    querying for a namespace called `$namespace` finds nothing and looks like
+ *    an empty chart rather than a mistake.
  */
 
 export type TemplateRole = 'cto' | 'manager' | 'sre' | 'devops' | 'developer';
@@ -46,12 +51,26 @@ export type WidgetCategory = 'Cost' | 'Issues' | 'Reliability' | 'Capacity' | 'P
 /** A widget's panel body — everything except the identity a dashboard gives it. */
 export type TemplatePanel = Pick<Panel, 'title' | 'description' | 'type' | 'datasource' | 'targets' | 'unit' | 'grid_pos'>;
 
+/**
+ * The kind of account a widget's query belongs on.
+ *
+ * Not derivable from the datasource, which is why it is declared. PromQL and
+ * spans reach a cluster, so those are `cluster`. The query engine takes any
+ * account, so what decides a findings widget is what it is ABOUT: savings and
+ * recommendations live against cloud accounts, K8s events against the cluster.
+ * A CloudWatch-native metrics widget, when one is written, declares `cloud` for
+ * the same reason.
+ */
+export type WidgetAccountKind = 'cluster' | 'cloud';
+
 export interface PanelTemplate {
   id: string;
   category: WidgetCategory;
   roles: TemplateRole[];
   /** The question this panel answers — the line under its title in the picker. */
   summary: string;
+  /** Defaults to `cluster`, which is what all but the cost widgets want. */
+  accountKind?: WidgetAccountKind;
   panel: TemplatePanel;
 }
 
@@ -108,6 +127,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
   {
     id: 'savings-by-rule',
     category: 'Cost',
+    accountKind: 'cloud',
     roles: ['cto', 'manager', 'devops'],
     summary: 'Which kind of waste is worth the most, ranked by total savings.',
     panel: entityPanel({
@@ -124,6 +144,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
   {
     id: 'savings-by-account',
     category: 'Cost',
+    accountKind: 'cloud',
     roles: ['cto', 'manager'],
     summary: 'Where the money is, by cloud account.',
     panel: entityPanel({
@@ -140,6 +161,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
   {
     id: 'savings-by-service',
     category: 'Cost',
+    accountKind: 'cloud',
     roles: ['cto', 'manager', 'devops'],
     summary: 'Which cloud service the waste sits in — compute, storage, database.',
     panel: entityPanel({
@@ -156,6 +178,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
   {
     id: 'top-savings-resources',
     category: 'Cost',
+    accountKind: 'cloud',
     roles: ['manager', 'devops', 'sre'],
     summary: 'The individual resources to act on first.',
     panel: entityPanel({
@@ -178,6 +201,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
   {
     id: 'critical-recommendations',
     category: 'Cost',
+    accountKind: 'cloud',
     roles: ['sre', 'devops', 'manager'],
     summary: 'The findings rated Critical or High, whatever they are worth.',
     panel: entityPanel({
@@ -515,7 +539,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'Request rate by service',
       description: 'HTTP requests per second reaching each workload.',
-      expr: 'sum by (destination_workload_name) (rate(container_http_requests_total{destination_workload_namespace=~"$namespace"}[5m]))',
+      expr: 'sum by (destination_workload_name) (rate(container_http_requests_total{destination_workload_namespace=~".*"}[5m]))',
       unit: 'req/s',
     }),
   },
@@ -527,7 +551,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'Error rate',
       description: '5xx responses as a share of all requests.',
-      expr: '100 * sum(rate(container_http_requests_total{status=~"5..", destination_workload_namespace=~"$namespace"}[5m])) / sum(rate(container_http_requests_total{destination_workload_namespace=~"$namespace"}[5m]))',
+      expr: '100 * sum(rate(container_http_requests_total{status=~"5..", destination_workload_namespace=~".*"}[5m])) / sum(rate(container_http_requests_total{destination_workload_namespace=~".*"}[5m]))',
       unit: '%',
     }),
   },
@@ -539,7 +563,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'p99 latency by service',
       description: '99th percentile request duration per workload.',
-      expr: 'histogram_quantile(0.99, sum by (le, destination_workload_name) (rate(container_http_requests_duration_seconds_total_bucket{destination_workload_namespace=~"$namespace"}[5m])))',
+      expr: 'histogram_quantile(0.99, sum by (le, destination_workload_name) (rate(container_http_requests_duration_seconds_total_bucket{destination_workload_namespace=~".*"}[5m])))',
       unit: 's',
     }),
   },
@@ -551,7 +575,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'p50 latency by service',
       description: 'Median request duration per workload. Read beside p99: both rising is a slow service, only p99 rising is a tail problem.',
-      expr: 'histogram_quantile(0.50, sum by (le, destination_workload_name) (rate(container_http_requests_duration_seconds_total_bucket{destination_workload_namespace=~"$namespace"}[5m])))',
+      expr: 'histogram_quantile(0.50, sum by (le, destination_workload_name) (rate(container_http_requests_duration_seconds_total_bucket{destination_workload_namespace=~".*"}[5m])))',
       unit: 's',
     }),
   },
@@ -563,7 +587,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'Busiest endpoints',
       description: 'Request rate per path, top ten.',
-      expr: 'topk(10, sum by (path, destination_workload_name) (rate(container_http_requests_total{destination_workload_namespace=~"$namespace"}[5m])))',
+      expr: 'topk(10, sum by (path, destination_workload_name) (rate(container_http_requests_total{destination_workload_namespace=~".*"}[5m])))',
       unit: 'req/s',
     }),
   },
@@ -635,7 +659,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'CPU usage by pod',
       description: 'CPU cores used per pod of the selected workload.',
-      expr: 'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=~"$namespace", pod=~"$workload.*"}[5m]))',
+      expr: 'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=~".*", pod=~".*"}[5m]))',
       unit: 'cores',
     }),
   },
@@ -647,7 +671,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'Memory usage by pod',
       description: 'Working-set bytes per pod of the selected workload.',
-      expr: 'sum by (pod) (container_memory_working_set_bytes{namespace=~"$namespace", pod=~"$workload.*"})',
+      expr: 'sum by (pod) (container_memory_working_set_bytes{namespace=~".*", pod=~".*"})',
       unit: 'bytes',
     }),
   },
@@ -659,7 +683,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'Restarts by pod',
       description: 'Container restarts in the last hour, per pod of the selected workload.',
-      expr: 'sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace=~"$namespace", pod=~"$workload.*"}[1h]))',
+      expr: 'sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace=~".*", pod=~".*"}[1h]))',
       unit: 'restarts',
     }),
   },
@@ -671,7 +695,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'Available replicas',
       description: 'Replicas reporting available for the selected deployment.',
-      expr: 'sum by (deployment) (kube_deployment_status_replicas_available{namespace=~"$namespace", deployment=~"$workload"})',
+      expr: 'sum by (deployment) (kube_deployment_status_replicas_available{namespace=~".*", deployment=~".*"})',
       unit: 'replicas',
     }),
   },
@@ -681,19 +705,59 @@ export function findPanelTemplate(id: string): PanelTemplate | undefined {
   return PANEL_TEMPLATES.find((t) => t.id === id);
 }
 
+export function widgetAccountKind(widget: PanelTemplate): WidgetAccountKind {
+  return widget.accountKind || 'cluster';
+}
+
+/**
+ * The scope to open a widget on, given the accounts the viewer can see.
+ *
+ * Always an account TYPE, never a list of accounts. A type means "every account
+ * of this provider" and is resolved at render, so the panel widens on its own as
+ * accounts are connected; pinning ids at authoring time freezes it, and a
+ * pre-ticked list of somebody's accounts is a choice we have no business making
+ * for them. Leaving Accounts empty in the editor says the same thing and reads
+ * as a default rather than a decision.
+ *
+ * The provider is read off a connected account by `kind` rather than compared
+ * against the literal 'K8S' / 'AWS' — those are backend vocabulary, and `kind`
+ * is the field that actually means "cluster" or "cloud".
+ *
+ * Empty when nothing fits. A tenant with no cluster cannot scope a PromQL
+ * widget, and the red "No account" chip in the editor is the honest answer —
+ * better than pre-selecting an account that will not answer.
+ */
+export function defaultWidgetScope(widget: PanelTemplate, accounts: AccountOption[]): PanelScope {
+  const wanted = widgetAccountKind(widget) === 'cloud' ? 'cloud' : 'kubernetes';
+  const providers = [...new Set(accounts.filter((a) => a.kind === wanted).map((a) => a.cloud_provider))].filter(Boolean);
+
+  // A findings widget reads the query engine, which is the one datasource that
+  // spans providers — so a cost widget opens on EVERY cloud provider rather than
+  // whichever happened to be connected first. Everything else resolves one
+  // provider's integration and takes the first match.
+  if (widget.panel.datasource === 'nudgebee') return panelScopeFromTypes(providers, [], accounts);
+  return { account_type: providers[0] || undefined, account_ids: [] };
+}
+
 /**
  * Copies a widget into a dashboard's panel list.
  *
- * Identity and account scope come from `blankPanel` — the widget carries
- * neither, and the picker hands the result to the panel editor so the author
- * chooses the account before anything is saved.
+ * The copy opens on the scope its datasource implies — a PromQL widget on the
+ * cluster accounts, a findings widget on all of them — rather than on an empty
+ * account field. We know where the query has to run; making the author work
+ * that out for each of 41 widgets is asking them to re-derive something the
+ * datasource already settled.
+ *
+ * It is a starting point, not a decision: the copy goes to the panel editor
+ * with the scope pre-filled and visible, where it can be changed before
+ * anything is saved. Passing no accounts leaves the scope empty, which is the
+ * honest answer for a caller that has none to offer.
  */
-export function panelFromTemplate(template: PanelTemplate, existing: Panel[]): Panel {
+export function panelFromTemplate(template: PanelTemplate, existing: Panel[], accounts: AccountOption[] = []): Panel {
   return {
     ...template.panel,
     id: nextPanelId(existing),
-    account_type: undefined,
-    account_ids: [],
+    ...defaultWidgetScope(template, accounts),
     // Deep-copied: the catalogue is a module-level singleton, and a panel edited
     // in place would otherwise rewrite the library for the rest of the session.
     targets: (template.panel.targets || []).map((t) => ({ ...t, ...(t.query ? { query: JSON.parse(JSON.stringify(t.query)) } : {}) })),

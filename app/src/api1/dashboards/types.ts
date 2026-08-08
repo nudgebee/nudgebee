@@ -187,4 +187,16 @@ export interface AccountOption {
   label: string;
   value: string;
   cloud_provider: string;
+  /**
+   * What the account manages — `kubernetes`, `cloud` or `vm` — straight off
+   * `accounts_list`'s `account_type`.
+   *
+   * Deliberately NOT named `account_type`: on a Panel that field holds the
+   * PROVIDER ("K8S"), and having the two mean different things under one name
+   * is how a scope ends up pointing at the wrong accounts.
+   *
+   * Optional because it is additive — a caller that has not been updated simply
+   * cannot pre-select by kind, rather than pre-selecting wrongly.
+   */
+  kind?: string;
 }

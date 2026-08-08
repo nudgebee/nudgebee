@@ -1,8 +1,11 @@
 import type { AccountOption } from '@api1/dashboards';
 import {
   applyAccountFilter,
+  coversAllOfTypes,
   deriveAccountType,
+  deriveAccountTypes,
   describePanelScope,
+  panelScopeFromTypes,
   panelQueryAccounts,
   panelScope,
   panelScopeLabels,
@@ -180,5 +183,55 @@ describe('describePanelScope', () => {
   it('says so when nothing resolves', () => {
     expect(describePanelScope({ account_ids: ['gone'] }, ACCOUNTS)).toBe('No account');
     expect(describePanelScope({}, ACCOUNTS)).toBe('No account');
+  });
+});
+
+describe('multi-provider scope', () => {
+  const ACCOUNTS = [
+    { label: 'cluster', value: 'k1', cloud_provider: 'K8S', kind: 'kubernetes' },
+    { label: 'aws-prod', value: 'a1', cloud_provider: 'AWS', kind: 'cloud' },
+    { label: 'aws-dev', value: 'a2', cloud_provider: 'AWS', kind: 'cloud' },
+    { label: 'gcp-prod', value: 'g1', cloud_provider: 'GCP', kind: 'cloud' },
+  ];
+
+  it('keeps one provider as a type, so the panel widens as accounts are connected', () => {
+    expect(panelScopeFromTypes(['AWS'], [], ACCOUNTS)).toEqual({ account_type: 'AWS', account_ids: [] });
+  });
+
+  it('spells several providers out as accounts, which is the only way to store them', () => {
+    expect(panelScopeFromTypes(['AWS', 'GCP'], [], ACCOUNTS)).toEqual({ account_type: undefined, account_ids: ['a1', 'a2', 'g1'] });
+  });
+
+  it('lets hand-picked accounts win over the providers that filtered them', () => {
+    expect(panelScopeFromTypes(['AWS', 'GCP'], ['a1'], ACCOUNTS)).toEqual({ account_type: undefined, account_ids: ['a1'] });
+  });
+
+  it('answers nothing for no choice at all, rather than every account', () => {
+    expect(panelScopeFromTypes([], [], ACCOUNTS)).toEqual({ account_type: undefined, account_ids: [] });
+  });
+
+  it('reads the providers back out of a stored panel', () => {
+    expect(deriveAccountTypes({ account_type: 'AWS', account_ids: [] }, ACCOUNTS)).toEqual(['AWS']);
+    // Deduplicated: two AWS accounts are one provider.
+    expect(deriveAccountTypes({ account_ids: ['a1', 'a2', 'g1'] }, ACCOUNTS)).toEqual(['AWS', 'GCP']);
+  });
+
+  it('tells "all of these providers" apart from a hand-picked subset', () => {
+    // Every AWS + GCP account — what panelScopeFromTypes writes, so the editor
+    // should reopen it as two providers with the account picker empty.
+    expect(coversAllOfTypes({ account_ids: ['a1', 'a2', 'g1'] }, ACCOUNTS)).toBe(true);
+    // One of two AWS accounts is a real choice, and must be shown as one.
+    expect(coversAllOfTypes({ account_ids: ['a1'] }, ACCOUNTS)).toBe(false);
+    expect(coversAllOfTypes({ account_ids: [] }, ACCOUNTS)).toBe(false);
+  });
+
+  it('round-trips a multi-provider scope through the editor', () => {
+    const stored = panelScopeFromTypes(['AWS', 'GCP'], [], ACCOUNTS);
+    const types = deriveAccountTypes(stored, ACCOUNTS);
+    const ids = coversAllOfTypes(stored, ACCOUNTS) ? [] : stored.account_ids || [];
+
+    expect(types).toEqual(['AWS', 'GCP']);
+    expect(ids).toEqual([]);
+    expect(panelScopeFromTypes(types, ids, ACCOUNTS)).toEqual(stored);
   });
 });
