@@ -482,6 +482,33 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		} else {
 			consecutiveFailedIters = 0
 		}
+
+		// No-progress brake (flag-gated, stats-based): the executor already counts
+		// identical (RepeatedResultCount) and trivial/empty (TrivialResultRepeatCount)
+		// results and escalates a scratchpad notice — but a notice "demonstrably does
+		// not break these loops." When those outcome counters cross the brake
+		// threshold, the model is fishing (re-formulating queries that keep coming
+		// back empty/identical). Break and fall through to summarizeConversation with
+		// what's been gathered. Keys on OUTCOMES, not command sameness.
+		if config.Config.LlmServerNoProgressBrakeEnabled {
+			brakeAt := config.Config.LlmServerNoProgressBrakeThreshold
+			if brakeAt < 2 {
+				brakeAt = 3
+			}
+			stuck := false
+			for j := range steps {
+				if stepIsStuck(&steps[j], brakeAt) {
+					e.ctx.GetLogger().Warn("plannerexecutor: no-progress brake — breaking; tool stuck on repeated/trivial results (fishing)",
+						"agent", e.agent.GetName(), "iteration", i, "tool", steps[j].Action.Tool,
+						"repeated", steps[j].RepeatedResultCount, "trivial", steps[j].TrivialResultRepeatCount, "threshold", brakeAt)
+					stuck = true
+					break
+				}
+			}
+			if stuck {
+				break
+			}
+		}
 	}
 
 	result, err := e.summarizeConversation()
@@ -1659,6 +1686,16 @@ func isNoMatchEnvelope(data string) bool {
 	// (encoders that pretty-print or hand-built shapes).
 	return strings.Contains(data, `"no_matches":true`) ||
 		strings.Contains(data, `"no_matches": true`)
+}
+
+// stepIsStuck reports whether a step's outcome-based repeat counters have crossed
+// the no-progress brake threshold — the model has driven this tool to the same
+// identical result (RepeatedResultCount) or to trivial/empty output
+// (TrivialResultRepeatCount) enough times this turn that it's fishing, not
+// progressing. Command-agnostic: keys on the OUTCOME counters the executor
+// already maintains, not on command sameness (the model re-formulates).
+func stepIsStuck(step *NBAgentPlannerToolActionStep, threshold int) bool {
+	return step.RepeatedResultCount >= threshold || step.TrivialResultRepeatCount >= threshold
 }
 
 // formatToolMetadataFooter renders the trailing

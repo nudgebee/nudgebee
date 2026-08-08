@@ -249,12 +249,20 @@ type appConfig struct {
 	LlmModelLite string `mapstructure:"llm_model_lite_name"`
 
 	// Agent specific configs
-	LLMServerAgentMaxParallel                 int `mapstructure:"llm_server_agent_max_parallel"`
-	LLMServerAgentReActMaxIterations          int `mapstructure:"llm_server_agent_react_max_iterations"`
-	LLMServerAgentReActSubAgentMaxIterations  int `mapstructure:"llm_server_agent_react_sub_agent_max_iterations"`
-	LLMServerAgentPromqlMaxIterations         int `mapstructure:"llm_server_agent_promql_max_iterations"`
-	LLMServerAgentObservabilityMaxIterations  int `mapstructure:"llm_server_agent_observability_max_iterations"`
-	LLMServerAgentObservabilityTimeoutSeconds int `mapstructure:"llm_server_agent_observability_timeout_seconds"`
+	LLMServerAgentMaxParallel                int `mapstructure:"llm_server_agent_max_parallel"`
+	LLMServerAgentReActMaxIterations         int `mapstructure:"llm_server_agent_react_max_iterations"`
+	LLMServerAgentReActSubAgentMaxIterations int `mapstructure:"llm_server_agent_react_sub_agent_max_iterations"`
+	// LlmServerNoProgressBrakeEnabled gates the stats-based no-progress convergence
+	// brake: when N consecutive planner iterations produce only no-progress steps
+	// (empty/no-match results, failures, or duplicate cache-hits — i.e. no new
+	// information), break the loop and synthesize with what's gathered instead of
+	// continuing to fish. Command-agnostic (keys on outcomes, not command sameness).
+	// Default false — feature-flagged for A/B. See INVESTIGATION_WASTE_ANALYSIS.md.
+	LlmServerNoProgressBrakeEnabled           bool `mapstructure:"llm_server_no_progress_brake_enabled"`
+	LlmServerNoProgressBrakeThreshold         int  `mapstructure:"llm_server_no_progress_brake_threshold"`
+	LLMServerAgentPromqlMaxIterations         int  `mapstructure:"llm_server_agent_promql_max_iterations"`
+	LLMServerAgentObservabilityMaxIterations  int  `mapstructure:"llm_server_agent_observability_max_iterations"`
+	LLMServerAgentObservabilityTimeoutSeconds int  `mapstructure:"llm_server_agent_observability_timeout_seconds"`
 	// LlmServerFetchLogsWallClockTimeoutSeconds caps the entire FetchLogsAgentV2.Execute
 	// pipeline (services-server RPC + kubectl_execute + datadog + workspace pod) at
 	// this wall-clock budget. Any stall (see conv 8832d8f4 — 6520s hang on a single
@@ -1028,6 +1036,8 @@ func init() {
 	// 50 (up from 10) is the value the deleted ReWoo→ReAct3 upgrade used to set;
 	// baking it in preserves that behavior now that orchestrating agents always run as ReAct3.
 	viper.SetDefault("llm_server_agent_react_max_iterations", 50)
+	viper.SetDefault("llm_server_no_progress_brake_enabled", false)
+	viper.SetDefault("llm_server_no_progress_brake_threshold", 3)
 	viper.SetDefault("llm_server_agent_react_sub_agent_max_iterations", 10)
 	viper.SetDefault("llm_server_agent_max_parallel", 4)
 	viper.SetDefault("llm_server_agent_promql_max_iterations", 4)
