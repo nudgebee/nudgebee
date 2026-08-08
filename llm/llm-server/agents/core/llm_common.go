@@ -534,8 +534,25 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	// only bounds individual messages).
 	promptMessages = applyPreflightContextWindowCap(ctx, promptMessages, provider, model, res, agentName)
 
-	// Step 3c: guarantee a user turn (Qwen3/vLLM rejects system-only prompts).
-	promptMessages = ensureUserMessage(promptMessages, model)
+	// Step 3c: guarantee a non-empty user turn (Qwen3/vLLM rejects a prompt with no user query).
+	// If the safety net fires, WARN with agent context — that's always a caller-side bug
+	// (an upstream planner emitted `<tool_input></tool_input>`, or a sub-agent was spawned
+	// with query=""). Silent auto-fix would mask which agent is broken; the warn gives us
+	// the exact caller to hunt down. Expected volume post-deploy: near-zero once callers
+	// are fixed. Grep in prod: `history: ensure_user_message safety net fired`.
+	var rewrite ensureUserMessageRewrite
+	promptMessages, rewrite = ensureUserMessage(promptMessages)
+	if rewrite != ensureUserMessageNoOp {
+		ctx.GetLogger().Warn("ensure_user_message safety net fired — caller emitted an empty/missing user turn",
+			"rewrite", string(rewrite),
+			"agent_name", agentName,
+			"agent_id", agentId,
+			"provider", provider,
+			"model", model,
+			"conversation_id", conversationId,
+			"message_id", messageId,
+		)
+	}
 
 	// Step 4: Generate content with retry logic
 	completion, callMetadata, err := generateLLMContentWithRetry(ctx, llm, promptMessages, options, agentName, agentId, accountId, conversationId, messageId, false, userId, res)

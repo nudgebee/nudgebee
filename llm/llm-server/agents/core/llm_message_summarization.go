@@ -527,21 +527,105 @@ func applyPreflightContextWindowCap(ctx *security.RequestContext, messages []llm
 	return result
 }
 
-// ensureUserMessage appends a minimal user turn for system-only prompts, but only
-// for models whose template rejects them (Qwen3/vLLM) — other providers accept
-// system-only prompts, so leave them untouched. Appended last to keep the cacheable prefix.
-func ensureUserMessage(messages []llms.MessageContent, model string) []llms.MessageContent {
-	if !strings.Contains(strings.ToLower(model), "qwen") {
-		return messages
-	}
-	for _, m := range messages {
-		if m.Role == llms.ChatMessageTypeHuman {
-			return messages
+// ensureUserMessageRewrite describes what ensureUserMessage did to the message
+// slice. Non-empty means the safety net fired — the caller should log/metric it
+// so we can identify offending agents (the fix hides the caller's underlying
+// bug: an upstream planner emitted an empty tool_input, or a sub-agent was
+// spawned with query="").
+type ensureUserMessageRewrite string
+
+const (
+	ensureUserMessageNoOp     ensureUserMessageRewrite = ""
+	ensureUserMessageAppended ensureUserMessageRewrite = "appended_new_user_turn"
+	ensureUserMessageReplaced ensureUserMessageRewrite = "replaced_empty_user_turn"
+)
+
+// ensureUserMessage guarantees at least one non-empty user turn. Some chat templates
+// (Qwen3 on vLLM) reject a message set with no user query — and an empty user turn trips
+// the same "No user query found" error — so a request without a usable user message would
+// 400. Applied to every request (not gated on model name): the model label for a
+// self-hosted endpoint is operator-chosen and often omits "qwen", and no legitimate prompt
+// is user-message-less, so this is a no-op in normal flow.
+//
+// Behavior:
+//   - Some usable user turn exists: no-op (returns messages unchanged, "").
+//   - No user turn exists at all: append a minimal "Continue." user turn (keeps the
+//     cacheable prefix intact). Returns "appended_new_user_turn".
+//   - A user turn exists but its content is unusable (empty / whitespace-only text):
+//     REPLACE its content in-place with "Continue." rather than appending a new turn.
+//     Appending would produce consecutive Human turns (e.g. [System, Human(""), Human("Continue.")]),
+//     which strict alternating-role APIs (Anthropic Messages) 400 on. In-place replace
+//     preserves the alternating role structure across every downstream provider.
+//     Returns "replaced_empty_user_turn".
+//
+// The rewrite reason is returned so the caller can log agent-context alongside
+// (function has none of that context itself). The safety net firing is ALWAYS
+// a bug in the calling agent path — a real prompt is never user-message-less —
+// so we want visibility into which agent hit the rewrite (see task #158 shape).
+func ensureUserMessage(messages []llms.MessageContent) ([]llms.MessageContent, ensureUserMessageRewrite) {
+	emptyHumanIdx := -1
+	for i, m := range messages {
+		if m.Role != llms.ChatMessageTypeHuman {
+			continue
+		}
+		if hasUsableContent(m) {
+			return messages, ensureUserMessageNoOp
+		}
+		// Record the FIRST empty human turn only — that's the one we'll rewrite.
+		// A later empty human would produce consecutive humans on its own, but
+		// we don't observe that shape in practice; picking the first is stable.
+		if emptyHumanIdx == -1 {
+			emptyHumanIdx = i
 		}
 	}
+	if emptyHumanIdx != -1 {
+		// Replace-in-place on a defensive copy of the slice + the target message's
+		// Parts (both are shared with the caller; we must not mutate them).
+		out := make([]llms.MessageContent, len(messages))
+		copy(out, messages)
+		origParts := out[emptyHumanIdx].Parts
+		parts := make([]llms.ContentPart, len(origParts))
+		copy(parts, origParts)
+		// Find the first TextContent part and rewrite it. Don't hardcode index 0 —
+		// a mixed Human message could carry an image or binary part at [0] and a
+		// text part later; hardcoding would corrupt non-text content.
+		replaced := false
+		for j, part := range parts {
+			if tc, ok := part.(llms.TextContent); ok {
+				tc.Text = "Continue."
+				parts[j] = tc
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			// No text part at all (e.g. image-only human turn with empty caption
+			// somehow marked unusable): append a text part rather than dropping
+			// the original content or creating a second Human message.
+			parts = append(parts, llms.TextContent{Text: "Continue."})
+		}
+		out[emptyHumanIdx].Parts = parts
+		return out, ensureUserMessageReplaced
+	}
+	// No Human turn at all — safe to append; no consecutive-role concern.
 	out := make([]llms.MessageContent, len(messages), len(messages)+1)
 	copy(out, messages)
-	return append(out, llms.TextParts(llms.ChatMessageTypeHuman, "Continue."))
+	return append(out, llms.TextParts(llms.ChatMessageTypeHuman, "Continue.")), ensureUserMessageAppended
+}
+
+// hasUsableContent reports whether a message carries content the model can render — any
+// non-text part (image, binary, …) or a text part with non-whitespace content.
+func hasUsableContent(m llms.MessageContent) bool {
+	for _, p := range m.Parts {
+		if t, ok := p.(llms.TextContent); ok {
+			if strings.TrimSpace(t.Text) != "" {
+				return true
+			}
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // SummarizeLargeMessageChunked chunks a very large message and summarizes it with context preservation
