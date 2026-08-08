@@ -654,6 +654,8 @@ func proxyTypeToIntegrationType(proxyType, dsType string) string {
 		return "ssh"
 	case "mcp-proxy":
 		return "mcp"
+	case "discovery-proxy":
+		return "discovery"
 	default:
 		return ""
 	}
@@ -703,7 +705,7 @@ func (p *pgStore) GetWorkspaceToolConfig(ctx context.Context, accountID, integra
 // requests through the proxy agent.
 func isDualModeProxy(proxyType string) bool {
 	switch proxyType {
-	case "db-proxy", "redis-proxy", "http-proxy", "ssh-proxy", "mcp-proxy":
+	case "db-proxy", "redis-proxy", "http-proxy", "ssh-proxy", "mcp-proxy", "discovery-proxy":
 		return true
 	default:
 		return false
