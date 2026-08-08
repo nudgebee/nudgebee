@@ -14,6 +14,7 @@ import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
 import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, type Panel } from '@api1/dashboards';
 import PanelEditorModal from './PanelEditorModal';
+import PanelLibraryModal from './PanelLibraryModal';
 import { panelScopeLabels } from './panelAccounts';
 import { blankPanel } from './panelDefaults';
 
@@ -35,6 +36,7 @@ const DashboardEditor: React.FC<Props> = ({ accountOptions, dashboard, onCancel,
   const [panels, setPanels] = useState<Panel[]>(dashboard?.definition?.panels || []);
   const [editingPanel, setEditingPanel] = useState<Panel | null>(null);
   const [panelModalOpen, setPanelModalOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Guarded rather than only disabling the buttons: the empty state's action has
@@ -42,6 +44,17 @@ const DashboardEditor: React.FC<Props> = ({ accountOptions, dashboard, onCancel,
   const openNewPanel = () => {
     if (saving) return;
     setEditingPanel(blankPanel(panels));
+    setPanelModalOpen(true);
+  };
+
+  /**
+   * A library widget lands in the panel editor rather than in the list: it
+   * carries a query but no account, and the account is the one field only the
+   * author can fill in.
+   */
+  const openLibraryPanel = (panel: Panel) => {
+    setLibraryOpen(false);
+    setEditingPanel(panel);
     setPanelModalOpen(true);
   };
 
@@ -221,6 +234,15 @@ const DashboardEditor: React.FC<Props> = ({ accountOptions, dashboard, onCancel,
                 {panels.length}
               </Chip>
               <Box sx={{ flex: 1 }} />
+              <Button
+                tone='secondary'
+                onClick={() => setLibraryOpen(true)}
+                disabled={saving}
+                id='add-panel-from-library-btn'
+                data-testid='add-panel-from-library-btn'
+              >
+                Add from library
+              </Button>
               <Button tone='secondary' onClick={openNewPanel} disabled={saving} id='add-panel-btn' data-testid='add-panel-btn'>
                 Add panel
               </Button>
@@ -240,6 +262,8 @@ const DashboardEditor: React.FC<Props> = ({ accountOptions, dashboard, onCancel,
             )}
           </Box>
         </Box>
+
+        <PanelLibraryModal open={libraryOpen} existingPanels={panels} onClose={() => setLibraryOpen(false)} onPick={openLibraryPanel} />
 
         <PanelEditorModal
           open={panelModalOpen}

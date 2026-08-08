@@ -20,6 +20,7 @@ import DashboardView from './DashboardView';
 import DashboardEditor from './DashboardEditor';
 import DashboardSkeleton from './DashboardSkeleton';
 import ImportDashboardModal from './ImportDashboardModal';
+import TemplateGalleryModal from './TemplateGalleryModal';
 
 type Mode = { name: 'list' } | { name: 'view'; id: string } | { name: 'edit'; id: string | null };
 
@@ -71,6 +72,7 @@ const CustomDashboards: React.FC = () => {
   const [pendingDelete, setPendingDelete] = useState<Dashboard | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
 
   // Mirrors the backend gate: anyone who can write to at least one account may
   // author dashboards, and the panels they may point at are checked per account
@@ -361,6 +363,17 @@ const CustomDashboards: React.FC = () => {
           actions={
             canWrite ? (
               <Stack direction='row' gap={1}>
+                {/* First of the three: on an empty tenant a template is the
+                    answer far more often than a blank canvas or someone else's
+                    exported JSON. */}
+                <Button
+                  tone='secondary'
+                  onClick={() => setTemplatesOpen(true)}
+                  id='open-template-gallery-btn'
+                  data-testid='open-template-gallery-btn'
+                >
+                  Use a template
+                </Button>
                 {/* Not `import-dashboard-btn` — that id belongs to the modal's
                     own submit button, and two elements cannot share one. */}
                 <Button tone='secondary' onClick={() => setImportOpen(true)} id='open-import-dashboard-btn' data-testid='open-import-dashboard-btn'>
@@ -379,6 +392,26 @@ const CustomDashboards: React.FC = () => {
           <CustomTable headers={headers} tableData={tableData} loading={loading} />
         </ListingLayout.Body>
       </ListingLayout>
+
+      <TemplateGalleryModal
+        open={templatesOpen}
+        accountOptions={accountOptions}
+        onClose={() => setTemplatesOpen(false)}
+        // Straight into the dashboard, not the editor: the panels were authored
+        // here and already carry the account the creator chose, so the useful
+        // next thing to see is the data. Import goes to the editor instead,
+        // because its panels are someone else's and may have been dropped.
+        //
+        // Mode is set alongside the route so the URL effect recognises this
+        // dashboard as already open and does not fetch back what the create
+        // just returned.
+        onCreated={(saved) => {
+          setTemplatesOpen(false);
+          setSelected({ dashboard: saved, bindings: [] });
+          setMode({ name: 'view', id: saved.id });
+          setRouteId(saved.id);
+        }}
+      />
 
       <ImportDashboardModal
         open={importOpen}

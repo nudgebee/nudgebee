@@ -17,6 +17,7 @@ import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, ty
 import DashboardPanel from './DashboardPanel';
 import { downloadNodeAsPng, waitForPanels } from './panelImage';
 import PanelEditorModal from './PanelEditorModal';
+import PanelLibraryModal from './PanelLibraryModal';
 import { blankPanel } from './panelDefaults';
 import type { VariableValues } from './templating';
 
@@ -110,6 +111,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
    */
   const [editingPanel, setEditingPanel] = useState<Panel | null>(null);
   const [panelModalOpen, setPanelModalOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
@@ -149,6 +151,17 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
 
   const openNewPanel = () => {
     setEditingPanel(blankPanel(panels));
+    setPanelModalOpen(true);
+  };
+
+  /**
+   * A library widget opens in the panel editor rather than going straight onto
+   * the dashboard: it carries a query but no account, and the account is the one
+   * field only the author can fill in.
+   */
+  const openLibraryPanel = (panel: Panel) => {
+    setLibraryOpen(false);
+    setEditingPanel(panel);
     setPanelModalOpen(true);
   };
 
@@ -227,9 +240,20 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
               />
             </Tooltip>
             {canEdit && (
-              <Button onClick={openNewPanel} disabled={saving} id='dashboard-add-panel-btn' data-testid='dashboard-add-panel-btn'>
-                Add panel
-              </Button>
+              <>
+                <Button
+                  tone='secondary'
+                  onClick={() => setLibraryOpen(true)}
+                  disabled={saving}
+                  id='dashboard-add-from-library-btn'
+                  data-testid='dashboard-add-from-library-btn'
+                >
+                  Add from library
+                </Button>
+                <Button onClick={openNewPanel} disabled={saving} id='dashboard-add-panel-btn' data-testid='dashboard-add-panel-btn'>
+                  Add panel
+                </Button>
+              </>
             )}
           </Stack>
         }
@@ -362,6 +386,8 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
             </Box>
           )}
         </Box>
+
+        <PanelLibraryModal open={libraryOpen} existingPanels={panels} onClose={() => setLibraryOpen(false)} onPick={openLibraryPanel} />
 
         <PanelEditorModal
           open={panelModalOpen}
