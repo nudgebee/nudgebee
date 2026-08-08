@@ -38,6 +38,15 @@ const ms = (s: number) => s * 1000;
 const OVER_THRESHOLD = '#D9534F';
 
 export function AgentLatencyBars({ profiles, thresholdSeconds, percentile, onSelectAgent, id }: AgentLatencyBarsProps) {
+  // react-chartjs-2 registers inline plugins once, at chart construction, and never
+  // re-registers them when the `plugins` prop changes — so a plugin that closes over
+  // thresholdSeconds/percentile keeps drawing the mount-time values (the default p90
+  // line) even after the latency filter changes. Keep the live values in a ref the
+  // render updates, and have the (stable) reference-line plugin read from it at draw
+  // time, so the dashed line always tracks the selected pXX.
+  const refLine = React.useRef({ thresholdSeconds, percentile });
+  refLine.current = { thresholdSeconds, percentile };
+
   const labels = profiles.map((p) => p.agent_name || 'agent');
   const datasets = SERIES.map((s) => ({
     label: s.label,
@@ -76,10 +85,13 @@ export function AgentLatencyBars({ profiles, thresholdSeconds, percentile, onSel
   );
 
   // Dashed reference line at x = threshold (value axis is x for horizontal bars).
+  // Reads the live threshold/percentile from the ref (see above) rather than closing
+  // over them, so it stays a single stable plugin that redraws to the selected pXX.
   const thresholdLine = React.useMemo(
     () => ({
       id: 'agentLatencyThreshold',
       afterDraw(chart: any) {
+        const { thresholdSeconds, percentile } = refLine.current;
         if (!thresholdSeconds) return;
         const { ctx, chartArea, scales } = chart;
         const x = scales.x?.getPixelForValue(thresholdSeconds);
@@ -99,7 +111,7 @@ export function AgentLatencyBars({ profiles, thresholdSeconds, percentile, onSel
         ctx.restore();
       },
     }),
-    [thresholdSeconds, percentile]
+    []
   );
 
   const options = React.useMemo(
