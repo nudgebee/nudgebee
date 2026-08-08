@@ -398,8 +398,21 @@ type appConfig struct {
 	EventAnalysisWorkerCount       int `mapstructure:"llm_server_event_analysis_worker_count"`
 	EventAnalysisQueueSize         int `mapstructure:"llm_server_event_analysis_queue_size"`
 	EventAnalysisRecoveryBatchSize int `mapstructure:"llm_server_event_analysis_recovery_batch_size"`
-	SyncDeadWorkerCount            int `mapstructure:"llm_server_sync_dead_worker_count"`
-	SyncDeadQueueSize              int `mapstructure:"llm_server_sync_dead_queue_size"`
+	// EventAnalysisFreshnessHours bounds how long a COMPLETED analysis may be
+	// reused for a *different* event that shares its fingerprint. Beyond this
+	// age the claim falls through and the new event gets its own run against
+	// current telemetry, instead of being bound to findings from days ago.
+	//
+	// 0 disables the check and preserves the previous behaviour: a completed
+	// analysis is reused forever regardless of age. Left at 0 by default because
+	// enabling it multiplies analysis volume — one run per fingerprint per
+	// window rather than one per fingerprint ever — which costs LLM spend
+	// (charged to the investigation budget) and grows both event_log_analysis
+	// and the llm_conversation_* tree. Turn it on per environment once that
+	// increase has been sized.
+	EventAnalysisFreshnessHours int `mapstructure:"llm_server_event_analysis_freshness_hours"`
+	SyncDeadWorkerCount         int `mapstructure:"llm_server_sync_dead_worker_count"`
+	SyncDeadQueueSize           int `mapstructure:"llm_server_sync_dead_queue_size"`
 	// AsyncApiTimeoutSeconds caps the time allowed for asynchronous API requests.
 	AsyncApiTimeoutSeconds int `mapstructure:"llm_server_async_api_timeout_seconds"`
 	// AsyncOperationTimeoutSeconds caps the time allowed for individual asynchronous background operations.
@@ -1136,6 +1149,8 @@ func init() {
 	viper.SetDefault("llm_server_event_analysis_worker_count", 5)
 	viper.SetDefault("llm_server_event_analysis_queue_size", 100)
 	viper.SetDefault("llm_server_event_analysis_recovery_batch_size", 5)
+	// 0 = disabled; see EventAnalysisFreshnessHours for why this is off by default.
+	viper.SetDefault("llm_server_event_analysis_freshness_hours", 0)
 	viper.SetDefault("llm_server_sync_dead_worker_count", 3)
 	viper.SetDefault("llm_server_sync_dead_queue_size", 50)
 

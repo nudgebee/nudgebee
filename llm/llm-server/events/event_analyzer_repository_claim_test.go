@@ -2,6 +2,7 @@ package events
 
 import (
 	"testing"
+	"time"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -44,9 +45,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}))
 
 		// 2. Transactional status check for fingerprint returns no rows
-		mock.ExpectQuery("SELECT id, status FROM event_log_analysis WHERE id = .* FOR UPDATE").
+		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
+			WillReturnRows(sqlmock.NewRows([]string{"id", "status", "written_at"}))
 
 		// 3. Insert into event_log_analysis RETURNING id
 		mock.ExpectQuery("INSERT INTO event_log_analysis").
@@ -72,9 +73,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 		mock.ExpectBegin()
 
 		// 1. Fingerprint check returns no rows
-		mock.ExpectQuery("SELECT id, status FROM event_log_analysis WHERE id = .* FOR UPDATE").
+		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
+			WillReturnRows(sqlmock.NewRows([]string{"id", "status", "written_at"}))
 
 		// 2. Insert into event_log_analysis with nil event_id RETURNING id
 		mock.ExpectQuery("INSERT INTO event_log_analysis").
@@ -98,9 +99,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WithArgs(eventID, AnalysisTypeLog).
 			WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}))
 
-		mock.ExpectQuery("SELECT id, status FROM event_log_analysis WHERE id = .* FOR UPDATE").
+		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow("analysis-inprogress", string(AnalysisStatusInProgress)))
+			WillReturnRows(sqlmock.NewRows([]string{"id", "status", "written_at"}).AddRow("analysis-inprogress", string(AnalysisStatusInProgress), time.Now()))
 
 		mock.ExpectExec("INSERT INTO event_analysis_mapping").
 			WithArgs(eventID, "analysis-inprogress", AnalysisTypeLog).
@@ -123,9 +124,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WithArgs(eventID, AnalysisTypeLog).
 			WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}))
 
-		mock.ExpectQuery("SELECT id, status FROM event_log_analysis WHERE id = .* FOR UPDATE").
+		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow("analysis-completed", string(AnalysisStatusCompleted)))
+			WillReturnRows(sqlmock.NewRows([]string{"id", "status", "written_at"}).AddRow("analysis-completed", string(AnalysisStatusCompleted), time.Now()))
 
 		mock.ExpectExec("INSERT INTO event_analysis_mapping").
 			WithArgs(eventID, "analysis-completed", AnalysisTypeLog).
@@ -148,9 +149,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WithArgs(eventID, AnalysisTypeLog).
 			WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}))
 
-		mock.ExpectQuery("SELECT id, status FROM event_log_analysis WHERE id = .* FOR UPDATE").
+		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow("analysis-completed", string(AnalysisStatusCompleted)))
+			WillReturnRows(sqlmock.NewRows([]string{"id", "status", "written_at"}).AddRow("analysis-completed", string(AnalysisStatusCompleted), time.Now()))
 
 		mock.ExpectQuery("INSERT INTO event_log_analysis").
 			WithArgs(eventID, fp, AnalysisStatusInProgress, acct, aggKey, AnalysisTypeLog).
@@ -185,9 +186,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WithArgs("analysis-old").
 			WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(string(AnalysisStatusCompleted)))
 
-		mock.ExpectQuery("SELECT id, status FROM event_log_analysis WHERE id = .* FOR UPDATE").
+		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow("analysis-old", string(AnalysisStatusCompleted)))
+			WillReturnRows(sqlmock.NewRows([]string{"id", "status", "written_at"}).AddRow("analysis-old", string(AnalysisStatusCompleted), time.Now()))
 
 		mock.ExpectQuery("INSERT INTO event_log_analysis").
 			WithArgs(eventID, fp, AnalysisStatusInProgress, acct, aggKey, AnalysisTypeLog).
@@ -222,9 +223,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WithArgs("analysis-old").
 			WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(string(AnalysisStatusCompleted)))
 
-		mock.ExpectQuery("SELECT id, status FROM event_log_analysis WHERE id = .* FOR UPDATE").
+		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow("analysis-active", string(AnalysisStatusInProgress)))
+			WillReturnRows(sqlmock.NewRows([]string{"id", "status", "written_at"}).AddRow("analysis-active", string(AnalysisStatusInProgress), time.Now()))
 
 		mock.ExpectExec("INSERT INTO event_analysis_mapping .* DO UPDATE SET analysis_id").
 			WithArgs(eventID, "analysis-active", AnalysisTypeLog).

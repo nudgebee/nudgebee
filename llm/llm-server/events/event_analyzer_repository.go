@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 
 	"github.com/jmoiron/sqlx"
@@ -84,11 +85,18 @@ func upsertAnalysisMapping(tx *sqlx.Tx, eventId, analysisID string, analysisType
 // EventAnalysisRepository handles database operations for event analysis.
 type EventAnalysisRepository struct {
 	dbManager *common.DatabaseManager
+	// analysisFreshness bounds how long a COMPLETED analysis may be reused for a
+	// different event sharing its fingerprint. Zero disables the bound, which is
+	// the previous behaviour. See config.EventAnalysisFreshnessHours.
+	analysisFreshness time.Duration
 }
 
 // NewEventAnalysisRepository creates a new repository for event analysis.
 func NewEventAnalysisRepository(dbManager *common.DatabaseManager) *EventAnalysisRepository {
-	return &EventAnalysisRepository{dbManager: dbManager}
+	return &EventAnalysisRepository{
+		dbManager:         dbManager,
+		analysisFreshness: time.Duration(config.Config.EventAnalysisFreshnessHours) * time.Hour,
+	}
 }
 
 // EventAnalysisType defines the type of analysis being performed.
@@ -398,13 +406,36 @@ func (r *EventAnalysisRepository) ClaimEventAnalysis(ctx *security.RequestContex
 
 	var existingStatus string
 	var existingAnalysisId string
+	var existingWrittenAt sql.NullTime
 	err = tx.QueryRowx(
-		`SELECT id, status FROM event_log_analysis WHERE id = (SELECT id FROM event_log_analysis WHERE event_fingerprint = $1 AND cloud_account_id = $2 AND event_aggregation_key = $3 AND analysis_type = $4 ORDER BY COALESCE(updated_at, recorded_at) DESC LIMIT 1) FOR UPDATE`,
+		`SELECT id, status, COALESCE(updated_at, recorded_at) FROM event_log_analysis WHERE id = (SELECT id FROM event_log_analysis WHERE event_fingerprint = $1 AND cloud_account_id = $2 AND event_aggregation_key = $3 AND analysis_type = $4 ORDER BY COALESCE(updated_at, recorded_at) DESC LIMIT 1) FOR UPDATE`,
 		fingerprint, accountId, aggKey, analysisType,
-	).Scan(&existingAnalysisId, &existingStatus)
+	).Scan(&existingAnalysisId, &existingStatus, &existingWrittenAt)
 
+	// A completed analysis for this fingerprint is only reusable while it is
+	// recent enough to still describe the system. Past that, a newly arriving
+	// event would otherwise be bound to findings produced against telemetry from
+	// days ago — and, since V850 gives it a mapping row, bound permanently: it
+	// would never pick up a later run for the same fingerprint. Falling through
+	// here lets the new event claim and generate against current data.
+	//
+	// IN_PROGRESS is deliberately not aged out. An active run is never stolen
+	// regardless of how long it has been going -- doing so would reintroduce the
+	// duplicate-dispatch bug (#29472) this gate exists to prevent, since a slow
+	// run is indistinguishable here from a dead one. Dead runs are handled
+	// elsewhere: the sync tick in api/conversation_sync.go marks an IN_PROGRESS
+	// analysis FAILED once it exceeds its own maxRecoveryAge, and FAILED falls
+	// through this condition and is claimable. That constant is separate from
+	// this window and is NOT affected by the config knob below, despite both
+	// being natural to set to 24h.
+	//
+	// FAILED and CREATED are likewise unaffected by the bound: neither matches
+	// this condition, so both already fall through to a fresh claim.
 	if err == nil {
-		if existingStatus == string(AnalysisStatusInProgress) || (existingStatus == string(AnalysisStatusCompleted) && !force) {
+		staleForReuse := r.analysisFreshness > 0 && existingWrittenAt.Valid &&
+			time.Since(existingWrittenAt.Time) > r.analysisFreshness
+
+		if existingStatus == string(AnalysisStatusInProgress) || (existingStatus == string(AnalysisStatusCompleted) && !force && !staleForReuse) {
 			if eventId != "" {
 				// hadMapping here means a forced regenerate declined to steal the
 				// active run. The mapping still points at this event's previous,
