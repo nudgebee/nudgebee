@@ -684,11 +684,34 @@ func statusOf(bErr *schemas.BifrostError) int {
 func writeBifrostError(c *gin.Context, bErr *schemas.BifrostError) int {
 	status := statusOf(bErr)
 	msg := "provider engine error"
-	if bErr.Error != nil && bErr.Error.Message != "" {
+	if bErr != nil && bErr.Error != nil && bErr.Error.Message != "" {
 		msg = bErr.Error.Message
 	}
-	writeJSONError(c, status, "upstream_error", msg)
+	writeJSONError(c, status, upstreamErrorCode(status), coldStartHint(status, msg))
 	return status
+}
+
+// coldStartHint appends a cold-start explanation to a 502/503/504 upstream error. Serverless
+// / scale-to-zero model endpoints (e.g. HF Inference Endpoints) return these while warming
+// up, so the hint reframes a transient "unavailable" as "retry shortly" rather than a hard
+// failure. Other statuses pass through unchanged.
+func coldStartHint(status int, msg string) string {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return msg + " — the model endpoint may be starting up or temporarily unavailable " +
+			"(common for serverless / scale-to-zero endpoints); retry in a moment"
+	default:
+		return msg
+	}
+}
+
+// upstreamErrorCode gives a 503 a more specific machine-readable code than the generic
+// upstream_error, so clients can distinguish a warm-up from a real upstream failure.
+func upstreamErrorCode(status int) string {
+	if status == http.StatusServiceUnavailable {
+		return "upstream_unavailable"
+	}
+	return "upstream_error"
 }
 
 func writeJSONError(c *gin.Context, status int, typ, msg string) {

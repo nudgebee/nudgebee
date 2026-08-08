@@ -171,6 +171,14 @@ func probe(ctx context.Context, cfg map[string]string) error {
 		return fmt.Errorf("%s rejected the api key (HTTP %d) — check the key", endpointLabel, resp.StatusCode)
 	case http.StatusNotFound:
 		return fmt.Errorf("no list-models endpoint at %s (HTTP 404) — for a custom endpoint, is base_url the OpenAI-compatible base?", endpointLabel)
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		// A warming-up endpoint may still return a useful diagnostic (GPU OOM, queue full);
+		// surface it when present. Skip an HTML body (leading "<") — a 502/503 from a proxy
+		// (Cloudflare/Nginx/ALB) is usually an error page, which would just clutter the UI.
+		if detail := strings.TrimSpace(string(body)); detail != "" && !strings.HasPrefix(detail, "<") {
+			return fmt.Errorf("%s is unavailable (HTTP %d): %s — the endpoint may be starting up (cold start / scaled to zero); retry in a moment", endpointLabel, resp.StatusCode, detail)
+		}
+		return fmt.Errorf("%s is unavailable (HTTP %d) — the endpoint may be starting up (cold start / scaled to zero); retry in a moment", endpointLabel, resp.StatusCode)
 	default:
 		return fmt.Errorf("%s connectivity failed (HTTP %d): %s", endpointLabel, resp.StatusCode, strings.TrimSpace(string(body)))
 	}

@@ -386,7 +386,7 @@ func openAIStreamError(bErr *schemas.BifrostError) gin.H {
 	if bErr != nil && bErr.Error != nil && bErr.Error.Message != "" {
 		msg = bErr.Error.Message
 	}
-	return gin.H{"message": msg, "type": "api_error"}
+	return gin.H{"message": coldStartHint(statusOf(bErr), msg), "type": "api_error"}
 }
 
 // openAIChatView marshals a unified chat response in clean OpenAI shape, dropping
