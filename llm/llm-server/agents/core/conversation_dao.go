@@ -1199,9 +1199,103 @@ func (chat *ConversationDao) UpdateConversationAgentResponse(agenId, response st
 	// marker response. A still-running executor goroutine must not clobber that
 	// state when it eventually finishes its blocked LLM/tool call.
 	agentQuery := `UPDATE llm_conversation_agent SET response = $2, updated_at = now(), status = $3, state = $4, response_summary = $5, agent_step_response = $6, "references" = $7 WHERE id = $1 AND status NOT IN ('terminated','fail', 'success')`
-	_, err := chat.dbManager.Db.Exec(agentQuery, agenId, response, agentStatus, state, responseSummary, agentStepResponse, references)
+	res, err := chat.dbManager.Db.Exec(agentQuery, agenId, response, agentStatus, state, responseSummary, agentStepResponse, references)
 	if err != nil {
 		return fmt.Errorf("history: failed to update agent call: %w", err)
+	}
+
+	// Sweep waiting ancestors. When a delegated child completes to a terminal
+	// state on a later message than its own spawn (the "resume" case — user
+	// answered a followup that a child sub-agent had emitted), the ancestor
+	// rows that entered Waiting when the followup was raised never get flipped
+	// back to a terminal state — their status ROW is frozen because the resume
+	// dispatches directly to the child by followup_message_id and never
+	// re-runs the ancestor. Prod evidence: conv e9826443 (2026-08-07) —
+	// k8s_orchestrator_lean + delegate_agent stayed 'waiting' 22h after the
+	// child (automation_builder) successfully handled 4 subsequent messages.
+	//
+	// The functional impact today is nil (no UI/metric consumes agent.status
+	// = 'waiting'), so this is cosmetic bookkeeping. Kept the sweep best-effort
+	// (log on failure, don't return err) so a transient DB blip on the sweep
+	// never turns a successful primary agent completion into a caller-visible
+	// failure. Only runs when THIS row's new status is a terminal
+	// success/fail — no sweep for waiting→waiting or in_progress transitions.
+	//
+	// Gate ALSO on rows-affected > 0. The primary UPDATE has a terminal-guard
+	// (`status NOT IN ('terminated','fail','success')`) that no-ops when the
+	// child is already in a terminal state from another path (e.g. terminated
+	// by user, or a concurrent goroutine wrote 'fail' first). In that case the
+	// child's status is NOT what this call intended (agentStatus), so sweeping
+	// ancestors with agentStatus would spread the wrong outcome upward — a
+	// success sweep after a lost race against a 'fail' write would flag the
+	// parents 'success' even though the actual child outcome was 'fail'.
+	if agentStatus == AgentExecutionStatusSuccess || agentStatus == AgentExecutionStatusFail {
+		// RowsAffected may error on some drivers; on error we conservatively
+		// skip the sweep rather than risk propagating a stale intent.
+		rowsAffected, raErr := res.RowsAffected()
+		if raErr != nil {
+			slog.Warn("history: RowsAffected failed on primary write — skipping ancestor sweep to avoid stale propagation",
+				"agent_id", agenId, "error", raErr)
+		} else if rowsAffected > 0 {
+			if sweepErr := chat.markWaitingAncestorsTerminal(agenId, agentStatus); sweepErr != nil {
+				slog.Warn("history: waiting-ancestors sweep failed (non-fatal — primary write already committed)",
+					"agent_id", agenId, "new_status", agentStatus, "error", sweepErr)
+			}
+		}
+	}
+	return nil
+}
+
+// maxWaitingAncestorSweepHops caps how far up the parent chain the sweep walks.
+// Real chains are 1–2 hops (orchestrator → delegate_agent → child); the cap is
+// a runaway-loop backstop for a corrupted parent_agent_id chain. Sized to match
+// the sibling walk in ResolveAgentByConversationAgentId.
+const maxWaitingAncestorSweepHops = 8
+
+// markWaitingAncestorsTerminal walks parent_agent_id up from the given agent
+// and flips any ancestor rows still in 'waiting' to the same terminal status.
+// Stops at the first non-waiting ancestor (already-completed rows above stay
+// as-is — the walk-up is only meant to clean up rows that entered Waiting
+// waiting for THIS descendant's followup). Uses a recursive CTE so we scan
+// the chain in a single round trip rather than N iterative SELECTs.
+//
+// Best-effort: any error is returned to the caller which logs and swallows.
+// The caller has already committed the primary agent-status write; a sweep
+// failure never rolls that back.
+func (chat *ConversationDao) markWaitingAncestorsTerminal(childAgentId string, terminalStatus AgentExecutionStatus) error {
+	// Recursive CTE walks parent_agent_id up from the child, capping at
+	// maxWaitingAncestorSweepHops (defense against a corrupted chain).
+	// The outer UPDATE only touches rows whose CURRENT status is 'waiting'
+	// — matching the "row was parked waiting for this followup" invariant
+	// the fix is designed to clean up. Already-terminal ancestors
+	// (success/fail/terminated) are left untouched.
+	// This codebase persists top-level agents with parent_agent_id =
+	// '00000000-0000-0000-0000-000000000000' (the nil UUID), NOT NULL.
+	// DB audit 2026-08-08: nil-UUID=3850 rows, NULL=0 rows, real-parent=1832
+	// over 7d. Both the anchor and recursive-step guards must exclude
+	// nil-UUID or the CTE walks past the real root, wasting a lookup and
+	// (worst case, if a stray row with id=nil-UUID exists and is Waiting)
+	// flipping it to terminal by mistake.
+	query := `
+WITH RECURSIVE ancestors(id, hops) AS (
+  SELECT parent_agent_id, 1
+    FROM llm_conversation_agent
+   WHERE id = $1 AND parent_agent_id IS NOT NULL
+     AND parent_agent_id <> '00000000-0000-0000-0000-000000000000'
+  UNION ALL
+  SELECT lca.parent_agent_id, a.hops + 1
+    FROM llm_conversation_agent lca
+    JOIN ancestors a ON lca.id = a.id
+   WHERE a.hops < $3 AND lca.parent_agent_id IS NOT NULL
+     AND lca.parent_agent_id <> '00000000-0000-0000-0000-000000000000'
+)
+UPDATE llm_conversation_agent
+   SET status = $2, updated_at = now()
+ WHERE id IN (SELECT id FROM ancestors)
+   AND status = 'waiting'`
+	_, err := chat.dbManager.Db.Exec(query, childAgentId, string(terminalStatus), maxWaitingAncestorSweepHops)
+	if err != nil {
+		return fmt.Errorf("markWaitingAncestorsTerminal: %w", err)
 	}
 	return nil
 }
