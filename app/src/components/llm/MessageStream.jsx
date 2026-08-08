@@ -197,6 +197,16 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
     [setCollapsedObj]
   );
 
+  // Per-question "Show more / Show less" toggle, keyed by message index so each question
+  // bubble owns its own expand state. Previously a single shared boolean toggled every
+  // question in the conversation at once (issue #35751).
+  const handleShowFullText = useCallback(
+    (index) => {
+      setShowFullText((prev) => ({ ...prev, [index]: !prev[index] }));
+    },
+    [setShowFullText]
+  );
+
   // Per-task "Tool Details" drawer — used by inline task rows during active runs (no Tasks
   // drawer is open in that case, so we open the primary drawer with the ToolDetails view).
   const handleOpenToolDetails = useCallback(
@@ -395,8 +405,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
               isCollapsed={false}
               collapsedObj={collapsedObj}
               onToggle={() => {}}
-              showFullText={showFullText}
-              onShowFullText={() => setShowFullText(!showFullText)}
+              showFullText={!!showFullText[group.question.originalIndex]}
+              onShowFullText={() => handleShowFullText(group.question.originalIndex)}
               {...itemProps}
             />
             {showInlineTasks &&
@@ -412,8 +422,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
                     isCollapsed={!!collapsedObj[task.originalIndex]}
                     collapsedObj={collapsedObj}
                     onToggle={() => handleCardClick(task.originalIndex)}
-                    showFullText={showFullText}
-                    onShowFullText={() => setShowFullText(!showFullText)}
+                    showFullText={!!showFullText[task.originalIndex]}
+                    onShowFullText={() => handleShowFullText(task.originalIndex)}
                     isLoadingInvestigation={isProcessing}
                     {...itemProps}
                     generateQuestionText={group?.question?.text || itemProps?.generateQuestionText}
@@ -436,8 +446,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
                 isCollapsed={!!collapsedObj[response.originalIndex]}
                 collapsedObj={collapsedObj}
                 onToggle={() => handleCardClick(response.originalIndex)}
-                showFullText={showFullText}
-                onShowFullText={() => setShowFullText(!showFullText)}
+                showFullText={!!showFullText[response.originalIndex]}
+                onShowFullText={() => handleShowFullText(response.originalIndex)}
                 isLoadingInvestigation={isProcessing}
                 {...itemProps}
                 generateQuestionText={group?.question?.text || itemProps?.generateQuestionText}
@@ -550,7 +560,7 @@ MessageStream.propTypes = {
   isProcessing: PropTypes.bool,
   collapsedObj: PropTypes.object,
   setCollapsedObj: PropTypes.func.isRequired,
-  showFullText: PropTypes.bool,
+  showFullText: PropTypes.object,
   setShowFullText: PropTypes.func.isRequired,
   itemProps: PropTypes.object.isRequired,
 };

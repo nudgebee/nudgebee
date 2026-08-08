@@ -58,6 +58,7 @@ function componentReducer(state, action) {
         selectedConversationId: '',
         generateQuestionText: '',
         collapsedObj: {},
+        showFullText: {},
         isTokenDataFetched: false,
         isFetchingTokenData: false,
       };
@@ -67,6 +68,7 @@ function componentReducer(state, action) {
         selectedSessionId: action.sessionId,
         selectedConversationId: '',
         collapsedObj: {},
+        showFullText: {},
         isTokenDataFetched: false,
         isFetchingTokenData: false,
       };
@@ -77,6 +79,7 @@ function componentReducer(state, action) {
         selectedSessionId: '',
         selectedConversationId: '',
         collapsedObj: {},
+        showFullText: {},
       };
     default:
       return state;
@@ -172,7 +175,9 @@ const KubernetesLLMResponseGenerator = ({
       isConversationListVisible: false,
       collapsedObj: {},
       openSettingsModal: false,
-      showFullText: false,
+      // Per-question "Show more / Show less" expand state, keyed by message index —
+      // mirrors collapsedObj so each question bubble owns its own toggle (issue #35751).
+      showFullText: {},
       // Distinct State for Session ID and Conversation ID
       selectedSessionId: restoredSessionId,
       selectedConversationId: router.query.conversation_id || conversationId || '',
