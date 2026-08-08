@@ -35,11 +35,6 @@ func containsTool(names []string, s string) bool {
 // model's training knowledge. Regression here would silently degrade grounding
 // on the 3 non-aws lean paths again.
 func TestLeanOrchestratorParity_Websearch(t *testing.T) {
-	// Force shell flag on so we exercise the same conditional-tail as prod default.
-	origShell := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = origShell })
-
 	tests := []struct {
 		name  string
 		names []string
@@ -66,12 +61,9 @@ func TestLeanOrchestratorParity_Websearch(t *testing.T) {
 // back into its preloaded set — the whole point of "lean" is to reach
 // specialists on-demand via delegate + search_tools.
 func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
-	origShell := config.Config.LlmServerShellToolEnabled
 	origRem := config.Config.RemediationAgentEnabled
-	config.Config.LlmServerShellToolEnabled = true
 	config.Config.RemediationAgentEnabled = false
 	t.Cleanup(func() {
-		config.Config.LlmServerShellToolEnabled = origShell
 		config.Config.RemediationAgentEnabled = origRem
 	})
 
@@ -85,7 +77,7 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		DelegateAgentToolName,
 		SearchToolsToolName,
 		WebSearchAgentName,
-		toolcore.ToolExecuteShellCommand, // gated on the flag we forced-on above
+		toolcore.ToolExecuteShellCommand,
 	}
 
 	// And every lean core must NOT preload these specialists — reaching them
@@ -131,10 +123,10 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		}
 	}
 
-	// Bound the reduced-core size: forced-on shell + remediation-off + the
-	// standard tail lands the four leans at the same tool count. If this
-	// count drifts up over time it's a signal that lean is drifting back
-	// toward the direct-orchestrator shape.
+	// Bound the reduced-core size: shell + remediation-off + the standard
+	// tail lands the four leans at the same tool count. If this count drifts
+	// up over time it's a signal that lean is drifting back toward the
+	// direct-orchestrator shape.
 	for _, tt := range cases {
 		t.Run(tt.name+"_bounded_size", func(t *testing.T) {
 			// 8 shared + memory (conditional but usually 1) + followup (conditional).
@@ -142,46 +134,6 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 			assert.LessOrEqual(t, len(tt.names), 15,
 				"%s reduced core has %d tools; lean should stay ≤15 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
 				tt.name, len(tt.names))
-		})
-	}
-}
-
-// TestLeanOrchestratorParity_ShellToolFlag pins the LlmServerShellToolEnabled
-// wiring on all four leans: shell must appear in the preloaded set when the
-// flag is ON and be absent when OFF. The four leans reach shell via two
-// different name-list helpers (trimmedK8sCoreToolNames + cloudLeanCoreToolNames),
-// so a regression in either helper's conditional-tail (`if
-// config.Config.LlmServerShellToolEnabled { names = append(...) }`) would
-// silently strip shell_execute from the affected lean(s) without the parity
-// test above catching it (that test only exercises the ON path). This test
-// exercises both.
-func TestLeanOrchestratorParity_ShellToolFlag(t *testing.T) {
-	orig := config.Config.LlmServerShellToolEnabled
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = orig })
-
-	leans := []struct {
-		name string
-		fn   func() []string
-	}{
-		{"k8s_lean", trimmedK8sCoreToolNames},
-		{"aws_lean", func() []string { return cloudLeanCoreToolNames(tools.ToolExecuteAwsCliCommand) }},
-		{"azure_lean", func() []string { return cloudLeanCoreToolNames(tools.ToolExecuteAzureCliCommand) }},
-		{"gcp_lean", func() []string { return cloudLeanCoreToolNames(tools.ToolExecuteGcpCliCommand) }},
-	}
-
-	config.Config.LlmServerShellToolEnabled = true
-	for _, l := range leans {
-		t.Run(l.name+"_shell_present_when_flag_on", func(t *testing.T) {
-			assert.True(t, containsTool(l.fn(), toolcore.ToolExecuteShellCommand),
-				"%s must preload shell_execute when LlmServerShellToolEnabled=true", l.name)
-		})
-	}
-
-	config.Config.LlmServerShellToolEnabled = false
-	for _, l := range leans {
-		t.Run(l.name+"_shell_absent_when_flag_off", func(t *testing.T) {
-			assert.False(t, containsTool(l.fn(), toolcore.ToolExecuteShellCommand),
-				"%s must NOT preload shell_execute when LlmServerShellToolEnabled=false", l.name)
 		})
 	}
 }
@@ -199,10 +151,6 @@ func TestLeanOrchestratorParity_ShellToolFlag(t *testing.T) {
 // fix, appending to call-1's result would silently mutate call-2's result
 // on the no-MCP path, and this test catches it.
 func TestReducedCoreHelpers_DefensiveCopy(t *testing.T) {
-	origShell := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = origShell })
-
 	// Super-admin context: DB-free (unit-test safe) and short-circuits the
 	// HasAccountAccess check in GetEnabledNBTools. Tenant-admin ctor hits the
 	// DB to resolve accountIds and returns nil when no DB is wired up.

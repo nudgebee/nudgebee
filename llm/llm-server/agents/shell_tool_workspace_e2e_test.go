@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -49,15 +48,6 @@ func newShellTestEnv(t *testing.T) (toolcore.NBTool, func(conversationId, query 
 	if tenant == "" || account == "" || user == "" {
 		t.Skip("TEST_TENANT / TEST_ACCOUNT / TEST_USER not set; shell workspace e2e tests skipped")
 	}
-
-	originalShellEnabled := config.Config.LlmServerShellToolEnabled
-	originalWorkspaceEnabled := config.Config.LlmServerWorkspaceEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	config.Config.LlmServerWorkspaceEnabled = true
-	t.Cleanup(func() {
-		config.Config.LlmServerShellToolEnabled = originalShellEnabled
-		config.Config.LlmServerWorkspaceEnabled = originalWorkspaceEnabled
-	})
 
 	shell := tools.ShellTool{AccountId: account}
 	runner := func(conversationId, command string) (toolcore.NBToolResponse, error) {

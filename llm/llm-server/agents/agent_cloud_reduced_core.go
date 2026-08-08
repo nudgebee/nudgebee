@@ -22,7 +22,7 @@ import (
 // cloudLeanCoreToolNames is the lean preloaded set for a cloud orchestrator. cliToolName is
 // the cloud's direct CLI tool (gcloud_execute / azure_execute) — its observability surface
 // (Cloud Logging/Monitoring, Azure Monitor) is the CLI itself, so no separate logs/metrics
-// sub-agents are preloaded. The conditional tail (shell/memory/followup) mirrors the k8s
+// sub-agents are preloaded. The conditional tail (memory/followup) mirrors the k8s
 // reduced core, so the ONLY difference from the direct orchestrator is the removed specialists.
 func cloudLeanCoreToolNames(cliToolName string) []string {
 	names := []string{
@@ -43,9 +43,7 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 	if config.Config.RemediationAgentEnabled {
 		names = append(names, RemediationAgentName)
 	}
-	if config.Config.LlmServerShellToolEnabled {
-		names = append(names, toolcore.ToolExecuteShellCommand)
-	}
+	names = append(names, toolcore.ToolExecuteShellCommand)
 	names = appendMemoryToolName(names)
 	if core.IsAgentsFollowupEnabled() {
 		names = append(names, FollowupAgentName)

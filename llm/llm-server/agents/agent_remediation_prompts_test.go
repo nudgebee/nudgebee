@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -67,12 +66,8 @@ func TestResolveRemediationMode(t *testing.T) {
 	}))
 }
 
-func remediationPromptJSONForRequest(t *testing.T, shellToolEnabled bool, request core.NBAgentRequest) string {
+func remediationPromptJSONForRequest(t *testing.T, request core.NBAgentRequest) string {
 	t.Helper()
-	prev := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = shellToolEnabled
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = prev })
-
 	prompt := RemediationAgent{accountId: "ACCOUNT_PLACEHOLDER"}.GetSystemPrompt(nil, request)
 	b, err := json.MarshalIndent(prompt, "", "  ")
 	require.NoError(t, err)
@@ -82,17 +77,15 @@ func remediationPromptJSONForRequest(t *testing.T, shellToolEnabled bool, reques
 func TestRemediationPromptGolden(t *testing.T) {
 	dir := filepath.Join("testdata", "prompt_golden")
 	cases := map[string]struct {
-		shellToolEnabled bool
-		request          core.NBAgentRequest
+		request core.NBAgentRequest
 	}{
-		"remediation_prompt":                {shellToolEnabled: false, request: remediationInvestigationRequest()},
-		"remediation_prompt_shell_tool":     {shellToolEnabled: true, request: remediationInvestigationRequest()},
-		"remediation_prompt_recommendation": {shellToolEnabled: false, request: remediationRecommendationRequest()},
+		"remediation_prompt_shell_tool":     {request: remediationInvestigationRequest()},
+		"remediation_prompt_recommendation": {request: remediationRecommendationRequest()},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := remediationPromptJSONForRequest(t, tc.shellToolEnabled, tc.request)
+			got := remediationPromptJSONForRequest(t, tc.request)
 			path := filepath.Join(dir, name+".json")
 
 			if *updateGolden {
@@ -110,58 +103,36 @@ func TestRemediationPromptGolden(t *testing.T) {
 	}
 }
 
-// TestRemediationRecommendationPromptShellFlagInvariance: recommendation mode
-// has no execute tool, so the shell-tool config flag (which only rewrites the
-// execute tool's usage notes) must not change its prompt at all.
-func TestRemediationRecommendationPromptShellFlagInvariance(t *testing.T) {
-	withoutShell := remediationPromptJSONForRequest(t, false, remediationRecommendationRequest())
-	withShell := remediationPromptJSONForRequest(t, true, remediationRecommendationRequest())
-	assert.Equal(t, withoutShell, withShell)
-}
-
 // TestRemediationGuardrailPlacement pins each safety guardrail to the section
 // it lives in. The redundancy across sections is intentional prompt design:
 // Instructions carry the workflow framing, Constraints are the planner's hard
 // rules, and the execute tool's usage notes are what the model re-reads at the
 // moment it considers calling the tool.
 func TestRemediationGuardrailPlacement(t *testing.T) {
-	cases := map[string]bool{
-		"without_shell_tool": false,
-		"with_shell_tool":    true,
-	}
+	prompt := RemediationAgent{accountId: "ACCOUNT_PLACEHOLDER"}.GetSystemPrompt(nil, remediationInvestigationRequest())
+	instructions := strings.Join(prompt.Instructions, "\n")
+	constraints := strings.Join(prompt.Constraints, "\n")
+	executeUsage := strings.Join(prompt.ToolUsage[tools.ToolRemediationExecute], "\n")
+	generateUsage := strings.Join(prompt.ToolUsage[tools.ToolRemediationGenerate], "\n")
 
-	for name, shellTool := range cases {
-		t.Run(name, func(t *testing.T) {
-			prev := config.Config.LlmServerShellToolEnabled
-			config.Config.LlmServerShellToolEnabled = shellTool
-			t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = prev })
+	// Approval gate — must hold in all three placements.
+	assert.Contains(t, instructions, "NEVER execute commands without explicit user approval")
+	assert.Contains(t, constraints, "NEVER execute commands without explicit user approval")
+	assert.Contains(t, executeUsage, "Only use AFTER user explicitly approves the plan")
 
-			prompt := RemediationAgent{accountId: "ACCOUNT_PLACEHOLDER"}.GetSystemPrompt(nil, remediationInvestigationRequest())
-			instructions := strings.Join(prompt.Instructions, "\n")
-			constraints := strings.Join(prompt.Constraints, "\n")
-			executeUsage := strings.Join(prompt.ToolUsage[tools.ToolRemediationExecute], "\n")
-			generateUsage := strings.Join(prompt.ToolUsage[tools.ToolRemediationGenerate], "\n")
+	// Plan-first, both placements.
+	assert.Contains(t, instructions, "ALWAYS present the plan first")
+	assert.Contains(t, constraints, "ALWAYS present the plan first and ask for confirmation")
 
-			// Approval gate — must hold in all three placements.
-			assert.Contains(t, instructions, "NEVER execute commands without explicit user approval")
-			assert.Contains(t, constraints, "NEVER execute commands without explicit user approval")
-			assert.Contains(t, executeUsage, "Only use AFTER user explicitly approves the plan")
+	// Tense discipline — the created-vs-executed confusion rules.
+	assert.Contains(t, instructions, "NEVER say you executed something when you only created a plan")
 
-			// Plan-first, both placements.
-			assert.Contains(t, instructions, "ALWAYS present the plan first")
-			assert.Contains(t, constraints, "ALWAYS present the plan first and ask for confirmation")
+	// Every plan must carry a rollback.
+	assert.Contains(t, instructions, "Include rollback plan in every remediation plan")
 
-			// Tense discipline — the created-vs-executed confusion rules.
-			assert.Contains(t, instructions, "NEVER say you executed something when you only created a plan")
-
-			// Every plan must carry a rollback.
-			assert.Contains(t, instructions, "Include rollback plan in every remediation plan")
-
-			// The generate tool must keep its needed-at-all gate (healthy systems and
-			// informational queries produce no plan).
-			assert.Contains(t, generateUsage, "verify that remediation is actually needed")
-		})
-	}
+	// The generate tool must keep its needed-at-all gate (healthy systems and
+	// informational queries produce no plan).
+	assert.Contains(t, generateUsage, "verify that remediation is actually needed")
 }
 
 // TestRemediationRecommendationGuardrailPlacement is the recommendation-mode

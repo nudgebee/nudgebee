@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -70,13 +69,11 @@ func (l RedisAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteRedisCommand] = []string{
-			"Executes Redis commands using `redis-cli`.",
-			"Input: A valid Redis command.",
-			"Output: Data returned by Redis.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the redis output.",
-		}
+	toolUsage[tools.ToolExecuteRedisCommand] = []string{
+		"Executes Redis commands using `redis-cli`.",
+		"Input: A valid Redis command.",
+		"Output: Data returned by Redis.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the redis output.",
 	}
 
 	examples := []core.NBAgentPromptExample{

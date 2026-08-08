@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -86,13 +85,11 @@ func (l RabbitMQAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteRabbitCommand] = []string{
-			"Use this tool to execute rabbitmqadmin commands, `rabbitmq-api METHOD /path` calls, or legacy curl calls against the RabbitMQ HTTP Management API.",
-			"Input: a valid rabbitmqadmin command, a `rabbitmq-api METHOD /path [extra curl args]` invocation (host/port/creds injected automatically), or a curl command targeting http://$RABBITMQ_HOST:$RABBITMQ_PORT/api/... .",
-			"Output: the data returned by the command.",
-			"You can use pipes (|) and jq to process output (e.g. `rabbitmqadmin -f raw_json list queues ... | jq ...` or `rabbitmq-api GET /api/overview | jq ...`).",
-		}
+	toolUsage[tools.ToolExecuteRabbitCommand] = []string{
+		"Use this tool to execute rabbitmqadmin commands, `rabbitmq-api METHOD /path` calls, or legacy curl calls against the RabbitMQ HTTP Management API.",
+		"Input: a valid rabbitmqadmin command, a `rabbitmq-api METHOD /path [extra curl args]` invocation (host/port/creds injected automatically), or a curl command targeting http://$RABBITMQ_HOST:$RABBITMQ_PORT/api/... .",
+		"Output: the data returned by the command.",
+		"You can use pipes (|) and jq to process output (e.g. `rabbitmqadmin -f raw_json list queues ... | jq ...` or `rabbitmq-api GET /api/overview | jq ...`).",
 	}
 	examples := []core.NBAgentPromptExample{
 		// --- rabbitmqadmin examples ---

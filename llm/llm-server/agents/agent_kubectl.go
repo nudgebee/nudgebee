@@ -3,7 +3,6 @@ package agents
 import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -114,15 +113,13 @@ func (l KubectlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"In templates, use canonical resource kinds (pods, services, deployments, statefulsets, daemonsets, ingresses); avoid shorthands like po/svc/deploy.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		newConstraints := []string{}
-		for _, c := range constraints {
-			if !strings.Contains(c, "we do not have access to the file system") {
-				newConstraints = append(newConstraints, c)
-			}
+	newConstraints := []string{}
+	for _, c := range constraints {
+		if !strings.Contains(c, "we do not have access to the file system") {
+			newConstraints = append(newConstraints, c)
 		}
-		constraints = newConstraints
 	}
+	constraints = newConstraints
 
 	toolUsage := map[string][]string{
 		tools.ToolExecuteKubectlCommand: {
@@ -139,13 +136,11 @@ func (l KubectlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteKubectlCommand] = []string{
-			"Use this tool FIRST to execute a kubectl command to answer the user's question.",
-			"Input: valid kubectl command",
-			"Output: the data returned by the kubectl command.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary.",
-		}
+	toolUsage[tools.ToolExecuteKubectlCommand] = []string{
+		"Use this tool FIRST to execute a kubectl command to answer the user's question.",
+		"Input: valid kubectl command",
+		"Output: the data returned by the kubectl command.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary.",
 	}
 	examples := []core.NBAgentPromptExample{
 		{

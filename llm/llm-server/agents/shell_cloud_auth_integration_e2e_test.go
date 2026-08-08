@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"os"
 	"testing"
@@ -31,16 +30,6 @@ import (
 // =============================================================================
 
 func TestAwsAgent_ShellExecuteWithCloudAuth(t *testing.T) {
-	// Enable shell tool for this test
-	origShell := config.Config.LlmServerShellToolEnabled
-	origWorkspace := config.Config.LlmServerWorkspaceEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	config.Config.LlmServerWorkspaceEnabled = true
-	t.Cleanup(func() {
-		config.Config.LlmServerShellToolEnabled = origShell
-		config.Config.LlmServerWorkspaceEnabled = origWorkspace
-	})
-
 	accountId := os.Getenv("TEST_AWS_ACCOUNT")
 	if accountId == "" {
 		t.Skip("TEST_AWS_ACCOUNT not set, skipping integration test")
@@ -94,15 +83,6 @@ func TestAwsAgent_ShellExecuteWithCloudAuth(t *testing.T) {
 }
 
 func TestGcpAgent_ShellExecuteWithCloudAuth(t *testing.T) {
-	origShell := config.Config.LlmServerShellToolEnabled
-	origWorkspace := config.Config.LlmServerWorkspaceEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	config.Config.LlmServerWorkspaceEnabled = true
-	t.Cleanup(func() {
-		config.Config.LlmServerShellToolEnabled = origShell
-		config.Config.LlmServerWorkspaceEnabled = origWorkspace
-	})
-
 	accountId := os.Getenv("TEST_GCP_ACCOUNT")
 	if accountId == "" {
 		t.Skip("TEST_GCP_ACCOUNT not set, skipping integration test")
@@ -164,15 +144,6 @@ func TestGcpAgent_ShellExecuteWithCloudAuth(t *testing.T) {
 // =============================================================================
 
 func TestK8sAgent_ShellExecuteGcloudCrossAccount(t *testing.T) {
-	origShell := config.Config.LlmServerShellToolEnabled
-	origWorkspace := config.Config.LlmServerWorkspaceEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	config.Config.LlmServerWorkspaceEnabled = true
-	t.Cleanup(func() {
-		config.Config.LlmServerShellToolEnabled = origShell
-		config.Config.LlmServerWorkspaceEnabled = origWorkspace
-	})
-
 	k8sAccountId := os.Getenv("TEST_ACCOUNT")
 	gcpAccountId := os.Getenv("TEST_GCP_ACCOUNT")
 	if k8sAccountId == "" || gcpAccountId == "" {
@@ -239,15 +210,6 @@ func TestK8sAgent_ShellExecuteGcloudCrossAccount(t *testing.T) {
 }
 
 func TestAzureAgent_ShellExecuteWithCloudAuth(t *testing.T) {
-	origShell := config.Config.LlmServerShellToolEnabled
-	origWorkspace := config.Config.LlmServerWorkspaceEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	config.Config.LlmServerWorkspaceEnabled = true
-	t.Cleanup(func() {
-		config.Config.LlmServerShellToolEnabled = origShell
-		config.Config.LlmServerWorkspaceEnabled = origWorkspace
-	})
-
 	accountId := os.Getenv("TEST_AZURE_ACCOUNT")
 	if accountId == "" {
 		t.Skip("TEST_AZURE_ACCOUNT not set, skipping integration test")

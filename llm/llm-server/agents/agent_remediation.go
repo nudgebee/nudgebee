@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -203,14 +202,12 @@ func remediationInvestigationPrompt() core.NBAgentPrompt {
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolRemediationExecute] = []string{
-			"Executes remediation commands with safety checks",
-			"Input: Specific kubectl/helm command to execute",
-			"Output: Command execution result (stdout, stderr, exit code)",
-			"CRITICAL: Only use AFTER user explicitly approves the plan",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the remediation output.",
-		}
+	toolUsage[tools.ToolRemediationExecute] = []string{
+		"Executes remediation commands with safety checks",
+		"Input: Specific kubectl/helm command to execute",
+		"Output: Command execution result (stdout, stderr, exit code)",
+		"CRITICAL: Only use AFTER user explicitly approves the plan",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the remediation output.",
 	}
 
 	constraints := []string{

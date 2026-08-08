@@ -73,37 +73,3 @@ func TestForwardedLLMConfigToMap_NoTiersOmitsKey(t *testing.T) {
 	_, present := m["tiers"]
 	assert.False(t, present, "tiers must be omitted entirely when unresolved, not sent empty")
 }
-
-// The legacy ephemeral-pod path must tier identically to the workspace path,
-// otherwise which code path served a request silently changes its cost.
-func TestForwardedLLMConfigToEnv_CarriesTierModels(t *testing.T) {
-	fwd := &core.ForwardedLLMConfig{
-		Provider: "googleai",
-		Model:    "run-pro-model",
-		ApiKey:   "test-key",
-		Tiers: map[string]string{
-			string(core.ModelTierRetrieval): "cheap-exec-model",
-			string(core.ModelTierSummary):   "cheap-summary-model",
-		},
-	}
-
-	env := map[string]string{}
-	for _, e := range forwardedLLMConfigToEnv(fwd) {
-		env[e.Name] = e.Value
-	}
-
-	assert.Equal(t, "cheap-exec-model", env["AGENT_MODEL_ROUTER"])
-	assert.Equal(t, "cheap-exec-model", env["AGENT_MODEL_FIXER"])
-	assert.Equal(t, "cheap-summary-model", env["AGENT_MODEL_REVIEW"])
-	// reasoning is already carried by the run model.
-	assert.Equal(t, "run-pro-model", env["LLM_MODEL_NAME"])
-}
-
-func TestForwardedLLMConfigToEnv_NoTiersEmitsNoRoleVars(t *testing.T) {
-	fwd := &core.ForwardedLLMConfig{Provider: "googleai", Model: "run-pro-model", ApiKey: "k"}
-
-	for _, e := range forwardedLLMConfigToEnv(fwd) {
-		assert.NotContains(t, e.Name, "AGENT_MODEL_",
-			"unresolved tiers must not emit empty role vars that would override pod env")
-	}
-}

@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -131,79 +130,39 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 		return core.NBToolResponse{}, fmt.Errorf("oracle: only read-only SELECT/WITH queries are allowed")
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		// Wrap query in sqlplus command so the workspace shim can intercept it.
-		// Uses -Q flag convention (mirroring sqlcmd -Q) because real sqlplus only
-		// accepts SQL via stdin (heredoc), which the shim cannot capture from os.Args.
-		// The shim captures this -Q flag in os.Args, and forager's sanitizeQuery
-		// extracts the SQL from it.
-		sqlplusFlags := ""
-		if database != "" {
-			escapedDb := strings.ReplaceAll(database, `"`, `\"`)
-			sqlplusFlags = fmt.Sprintf(` -d "%s"`, escapedDb)
-		}
-		escapedQuery := strings.ReplaceAll(query, `"`, `\"`)
-		wsQuery := fmt.Sprintf(`sqlplus%s -Q "%s"`, sqlplusFlags, escapedQuery)
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, wsQuery, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-
-		response = convertCsvToJsonString(nbRequestContext, response, rune(','))
-
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("oracle: unable to execute oracle query in workspace", "error", err.Error())
-			if response == "" {
-				response = err.Error()
-			}
-			// sqlplus uses `-H` (uppercase H), NOT `--help`.
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "sqlplus", "sqlplus -H"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeTable,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
+	wm := workspace.NewWorkspaceManager()
+	// Wrap query in sqlplus command so the workspace shim can intercept it.
+	// Uses -Q flag convention (mirroring sqlcmd -Q) because real sqlplus only
+	// accepts SQL via stdin (heredoc), which the shim cannot capture from os.Args.
+	// The shim captures this -Q flag in os.Args, and forager's sanitizeQuery
+	// extracts the SQL from it.
+	sqlplusFlags := ""
+	if database != "" {
+		escapedDb := strings.ReplaceAll(database, `"`, `\"`)
+		sqlplusFlags = fmt.Sprintf(` -d "%s"`, escapedDb)
 	}
+	escapedQuery := strings.ReplaceAll(query, `"`, `\"`)
+	wsQuery := fmt.Sprintf(`sqlplus%s -Q "%s"`, sqlplusFlags, escapedQuery)
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, wsQuery, map[string]string{
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobOracle, query, nbRequestContext.AccountId, map[string]any{
-		"database": database,
-	}, false)
+	response = convertCsvToJsonString(nbRequestContext, response, rune(','))
+
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("oracle: unable to execute oracle query", "error", err.Error())
-		responseData := ""
-		if response != nil {
-			if responseData1, ok := response.(string); ok {
-				responseData = responseData1
-			}
+		nbRequestContext.Ctx.GetLogger().Error("oracle: unable to execute oracle query in workspace", "error", err.Error())
+		if response == "" {
+			response = err.Error()
 		}
-		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
-		// non-string response, so the LLM always sees the failure reason
-		// rather than an empty envelope.
-		if responseData == "" {
-			responseData = err.Error()
-		}
+		// sqlplus uses `-H` (uppercase H), NOT `--help`.
 		return core.NBToolResponse{
-			Data:   cliRecoveryEnvelope(responseData, "", "oracle", ""),
+			Data:   cliRecoveryEnvelope(response, "", "sqlplus", "sqlplus -H"),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	// Guard the assertion (mirrors tool_mssql): a future ExecuteContainerJob
-	// path could return a non-string / nil response alongside a nil error,
-	// which an unguarded `response.(string)` would turn into a panic. A nil
-	// response falls through as an empty string rather than the literal
-	// "<nil>" that fmt.Sprintf would produce.
-	data, ok := response.(string)
-	if !ok && response != nil {
-		data = fmt.Sprintf("%v", response)
-	}
 	return core.NBToolResponse{
-		Data:   data,
+		Data:   response,
 		Type:   core.NBToolResponseTypeTable,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil

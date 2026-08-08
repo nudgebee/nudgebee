@@ -2,9 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"nudgebee/llm/cloud"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -115,102 +112,41 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 		return core.NBToolResponse{}, fmt.Errorf("unable to identify accountId - %s, please configure", t.Name())
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		creds, err := GetCloudAccountCredentials(accountId)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-
-		auth, err := BuildAzureAuth(creds)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-
-		// Auto-install costmanagement extension if needed
-		if strings.Contains(command, "costmanagement") {
-			auth.CommandPrefix += " && az extension add --name costmanagement > /dev/null "
-		}
-
-		auth.Env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
-		fullCommand := WrapCommandWithAuth(command, auth)
-
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, fullCommand, auth.Env)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("azure: unable to execute shell script", "error", err.Error(), "command", fullCommand)
-			if response == "" {
-				response = err.Error()
-			}
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "az", "az <command> --help"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
-
-	if isShellSyntax(command) {
-		return core.NBToolResponse{
-			Data:   "ERROR: az_execute accepts a single Azure CLI command in non-workspace mode, not shell scripts or loops. Call az_execute once per command instead of using for-loops or pipes.",
-			Status: core.NBToolResponseStatusError,
-		}, nil
-	}
-
-	if !strings.HasPrefix(command, "az") {
-		command = "az " + command
-	}
-
-	tenant := nbRequestContext.Ctx.GetSecurityContext().GetTenantId()
-	if tenant == "" {
-		tenant1, err := security.GetTenantIdFromAccountId(accountId)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-		tenant = tenant1
-	}
-
-	response, err := cloud.Execute(cloud.CloudExecuteCliCommandRequest{
-		AccountID: accountId,
-		TenantID:  tenant,
-		UserID:    nbRequestContext.Ctx.GetSecurityContext().GetUserId(),
-		Command:   command,
-	})
+	creds, err := GetCloudAccountCredentials(accountId)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("azure-cli: command execution failed", "error", err.Error(), "command", command)
 		return core.NBToolResponse{}, err
 	}
 
-	data := ""
-	if dataRaw := response["data"]; dataRaw != nil {
-		if dataStr, ok := dataRaw.(string); ok {
-			data = dataStr
-		}
-	} else if errorsRaw := response["errors"]; errorsRaw != nil {
-		if errorsArr, ok := errorsRaw.([]any); ok && len(errorsArr) > 0 {
-			if errorMap, ok := errorsArr[0].(map[string]any); ok {
-				if msg, ok := errorMap["message"].(string); ok {
-					data = msg
-				}
-			}
-		}
+	auth, err := BuildAzureAuth(creds)
+	if err != nil {
+		return core.NBToolResponse{}, err
 	}
 
-	if data == "" {
-		dataArr, err := common.MarshalJson(response)
-		if err != nil {
-			return core.NBToolResponse{}, err
+	// Auto-install costmanagement extension if needed
+	if strings.Contains(command, "costmanagement") {
+		auth.CommandPrefix += " && az extension add --name costmanagement > /dev/null "
+	}
+
+	auth.Env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
+	fullCommand := WrapCommandWithAuth(command, auth)
+
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, fullCommand, auth.Env)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("azure: unable to execute shell script", "error", err.Error(), "command", fullCommand)
+		if response == "" {
+			response = err.Error()
 		}
-		data = string(dataArr)
+		return core.NBToolResponse{
+			Data:   cliRecoveryEnvelope(response, "", "az", "az <command> --help"),
+			Status: core.NBToolResponseStatusError,
+		}, err
 	}
 
 	return core.NBToolResponse{
-		Data: data,
-		Type: core.NBToolResponseTypeText,
+		Data:   response,
+		Type:   core.NBToolResponseTypeText,
+		Status: core.NBToolResponseStatusSuccess,
 	}, nil
 }
 

@@ -2,7 +2,6 @@ package aws
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -65,15 +64,13 @@ func (a AwsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 		"Evidence-based: run command → parse output → make statement (never assume)",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		newInstructions := []string{}
-		for _, inst := range instructions {
-			if !strings.Contains(inst, "AWS CLI ONLY") {
-				newInstructions = append(newInstructions, inst)
-			}
+	newInstructions := []string{}
+	for _, inst := range instructions {
+		if !strings.Contains(inst, "AWS CLI ONLY") {
+			newInstructions = append(newInstructions, inst)
 		}
-		instructions = newInstructions
 	}
+	instructions = newInstructions
 
 	toolUsage := map[string][]string{
 		tools.ToolExecuteAwsCliCommand: {
@@ -82,12 +79,10 @@ func (a AwsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteAwsCliCommand] = []string{
-			"You can use **aws_execute** to execute AWS CLI commands.",
-			"Use this tool to interact with AWS, always prefer this tool over other tools",
-			"You can use standard shell features like pipes, redirects, and substitutions.",
-		}
+	toolUsage[tools.ToolExecuteAwsCliCommand] = []string{
+		"You can use **aws_execute** to execute AWS CLI commands.",
+		"Use this tool to interact with AWS, always prefer this tool over other tools",
+		"You can use standard shell features like pipes, redirects, and substitutions.",
 	}
 
 	examples := []core.NBAgentPromptExample{

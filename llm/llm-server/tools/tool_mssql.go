@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -111,75 +110,36 @@ func (m MSSQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 		return core.NBToolResponse{}, err
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		// Wrap query in sqlcmd command so the workspace shim can intercept it.
-		// Same pattern as Postgres (psql -c "query") and other DB tools.
-		sqlcmdFlags := ""
-		if database != "" {
-			escapedDb := strings.ReplaceAll(database, `"`, `\"`)
-			sqlcmdFlags = fmt.Sprintf(` -d "%s"`, escapedDb)
-		}
-		escapedQuery := strings.ReplaceAll(query, `"`, `\"`)
-		wsQuery := fmt.Sprintf(`sqlcmd%s -Q "%s" -s "	" -W`, sqlcmdFlags, escapedQuery)
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, wsQuery, map[string]string{
-			"MSSQL_DATABASE":                  database,
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("mssql: unable to execute mssql query in workspace", "error", err.Error(), "tool_config", nbRequestContext.ToolConfig.Name)
-			if response == "" {
-				response = err.Error()
-			}
-			// sqlcmd uses `-?` (single dash + question mark), NOT `--help`.
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "sqlcmd", "sqlcmd -?"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		response = convertCsvToJsonString(nbRequestContext, response, rune('\t'))
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeTable,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
+	wm := workspace.NewWorkspaceManager()
+	// Wrap query in sqlcmd command so the workspace shim can intercept it.
+	// Same pattern as Postgres (psql -c "query") and other DB tools.
+	sqlcmdFlags := ""
+	if database != "" {
+		escapedDb := strings.ReplaceAll(database, `"`, `\"`)
+		sqlcmdFlags = fmt.Sprintf(` -d "%s"`, escapedDb)
 	}
-
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobMssql, query, nbRequestContext.AccountId, map[string]any{
-		"database": database,
-	}, false)
+	escapedQuery := strings.ReplaceAll(query, `"`, `\"`)
+	wsQuery := fmt.Sprintf(`sqlcmd%s -Q "%s" -s "	" -W`, sqlcmdFlags, escapedQuery)
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, wsQuery, map[string]string{
+		"MSSQL_DATABASE":                  database,
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("mssql: unable to execute mssql query", "error", err.Error())
-		responseData := ""
-		if response != nil {
-			if responseData1, ok := response.(string); ok {
-				responseData = responseData1
-			}
+		nbRequestContext.Ctx.GetLogger().Error("mssql: unable to execute mssql query in workspace", "error", err.Error(), "tool_config", nbRequestContext.ToolConfig.Name)
+		if response == "" {
+			response = err.Error()
 		}
-		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
-		// non-string response, so the LLM always sees the failure reason
-		// rather than an empty envelope.
-		if responseData == "" {
-			responseData = err.Error()
-		}
+		// sqlcmd uses `-?` (single dash + question mark), NOT `--help`.
 		return core.NBToolResponse{
-			Data:   cliRecoveryEnvelope(responseData, "", "mssql", ""),
+			Data:   cliRecoveryEnvelope(response, "", "sqlcmd", "sqlcmd -?"),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	data, ok := response.(string)
-	if !ok {
-		return core.NBToolResponse{
-			Data:   fmt.Sprintf("%v", response),
-			Type:   core.NBToolResponseTypeTable,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
+	response = convertCsvToJsonString(nbRequestContext, response, rune('\t'))
+
 	return core.NBToolResponse{
-		Data:   data,
+		Data:   response,
 		Type:   core.NBToolResponseTypeTable,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil

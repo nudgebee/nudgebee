@@ -2,7 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/utils"
@@ -112,34 +111,17 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	command = strings.ReplaceAll(command, "\\n", "\n")
 
-	var response string
-	var err error
+	wm := workspace.NewWorkspaceManager()
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-
-		// Prepare env with GITHUB_TOKEN
-		env := map[string]string{
-			"GITHUB_TOKEN": githubToken,
-		}
-		env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
-
-		// Use the encapsulated lazy creation/execution logic
-		// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
-		response, err = wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
-	} else {
-		if isShellSyntax(command) {
-			return core.NBToolResponse{
-				Data:   "ERROR: github_execute accepts a single gh command in non-workspace mode, not shell scripts or loops.",
-				Status: core.NBToolResponseStatusError,
-			}, nil
-		}
-		if !strings.HasPrefix(command, "gh") {
-			command = "gh " + command
-		}
-		// execute gh cli command locally
-		response, err = ExecuteCliCommand(nbRequestContext, command, []string{"GITHUB_TOKEN=" + githubToken}, []string{"gh", "grep", "awk", "jq"})
+	// Prepare env with GITHUB_TOKEN
+	env := map[string]string{
+		"GITHUB_TOKEN": githubToken,
 	}
+	env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
+
+	// Use the encapsulated lazy creation/execution logic
+	// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
 
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("github: unable to execute shell script", "error", err.Error(), "command", command)

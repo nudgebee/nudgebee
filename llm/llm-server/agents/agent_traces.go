@@ -408,13 +408,11 @@ func (m TracesAgentTool) Call(nbRequestContext toolcore.NbToolContext, input too
 		}
 		shouldSave := false
 
-		if config.Config.LlmServerShellToolEnabled {
-			if outputFile != "" {
-				shouldSave = true
-			} else if len(traceData) > 2000 {
-				shouldSave = true
-				outputFile = fmt.Sprintf("traces_%d.txt", time.Now().UnixNano())
-			}
+		if outputFile != "" {
+			shouldSave = true
+		} else if len(traceData) > 2000 {
+			shouldSave = true
+			outputFile = fmt.Sprintf("traces_%d.txt", time.Now().UnixNano())
 		}
 
 		if shouldSave {

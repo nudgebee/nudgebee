@@ -2118,7 +2118,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	}
 	critiquePrompt := prompts.NewPromptTemplate(
 		critiquerPrompt,
-		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled", "sdg_grounding_enabled", "notebook", "today"},
+		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "tools_invoked", "hypothesis_mode_enabled", "sdg_grounding_enabled", "notebook", "today"},
 	)
 	critiquePromptStr, promptErr := critiquePrompt.Format(map[string]any{
 		"input":                   input,
@@ -2129,7 +2129,6 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 		"question_type":           lo.Ternary(IsInvestigationRequestTask(o.request.Query), "investigation", "query"),
 		"tool_names":              reActPromptToolNames(o.tools),
 		"tool_descriptions":       reActPromptToolDescriptions(o.tools),
-		"shell_tool_enabled":      config.Config.LlmServerShellToolEnabled && HasShellTool(o.tools),
 		"tools_invoked":           extractToolsInvoked(intermediateSteps),
 		"hypothesis_mode_enabled": o.hypothesisModeEnabled,
 		"sdg_grounding_enabled":   config.Config.LlmServerSDGGroundingContractEnabled && HasServiceDependencyGraphTool(o.tools),
@@ -2337,8 +2336,6 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 			[]string{
 				"tool_names",
 				"tool_descriptions",
-				"workspace_enabled",
-				"shell_tool_enabled",
 				"delegate_agent_enabled",
 				"notebook_enabled",
 				"hypothesis_mode_enabled",
@@ -2503,8 +2500,6 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		// System message template vars (stable — cached across conversations)
 		"tool_names":                   reActPromptToolNames(tools),
 		"tool_descriptions":            reActPromptToolDescriptions(tools),
-		"workspace_enabled":            config.Config.LlmServerWorkspaceEnabled,
-		"shell_tool_enabled":           config.Config.LlmServerShellToolEnabled && HasShellTool(tools),
 		"delegate_agent_enabled":       HasDelegateAgentTool(tools),
 		"notebook_enabled":             notebookEnabled,
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,

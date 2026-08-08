@@ -117,23 +117,16 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 		}
 	}
 
-	// 2. Inject or Remove shell_execute based on global config
-	if config.Config.LlmServerShellToolEnabled {
-		if !skipInjection {
-			found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
-				return strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
-			})
-			if !found {
-				if t, ok := toolcore.GetNBTool(accountId, toolcore.ToolExecuteShellCommand); ok {
-					toolList = append(toolList, t)
-				}
+	// 2. Inject shell_execute (unless the agent opted out of default-tool injection)
+	if !skipInjection {
+		found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
+			return strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
+		})
+		if !found {
+			if t, ok := toolcore.GetNBTool(accountId, toolcore.ToolExecuteShellCommand); ok {
+				toolList = append(toolList, t)
 			}
 		}
-	} else {
-		// If explicitly disabled globally, ensure it's removed even if an agent tried to include it
-		toolList = lo.Filter(toolList, func(t toolcore.NBTool, _ int) bool {
-			return !strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
-		})
 	}
 
 	// 3. Inject watch tools only for watch-capable agents (read-only investigators

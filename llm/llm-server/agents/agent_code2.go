@@ -1,14 +1,11 @@
 package agents
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/url"
 	"nudgebee/llm/agents/core"
@@ -20,20 +17,12 @@ import (
 	"nudgebee/llm/utils"
 	"nudgebee/llm/workspace"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/tmc/langchaingo/llms"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kube_labels "k8s.io/apimachinery/pkg/labels"
-	kube_watch "k8s.io/apimachinery/pkg/watch"
-	kubernetes "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 // AgentCodeAnalyzer is the canonical registered name for the code-analysis
@@ -81,12 +70,6 @@ const defaultForwardedSkillTopK = 5
 // the primary control; this only guards against a handful of very large skills
 // still bloating every downstream code-analysis agent and PR sub-prompt.
 const maxForwardedSkillBytes = 24000
-
-// Environment variable names for passing large payloads to code-analysis-agent
-const (
-	envCodeAgentLogs   = "CODE_AGENT_LOGS"
-	envCodeAgentPrompt = "CODE_AGENT_PROMPT"
-)
 
 // irrelevantAnalysisMarker is the phrase emitted by the code-analysis service when
 // the analysis is not relevant to the user's query. Must match the output in llm/code-analysis.
@@ -148,178 +131,6 @@ Each call runs a full (expensive) analysis — decide the intended outcome first
 	core.RegisterNBAgentFactory(agentCodeAnalyzerLegacyName, codeAnalyzerFactory)
 }
 
-func evaluateCodeUsingCli(ctx *security.RequestContext, request CodeAgent2Request, creds []GitCredentials, provider string) (string, error) {
-	logger := ctx.GetLogger()
-
-	// Validate that the local execution path is configured
-	if config.Config.LlmServerCodeAgentLocalExecPath == "" {
-		return "", errors.New("LlmServerCodeAgentLocalExecPath is not configured. Set LLM_SERVER_AGENT_CODEAGENT_LOCAL_EXEC_PATH environment variable or switch to pod mode by setting LLM_SERVER_AGENT_CODEAGENT_MODE=remote-cli")
-	}
-
-	args := []string{config.Config.LlmServerCodeAgentLocalExecPath, "--analyze"}
-
-	if request.GitRepo != "" {
-		args = append(args, "--repo", request.GitRepo)
-	}
-
-	if request.EventId != "" {
-		args = append(args, "--eventid", request.EventId)
-	}
-
-	if request.RecommendationId != "" {
-		args = append(args, "--recommendationid", request.RecommendationId)
-	}
-
-	if request.AccountId != "" {
-		args = append(args, "--accountid", request.AccountId)
-	}
-
-	if request.WorkflowId != "" {
-		args = append(args, "--workflowid", request.WorkflowId)
-	}
-
-	if request.RaisePr {
-		args = append(args, "--raisepr", "true")
-	}
-
-	// Explicit mode enables propose mode (mode=fix, raisepr=false). When unset the
-	// CLI derives the mode from raisepr, so only forward it when the caller set it.
-	if request.Mode != "" {
-		args = append(args, "--mode", request.Mode)
-	}
-
-	env := os.Environ()
-
-	// Pass large payloads via environment variables to avoid ARG_MAX limits
-	if len(request.Errors) > 0 {
-		env = append(env, envCodeAgentLogs+"="+strings.Join(request.Errors, "\n"))
-	}
-	if request.Query != "" {
-		env = append(env, envCodeAgentPrompt+"="+request.Query)
-	}
-	// Get Git token based on auth type and provider
-	if len(creds) > 0 {
-		gitToken := ""
-		switch creds[0].AuthType {
-		case "token":
-			gitToken = creds[0].Password
-		case "application":
-			// For GitHub App, get installation token (only applicable for GitHub)
-			if provider == "github" {
-				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
-					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
-				} else {
-					// Use the URL from credentials for GitHub Enterprise support
-					apiUrl := creds[0].Url
-					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
-					} else {
-						gitToken = token
-					}
-				}
-			} else {
-				// For GitLab, use password directly as token
-				gitToken = creds[0].Password
-			}
-		}
-		if gitToken != "" {
-			// Set appropriate environment variable based on provider
-			if provider == "gitlab" {
-				env = append(env, "GITLAB_TOKEN="+gitToken)
-			} else {
-				env = append(env, "GITHUB_TOKEN="+gitToken)
-			}
-		}
-	}
-
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = env
-
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return "", errors.New(err.Error() + ": " + stderr.String())
-	}
-	// --- START: Modified section ---
-
-	// This struct is used to unmarshal *only* the fields we care about
-	type logEntry struct {
-		LogType string `json:"log_type"`
-		Event   string `json:"event"`
-	}
-
-	fullOutput := out.String()
-	// Save logs to file
-	// os.WriteFile("agent_logs.out", []byte(fullOutput), 0644)
-	// Scan the output line by line
-	scanner := bufio.NewScanner(strings.NewReader(fullOutput))
-	var finalAnswerLine string
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var entry logEntry
-		// Try to unmarshal the line into our struct
-		if json.Unmarshal(line, &entry) == nil {
-			// Log all valid JSON entries continuously
-			logger.Debug("code analysis log", "output", string(line))
-
-			// Check if this is our final answer
-			if entry.LogType == "RESULT" && entry.Event == "final_answer" {
-				finalAnswerLine = string(line)
-			}
-		} else {
-			// Log non-JSON lines as well
-			logger.Debug("code analysis output", "output", string(line))
-		}
-	}
-
-	// If we found a final answer, return it
-	if finalAnswerLine != "" {
-		return finalAnswerLine, nil
-	}
-
-	// If we finished scanning and found no matching line,
-	// return the *entire* original stdout output as requested.
-	return fullOutput, nil
-}
-
-func getKubeClient(qps float32, burst int) (*kubernetes.Clientset, error) {
-	// Try to get in-cluster config
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		// Fallback to kubeconfig file
-		kubeconfig := os.Getenv("KUBECONFIG")
-		if kubeconfig == "" {
-			kubeconfig = clientcmd.RecommendedHomeFile
-		}
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create kubernetes config: %w", err)
-		}
-	}
-
-	config.QPS = qps
-	config.Burst = burst
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
-	}
-	return clientset, nil
-}
-
-// forwardedLLMConfigToMap renders a resolved tenant LLM config as the JSON body
-// block consumed by the code-analysis /analyze endpoint (workspace path).
 func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 	m := map[string]any{"provider": c.Provider}
 	if c.Model != "" {
@@ -355,278 +166,6 @@ func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 	return m
 }
 
-// forwardedLLMConfigToEnv renders a resolved tenant LLM config as pod env vars
-// for the legacy ephemeral pod path. Appended AFTER the LLM_* SecretKeyRef
-// fallback so these per-request values win (last duplicate env name wins in k8s).
-func forwardedLLMConfigToEnv(c *core.ForwardedLLMConfig) []corev1.EnvVar {
-	env := []corev1.EnvVar{{Name: "LLM_PROVIDER", Value: c.Provider}}
-	add := func(name, val string) {
-		if val != "" {
-			env = append(env, corev1.EnvVar{Name: name, Value: val})
-		}
-	}
-	add("LLM_MODEL_NAME", c.Model)
-	add("LLM_PROVIDER_API_KEY", c.ApiKey)
-	add("LLM_PROVIDER_API_ENDPOINT", c.ApiEndpoint)
-	add("LLM_PROVIDER_API_VERSION", c.ApiVersion)
-	add("LLM_PROVIDER_API_TYPE", c.ApiType)
-	add("LLM_PROVIDER_REGION", c.Region)
-	// Per-role tiers, mirroring forwardedLLMConfigToMap so the legacy pod path
-	// tiers identically to the workspace path. The reasoning tier is already
-	// carried by LLM_MODEL_NAME above; code-analysis maps retrieval onto both
-	// the router and the fixer, and summary onto the reviewer.
-	add("AGENT_MODEL_ROUTER", c.Tiers[string(core.ModelTierRetrieval)])
-	add("AGENT_MODEL_FIXER", c.Tiers[string(core.ModelTierRetrieval)])
-	add("AGENT_MODEL_REVIEW", c.Tiers[string(core.ModelTierSummary)])
-	return env
-}
-
-func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (string, error) {
-	logger := ctx.GetLogger()
-	// Default values for pod execution
-	namespace := config.Config.LlmServerCodeAgentNamespace
-	image := config.Config.LlmServerCodeAgentImage
-	qps := float32(100)
-	burst := 200
-
-	clientset, err := getKubeClient(qps, burst)
-	if err != nil {
-		return "", err
-	}
-
-	podName := fmt.Sprintf("nb-code-agent-%d", time.Now().UnixNano())
-
-	args := []string{"/app/code-analysis-agent", "--analyze"}
-
-	if request.GitRepo != "" {
-		args = append(args, "--repo", request.GitRepo)
-	}
-
-	if request.EventId != "" {
-		args = append(args, "--eventid", request.EventId)
-	}
-
-	if request.RecommendationId != "" {
-		args = append(args, "--recommendationid", request.RecommendationId)
-	}
-
-	if request.AccountId != "" {
-		args = append(args, "--accountid", request.AccountId)
-	}
-
-	if request.WorkflowId != "" {
-		args = append(args, "--workflowid", request.WorkflowId)
-	}
-
-	if request.GitRepo == "" && request.Agent == "" {
-		args = append(args, "--agent", "code_agent")
-	} else if request.Agent != "" {
-		args = append(args, "--agent", request.Agent)
-	}
-
-	if request.RaisePr {
-		args = append(args, "--raisepr", "true")
-	}
-
-	// Explicit mode enables propose mode (mode=fix, raisepr=false). When unset the
-	// CLI derives the mode from raisepr, so only forward it when the caller set it.
-	if request.Mode != "" {
-		args = append(args, "--mode", request.Mode)
-	}
-
-	args = append(args, "--conversationid", agentRequest.SessionId)
-	envVars := []corev1.EnvVar{}
-
-	// Pass large payloads via environment variables to avoid ARG_MAX limits
-	if len(request.Errors) > 0 {
-		logs := strings.Join(request.Errors, "\n")
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  envCodeAgentLogs,
-			Value: logs,
-		})
-	}
-	if request.Query != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  envCodeAgentPrompt,
-			Value: request.Query,
-		})
-	}
-
-	// Get Git token based on auth type and provider
-	if len(creds) > 0 {
-		gitToken := ""
-		switch creds[0].AuthType {
-		case "token":
-			gitToken = creds[0].Password
-		case "application":
-			// For GitHub App, get installation token (only applicable for GitHub)
-			if provider == "github" {
-				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
-					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
-				} else {
-					// Use the URL from credentials for GitHub Enterprise support
-					apiUrl := creds[0].Url
-					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
-					} else {
-						gitToken = token
-					}
-				}
-			} else {
-				// For GitLab, use password directly as token
-				gitToken = creds[0].Password
-			}
-		}
-		if gitToken != "" {
-			// Set appropriate environment variable based on provider
-			tokenEnvName := "GITHUB_TOKEN"
-			if provider == "gitlab" {
-				tokenEnvName = "GITLAB_TOKEN"
-			}
-			envVars = append(envVars, corev1.EnvVar{
-				Name:  tokenEnvName,
-				Value: gitToken,
-			})
-		}
-	}
-
-	// Forward the public app base URL so the code-analysis agent can build
-	// correct deep-links (e.g. the "Nubi Conversation" link in generated PRs).
-	// The full nudgebee secret is deliberately NOT mounted into this pod (see
-	// below); BASE_URL alone is non-sensitive, and llm-server already holds the
-	// correct per-environment value in its own env. Without this the agent's
-	// config falls back to the hardcoded prod default, so non-prod PRs link to
-	// app.nudgebee.com.
-	if baseURL := os.Getenv("BASE_URL"); baseURL != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "BASE_URL",
-			Value: baseURL,
-		})
-	}
-
-	// Pass only the minimal LLM_* keys via SecretKeyRef instead of mounting the
-	// entire nudgebee secret. This keeps app-infra secrets (DB URLs, RabbitMQ,
-	// encryption key, OAuth/internal tokens, cloud creds) out of a pod that runs
-	// untrusted customer build/agent commands. These are the global fallback;
-	// the tenant-resolved llm_config appended below overrides them.
-	if config.Config.LlmServerCodeAgentSecret != "" {
-		envVars = append(envVars, workspace.LLMSecretEnvVars(config.Config.LlmServerCodeAgentSecret)...)
-	}
-
-	// Forward the tenant-resolved, decrypted LLM config as explicit env vars,
-	// appended after the SecretKeyRef fallback so they win (last duplicate env
-	// name wins in k8s). Degrade gracefully; never log the API key.
-	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
-		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
-	} else if llmCfg != nil {
-		envVars = append(envVars, forwardedLLMConfigToEnv(llmCfg)...)
-		logger.Info("code: forwarding tenant LLM config to analysis pod", "provider", llmCfg.Provider, "model", llmCfg.Model)
-	}
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: namespace,
-			Labels: kube_labels.Set{
-				"app":             "code-analysis-agent",
-				"account_id":      agentRequest.AccountId,
-				"conversation_id": agentRequest.ConversationId,
-				"message_id":      agentRequest.MessageId,
-				"job":             podName,
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:            "cli-container",
-					Image:           image,
-					ImagePullPolicy: "Always",
-					Command:         args,
-					Env:             envVars,
-				},
-			},
-			RestartPolicy: corev1.RestartPolicyNever,
-		},
-	}
-
-	if config.Config.LlmServerCodeAgentImagePullSecret != "" {
-		pod.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
-			{Name: config.Config.LlmServerCodeAgentImagePullSecret},
-		}
-	}
-
-	// Create the pod
-	_, err = clientset.CoreV1().Pods(namespace).Create(ctx.GetContext(), pod, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("failed to create pod: %w", err)
-	}
-
-	// Watch for pod completion
-	watcher, err := clientset.CoreV1().Pods(namespace).Watch(ctx.GetContext(), metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("metadata.name=%s", podName),
-		Watch:         true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to set up pod watcher: %w", err)
-	}
-	defer watcher.Stop()
-
-	for event := range watcher.ResultChan() {
-		if event.Type == kube_watch.Modified || event.Type == kube_watch.Added {
-			p, ok := event.Object.(*corev1.Pod)
-			if !ok {
-				continue
-			}
-			if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
-				break
-			}
-		}
-	}
-
-	// Get logs
-	podLogs, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{}).Stream(ctx.GetContext())
-	if err != nil {
-		return "", fmt.Errorf("failed to get pod logs: %w", err)
-	}
-	defer func() {
-		if err := podLogs.Close(); err != nil {
-			// Log the error, but don't return it as the main result
-			logger.Error("error closing pod logs stream", "error", err, "pod", podName)
-		}
-	}()
-
-	buf := new(bytes.Buffer)
-	if _, err := io.Copy(buf, podLogs); err != nil {
-		return "", fmt.Errorf("failed to copy pod logs to buffer: %w", err)
-	}
-
-	// Determine if the pod should be deleted
-	var finalPod *corev1.Pod
-	// Re-fetch the pod to get its final status after logs are collected
-	finalPod, err = clientset.CoreV1().Pods(namespace).Get(ctx.GetContext(), podName, metav1.GetOptions{})
-	if err != nil {
-		logger.Error("error getting final pod status", "pod", podName, "error", err)
-	} else {
-		switch finalPod.Status.Phase {
-		case corev1.PodSucceeded:
-			// Delete the pod if it succeeded
-			deletePolicy := metav1.DeletePropagationBackground
-			if err := clientset.CoreV1().Pods(namespace).Delete(ctx.GetContext(), podName, metav1.DeleteOptions{
-				PropagationPolicy: &deletePolicy,
-			}); err != nil {
-				logger.Error("error deleting successful pod", "pod", podName, "error", err)
-			}
-		case corev1.PodFailed:
-			logger.Warn("pod failed and is being kept for debugging", "pod", podName)
-		}
-	}
-
-	return buf.String(), nil
-}
-
-// evaluateCodeUsingWorkspace calls the workspace pod's native /analyze endpoint
 // instead of launching a new pod per request.
 func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (codeAnalysisResult, error) {
 	logger := ctx.GetLogger()
@@ -823,16 +362,17 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		}
 	}
 
-	// Forward the tenant-resolved, decrypted LLM config so the stateless
-	// code-analysis service honors the tenant's own LLM integration instead of
-	// the pod's global LLM_* secret-env fallback. Degrade gracefully: on any
-	// failure, or when nothing tenant-specific resolves, omit the block and let
-	// the pod use its fallback. The API key is plaintext — never log it.
+	// Forward the resolved, decrypted LLM config so the stateless code-analysis
+	// service runs on the tenant's own LLM integration — or, absent one, on the
+	// same default llm-server itself resolved — instead of whatever its startup
+	// env happens to name. Degrade gracefully: on any failure, or when no
+	// provider resolves at all, omit the block and let the pod use its
+	// fallback. The API key is plaintext — never log it.
 	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
 		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
 	} else if llmCfg != nil {
 		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
-		logger.Info("code: forwarding tenant LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model)
+		logger.Info("code: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 	}
 
 	// Pre-flight: verify workspace pod is reachable before dispatching analysis
@@ -1591,11 +1131,9 @@ func (l CodeAgent2) GetDescription() string {
 		"* Analyze service failures by correlating logs with source code.\n" +
 		"* Identify bugs and propose code fixes or create Pull Requests (PRs)."
 
-	if config.Config.LlmServerShellToolEnabled {
-		desc += "\n\n**Do NOT use for:**\n" +
-			"* Simple file lookups or running basic shell commands (use 'shell_execute').\n" +
-			"* Checking network connectivity or infrastructure state (use 'shell_execute')."
-	}
+	desc += "\n\n**Do NOT use for:**\n" +
+		"* Simple file lookups or running basic shell commands (use 'shell_execute').\n" +
+		"* Checking network connectivity or infrastructure state (use 'shell_execute')."
 
 	return desc
 }
@@ -2036,116 +1574,38 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		}
 	}
 
-	finalOutput := ""
-
-	if config.Config.LlmServerWorkspaceEnabled {
-		// execute via workspace /analyze endpoint
-		startTime := time.Now()
-		wsResult, err := evaluateCodeUsingWorkspace(ctx, query, codeAgentRequest, creds, provider)
-		latency := time.Since(startTime).Seconds()
-		if err != nil {
-			ctx.GetLogger().Error("code: failed to execute via workspace", "error", err.Error())
-			// Write the message-scoped guard on failure too. A poll timeout here
-			// usually means the analysis is STILL RUNNING server-side (the workspace
-			// pod does not cancel it when polling stops) — without the guard, the
-			// planner's natural "tool errored, retry" reaction dispatches a second
-			// /analyze and two full analyses run for one message.
-			if guardKey, ok := codeAgentGuardKey(query.ConversationId, query.MessageId); ok {
-				_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey,
-					[]byte(fmt.Sprintf("previous attempt failed and may still be running server-side: %v", err)))
-			}
-			return core.NBAgentResponse{}, err
-		}
-		ctx.GetLogger().Info("Workspace /analyze Output", "output_length", len(wsResult.AgentResponse))
-
-		// Record token usage from code-analysis service (fire-and-forget). Tier
-		// attribution is resolved here, on the request goroutine, because the
-		// recorder outlives the request context.
-		modelTier, taskType := core.TierAttributionForRecord(ctx)
-		go recordCodeAnalysisTokenUsage(query, wsResult.TokenUsage, latency, modelTier, taskType)
-
-		// workspace path returns agent_response directly — parse and enrich
-		var actualResponse map[string]any
-		if err := json.Unmarshal([]byte(wsResult.AgentResponse), &actualResponse); err != nil {
-			return core.NBAgentResponse{
-				Response: []string{wsResult.AgentResponse},
-			}, nil
-		}
-		actualResponse["source_details"] = map[string]any{
-			"workloads.nudgebee.com/git.hash": codeAgentRequest.GitCommit,
-			"workloads.nudgebee.com/git.repo": codeAgentRequest.GitRepo,
-		}
-		jsonResponse, err := json.Marshal(actualResponse)
-		if err != nil {
-			return core.NBAgentResponse{}, err
-		}
-		responseStr := string(jsonResponse)
-		finalResponse := handleAnalysisResult(ctx, query.ConversationId, query.MessageId, responseStr)
-		go trackPRInResolution(ctx, query, responseStr, codeAgentRequest.GitRepo, provider)
-		return core.NBAgentResponse{
-			Response: []string{finalResponse},
-		}, nil
-	} else if config.Config.LlmServerCodeAgentMode == "local" {
-		// execute command for local testing
-		cliOutput, err := evaluateCodeUsingCli(ctx, codeAgentRequest, creds, provider)
-		if err != nil {
-			ctx.GetLogger().Error("code: failed to analyze request", "error", err)
-			return core.NBAgentResponse{}, err
-		}
-		ctx.GetLogger().Info("CLI Command Output", "output", cliOutput)
-		finalOutput = cliOutput
-	} else {
-		// execute command using pod
-		podOutput, err := evaluateCodeUsingPod(ctx, query, codeAgentRequest, creds, provider)
-		if err != nil {
-			ctx.GetLogger().Error("code: failed to execute CLI command in pod", "error", err.Error())
-			return core.NBAgentResponse{}, err
-		}
-		for output := range strings.SplitSeq(podOutput, "\n") {
-			if !strings.Contains(output, `"event":"final_answer"`) {
-				continue
-			}
-			podOutput = output
-			break
-		}
-
-		ctx.GetLogger().Info("CLI Command Output from Pod", "output", podOutput)
-		finalOutput = podOutput
-	}
-
-	var actualResponse map[string]any
-	var cliTokenUsage *codeAnalysisTokenUsage
-	logAnalysisResponse := map[string]any{}
-	err = json.Unmarshal([]byte(finalOutput), &logAnalysisResponse)
+	// execute via workspace /analyze endpoint
+	startTime := time.Now()
+	wsResult, err := evaluateCodeUsingWorkspace(ctx, query, codeAgentRequest, creds, provider)
+	latency := time.Since(startTime).Seconds()
 	if err != nil {
-		// If unmarshaling fails, return the raw output as a message
-		return core.NBAgentResponse{
-			Response: []string{finalOutput},
-		}, nil
-	}
-	if data, ok := logAnalysisResponse["data"].(map[string]any); ok {
-		if result, ok := data["result"].(map[string]any); ok {
-			if agentResponse, ok := result["agent_response"].(map[string]any); ok {
-				actualResponse = agentResponse
-			} else if analysisResult, ok := result["analysis_result"].(map[string]any); ok {
-				actualResponse = analysisResult
-			}
-			// Extract token usage from CLI/pod response
-			if tuRaw, ok := result["token_usage"].(map[string]any); ok {
-				cliTokenUsage = parseTokenUsageMap(tuRaw)
-			}
+		ctx.GetLogger().Error("code: failed to execute via workspace", "error", err.Error())
+		// Write the message-scoped guard on failure too. A poll timeout here
+		// usually means the analysis is STILL RUNNING server-side (the workspace
+		// pod does not cancel it when polling stops) — without the guard, the
+		// planner's natural "tool errored, retry" reaction dispatches a second
+		// /analyze and two full analyses run for one message.
+		if guardKey, ok := codeAgentGuardKey(query.ConversationId, query.MessageId); ok {
+			_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey,
+				[]byte(fmt.Sprintf("previous attempt failed and may still be running server-side: %v", err)))
 		}
+		return core.NBAgentResponse{}, err
 	}
-	// Record token usage from CLI/pod path (fire-and-forget)
-	cliModelTier, cliTaskType := core.TierAttributionForRecord(ctx)
-	go recordCodeAnalysisTokenUsage(query, cliTokenUsage, 0, cliModelTier, cliTaskType)
-	if actualResponse == nil {
-		// If we couldn't find the expected structure, return the whole parsed response
+	ctx.GetLogger().Info("Workspace /analyze Output", "output_length", len(wsResult.AgentResponse))
+
+	// Record token usage from code-analysis service (fire-and-forget). Tier
+	// attribution is resolved here, on the request goroutine, because the
+	// recorder outlives the request context.
+	modelTier, taskType := core.TierAttributionForRecord(ctx)
+	go recordCodeAnalysisTokenUsage(query, wsResult.TokenUsage, latency, modelTier, taskType)
+
+	// workspace path returns agent_response directly — parse and enrich
+	var actualResponse map[string]any
+	if err := json.Unmarshal([]byte(wsResult.AgentResponse), &actualResponse); err != nil {
 		return core.NBAgentResponse{
-			Response: []string{finalOutput},
+			Response: []string{wsResult.AgentResponse},
 		}, nil
 	}
-
 	actualResponse["source_details"] = map[string]any{
 		"workloads.nudgebee.com/git.hash": codeAgentRequest.GitCommit,
 		"workloads.nudgebee.com/git.repo": codeAgentRequest.GitRepo,
@@ -3448,17 +2908,17 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		}
 	}
 
-	// Forward the tenant-resolved LLM config, exactly as the main analysis path
-	// does. Without this the workspace pod falls back to its global LLM_* secret
-	// env, which is not guaranteed to name a provider code-analysis supports —
-	// every followup then fails at client construction before doing any work.
-	// Degrade gracefully: on any failure, or when nothing tenant-specific
-	// resolves, omit the block. The API key is plaintext — never log it.
+	// Forward the resolved LLM config, exactly as the main analysis path does.
+	// Without this the workspace pod falls back to its global LLM_* secret env,
+	// which is not guaranteed to name a provider code-analysis supports — every
+	// followup then fails at client construction before doing any work. Degrade
+	// gracefully: on any failure, or when no provider resolves at all, omit the
+	// block. The API key is plaintext — never log it.
 	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, query.AccountId, AgentCodeAnalyzer, query.ConversationId); lerr != nil {
 		logger.Warn("code followup: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
 	} else if llmCfg != nil {
 		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
-		logger.Info("code followup: forwarding tenant LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model)
+		logger.Info("code followup: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 	}
 
 	// Pre-flight: verify workspace pod is reachable

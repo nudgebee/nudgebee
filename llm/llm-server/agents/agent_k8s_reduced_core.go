@@ -19,7 +19,7 @@ import (
 // @k8s_orchestrator_trim eval handle, since removed.)
 
 // trimmedK8sCoreToolNames is the lean preloaded set. The conditional tail mirrors
-// the production orchestrator's exactly (remediation/shell/memory/followup) so the
+// the production orchestrator's exactly (remediation/memory/followup) so the
 // ONLY difference from the direct orchestrator is the removed specialist agents.
 // search_tools is always registered, so it survives the enabled-filter; specialists are
 // reached on-demand via search_tools + delegate_agent.
@@ -47,9 +47,7 @@ func trimmedK8sCoreToolNames() []string {
 	if config.Config.RemediationAgentEnabled {
 		names = append(names, RemediationAgentName)
 	}
-	if config.Config.LlmServerShellToolEnabled {
-		names = append(names, toolcore.ToolExecuteShellCommand)
-	}
+	names = append(names, toolcore.ToolExecuteShellCommand)
 	names = appendMemoryToolName(names)
 	if core.IsAgentsFollowupEnabled() {
 		names = append(names, FollowupAgentName)

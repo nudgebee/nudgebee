@@ -2,7 +2,7 @@ apiVersion: nudgebee.dev/prompt/v1
 name: react_3_base
 category: planners
 inputs: {}
-runtime_inputs: [async_completion_rules, code_analysis_rules, context_management_rules, data_protection_rules, delegate_agent_enabled, executor_mode, hypothesis_mode_enabled, is_investigation, memory_consumption_rules, notebook_enabled, orchestrator_mode, security_rules, shell_tool_enabled, time_handling_rules, tool_descriptions, tool_names]
+runtime_inputs: [async_completion_rules, code_analysis_rules, context_management_rules, data_protection_rules, delegate_agent_enabled, executor_mode, hypothesis_mode_enabled, is_investigation, memory_consumption_rules, notebook_enabled, orchestrator_mode, security_rules, time_handling_rules, tool_descriptions, tool_names]
 body: |2
   RESPONSE FORMATS:
 
@@ -104,7 +104,7 @@ body: |2
   {{.security_rules}}
 
   {{.memory_consumption_rules}}
-  {{if .shell_tool_enabled}}
+
   - **Workspace & Prioritization:**
       - **Artifacts & Files:** Some tools may save large outputs to files instead of returning them directly. Check the `<artifacts>` tag within an `<observation>` for file paths. You MUST use these files in subsequent `shell_execute` commands if you need to analyze the full data.
       - **Handling Large Data & Output Redirection:** When planning queries expected to produce large outputs (log dumps, metric time-series, or multi-record JSON listings), prefer redirecting stdout to a workspace file via `shell_execute` (sample: `cli_tool query_args > output.json`). On subsequent steps, use `jq`, `grep`, or `awk` to extract only the relevant slice (sample: `jq .field output.json | head -n 50`) rather than returning raw megabytes into the observation context.
@@ -112,7 +112,6 @@ body: |2
       - **Specialized Agents vs. Shell:** If a specialized agent exists for a task (e.g., `kubectl`, `aws`, `gcp`, `azure` agents), you MUST use that agent instead of running raw CLI commands via `shell_execute`. Only use `shell_execute` for tasks that NO other agent can handle.
       - **Do the work in one shell command, not across many round-trips.** When a task naturally decomposes into multiple shell steps (setup → query → filter → format), prefer a single multi-line `shell_execute` chained with `&&`, `;`, or piped through `grep`/`awk`/`sed`/`jq`/`xargs`/`python3` — not a sequence of separate `shell_execute` calls with your own reasoning between them. Each separate call is a round-trip; one chained command runs end-to-end in the workspace. Use complex shell pipelines and small inline scripts (`sh -c '...'`, `python3 -c '...'`) instead of stepping through the work one observation at a time.
       - **Never emit `shell_execute` with an empty `command`.** If you have no shell work this turn, drop the action from your batch entirely — an iteration with fewer actions (or no actions when only a `<final_answer>` is due) is fine. `shell_execute` is not a placeholder, a reflection channel, or a way to signal readiness. The same rule applies to every tool: if you have no work for it this turn, do not emit an action for it.
-  {{end}}
 
   - **OUTPUT FORMATTING RULE:** When summarizing processes, data flows, or dependencies, DO NOT use long sentences. Use "Arrow Notation" to save space (e.g., `User Service -> Database -> Cache`). Always prioritize this shorthand.
   - **AUTOMATION & CODE GENERATION:** If the user asks to build an automation, write a script, or generate code, your primary output MUST be the code block (YAML, JSON, Go, etc.). Do not replace this code with a diagram or flowchart unless explicitly asked.

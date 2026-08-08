@@ -28,7 +28,7 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 
 	if !found {
 		// check if it's a builtin tool like load_skills or shell_execute
-		if strings.EqualFold(toolName, "load_skills") || (strings.EqualFold(toolName, toolcore.ToolExecuteShellCommand) && config.Config.LlmServerShellToolEnabled) {
+		if strings.EqualFold(toolName, "load_skills") || strings.EqualFold(toolName, toolcore.ToolExecuteShellCommand) {
 			if t, ok := toolcore.GetNBTool(request.AccountId, toolName); ok {
 				found = true
 				tool = t

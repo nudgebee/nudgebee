@@ -225,7 +225,6 @@ func renderK8sDebugReactPrompt(ctx *security.RequestContext, query core.NBAgentR
 	// a template execution failure and falling back to a minimal prompt.
 	tmplData := map[string]any{
 		"remediation_enabled":   config.Config.RemediationAgentEnabled,
-		"shell_tool_enabled":    config.Config.LlmServerShellToolEnabled,
 		"watch_enabled":         config.Config.WatchEnabled,
 		"data_protection_rules": prompts.GetPrompt(ctx.GetContext(), prompts.PromptDataProtectionRules, ""),
 		"code_analysis_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptCodeAnalysisRules, ""),
@@ -395,11 +394,7 @@ func getSupportedTools(ctx *security.RequestContext, accountId string, agentName
 				slog.Debug("Remediation agent enabled", "accountId", accountId, "agent", agentName)
 			}
 
-			// Conditionally add shell tool based on feature flag
-			if config.Config.LlmServerShellToolEnabled {
-				baseTools = append(baseTools, toolcore.ToolExecuteShellCommand)
-				slog.Debug("Shell tool enabled", "accountId", accountId, "agent", agentName)
-			}
+			baseTools = append(baseTools, toolcore.ToolExecuteShellCommand)
 
 			// Conditionally add think tool for complex investigations
 			if config.Config.LlmServerThinkToolEnabled {

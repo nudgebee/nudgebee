@@ -33,7 +33,7 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 	assert.NotEmpty(t, base, "embedded react_3 base prompt must load")
 
 	vars := []string{
-		"tool_names", "tool_descriptions", "workspace_enabled", "shell_tool_enabled",
+		"tool_names", "tool_descriptions",
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
 		"orchestrator_mode", "executor_mode", "is_investigation",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
@@ -44,8 +44,6 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 	out, err := tmpl.Format(map[string]any{
 		"tool_names":                   "kubectl, logs, metrics",
 		"tool_descriptions":            "kubectl: ...",
-		"workspace_enabled":            true,
-		"shell_tool_enabled":           false,
 		"delegate_agent_enabled":       false,
 		"notebook_enabled":             notebookEnabled,
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
@@ -349,7 +347,7 @@ func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabl
 
 	vars := []string{
 		"input", "scratchpad", "final_answer", "question_type", "tool_names",
-		"tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled",
+		"tool_descriptions", "tools_invoked", "hypothesis_mode_enabled",
 		"sdg_grounding_enabled", "notebook", "today",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
@@ -362,7 +360,6 @@ func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabl
 		"question_type":           questionType,
 		"tool_names":              "kubectl, logs, metrics",
 		"tool_descriptions":       "kubectl: ...",
-		"shell_tool_enabled":      false,
 		"tools_invoked":           "kubectl",
 		"hypothesis_mode_enabled": hypothesisModeEnabled,
 		"sdg_grounding_enabled":   sdgGroundingEnabled,

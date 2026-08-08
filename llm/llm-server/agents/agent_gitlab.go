@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -125,17 +124,15 @@ func (a GitlabAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"Do NOT use `glab repo clone` or attempt to create/modify files via the glab CLI. For any task involving source code changes or MR creation with code modifications, delegate to `code_analyzer`. Reading file contents via the repository API is permitted.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		// Relax constraints if workspace is enabled
-		newConstraints := []string{}
-		for _, c := range constraints {
-			if !strings.Contains(c, "advance shell features") {
-				newConstraints = append(newConstraints, c)
-			}
+	// Relax constraints since a full shell is always available
+	newConstraints := []string{}
+	for _, c := range constraints {
+		if !strings.Contains(c, "advance shell features") {
+			newConstraints = append(newConstraints, c)
 		}
-		newConstraints = append(newConstraints, "You are running in a full shell environment. You can use pipes, redirection, and standard Linux utilities (grep, awk, sed, unzip, etc.) alongside `glab`.")
-		constraints = newConstraints
 	}
+	newConstraints = append(newConstraints, "You are running in a full shell environment. You can use pipes, redirection, and standard Linux utilities (grep, awk, sed, unzip, etc.) alongside `glab`.")
+	constraints = newConstraints
 
 	toolUsage := map[string][]string{
 		tools.ToolExecuteGitlabCliCommand: {

@@ -416,8 +416,6 @@ type appConfig struct {
 	LlmServerCodeAgentImage           string `mapstructure:"llm_server_agent_codeagent_image"`
 	LlmServerCodeAgentNamespace       string `mapstructure:"llm_server_agent_codeagent_namespace"`
 	LlmServerCodeAgentSecret          string `mapstructure:"llm_server_agent_codeagent_secret"`
-	LlmServerCodeAgentMode            string `mapstructure:"llm_server_agent_codeagent_mode"`
-	LlmServerCodeAgentLocalExecPath   string `mapstructure:"llm_server_agent_codeagent_local_exec_path"`
 	LlmServerCodeAgentImagePullSecret string `mapstructure:"llm_server_agent_codeagent_image_pull_secret"`
 	// LlmServerCodeAgentExtraEnv is a comma-separated KEY=VALUE list appended to
 	// workspace pod env — the operator-facing knob for code-analysis flags (e.g.
@@ -428,7 +426,6 @@ type appConfig struct {
 	LlmServerSerperApiKey        string `mapstructure:"serper_api_key"`
 	LlmServerJinaApiKey          string `mapstructure:"jina_api_key"`
 
-	LlmServerWorkspaceEnabled bool `mapstructure:"llm_server_workspace_enabled"`
 	// LlmServerWorkspaceKubeconfigPath optionally overrides the kubeconfig file used
 	// when llm-server creates/manages the workspace pod. If empty, falls back to
 	// in-cluster config, then $KUBECONFIG, then ~/.kube/config. Useful for local dev
@@ -451,7 +448,6 @@ type appConfig struct {
 	// given up and the result would never reach the LLM.
 	LlmServerWorkspaceCommandTimeout string `mapstructure:"llm_server_workspace_command_timeout"`
 
-	LlmServerShellToolEnabled bool `mapstructure:"llm_server_shell_tool_enabled"`
 	// LlmServerFsEvidenceRecallEnabled gates the FS evidence-recall layer: when a
 	// large observation is compressed in the scratchpad, replace the dead-end
 	// truncation marker with a live handle to the workspace file the tool already
@@ -1172,16 +1168,13 @@ func init() {
 	viper.SetDefault("llm_server_async_operation_timeout_seconds", 5)
 	viper.SetDefault("llm_server_agent_codeagent_namespace", "nudgebee")
 	viper.SetDefault("llm_server_agent_codeagent_secret", "nudgebee")
-	viper.SetDefault("llm_server_agent_codeagent_mode", "remote-cli") // remote-cli, remote-http, "local"
 	viper.SetDefault("llm_server_agent_codeagent_image", "ghcr.io/nudgebee/code-analysis-agent:latest")
 	viper.SetDefault("llm_server_agent_codeagent_extra_env", "")
-	viper.SetDefault("llm_server_agent_codeagent_local_exec_path", "")
 	viper.SetDefault("llm_server_agent_codeagent_image_pull_secret", "")
 	viper.SetDefault("llm_server_agent_search_provider", "")
 	viper.SetDefault("serper_api_key", "")
 	viper.SetDefault("jina_api_key", "")
 
-	viper.SetDefault("llm_server_workspace_enabled", true)
 	viper.SetDefault("llm_server_workspace_resource_limit_cpu", "")
 	viper.SetDefault("llm_server_workspace_resource_limit_memory", "")
 	viper.SetDefault("llm_server_workspace_resource_request_cpu", "250m")
@@ -1190,7 +1183,6 @@ func init() {
 	// comments above — this default is computed, not hand-picked, so it can't
 	// silently drift out of sync with the HTTP client timeout it must stay under.
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
-	viper.SetDefault("llm_server_shell_tool_enabled", true)
 	viper.SetDefault("llm_server_fs_evidence_recall_enabled", false)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)

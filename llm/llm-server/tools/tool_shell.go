@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -144,13 +143,6 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 		)
 	}
 
-	if !config.Config.LlmServerShellToolEnabled {
-		return core.NBToolResponse{
-			Data:   "Shell tool is only available when shell tool is enabled.",
-			Status: core.NBToolResponseStatusError,
-		}, fmt.Errorf("shell tool is disabled")
-	}
-
 	// Handle optional work_dir (sanitized and escaped to prevent command injection)
 	if wd, ok := input.Arguments["work_dir"].(string); ok && wd != "" {
 		sanitizedWd := common.SanitizePath(wd)
@@ -168,38 +160,36 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	// This allows the shell tool to run cloud CLI commands (aws, gcloud, az) without requiring
 	// the planner to route through specialized cloud tools.
 	env := map[string]string{}
-	if config.Config.LlmServerWorkspaceEnabled {
-		cloudAuth, err := m.buildCloudAuthEnv(nbRequestContext, command)
-		if err != nil {
-			// Non-fatal: log the warning and proceed without cloud auth.
-			// The account may not be a cloud account (e.g. K8s-only), or creds may be missing.
-			slog.Warn("shell: cloud auth injection skipped", "account_id", m.AccountId, "error", err)
-		} else if cloudAuth != nil {
-			for k, v := range cloudAuth.Env {
-				env[k] = v
-			}
-			command = WrapCommandWithBestEffortAuth(command, cloudAuth)
+	cloudAuth, err := m.buildCloudAuthEnv(nbRequestContext, command)
+	if err != nil {
+		// Non-fatal: log the warning and proceed without cloud auth.
+		// The account may not be a cloud account (e.g. K8s-only), or creds may be missing.
+		slog.Warn("shell: cloud auth injection skipped", "account_id", m.AccountId, "error", err)
+	} else if cloudAuth != nil {
+		for k, v := range cloudAuth.Env {
+			env[k] = v
 		}
+		command = WrapCommandWithBestEffortAuth(command, cloudAuth)
+	}
 
-		// Inject GITHUB_TOKEN when the command invokes `gh`. Same shape as the
-		// cloud cross-account path: hint via QueryConfig.ToolConfigs first, then
-		// fall back to the sole active github integration in the tenant.
-		if ghAuth, err := m.buildGithubAuthEnv(nbRequestContext, command); err != nil {
-			slog.Warn("shell: github auth injection skipped", "account_id", m.AccountId, "error", err)
-		} else if ghAuth != nil {
-			for k, v := range ghAuth.Env {
-				env[k] = v
-			}
+	// Inject GITHUB_TOKEN when the command invokes `gh`. Same shape as the
+	// cloud cross-account path: hint via QueryConfig.ToolConfigs first, then
+	// fall back to the sole active github integration in the tenant.
+	if ghAuth, err := m.buildGithubAuthEnv(nbRequestContext, command); err != nil {
+		slog.Warn("shell: github auth injection skipped", "account_id", m.AccountId, "error", err)
+	} else if ghAuth != nil {
+		for k, v := range ghAuth.Env {
+			env[k] = v
 		}
+	}
 
-		// Same shape for `glab`: GITLAB_TOKEN, plus GITLAB_HOST when the tenant
-		// runs a self-hosted GitLab.
-		if glAuth, err := m.buildGitlabAuthEnv(nbRequestContext, command); err != nil {
-			slog.Warn("shell: gitlab auth injection skipped", "account_id", m.AccountId, "error", err)
-		} else if glAuth != nil {
-			for k, v := range glAuth.Env {
-				env[k] = v
-			}
+	// Same shape for `glab`: GITLAB_TOKEN, plus GITLAB_HOST when the tenant
+	// runs a self-hosted GitLab.
+	if glAuth, err := m.buildGitlabAuthEnv(nbRequestContext, command); err != nil {
+		slog.Warn("shell: gitlab auth injection skipped", "account_id", m.AccountId, "error", err)
+	} else if glAuth != nil {
+		for k, v := range glAuth.Env {
+			env[k] = v
 		}
 	}
 

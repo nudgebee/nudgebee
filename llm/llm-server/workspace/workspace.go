@@ -214,9 +214,6 @@ func (w *workspaceManager) WaitForReady(ctx *security.RequestContext, accountId 
 		ctx.GetLogger().Error("workspace: accountId is required for wait")
 		return fmt.Errorf("workspace: accountId is required")
 	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return fmt.Errorf("workspace feature is disabled")
-	}
 
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
@@ -296,9 +293,6 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	if accountId == "" {
 		ctx.GetLogger().Error("workspace: accountId is required for creation")
 		return fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return fmt.Errorf("workspace feature is disabled")
 	}
 
 	logger := ctx.GetLogger()
@@ -607,9 +601,6 @@ func (w *workspaceManager) IsWorkspaceExists(ctx *security.RequestContext, accou
 		ctx.GetLogger().Error("workspace: accountId is required for exists check")
 		return false, fmt.Errorf("workspace: accountId is required")
 	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return false, fmt.Errorf("workspace feature is disabled")
-	}
 
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
@@ -696,9 +687,6 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 		ctx.GetLogger().Error("workspace: accountId is required for termination")
 		return fmt.Errorf("workspace: accountId is required")
 	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return fmt.Errorf("workspace feature is disabled")
-	}
 
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
@@ -742,9 +730,6 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 // API failure — observed to delay code-analysis fixes by nearly two weeks.
 // Deleted pods are recreated lazily by CreateWorkspace on next use.
 func CleanupStaleWorkspaces(ctx context.Context) {
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return
-	}
 	// Skip cleanup when running outside K8s (local development).
 	// Only treat rest.ErrNotInCluster as "not in K8s"; log other errors as warnings.
 	if _, err := rest.InClusterConfig(); err != nil {
@@ -868,9 +853,6 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 	if accountId == "" {
 		ctx.GetLogger().Error("workspace: accountId is required for direct execution")
 		return "", fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return "", fmt.Errorf("workspace feature is disabled")
 	}
 
 	logger := ctx.GetLogger()
@@ -1013,9 +995,6 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 	if accountId == "" {
 		return nil, fmt.Errorf("workspace: accountId is required")
 	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return nil, fmt.Errorf("workspace feature is disabled")
-	}
 
 	logger := ctx.GetLogger()
 	logger.Debug("workspace: calling API", "method", method, "endpoint", endpoint, "account_id", accountId)
@@ -1137,9 +1116,6 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestContext, accountId string, method string, endpoint string, queryParams map[string]string, body any, httpClient *http.Client) ([]byte, error) {
 	if accountId == "" {
 		return nil, fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return nil, fmt.Errorf("workspace feature is disabled")
 	}
 
 	logger := ctx.GetLogger()
@@ -1284,9 +1260,6 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 func (w *workspaceManager) callWorkspaceAPIStream(ctx *security.RequestContext, accountId string, method string, endpoint string, queryParams map[string]string, body any) (io.ReadCloser, error) {
 	if accountId == "" {
 		return nil, fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return nil, fmt.Errorf("workspace feature is disabled")
 	}
 
 	// Prepare request body

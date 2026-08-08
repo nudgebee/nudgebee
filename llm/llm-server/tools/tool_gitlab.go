@@ -2,7 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -87,37 +86,22 @@ func (m GitlabCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	command = strings.ReplaceAll(command, "\\n", "\n")
 
-	var response string
+	wm := workspace.NewWorkspaceManager()
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-
-		env := map[string]string{}
-		for k, v := range auth.Env {
-			env[k] = v
-		}
-		env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
-
-		// Use the encapsulated lazy creation/execution logic
-		// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
-		response, err = wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
-	} else {
-		// Enforce 'glab ' prefix for local execution for security
-		if !strings.HasPrefix(command, "glab ") {
-			command = "glab " + command
-		}
-		env := make([]string, 0, len(auth.Env))
-		for k, v := range auth.Env {
-			env = append(env, k+"="+v)
-		}
-		// execute glab cli command locally
-		response, err = ExecuteCliCommand(nbRequestContext, command, env, []string{"glab", "grep", "awk", "jq"})
+	env := map[string]string{}
+	for k, v := range auth.Env {
+		env[k] = v
 	}
+	env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
 
-	// In workspace mode the command reaches a real shell unfiltered, so a stray
-	// `printenv` (or `glab config get token`) would otherwise echo the PAT back
-	// into the model's context. Scrub before anything is returned, on both the
-	// success and error paths.
+	// Use the encapsulated lazy creation/execution logic
+	// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
+
+	// The command reaches a real shell unfiltered, so a stray `printenv` (or
+	// `glab config get token`) would otherwise echo the PAT back into the
+	// model's context. Scrub before anything is returned, on both the success
+	// and error paths.
 	response = ScrubCredentials(response, auth.Env)
 
 	if err != nil {

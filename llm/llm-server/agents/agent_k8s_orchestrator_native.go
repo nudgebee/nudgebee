@@ -106,12 +106,10 @@ func (a *K8sNativeAgent) GetSupportedTools(ctx *security.RequestContext) []toolc
 		MetricsAgentName,                 // historical + custom metrics via PromQL wrapper (Prometheus discovery is non-trivial)
 		TracesAgentName,                  // in-cluster trace queries
 	}
-	if config.Config.LlmServerShellToolEnabled {
-		// shell_execute handles post-processing (grep/awk/sort) of kubectl
-		// output saved to workspace files. standard_diagnostic_grep also
-		// depends on the underlying shell primitive.
-		names = append(names, toolcore.ToolExecuteShellCommand)
-	}
+	// shell_execute handles post-processing (grep/awk/sort) of kubectl
+	// output saved to workspace files. standard_diagnostic_grep also
+	// depends on the underlying shell primitive.
+	names = append(names, toolcore.ToolExecuteShellCommand)
 	if config.Config.LlmServerThinkToolEnabled {
 		names = append(names, tools.ThinkToolName)
 	}

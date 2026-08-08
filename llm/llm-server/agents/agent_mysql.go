@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -68,12 +67,10 @@ func (l MySQLDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteMySQLQuery] = []string{
-			"Executes `SELECT` queries against MySQL. Input MUST be a JSON object with a `query` key and optional `database` key. Example: `{\"query\": \"SELECT * FROM orders LIMIT 10;\", \"database\": \"sales\"}`.",
-			"Output: Data returned by the SQL query.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the query output.",
-		}
+	toolUsage[tools.ToolExecuteMySQLQuery] = []string{
+		"Executes `SELECT` queries against MySQL. Input MUST be a JSON object with a `query` key and optional `database` key. Example: `{\"query\": \"SELECT * FROM orders LIMIT 10;\", \"database\": \"sales\"}`.",
+		"Output: Data returned by the SQL query.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the query output.",
 	}
 	examples := []core.NBAgentPromptExample{
 		{

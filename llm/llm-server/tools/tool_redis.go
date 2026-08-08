@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -95,69 +94,38 @@ func (m RedisExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 	if !strings.Contains(command, "redis-cli") {
 		command = fmt.Sprintf("redis-cli %s", command)
 	}
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("redis: unable to execute shell script", "error", err.Error(), "command", command)
-			if response == "" {
-				response = err.Error()
-			}
-			// redis-cli --help lists CLI flags; interactive mode uses HELP <cmd>
-			// to list valid Redis commands.
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "redis-cli", "redis-cli --help (or HELP <command> in interactive mode)"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		// Wrap in JSON to be consistent with non-workspace mode
-		outputformat := map[string]string{
-			"stdout": response,
-		}
-		outputformatBytes, err := common.MarshalJson(outputformat)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("redis: unable to marshal response", "error", err.Error())
-			return core.NBToolResponse{
-				Data:   response,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-		response = string(outputformatBytes)
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
-
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobRedis, command, nbRequestContext.AccountId, map[string]any{}, false)
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("redis: unable to execute shell script", "error", err.Error())
-		responseData := ""
-		if response != nil {
-			if responseData1, ok := response.(string); ok {
-				responseData = responseData1
-			}
+		nbRequestContext.Ctx.GetLogger().Error("redis: unable to execute shell script", "error", err.Error(), "command", command)
+		if response == "" {
+			response = err.Error()
 		}
-		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
-		// non-string response, so the LLM always sees the failure reason
-		// rather than an empty envelope.
-		if responseData == "" {
-			responseData = err.Error()
-		}
+		// redis-cli --help lists CLI flags; interactive mode uses HELP <cmd>
+		// to list valid Redis commands.
 		return core.NBToolResponse{
-			Data:   cliRecoveryEnvelope(responseData, "", "redis-cli", ""),
+			Data:   cliRecoveryEnvelope(response, "", "redis-cli", "redis-cli --help (or HELP <command> in interactive mode)"),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
-	data := response.(string)
+
+	outputformat := map[string]string{
+		"stdout": response,
+	}
+	outputformatBytes, err := common.MarshalJson(outputformat)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("redis: unable to marshal response", "error", err.Error())
+		return core.NBToolResponse{
+			Data:   response,
+			Status: core.NBToolResponseStatusError,
+		}, err
+	}
+	response = string(outputformatBytes)
 
 	return core.NBToolResponse{
-		Data:   string(data),
+		Data:   response,
 		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil

@@ -139,11 +139,9 @@ func (a *AzureOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, q
 		instructions = append(instructions, "Azure Services - "+strings.Join(services, ","))
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, "**Full Shell Capabilities:**")
-		instructions = append(instructions, "The execution environment supports a full shell. You can use pipes (`|`), redirection, and standard Linux utilities (`grep`, `awk`, `sed`, `jq`, `sort`, `uniq`) in your planned queries.")
-		instructions = append(instructions, "Encourage the use of these tools to filter and process output directly in the command line for efficiency.")
-	}
+	instructions = append(instructions, "**Full Shell Capabilities:**")
+	instructions = append(instructions, "The execution environment supports a full shell. You can use pipes (`|`), redirection, and standard Linux utilities (`grep`, `awk`, `sed`, `jq`, `sort`, `uniq`) in your planned queries.")
+	instructions = append(instructions, "Encourage the use of these tools to filter and process output directly in the command line for efficiency.")
 
 	constraints := []string{
 		"Investigation ONLY - DIAGNOSE and PROPOSE remediation, NEVER execute infrastructure changes",

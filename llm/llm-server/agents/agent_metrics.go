@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -211,13 +210,11 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		}
 		shouldSave := false
 
-		if config.Config.LlmServerShellToolEnabled {
-			if outputFile != "" {
-				shouldSave = true
-			} else if len(metricData) > 2000 {
-				shouldSave = true
-				outputFile = fmt.Sprintf("metrics_%d.txt", time.Now().UnixNano()) // Metrics often JSON/Text
-			}
+		if outputFile != "" {
+			shouldSave = true
+		} else if len(metricData) > 2000 {
+			shouldSave = true
+			outputFile = fmt.Sprintf("metrics_%d.txt", time.Now().UnixNano()) // Metrics often JSON/Text
 		}
 
 		if shouldSave {

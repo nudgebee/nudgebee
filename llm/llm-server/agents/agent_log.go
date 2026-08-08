@@ -158,9 +158,7 @@ func (l *LogAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NB
 
 func (l *LogAgent) buildToolList(ctx *security.RequestContext) []toolcore.NBTool {
 	names := []string{ResourceSearchAgentName, FetchLogsAgentName}
-	if config.Config.LlmServerShellToolEnabled {
-		names = append(names, toolcore.ToolExecuteShellCommand)
-	}
+	names = append(names, toolcore.ToolExecuteShellCommand)
 	// standard_diagnostic_grep is no longer exposed to the LLM — the bundle
 	// now fires deterministically inside fetch_logs when the query wording
 	// asks for error content, and the result rides back in the fetch
@@ -203,9 +201,9 @@ func (l *LogAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAg
 
 	switch mode {
 	case logModeInvestigation:
-		instructions = append(instructions, investigationInstructions(config.Config.LlmServerShellToolEnabled)...)
+		instructions = append(instructions, investigationInstructions()...)
 	case logModeEnumeration:
-		instructions = append(instructions, enumerationInstructions(config.Config.LlmServerShellToolEnabled)...)
+		instructions = append(instructions, enumerationInstructions()...)
 	default:
 		instructions = append(instructions, routineInstructions()...)
 	}
@@ -263,7 +261,7 @@ func routineInstructions() []string {
 // antecedent fetch, mandatory E1/E2 recovery on empty grep, time-window
 // framing for clustered errors. Routine and enumeration blocks are not
 // included.
-func investigationInstructions(shellEnabled bool) []string {
+func investigationInstructions() []string {
 	out := []string{
 		"**Workflow (Investigation):**",
 		"  3. **Broad first-pass fetch (newest-first).** You MUST phrase the fetch with `last 24h, limit 5000`. The `time_range` and `limit` are MANDATORY — a bare phrasing like \"recent logs for X\" produces a narrow 1h/1000 default that misses errors which happened earlier in the pod's lifetime (cron schedulers, replay-style fixtures, jobs that backfill historical data at startup all routinely emit errors hours before the test runtime). A 24h/5000 fetch covers the full pod lifecycle for most workloads.",
@@ -272,75 +270,64 @@ func investigationInstructions(shellEnabled bool) []string {
 		"     - For very chatty services that hit the 5000 limit on a 24h window, narrow by container or stream — never by error keyword.",
 	}
 
-	if shellEnabled {
-		// The fetch_logs envelope carries `bundle_signal` — a pre-computed
-		// category sweep that runs deterministically server-side whenever
-		// the query wording asks for error content. That obsoletes the old
-		// "please call standard_diagnostic_grep first" step and saves an
-		// LLM turn. If the bundle signal is clear the LLM can answer from
-		// it directly; if it's thin or ambiguous, the manual Call A + B
-		// pass below still runs.
-		if config.Config.LogsStandardGrepEnabled {
-			out = append(out,
-				"  4a. **Read `bundle_signal` first (fastest path).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side sweep across error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx categories against the saved file. When it's non-empty and shows a clear signal (matches concentrated in one category with a visible transition timestamp), skip step 4 below and go straight to the WHEN report. When it's empty (bundle didn't fire — query wording wasn't error-adjacent) or thin (matches scattered across categories, no clear timestamp cluster), fall through to step 4 for the manual Call A+B pass and any domain-aware patterns. Use the provided bundle output directly — the server has already run the sweep.",
-			)
-		}
+	// The fetch_logs envelope carries `bundle_signal` — a pre-computed
+	// category sweep that runs deterministically server-side whenever
+	// the query wording asks for error content. That obsoletes the old
+	// "please call standard_diagnostic_grep first" step and saves an
+	// LLM turn. If the bundle signal is clear the LLM can answer from
+	// it directly; if it's thin or ambiguous, the manual Call A + B
+	// pass below still runs.
+	if config.Config.LogsStandardGrepEnabled {
 		out = append(out,
-			"  4. **Mandatory shell_execute pass (NOT optional for this mode).** When `fetch_logs` returns a non-empty `file_ref`, you MUST run AT LEAST TWO `shell_execute` calls before producing a final answer. Call A and Call B read the SAME file with different patterns and are INDEPENDENT — **emit BOTH in ONE iteration as a single parallel batch** (do NOT wait for A's result before issuing B); correlate their outputs afterward once both return:",
-			"     **Never batch a `fetch_logs` call together with a `shell_execute` grep on the file_ref it is expected to return — not here, not anywhere else in this workflow.** `file_ref` only exists once `fetch_logs` actually finishes; a grep queued in the same iteration cannot know the real value and will target a file that hasn't been written yet, producing `No such file or directory` even though your command is otherwise correct. Call A and Call B are safe to batch because they both read a file_ref `fetch_logs` has ALREADY returned in a prior, completed step — always let a `fetch_logs` call finish and observe its `file_ref` before grepping it, in the NEXT iteration.",
-			"     Call A — scan for the error transition:",
-			"       `grep -nE \"ERROR|FATAL|PANIC|exception|traceback\" <file_ref> | head -20`",
-			"       Once it returns, note the timestamp on the first matching line — that is the transition point.",
-			"     Call B — scan for the trigger:",
-			"       `grep -nE \"reload|reconfigur|deploy|rollout|secret.rotat|config.changed|started|loaded|env|config\" <file_ref> | head -20`",
-			"       The trigger usually lives in WARN/INFO/CONFIG lines that Call A skipped; after both return, pick the trigger line that immediately precedes Call A's transition point.",
-			"  5. **Second-pass targeted antecedent fetch (only if Call A finds an error timestamp).** Call fetch_logs again with `\"all logs for <pod> in <namespace> from <T-5min> to <T>, limit 500, in chronological forward order\"`. This pulls the trigger context (config reload, deploy, secret rotation) immediately preceding the error — bounded by explicit `start_time`/`end_time`, so forward+limit is safe. Wait for this call to complete and observe its `file_ref`, THEN re-run Call B's grep on it as a separate, later iteration — never in the same batch as this fetch_logs call. Skip if Call B already found a clear trigger.",
-			"  6. **Empty-result recovery (MANDATORY two-step — DO NOT skip):**",
-			"     Step E1 — re-grep with case-insensitive + broader keywords on the SAME file:",
-			"       `grep -inE \"error|fail|fatal|panic|exception|traceback|connection.refused|connectionerror|cannot.connect|timed.out|timeout|denied|unreachable\" <file_ref> | head -20`",
-			"       The default Call A pattern is case-sensitive and misses mixed-case wording (e.g. `ConnectionError`, `Connection refused`) and protocol idioms (`timed out`, `unreachable`).",
-			"     Step E2 — only if Step E1 is also empty, widen the fetch:",
-			"       Re-call fetch_logs with `\"all logs for <pod> in <namespace> last 7d, limit 5000\"` (widen the *window*, not the limit — 5000 is the recommended max across providers). Wait for it to complete, THEN re-run the Step E1 grep on the new file_ref in a later iteration — never in the same batch as this fetch_logs call.",
-			"       If the user's question or any earlier observation mentions a specific timestamp, ALSO issue a narrower targeted fetch around that timestamp.",
-			"     **Strict prohibitions:**",
-			"       - Do NOT substitute kubectl events, deployment status, or rollout history for a wider log fetch. Events ≠ logs. The critic rejects \"no issues\" answers based on event checks alone.",
-			"       - Do NOT call `think` to conclude \"no issues\" without completing Step E1 AND (if E1 empty) Step E2.",
-			"       - Only after Call A + Step E1 + Step E2 all return empty may you state \"no errors found in last 7d\".",
-			"  Do NOT produce a final answer without Call A AND (Call B succeeding OR a documented second-pass attempt OR a documented widened-window attempt). The critic will reject answers that skip this step.",
-			"  **Report WHEN (MANDATORY).** Your final answer MUST state the incident time window — the `timestamp` field of the FIRST and LAST matching error line from Call A. Naming the failure and its cause without \"between <T1> and <T2>\" is incomplete. Do NOT conflate live pod status with incident timing: a pod that is `Running` now can have had a bounded PAST incident — phrase it as \"errors occurred between <T1> and <T2>\", never \"currently failing\" when the error timestamps are in the past.",
-
-			"**Domain-aware grep patterns (for additional shell_execute passes when default Call B is empty — if you run several, emit them together in ONE parallel batch; they are independent reads of the same file):**",
-			"  - Crashes / restarts:  `OOM|Killed|exit.code|CrashLoop|restart|signal|SIGTERM|SIGKILL`",
-			"  - Latency / slowness:  `timeout|deadline|slow|connection.pool|retry|context.deadline|elapsed`",
-			"  - Auth / access:       `401|403|JWT|token|expired|unauthorized|forbidden|permission`",
-			"  - Memory / resources:  `OOM|heap|memory|allocation|GC|garbage.collect`",
-			"  - Network:             `connection.refused|ECONNREFUSED|DNS|resolve|unreachable|reset`",
-			"  - Database:            `deadlock|lock.timeout|too.many.connections|query.timeout|replication`",
-
-			"**Useful shell_execute shapes (FILE = file_ref returned by fetch_logs):**",
-			"  - Shape & frequency:  `wc -l FILE; grep -c \"ERROR\\|WARN\\|FATAL\" FILE`",
-			"  - Context ±5 lines:   `grep -n -B5 -A5 \"SPECIFIC\" FILE`",
-			"  - Frequency table:    `grep -oE \"PATTERN\" FILE | sort | uniq -c | sort -rn | head -20`",
-			"  - Time bookends:      `head -5 FILE; tail -5 FILE`",
-			"  - Window slice:       `awk '/HH:MM:SS/,/HH:MM:SS/' FILE` to slice a time range",
-		)
-	} else {
-		out = append(out,
-			"  4. **Antecedents rule (CRITICAL — shell_execute is unavailable, so read the fetch response directly):**",
-			"     The trigger is the most important finding. The broad first-pass fetch returns lines in newest-first order. Read the output directly:",
-			"       1. Locate the LAST line containing ERROR/FATAL/PANIC (most recent error) AND the FIRST such line in the response (oldest error in window). The first-of-many is the transition point.",
-			"       2. If the trigger is in the same file: scan WARN/INFO/CONFIG lines just before the transition point for `reload|deploy|config|rotate|started|loaded`.",
-			"       3. If the file has no errors OR no trigger context near the first error: issue a **second fetch** with a narrow `start_time`/`end_time` window (5-15 min) targeting the gap — either before the first error (for trigger context) or shifted further back in history (if the broad fetch's window was too narrow to contain any errors).",
-			"     A symptom-only answer (\"connection refused to db-staging\") without naming the trigger (\"config reload at 10:07 loaded staging endpoints in prod\") is incomplete and will be rejected by the critic.",
+			"  4a. **Read `bundle_signal` first (fastest path).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side sweep across error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx categories against the saved file. When it's non-empty and shows a clear signal (matches concentrated in one category with a visible transition timestamp), skip step 4 below and go straight to the WHEN report. When it's empty (bundle didn't fire — query wording wasn't error-adjacent) or thin (matches scattered across categories, no clear timestamp cluster), fall through to step 4 for the manual Call A+B pass and any domain-aware patterns. Use the provided bundle output directly — the server has already run the sweep.",
 		)
 	}
+	out = append(out,
+		"  4. **Mandatory shell_execute pass (NOT optional for this mode).** When `fetch_logs` returns a non-empty `file_ref`, you MUST run AT LEAST TWO `shell_execute` calls before producing a final answer. Call A and Call B read the SAME file with different patterns and are INDEPENDENT — **emit BOTH in ONE iteration as a single parallel batch** (do NOT wait for A's result before issuing B); correlate their outputs afterward once both return:",
+		"     **Never batch a `fetch_logs` call together with a `shell_execute` grep on the file_ref it is expected to return — not here, not anywhere else in this workflow.** `file_ref` only exists once `fetch_logs` actually finishes; a grep queued in the same iteration cannot know the real value and will target a file that hasn't been written yet, producing `No such file or directory` even though your command is otherwise correct. Call A and Call B are safe to batch because they both read a file_ref `fetch_logs` has ALREADY returned in a prior, completed step — always let a `fetch_logs` call finish and observe its `file_ref` before grepping it, in the NEXT iteration.",
+		"     Call A — scan for the error transition:",
+		"       `grep -nE \"ERROR|FATAL|PANIC|exception|traceback\" <file_ref> | head -20`",
+		"       Once it returns, note the timestamp on the first matching line — that is the transition point.",
+		"     Call B — scan for the trigger:",
+		"       `grep -nE \"reload|reconfigur|deploy|rollout|secret.rotat|config.changed|started|loaded|env|config\" <file_ref> | head -20`",
+		"       The trigger usually lives in WARN/INFO/CONFIG lines that Call A skipped; after both return, pick the trigger line that immediately precedes Call A's transition point.",
+		"  5. **Second-pass targeted antecedent fetch (only if Call A finds an error timestamp).** Call fetch_logs again with `\"all logs for <pod> in <namespace> from <T-5min> to <T>, limit 500, in chronological forward order\"`. This pulls the trigger context (config reload, deploy, secret rotation) immediately preceding the error — bounded by explicit `start_time`/`end_time`, so forward+limit is safe. Wait for this call to complete and observe its `file_ref`, THEN re-run Call B's grep on it as a separate, later iteration — never in the same batch as this fetch_logs call. Skip if Call B already found a clear trigger.",
+		"  6. **Empty-result recovery (MANDATORY two-step — DO NOT skip):**",
+		"     Step E1 — re-grep with case-insensitive + broader keywords on the SAME file:",
+		"       `grep -inE \"error|fail|fatal|panic|exception|traceback|connection.refused|connectionerror|cannot.connect|timed.out|timeout|denied|unreachable\" <file_ref> | head -20`",
+		"       The default Call A pattern is case-sensitive and misses mixed-case wording (e.g. `ConnectionError`, `Connection refused`) and protocol idioms (`timed out`, `unreachable`).",
+		"     Step E2 — only if Step E1 is also empty, widen the fetch:",
+		"       Re-call fetch_logs with `\"all logs for <pod> in <namespace> last 7d, limit 5000\"` (widen the *window*, not the limit — 5000 is the recommended max across providers). Wait for it to complete, THEN re-run the Step E1 grep on the new file_ref in a later iteration — never in the same batch as this fetch_logs call.",
+		"       If the user's question or any earlier observation mentions a specific timestamp, ALSO issue a narrower targeted fetch around that timestamp.",
+		"     **Strict prohibitions:**",
+		"       - Do NOT substitute kubectl events, deployment status, or rollout history for a wider log fetch. Events ≠ logs. The critic rejects \"no issues\" answers based on event checks alone.",
+		"       - Do NOT call `think` to conclude \"no issues\" without completing Step E1 AND (if E1 empty) Step E2.",
+		"       - Only after Call A + Step E1 + Step E2 all return empty may you state \"no errors found in last 7d\".",
+		"  Do NOT produce a final answer without Call A AND (Call B succeeding OR a documented second-pass attempt OR a documented widened-window attempt). The critic will reject answers that skip this step.",
+		"  **Report WHEN (MANDATORY).** Your final answer MUST state the incident time window — the `timestamp` field of the FIRST and LAST matching error line from Call A. Naming the failure and its cause without \"between <T1> and <T2>\" is incomplete. Do NOT conflate live pod status with incident timing: a pod that is `Running` now can have had a bounded PAST incident — phrase it as \"errors occurred between <T1> and <T2>\", never \"currently failing\" when the error timestamps are in the past.",
+
+		"**Domain-aware grep patterns (for additional shell_execute passes when default Call B is empty — if you run several, emit them together in ONE parallel batch; they are independent reads of the same file):**",
+		"  - Crashes / restarts:  `OOM|Killed|exit.code|CrashLoop|restart|signal|SIGTERM|SIGKILL`",
+		"  - Latency / slowness:  `timeout|deadline|slow|connection.pool|retry|context.deadline|elapsed`",
+		"  - Auth / access:       `401|403|JWT|token|expired|unauthorized|forbidden|permission`",
+		"  - Memory / resources:  `OOM|heap|memory|allocation|GC|garbage.collect`",
+		"  - Network:             `connection.refused|ECONNREFUSED|DNS|resolve|unreachable|reset`",
+		"  - Database:            `deadlock|lock.timeout|too.many.connections|query.timeout|replication`",
+
+		"**Useful shell_execute shapes (FILE = file_ref returned by fetch_logs):**",
+		"  - Shape & frequency:  `wc -l FILE; grep -c \"ERROR\\|WARN\\|FATAL\" FILE`",
+		"  - Context ±5 lines:   `grep -n -B5 -A5 \"SPECIFIC\" FILE`",
+		"  - Frequency table:    `grep -oE \"PATTERN\" FILE | sort | uniq -c | sort -rn | head -20`",
+		"  - Time bookends:      `head -5 FILE; tail -5 FILE`",
+		"  - Window slice:       `awk '/HH:MM:SS/,/HH:MM:SS/' FILE` to slice a time range",
+	)
 	return out
 }
 
 // enumerationInstructions returns the body for MODE = ENUMERATION: broad
 // fetch + per-signature aggregation, no causal narrative. Routine and
 // investigation blocks are not included.
-func enumerationInstructions(shellEnabled bool) []string {
+func enumerationInstructions() []string {
 	out := []string{
 		"**Workflow (Enumeration):**",
 		"  3. **Broad fetch (no error-keyword body filter).** Phrase with `last 1h, limit 2000` (or the user-specified window). The user wants a comprehensive list of distinct error categories, NOT a single root-cause narrative.",
@@ -348,34 +335,27 @@ func enumerationInstructions(shellEnabled bool) []string {
 		"     - Do NOT include error keywords (`errors`, `exceptions`, `failures`) in the question — that adds a body filter that excludes the surrounding context.",
 	}
 
-	if shellEnabled {
-		// The fetch_logs envelope's `bundle_signal` field already gives us
-		// a category-tagged sweep for the well-known failure axes (crash /
-		// network / oom / …) — exactly what enumeration wants. Present
-		// those categories directly, then use the manual per-signature
-		// pipeline (step 4) to pick up tail signatures the bundle doesn't
-		// know about (custom app errors, service-specific tokens).
-		if config.Config.LogsStandardGrepEnabled {
-			out = append(out,
-				"  3a. **Read `bundle_signal` first (fastest path for enumeration).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side category sweep against the saved file. When it's non-empty, present those categories directly in your final answer using their tag names (error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx). Then run step 4 below only for signatures the bundle didn't cover (custom application errors, service-specific tokens) — focus step 4 exclusively on the tail patterns absent from the bundle output. When `bundle_signal` is empty (bundle didn't fire — query wording wasn't error-adjacent) start with step 4.",
-			)
-		}
+	// The fetch_logs envelope's `bundle_signal` field already gives us
+	// a category-tagged sweep for the well-known failure axes (crash /
+	// network / oom / …) — exactly what enumeration wants. Present
+	// those categories directly, then use the manual per-signature
+	// pipeline (step 4) to pick up tail signatures the bundle doesn't
+	// know about (custom app errors, service-specific tokens).
+	if config.Config.LogsStandardGrepEnabled {
 		out = append(out,
-			"  4. **Per-signature aggregation pipeline (MANDATORY — without this you miss error categories):**",
-			"     ```",
-			"     grep -iE 'error|fail|warn|exception|fatal|timeout|refused|denied' <file_ref> \\",
-			"       | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]+Z?//g; s/[0-9a-f]{8}-[0-9a-f-]+//g; s/[0-9]+(ms|s|MB|KB|GB)//g; s/\\b[0-9]+\\b/N/g' \\",
-			"       | sort | uniq -c | sort -rn | head -20",
-			"     ```",
-			"     Step 1 (grep) filters to error-class lines. Step 2 (sed) normalises timestamps, UUIDs/hex IDs, and digit runs so messages that differ only by timestamp or request-id collapse to one signature. Step 3 (sort | uniq -c | sort -rn) ranks the distinct signatures by frequency. The pipeline operates on the saved log file directly — it does NOT need a JSON-aware extractor (the file is one entry per line, with the message field as part of the line text).",
-			"  5. **Output:** lead with `\"Found N distinct error categories across M occurrences\"`, then list each signature with its count and a verbatim example line. Include EVERY distinct signature from the pipeline output — do NOT drop any. Do NOT speculate about root cause. Do NOT recommend fixes.",
-		)
-	} else {
-		out = append(out,
-			"  4. **In-process aggregation (shell_execute is unavailable):** scan the fetch response, group by error-class signature (collapse digit runs and IDs), and count occurrences. Lead the answer with `\"Found N distinct error categories\"` and list each with its count and an example line.",
-			"  5. Do NOT speculate about root cause. Do NOT recommend fixes. The user wants enumeration, not diagnosis.",
+			"  3a. **Read `bundle_signal` first (fastest path for enumeration).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side category sweep against the saved file. When it's non-empty, present those categories directly in your final answer using their tag names (error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx). Then run step 4 below only for signatures the bundle didn't cover (custom application errors, service-specific tokens) — focus step 4 exclusively on the tail patterns absent from the bundle output. When `bundle_signal` is empty (bundle didn't fire — query wording wasn't error-adjacent) start with step 4.",
 		)
 	}
+	out = append(out,
+		"  4. **Per-signature aggregation pipeline (MANDATORY — without this you miss error categories):**",
+		"     ```",
+		"     grep -iE 'error|fail|warn|exception|fatal|timeout|refused|denied' <file_ref> \\",
+		"       | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]+Z?//g; s/[0-9a-f]{8}-[0-9a-f-]+//g; s/[0-9]+(ms|s|MB|KB|GB)//g; s/\\b[0-9]+\\b/N/g' \\",
+		"       | sort | uniq -c | sort -rn | head -20",
+		"     ```",
+		"     Step 1 (grep) filters to error-class lines. Step 2 (sed) normalises timestamps, UUIDs/hex IDs, and digit runs so messages that differ only by timestamp or request-id collapse to one signature. Step 3 (sort | uniq -c | sort -rn) ranks the distinct signatures by frequency. The pipeline operates on the saved log file directly — it does NOT need a JSON-aware extractor (the file is one entry per line, with the message field as part of the line text).",
+		"  5. **Output:** lead with `\"Found N distinct error categories across M occurrences\"`, then list each signature with its count and a verbatim example line. Include EVERY distinct signature from the pipeline output — do NOT drop any. Do NOT speculate about root cause. Do NOT recommend fixes.",
+	)
 	return out
 }
 
@@ -523,18 +503,16 @@ func buildLogToolResponse(nbRequestContext toolcore.NbToolContext, agent core.NB
 
 	// Workspace artifacts are saved exactly once — by FetchLogsAgent's
 	// saveLogsToWorkspace inside fetch_logs (raw JSONL, gated on non-empty
-	// payload). The previous double-save here (synthesised markdown, gated
-	// on LlmServerShellToolEnabled + (output_file or len > 2000)) produced
-	// a second workspace file per query with different content and different
-	// gating rules. We propagate fetch_logs's file_ref upward via
-	// resp.References so the UI / parent planner sees one canonical artifact.
+	// payload). The previous double-save here (synthesised markdown, with
+	// different content and different gating rules) produced a second
+	// workspace file per query. We propagate fetch_logs's file_ref upward
+	// via resp.References so the UI / parent planner sees one canonical
+	// artifact.
 	//
-	// `output_file` was previously honoured here as a caller-driven save —
-	// but it was silently ignored when LlmServerShellToolEnabled was off,
-	// which made the contract unreliable. We honour caller-requested saves
-	// only when the resp.References from fetch_logs is empty (i.e., kubectl
-	// passthrough produced no JSONL artifact); otherwise we trust the
-	// existing reference.
+	// We honour caller-requested `output_file` saves only when the
+	// resp.References from fetch_logs is empty (i.e., kubectl passthrough
+	// produced no JSONL artifact); otherwise we trust the existing
+	// reference.
 	references := append([]toolcore.NBToolResponseReference{}, resp.References...)
 	outputFile, _ := input.Arguments["output_file"].(string)
 	if outputFile != "" && len(references) == 0 {

@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -75,13 +74,11 @@ func (l HelmAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAg
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteHelmCommand] = []string{
-			"Executes Helm commands (e.g., `helm list`, `helm history`, `helm status`).",
-			"Input: A valid Helm command.",
-			"Output: Data returned by the Helm CLI.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the helm output.",
-		}
+	toolUsage[tools.ToolExecuteHelmCommand] = []string{
+		"Executes Helm commands (e.g., `helm list`, `helm history`, `helm status`).",
+		"Input: A valid Helm command.",
+		"Output: Data returned by the Helm CLI.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the helm output.",
 	}
 	examples := []core.NBAgentPromptExample{
 		{

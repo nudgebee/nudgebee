@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/asserts"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
@@ -987,11 +986,6 @@ func TestK8sAgent_WorkspaceFeatures(t *testing.T) {
 	if os.Getenv("TEST_ACCOUNT") == "" {
 		t.Skip("TEST_ACCOUNT not set")
 	}
-
-	// Enable the shell tool for these tests
-	orig := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = orig })
 
 	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 

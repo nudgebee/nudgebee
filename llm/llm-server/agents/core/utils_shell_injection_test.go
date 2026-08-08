@@ -1,7 +1,6 @@
 package core
 
 import (
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"testing"
@@ -93,10 +92,6 @@ func TestHasShellTool_EmptyList(t *testing.T) {
 // =============================================================================
 
 func TestFilterAndInjectDefaultTools_InjectsShellWhenEnabled(t *testing.T) {
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{
 		mockTool{name: "aws_execute"},
 	}
@@ -115,28 +110,10 @@ func TestFilterAndInjectDefaultTools_InjectsShellWhenEnabled(t *testing.T) {
 	assert.True(t, found, "original aws_execute tool should still be present")
 }
 
-func TestFilterAndInjectDefaultTools_DoesNotInjectShellWhenDisabled(t *testing.T) {
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = false
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
-	tools := []toolcore.NBTool{
-		mockTool{name: "aws_execute"},
-	}
-
-	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, toolcore.AgentCapabilities{})
-
-	assert.False(t, HasShellTool(result), "shell_execute should NOT be injected when disabled")
-}
-
 func TestFilterAndInjectDefaultTools_ShellCoexistsWithCloudTools(t *testing.T) {
 	// Key test: shell_execute should be injected even when cloud-specific tools
 	// (aws_execute, gcloud_execute, azure_execute) are already present.
 	// This verifies the old hasCloudTool guard was removed.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tests := []struct {
 		name  string
 		tools []toolcore.NBTool
@@ -192,10 +169,6 @@ func TestFilterAndInjectDefaultTools_ShellCoexistsWithCloudTools(t *testing.T) {
 
 func TestFilterAndInjectDefaultTools_DoesNotDuplicateShell(t *testing.T) {
 	// If shell_execute is already in the tool list, it should not be added again
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{
 		mockTool{name: "aws_execute"},
 		mockTool{name: toolcore.ToolExecuteShellCommand},
@@ -279,10 +252,6 @@ func TestFilterAndInjectDefaultTools_ShellInjectedThenFilteredByCapabilities(t *
 	// Shell is enabled globally but disabled by agent capabilities.
 	// The injection happens after filtering, so shell gets injected.
 	// This tests the order of operations.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{
 		mockTool{name: "aws_execute"},
 	}
@@ -295,10 +264,8 @@ func TestFilterAndInjectDefaultTools_ShellInjectedThenFilteredByCapabilities(t *
 
 	// Note: Current implementation filters FIRST, then injects shell.
 	// So disabled_tools won't prevent injection (shell isn't in the list yet when filter runs).
-	// This is the expected behavior — FilterAndInjectDefaultTools is about default injection,
-	// and the global config flag is the control mechanism.
-	// If the agent truly needs to disable shell, it should not include it in its tool list
-	// and set LlmServerShellToolEnabled = false.
+	// This is the expected behavior — FilterAndInjectDefaultTools is about default injection.
+	// If the agent truly needs to disable shell, it should not include it in its tool list.
 	assert.True(t, HasShellTool(result),
 		"shell_execute is injected AFTER filtering, so disabled_tools doesn't block injection")
 }
@@ -308,14 +275,11 @@ func TestFilterAndInjectDefaultTools_ShellInjectedThenFilteredByCapabilities(t *
 // =============================================================================
 
 func TestAwsDebugAgent_ShellToolInToolList(t *testing.T) {
-	// Verify that when LlmServerShellToolEnabled is true, the AWS debug agent's
-	// supported tool name list includes shell_execute.
-	// This is a unit test for the tool name inclusion — the actual tool resolution
-	// from registry requires running services and is covered by integration tests.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
+	// Verify that the AWS debug agent's supported tool name list includes
+	// shell_execute. This is a unit test for the tool name inclusion — the
+	// actual tool resolution from registry requires running services and is
+	// covered by integration tests.
+	//
 	// We can't call getAwsPlannerSupportedTools directly (it's in agents package
 	// and requires DB), but we CAN verify the FilterAndInjectDefaultTools logic:
 	// AWS debug agents provide aws_execute, aws_observability etc. and shell should be auto-injected.
@@ -330,10 +294,6 @@ func TestAwsDebugAgent_ShellToolInToolList(t *testing.T) {
 }
 
 func TestGcpDebugAgent_ShellToolInToolList(t *testing.T) {
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	gcpTools := []toolcore.NBTool{
 		mockTool{name: "gcloud_execute"},
 	}
@@ -344,10 +304,6 @@ func TestGcpDebugAgent_ShellToolInToolList(t *testing.T) {
 }
 
 func TestAzureDebugAgent_ShellToolInToolList(t *testing.T) {
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	azureTools := []toolcore.NBTool{
 		mockTool{name: "azure_execute"},
 	}
@@ -365,10 +321,6 @@ func TestFilterAndInjectDefaultTools_AgentOptOutSkipsShellInjection(t *testing.T
 	// Shell is enabled globally, but an agent that implements DefaultToolsOptOut
 	// returning true must not get shell_execute injected. This is the path the
 	// dynamic delegate sub-agent uses to keep parent-supplied tool curation honest.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
 
 	result := FilterAndInjectDefaultTools("test-account", mockOptOutAgent{name: "delegate_agent"}, "", tools, toolcore.AgentCapabilities{})
@@ -382,10 +334,6 @@ func TestFilterAndInjectDefaultTools_AgentOptOutSkipsShellInjection(t *testing.T
 func TestFilterAndInjectDefaultTools_AgentOptOutSkipsLoadSkillsInjection(t *testing.T) {
 	// load_skills is normally injected when the agent prompt contains <skill-lists>.
 	// An opt-out agent must skip this injection too.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = false
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
 
 	// Prompt contains the skill-lists marker that would normally trigger load_skills injection.
@@ -401,10 +349,6 @@ func TestFilterAndInjectDefaultTools_CustomAgentOptsOut(t *testing.T) {
 	// nbCustomAgent must opt out of default injection so the operator's tool selection
 	// (set via UI/API) is honored verbatim. Without the opt-out, a custom agent
 	// configured with tools=[postgres_execute] would silently also get shell_execute.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	custom := &nbCustomAgent{
 		agent:     AgentDto{Name: "user_defined_db_agent"},
 		accountId: "test-account",
@@ -423,37 +367,10 @@ func TestFilterAndInjectDefaultTools_PlainAgentStillGetsInjection(t *testing.T) 
 	// Sanity: a regular NBAgent that doesn't implement the opt-out interface
 	// must still get shell injection — we don't want a silent regression for
 	// the 27+ agents relying on default behavior.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{mockTool{name: "aws_execute"}}
 
 	result := FilterAndInjectDefaultTools("test-account", mockPlainAgent{name: "aws_debug"}, "", tools, toolcore.AgentCapabilities{})
 
 	assert.True(t, HasShellTool(result),
 		"plain agent without opt-out interface must still receive shell_execute injection")
-}
-
-func TestCloudDebugAgents_ShellNotInjectedWhenDisabled(t *testing.T) {
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = false
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
-	tests := []struct {
-		name  string
-		tools []toolcore.NBTool
-	}{
-		{"aws", []toolcore.NBTool{mockTool{name: "aws_execute"}}},
-		{"gcp", []toolcore.NBTool{mockTool{name: "gcloud_execute"}}},
-		{"azure", []toolcore.NBTool{mockTool{name: "azure_execute"}}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := FilterAndInjectDefaultTools("test-account", nil, "", tt.tools, toolcore.AgentCapabilities{})
-			assert.False(t, HasShellTool(result),
-				"%s debug agent should NOT have shell_execute when disabled", tt.name)
-		})
-	}
 }

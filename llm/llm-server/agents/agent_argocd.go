@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -187,13 +186,11 @@ func (l ArgoCDAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteArgoCDCommand] = []string{
-			"Primary tool for ArgoCD operations: app list, app get, app sync, app diff, app history, app logs",
-			"Input: valid argocd command",
-			"Output: ArgoCD application status, sync information, and deployment details",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the argocd output.",
-		}
+	toolUsage[tools.ToolExecuteArgoCDCommand] = []string{
+		"Primary tool for ArgoCD operations: app list, app get, app sync, app diff, app history, app logs",
+		"Input: valid argocd command",
+		"Output: ArgoCD application status, sync information, and deployment details",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the argocd output.",
 	}
 
 	return core.NBAgentPrompt{
