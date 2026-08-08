@@ -2,9 +2,35 @@ package configtest
 
 import (
 	"context"
+	"net"
 	"strings"
 	"testing"
 )
+
+// TestIsBlockedEgressIP: the private-network opt-in gates loopback + RFC1918 private, but
+// link-local/cloud-metadata (169.254.169.254) and unspecified stay blocked even when opted in.
+func TestIsBlockedEgressIP(t *testing.T) {
+	cases := []struct {
+		name    string
+		ip      string
+		allow   bool
+		blocked bool
+	}{
+		{"metadata blocked (flag off)", "169.254.169.254", false, true},
+		{"metadata STILL blocked (flag on)", "169.254.169.254", true, true},
+		{"unspecified blocked (flag on)", "0.0.0.0", true, true},
+		{"private blocked (flag off)", "10.0.0.5", false, true},
+		{"private allowed (flag on)", "10.0.0.5", true, false},
+		{"loopback blocked (flag off)", "127.0.0.1", false, true},
+		{"loopback allowed (flag on)", "127.0.0.1", true, false},
+		{"public allowed (flag off)", "8.8.8.8", false, false},
+	}
+	for _, tc := range cases {
+		if got := isBlockedEgressIP(net.ParseIP(tc.ip), tc.allow); got != tc.blocked {
+			t.Errorf("%s: isBlockedEgressIP(%s, allow=%v) = %v, want %v", tc.name, tc.ip, tc.allow, got, tc.blocked)
+		}
+	}
+}
 
 // TestProbe_VertexStructuralOK: a well-formed Vertex config passes the (structural) probe
 // — project + region present and the service-account JSON parses with the needed fields.
@@ -62,7 +88,7 @@ func TestProbe_ConfigValidation(t *testing.T) {
 		{"anthropic without key", map[string]string{"provider": "anthropic"}, "api_key is required"},
 		{"gemini without key", map[string]string{"provider": "gemini"}, "api_key is required"},
 		{"custom without base_url", map[string]string{"provider": "custom"}, "base_url is required"},
-		{"custom http base_url", map[string]string{"provider": "custom", "base_url": "http://localhost/v1"}, "https"},
+		{"custom non-http scheme", map[string]string{"provider": "custom", "base_url": "ftp://host/v1"}, "http or https"},
 		{"custom private base_url shape ok", map[string]string{"provider": "custom", "base_url": "not a url"}, "valid URL"},
 		{"vertex missing project/region", map[string]string{"provider": "vertex", "service_account_json": `{"client_email":"a","private_key":"b"}`}, "project_id and region"},
 		{"vertex malformed SA JSON", map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": "nope"}, "service_account_json"},

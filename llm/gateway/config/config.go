@@ -49,6 +49,13 @@ type Configuration struct {
 	GeminiAPIKey      string `mapstructure:"gateway_gemini_api_key"`
 	HuggingFaceAPIKey string `mapstructure:"gateway_huggingface_api_key"`
 
+	// AllowPrivateEndpoints, when true, lets endpoints resolve to RFC1918 PRIVATE IPs — for
+	// a gateway deployed inside a private cluster reaching its own internal model servers
+	// (self-hosted vLLM, k8s service DNS). Default FALSE: a public/multi-tenant gateway must
+	// NOT egress to private networks (SSRF). Link-local/cloud-metadata (169.254.x) stays
+	// blocked regardless of this flag, at both Test-Connection and request-dial time.
+	AllowPrivateEndpoints bool `mapstructure:"gateway_allow_private_endpoints"`
+
 	// Metastore (Postgres): virtual keys, identity, pricing catalog.
 	GatewayDBURL        string `mapstructure:"gateway_db_url"`
 	GatewayDBMaxConns   int    `mapstructure:"gateway_db_max_connections"`
@@ -185,6 +192,7 @@ var keyDefaults = map[string]any{
 	"gateway_openai_api_key":                "",
 	"gateway_gemini_api_key":                "",
 	"gateway_huggingface_api_key":           "",
+	"gateway_allow_private_endpoints":       false,
 	"gateway_db_url":                        "",
 	"gateway_db_max_connections":            20,
 	"gateway_db_min_connections":            2,

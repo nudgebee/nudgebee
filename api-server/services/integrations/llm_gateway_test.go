@@ -79,10 +79,15 @@ func TestLLMGateway_ValidateConfig(t *testing.T) {
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "custom", "models": "m"}), ""), "custom without base_url must error")
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "custom", "base_url": "https://ep.example/v1"}), ""), "custom without models must error")
 
-	// A private/internal custom URL is rejected by the SSRF shape check.
+	// A non-http(s) scheme is rejected by the URL shape check (http + https are both allowed;
+	// the SSRF boundary is the gateway's dial-time IP check, gated by the private-endpoints opt-in).
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
-		"provider": "custom", "base_url": "http://localhost/v1", "models": "m",
-	}), ""), "http/loopback base_url must be rejected")
+		"provider": "custom", "base_url": "ftp://host/v1", "models": "m",
+	}), ""), "non-http(s) base_url must be rejected")
+	// http is now allowed (for in-cluster endpoints).
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "custom", "base_url": "http://vllm.internal/v1", "models": "m",
+	}), ""), "http base_url must be accepted")
 
 	// Vertex: project + region + a well-formed service-account JSON.
 	validSA := `{"type":"service_account","client_email":"x@y.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"}`
