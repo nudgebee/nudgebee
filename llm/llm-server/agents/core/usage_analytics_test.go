@@ -235,6 +235,80 @@ func TestListConversationCosts_ModelBreakdown(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUserBreakdown_IncludesSystemUser is a regression test for #35804: the
+// per-user breakdown used to drop every row for the synthetic system user via
+// "AND t.user_id <> systemUserID", making Users-tab totals fall short of
+// Overview's by however much automation usage the tenant had. It must now
+// surface that usage, labeled the same way the audit log already labels the
+// same sentinel (app/src/components/audits/index.jsx), instead of excluding it.
+func TestUserBreakdown_IncludesSystemUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	now := time.Now()
+
+	// Matching this regex is only possible against the new CASE-mapped query —
+	// the old "AND t.user_id <> '...'" exclusion produces different SQL, so this
+	// also guards against the exclusion silently coming back.
+	mock.ExpectQuery(`CASE WHEN t\.user_id = '00000000-0000-0000-0000-000000000000' THEN 'SYSTEM'`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"group_key", "cost_usd", "input_tokens", "output_tokens", "cached_input_tokens",
+			"requests", "conversations", "avg_latency_seconds",
+		}).
+			AddRow("SYSTEM", 1.50, 5_590_000, 162_800, 0, 40, 348, 3.2).
+			AddRow("alice", 0.71, 2_610_000, 76_000, 0, 30, 30, 1.1))
+
+	filter := UsageMetricsFilter{AccountIDs: []string{"acc-1"}, StartDate: now.Add(-24 * time.Hour), EndDate: now}
+	where, args := filter.buildWhere()
+
+	rows, err := dao.breakdownForDimension("user", where, args, 100)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	require.Len(t, rows, 2)
+	assert.Equal(t, "SYSTEM", rows[0].Key)
+	assert.InDelta(t, 1.50, rows[0].CostUsd, 0.001)
+}
+
+// TestUserBreakdown_NullUserIDFallsBackToUnknown is a regression test for the
+// gap the #35804 fix (above) opened: dropping "AND t.user_id <> systemUserID"
+// means rows with a NULL t.user_id (background code-analysis usage inserted
+// via buildCodeAnalysisUsageRecord, which has no systemUserID fallback the
+// way GenerateAndTrackLLMContent does) are no longer excluded upstream. The
+// bare CASE would then emit a NULL group_key and fail the scan into
+// GroupKey's non-nullable string. The outer COALESCE(..., 'unknown') must
+// guard it, matching how every other dimension in this file already handles
+// a nullable group key.
+func TestUserBreakdown_NullUserIDFallsBackToUnknown(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	now := time.Now()
+
+	// Asserts the outer COALESCE guard is present in the generated SQL, then
+	// simulates what Postgres would return for a NULL-user_id row once that
+	// guard is in place: "unknown", not NULL — so the scan into GroupKey
+	// (non-nullable string) succeeds instead of erroring.
+	mock.ExpectQuery(`COALESCE\(CASE WHEN t\.user_id = '00000000-0000-0000-0000-000000000000' THEN 'SYSTEM'.*END, 'unknown'\)`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"group_key", "cost_usd", "input_tokens", "output_tokens", "cached_input_tokens",
+			"requests", "conversations", "avg_latency_seconds",
+		}).
+			AddRow("unknown", 0.05, 12_000, 400, 0, 2, 2, 0.4))
+
+	filter := UsageMetricsFilter{AccountIDs: []string{"acc-1"}, StartDate: now.Add(-24 * time.Hour), EndDate: now}
+	where, args := filter.buildWhere()
+
+	rows, err := dao.breakdownForDimension("user", where, args, 100)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	require.Len(t, rows, 1)
+	assert.Equal(t, "unknown", rows[0].Key)
+}
+
 // TestUsageDimensions_Whitelist documents the exact set of groupable
 // dimensions; new ones must be added deliberately, never derived from input.
 func TestUsageDimensions_Whitelist(t *testing.T) {

@@ -599,10 +599,24 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 func (chat *ConversationDao) breakdownForDimension(dim, where string, args []any, limit int) ([]UsageGroupRow, error) {
 	switch dim {
 	case "user":
+		// The synthetic system user has no row in `users`, so previously this
+		// breakdown just dropped its usage entirely (AND t.user_id <> systemUserID)
+		// — leaving the per-user rows short of the Overview totals by however much
+		// automation/background usage the tenant has (#35804). Keep those rows and
+		// label them like the audit log already does for the same sentinel
+		// (app/src/components/audits/index.jsx), rather than silently excluding them.
+		// t.user_id is nullable (background rows written via
+		// buildCodeAnalysisUsageRecord can carry an empty UserID with no
+		// systemUserID fallback), and dropping the old "<> systemUserID" filter
+		// means those NULL rows are no longer excluded upstream — the CASE alone
+		// would emit a NULL group_key and fail the scan into GroupKey's
+		// non-nullable string. Outer COALESCE(..., 'unknown') matches how every
+		// other dimension in this file (model/provider/source/agent/status,
+		// runGroupedUsageSets above) already guards a nullable group key.
 		return chat.runUsageBreakdown(
-			"COALESCE(u.display_name, u.username, t.user_id::text)",
+			fmt.Sprintf("COALESCE(CASE WHEN t.user_id = '%s' THEN 'SYSTEM' ELSE COALESCE(u.display_name, u.username, t.user_id::text) END, 'unknown')", systemUserID),
 			"LEFT JOIN users u ON u.id = t.user_id",
-			fmt.Sprintf(" AND t.user_id <> '%s'", systemUserID),
+			"",
 			where, args, limit)
 	case "account":
 		return chat.runUsageBreakdown(
