@@ -107,6 +107,7 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 	// Generic provider-agnostic endpoint: OpenAI-compatible, with the provider chosen
 	// from the model name. Same auth + control pipeline as the native mounts.
 	r.POST("/v1/chat/completions", authmw, h.handleChat)
+	r.POST("/v1/embeddings", authmw, h.handleEmbeddings)
 	r.GET("/v1/models", authmw, h.handleModels)
 }
 
