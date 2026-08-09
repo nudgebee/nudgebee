@@ -362,6 +362,60 @@ func TestIsGCPPermissionOrNotFoundError(t *testing.T) {
 	}
 }
 
+// TestResolveRecommenderLocations proves locations come from the account's own
+// resources: regions from the Region field (deduped, lowercased), zones parsed
+// back out of selfLink/ARN since collectors normalize Region to the enclosing
+// region and the zone only survives inside those links.
+func TestResolveRecommenderLocations(t *testing.T) {
+	resources := []providers.Resource{
+		{
+			Region: "asia-south1",
+			Arn:    "https://www.googleapis.com/compute/v1/projects/p/zones/asia-south1-a/instances/vm-1",
+		},
+		{
+			Region: "Asia-South1", // dedupes case-insensitively with the row above
+			Meta:   map[string]interface{}{"selfLink": "projects/p/zones/asia-south1-b/disks/disk-1"},
+		},
+		{Region: "US"},           // BigQuery multi-region dataset — lowercased
+		{Region: "  "},           // blank region — skipped
+		{Region: "global"},       // global resources (IAM, images) — scopeGlobal owns this class
+		{Region: "europe-west2"}, // no zone info anywhere — region only
+	}
+
+	regions, zones := resolveRecommenderLocations(resources)
+
+	assert.Equal(t, []string{"asia-south1", "europe-west2", "us"}, regions)
+	assert.Equal(t, []string{"asia-south1-a", "asia-south1-b"}, zones)
+}
+
+func TestResolveRecommenderLocationsEmpty(t *testing.T) {
+	regions, zones := resolveRecommenderLocations(nil)
+	assert.Empty(t, regions)
+	assert.Empty(t, zones)
+}
+
+// TestLocationsForScope proves the bitmask expansion: each scope class
+// contributes its own location list, and combinations union them.
+func TestLocationsForScope(t *testing.T) {
+	regions := []string{"asia-south1", "us"}
+	zones := []string{"asia-south1-a"}
+
+	assert.Equal(t, []string{"global"}, locationsForScope(scopeGlobal, regions, zones))
+	assert.Equal(t, []string{"asia-south1", "us"}, locationsForScope(scopeRegional, regions, zones))
+	assert.Equal(t, []string{"asia-south1-a"}, locationsForScope(scopeZonal, regions, zones))
+	assert.Equal(t, []string{"global", "asia-south1", "us"}, locationsForScope(scopeRegional|scopeGlobal, regions, zones))
+	assert.Equal(t, []string{"asia-south1", "us", "asia-south1-a"}, locationsForScope(scopeRegional|scopeZonal, regions, zones))
+}
+
+// TestRecommenderTypesDeclareScope guards against a new entry silently
+// defaulting to scope 0, which would make locationsForScope return no
+// locations and the recommender never be queried.
+func TestRecommenderTypesDeclareScope(t *testing.T) {
+	for _, rt := range recommenderTypes {
+		assert.NotZero(t, rt.scope, "recommender %s must declare a location scope", rt.id)
+	}
+}
+
 func TestGCPRecommenderIntegration(t *testing.T) {
 	projectID := os.Getenv("GCP_PROJECT_ID")
 	if projectID == "" {
@@ -375,9 +429,13 @@ func TestGCPRecommenderIntegration(t *testing.T) {
 
 	ctx := providers.NewCloudProviderContext(context.Background())
 
+	// No collected resources in this standalone test — exercise the fallback
+	// region list plus global, the same path production takes on a fresh account.
+	regions := fallbackRecommenderRegions
+
 	var recommendations []providers.Recommendation
 	for _, rt := range recommenderTypes {
-		for _, location := range recommenderLocations {
+		for _, location := range locationsForScope(rt.scope, regions, nil) {
 			parent := fmt.Sprintf("projects/%s/locations/%s/recommenders/%s", projectID, location, rt.id)
 
 			recs, fetchErr := fetchRecommendations(ctx, client, parent, rt.id, rt.category, location)

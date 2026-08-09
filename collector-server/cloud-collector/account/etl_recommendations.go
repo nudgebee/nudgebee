@@ -321,10 +321,24 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 		ctx.GetLogger().Error("unable to get dbms", "error", err)
 		return providers.ListRecommendationsResponse{}, providers.Account{}, err
 	}
-	query := `select created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name 
+	query := `select created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
 	from cloud_resourses
-	where account = $1 and lower(service_name) = $2 and lower(status) = 'active'`
-	rows, err := databaseManager.Query(query, accountId, strings.ToLower(filter.ServiceName))
+	where account = $1 and lower(status) = 'active'`
+	args := []interface{}{accountId}
+	// The GCP "Recommender" pseudo-service owns no cloud_resourses rows of its
+	// own — it needs the account's full resource set to derive which
+	// regions/zones to query (see resolveRecommenderLocations in
+	// providers/gcloud). Gate this on the GCP provider: the account-level
+	// StoreRecommendationsAll runs the "recommender" native-service sync for
+	// every provider, and dropping the filter for AWS/Azure would hand their
+	// dispatchers the full active fleet — Azure's ListRecommendations would then
+	// fall through to re-crawl every registered service. Every other case keeps
+	// the service_name filter, preserving the pre-change behavior exactly.
+	if !strings.EqualFold(filter.ServiceName, "recommender") || !strings.EqualFold(provider, "gcp") {
+		query += ` and lower(service_name) = $2`
+		args = append(args, strings.ToLower(filter.ServiceName))
+	}
+	rows, err := databaseManager.Query(query, args...)
 	if err != nil {
 		ctx.GetLogger().Error("unable to fetch existing resources", "error", err)
 		return providers.ListRecommendationsResponse{}, providers.Account{}, err
