@@ -175,6 +175,9 @@ func (h *handler) unaryChat(c *gin.Context, bctx *schemas.BifrostContext, rc *Re
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadRequest, nil, nil, nil)
 		return
 	}
+	// Preserve provider-specific params the unified schema doesn't model (e.g. vLLM's
+	// chat_template_kwargs) so passthrough-capable lanes forward them to the upstream.
+	applyChatExtraParams(&oaiReq, rc.Body)
 	breq := oaiReq.ToBifrostChatRequest(bctx)
 	// Pin the routed target: the client addressed a model name; routing may have
 	// re-mapped it, and the provider is derived from that name, not the request body.
@@ -276,6 +279,7 @@ func (h *handler) streamChat(c *gin.Context, bctx *schemas.BifrostContext, cance
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadRequest, nil, nil, nil)
 		return
 	}
+	applyChatExtraParams(&oaiReq, rc.Body)
 	breq := oaiReq.ToBifrostChatRequest(bctx)
 	breq.Provider = rc.Provider
 	breq.Model = rc.Model
