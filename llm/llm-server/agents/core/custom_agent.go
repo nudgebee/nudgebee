@@ -314,6 +314,16 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 		return prompt
 	}
 
+	// A custom agent's stored prompt may have no tool_usage key at all — the
+	// field is omitempty, and anything not authored through the UI usually
+	// leaves it out — which unmarshals to a nil map. Writing to it below panics
+	// and takes the whole conversation down with it, so the agent is unusable
+	// from its first tool call. UpdatePromptForMultiCommandTool already guards
+	// the same map for the same reason.
+	if prompt.ToolUsage == nil {
+		prompt.ToolUsage = make(map[string][]string)
+	}
+
 	// populate tool usage in the prompt
 	for _, tool := range tools {
 		existingUsage, ok := prompt.ToolUsage[tool.Name()]
