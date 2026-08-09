@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPrometheusExtractLabels_SeriesInvariant locks the contract the event-label
@@ -32,8 +33,10 @@ func TestPrometheusExtractLabels_SeriesInvariant(t *testing.T) {
 
 	// The full series array is preserved under "_series" for for_each templating.
 	series, ok := labels["_series"].([]map[string]any)
-	assert.True(t, ok, "_series must be the full []map[string]any array, not stringified")
-	assert.Len(t, series, 2)
+	// require: a failed type assertion here means series is nil, so the
+	// subsequent index would panic rather than fail cleanly.
+	require.True(t, ok, "_series must be the full []map[string]any array, not stringified")
+	require.Len(t, series, 2)
 	assert.Equal(t, "app-b", series[1]["pod"])
 }
 
