@@ -65,6 +65,10 @@ func generateMissingDigests() error {
 		return fmt.Errorf("generateMissingDigests: finding pending periods: %w", err)
 	}
 	if len(periods) == 0 {
+		// Still sweep for undelivered digests: a week can be generated on one
+		// tick and fail to publish on the same tick (exchange down, pod
+		// restart), which leaves nothing to generate but something to send.
+		deliverGeneratedDigests()
 		return nil
 	}
 
@@ -90,7 +94,24 @@ func generateMissingDigests() error {
 	}
 
 	scanCtx.GetLogger().Info("digest: run complete", "generated", len(periods)-failures, "failed", failures)
+
+	// Delivery runs after every generation pass, over whatever is complete and
+	// unsent — including weeks generated on an earlier tick. Separate from
+	// generation so a channel outage costs a delayed message, not a lost digest.
+	deliverGeneratedDigests()
 	return nil
+}
+
+// deliverGeneratedDigests runs the delivery sweep under its own context.
+//
+// It must not reuse the generation scan's context: that one carries a
+// digestGenerationTimeout deadline set before the LLM work started, and a full
+// run over a busy tenant routinely outlives it — the sweep would then fail with
+// "context deadline exceeded" on every tick that actually had digests to send.
+func deliverGeneratedDigests() {
+	ctx, cancel := newDigestContext("")
+	defer cancel()
+	notifyGeneratedDigests(ctx)
 }
 
 // newDigestContext builds the background request context the generator runs

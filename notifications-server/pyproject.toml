@@ -63,6 +63,7 @@ opentelemetry-sdk = "^1.40.0"
 opentelemetry-instrumentation-fastapi = "^0.61b0"
 opentelemetry-instrumentation-requests = "^0.61b0"
 opentelemetry-instrumentation-aiohttp-client = "^0.61b0"
+reportlab = "^5.0.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -75,3 +76,4 @@ mypy = "2.3.0"
 flake8 = "7.3.0"
 sqlglot = "30.14.0"
 pytest = ">=8.3,<10.0"
+pypdf = "^6.15.0"

@@ -145,6 +145,20 @@ from notifications_server.message_templates.discord.recommendation_resolution im
     get_discord_recommendation_resolution_template,
 )
 
+from notifications_server.message_templates.slack.weekly_digest_events import (
+    get_weekly_digest_events_message_params,
+    get_weekly_digest_events_message_template,
+)
+from notifications_server.message_templates.ms_teams.weekly_digest_events import (
+    get_teams_weekly_digest_events_template,
+)
+from notifications_server.message_templates.google_chat.weekly_digest_events import (
+    get_gchat_weekly_digest_events_template,
+)
+from notifications_server.message_templates.discord.weekly_digest_events import (
+    get_discord_weekly_digest_events_template,
+)
+
 template_mapping = {
     "default": {
         "common_params": get_default_message_params,
@@ -250,5 +264,12 @@ template_mapping = {
         "ms_teams": get_teams_recommendation_resolution_template,
         "google_chat": get_gchat_recommendation_resolution_template,
         "discord": get_discord_recommendation_resolution_template,
+    },
+    "weekly_digest_events": {
+        "common_params": get_weekly_digest_events_message_params,
+        "slack": get_weekly_digest_events_message_template,
+        "ms_teams": get_teams_weekly_digest_events_template,
+        "google_chat": get_gchat_weekly_digest_events_template,
+        "discord": get_discord_weekly_digest_events_template,
     },
 }

@@ -711,6 +711,97 @@ func UpsertDigest(
 	return nil
 }
 
+// FindUndeliveredDigests returns complete tenant-weeks that have not yet been
+// pushed to notification channels, oldest first so a tenant that missed two
+// weeks receives them in the order they happened.
+//
+// Delivery is keyed on notified_at rather than on status, because status alone
+// cannot distinguish "generated for the first time" from "regenerated". The gap
+// scan deliberately re-queues rows whose shape key is superseded, so every
+// prompt change rewrites the whole lookback window; keying off status would
+// re-send all of it. UpsertDigest never writes notified_at, so a regenerated
+// week stays delivered.
+//
+// Three filters beyond notified_at, each load-bearing:
+//   - status = generated — a partial row is still owed a synthesis, and sending
+//     it would push a review whose briefing is about to change.
+//   - source = scheduled — an on-demand row is a user's provisional preview.
+//     Delivering it would both surprise the channel and consume the week's one
+//     delivery, so the authoritative scheduled run would then stay silent.
+//   - a non-empty class_summaries — an empty week has no findings to report.
+//     api-server's daily report skips publishing on an empty payload for the
+//     same reason. The row is still marked delivered by the caller so it does
+//     not linger in this scan forever.
+func FindUndeliveredDigests(ctx *security.RequestContext, limit int) ([]Digest, error) {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("FindUndeliveredDigests: db manager: %w", err)
+	}
+	// The period_start floor keeps a long outage from replaying ancient weeks
+	// into a channel: anything older than the lookback window is history the
+	// generator itself will not refill.
+	query := `SELECT ` + digestSelectCols + `
+		FROM event_analysis_digest
+		WHERE notified_at IS NULL
+		  AND status = $1
+		  AND source = $2
+		  AND period_start >= (CURRENT_DATE - ($3::int * 7))
+		ORDER BY period_start ASC
+		LIMIT $4`
+	out := []Digest{}
+	if err := dbms.Db.SelectContext(ctx.GetContext(), &out, query,
+		DigestStatusGenerated, DigestSourceScheduled, DigestLookbackWeeks, limit); err != nil {
+		return nil, fmt.Errorf("FindUndeliveredDigests: query: %w", err)
+	}
+	return out, nil
+}
+
+// MarkDigestDelivered stamps a digest as pushed to notification channels.
+//
+// Called after a successful publish, and also for a week deliberately not sent
+// (no findings) so it stops appearing in the scan. The WHERE clause re-checks
+// notified_at so two publishers racing on the same row produce one delivery
+// rather than two: the loser updates zero rows.
+func MarkDigestDelivered(ctx *security.RequestContext, id string) (bool, error) {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return false, fmt.Errorf("MarkDigestDelivered: db manager: %w", err)
+	}
+	res, err := dbms.Db.ExecContext(ctx.GetContext(),
+		`UPDATE event_analysis_digest SET notified_at = now(), updated_at = now()
+		 WHERE id = $1::uuid AND notified_at IS NULL`, id)
+	if err != nil {
+		return false, fmt.Errorf("MarkDigestDelivered: exec: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("MarkDigestDelivered: rows affected: %w", err)
+	}
+	return rows > 0, nil
+}
+
+// ReleaseDigestDelivery undoes MarkDigestDelivered so a failed publish is
+// retried on the next tick.
+//
+// The claim is taken before publishing, because a crash between a successful
+// publish and its mark would otherwise re-send the week. That ordering alone
+// would trade one rare duplicate for a permanent silent loss whenever the
+// exchange is unreachable — and an unreachable exchange fails every tenant at
+// once, not one. Releasing the claim on a failed publish keeps both properties:
+// no duplicate from a crash, no lost week from an outage.
+func ReleaseDigestDelivery(ctx *security.RequestContext, id string) error {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return fmt.Errorf("ReleaseDigestDelivery: db manager: %w", err)
+	}
+	if _, err := dbms.Db.ExecContext(ctx.GetContext(),
+		`UPDATE event_analysis_digest SET notified_at = NULL, updated_at = now()
+		 WHERE id = $1::uuid`, id); err != nil {
+		return fmt.Errorf("ReleaseDigestDelivery: exec: %w", err)
+	}
+	return nil
+}
+
 // Digest is a stored digest row as served to the UI.
 type Digest struct {
 	ID          string    `db:"id"              json:"id"`

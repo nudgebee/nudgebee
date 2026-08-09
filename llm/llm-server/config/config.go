@@ -396,6 +396,13 @@ type appConfig struct {
 	// pod receives every message.
 	RabbitMqLLMCacheInvalidationExchange string `mapstructure:"rabbit_mq_llm_cache_invalidation_exchange"`
 
+	// notifications-server's inbound exchange, shared with api-server and
+	// cloud-collector. Values must match api-server's defaults for the same keys
+	// — the three services publish to one exchange, and a divergent default here
+	// would silently route the weekly digest nowhere.
+	RabbitMqNotificationsExchange string `mapstructure:"rabbit_mq_notifications_exchange"`
+	RabbitMqNotificationsQueue    string `mapstructure:"rabbit_mq_notifications_queue"`
+
 	LlmServerShellImage             string `mapstructure:"llm_server_tool_shell_image"`
 	LlmToolCrawlDevtoolWebsocketUrl string `mapstructure:"llm_server_tool_crawl_devtool_websocket_url"`
 
@@ -1184,6 +1191,10 @@ func init() {
 
 	viper.SetDefault("rabbit_mq_event_investigate_completed_exchange", "llm_server_event_investigate_completed")
 	viper.SetDefault("rabbit_mq_event_investigate_completed_routing_key", "llm_server_event_investigate_completed")
+
+	// Must stay identical to api-server's defaults for these keys.
+	viper.SetDefault("rabbit_mq_notifications_exchange", "notifications_exchange")
+	viper.SetDefault("rabbit_mq_notifications_queue", "notifications")
 
 	viper.SetDefault("LLM_SERVER_TOOL_CRAWL_DEVTOOL_WEBSOCKET_URL", "")
 

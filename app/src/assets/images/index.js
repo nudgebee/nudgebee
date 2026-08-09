@@ -463,7 +463,7 @@ export const SLOInspectionWhiteIcon = require('@assets/kubernetes/slo-inspection
 export const SLOInspectionBlackIcon = require('@assets/kubernetes/slo-inspection.svg');
 
 export const EmailIconBlack = require('@assets/kubernetes/email-icon.svg');
-export const EmaiIconWhite = require('@assets/kubernetes/email-icon-white.svg');
+export const EmailIconWhite = require('@assets/kubernetes/email-icon-white.svg');
 
 export const ScaleIcon = require('@assets/application/scale-new.svg');
 
