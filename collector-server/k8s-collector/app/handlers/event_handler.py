@@ -697,11 +697,23 @@ def handle_existing_resolved_event(cloud_account_id, existing_event):
         # Don't fail - history is not critical, continue with UPDATE
 
     # Then UPDATE the event (triggers webhook, but deterministic ID prevents duplicate)
-    database.run_query(
+    resolved_rows = database.run_query(
         "update events set status = 'CLOSED' , ends_at = now() where cloud_account_id=%s and id=%s and"
-        " status != 'CLOSED'",
+        " status != 'CLOSED' returning id",
         [cloud_account_id, existing_event["id"]],
     )
+    # Only a genuine open->closed transition notifies; api-server routes it to
+    # the resolved Slack reply, threaded under the original alert message.
+    if resolved_rows:
+        try:
+            rabbitmq_client.publish_message(
+                Configs.RABBIT_MQ_EVENT_POST_PROCESS_EXCHANGE,
+                Configs.RABBIT_MQ_EVENT_POST_PROCESS_QUEUE,
+                {"event_id": existing_event["id"], "notify_resolved": True},
+                message_ttl=60 * 60 * 1000,
+            )
+        except Exception:
+            logging.exception(f"Failed to publish resolved notification for event {existing_event['id']}")
     try:
         existing_event["status"] = "CLOSED"
         _write_events_to_clickhouse([existing_event])

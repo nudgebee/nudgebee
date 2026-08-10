@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     RABBIT_MQ_KG_UPDATE_EXCHANGE: str = "kg_update_exchange"
     RABBIT_MQ_KG_UPDATE_QUEUE: str = "kg_update"
 
+    RABBIT_MQ_EVENT_POST_PROCESS_EXCHANGE: str = "event_post_process_exchange"
+    RABBIT_MQ_EVENT_POST_PROCESS_QUEUE: str = "event_post_process"
+
     REDIS_SERVER_HOST: str
     REDIS_SERVER_PORT: int
     REDIS_USER_NAME: str
