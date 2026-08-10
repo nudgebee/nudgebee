@@ -41,6 +41,8 @@ export interface UsageGroupRow {
 export interface UsageFilterOption {
   id: string;
   name: string;
+  /** Accounts only — groups the account dropdown by provider and picks its logo. */
+  cloud_provider?: string;
 }
 
 export interface UsageFilters {

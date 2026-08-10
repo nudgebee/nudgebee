@@ -14,6 +14,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import CloseIcon from '@mui/icons-material/Close';
 import RestartAltOutlinedIcon from '@mui/icons-material/RestartAltOutlined';
 import FilterDropdown from '@ui/FilterDropdown';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import Tooltip from '@ui/Tooltip';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Input } from '@ui/Input';
@@ -145,7 +146,17 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
   const [open, setOpen] = React.useState(false);
   const anchorEnd = anchorDate || FIXTURE_ANCHOR;
 
-  const accountOptions = (options?.accounts ?? []).map((a) => ({ label: a.name, value: a.id }));
+  // Accounts group by cloud provider (with its logo on the header and on each
+  // row) — same shape every other account picker in the app uses. The backend
+  // only returns accounts that have usage in the selected window, so this list
+  // narrows with the date range like the model/provider/source lists do.
+  const accountOptions = (options?.accounts ?? []).map((a) => {
+    // 'Other' (never undefined) so an account whose provider the backend didn't
+    // resolve gets the generic cloud glyph — CloudProviderIcon falls back to the
+    // AWS logo on a null provider, which would mislabel it.
+    const provider = a.cloud_provider || 'Other';
+    return { label: a.name, value: a.id, group: provider, icon: <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' /> };
+  });
   // Before the first successful ai_get_usage_filters fetch, fall back to an EMPTY
   // list (reads as "loading/none") rather than mock fixtures — never surface
   // fictitious model/provider names as selectable values in a live view.
@@ -182,6 +193,9 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
         <FilterDropdown
           id='cost-filter-account'
           label='Account'
+          grouped
+          groupIcon={(groupKey: string) => <CloudProviderIcon cloud_provider={groupKey} width='14px' height='14px' />}
+          searchPlaceholder='Search accounts'
           options={accountOptions}
           value={accountId}
           onSelect={(e: { target: { value: string | null } }) => onAccountChange?.(e?.target?.value ?? '')}

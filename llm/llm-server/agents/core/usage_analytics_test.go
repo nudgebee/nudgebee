@@ -1,6 +1,7 @@
 package core
 
 import (
+	"database/sql/driver"
 	"strings"
 	"testing"
 	"time"
@@ -242,4 +243,55 @@ func TestUsageDimensions_Whitelist(t *testing.T) {
 	}
 	assert.False(t, usageDimensions["password"])
 	assert.False(t, usageDimensions["; DROP TABLE"])
+}
+
+// argContains matches a bound pq array arg by substring — enough to tell the
+// readable-account list apart from the selected one without re-encoding pq's
+// array literal syntax in the test.
+type argContains struct{ want string }
+
+func (a argContains) Match(v driver.Value) bool {
+	s, ok := v.(string)
+	return ok && strings.Contains(s, a.want)
+}
+
+// TestGetUsageFilters_AccountsScopedToWindowNotSelection pins the two rules the
+// account dropdown depends on: it is offered from every READABLE account (not
+// just the selected one, which would collapse it to a single option), narrowed
+// to accounts with usage in the window, and it carries cloud_provider so the UI
+// can group by provider and show its logo.
+func TestGetUsageFilters_AccountsScopedToWindowNotSelection(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	dao := &ConversationDao{
+		dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")},
+	}
+
+	mock.ExpectQuery("array_agg").
+		WillReturnRows(sqlmock.NewRows([]string{"sources", "models", "providers", "agents", "statuses"}).
+			AddRow("{Investigation}", "{claude-opus}", "{bedrock}", "{aws}", "{success}"))
+	mock.ExpectQuery("LEFT JOIN users").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
+	// $1 = readable accounts (must include acc-2, which is NOT the selection),
+	// $4 = the selection kept visible even without data in the window.
+	mock.ExpectQuery("cloud_provider").
+		WithArgs(argContains{"acc-2"}, sqlmock.AnyArg(), sqlmock.AnyArg(), argContains{"acc-1"}).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "cloud_provider"}).
+			AddRow("acc-1", "prod-aws", "AWS").
+			AddRow("acc-2", "prod-gcp", "GCP"))
+
+	now := time.Now()
+	out, err := dao.GetUsageFilters(UsageMetricsFilter{
+		AccountIDs: []string{"acc-1"}, // selected scope — dimensions/users use this
+		StartDate:  now.Add(-24 * time.Hour),
+		EndDate:    now,
+	}, []string{"acc-1", "acc-2"}, []string{"acc-1"})
+	require.NoError(t, err)
+
+	require.Len(t, out.Accounts, 2, "dropdown must offer every readable account, not just the selected one")
+	assert.Equal(t, "AWS", out.Accounts[0].CloudProvider)
+	assert.Equal(t, "GCP", out.Accounts[1].CloudProvider)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
