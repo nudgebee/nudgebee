@@ -70,6 +70,10 @@ const CustomDashboards: React.FC = () => {
   const [mode, setMode] = useState<Mode>({ name: 'list' });
   const [dashboards, setDashboards] = useState<Dashboard[]>([]);
   const [loading, setLoading] = useState(false);
+  // Two search states, as everywhere else in the app (see KubernetesAlertManager):
+  // `searchInput` is what is typed, `search` is what has been submitted. Only the
+  // submitted one feeds the request, so typing costs nothing until Enter.
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<{ dashboard: Dashboard; bindings: DashboardBinding[] } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Dashboard | null>(null);
@@ -405,7 +409,21 @@ const CustomDashboards: React.FC = () => {
             ) : null
           }
         >
-          <SearchInput value={search} onChange={setSearch} label='Search dashboards' id='dashboard-search' />
+          <SearchInput
+            value={searchInput}
+            // Emptying the field restores the full list without an Enter — an
+            // empty box that still shows filtered rows reads as a bug. Every
+            // other keystroke waits for Enter. This covers the X too: it
+            // reports the cleared value through onChange before onClear, so no
+            // separate onClear handler is needed here.
+            onChange={(next: string) => {
+              setSearchInput(next);
+              if (next.trim() === '') setSearch('');
+            }}
+            onEnterPress={() => setSearch(searchInput.trim())}
+            label='Search dashboards'
+            id='dashboard-search'
+          />
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           <CustomTable headers={headers} tableData={tableData} loading={loading} />
