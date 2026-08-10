@@ -2444,6 +2444,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 {{.notebook}}
 </notebook_content>
 {{end}}
+{{.memory_context_block}}
 {{.channel_context_block}}
 <question>{{.input}}</question>
 
@@ -2461,6 +2462,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"user_context_block",
 		"kb_prestep_content",
 		"skill_lists_menu",
+		"memory_context_block",
 		"channel_context_block",
 	}))
 
@@ -2531,6 +2533,11 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		// KB pre-step is enabled.
 		"kb_prestep_content": request.KBPrestepContent,
 		"skill_lists_menu":   request.SkillListsMenu,
+		// Memories are reference material, not the agent's own working state —
+		// rendered as a framed block beside the channel context rather than
+		// seeded into the notebook, where they carried the authority of prior
+		// findings.
+		"memory_context_block": renderMemoryContextBlock(request.MemoryContext),
 		// Sits above the question so context compression never trims it away
 		// before the model reads what it is meant to be grounded in.
 		"channel_context_block": renderChannelContextBlock(request.ChannelContext),

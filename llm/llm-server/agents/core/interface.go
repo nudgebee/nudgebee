@@ -151,6 +151,10 @@ type NBAgentRequest struct {
 	// conversation reference for the UI's citation; never rendered into the
 	// prompt.
 	ChannelContextRefs map[string]any `json:"channel_context_refs,omitempty"`
+	// MemoryContext carries the composed memory slab (soul, preferences,
+	// patterns, decisions, collective, plus the <memory_index> audit footer).
+	// Rendered as a reference-framed <user_memory> block in the human message.
+	MemoryContext string `json:"memory_context,omitempty"`
 }
 
 // DO not use for API calls

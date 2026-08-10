@@ -634,7 +634,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	kbStart := time.Now()
 	kbResult = <-kbChan
 	if memoryModuleActive {
-		initialNotebook = <-memV2Chan
+		// Reference context, not working state: seeding the notebook handed
+		// every injected memory the authority of the agent's own prior
+		// findings. The planner frames it as <user_memory>; the notebook
+		// starts empty.
+		request.MemoryContext = <-memV2Chan
 		<-memChan // drain
 	} else {
 		initialNotebook = <-memChan
