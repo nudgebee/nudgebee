@@ -659,10 +659,20 @@ func (s *Service) handleWorkflowTrigger(ctx *security.RequestContext, id, tenant
 					}
 					scheduleCount++
 				}
+			} else {
+				// A schedule trigger with no cron registers nothing, so the workflow
+				// looks scheduled and active and never fires. Trigger.Validate now
+				// rejects this on create and update, which is where it can still be
+				// fixed; the paths that reach here without validating (status change,
+				// version publish) only ever see rows that were stored before that
+				// check existed. Failing them would leave such a row unpauseable and
+				// unactivatable with no in-product repair, so log and carry on.
+				slog.Warn("schedule trigger has no cron expression; no schedule registered",
+					"workflowID", id, "accountID", accountId, "triggerIndex", i)
 			}
 		case model.WorkflowTriggerWebhook:
 			if trigger.Internal == nil || trigger.Internal.Name == "" {
-				return nil, "", common.ErrorBadRequest("webhook trigger missing internal name after normalization")
+				return nil, "", common.ErrorBadRequest("webhook trigger requires params.integration_name")
 			}
 			integrationID := trigger.Internal.Name
 

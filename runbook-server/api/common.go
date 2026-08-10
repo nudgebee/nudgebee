@@ -96,6 +96,28 @@ func formatValidationError(err error) string {
 			messages = append(messages, "schedule trigger overlap policy must be one of: Skip, BufferOne, BufferAll, CancelOther, TerminateOther, AllowAll")
 		case "catchup_window_invalid_type", "catchup_window_invalid_duration":
 			messages = append(messages, "schedule trigger catchup window must be a Go duration (e.g. 60s, 5m, 1h)")
+		case "integration_name_missing":
+			messages = append(messages, "webhook trigger requires params.integration_name")
+		case "integration_name_invalid":
+			messages = append(messages, "webhook trigger params.integration_name must be a non-empty string")
+		case "unsupported_webhook_param", "filter_invalid_type", "filter_invalid_syntax",
+			"unsupported_event_param", "on_invalid_type", "on_invalid_phase",
+			"event_type_invalid_type", "event_type_invalid_item",
+			"event_trigger_needs_filter", "optimization_trigger_needs_params":
+			// These tags are reported by Trigger.Validate with a ready-written human
+			// message in ReportError's `param` argument. Surface it instead of letting
+			// the default branch print the raw tag. Deliberately not a blanket
+			// `default: fe.Param()` — built-in tags (min/max/len) put a bare number
+			// there, which would read worse than the tag name.
+			//
+			// Every tag listed above passes a non-empty message today. Fall back on the
+			// tag anyway so that adding one here without a message degrades to the old
+			// cryptic string rather than to an empty error the caller cannot read.
+			if param := fe.Param(); param != "" {
+				messages = append(messages, param)
+			} else {
+				messages = append(messages, fmt.Sprintf("%s failed validation: %s", field, fe.Tag()))
+			}
 		case "min":
 			// e.g. `tasks` / `triggers` are `min=1` slices — "min" alone reads as
 			// a truncated/cryptic tag, so spell out the constraint by field kind.

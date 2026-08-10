@@ -408,6 +408,52 @@ func TestValidateWorkflow(t *testing.T) {
 	})
 }
 
+// TestValidateWorkflow_TriggerNilParams pins the behaviour of every trigger type when
+// the definition omits `params` entirely (JSON `{"type":"webhook"}` unmarshals to a nil
+// map, unlike `{"type":"webhook","params":{}}` which is an empty one). Validate used to
+// short-circuit on nil params for everything except event/optimization, so webhook and
+// schedule triggers passed validation and were then rejected by the save call — or, for
+// schedule, saved and silently never fired (#35384). Manual is the only type with no
+// required params and must still pass. Covering all five types here is the regression
+// guard: a new trigger type with a required param has to add its row.
+func TestValidateWorkflow_TriggerNilParams(t *testing.T) {
+	tests := []struct {
+		name        string
+		triggerType model.WorkflowTrigger
+		wantTag     string // empty means the definition must validate cleanly
+	}{
+		{"manual accepts absent params", model.WorkflowTriggerManual, ""},
+		{"schedule requires cron", model.WorkflowTriggerSchedule, "cron_missing"},
+		{"webhook requires integration_name", model.WorkflowTriggerWebhook, "integration_name_missing"},
+		{"event requires event_type or filter", model.WorkflowTriggerEvent, "event_trigger_needs_filter"},
+		{"optimization requires params", model.WorkflowTriggerOptimization, "optimization_trigger_needs_params"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wf := model.Workflow{
+				Name: "test-workflow",
+				Definition: model.WorkflowDefinition{
+					Version:  "v1",
+					Triggers: []model.Trigger{{Type: tt.triggerType}}, // Params intentionally nil
+					Tasks:    []model.Task{{ID: "task1", Type: "http_request"}},
+				},
+			}
+			err := model.ValidateWorkflow(wf)
+			if tt.wantTag == "" {
+				assert.NoError(t, err)
+				return
+			}
+			// Guard the Contains on Error: a regression here returns nil, and calling
+			// err.Error() on it would panic the whole package run instead of reporting
+			// which trigger type stopped being validated.
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), tt.wantTag)
+			}
+		})
+	}
+}
+
 func TestValidateWorkflow_TaskTimeoutsExceedWorkflow(t *testing.T) {
 	t.Run("Task timeouts sum exceeds workflow timeout", func(t *testing.T) {
 		wf := model.Workflow{

@@ -469,6 +469,37 @@ func (s *APITestSuite) TestValidateWorkflow() {
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		mockService.AssertExpectations(t)
 	})
+
+	// The AI automation builder calls this endpoint between building and saving and
+	// feeds the response back to the model, so the body has to name the offending
+	// parameter rather than echo the raw go-playground tag (#35384).
+	s.T().Run("Trigger param error is human-readable", func(t *testing.T) {
+		invalidWorkflow := model.Workflow{
+			Name: "flat-webhook-workflow",
+			Definition: model.WorkflowDefinition{
+				Version:  "v1",
+				Triggers: []model.Trigger{{Type: model.WorkflowTriggerWebhook}}, // no params
+				Tasks:    []model.Task{{ID: "task-1", Type: "scripting.run_script", Params: map[string]any{"script": "echo 'hello'"}}},
+			},
+		}
+		// Return the real validator error the service would produce, so this asserts the
+		// handler's formatting rather than a hand-written string.
+		realErr := model.ValidateWorkflow(invalidWorkflow)
+		assert.Error(t, realErr, "a webhook trigger without params must fail validation")
+		mockService.On("ValidateWorkflow", mock.Anything, "test-account", invalidWorkflow).Return(realErr).Once()
+
+		body, _ := json.Marshal(invalidWorkflow)
+		req, _ := http.NewRequest(http.MethodPost, "/workflows/validate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Account-ID", "test-account")
+		w := httptest.NewRecorder()
+		s.server.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "webhook trigger requires params.integration_name")
+		assert.NotContains(t, w.Body.String(), "integration_name_missing", "raw validator tag must not leak to the caller")
+		mockService.AssertExpectations(t)
+	})
 }
 
 func (s *APITestSuite) TestCreateWorkflow() {

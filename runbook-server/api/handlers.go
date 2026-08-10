@@ -932,7 +932,13 @@ func (s *Server) validateWorkflow(c *gin.Context) {
 	}
 
 	if err := s.workflowService.ValidateWorkflow(sc, accountID, wf); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "validation failed: " + err.Error()})
+		// Format rather than dumping err.Error(): this is the endpoint the AI automation
+		// builder calls between building and saving, and it feeds the response straight
+		// back to the model to correct itself. A raw go-playground error ("Field
+		// validation for 'params' failed on the 'integration_name_missing' tag") is not
+		// something it can act on. formatValidationError passes non-validator errors
+		// through unchanged.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "validation failed: " + formatValidationError(err)})
 		return
 	}
 

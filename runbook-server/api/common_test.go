@@ -51,6 +51,91 @@ func TestFormatValidationError_ScheduleTrigger(t *testing.T) {
 	}
 }
 
+// The messages the RPC layer returns for the trigger-param failures the AI
+// automation builder actually hits. Two things are pinned here: that a trigger
+// omitting `params` entirely now fails at all (#35384 — validate used to answer OK
+// and the save then 400'd), and that the tags carrying a written-out message in
+// ReportError's param argument surface that message instead of the raw tag. The
+// builder reads this string to correct itself, so "params failed validation:
+// event_trigger_needs_filter" is not a usable answer.
+func TestFormatValidationError_TriggerParams(t *testing.T) {
+	workflowWith := func(trigger model.Trigger) model.Workflow {
+		return model.Workflow{
+			Name: "trigger-param-workflow",
+			Definition: model.WorkflowDefinition{
+				Version:  "v1",
+				Triggers: []model.Trigger{trigger},
+				Tasks:    []model.Task{{ID: "task1", Type: "core.print"}},
+			},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		trigger model.Trigger
+		want    string
+	}{
+		{
+			"webhook without params names the parameter",
+			model.Trigger{Type: model.WorkflowTriggerWebhook},
+			"webhook trigger requires params.integration_name",
+		},
+		{
+			"webhook with empty integration_name",
+			model.Trigger{Type: model.WorkflowTriggerWebhook, Params: map[string]any{"integration_name": ""}},
+			"webhook trigger params.integration_name must be a non-empty string",
+		},
+		{
+			"schedule without params names the cron",
+			model.Trigger{Type: model.WorkflowTriggerSchedule},
+			"schedule trigger is missing a cron expression",
+		},
+		{
+			"event without params surfaces the reported message",
+			model.Trigger{Type: model.WorkflowTriggerEvent},
+			"Event trigger requires at least one of: event_type, or filter",
+		},
+		{
+			"optimization without params surfaces the reported message",
+			model.Trigger{Type: model.WorkflowTriggerOptimization},
+			"Optimization trigger requires params with at least one of: categories, rule_names, clusters, filter",
+		},
+		{
+			"unsupported webhook param names the offending key",
+			model.Trigger{Type: model.WorkflowTriggerWebhook, Params: map[string]any{"integration_name": "hook", "nope": "x"}},
+			"Unsupported parameter: nope",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := model.ValidateWorkflow(workflowWith(tc.trigger))
+			if err == nil {
+				t.Fatalf("expected a validation error, got nil")
+			}
+			if got := formatValidationError(err); got != tc.want {
+				t.Errorf("formatValidationError() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Manual is the one trigger type with no required params, so omitting the block
+// must stay valid — the counterweight to the cases above.
+func TestFormatValidationError_ManualTriggerNeedsNoParams(t *testing.T) {
+	wf := model.Workflow{
+		Name: "manual-workflow",
+		Definition: model.WorkflowDefinition{
+			Version:  "v1",
+			Triggers: []model.Trigger{{Type: model.WorkflowTriggerManual}},
+			Tasks:    []model.Task{{ID: "task1", Type: "core.print"}},
+		},
+	}
+	if err := model.ValidateWorkflow(wf); err != nil {
+		t.Errorf("manual trigger without params should validate, got %q", formatValidationError(err))
+	}
+}
+
 func TestFormatValidationError_Min(t *testing.T) {
 	v := newTestValidator()
 

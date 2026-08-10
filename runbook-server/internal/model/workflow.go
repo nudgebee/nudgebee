@@ -357,16 +357,17 @@ func (d WorkflowDefinition) SupportsAIInvocation() bool {
 }
 
 // Validate performs struct-level validation for Trigger.
+//
+// Every trigger type states its own param requirements in its case below, and each
+// case is nil-safe (map reads and ranges on a nil map are no-ops, len(nil) is 0), so
+// a nil Params block reaches the switch and fails whatever that type actually
+// requires. There is deliberately no pre-switch short-circuit: the previous one
+// exempted every type except event/optimization, which meant `webhook` (needs
+// integration_name) and `schedule` (needs cron) were never checked when the caller
+// omitted params entirely — validate answered OK and the subsequent save 400'd
+// (#35384). Keep per-type knowledge in the case, never in a guard above it, or the
+// next type that gains a required param reintroduces the same hole.
 func (t Trigger) Validate(sl validator.StructLevel) {
-	// For most trigger types a missing params block means "no params to validate".
-	// Event and optimization triggers are exceptions: event requires at least one of
-	// event_type or filter, and optimization requires at least one of categories,
-	// rule_names, clusters, or filter — both must run their case below even when
-	// params is nil/empty so the missing-params error surfaces.
-	if t.Params == nil && t.Type != WorkflowTriggerEvent && t.Type != WorkflowTriggerOptimization {
-		return
-	}
-
 	switch t.Type {
 	case WorkflowTriggerSchedule:
 		cronVal, cronOk := t.Params["cron"]
