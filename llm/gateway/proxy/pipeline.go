@@ -38,6 +38,11 @@ type RequestContext struct {
 	// bypassing the normal per-tenant/operator credential lookup.
 	DirectKey *schemas.Key
 
+	// DirectKeyURLPath, when non-empty, overrides the vLLM lane's request path for the
+	// DirectKey above (set on the Bifrost context by the resolver stage). Used by a
+	// vertex_openai upstream to dial Vertex's `…/endpoints/openapi/chat/completions`.
+	DirectKeyURLPath string
+
 	// Set by the route stage; consumed by metering as the routing decision record.
 	Decision routing.Decision
 

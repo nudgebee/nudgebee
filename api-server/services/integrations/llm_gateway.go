@@ -59,6 +59,11 @@ const (
 	llmGatewayProviderGemini    = "gemini"
 	llmGatewayProviderVertex    = "vertex"
 	llmGatewayProviderBedrock   = "bedrock"
+	// vertex_openai is Vertex AI's OpenAI-compatible ("MaaS" / Model Garden) endpoint. It
+	// shares Vertex's GCP creds (project + region + service-account JSON) but is matched BY
+	// MODEL like `custom` (so it also needs `models`) and routed on the vLLM lane to Vertex's
+	// openapi/chat/completions path. Kept in sync with the gateway resolver's vertex_openai case.
+	llmGatewayProviderVertexOpenAI = "vertex_openai"
 )
 
 func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
@@ -76,8 +81,8 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 			},
 			"provider": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Which provider this credential is for. Choose 'custom' for a self-hosted / OpenAI-compatible endpoint.",
-				Enum:        []any{llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini, llmGatewayProviderVertex, llmGatewayProviderBedrock, llmGatewayProviderCustom},
+				Description: "Which provider this credential is for. Choose 'custom' for a self-hosted / OpenAI-compatible endpoint, or 'vertex_openai' for Vertex AI's OpenAI-compatible (Model Garden / MaaS) endpoint.",
+				Enum:        []any{llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini, llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI, llmGatewayProviderBedrock, llmGatewayProviderCustom},
 				Priority:    8,
 			},
 			"api_key": {
@@ -103,10 +108,10 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 			},
 			"models": {
 				Type:         core.ToolSchemaTypeString,
-				Description:  "Comma-separated model ids this endpoint serves (e.g. Qwen/Qwen3.6-35B-A3B-FP8). A client addresses the model by one of these names.",
+				Description:  "Comma-separated model ids this endpoint serves (e.g. Qwen/Qwen3.6-35B-A3B-FP8, or google/gemma-3-27b-it-maas for Vertex MaaS). A client addresses the model by one of these names.",
 				Priority:     5,
-				ShowWhen:     map[string]any{"provider": llmGatewayProviderCustom},
-				RequiredWhen: map[string]any{"provider": llmGatewayProviderCustom},
+				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderCustom, llmGatewayProviderVertexOpenAI}},
+				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderCustom, llmGatewayProviderVertexOpenAI}},
 			},
 			// Vertex (provider=vertex): structured GCP creds — the endpoint is derived from
 			// project + region, and auth is a service-account JSON. Shown only for vertex; api_key
@@ -115,16 +120,16 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 				Type:         core.ToolSchemaTypeString,
 				Description:  "GCP project ID that hosts the Vertex AI models.",
 				Priority:     4,
-				ShowWhen:     map[string]any{"provider": llmGatewayProviderVertex},
-				RequiredWhen: map[string]any{"provider": llmGatewayProviderVertex},
+				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI}},
+				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI}},
 			},
-			// region is shared by Vertex (a GCP region) and Bedrock (an AWS region).
+			// region is shared by Vertex (a GCP region, or 'global') and Bedrock (an AWS region).
 			"region": {
 				Type:         core.ToolSchemaTypeString,
-				Description:  "Provider region — a GCP region for Vertex (e.g. us-central1) or an AWS region for Bedrock (e.g. us-east-1).",
+				Description:  "Provider region — a GCP region for Vertex (e.g. us-central1, or 'global') or an AWS region for Bedrock (e.g. us-east-1).",
 				Priority:     3,
-				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderBedrock}},
-				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderBedrock}},
+				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI, llmGatewayProviderBedrock}},
+				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI, llmGatewayProviderBedrock}},
 			},
 			"service_account_json": {
 				Type:         core.ToolSchemaTypeString,
@@ -132,8 +137,8 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 				Priority:     2,
 				IsEncrypted:  true, // encrypted at rest + redacted from UI reads
 				Multiline:    true, // it's a multi-line JSON blob
-				ShowWhen:     map[string]any{"provider": llmGatewayProviderVertex},
-				RequiredWhen: map[string]any{"provider": llmGatewayProviderVertex},
+				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI}},
+				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI}},
 			},
 			// Bedrock (provider=bedrock): STATIC AWS creds — a tenant must supply access +
 			// secret together (a keyless config would borrow the pod's IAM role, an
@@ -206,22 +211,25 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 		if cfg["region"] == "" {
 			errs = append(errs, fmt.Errorf("region is required for Vertex (a GCP region, e.g. us-central1)"))
 		}
-		// On EDIT, an unchanged SA JSON arrives as the UI redaction mask or as ciphertext
-		// (is_encrypted) — neither is parseable JSON. Only format-check a freshly-typed
-		// plaintext value; the "required" check still applies in every case.
-		sa, saOpaque := "", false
-		for _, v := range values {
-			if v.Name == "service_account_json" {
-				sa = strings.TrimSpace(v.Value)
-				saOpaque = v.IsEncrypted || isRedactionMask(sa)
-				break
-			}
+		errs = append(errs, vertexServiceAccountErrors(values)...)
+	case llmGatewayProviderVertexOpenAI:
+		// Vertex OpenAI-compatible (MaaS): Vertex's GCP creds PLUS the model ids it serves
+		// (matched by model like custom). region may be a GCP region or 'global'.
+		if cfg["project_id"] == "" {
+			errs = append(errs, fmt.Errorf("project_id is required for Vertex (OpenAI-compatible)"))
 		}
-		if sa == "" {
-			errs = append(errs, fmt.Errorf("service_account_json is required for Vertex"))
-		} else if !saOpaque {
-			if err := validateServiceAccountJSON(sa); err != nil {
-				errs = append(errs, fmt.Errorf("service_account_json %s", err))
+		if cfg["region"] == "" {
+			errs = append(errs, fmt.Errorf("region is required for Vertex (OpenAI-compatible) — a GCP region, e.g. us-central1, or 'global'"))
+		}
+		errs = append(errs, vertexServiceAccountErrors(values)...)
+		if cfg["models"] == "" {
+			errs = append(errs, fmt.Errorf("models is required for Vertex (OpenAI-compatible) — the MaaS model id(s), comma-separated"))
+		} else {
+			for _, part := range strings.Split(cfg["models"], ",") {
+				if strings.TrimSpace(part) == "" {
+					errs = append(errs, fmt.Errorf("models must be a comma-separated list with no empty entries"))
+					break
+				}
 			}
 		}
 	case llmGatewayProviderBedrock:
@@ -240,9 +248,33 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 	case "":
 		errs = append(errs, fmt.Errorf("provider is required"))
 	default:
-		errs = append(errs, fmt.Errorf("unsupported provider %q (expected openai, anthropic, gemini, vertex, bedrock, or custom)", provider))
+		errs = append(errs, fmt.Errorf("unsupported provider %q (expected openai, anthropic, gemini, vertex, vertex_openai, bedrock, or custom)", provider))
 	}
 	return errs
+}
+
+// vertexServiceAccountErrors validates the service_account_json for a Vertex-family provider
+// (vertex and vertex_openai). On EDIT an unchanged value arrives as the UI redaction mask or
+// as ciphertext (is_encrypted) — neither is parseable JSON — so only a freshly-typed
+// plaintext value is format-checked; the "required" check still applies in every case.
+func vertexServiceAccountErrors(values []core.IntegrationConfigValue) []error {
+	sa, saOpaque := "", false
+	for _, v := range values {
+		if v.Name == "service_account_json" {
+			sa = strings.TrimSpace(v.Value)
+			saOpaque = v.IsEncrypted || isRedactionMask(sa)
+			break
+		}
+	}
+	if sa == "" {
+		return []error{fmt.Errorf("service_account_json is required for Vertex")}
+	}
+	if !saOpaque {
+		if err := validateServiceAccountJSON(sa); err != nil {
+			return []error{fmt.Errorf("service_account_json %s", err)}
+		}
+	}
+	return nil
 }
 
 // isRedactionMask reports whether a value is the UI's "secret unchanged" placeholder — a

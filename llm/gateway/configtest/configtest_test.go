@@ -46,6 +46,21 @@ func TestProbe_VertexStructuralOK(t *testing.T) {
 	}
 }
 
+// TestProbe_VertexOpenAIStructuralOK: a well-formed vertex_openai config passes the
+// (structural) probe — project + region + a well-formed SA JSON + models all present.
+func TestProbe_VertexOpenAIStructuralOK(t *testing.T) {
+	cfg := map[string]string{
+		"provider":             "vertex_openai",
+		"project_id":           "p",
+		"region":               "global",
+		"service_account_json": `{"type":"service_account","client_email":"x@y.iam.gserviceaccount.com","private_key":"k"}`,
+		"models":               "google/gemma-3-27b-it-maas",
+	}
+	if err := probe(context.Background(), cfg); err != nil {
+		t.Fatalf("valid vertex_openai config should pass structural probe, got %v", err)
+	}
+}
+
 // TestProbe_BedrockStructuralOK: a well-formed Bedrock config passes the (structural) probe
 // — static access + secret + region all present.
 func TestProbe_BedrockStructuralOK(t *testing.T) {
@@ -92,6 +107,10 @@ func TestProbe_ConfigValidation(t *testing.T) {
 		{"custom private base_url shape ok", map[string]string{"provider": "custom", "base_url": "not a url"}, "valid URL"},
 		{"vertex missing project/region", map[string]string{"provider": "vertex", "service_account_json": `{"client_email":"a","private_key":"b"}`}, "project_id and region"},
 		{"vertex malformed SA JSON", map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": "nope"}, "service_account_json"},
+		{"vertex_openai missing project/region", map[string]string{"provider": "vertex_openai", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m"}, "project_id and region"},
+		{"vertex_openai invalid region", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "US_CENTRAL1", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m"}, "not a valid Vertex location"},
+		{"vertex_openai missing models", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`}, "models is required"},
+		{"vertex_openai empty model entry", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m1,,m2"}, "no empty entries"},
 		{"bedrock missing creds", map[string]string{"provider": "bedrock", "region": "us-east-1"}, "access_key and secret_key"},
 		{"bedrock missing region", map[string]string{"provider": "bedrock", "access_key": "AKIA", "secret_key": "sk"}, "region is required for Bedrock"},
 	}

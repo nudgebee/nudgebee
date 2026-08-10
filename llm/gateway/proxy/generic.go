@@ -54,30 +54,34 @@ func (h *handler) handleChat(c *gin.Context) {
 	identity := auth.FromContext(c)
 
 	requestedModel, streaming := parseBody(body)
-	provider, model, ok := resolveModelProvider(requestedModel)
-	// customKey, when set, is a per-request credential for a tenant's custom OpenAI-
-	// compatible upstream (an llm_gateway integration) — it carries the upstream's base
-	// URL, so it's injected as a DirectKey and the request routes on the vLLM lane.
+	// Resolution order — a tenant's EXPLICITLY-configured upstream wins over the built-in
+	// heuristics. A custom / vertex_openai model (matched by the exact configured id) is
+	// checked FIRST: otherwise a configured MaaS id like "google/gemma-…-maas" would be
+	// hijacked by the "google" → Gemini provider alias and sent to generateContent instead of
+	// the tenant's endpoint. Falling through: a known "provider/model" or bare name, then a
+	// tier alias (e.g. "nb-fast") a routing rule maps to a provider, else a clear 400.
+	// customKey, when set, is that upstream's per-request credential (carries its base URL),
+	// injected as a DirectKey so the request routes on the vLLM lane.
+	var provider schemas.ModelProvider
+	var model string
 	var customKey *schemas.Key
-	if !ok {
-		// Not a "provider/model" or a known bare name — but it may be a tier alias
-		// (e.g. "nb-fast") that a routing rule maps to a provider, or a model served by
-		// one of the tenant's custom upstreams. Adopt that provider as the lane and keep
-		// the model token, so the route stage does the authoritative resolution.
-		if lane, isTier := h.tierLane(identity, requestedModel); isTier {
-			provider, model = lane, requestedModel
-		} else if cp, key, isCustom := resolveCustomProvider(identity.TenantID, requestedModel); isCustom {
-			provider, model = cp, requestedModel
-			customKey = &key
-		} else {
-			msg := `unknown or missing model; address it as "provider/model" (e.g. "anthropic/claude-opus-4-8") or a known model name`
-			if config.Config.TiersEnabled {
-				msg += `, or a tier alias (nb-fast/nb-cheap/nb-smart)`
-			}
-			edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request", msg)
-			h.recordReject(identity, schemas.OpenAI, requestedModel, c.Request.Method, chatCompletionsPath, http.StatusBadRequest, "unknown_model", start)
-			return
+	var customKeyPath string
+	if cp, key, path, isCustom := resolveCustomProvider(identity.TenantID, requestedModel); isCustom {
+		provider, model = cp, requestedModel
+		customKey = &key
+		customKeyPath = path
+	} else if p, m, known := resolveModelProvider(requestedModel); known {
+		provider, model = p, m
+	} else if lane, isTier := h.tierLane(identity, requestedModel); isTier {
+		provider, model = lane, requestedModel
+	} else {
+		msg := `unknown or missing model; address it as "provider/model" (e.g. "anthropic/claude-opus-4-8") or a known model name`
+		if config.Config.TiersEnabled {
+			msg += `, or a tier alias (nb-fast/nb-cheap/nb-smart)`
 		}
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request", msg)
+		h.recordReject(identity, schemas.OpenAI, requestedModel, c.Request.Method, chatCompletionsPath, http.StatusBadRequest, "unknown_model", start)
+		return
 	}
 	bctx, cancel := schemas.NewBifrostContextWithCancel(c.Request.Context())
 
@@ -87,7 +91,7 @@ func (h *handler) handleChat(c *gin.Context) {
 		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,
 		Identity: identity, Provider: provider,
 		Model: model, Path: chatCompletionsPath, Body: body, Streaming: streaming,
-		DirectKey: customKey,
+		DirectKey: customKey, DirectKeyURLPath: customKeyPath,
 	}
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()

@@ -50,22 +50,32 @@ func (h *handler) handleEmbeddings(c *gin.Context) {
 	identity := auth.FromContext(c)
 
 	requestedModel, _ := parseBody(body) // embeddings are never streamed
-	provider, model, ok := resolveModelProvider(requestedModel)
-	// customKey, when set, is a per-request credential for a tenant's custom OpenAI-
-	// compatible upstream carrying its base URL — injected as a DirectKey so the request
-	// routes on the vLLM lane. Tier aliases don't apply to embeddings, so (unlike chat)
-	// there's no tier fallback here.
+	// A tenant's explicitly-configured custom upstream (matched by the exact model id) wins
+	// over the built-in provider-alias heuristic — same precedence as the chat path (see
+	// generic.go). customKey is that upstream's per-request credential (carries its base URL),
+	// injected as a DirectKey so the request routes on the vLLM lane. Tier aliases don't apply
+	// to embeddings, so (unlike chat) there's no tier fallback here.
+	var provider schemas.ModelProvider
+	var model string
 	var customKey *schemas.Key
-	if !ok {
-		if cp, key, isCustom := resolveCustomProvider(identity.TenantID, requestedModel); isCustom {
-			provider, model = cp, requestedModel
-			customKey = &key
-		} else {
+	if cp, key, path, isCustom := resolveCustomProvider(identity.TenantID, requestedModel); isCustom {
+		// A non-empty path override means a vertex_openai upstream, whose path is
+		// chat-completions-specific — embeddings aren't supported for it in this release.
+		if path != "" {
 			edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
-				`unknown or missing model; address it as "provider/model" (e.g. "openai/text-embedding-3-small") or a known model name`)
-			h.recordReject(identity, schemas.OpenAI, requestedModel, c.Request.Method, embeddingsPath, http.StatusBadRequest, "unknown_model", start)
+				"embeddings are not supported for this Vertex (OpenAI-compatible) endpoint")
+			h.recordReject(identity, cp, requestedModel, c.Request.Method, embeddingsPath, http.StatusBadRequest, "unsupported_embeddings", start)
 			return
 		}
+		provider, model = cp, requestedModel
+		customKey = &key
+	} else if p, m, known := resolveModelProvider(requestedModel); known {
+		provider, model = p, m
+	} else {
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
+			`unknown or missing model; address it as "provider/model" (e.g. "openai/text-embedding-3-small") or a known model name`)
+		h.recordReject(identity, schemas.OpenAI, requestedModel, c.Request.Method, embeddingsPath, http.StatusBadRequest, "unknown_model", start)
+		return
 	}
 
 	bctx, cancel := schemas.NewBifrostContextWithCancel(c.Request.Context())

@@ -25,7 +25,7 @@ func TestLLMGateway_ConfigSchema(t *testing.T) {
 	assert.Equal(t, []string{"provider"}, schema.Required)
 
 	// provider is the umbrella selector.
-	assert.Equal(t, []any{"openai", "anthropic", "gemini", "vertex", "bedrock", "custom"}, schema.Properties["provider"].Enum)
+	assert.Equal(t, []any{"openai", "anthropic", "gemini", "vertex", "vertex_openai", "bedrock", "custom"}, schema.Properties["provider"].Enum)
 
 	// api_key is encrypted; required (shows *) for the known providers, optional for custom.
 	assert.True(t, schema.Properties["api_key"].IsEncrypted, "api_key must be encrypted")
@@ -33,21 +33,21 @@ func TestLLMGateway_ConfigSchema(t *testing.T) {
 	// Visible for every provider (incl. custom) — otherwise required_when alone hides it.
 	assert.Equal(t, map[string]any{"provider": []any{"openai", "anthropic", "gemini", "custom"}}, schema.Properties["api_key"].ShowWhen)
 
-	// base_url + models are custom-only (ShowWhen provider=custom).
+	// base_url is custom-only; models is shared by custom + vertex_openai (both matched by model).
 	assert.Equal(t, map[string]any{"provider": "custom"}, schema.Properties["base_url"].ShowWhen)
-	assert.Equal(t, map[string]any{"provider": "custom"}, schema.Properties["models"].ShowWhen)
+	assert.Equal(t, map[string]any{"provider": []any{"custom", "vertex_openai"}}, schema.Properties["models"].ShowWhen)
 
 	// No account binding — the gateway resolves per tenant, not per account.
 	assert.NotContains(t, schema.Properties, "account_id")
 
-	// Vertex structured fields — shown only for vertex; SA JSON encrypted + multiline.
-	assert.Equal(t, map[string]any{"provider": "vertex"}, schema.Properties["project_id"].ShowWhen)
-	assert.Equal(t, map[string]any{"provider": "vertex"}, schema.Properties["service_account_json"].ShowWhen)
+	// Vertex structured fields — shared by vertex + vertex_openai; SA JSON encrypted + multiline.
+	assert.Equal(t, map[string]any{"provider": []any{"vertex", "vertex_openai"}}, schema.Properties["project_id"].ShowWhen)
+	assert.Equal(t, map[string]any{"provider": []any{"vertex", "vertex_openai"}}, schema.Properties["service_account_json"].ShowWhen)
 	assert.True(t, schema.Properties["service_account_json"].IsEncrypted, "SA JSON must be encrypted")
 	assert.True(t, schema.Properties["service_account_json"].Multiline, "SA JSON should render multiline")
 
-	// region is shared by Vertex + Bedrock.
-	assert.Equal(t, map[string]any{"provider": []any{"vertex", "bedrock"}}, schema.Properties["region"].ShowWhen)
+	// region is shared by Vertex, vertex_openai, and Bedrock.
+	assert.Equal(t, map[string]any{"provider": []any{"vertex", "vertex_openai", "bedrock"}}, schema.Properties["region"].ShowWhen)
 
 	// Bedrock structured fields — shown only for bedrock; secret + session encrypted.
 	assert.Equal(t, map[string]any{"provider": "bedrock"}, schema.Properties["access_key"].ShowWhen)
@@ -97,6 +97,20 @@ func TestLLMGateway_ValidateConfig(t *testing.T) {
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": `{"type":"service_account"}`}), ""), "SA JSON missing client_email/private_key must error")
 	// Edit flow: an unchanged SA JSON arrives as the redaction mask — must NOT fail format validation.
 	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "vertex", "project_id": "p", "region": "us-central1", "service_account_json": "*********************************"}), ""), "masked SA JSON must skip format validation")
+
+	// vertex_openai (Vertex OpenAI-compatible / MaaS): Vertex creds + models (matched by model).
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": validSA, "models": "google/gemma-3-27b-it-maas",
+	}), ""), "well-formed vertex_openai config must pass")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": validSA,
+	}), ""), "vertex_openai without models must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "region": "global", "service_account_json": validSA, "models": "m",
+	}), ""), "vertex_openai without project_id must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "us-central1", "models": "m",
+	}), ""), "vertex_openai without service_account_json must error")
 
 	// Bedrock: static access + secret + region.
 	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "bedrock", "access_key": "AKIA", "secret_key": "sk", "region": "us-east-1"}), ""))

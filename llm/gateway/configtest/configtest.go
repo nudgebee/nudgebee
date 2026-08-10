@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -43,6 +44,17 @@ func validateServiceAccountJSON(raw string) error {
 		return fmt.Errorf("does not look like a service-account key (missing client_email/private_key)")
 	}
 	return nil
+}
+
+// vertexRegionRe bounds a Vertex location token to characters that can't smuggle a different
+// host into the constructed aiplatform URL. (Kept in sync with the identical guard in
+// ee/providers/vertexopenai.go, which applies it at request time.)
+var vertexRegionRe = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// validVertexRegion reports whether region is a safe Vertex location token: "global" or a
+// standard regional id (us-central1, europe-west4, …).
+func validVertexRegion(region string) bool {
+	return region == "global" || vertexRegionRe.MatchString(region)
 }
 
 // normalizeBaseURL trims a trailing slash and an optional trailing /v1, so a base URL works
@@ -115,6 +127,36 @@ func probe(ctx context.Context, cfg map[string]string) error {
 		}
 		if err := validateServiceAccountJSON(sa); err != nil {
 			return fmt.Errorf("service_account_json %s", err)
+		}
+		return nil
+	case "vertex_openai":
+		// Vertex AI's OpenAI-compatible ("MaaS") endpoint. Structural validation only (this
+		// cut), mirroring the `vertex` case: confirm project/region and a well-formed
+		// service-account JSON so a truncated/wrong paste is caught here; real connectivity
+		// (and the OAuth token mint from the SA JSON) is proven on the first routed request.
+		if strings.TrimSpace(cfg["project_id"]) == "" || strings.TrimSpace(cfg["region"]) == "" {
+			return fmt.Errorf("project_id and region are required for Vertex (OpenAI-compatible)")
+		}
+		if !validVertexRegion(strings.TrimSpace(cfg["region"])) {
+			return fmt.Errorf("region %q is not a valid Vertex location (e.g. us-central1, or global)", strings.TrimSpace(cfg["region"]))
+		}
+		sa := strings.TrimSpace(cfg["service_account_json"])
+		if sa == "" {
+			return fmt.Errorf("service_account_json is required for Vertex (OpenAI-compatible)")
+		}
+		if err := validateServiceAccountJSON(sa); err != nil {
+			return fmt.Errorf("service_account_json %s", err)
+		}
+		// Mirror ValidateConfig (api-server): require at least one model id and reject empty
+		// entries (e.g. "m1,,m2"), so the probe and the save path agree.
+		if models := strings.TrimSpace(cfg["models"]); models == "" {
+			return fmt.Errorf("models is required for Vertex (OpenAI-compatible) — list the MaaS model id(s), comma-separated")
+		} else {
+			for _, part := range strings.Split(models, ",") {
+				if strings.TrimSpace(part) == "" {
+					return fmt.Errorf("models must be a comma-separated list with no empty entries")
+				}
+			}
 		}
 		return nil
 	case "bedrock":
