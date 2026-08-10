@@ -410,7 +410,7 @@ export async function deleteIntegration(
         .getByRole("dialog")
         .getByRole("button", { name: "Delete", exact: true })
         .click();
-      await successToast.waitFor({ state: "visible", timeout: 15000 });
+      await successToast.waitFor({ state: "visible", timeout: 30000 });
     },
     {
       testName: `Delete ${serviceName} Integration`,

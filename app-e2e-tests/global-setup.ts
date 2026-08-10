@@ -26,10 +26,15 @@ async function globalSetup(_config: FullConfig) {
       const context = await browser.newContext({ baseURL: process.env.BASE_URL });
       const page = await context.newPage();
       try {
-        // Skip cluster selection here: the session cookie is all we persist, and
-        // the cluster is in-memory state each test re-selects. Selecting it in
-        // this one-shot setup would turn a flaky dropdown into a suite failure.
-        await new LoginPage(page).doFullLogin({ selectCluster: false });
+        // Select the cluster here too. ClusterDropDown persists the choice to
+        // localStorage (`nudgebee.userPreferences.last_account`) and restores it
+        // on mount, so it rides along in the saved storageState and every test
+        // starts on the right cluster without driving the dropdown itself. The
+        // retry loop around this call covers the dropdown's flakiness.
+        //
+        // force: this is the run that resolves and records the tenant, so it must
+        // switch for real rather than trusting a tenant recorded by an earlier run.
+        await new LoginPage(page).doFullLogin({ selectCluster: true, force: true });
 
         mkdirSync(path.dirname(AUTH_STATE_PATH), { recursive: true });
         await context.storageState({ path: AUTH_STATE_PATH });

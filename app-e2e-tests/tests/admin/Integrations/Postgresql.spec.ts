@@ -1,108 +1,54 @@
 import { test } from "@playwright/test";
 import {
-  navigateToDatabaseTab,
-  testConnection,
-  saveAndHandleAlreadyExists,
-  isIntegrationPresent,
-  deleteIntegration,
-  disableIntegration,
-  enableIntegration,
-} from "./util";
+  checkPostgresIntegrationExists,
+  deletePostgresIntegration,
+  addPostgresIntegration,
+  disablePostgresIntegration,
+  enablePostgresIntegration,
+} from "./postgresHelper";
 
-const requiredEnv = ["POSTGRES_NAME", "POSTGRES_SECRET"];
+// Each test is one step from postgresHelper. The same steps are re-used by
+// journeys that walk several areas of the app in a single login — see
+// tests/journeys/PostgresIntegrationNubi.spec.ts.
+
+// CLUSTER is required too: the Add step picks the account by that name, and
+// without it the form silently receives undefined rather than skipping.
+const requiredEnv = ["POSTGRES_NAME", "POSTGRES_SECRET", "CLUSTER"];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
-const configName = process.env.POSTGRES_NAME!;
+const configName = process.env.POSTGRES_NAME ?? "";
 
 test.describe.serial("Postgresql Account Integration", () => {
   let integrationExists = false;
 
-  test("Check if Postgresql integration exists", async ({ page }) => {
+  test.beforeEach(() => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
     );
-    const locators = await navigateToDatabaseTab(page);
-    integrationExists = await isIntegrationPresent(page, {
-      openList: async () => {
-        await locators.postgresqlBtn.click();
-      },
-      configName,
-      serviceName: "Postgresql",
-      statusFilterId: "postgres-status-filter",
-    });
+  });
+
+  test("Check if Postgresql integration exists", async ({ page }) => {
+    integrationExists = await checkPostgresIntegrationExists(page, configName);
   });
 
   test("Delete Postgresql integration if present", async ({ page }) => {
-    test.skip(
-      missingEnv.length > 0,
-      `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
-    );
     test.skip(!integrationExists, "Postgresql integration not present — nothing to delete");
-    const locators = await navigateToDatabaseTab(page);
-    await deleteIntegration(page, {
-      openList: async () => {
-        await locators.postgresqlBtn.click();
-      },
-      configName,
-      serviceName: "Postgresql",
-      statusFilterId: "postgres-status-filter",
-    });
+    await deletePostgresIntegration(page, configName);
   });
 
   test("Add Postgresql Account Integration", async ({ page }) => {
-    test.skip(
-      missingEnv.length > 0,
-      `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
-    );
-    const locators = await navigateToDatabaseTab(page);
-
-    await locators.postgresqlBtn.click();
-    await locators.addPostgresqlAccountBtn.click();
-
-    await locators.postgresqlConfigNameInput.fill(configName);
-    await locators.postgresqlAccountIdDropdown.click();
-    await locators.postgresqlAccountIdOption(process.env.CLUSTER!).first().click();
-    await locators.postgresqlAccountIdDropdown.press("Escape");
-    await locators.postgresqlK8sSecretInput.fill(process.env.POSTGRES_SECRET!);
-
-    await testConnection(page, {
-      testConnectionBtn: locators.postgresqlTestConnectionBtn,
-      successToast: locators.postgresqlTestConnectionSuccessToast,
-      serviceName: "Postgresql",
-      saveBtn: locators.saveBtn,
-      operationNames: ["TestIntegrationConnectionConfig"],
-      checkDataErrors: true,
-    });
-
-    await saveAndHandleAlreadyExists(page, {
-      saveBtn: locators.saveBtn,
-      successToast: locators.postgresqlSuccessToast,
-      testName: "Add Postgresql Account Integration",
-      operationNames: ["AddIntegrations"],
+    await addPostgresIntegration(page, {
+      configName,
+      secret: process.env.POSTGRES_SECRET ?? "",
+      cluster: process.env.CLUSTER ?? "",
     });
   });
 
   test("Disable Postgresql integration", async ({ page }) => {
-    test.skip(
-      missingEnv.length > 0,
-      `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
-    );
-    const locators = await navigateToDatabaseTab(page);
-    await locators.postgresqlBtn.click();
-    await disableIntegration(page, { configName, serviceName: "Postgresql" });
+    await disablePostgresIntegration(page, configName);
   });
 
   test("Enable Postgresql integration", async ({ page }) => {
-    test.skip(
-      missingEnv.length > 0,
-      `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
-    );
-    const locators = await navigateToDatabaseTab(page);
-    await locators.postgresqlBtn.click();
-    await enableIntegration(page, {
-      configName,
-      serviceName: "Postgresql",
-      statusFilterId: "postgres-status-filter",
-    });
+    await enablePostgresIntegration(page, configName);
   });
 });

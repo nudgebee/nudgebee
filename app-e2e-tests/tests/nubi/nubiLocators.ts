@@ -96,8 +96,14 @@ export class NubiLocators {
       .getByRole("button", { name: "Ask nubi" })
       .or(page.locator('img[alt="Ask nubi"]'));
     this.newChatBtn = page.locator('img[src*="plus-icon"]');
-    this.chatTextbox = page.getByPlaceholder(
-      "Ask me about troubleshooting, error logs, resource usage, or optimizations.");
+    // The same chat renders with two different placeholders: the long one on the
+    // full /ask-nudgebee page, and "Ask a question..." when Nubi is opened as the
+    // floating panel (KubernetesLLMResponseGeneratorV2 keys it off `popup`).
+    // Match either, so a caller does not have to know which mode it landed in.
+    this.chatTextbox = page
+      .getByPlaceholder("Ask me about troubleshooting, error logs, resource usage, or optimizations.")
+      .or(page.getByPlaceholder("Ask a question..."))
+      .first();
     this.submitBtn = page.locator('#set-config-btn')
     // Create Custom Agent Locators
     this.settingsBtn = page.getByRole('button', { name: 'Settings', exact: true });
