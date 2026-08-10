@@ -753,12 +753,11 @@ func suggestLabels(unknown, available []string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 	for _, u := range unknown {
-		lu := strings.ToLower(u)
-		for _, a := range available {
-			la := strings.ToLower(a)
-			if !strings.Contains(la, lu) && !strings.Contains(lu, la) {
-				continue
-			}
+		// Same matcher the value suggestions use (shared tokens OR typo distance OR
+		// substring). Plain substring containment only caught truncations — a mid-word
+		// deletion or transposition ("k8s_deploymnt_name") scored nothing and the caller
+		// got an unknown-label error with no correction to act on.
+		for _, a := range closestValues(u, available) {
 			if _, ok := seen[a]; ok {
 				continue
 			}
