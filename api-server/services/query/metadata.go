@@ -9798,40 +9798,46 @@ func init() {
 		if v.Type == Aggregate || v.Type == Derived {
 			continue
 		}
-		tableDef := v
+		// Scoped to its own function so the deferred close runs at the end of THIS
+		// iteration. Deferring directly in the loop body stacks every cursor until
+		// init() returns, and the MapScan `break` below leaves the cursor undrained
+		// — so database/sql does not auto-close it either, pinning one warehouse
+		// connection per scan-error table for the rest of init().
+		func() {
+			tableDef := v
 
-		rows, err := warehouse.Db.Queryx("select name, type from system.columns where table = ? and database = ? ", v.Def, config.Config.ClickhouseDatabase)
-		if err != nil {
-			slog.Error("unable to query warehouse connector", "error", err, "table", k)
-			continue
-		}
-		defer func() {
-			err := rows.Close()
+			rows, err := warehouse.Db.Queryx("select name, type from system.columns where table = ? and database = ? ", v.Def, config.Config.ClickhouseDatabase)
 			if err != nil {
-				slog.Error("query: unable to close rows", "error", err)
+				slog.Error("unable to query warehouse connector", "error", err, "table", k)
+				return
 			}
-		}()
+			defer func() {
+				if err := rows.Close(); err != nil {
+					slog.Error("query: unable to close rows", "error", err, "table", k)
+				}
+			}()
 
-		columnDefs := tableDef.Columns
-		for rows.Next() {
-			var row = make(map[string]any)
-			err = rows.MapScan(row)
-			if err != nil {
-				slog.Error("unable to scan rows", "error", err, "table", k)
-				break
-			}
-			columnName := row["name"].(string)
-			columnType := getColumnTypeFromClickhouseType(row["type"].(string))
-			if _, ok := columnDefs[columnName]; !ok {
-				columnDefs[columnName] = ColumnDefinition{
-					IsAggregated: false,
-					Type:         ColumnDefinitionType(columnType),
-					Def:          columnName,
+			columnDefs := tableDef.Columns
+			for rows.Next() {
+				var row = make(map[string]any)
+				err = rows.MapScan(row)
+				if err != nil {
+					slog.Error("unable to scan rows", "error", err, "table", k)
+					break
+				}
+				columnName := row["name"].(string)
+				columnType := getColumnTypeFromClickhouseType(row["type"].(string))
+				if _, ok := columnDefs[columnName]; !ok {
+					columnDefs[columnName] = ColumnDefinition{
+						IsAggregated: false,
+						Type:         ColumnDefinitionType(columnType),
+						Def:          columnName,
+					}
 				}
 			}
-		}
-		slog.Info("updating table definition", "table", k, "columns", columnDefs)
-		tableDef.Columns = columnDefs
-		table_metadata[k] = tableDef
+			slog.Info("updating table definition", "table", k, "columns", columnDefs)
+			tableDef.Columns = columnDefs
+			table_metadata[k] = tableDef
+		}()
 	}
 }
