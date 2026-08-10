@@ -598,8 +598,10 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   }, [installedPlatforms]);
 
   // Google Chat destinations are bound spaces (service-account model), independent
-  // of any MessagingPlatform install — load once on mount.
+  // of any MessagingPlatform install — fetch on every open since the list is
+  // cleared on close and the modal stays mounted between opens.
   useEffect(() => {
+    if (!open) return;
     setLoadingChannelList((prev) => ({ ...prev, google_chat: true }));
     apiAccount
       .getNotificationChannelList('google_chat')
@@ -610,7 +612,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
       .finally(() => {
         setLoadingChannelList((prev) => ({ ...prev, google_chat: false }));
       });
-  }, []);
+  }, [open]);
 
   const fetchCluster = (notificationRuleObject: any) => {
     getClustersData();
