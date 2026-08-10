@@ -3762,6 +3762,13 @@ actions:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/product_updates'
       forward_client_headers: true
+      # The platform changelog is the same list for everyone — it has no tenant
+      # or account dimension (the handler reads an embedded/remote JSON file and
+      # never touches tenant data). Available to every signed-in user, so the
+      # gateway's role gate is skipped and the `product` module is not grantable
+      # (see NON_GRANTABLE_MODULES in permissionCatalog.ts). The role list below
+      # is kept as documentation of who used to reach it.
+      tenant_agnostic: true
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN

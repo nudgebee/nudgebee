@@ -35,6 +35,9 @@ describe('permissionCatalog', () => {
     'auth_delete_session',
     // nudgebee: build-info read, nothing to administer.
     'nudgebee_list_versions',
+    // product: the platform changelog. `tenant_agnostic: true` makes it
+    // reachable by every signed-in user, so there is no grant to offer.
+    'product_updates_list',
     // signup: pre-auth onboarding, server-side only. These carry no
     // `permissions:` block, so no built-in role can invoke them via the gateway
     // — a custom grant must not be able to either.
@@ -117,9 +120,25 @@ describe('permissionCatalog', () => {
 
   it('keeps non-grantable modules out of the catalog', () => {
     const modules = new Set(buildCatalog(ACTION_NAMES).map((e) => e.module));
-    for (const m of ['auth', 'nudgebee', 'relay', 'signup', 'userauths']) {
+    for (const m of ['auth', 'nudgebee', 'product', 'relay', 'signup', 'userauths']) {
       expect(modules.has(m)).toBe(false);
     }
+  });
+
+  // Feature flags are tenant settings, not their own domain. The reads every
+  // role has to make land on tenants:Read; the one write must NOT — folding a
+  // mutation into a Read grant would let a read-only role toggle flags.
+  it('folds the featureflags module into tenants, keeping the write on tenants:Write', () => {
+    expect(classifyAction('featureflags_list')).toEqual({ module: 'tenants', class: 'Read' });
+    expect(classifyAction('features_list')).toEqual({ module: 'tenants', class: 'Read' });
+    expect(classifyAction('featureflag_upsert')).toEqual({ module: 'tenants', class: 'Write' });
+    expect(new Set(buildCatalog(ACTION_NAMES).map((e) => e.module)).has('featureflags')).toBe(false);
+  });
+
+  // The platform changelog is available to every signed-in user via
+  // `tenant_agnostic: true`, so there is no grant to hand out for it.
+  it('makes the product module non-grantable', () => {
+    expect(classifyAction('product_updates_list')).toBeNull();
   });
 
   // resource_* and cloud_* are one cloud-resource domain (both read
@@ -141,7 +160,6 @@ describe('permissionCatalog', () => {
 
   it('normalizes singular/plural modules consistently', () => {
     expect(normalizeModule('notification')).toBe('notifications');
-    expect(normalizeModule('featureflag')).toBe('featureflags');
     expect(normalizeModule('tenant')).toBe('tenants');
     expect(normalizeModule('integration')).toBe('integrations');
     expect(normalizeModule('application')).toBe('applications');
@@ -151,7 +169,6 @@ describe('permissionCatalog', () => {
     expect(classifyAction('workflows_create_schedule')).toEqual({ module: 'workflows', class: 'Write' });
     expect(classifyAction('accounts_list')).toEqual({ module: 'accounts', class: 'Read' });
     expect(classifyAction('anomaly_execute')).toEqual({ module: 'anomalies', class: 'Execute' });
-    expect(classifyAction('featureflag_upsert')).toEqual({ module: 'featureflags', class: 'Write' });
     // MODULE_OVERRIDES re-homes channel↔account mapping under messagingplatforms.
     expect(classifyAction('notification_channel_mapping_create')).toEqual({ module: 'messagingplatforms', class: 'Write' });
     expect(classifyAction('notification_channel_account_mapping_v2')).toEqual({ module: 'messagingplatforms', class: 'Read' });

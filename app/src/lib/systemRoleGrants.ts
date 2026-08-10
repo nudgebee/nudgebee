@@ -60,9 +60,11 @@ export const SYSTEM_ROLE_LABELS: Record<string, string> = {
 // tenant_admin (which keeps them purely for faithful UI display; its CanManage
 // already passes via IsTenantAdmin, independent of the grant). Keep this set in
 // lockstep with the CanManage call sites in api-server/services/tenant/service.go.
+// `featureflags:Write` used to be listed here; the featureflags module is gone
+// (its actions fold into `tenants`) and UpsertFeatureFlags now gates on
+// CanManage("tenants","Write"), which is already covered by the first entry.
 const CANMANAGE_GATED = new Set<string>([
   'tenants:Write',
-  'featureflags:Write',
   'integrations:Write',
   'notifications:Write',
   'messagingplatforms:Write',

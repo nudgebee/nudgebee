@@ -5,7 +5,7 @@ import "strings"
 // Tenant config is delegable, privilege is not.
 //
 // UpsertTenantAttributes and UpsertFeatureFlags are gated by CanManage, so a
-// dynamic-RBAC `tenants:Write` / `featureflags:Write` grant reaches them — that
+// dynamic-RBAC `tenants:Write` grant reaches both of them — that
 // is the point: a tenant admin can hand tenant configuration to someone who is
 // not an admin. But a handful of the keys those two handlers write are not
 // configuration at all; they govern billing or authorization. Delegating "set

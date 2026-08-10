@@ -864,23 +864,23 @@ func (s *Server) handleSaveConfig(c *gin.Context, sc *security.RequestContext, a
 		return
 	}
 
-	// Empty account_id means tenant-level. Writing tenant-level rows requires
-	// tenant-admin (or super-admin); account-level writes require write access
-	// to that specific account.
-	if accountID == "" {
-		if !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeUpdate) {
+	// Empty account_id means tenant-level (config.AccountID nil), otherwise the
+	// write is scoped to that account. configAccountScope resolves both the scope
+	// and the write verdict, and accepts a dynamic-RBAC config:Write grant on top
+	// of the built-in tenant/account write roles — the same rule the get/list/
+	// delete handlers already use. This handler used to run its own role-only
+	// check, so a pure config:Write holder was 401'd here after the read path had
+	// already served them the rows they were editing.
+	scopedAccountID, _, hasWrite := configAccountScope(sc, args)
+	if !hasWrite {
+		if accountID == "" {
 			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{errors.New("unauthorized to save tenant-level config")}))
-			return
-		}
-		config.AccountID = nil
-	} else {
-		if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) {
+		} else {
 			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{errors.New("unauthorized to save config")}))
-			return
 		}
-		acc := accountID
-		config.AccountID = &acc
+		return
 	}
+	config.AccountID = scopedAccountID
 
 	config.TenantID = sc.GetSecurityContext().GetTenantId()
 	config.UpdatedBy = sc.GetSecurityContext().GetUserId()

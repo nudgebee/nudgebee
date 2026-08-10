@@ -9343,7 +9343,12 @@ var table_metadata = map[string]TableDefinition{
 		Def:                 "feature_flag",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
-		PermissionModule:    "featureflags",
+		// Feature flags are tenant settings — the standalone `featureflags` module
+		// was folded into `tenants`. Keep in lockstep with MODULE_ALIASES in
+		// app/src/lib/permissionCatalog.ts: featureflags_list classifies as
+		// tenants:Read at the gateway, so the query engine must accept the same
+		// grant or the call clears the gateway and 403s here.
+		PermissionModule: "tenants",
 		// Tenant-wide feature flags (account_id IS NULL) must be readable by
 		// account-scoped users; otherwise b-Cortex tabs show "not enabled for
 		// your tenant" for Account Admin/Readonly roles (#34510).

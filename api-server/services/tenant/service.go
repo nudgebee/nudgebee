@@ -1542,13 +1542,17 @@ func DeleteTenantAttributes(ctx *security.RequestContext, request TenantAttribut
 }
 
 func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertRequest) (FeatureFlagUpsertResponse, error) {
-	if !ctx.GetSecurityContext().CanManage("featureflags", "Write") {
+	// Feature flags are tenant settings: the standalone `featureflags` module was
+	// folded into `tenants`, so this write is governed by tenants:Write — the same
+	// grant that already covers UpsertTenantAttributes. Keep in lockstep with
+	// MODULE_ALIASES in app/src/lib/permissionCatalog.ts.
+	if !ctx.GetSecurityContext().CanManage("tenants", "Write") {
 		return FeatureFlagUpsertResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	// A few flags govern authorization rather than product behavior — notably
 	// RBAC_K8S and CUSTOM_ROLES, the latter being the switch for the grant
 	// mechanism doing the checking here (see privileged_config.go). Those stay
-	// tenant-admin-only however broad the caller's featureflags grant is.
+	// tenant-admin-only however broad the caller's tenants grant is.
 	if !ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin() {
 		for _, f := range request.Features {
 			if isPrivilegedFeatureFlag(f.FeatureId) {

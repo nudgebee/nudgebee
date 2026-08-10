@@ -55,8 +55,12 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOpti
   // Add/Edit/Delete: a built-in write role, or a dynamic-RBAC config:Write grant.
   // config:Read deliberately does NOT unlock these — it is read-only.
   const canEdit = hasWriteAccess(accountId) || hasPermission('config', 'Write');
-  // Only tenant_admin can view or write tenant-scoped configs.
-  const canAccessTenantScope = isTenantAdmin();
+  // Tenant scope: a built-in tenant admin, or a dynamic-RBAC config grant.
+  // Mirrors runbook-server's canReadTenantConfigs — Write implies Read there,
+  // so a config:Write holder must see the Tenant (shared) view too. Without
+  // this a pure custom-role holder got the account-only toggle even though the
+  // backend would have served them tenant rows.
+  const canAccessTenantScope = isTenantAdmin() || hasPermission('config', 'Read') || hasPermission('config', 'Write');
   const [configs, setConfigs] = useState<Config[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [editFormOpen, setEditFormOpen] = useState<boolean>(false);

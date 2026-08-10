@@ -22,9 +22,10 @@ export type RpcRoute = {
   // actions.yaml `tenant_agnostic: true`. The action authorizes on the
   // authenticated user's identity alone, not on a role within the active
   // tenant, so the gateway skips BOTH the no-tenant-role and the role gate
-  // for it. Reserved for identity-scoped, cross-tenant actions (e.g.
-  // `users_list_tenants`) that a roleless user must still reach to recover —
-  // see the gate in forwardAction (rpcGateway.ts).
+  // for it. Reserved for actions that carry no tenant-scoped data: the
+  // identity-scoped ones a roleless user must reach to recover (e.g.
+  // `users_list_tenants`) and the platform-wide reads every signed-in user gets
+  // (e.g. `product_updates_list`) — see the gate in forwardAction (rpcGateway.ts).
   tenantAgnostic: boolean;
   // Per-action upstream headers from actions.yaml `headers:` block.
   // Each entry maps a header name to an env-var name; the gateway looks up

@@ -93,8 +93,17 @@ const MODULE_ALIASES: Record<string, string> = {
   application: 'applications',
   audit: 'audits',
   event: 'events',
-  featureflag: 'featureflags',
-  features: 'featureflags',
+  // Feature flags are tenant settings, not a domain of their own. Their two
+  // reads (featureflags_list, features_list) are app-bootstrap calls EVERY role
+  // has to make to render feature-gated UI, so a separate `featureflags:Read`
+  // checkbox was a grant an admin could only ever get wrong; the one write
+  // (featureflag_upsert) is a Tenant Settings mutation. Folded into `tenants` —
+  // the class still derives from the verb, so the reads land on tenants:Read and
+  // the upsert on tenants:Write, NOT on Read. Keep in lockstep with
+  // feature_flag_v2's PermissionModule (api-server/services/query/metadata.go).
+  featureflag: 'tenants',
+  featureflags: 'tenants',
+  features: 'tenants',
   integration: 'integrations',
   log: 'logs',
   metric: 'metrics',
@@ -179,6 +188,12 @@ const MODULE_OVERRIDES: Record<string, string> = {
 // gateway gate all derive from classifyAction.
 //
 //   nudgebee  — nudgebee_list_versions, a build-info read; nothing to administer.
+//   product   — product_updates_list, the platform changelog behind the "What's
+//               New" drawer. It carries no tenant or account dimension and every
+//               signed-in user is meant to see it, so it is declared
+//               `tenant_agnostic: true` in actions.yaml and skips the gateway
+//               gate entirely. A grantable `product:Read` checkbox on top of
+//               that would have been a no-op an admin could still fail to tick.
 //   signup    — pre-auth tenant-onboarding flow, driven server-side from
 //               pages/api/auth/signup*.ts. Its actions carry NO `permissions:`
 //               block on purpose, so route.allowedRoles is empty and no built-in
@@ -220,7 +235,7 @@ const MODULE_OVERRIDES: Record<string, string> = {
 //               HasScopedPermission). Keeping `relay` here means a NEW relay action
 //               is non-grantable until it too is explicitly re-homed. Built-in roles
 //               are unaffected — they pass via actions.yaml `permissions:`.
-const NON_GRANTABLE_MODULES = new Set<string>(['auth', 'nudgebee', 'relay', 'roles', 'signup', 'userauths', 'userroles']);
+const NON_GRANTABLE_MODULES = new Set<string>(['auth', 'nudgebee', 'product', 'relay', 'roles', 'signup', 'userauths', 'userroles']);
 
 // Individual actions that are never grantable, even though their module is.
 // Same fail-closed mechanism as NON_GRANTABLE_MODULES, keyed by raw action name
@@ -301,7 +316,6 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   integrations: 'tenant',
   notifications: 'tenant',
   messagingplatforms: 'tenant',
-  featureflags: 'tenant',
   config: 'tenant',
   audits: 'tenant',
   webhook: 'tenant',
@@ -321,8 +335,6 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   // scoped grant fails closed). Filing it under 'tenant' is what stops an admin
   // binding it to a group+account and believing it took effect.
   llm: 'tenant',
-  // product_updates_list is the platform changelog — no account dimension.
-  product: 'tenant',
   // Per-account / per-cluster operational data.
   accounts: 'account',
   aws: 'account',

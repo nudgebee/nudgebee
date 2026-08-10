@@ -3,7 +3,7 @@ package tenant
 import "testing"
 
 // The escalation these guards close: UpsertTenantAttributes / UpsertFeatureFlags
-// are CanManage-gated, so a `tenants:Write` / `featureflags:Write` custom grant
+// are CanManage-gated, so a `tenants:Write` custom grant
 // reaches them. Without the denylist that grant also carried "switch off
 // entitlement metering" and "switch off K8s RBAC / dynamic RBAC itself".
 func TestPrivilegedTenantAttributes(t *testing.T) {
@@ -31,7 +31,7 @@ func TestPrivilegedFeatureFlags(t *testing.T) {
 	}
 	for _, id := range []string{FEATURE_ANOMALY_DETECTION, FEATURE_VERTICAL_RIGHTSIZING, ""} {
 		if isPrivilegedFeatureFlag(id) {
-			t.Errorf("%q is a product flag and must stay toggleable by a featureflags:Write grant", id)
+			t.Errorf("%q is a product flag and must stay toggleable by a tenants:Write grant", id)
 		}
 	}
 }

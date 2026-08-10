@@ -297,13 +297,15 @@ func TestAccountScopableModulesPinned(t *testing.T) {
 		"audits":             true,
 		"cloud":              true,
 		"events":             true,
-		"featureflags":       true,
 		"insights":           true,
 		"k8s":                true,
 		"messagingplatforms": true,
 		"notifications":      true,
 		"recommendations":    true,
-		"tickets":            true,
+		// feature_flag_v2 carries account_id and now maps to the `tenants` module
+		// (the standalone featureflags module was folded in).
+		"tenants": true,
+		"tickets": true,
 	}
 	assert.Equal(t, want, got, "account-scopable module set changed — sync app/src/lib/permissionCatalog.ts ACCOUNT_SCOPABLE_MODULES")
 }
