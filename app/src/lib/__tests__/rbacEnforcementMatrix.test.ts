@@ -17,7 +17,7 @@ jest.mock('next-auth/jwt', () => ({ getToken: jest.fn() }));
 jest.mock('@lib/internal', () => ({ decodeSessionJWT: jest.fn(), decrypt: jest.fn() }));
 jest.mock('@lib/sessionRevocation', () => ({ isSessionRevoked: jest.fn() }));
 
-import { actionHasCustomGrant, ACCOUNT_ENFORCED_ACTIONS } from '@lib/rpcGateway';
+import { actionHasCustomGrant, forwardAction, ACCOUNT_ENFORCED_ACTIONS } from '@lib/rpcGateway';
 import { loadRpcRoutes, type RpcRoute } from '@lib/rpcRoutes';
 import { buildCatalog, classifyAction, type PermissionClass } from '@lib/permissionCatalog';
 import { deriveSystemRoleGrants, DERIVED_SYSTEM_ROLE_KEYS } from '@lib/systemRoleGrants';
@@ -327,5 +327,55 @@ describe('RBAC enforcement matrix — classifier stability', () => {
   it('only ever emits Read | Write | Execute', () => {
     const bad = grantable.filter((n) => !CLASSES.includes(classOf(routes[n].permission!)));
     expect(bad).toEqual([]);
+  });
+});
+
+// Which denial a caller gets is not cosmetic: `no_tenant_role` tells them to
+// switch tenants, which is unactionable — and wrong — for someone who has access
+// and merely cannot perform one privileged operation. Both branches return before
+// any upstream fetch, so this needs no network.
+describe('RBAC enforcement matrix — denial kind', () => {
+  const sessionVariables = (roles: string[], permissions: string[]) => ({
+    role: roles[0] || 'tenant_admin_readonly',
+    allowed_roles: roles,
+    permissions,
+    user_id: 'u1',
+    tenant_id: 't1',
+  });
+
+  const forward = (method: string, roles: string[], permissions: string[]) =>
+    forwardAction({
+      method,
+      params: {},
+      sessionVariables: sessionVariables(roles, permissions),
+      tenantId: 't1',
+      userId: 'u1',
+      traceparent: '',
+      requestId: 'r1',
+    });
+
+  it('reports no_tenant_role only when the caller holds neither a role nor any grant', async () => {
+    const r = await forward('userroles_upsert_group', [], []);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error.kind).toBe('no_tenant_role');
+  });
+
+  it('reports forbidden — not no_tenant_role — for a grants-only caller on a non-grantable action', async () => {
+    // The reported case: a usergroups:Write holder assigning a tenant role to a
+    // group. userroles_* is privilege administration and non-grantable, so the
+    // denial is correct; telling them to switch tenants was not.
+    const r = await forward('userroles_upsert_group', [], ['usergroups:Read', 'usergroups:Write']);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error.kind).toBe('forbidden');
+  });
+
+  it('does not name a role the grants-only caller never held', async () => {
+    const r = await forward('userroles_upsert_group', [], ['usergroups:Write']);
+    expect(!r.ok && r.error.kind === 'forbidden' && r.error.role).toBe('');
+  });
+
+  it('still names the real role when the caller holds a built-in one', async () => {
+    const r = await forward('userroles_upsert_group', ['account_admin'], []);
+    expect(!r.ok && r.error.kind === 'forbidden' && r.error.role).toBe('account_admin');
   });
 });

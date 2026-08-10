@@ -8,6 +8,7 @@ import { signOut } from 'next-auth/react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { renderSlot } from '@lib/slots';
+import { userManagementFilters } from '@lib/authHooks';
 
 // Internal Imports
 import { LayoutHeaderActionSlot } from '@shared/layout/LayoutHeaderActionSlot';
@@ -468,6 +469,23 @@ const PageLayout = ({ children }) => {
             icon: IntegrationsIcon,
           },
           { text: 'Ownership', path: '/user-management#ownership', id: 'sidenav-admin-ownership', module: 'ownership', icon: UserGroupIcon },
+          // Admin sections registered by extensions (Roles & Permissions, Billing)
+          // rather than hardcoded above. Read from the SAME registry the
+          // /user-management page builds its tabs from, in the same order, so the
+          // flyout cannot drift from the tab list — the Roles tab had existed for
+          // a while with no way to reach it from the sidebar.
+          //
+          // No `module` is set on purpose: these self-gate via their own
+          // shouldShow(session) and are HIDDEN when it fails, whereas the base
+          // sections above always exist and render disabled-with-a-tooltip. Roles
+          // has no meaningful disabled state — a tenant without the CUSTOM_ROLES
+          // feature has nothing to administer there at all.
+          ...userManagementFilters(session).map((f) => ({
+            text: f.name,
+            path: `/user-management#${f.fragment}`,
+            id: `sidenav-admin-${f.fragment}`,
+            icon: f.icon,
+          })),
         ],
       });
     }

@@ -1033,6 +1033,18 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   // SaaS-tier tenants, so a non-SaaS tenant's search shouldn't offer it either
   // (canAccessAdmin alone isn't enough — that only checks nav-level admin access).
   const canAccessBilling = data?.tier === 'saas';
+  // Same gate the Roles tab's own registration uses (RolePermissions.jsx's
+  // shouldShow): the CUSTOM_ROLES feature must be on, and the user must hold a
+  // tenant-wide role or the delegated customroles:Read grant. canAccessAdmin
+  // alone isn't enough — it only checks nav-level admin access, so an Audits-only
+  // reviewer would otherwise get a row leading to a tab that isn't there.
+  const canAccessRoles = !!(
+    data?.customRolesEnabled &&
+    (data?.roles?.includes('tenant_admin') ||
+      data?.roles?.includes('tenant_admin_readonly') ||
+      data?.isSuperAdmin ||
+      data?.permissions?.includes('customroles:Read'))
+  );
   // Same two gates optimise/index.jsx's own LLM Analyser/AI Gateway tabs use:
   // isUiFeatureEnabled reads the deployment's UI_ENABLE_LLM_ANALYSER/
   // UI_ENABLE_LLM_GATEWAY env vars off the session (per-deployment, not a
@@ -1074,6 +1086,9 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       if (opt.label === 'Billing' && !canAccessBilling) {
         return false;
       }
+      if (opt.label === 'Roles' && !canAccessRoles) {
+        return false;
+      }
       if (opt.label === 'LLM Analyser' && !canAccessLlmAnalyser) {
         return false;
       }
@@ -1082,7 +1097,7 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       }
       return true;
     },
-    [canAccessAdmin, canAccessTaskRunner, canAccessBilling, canAccessLlmAnalyser, canAccessAiGateway]
+    [canAccessAdmin, canAccessTaskRunner, canAccessBilling, canAccessRoles, canAccessLlmAnalyser, canAccessAiGateway]
   );
 
   const accountScopedNavItems = useMemo(

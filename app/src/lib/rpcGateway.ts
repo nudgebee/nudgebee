@@ -356,12 +356,19 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   // caller's own username, so skipping the role gate doesn't widen tenant-scoped
   // data access. super_admin bypasses both gates too.
   if (!isSuperAdmin && !route.tenantAgnostic) {
-    // No roles at all → the user has no assignment in the active tenant. Report
-    // that as its own error rather than a `forbidden` that would falsely name
-    // `tenant_admin_readonly` (buildSessionVariables' fallback role label, not a
-    // real role the user holds). A user who holds a matching custom grant is not
-    // role-less for this action, so let it through.
-    if (allowedRoles.length === 0 && !hasPermission) {
+    // No roles AND no grants at all → the user genuinely has no assignment in
+    // the active tenant. Report that as its own error rather than a `forbidden`
+    // that would falsely name `tenant_admin_readonly` (buildSessionVariables'
+    // fallback role label, not a real role the user holds).
+    //
+    // Keyed on holding NO grants, not on lacking a grant for THIS action. A pure
+    // custom-role user who calls a non-grantable action (privilege administration
+    // like userroles_upsert_group, signup, session plumbing) holds no built-in
+    // role and no matching grant, so the old condition told them to "switch to a
+    // tenant where you have access" — advice that is both wrong and unactionable
+    // for someone who has access and simply cannot perform this one operation.
+    // They fall through to `forbidden` below, which says so.
+    if (allowedRoles.length === 0 && permissions.length === 0) {
       return { ok: false, error: { kind: 'no_tenant_role', method: opts.method } };
     }
     const hasAllowedRole = allowedRoles.some((r) => route.allowedRoles.has(r));
@@ -371,7 +378,11 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
         error: {
           kind: 'forbidden',
           method: opts.method,
-          role,
+          // Blank for a grants-only caller: `role` is buildSessionVariables'
+          // 'tenant_admin_readonly' fallback label, not a role they hold, and
+          // naming it in the denial sends them chasing a role they never had.
+          // forwardErrorMessage words the message around the action instead.
+          role: allowedRoles.length > 0 ? role : '',
           allowedRoles: [...route.allowedRoles],
         },
       };
@@ -747,7 +758,7 @@ function forwardErrorMessage(err: ForwardError): string {
     case 'no_tenant_role':
       return NO_TENANT_ROLE_MESSAGE;
     case 'forbidden':
-      return `Role '${err.role}' is not permitted to invoke '${err.method}'`;
+      return err.role ? `Role '${err.role}' is not permitted to invoke '${err.method}'` : `Your permissions do not allow '${err.method}'`;
     case 'upstream_unreachable':
       console.error(`[graphql-gateway] upstream_unreachable method=${err.method} url=${err.url} detail=${err.detail}`);
       return `Upstream unreachable for ${err.method}`;

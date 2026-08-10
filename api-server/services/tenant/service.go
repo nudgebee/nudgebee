@@ -1190,7 +1190,10 @@ func UpsertK8sAccountNamespaceGroupRole(ctx *security.RequestContext, request Ac
 
 func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequest) (ManageGroupUsersResponse, error) {
 	ctx.GetLogger().Info("manage group users", "request", slog.AnyValue(request))
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	// tenant_admin or a usergroups:Write grant. The privilege check that keeps the
+	// grant from being an escalation runs after the tenant-membership check below,
+	// once we know the group is real and belongs to this tenant.
+	if !canAdministerUserGroups(ctx.GetSecurityContext()) {
 		return ManageGroupUsersResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 
@@ -1213,6 +1216,20 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 	err = groupRow.MapScan(groupCount)
 	if err != nil || groupCount["count"].(int64) == 0 {
 		return ManageGroupUsersResponse{}, common.ErrorUnauthorized("Group not found in tenant")
+	}
+
+	// Membership of a group that carries a tenant-wide role or a custom role
+	// stays tenant-admin-only: every member inherits that group's authority, so
+	// a usergroups:Write holder could otherwise add themselves to an admin group
+	// and elevate. Ordinary groups remain delegable. See authz_usergroups.go.
+	if !mayChangePrivilegedGroupMembership(ctx.GetSecurityContext()) {
+		privileged, err := groupConfersPrivilege(manager, ctx.GetSecurityContext().GetTenantId(), request.GroupId)
+		if err != nil {
+			return ManageGroupUsersResponse{}, common.ErrorInternal("Error validating group privileges")
+		}
+		if privileged {
+			return ManageGroupUsersResponse{}, common.ErrorUnauthorized("Changing membership of a group that carries a role requires a tenant admin")
+		}
 	}
 
 	// resolve add_usernames to user_ids — batch query instead of per-username lookup
@@ -1633,7 +1650,9 @@ func pgUniqueViolation(err error) bool {
 }
 
 func CreateUserGroup(ctx *security.RequestContext, request UserGroupCreateRequest) (UserGroupCreateResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	// tenant_admin or a usergroups:Write grant — see authz_usergroups.go. A new
+	// group carries no roles, so creating one confers nothing on its own.
+	if !canAdministerUserGroups(ctx.GetSecurityContext()) {
 		return UserGroupCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1674,7 +1693,10 @@ func CreateUserGroup(ctx *security.RequestContext, request UserGroupCreateReques
 }
 
 func UpdateUserGroup(ctx *security.RequestContext, request UserGroupUpdateRequest) (UserGroupUpdateResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	// tenant_admin or a usergroups:Write grant — see authz_usergroups.go. This
+	// writes the group's name/description only; roles and membership are separate
+	// actions with their own gates.
+	if !canAdministerUserGroups(ctx.GetSecurityContext()) {
 		return UserGroupUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)

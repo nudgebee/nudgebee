@@ -1,4 +1,4 @@
-import { gqlStringify, queryGraphQL } from './HttpService';
+import { gqlStringify, queryGraphQL, unwrapGraphQL } from './HttpService';
 import cache from './cache';
 import { safeJSONParse } from 'src/utils/common';
 
@@ -600,12 +600,14 @@ export async function createUserGroup(name: string, desc: string) {
     name: name,
     description: desc,
   });
-  if (response.data.errors) {
-    return response.data;
-  }
-
+  // Throw rather than return the error envelope. Returning it made a failed
+  // create indistinguishable from a successful one to the caller: GroupModal
+  // read `result?.data?.data?.id`, got undefined without an exception, reported
+  // "Group added successfully", then called usergroups_update_members with
+  // group_id undefined — surfacing an authorization failure as the gateway's
+  // `missing_required_variable:$group_id`.
   return {
-    data: response.data.data.usergroup_create,
+    data: unwrapGraphQL(response, 'Failed to create group')?.usergroup_create,
   };
 }
 

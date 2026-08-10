@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Box } from '@mui/material';
 import { writeIcon } from '@assets';
@@ -88,6 +88,7 @@ const AllUsers = () => {
     setAddUserModalVisible(false);
     if (updated) {
       fetchUsers();
+      fetchCustomRoles();
     }
   };
 
@@ -171,7 +172,12 @@ const AllUsers = () => {
   // holder and 400s tenant-wide when CUSTOM_ROLES is off. The Role column is an
   // enrichment, so a failure here must leave the built-in role rendering rather
   // than break the page.
-  useEffect(() => {
+  // Re-run after any user write, not just on mount: the Role column is derived
+  // from each role's `user_ids`, which the Edit User modal changes via the
+  // role-side replace-all assignment API. Refetching only the users left a
+  // custom role the admin had just unassigned rendering in the column until a
+  // full page reload.
+  const fetchCustomRoles = useCallback(() => {
     if (!canReadCustomRoles()) {
       return;
     }
@@ -181,6 +187,10 @@ const AllUsers = () => {
         console.error('Failed to load custom roles for the users list:', err);
       });
   }, []);
+
+  useEffect(() => {
+    fetchCustomRoles();
+  }, [fetchCustomRoles]);
 
   // user id → names of the custom roles assigned directly to them. Group-derived
   // custom roles are deliberately NOT folded in: they belong to the group and
@@ -255,6 +265,7 @@ const AllUsers = () => {
     setEditUserModalVisible(false);
     if (updated) {
       fetchUsers();
+      fetchCustomRoles();
     }
   };
 

@@ -133,6 +133,13 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Notifications', path: '/user-management#notifications' },
   { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
   { group: 'Admin', label: 'Ownership', path: '/user-management#ownership' },
+  // Registered dynamically via registerUserManagementFilter in
+  // src/ee/components/user-management/RolePermissions.jsx, not a static
+  // baseFilters entry. Gated in search by GlobalPageSearch.jsx's own
+  // canAccessRoles check, mirroring that registration's shouldShow — the tab
+  // is absent for a tenant without the CUSTOM_ROLES feature, so a search row
+  // leading to it would dead-end.
+  { group: 'Admin', label: 'Roles', path: '/user-management#roles' },
   // SaaS-tier only — registered dynamically via registerUserManagementFilter
   // in src/ee/components/billingFilter.tsx (shouldShow: tier === 'saas'),
   // not a static baseFilters entry in user-management/index.jsx. Gated in

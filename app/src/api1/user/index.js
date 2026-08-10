@@ -443,11 +443,12 @@ const apiUser = {
       return err;
     }
   },
+  // Pass createUserGroup's `{ data: <created group> }` straight through. It used
+  // to be re-wrapped as `{ data: { data: ... } }`, which forced the single caller
+  // to read `result.data.data.id` — correct, but it reads like a bug and was
+  // reported as one in review. The extra level carried no information.
   addUserGroup: async function (group, desc) {
-    let response = await createUserGroup(group, desc);
-    return {
-      data: response,
-    };
+    return createUserGroup(group, desc);
   },
   listIntegrationAccounts: async function (userId) {
     try {

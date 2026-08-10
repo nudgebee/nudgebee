@@ -17,7 +17,7 @@ import { Label } from '@ui/Label';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
 import CustomTable from '@shared/tables/CustomTable';
-import { hasWriteAccess, canManage } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import { action } from 'src/utils/actionStyles';
 import { ds } from 'src/utils/colors';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -246,7 +246,12 @@ const ListIntegrations = ({ integrationName }) => {
   };
 
   const getMenuItems = (item) => {
-    if (!hasWriteAccess()) return [];
+    // Same gate as the Add-integration button below (canManage('integrations',
+    // 'Write')). It used to be a bare hasWriteAccess(), which only consults the
+    // built-in roles: a pure custom-role holder with integrations:Write could
+    // add an integration but got an empty row menu — no Edit, Enable/Disable or
+    // Delete on the thing they had just created.
+    if (!canManage('integrations', 'Write')) return [];
     const status = item.status || 'enabled';
     const items = [];
     if (item?.source === 'agent' && agentManagedIntegrations.includes(integrationName)) {

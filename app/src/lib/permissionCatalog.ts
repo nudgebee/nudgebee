@@ -200,9 +200,15 @@ const MODULE_OVERRIDES: Record<string, string> = {
 //               Deliberately NARROWER than "all identity modules": `users` stays
 //               grantable because `users:Write` is a supported delegation (profile
 //               edits + user creation via canAdministerUsers), with the privilege
-//               half carved out by mayAssignTenantRole. `usergroups` stays
-//               classifiable but is inert — every one of its handlers is
-//               IsTenantAdmin()-only. `customroles` stays grantable at READ only;
+//               half carved out by mayAssignTenantRole. `usergroups` is the same
+//               shape: usergroup_create / usergroup_update /
+//               usergroups_update_members gate on CanManage("usergroups","Write")
+//               (api-server/services/tenant/authz_usergroups.go), with the
+//               privilege half carved out by mayChangePrivilegedGroupMembership —
+//               a grant holder cannot change membership of a group carrying a
+//               tenant-wide or custom role, which is how they would otherwise mint
+//               themselves an admin. Assigning a role TO a group stays here in the
+//               non-grantable `userroles` module. `customroles` stays grantable at READ only;
 //               its write actions are excluded by name (NON_GRANTABLE_ACTIONS).
 //   roles      — the read-only built-in role catalog shares the privilege-admin
 //               surface; nothing here is meant to be delegated.

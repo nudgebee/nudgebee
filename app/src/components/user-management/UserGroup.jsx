@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import apiUserManagement from '@api1/user';
 import CustomTable from '@shared/tables/CustomTable2';
 import { Box, Typography, List, ListItem, ListItemText } from '@mui/material';
@@ -52,6 +52,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
     setActiveGroupData(null);
     if (shouldUpdate) {
       fetchUserGroups();
+      fetchCustomRoles();
     }
   };
 
@@ -76,7 +77,10 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
   // usergroups:Read holder and 400s tenant-wide when CUSTOM_ROLES is off, and
   // this column is an enrichment — it must not turn either into an error for a
   // page that otherwise works. Failure leaves the built-in roles rendering.
-  useEffect(() => {
+  // Re-run after any group write, not just on mount: the custom-role column is
+  // derived from each role's `group_ids`, which the group modal changes via the
+  // role-side replace-all assignment API. See the same fix in AllUsers.
+  const fetchCustomRoles = useCallback(() => {
     if (!canReadCustomRoles()) {
       return;
     }
@@ -86,6 +90,10 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
         console.error('Failed to load custom roles for the groups list:', err);
       });
   }, []);
+
+  useEffect(() => {
+    fetchCustomRoles();
+  }, [fetchCustomRoles]);
 
   useEffect(() => {
     fetchUserGroups();

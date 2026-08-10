@@ -14,7 +14,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import PropTypes from 'prop-types';
 import { Button } from '@ui/Button';
 import { Modal } from '@ui/Modal';
-import { canManage, isCustomRolesEnabled } from '@lib/auth';
+import { canManage, isCustomRolesEnabled, isTenantAdmin } from '@lib/auth';
 import { textValidation } from '@lib/validation';
 import { ds } from 'src/utils/colors';
 import { DeleteIconRed as DeleteIcon, modalerror, AWSIcon, AzureIcon, GCPIcon, ouK8s as KubernetesIcon } from '@assets';
@@ -242,6 +242,12 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   const [userRemoved, setUserRemoved] = useState(new Set());
   const [rbacType, setRbacType] = useState('tenant');
   const [groupRole, setGroupRole] = useState('');
+  // Group administration (name, description, membership) is delegable via a
+  // usergroups:Write grant; handing out authority THROUGH a group is not. Mirrors
+  // the backend: userroles_upsert_group and the customroles assignment actions are
+  // non-grantable, and mayChangePrivilegedGroupMembership keeps a grant holder off
+  // the membership of any group that already carries a role.
+  const canAssignGroupRoles = isTenantAdmin();
   const [accountOptions, setAccountOptions] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [showSelectedAccounts, setShowSelectedAccounts] = useState([]);
@@ -579,7 +585,15 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     let groupId;
     try {
       const result = await apiUserManagement.addUserGroup(groupNameValue, groupDescValue);
-      groupId = result?.data?.data?.id;
+      groupId = result?.data?.id;
+      // A create that resolves without an id is a failure we can't act on —
+      // treat it as one rather than proceeding to the member call with an
+      // undefined group_id, which the gateway rejects as a missing required
+      // variable and which reads as a member-attach problem on a group that
+      // was never created.
+      if (!groupId) {
+        throw new Error('Group was not created');
+      }
     } catch (error) {
       console.error('Error creating group:', error);
       handleSnackBarData({ message: error?.message || 'An error occurred', severity: 'error', icon: modalerror.default.src });
@@ -1037,6 +1051,15 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                     multiple
                     id='group-tenant-role'
                     placeholder='Select role(s)'
+                    // Assigning a role to a group is privilege administration: every
+                    // member inherits it, so it stays tenant-admin-only on both write
+                    // paths (userroles_upsert_group and the customroles assignment
+                    // actions are in non-grantable modules, and SyncUserRoles re-checks).
+                    // A usergroups:Write holder can administer the group but not hand
+                    // out authority through it — without this the picker looked usable
+                    // and every save 403'd.
+                    disabled={!canAssignGroupRoles}
+                    instructionText={canAssignGroupRoles ? undefined : 'Only a tenant admin can assign roles to a group.'}
                     value={[...(groupRole ? [groupRole] : []), ...selectedCustomRoles]}
                     onChange={(next) => {
                       // One merged picker: the tenant built-in role (single — carries data
@@ -1084,6 +1107,12 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                         options={[...ACCOUNT_ROLE_OPTIONS, ...customRolesList.map((r) => ({ value: r.id, label: r.name }))]}
                         onChange={(next) => setSelectedAccountRole(next)}
                         placeholder='Select role'
+                        // Same rule as the tenant tab: binding a role to a group is
+                        // privilege administration whatever the scope, and both write
+                        // paths (userroles_upsert_account_group, the customroles
+                        // account-assignment action) are non-grantable.
+                        disabled={!canAssignGroupRoles}
+                        instructionText={canAssignGroupRoles ? undefined : 'Only a tenant admin can assign roles to a group.'}
                         minWidth='100%'
                       />
                     </Box>
@@ -1125,7 +1154,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                           setSelectedAccounts([]);
                           setSelectedAccountRole('');
                         }}
-                        disabled={selectedAccounts.length === 0 || !selectedAccountRole}
+                        disabled={!canAssignGroupRoles || selectedAccounts.length === 0 || !selectedAccountRole}
                       >
                         Add
                       </Button>
