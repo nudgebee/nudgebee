@@ -4365,6 +4365,19 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
       - role: tenant_admin
+  - name: security_scan_vm
+    comment: Trigger an on-demand VM package inventory + vulnerability scan
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/recommendation'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
   - name: slo_config_create
     comment: Create an SLO configuration
     definition:
@@ -6869,6 +6882,7 @@ custom_types:
     - name: QueryWhereBooleanRequest
     - name: DisableAlertRule
     - name: security_scan_image_input
+    - name: security_scan_vm_input
     - name: tenant_user_roles_upsert_one_input
     - name: tenant_group_roles_upsert_one_input
     - name: account_user_roles_upsert_one_input
@@ -7305,6 +7319,7 @@ custom_types:
     - name: AlertRuleResponse
     - name: auto_optimize_recommendation_output
     - name: security_scan_image_output
+    - name: security_scan_vm_output
     - name: tenant_user_roles_upsert_one_output
     - name: tenant_group_roles_upsert_one_output
     - name: account_user_roles_upsert_one_output

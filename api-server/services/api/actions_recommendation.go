@@ -7,6 +7,7 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/recommendation"
 	"nudgebee/services/scan_orchestrator"
+	"nudgebee/services/vmpackage"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -106,6 +107,57 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 		}
 
 		resp, err := recommendation.ScanImage(ctx, request)
+		defer func() {
+			err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}})
+			if err != nil {
+				ctx.GetLogger().Error("failed to create audit event", "error", err)
+			}
+		}()
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			auditEvent.EventStatus = audit.EventStatusFailure
+			return
+		}
+
+		c.JSON(200, resp)
+		return
+	case "security_scan_vm":
+		var request vmpackage.ScanRequest
+		var err error
+		if mlRequest["object"] == nil {
+			err = common.UnmarshalMapToStruct(mlRequest, &request)
+		} else {
+			err = common.UnmarshalMapToStruct(mlRequest["object"].(map[string]interface{}), &request)
+		}
+
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		auditEvent := audit.Audit{
+			UserId:         ctx.GetSecurityContext().GetUserId(),
+			TenantId:       ctx.GetSecurityContext().GetTenantId(),
+			AccountId:      request.AccountId,
+			EventTime:      time.Now().UTC(),
+			EventCategory:  audit.EventCategoryRecommendation,
+			EventTarget:    request.CloudResourceId,
+			EventType:      audit.EventTypeRecommendationApply,
+			EventState:     request,
+			EventPrevState: nil,
+			EventActor:     audit.EventActorUiService,
+			EventAction:    audit.EventActionCreate,
+			EventStatus:    audit.EventStatusSuccess,
+			EventAttr:      map[string]any{},
+		}
+
+		resp, err := vmpackage.ScanPackages(ctx, request)
 		defer func() {
 			err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}})
 			if err != nil {

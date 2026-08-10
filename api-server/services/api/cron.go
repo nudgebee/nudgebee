@@ -29,6 +29,8 @@ import (
 	"nudgebee/services/traces"
 	"nudgebee/services/triage"
 	"nudgebee/services/user"
+	"nudgebee/services/vmpackage"
+	vmqueue "nudgebee/services/vmpackage/queue"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -630,6 +632,35 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				}
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
+		case "VM Vulnerability Scan":
+			// Job management is RabbitMQ-based: this handler only lists
+			// discovery-type integrations and publishes one message per
+			// integration (fast, no relay calls) — the actual sweep ->
+			// inventory -> vuln-match -> persist work happens in
+			// vmpackage/queue's consumer, decoupled from this HTTP request.
+			dbManager, err := database.GetDatabaseManager(database.Metastore)
+			if err != nil {
+				ctx.GetLogger().Error("cron: failed to get database manager", "error", err)
+				c.JSON(500, gin.H{"status": "error", "message": "Failed to initialize database"})
+				return
+			}
+			datasources, err := vmpackage.ListDiscoveryDatasources(dbManager)
+			if err != nil {
+				ctx.GetLogger().Error("cron: failed to list discovery datasources", "error", err)
+				c.JSON(500, gin.H{"status": "error", "message": "Failed to list discovery datasources"})
+				return
+			}
+			queued, failed := 0, 0
+			for _, ds := range datasources {
+				if err := vmqueue.PublishVMScan(ctx.GetContext(), ds.IntegrationID, ds.TenantID, ds.AccountID, "cron"); err != nil {
+					ctx.GetLogger().Error("cron: failed to publish vm scan", "integration_id", ds.IntegrationID, "error", err)
+					failed++
+					continue
+				}
+				queued++
+			}
+			ctx.GetLogger().Info("cron: vm vulnerability scan queued", "queued", queued, "failed", failed)
+			c.JSON(200, gin.H{"status": "ok", "queued": queued, "failed": failed})
 		default:
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "rpc_cron", "invalid_cron_job")
 			c.JSON(400, common.ErrorActionBadRequest("Invalid cron job"))

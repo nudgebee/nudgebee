@@ -1797,6 +1797,12 @@ type Mutation {
 }
 
 type Mutation {
+  security_scan_vm(
+    object: security_scan_vm_input!
+  ): security_scan_vm_output
+}
+
+type Mutation {
   slo_config_create(
     request: SLOCreateRequest!
   ): SLOResponse
@@ -3260,6 +3266,12 @@ input security_scan_image_input {
   account_id: String!
   workload: String!
   namespace: String!
+}
+
+input security_scan_vm_input {
+  account_id: String!
+  datasource_id: String!
+  cloud_resource_id: String!
 }
 
 input tenant_user_roles_upsert_one_input {
@@ -6648,6 +6660,10 @@ type auto_optimize_recommendation_output {
 }
 
 type security_scan_image_output {
+  data: [jsonb]!
+}
+
+type security_scan_vm_output {
   data: [jsonb]!
 }
 

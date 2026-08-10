@@ -95,6 +95,8 @@ type appConfig struct {
 	RelayServerEndpoint  string `mapstructure:"relay_server_endpoint"`
 	RelayServerSecretKey string `mapstructure:"relay_server_secret_key"`
 
+	VulnMatcherServerEndpoint string `mapstructure:"vuln_matcher_server_endpoint"`
+
 	OtelServiceName          string `mapstructure:"otel_service_name"`
 	OtelExporterOtlpEndpoint string `mapstructure:"otel_exporter_otlp_endpoint"`
 
@@ -265,6 +267,11 @@ type appConfig struct {
 	RabbitMqEventPostProcessQueue       string `mapstructure:"rabbit_mq_event_post_process_queue"`
 	RabbitMqEventPostProcessConcurrency int    `mapstructure:"rabbit_mq_event_post_process_concurrency"`
 
+	// VM discovery/vulnerability scan queue configuration
+	RabbitMqVMScanExchange    string `mapstructure:"rabbit_mq_vm_scan_exchange"`
+	RabbitMqVMScanQueue       string `mapstructure:"rabbit_mq_vm_scan_queue"`
+	RabbitMqVMScanConcurrency int    `mapstructure:"rabbit_mq_vm_scan_concurrency"`
+
 	// Webhook async processing queue configuration
 	RabbitMqWebhookProcessExchange    string `mapstructure:"rabbit_mq_webhook_process_exchange"`
 	RabbitMqWebhookProcessQueue       string `mapstructure:"rabbit_mq_webhook_process_queue"`
@@ -366,6 +373,8 @@ func init() {
 
 	viper.SetDefault("relay_server_endpoint", "http://localhost:52832")
 	viper.SetDefault("relay_server_secret_key", "")
+
+	viper.SetDefault("vuln_matcher_server_endpoint", "http://vuln-matcher-server:8080")
 
 	viper.SetDefault("git_commit_nudgebee_user", "Nudgebee Bot")
 	viper.SetDefault("git_commit_nudgebee_user_email", "")
@@ -471,6 +480,11 @@ func init() {
 	viper.SetDefault("rabbit_mq_event_post_process_exchange", "event_post_process_exchange")
 	viper.SetDefault("rabbit_mq_event_post_process_queue", "event_post_process")
 	viper.SetDefault("rabbit_mq_event_post_process_concurrency", 5)
+
+	// VM discovery/vulnerability scan queue configuration
+	viper.SetDefault("rabbit_mq_vm_scan_exchange", "vm_scan_exchange")
+	viper.SetDefault("rabbit_mq_vm_scan_queue", "vm_scan")
+	viper.SetDefault("rabbit_mq_vm_scan_concurrency", 4)
 
 	// Webhook async processing queue configuration
 	viper.SetDefault("rabbit_mq_webhook_process_exchange", "webhook_process_exchange")
