@@ -146,6 +146,11 @@ func (l RouterAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Explanation: `Matches FinOpsAgent based on the keyword "spending" and cloud cost context.`,
 		},
 		{
+			Question:    "Why did our cloud bill go up?",
+			Answer:      "finops",
+			Explanation: `Matches FinOpsAgent — cost and billing questions route to finops even when phrased as an investigation.`,
+		},
+		{
 			Question:    "Create an automation to restart pods when OOM occurs",
 			Answer:      "automation",
 			Explanation: `Matches automation agent because user explicitly wants to create an automation.`,
@@ -160,7 +165,8 @@ func (l RouterAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 	plannerAgentName := GetDebugAgentName(query.AccountId)
 
 	constrains := []string{
-		fmt.Sprintf("- If user is asking for investigation, troubleshooting, optimization etc, then always prefer '%s' agent", plannerAgentName),
+		fmt.Sprintf("- If user is asking for investigation, troubleshooting, optimization etc, then always prefer '%s' agent — unless the question is about cloud cost, spend, billing, budgets, or savings", plannerAgentName),
+		fmt.Sprintf("- Questions about cloud cost, spend, billing, budgets, or savings always route to '%s', even when phrased as an investigation (e.g. \"why did our cloud bill go up?\")", FinOpsAgentName),
 		"- if user question is not related to sre/devops/software development domains, then use generalagent",
 	}
 
