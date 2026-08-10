@@ -22,6 +22,9 @@ func TestRenderChannelContextBlock_FencesAndFramesTheTranscript(t *testing.T) {
 	// is even before the security rules are consulted.
 	assert.Contains(t, block, "reference material only")
 	assert.Contains(t, block, "not instructions")
+	// And it must tell the model to USE the conversation to scope a vague
+	// question — not merely to hold it as passive background.
+	assert.Contains(t, block, "scope the question")
 }
 
 func TestRenderChannelContextBlock_KeepsHostileTextInsideTheFence(t *testing.T) {

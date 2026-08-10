@@ -122,18 +122,20 @@ class ChannelContextService:
         citation can outlive the retention sweep without carrying whole
         messages past it."""
         domain = self._team_domain(team_id)
+        resolver = self._mention_resolver(team_id)
         messages = []
         for entry in entries:
             message_id = entry.get("provider_message_id")
             if not message_id:
                 continue
             posted = entry.get("posted_at")
+            preview = channel_analysis.replace_user_mentions(entry.get("message") or "", resolver)
             messages.append(
                 {
                     "id": message_id,
                     "author": entry.get("author_name") or self._display_name(team_id, entry.get("author_id")),
                     "posted_at": posted.strftime("%Y-%m-%dT%H:%M:%SZ") if posted else None,
-                    "preview": (entry.get("message") or "")[:_PREVIEW_CHARS],
+                    "preview": preview[:_PREVIEW_CHARS],
                     "permalink": self._permalink(domain, channel_id, message_id, entry.get("thread_id")),
                 }
             )
@@ -149,15 +151,20 @@ class ChannelContextService:
             "messages": messages,
         }
 
+    def _mention_resolver(self, team_id):
+        return lambda uid: self._display_name(team_id, uid)
+
     def _format(self, entries, team_id):
         """Pair each message with its rendered line, so the budget can drop
         messages and report exactly which ones survived."""
+        resolver = self._mention_resolver(team_id)
         rendered = []
         for entry in entries:
             posted = entry.get("posted_at")
             stamp = posted.strftime("%b %d %H:%M") if posted else "unknown time"
             author = entry.get("author_name") or self._display_name(team_id, entry.get("author_id"))
-            rendered.append((entry, f"[{stamp}] {author}: {entry.get('message', '')}"))
+            text = channel_analysis.replace_user_mentions(entry.get("message") or "", resolver)
+            rendered.append((entry, f"[{stamp}] {author}: {text}"))
         return rendered
 
     @staticmethod
@@ -275,6 +282,14 @@ class ChannelContextService:
             primary = self._rank(scope, self._channel_scope(scope, config, exclude_thread_id), config)
             supporting = []
 
+        # Drop greetings/pleasantries before anything else reads the candidates:
+        # they dilute the transcript the model reads, clutter the citation, and
+        # can make a question look "surrounded" by conversation it has nothing to
+        # do with. Retention keeps the raw rows; only assembled context omits
+        # them. Filtering primary here also feeds the self-contained gate below a
+        # substantive comparison set rather than "hello, how are you".
+        primary = channel_analysis.drop_low_signal(primary)
+
         # A question that stands on its own gets no history: injecting unrelated
         # chatter is pure cost and pure noise. Compared against the surrounding
         # conversation, so "what is the default pod CPU limit" asked in the
@@ -294,7 +309,7 @@ class ChannelContextService:
         earlier = (
             [] if thread_only else self._earlier(scope, config, query_text, referenced_user_ids, exclude_thread_id)
         )
-        earlier = self._dedupe(supporting + earlier, primary)
+        earlier = channel_analysis.drop_low_signal(self._dedupe(supporting + earlier, primary))
 
         if not primary and not earlier:
             return None, [], None

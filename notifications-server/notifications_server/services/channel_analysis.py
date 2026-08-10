@@ -78,6 +78,18 @@ _STOPWORDS = frozenset(
 _WORD_PATTERN = re.compile(r"[a-z0-9][a-z0-9'_-]*")
 
 
+# Content words that carry no investigative signal — pure social pleasantries.
+# A message whose content words are all in here (or empty after stopwords) is
+# greeting/small-talk, kept out of assembled context and citations. Deliberately
+# narrow: only words that are noise in an ops channel, never a system or verb a
+# real question would use.
+_PLEASANTRY_WORDS = frozenset(
+    """hello hey heya hiya howdy yo sup morning afternoon evening night thanks thank thankyou thx cheers
+    welcome greetings please doing today things going alright okay fine good well day cool awesome nice
+    great sure yeah yep yup nope hows whats gday""".split()
+)
+
+
 def _content_words(text):
     return {word for word in _WORD_PATTERN.findall((text or "").lower()) if word not in _STOPWORDS and len(word) > 2}
 
@@ -86,6 +98,46 @@ def strip_user_mentions(text):
     """Drop <@U123> tokens. The bot's own mention is not part of the question,
     and leaving ids in skews both the deictic gate and topic overlap."""
     return _USER_MENTION_PATTERN.sub(" ", text or "")
+
+
+def replace_user_mentions(text, resolver):
+    """Rewrite each ``<@Uxxx>`` as ``@<resolver(id)>`` so a transcript line or
+    citation preview reads as prose instead of a raw Slack id. ``resolver`` maps
+    a user id to a display name (no leading @). Used for injected context, not
+    the deictic/overlap gates — those keep stripping ids via strip_user_mentions.
+    A resolver returning None or raising falls back to the raw id, so a bad
+    lookup never yields "@None" or crashes the caller."""
+    if not text:
+        return text
+
+    def _sub(match):
+        uid = match.group(1)
+        try:
+            name = resolver(uid)
+        except Exception:
+            name = None
+        return "@" + (name or uid)
+
+    return _USER_MENTION_PATTERN.sub(_sub, text)
+
+
+def is_low_signal(text):
+    """True for a content-free social message (greeting, pleasantry, "how are
+    things today"). Such messages add nothing to an investigation and only
+    dilute the context and clutter citations, so assembly drops them.
+
+    A message is low-signal only when NOTHING meaningful survives removing
+    stopwords and pleasantries. Deliberately does not apply _content_words'
+    length>2 filter: short resource names ("db", "s3", "lb", "vm", "mq") must
+    keep their status message, so "db is not good" stays (db survives) even
+    though every other word is a stopword or pleasantry."""
+    tokens = _WORD_PATTERN.findall(strip_user_mentions(text).lower())
+    return not any(token not in _STOPWORDS and token not in _PLEASANTRY_WORDS for token in tokens)
+
+
+def drop_low_signal(entries):
+    """Filter low-signal messages out of a candidate list, preserving order."""
+    return [entry for entry in entries if not is_low_signal(entry.get("message"))]
 
 
 def detect_overrides(mention_text):

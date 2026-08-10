@@ -288,7 +288,10 @@ class TestAuthorNameResolution:
         monkeypatch.setattr(cc.cache, "get_cached_user_name", lambda team, uid: cached.get(uid))
         monkeypatch.setattr(cc.cache, "cache_user_name", lambda team, uid, name, **kw: cached.__setitem__(uid, name))
         svc.common_service = type("CS", (), {"get_slack_user_display_name": staticmethod(resolve)})()
-        _stub(monkeypatch, recent=[_row("a", i, author=None, author_id="U9", mid=f"m{i}") for i in range(5)])
+        _stub(
+            monkeypatch,
+            recent=[_row(f"workload issue {i} seen", i, author=None, author_id="U9", mid=f"m{i}") for i in range(5)],
+        )
 
         svc.build("t1", "T1", "C1", query_text="what about it")
 
@@ -300,17 +303,17 @@ class TestAuthorNameResolution:
         monkeypatch.setattr(cc.cache, "get_cached_user_name", lambda team, uid: cached.get(uid))
         monkeypatch.setattr(cc.cache, "cache_user_name", lambda team, uid, name, **k: cached.setdefault(uid, name))
         svc.common_service = type("CS", (), {"get_slack_user_display_name": staticmethod(lambda t, u: "Priya")})()
-        _stub(monkeypatch, recent=[_row("hello", 1, author=None, author_id="U9")])
+        _stub(monkeypatch, recent=[_row("ticket server down", 1, author=None, author_id="U9")])
 
         block, _, _ = svc.build("t1", "T1", "C1", query_text="what about it")
 
-        assert "Priya: hello" in block
+        assert "Priya: ticket server down" in block
         assert cached["U9"] == "Priya"
 
     def test_an_unresolvable_author_falls_back_to_the_raw_id(self, svc, monkeypatch):
-        _stub(monkeypatch, recent=[_row("hello", 1, author=None, author_id="U9")])
+        _stub(monkeypatch, recent=[_row("ticket server down", 1, author=None, author_id="U9")])
         block, _, _ = svc.build("t1", "T1", "C1", query_text="what about it")
-        assert "U9: hello" in block
+        assert "U9: ticket server down" in block
 
 
 class TestPerChannelOverrides:

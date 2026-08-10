@@ -93,3 +93,74 @@ class TestTags:
 
     def test_strip_user_mentions_removes_ids(self):
         assert "U1" not in ca.strip_user_mentions("<@U1> what broke?")
+
+
+class TestLowSignal:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "hello, how are you?",
+            "how are you doing today?",
+            "how are things today?",
+            "<@U05NY2LD3A8> hey",
+            "thanks!",
+            "good morning",
+        ],
+    )
+    def test_pleasantries_are_low_signal(self, text):
+        assert ca.is_low_signal(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Seems like issue with ticket server",
+            "there is some issue with deployment name app-dev",
+            "<@U05NY2LD3A8> how is infra today? any issues?",
+            "can you check workload issues?",
+        ],
+    )
+    def test_messages_naming_a_problem_are_kept(self, text):
+        assert not ca.is_low_signal(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "db is not good",
+            "s3 is doing fine",
+            "lb doing well today",
+            "mq down",
+        ],
+    )
+    def test_short_resource_names_survive_casual_phrasing(self, text):
+        # Two-letter service names ("db", "s3", "lb", "mq") must not be filtered
+        # out just because the rest of the message is casual — a status message
+        # about them is real signal.
+        assert not ca.is_low_signal(text)
+
+    def test_resolver_that_raises_or_returns_none_falls_back_to_id(self):
+        assert ca.replace_user_mentions("<@U1> ping", lambda uid: None) == "@U1 ping"
+
+        def boom(uid):
+            raise KeyError(uid)
+
+        assert ca.replace_user_mentions("<@U1> ping", boom) == "@U1 ping"
+
+    def test_drop_low_signal_filters_entries_in_order(self):
+        entries = [
+            {"message": "hello there"},
+            {"message": "ticket server is down"},
+            {"message": "how are you doing today?"},
+            {"message": "app-dev deployment failing"},
+        ]
+        kept = [e["message"] for e in ca.drop_low_signal(entries)]
+        assert kept == ["ticket server is down", "app-dev deployment failing"]
+
+
+class TestReplaceUserMentions:
+    def test_resolves_ids_to_display_names(self):
+        out = ca.replace_user_mentions("<@U1> can you check with <@U2>?", {"U1": "Nubi", "U2": "Arjun"}.__getitem__)
+        assert out == "@Nubi can you check with @Arjun?"
+
+    def test_empty_text_is_safe(self):
+        assert ca.replace_user_mentions("", lambda uid: uid) == ""
+        assert ca.replace_user_mentions(None, lambda uid: uid) is None
