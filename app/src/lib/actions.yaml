@@ -636,7 +636,7 @@ actions:
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: events_list_analysis_digests
-    comment: List an account's weekly event-analysis digests, newest first
+    comment: List the tenant's weekly reliability reviews, newest first
     definition:
       kind: synchronous
       handler: '{{LLM_SERVER_URL}}/v1/completions/event-analysis-digests'
@@ -646,14 +646,10 @@ actions:
           value_from_env: LLM_SERVER_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: events_get_analysis_digest
-    comment: Get one week's event-analysis digest including per-class findings
+    comment: Get one week's tenant reliability review including per-class findings
     definition:
       kind: synchronous
       handler: '{{LLM_SERVER_URL}}/v1/completions/event-analysis-digest'
@@ -663,14 +659,10 @@ actions:
           value_from_env: LLM_SERVER_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: events_generate_analysis_digest
-    comment: Generate one week's event-analysis digest on demand (scheduler supersedes it)
+    comment: Generate one week's tenant reliability review on demand (scheduler supersedes it)
     definition:
       kind: synchronous
       handler: '{{LLM_SERVER_URL}}/v1/completions/event-analysis-digest-generate'
@@ -680,7 +672,6 @@ actions:
           value_from_env: LLM_SERVER_TOKEN
       timeout: 900
     permissions:
-      - role: account_admin
       - role: tenant_admin
   - name: ai_aggregate_tool_usage
     comment: Aggregate tool usage into a leaderboard by calls, errors, and cost
