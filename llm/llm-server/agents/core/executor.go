@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
-	"nudgebee/llm/memory"
+	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
@@ -479,6 +479,27 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		request.PreviousState = previousState
 	}
 
+	// Attach the provider that will actually serve this agent's LLM calls, so
+	// prompt resolution (provider-specific files, provider-scoped DB config,
+	// provider-targeted experiments) matches it. Without this, prompt loads fall
+	// back to the deployment-wide LLM_PROVIDER env var, which per-account model
+	// configuration, pinned sources, and conversation overrides can all disagree
+	// with. Resolution failure keeps the env fallback — same behavior as before.
+	// Rebind ctx locally instead of ctx.SetContext: sub-agents in a parallel
+	// action batch share the caller's RequestContext pointer, so an in-place
+	// mutation would race and leak one agent's provider into its siblings.
+	if ctx != nil {
+		if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Provider != "" {
+			ctx = security.NewRequestContext(
+				nbprompts.WithRequestProvider(ctx.GetContext(), res.Provider),
+				ctx.GetSecurityContext(),
+				ctx.GetLogger(),
+				ctx.GetTracer(),
+				ctx.GetMeter(),
+			)
+		}
+	}
+
 	// Images attached but no configured model (main or lite) can process them:
 	// don't let the agent loose on tool-calling investigation driven by a query
 	// it can't actually ground in the image content — answer directly instead.
@@ -593,7 +614,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// and needs no agent mapping — an agent with no mapped KBs must
 			// still surface account knowledge (e.g. a synced Confluence runbook
 			// for the alert under investigation, #34779). Only the menu is
-			// mapping-dependent; BuildSkillListsMenu returns "" for empty kbs.
+			// mapping-dependent; buildSkillListsMenu returns "" for empty kbs.
+			menu := buildSkillListsMenu(kbs)
 			block := ""
 			var kbRefs []AgentReference
 			if isTopLevelInvocation {
@@ -601,7 +623,6 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 				// content actually matched, not every mapped KB.
 				block, kbRefs = retrieveRelevantKB(ctx, request, kbs)
 			}
-			menu := BuildSkillListsMenu(kbs, block != "")
 			kbChan <- kbAssemblyResult{prompt: prompt, menu: menu, prestepBlock: block, kbRefs: kbRefs}
 			return
 		}
@@ -614,14 +635,26 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// entirely — no concatenation, no double-injection. When the module is off
 	// (or the tenant is not allowlisted) the legacy notebook remains primary.
 	tenantID := ctx.GetSecurityContext().GetTenantId()
-	memoryModuleActive := memory.ComposeEnabledFor(tenantID)
+	memoryModuleActive := isMemoryV2ActiveFn(tenantID)
 
 	memChan := make(chan string, 1)
 	memV2Chan := make(chan string, 1)
-	if memoryModuleActive {
+	// Memory is composed once, at the top-level invocation; sub-agents skip the
+	// per-agent recompose (mirrors the eager KB retrieval above, which is already
+	// top-level-only) — each recompose re-ran the 3-layer memory Compose (~3-5s).
+	// isTopLevelInvocation keys off OriginalQuery, which tool-invoked sub-agents like
+	// the async "LLM" title generator never inherit, so also treat any request with a
+	// distinct parent agent as a sub-agent (the canonical test in promptVariantForRequest).
+	isSubAgentInvocation := !isTopLevelInvocation ||
+		(request.ParentAgentId != "" && request.ParentAgentId != request.AgentId)
+	if isSubAgentInvocation {
+		// Empty sends keep the collectors below unblocked.
+		memChan <- ""
+		memV2Chan <- ""
+	} else if memoryModuleActive {
 		memChan <- ""
 		go func() {
-			memV2Chan <- composeMemoryV2Block(ctx, request, agent)
+			memV2Chan <- composeMemoryV2BlockFn(ctx, request, agent)
 		}()
 	} else {
 		go func(cf []string) {
@@ -1599,11 +1632,7 @@ func injectKBContext(ctx *security.RequestContext, accountId string, ownNames []
 		activeCount++
 		escapedName := escapeTemplateSyntax(kb.Name)
 		escapedDesc := escapeTemplateSyntax(kb.Description)
-		if strings.TrimSpace(escapedDesc) != "" {
-			skillList = append(skillList, fmt.Sprintf("name: %s - description: %s", escapedName, escapedDesc))
-		} else {
-			skillList = append(skillList, fmt.Sprintf("name: %s", escapedName))
-		}
+		skillList = append(skillList, fmt.Sprintf("name: %s - description: %s", escapedName, escapedDesc))
 	}
 
 	// Wait for RAG previews and append integration skill entries.

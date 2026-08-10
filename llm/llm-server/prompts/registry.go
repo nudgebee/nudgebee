@@ -168,7 +168,7 @@ func GetPromptStrict(ctx context.Context, module string, accountID string, args 
 	resp, err := loader.GetPrompt(ctx, PromptRequest{
 		Name:      module,
 		Category:  category,
-		Provider:  GetProviderFromConfig(),
+		Provider:  providerForRequest(ctx),
 		AccountID: accountID,
 	})
 	if err != nil {
@@ -254,8 +254,43 @@ func RenderPrompt(ctx context.Context, module string, accountID string, data map
 }
 
 // GetProviderFromConfig returns the LLM provider from config
+// requestProviderKey carries the LLM provider resolved for the current request
+// (conversation override → pinned source → tier config → env, reconciled by
+// agents/core.ResolveLLMConfig). Set via WithRequestProvider at the start of an
+// agent execution so prompt resolution matches the provider that will actually
+// serve the call, instead of the deployment-wide LLM_PROVIDER env var.
+type requestProviderKey struct{}
+
+// WithRequestProvider returns a context carrying the provider prompt resolution
+// should use for this request. The value is normalized to prompt-tree provider
+// names at read time. A nil ctx is tolerated and treated as context.Background().
+func WithRequestProvider(ctx context.Context, provider string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, requestProviderKey{}, provider)
+}
+
+// providerForRequest resolves the provider for a prompt load: the per-request
+// value when one was attached, otherwise the deployment-wide config default.
+// Background jobs and startup validation carry no request provider and keep
+// today's env-based behavior.
+func providerForRequest(ctx context.Context) string {
+	if ctx != nil {
+		if p, ok := ctx.Value(requestProviderKey{}).(string); ok && p != "" {
+			return NormalizeProviderName(p)
+		}
+	}
+	return GetProviderFromConfig()
+}
+
 func GetProviderFromConfig() string {
-	provider := strings.ToLower(config.Config.LlmProvider)
+	return NormalizeProviderName(config.Config.LlmProvider)
+}
+
+// NormalizeProviderName maps config provider names to prompt-tree provider names.
+func NormalizeProviderName(provider string) string {
+	provider = strings.ToLower(provider)
 
 	// Map config provider names to prompt system provider names
 	switch provider {

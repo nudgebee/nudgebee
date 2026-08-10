@@ -2474,27 +2474,27 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// Shared fragments are spliced into every planner prompt, so a missing one
 	// silently removes a whole rules block from the system message. This function
 	// returns an error, so load them strictly and refuse to build a partial prompt.
-	contextContinuity, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptContextContinuity, "")
+	contextContinuity, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptContextContinuity, request.AccountId)
 	if err != nil {
 		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptContextContinuity fragment: %w", err)
 	}
-	timeHandlingRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptTimeHandlingRules, "")
+	timeHandlingRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptTimeHandlingRules, request.AccountId)
 	if err != nil {
 		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptTimeHandlingRules fragment: %w", err)
 	}
-	dataProtectionRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptDataProtectionRules, "")
+	dataProtectionRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptDataProtectionRules, request.AccountId)
 	if err != nil {
 		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptDataProtectionRules fragment: %w", err)
 	}
-	codeAnalysisRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptCodeAnalysisRules, "")
+	codeAnalysisRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptCodeAnalysisRules, request.AccountId)
 	if err != nil {
 		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptCodeAnalysisRules fragment: %w", err)
 	}
-	securityRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptSecurityRules, "")
+	securityRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptSecurityRules, request.AccountId)
 	if err != nil {
 		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptSecurityRules fragment: %w", err)
 	}
-	memoryConsumptionRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptMemoryConsumptionRules, "")
+	memoryConsumptionRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptMemoryConsumptionRules, request.AccountId)
 	if err != nil {
 		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptMemoryConsumptionRules fragment: %w", err)
 	}

@@ -59,18 +59,23 @@ func (c *PromptCache) Get(req PromptRequest) (*PromptResponse, bool) {
 		return nil, false
 	}
 
-	// Clone the response and update metadata
+	// Clone the response and update metadata. Copy the whole Metadata struct
+	// rather than listing fields — a field-by-field clone silently drops any
+	// field it forgets (ExperimentName was lost on every cache hit this way).
+	metadata := entry.Response.Metadata
+	if metadata.ExperimentID != nil {
+		id := *metadata.ExperimentID
+		metadata.ExperimentID = &id
+	}
+	if metadata.ExperimentName != nil {
+		name := *metadata.ExperimentName
+		metadata.ExperimentName = &name
+	}
+	metadata.CacheHit = true
+	metadata.LoadTimeMs = 0 // Will be set by loader
 	response := &PromptResponse{
-		Content: entry.Response.Content,
-		Metadata: PromptMetadata{
-			Version:      entry.Response.Metadata.Version,
-			Provider:     entry.Response.Metadata.Provider,
-			Category:     entry.Response.Metadata.Category,
-			ConfigSource: entry.Response.Metadata.ConfigSource,
-			ExperimentID: entry.Response.Metadata.ExperimentID,
-			CacheHit:     true,
-			LoadTimeMs:   0, // Will be set by loader
-		},
+		Content:  entry.Response.Content,
+		Metadata: metadata,
 	}
 
 	return response, true
