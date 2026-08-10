@@ -1610,10 +1610,6 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   return (
     // Forces this instance's popover to the viewport center regardless of trigger
     // position, and gives it a Modal-like (@ui/Modal) pop-in + dark backdrop.
-    // Overrides the MuiPopover-paper's JS-computed inline top/left —
-    // disablePortal keeps the paper in this subtree, so the selector reaches
-    // it — with !important, since author !important beats both inline
-    // styles and the component's own transform/slide-in keyframes.
     // Backdrop mirrors Modal's default dim color (MUI Backdrop's own
     // rgba(0,0,0,0.5)) and its opacity-transition timing.
     <Box
@@ -1623,39 +1619,6 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
         maxWidth: '60%',
         '@media (max-width: 1300px)': {
           maxWidth: '70%',
-        },
-        // top is a fixed offset (not 50%) so the panel's top edge stays put as its
-        // height changes with the result count — true vertical centering would
-        // re-center around a shrinking/growing box, making the top edge visibly
-        // jump on every keystroke. Only left is 50%, so horizontal centering still
-        // uses translateX; there's no translateY left to do.
-        '& .MuiPopover-paper': {
-          position: 'fixed !important',
-          top: `${ds.space.mul(0, 50)} !important`,
-          left: '50% !important',
-          // Static resting transform, matching the keyframe's own 100% value
-          // — kept OUTSIDE the animation (see `forwards` note below) so it's
-          // still in effect once the animation ends.
-          transform: 'translate(-50%, 0)',
-          margin: 0,
-          padding: ds.space[4],
-          // No `forwards`: an animation held via fill-mode: forwards keeps
-          // its GPU compositing layer pinned indefinitely after it finishes,
-          // which left Chrome occasionally failing to repaint this element's
-          // screen region once it was actually removed from the DOM on
-          // close — a stale "ghost" frame of the popover stayed visible
-          // until something else forced a repaint (e.g. typing). The base
-          // `transform` above already matches the animation's end state, so
-          // dropping `forwards` doesn't cause a visible snap once it ends.
-          animation: 'globalSearchPopoverPopIn 360ms cubic-bezier(0.22, 1, 0.36, 1) !important',
-        },
-        '@keyframes globalSearchPopoverPopIn': {
-          '0%': { transform: 'translate(-50%, 0) translateY(20px) scale(0.96)', opacity: 0 },
-          '100%': { transform: 'translate(-50%, 0) translateY(0) scale(1)', opacity: 1 },
-        },
-        '& .MuiBackdrop-root': {
-          backgroundColor: 'rgba(0, 0, 0, 0.5) !important',
-          transition: 'opacity 300ms cubic-bezier(0.22, 1, 0.36, 1) !important',
         },
       }}
     >
@@ -1768,11 +1731,22 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
         open={open}
         anchorEl={anchorEl}
         onClose={() => setAnchorEl(null)}
-        disablePortal
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
         TransitionComponent={GlobalSearchPopoverTransition}
         slotProps={{
+          // No disablePortal: this renders straight to document.body (like
+          // ds/Modal), so it lands at MUI's default modal z-index (1300) —
+          // clear of the sidebar's own z-index:100 stacking context. With
+          // disablePortal, the whole Modal (backdrop included) used to nest
+          // inside #app-sticky-header's position:sticky/z-index:20 subtree,
+          // which caps it below the sidebar regardless of its own z-index —
+          // the sidebar's hover flyout would paint (and stay clickable) over
+          // the dimmed backdrop. Because it no longer nests under the
+          // trigger, the paper override below goes straight on the paper
+          // slot's own sx (not an ancestor `&` selector) so it still applies
+          // wherever the portal lands. Same reasoning for the backdrop dim,
+          // via `sx` on the Popover itself below.
           paper: {
             sx: {
               // Surface chrome shared via --ds-overlay-* tokens with DropdownMenu/Select/FilterDropdown.
@@ -1783,14 +1757,50 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
               boxShadow: 'var(--ds-overlay-shadow)',
               width: POPOVER_WIDTH,
               overflow: 'hidden',
-              position: 'relative',
-              transformOrigin: 'top left',
-              animation: 'globalSearchSlideIn var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',
-              '@keyframes globalSearchSlideIn': {
-                '0%': { opacity: 0, transform: 'scaleY(0.9) translateY(-8px)' },
-                '100%': { opacity: 1, transform: 'scaleY(1) translateY(0)' },
+              // Forces the popover to the viewport center regardless of
+              // trigger position. top is a fixed offset (not 50%) so the
+              // panel's top edge stays put as its height changes with the
+              // result count — true vertical centering would re-center
+              // around a shrinking/growing box, making the top edge visibly
+              // jump on every keystroke. Only left is 50%, so horizontal
+              // centering still uses translateX.
+              position: 'fixed !important',
+              top: `${ds.space.mul(0, 50)} !important`,
+              left: '50% !important',
+              // Static resting transform, matching the keyframe's own 100% value
+              // — kept OUTSIDE the animation (see `forwards` note below) so it's
+              // still in effect once the animation ends.
+              transform: 'translate(-50%, 0)',
+              margin: 0,
+              padding: ds.space[4],
+              transformOrigin: 'top center',
+              // No `forwards`: an animation held via fill-mode: forwards keeps
+              // its GPU compositing layer pinned indefinitely after it finishes,
+              // which left Chrome occasionally failing to repaint this element's
+              // screen region once it was actually removed from the DOM on
+              // close — a stale "ghost" frame of the popover stayed visible
+              // until something else forced a repaint (e.g. typing). The base
+              // `transform` above already matches the animation's end state, so
+              // dropping `forwards` doesn't cause a visible snap once it ends.
+              animation: 'globalSearchPopoverPopIn 360ms cubic-bezier(0.22, 1, 0.36, 1)',
+              '@keyframes globalSearchPopoverPopIn': {
+                '0%': { transform: 'translate(-50%, 0) translateY(20px) scale(0.96)', opacity: 0 },
+                '100%': { transform: 'translate(-50%, 0) translateY(0) scale(1)', opacity: 1 },
               },
             },
+          },
+        }}
+        // Popover has no slotProps.backdrop slot (it hardcodes slotProps.root's
+        // own backdrop config to `invisible: true`, which a nested override
+        // would collide with) — so the dim backdrop is styled here instead, via
+        // a descendant selector on the Popover's own sx. That still lands on
+        // Modal's root wrapper regardless of portal target, and the Backdrop
+        // is always rendered as a real DOM child of that wrapper, so this
+        // reaches it correctly whether or not the popover is portalled.
+        sx={{
+          '& .MuiBackdrop-root': {
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            transition: 'opacity 300ms cubic-bezier(0.22, 1, 0.36, 1) !important',
           },
         }}
         onKeyDown={handleKeyDown}
