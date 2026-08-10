@@ -91,7 +91,7 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 	}
 
 	if !found {
-		return nil, nil, fmt.Errorf("auth: tool not found - %s, agent - %s", toolName, agent.GetName())
+		return nil, nil, fmt.Errorf("auth: tool not found - %s, agent - %s (not in your authorized tool set — route through delegate_agent, or discover it via search_tools first)", toolName, agent.GetName())
 	}
 
 	requestType := toolcore.ToolRequestType("")
