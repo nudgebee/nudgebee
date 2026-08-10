@@ -7,6 +7,7 @@ on:
     paths:
       - vuln-matcher-server/**
       - .github/workflows/vuln-matcher-server-test-gke.yaml
+      - deploy/kubernetes/vuln-matcher-server/**
 
 jobs:
   app-build:

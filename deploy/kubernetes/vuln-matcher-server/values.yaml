@@ -1,0 +1,94 @@
+# Default values for vuln-matcher-server.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: nudgebee-vuln-matcher-server
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: 'latest'
+
+global:
+  image:
+    registry: 'ghcr.io/nudgebee'
+  imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8080
+
+env:
+  # Where the vulnerability database lives inside the pod. Must match the
+  # vuln-db volume mount below.
+  VULN_DB_ROOT: /var/lib/vuln-matcher/db
+  # Fetch/refresh the database on start. Set "false" for air-gapped installs,
+  # where the database is placed on the volume out of band.
+  VULN_DB_UPDATE: "true"
+  # VULN_DB_UPDATE_URL: ""   # override to fetch the database from our own mirror
+  # VULN_DB_MAX_AGE: 168h    # how stale the database may be before /readyz fails
+
+resources:
+  # Matching a large deduplicated package set is CPU-bound; the database
+  # itself lives on disk (emptyDir below), not in memory.
+  limits:
+    cpu: '1'
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# The vulnerability database is ephemeral by design: refreshed from the update
+# URL on start, never baked into the image. ~139 MB download, ~1.8 GB unpacked.
+volumes:
+  - name: vuln-db
+    emptyDir:
+      sizeLimit: 6Gi
+
+volumeMounts:
+  - name: vuln-db
+    mountPath: /var/lib/vuln-matcher/db
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+annotations: {}
