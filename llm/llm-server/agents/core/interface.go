@@ -146,6 +146,11 @@ type NBAgentRequest struct {
 	// it as reference-only lives in the shared security rules, where it is
 	// operator-controlled rather than sitting inside the untrusted content.
 	ChannelContext string `json:"channel_context,omitempty"`
+	// ChannelContextRefs carries the provenance of ChannelContext — channel plus
+	// per-message author/preview/permalink. Persisted as a channel_context
+	// conversation reference for the UI's citation; never rendered into the
+	// prompt.
+	ChannelContextRefs map[string]any `json:"channel_context_refs,omitempty"`
 }
 
 // DO not use for API calls

@@ -1778,6 +1778,21 @@ class CommonService:
             LOG.debug(f"Failed to get user display name: {e}")
             return None
 
+    def get_slack_team_domain(self, team_id):
+        """Workspace subdomain (acme in acme.slack.com), used to build message
+        permalinks. None when the workspace or its domain can't be resolved."""
+        try:
+            bot = self.get_slack_installation(team_id)
+            if not bot:
+                return None
+            info = self.slack_app.client.team_info(token=bot.token, team_id=team_id)
+            if not info.get("ok"):
+                return None
+            return info.get("team", {}).get("domain") or None
+        except Exception as e:
+            LOG.debug(f"Failed to get team domain: {e}")
+            return None
+
     def get_thread_messages(self, tenant_id, channel_id, thread_ts, team_id=None):
         try:
             messaging_platform = self._get_messaging_platform(tenant_id, team_id, "slack")

@@ -6,6 +6,7 @@ import CustomDrawer, { SecondaryDrawer } from '@shared/CustomDrawer';
 import TasksDrawerContent from './common/TasksDrawerContent';
 import MemoriesDrawerContent from './common/MemoriesDrawerContent';
 import ReferencesDrawerContent from './common/ReferencesDrawerContent';
+import ChannelContextDrawerContent from './common/ChannelContextDrawerContent';
 import ToolDetails from './common/ToolDetails';
 import useMessageAdditionalData from '@hooks/useMessageAdditionalData';
 import WatchesTab from './WatchesTab';
@@ -251,6 +252,11 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
     setSecondary({ open: false, task: null });
   }, []);
 
+  const openChannelsDrawer = useCallback((references) => {
+    setDrawer({ open: true, kind: 'channels', title: 'Channel Conversation', data: { references } });
+    setSecondary({ open: false, task: null });
+  }, []);
+
   // Watches drawer — opens the WatchesTab keyed on the conversation. Unlike
   // tasks/contexts/memories which are per-response artefacts, watches are
   // a conversation-level state, so we render the chip on the most-recent
@@ -365,7 +371,11 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
         // its curated `tasks` are unchanged. Fall back to `tasks` for responses predating drawerTasks.
         const drawerTasks = response?.drawerTasks ?? tasks;
         const extra = response ? additionalData[response.id] : null;
-        const references = extra?.references || [];
+        const allReferences = extra?.references || [];
+        // Channel-context provenance gets its own chip + drawer; everything
+        // else stays in the Additional Contexts panel as before.
+        const references = allReferences.filter((r) => r?.type !== 'channel_context');
+        const channelRefs = allReferences.filter((r) => r?.type === 'channel_context');
         const memories = extra?.memories || [];
 
         const responseTokenData = response ? itemProps.messageTokenData?.[response.id] || itemProps.messageTokenData?.[response.messageId] : null;
@@ -382,10 +392,12 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
               taskCount: drawerTasks.length,
               contextCount: references.length,
               memoryCount: memories.length,
+              channelCount: channelRefs.length,
               watchCount: watchesForThisGroup,
               onOpenTasks: drawerTasks.length > 0 ? () => openTasksDrawer({ tasks: drawerTasks }) : undefined,
               onOpenContexts: references.length > 0 ? () => openContextsDrawer(references) : undefined,
               onOpenMemories: memories.length > 0 ? () => openMemoriesDrawer(memories) : undefined,
+              onOpenChannels: channelRefs.length > 0 ? () => openChannelsDrawer(channelRefs) : undefined,
               onOpenWatches: watchesForThisGroup > 0 ? openWatchesDrawer : undefined,
               messageTokenData: responseTokenData,
               onTokenUsageHover: itemProps.handleTokenUsageHover,
@@ -539,6 +551,8 @@ const renderDrawerContent = ({ drawer, secondary, itemProps, onOpenToolDetails }
       // lives in ReferencesDrawerContent so the same UX renders on both
       // this drawer and the LLMConversationWithTabs Additional Contexts tab.
       return <ReferencesDrawerContent references={drawer.data.references} />;
+    case 'channels':
+      return <ChannelContextDrawerContent references={drawer.data.references} />;
     case 'memories':
       return <MemoriesDrawerContent memories={drawer.data.memories} />;
     case 'tool-details':

@@ -179,7 +179,7 @@ class Events:
         return blocks
 
     @staticmethod
-    def build_llm_payload(cached_entry, query_override=None, channel_context=None):
+    def build_llm_payload(cached_entry, query_override=None, channel_context=None, channel_context_refs=None):
         payload = {
             "query": query_override or cached_entry["text"],
             "account_id": cached_entry["account_id"],
@@ -193,6 +193,8 @@ class Events:
         # it into `query`.
         if channel_context:
             payload["channel_context"] = channel_context
+        if channel_context_refs:
+            payload["channel_context_refs"] = channel_context_refs
         return payload
 
     def _slack_bot_token(self, team_id):
@@ -862,7 +864,7 @@ class Events:
         question = (query_text or "").split(THREAD_CONTEXT_MARKER, 1)[0].strip()
         try:
             with ChannelContextService(engine=self.session.get_bind(), common_service=self.common_service) as svc:
-                block, used = svc.build(
+                block, used, refs = svc.build(
                     tenant_id=cached_entry.get("tenant_id"),
                     team_id=team_id,
                     channel_id=channel_id,
@@ -874,12 +876,12 @@ class Events:
                 )
         except Exception:
             LOG.exception("Failed to build channel context for %s/%s", team_id, channel_id)
-            return None
+            return None, None
         # Kept with the conversation, not the message rows: which messages an
         # answer rested on is per-thread state that should expire with the
         # thread's session rather than outlive it in the database.
         self.cache.update_event_entry(thread_ts, channel_context_used=used)
-        return block
+        return block, refs
 
     def _process_event(self, channel_id, cleaned_string, team_id, thread_ts, _type):
         cached_entry = self.cache.get_event_entry(thread_ts)
@@ -909,8 +911,15 @@ class Events:
             cleaned_string = conversation
             cached_entry = self.cache.get_event_entry(thread_ts)
 
-        channel_context = self._build_channel_context(cached_entry, channel_id, team_id, thread_ts, cleaned_string)
-        payload = self.build_llm_payload(cached_entry, query_override=cleaned_string, channel_context=channel_context)
+        channel_context, channel_context_refs = self._build_channel_context(
+            cached_entry, channel_id, team_id, thread_ts, cleaned_string
+        )
+        payload = self.build_llm_payload(
+            cached_entry,
+            query_override=cleaned_string,
+            channel_context=channel_context,
+            channel_context_refs=channel_context_refs,
+        )
 
         headers = {
             "x-tenant-id": cached_entry["tenant_id"],

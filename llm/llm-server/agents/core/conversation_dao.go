@@ -352,6 +352,13 @@ const (
 	AgentReferenceTypeKB           AgentReferenceType = "knowledge_base"
 	AgentReferenceTypeContextState AgentReferenceType = "context_state"
 
+	// AgentReferenceTypeChannelContext is the provenance of a watched-channel
+	// context block: which channel and which retained messages a Slack answer
+	// drew on. Metadata is self-contained (channel, span, per-message
+	// author/preview/permalink snapshotted at write time) so the citation still
+	// renders after the retention sweep deletes the source rows.
+	AgentReferenceTypeChannelContext AgentReferenceType = "channel_context"
+
 	// Memory-v2 injection reference types. Written by the memory bridge for
 	// every item that made it into the composed slab; the hydration SELECT in
 	// GetConversationReferences joins each of these to its owning
@@ -463,6 +470,10 @@ func (chat *ConversationDao) ListAgentReferences(accountId, conversationId strin
 	query := `SELECT r.id, r.account_id, r.conversation_id, r.message_id, r.agent_id, r.reference_id, r.reference_type, r.metadata::text, r.created_at,
 			    CASE
 					WHEN r.reference_type = 'context_state' THEN r.metadata::text
+					-- channel_context is fully self-contained: the display value is
+					-- the channel name stamped at write time. Without a non-empty
+					-- projection the empty-content skip below would drop the row.
+					WHEN r.reference_type = 'channel_context' THEN COALESCE(NULLIF(r.metadata->>'channel_name',''), r.metadata->>'channel_id')
 					WHEN r.reference_type = 'memory' THEN m.content
 					-- knowledge_base: prefer the KB's stored body, but fall back to
 					-- the metadata stamped at write time. Integration KBs (Confluence,

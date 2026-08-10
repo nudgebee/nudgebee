@@ -71,6 +71,7 @@ const COUNT_LABELS = {
   tasks: ['task', 'tasks'],
   contexts: ['context', 'contexts'],
   memories: ['memory', 'memories'],
+  channels: ['channel', 'channels'],
   watches: ['watch', 'watches'],
 };
 
@@ -281,6 +282,12 @@ const buildItems = (props) => {
   if (props.memoryCount > 0 && props.onOpenMemories) {
     items.push(countItem('memories', 'savings', props.memoryCount, props.onOpenMemories));
   }
+  if (props.channelCount > 0 && props.onOpenChannels) {
+    // 'agent' tone, same as contexts — both are grounded-context categories;
+    // the label carries the distinction. Renders only on Slack-originated
+    // turns that actually drew on a watched channel.
+    items.push(countItem('channels', 'agent', props.channelCount, props.onOpenChannels));
+  }
   const filterItem = egressfilterItem(props.egressfilterEvents, props.onOpenEgressDetails);
   if (filterItem) {
     items.push(filterItem);
@@ -333,10 +340,12 @@ const ResponseMetaRail = ({
   taskCount = 0,
   contextCount = 0,
   memoryCount = 0,
+  channelCount = 0,
   watchCount = 0,
   onOpenTasks,
   onOpenContexts,
   onOpenMemories,
+  onOpenChannels,
   onOpenWatches,
   messageTokenData,
   onTokenUsageHover,
@@ -356,10 +365,12 @@ const ResponseMetaRail = ({
     taskCount,
     contextCount,
     memoryCount,
+    channelCount,
     watchCount,
     onOpenTasks,
     onOpenContexts,
     onOpenMemories,
+    onOpenChannels,
     onOpenWatches,
     messageTokenData,
     onTokenUsageHover,
@@ -413,10 +424,12 @@ ResponseMetaRail.propTypes = {
   taskCount: PropTypes.number,
   contextCount: PropTypes.number,
   memoryCount: PropTypes.number,
+  channelCount: PropTypes.number,
   watchCount: PropTypes.number,
   onOpenTasks: PropTypes.func,
   onOpenContexts: PropTypes.func,
   onOpenMemories: PropTypes.func,
+  onOpenChannels: PropTypes.func,
   onOpenWatches: PropTypes.func,
   messageTokenData: PropTypes.any,
   onTokenUsageHover: PropTypes.func,

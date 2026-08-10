@@ -56,6 +56,11 @@ type ConversationApiRequest struct {
 	// Callers must never merge it into Query — keeping it separate is what lets
 	// the agent treat it as reference material rather than as a request.
 	ChannelContext string `json:"channel_context,omitempty"`
+	// ChannelContextRefs is structured provenance for ChannelContext — which
+	// channel and which retained messages the block was assembled from. Stored
+	// as a channel_context conversation reference so the UI can show what the
+	// answer drew on. Opaque to the agent; never rendered into the prompt.
+	ChannelContextRefs map[string]any `json:"channel_context_refs,omitempty"`
 	// LogProvider optionally pins /log-query resolution to a specific log
 	// provider (e.g. "loki") instead of the account's default — mirrors the
 	// logs tab's "Log Provider:" dropdown override sent as log_provider on
@@ -574,7 +579,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		// Execute the agent
 		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_chat", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext))
+			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs))
 		}, core.NBAgentResponse{
 			Response:       []string{"Your request has been received and will be processed asynchronously."},
 			Query:          request.Query,

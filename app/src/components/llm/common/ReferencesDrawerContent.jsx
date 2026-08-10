@@ -116,6 +116,12 @@ const ReferencesDrawerContent = ({ references = [] }) => {
   const buckets = useMemo(() => {
     const acc = {};
     for (const ref of references) {
+      // Channel-context provenance has its own drawer (ChannelContextDrawerContent,
+      // via the meta-rail "channel" chip); in this panel it would land in the
+      // generic Other bucket as an unreadable metadata blob.
+      if (ref?.type === 'channel_context') {
+        continue;
+      }
       const cat = categorizeRef(ref?.type);
       if (!acc[cat]) acc[cat] = { total: 0, usedCount: 0, bySubtype: {}, rows: [] };
       acc[cat].total += 1;

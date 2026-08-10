@@ -328,6 +328,7 @@ type additionalConversationSessionRequestConfig struct {
 	isResume              bool
 	images                []ImageAttachment
 	channelContext        string
+	channelContextRefs    map[string]any
 }
 
 type ConversationSessionRequestConfig interface {
@@ -587,6 +588,23 @@ func ConversationSessionRequestWithChannelContext(channelContext string) Convers
 	}
 }
 
+type sessionRequestWithChannelContextRefs struct {
+	channelContextRefs map[string]any
+}
+
+func (h sessionRequestWithChannelContextRefs) apply(c *additionalConversationSessionRequestConfig) {
+	c.channelContextRefs = h.channelContextRefs
+}
+
+// ConversationSessionRequestWithChannelContextRefs carries the provenance of
+// the channel context block — destined for a conversation reference row the
+// UI cites, never for the prompt.
+func ConversationSessionRequestWithChannelContextRefs(refs map[string]any) ConversationSessionRequestConfig {
+	return sessionRequestWithChannelContextRefs{
+		channelContextRefs: refs,
+	}
+}
+
 func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgent, userId string, accountId string, sessionId string, query string, configs ...ConversationSessionRequestConfig) (NBAgentResponse, error) {
 
 	defaultConfig := additionalConversationSessionRequestConfig{
@@ -651,6 +669,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		IsResume:              defaultConfig.isResume,
 		Images:                defaultConfig.images,
 		ChannelContext:        defaultConfig.channelContext,
+		ChannelContextRefs:    defaultConfig.channelContextRefs,
 	}
 
 	response, err := handleConversationRequest(ctx, agentRequest, agent, sessionId, defaultConfig.source)
@@ -1195,6 +1214,22 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			return NBAgentResponse{}, err
 		}
 		request.MessageId = messageId.String()
+
+		// Best-effort: the citation must never fail the turn. Attached to the
+		// turn's message row, where the channel context was injected.
+		if len(request.ChannelContextRefs) > 0 {
+			refId, _ := request.ChannelContextRefs["channel_id"].(string)
+			if refId == "" {
+				refId = string(AgentReferenceTypeChannelContext)
+			}
+			if err := GetConversationDao().SaveAgentReferences(request.AccountId, conversation.ID.String(), request.MessageId, uuid.Nil.String(), []AgentReference{{
+				Type:        AgentReferenceTypeChannelContext,
+				ReferenceID: refId,
+				Metadata:    request.ChannelContextRefs,
+			}}); err != nil {
+				ctx.GetLogger().Error("conversation: failed to save channel context reference", "error", err, "message_id", request.MessageId)
+			}
+		}
 
 		markConversationActive(ctx, conversation.ID.String(), conversation.Status, "new turn", true)
 
