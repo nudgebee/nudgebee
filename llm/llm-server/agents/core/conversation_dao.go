@@ -2706,6 +2706,10 @@ type TokenUsageDetailedRecord struct {
 	RequestStatus       string
 	LatencySeconds      sql.NullFloat64
 	CreatedAt           time.Time
+	// Cost persisted at insert time. NULL on legacy rows (and on calls with no
+	// pricing entry then), which fall back to a live recompute — same preference
+	// as GetConversationTokenUsage and usage_analytics.perCallCostExpr.
+	CostUsd sql.NullFloat64
 }
 
 // GetConversationTokenUsageDetailed returns all individual token usage records for detailed analysis
@@ -2725,7 +2729,8 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, a
 			COALESCE(t.thinking_tokens, 0) as ThinkingTokens,
 			t.request_status as RequestStatus,
 			t.latency_seconds as LatencySeconds,
-			t.created_at as CreatedAt
+			t.created_at as CreatedAt,
+			t.cost_usd as CostUsd
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
 		WHERE c.session_id = $1 AND c.account_id = $2::uuid
