@@ -383,27 +383,29 @@ class SlackSender(BaseSender):
 
     @staticmethod
     async def check_if_sent_already(session, fingerprint, team_id, channels):
+        # The same finding may have been delivered to several channels (rule
+        # routing vs defaults), each with its own thread — so scan the
+        # fingerprint's rows for the target channel instead of comparing only
+        # the latest row.
+        normalized_channel = normalize_channel(channels)
+        target_channel_id = normalized_channel.get("id") if isinstance(normalized_channel, dict) else None
+        if not target_channel_id:
+            return None
+
         result = await session.execute(
             select(SentNotifications)
             .filter_by(slack_team_id=team_id, fingerprint=fingerprint)
             .order_by(SentNotifications.created_at.desc())
-            .limit(1)
         )
-        notification = result.scalars().first()
-
-        if not notification or not notification.slack_metadata:
-            return None
-
-        try:
-            slack_metadata = json.loads(notification.slack_metadata)
-        except json.JSONDecodeError:
-            LOG.warning(f"Failed to parse slack_metadata for fingerprint {fingerprint}")
-            return None
-
-        channel_id = slack_metadata.get("channel")
-        if channels:
-            normalized_channel = normalize_channel(channels)
-            if normalized_channel and channel_id == normalized_channel.get("id"):
+        for notification in result.scalars():
+            if not notification.slack_metadata:
+                continue
+            try:
+                slack_metadata = json.loads(notification.slack_metadata)
+            except json.JSONDecodeError:
+                LOG.warning(f"Failed to parse slack_metadata for fingerprint {fingerprint}")
+                continue
+            if slack_metadata.get("channel") == target_channel_id:
                 return notification.slack_thread_id
 
         return None
@@ -948,7 +950,9 @@ class MessageService:
         }.get(platform)
 
     async def _send_finding_to_slack(self, session, tenant_id, ip, finding, fingerprint):
-        thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.channels)
+        # Look up the thread at the channel the message is actually posted to
+        # (rule-routed channel or default), not the installation default.
+        thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.to_channel)
         message, output_blocks, attachments = get_slack_finding_message(self.slack_app, ip, finding)
 
         # Empty text/blocks must be OMITTED: with no blocks Slack renders a
