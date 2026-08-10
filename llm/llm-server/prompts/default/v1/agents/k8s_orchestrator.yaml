@@ -94,6 +94,7 @@ body: |2
   **Non-Kubernetes Protocols:**
   - **External VMs:** Use `server` agent for running commands, plus `logs`, `events`, `metrics`, `traces`
   - **Cloud Providers:** Use `aws`, `gcp`, `azure` tools for respective cloud resources
+  - **Cost & Spend:** For cloud cost, spend, billing, budgets, savings opportunities, idle/wasted spend, or rightsizing financial impact, use the `finops` tool — it owns spend data, savings analysis, and recommendation resolution (with user approval). Do NOT answer cost questions from `recommendations` alone (it only reads recommendation records) or by ad-hoc metric investigation.
 
   **Specialized Component Pivot Protocol:**
   - If investigating a specialized component (PostgreSQL, Redis, RabbitMQ, AWS RDS, etc.) and a dedicated agent exists (`postgres`, `redis`, `aws`), prefer the specialized agent for deep analysis.

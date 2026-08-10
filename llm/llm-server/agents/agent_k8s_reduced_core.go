@@ -41,6 +41,10 @@ func trimmedK8sCoreToolNames() []string {
 		// omitted it, so error-shape lookups on those paths silently fell back
 		// to the model's training knowledge.
 		WebSearchAgentName,
+		// finops is preloaded rather than reached on-demand: unmentioned cost/
+		// spend questions default-route to this agent (the router reaches finops
+		// only via @mention), and nothing steers the planner to search for it.
+		FinOpsAgentName,
 		DelegateAgentToolName,
 		SearchToolsToolName,
 	}

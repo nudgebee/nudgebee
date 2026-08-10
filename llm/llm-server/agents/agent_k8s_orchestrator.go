@@ -404,6 +404,12 @@ func getSupportedTools(ctx *security.RequestContext, accountId string, agentName
 			// On-demand memory tool (path B), gated by LLM_MEMORY_TOOL_ENABLED.
 			baseTools = appendMemoryToolName(baseTools)
 
+			// Unmentioned cost/spend questions default-route to this agent (the
+			// router reaches finops only via @mention), so preload finops as a
+			// callable sub-agent. Default list only — admin-pinned tool lists are
+			// deliberately not extended (finops carries write tools).
+			baseTools = append(baseTools, FinOpsAgentName)
+
 			toolNames = baseTools
 		}
 
