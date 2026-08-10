@@ -21,7 +21,7 @@ export type TriggerType = 'user_chat' | 'user_manual' | 'auto_event' | 'auto_sch
 
 export type Assistant = 'AI-SRE' | 'AI-FinOps' | 'AI-K8s' | 'AI-CloudOps' | 'Custom';
 
-export type RunStatus = 'completed' | 'failed' | 'awaiting-approval' | 'cancelled';
+export type RunStatus = 'completed' | 'in-progress' | 'failed' | 'awaiting-approval' | 'cancelled';
 
 export type Provider = 'Anthropic' | 'OpenAI' | 'Bedrock' | 'Google' | 'Ollama';
 

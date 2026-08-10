@@ -58,12 +58,28 @@ function perTokenRates(
   return { costPerInputToken: inTok ? blended : 0, costPerOutputToken: outTok ? blended : 0 };
 }
 
-/** Map a raw backend status string to the UI's run-status enum. */
+/**
+ * Map a raw backend status string to the UI's run-status enum.
+ *
+ * Inputs are the `llm_conversation_status` Postgres enum, carried by
+ * conversations, messages and agents alike: IN_PROGRESS · PENDING · WAITING ·
+ * WAITING_FOR_CLIENT_TOOL · COMPLETED · FAILED · KILLED · TERMINATED (plus the
+ * transient TERMINATING the chat sets locally).
+ *
+ * Only the WAITING* states are actually blocked on a human or client tool.
+ * IN_PROGRESS / PENDING are the system working — they used to fall into the
+ * "awaiting" bucket, so a running conversation was reported as needing
+ * attention while the chat view showed it in progress. KILLED / TERMINATED
+ * matched nothing and fell through to the `completed` default, reporting a
+ * stopped run as a successful one.
+ */
 export function toRunStatus(raw: string | undefined): RunStatus {
   const s = (raw ?? '').toLowerCase();
   if (s.includes('fail') || s.includes('error')) return 'failed';
-  if (s.includes('cancel') || s.includes('abort')) return 'cancelled';
-  if (s.includes('await') || s.includes('approval') || s.includes('pending') || s.includes('progress')) return 'awaiting-approval';
+  if (s.includes('cancel') || s.includes('abort') || s.includes('kill') || s.includes('terminat')) return 'cancelled';
+  // 'wait' also covers 'await' and WAITING_FOR_CLIENT_TOOL.
+  if (s.includes('wait') || s.includes('approval')) return 'awaiting-approval';
+  if (s.includes('progress') || s.includes('pending') || s.includes('running')) return 'in-progress';
   return 'completed';
 }
 

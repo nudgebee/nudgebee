@@ -64,8 +64,9 @@ interface ConversationsTableProps {
   loading?: boolean;
 }
 
-const STATUS_TONE: Record<RunStatus, 'success' | 'critical' | 'warning' | 'neutral'> = {
+const STATUS_TONE: Record<RunStatus, 'success' | 'critical' | 'warning' | 'neutral' | 'info'> = {
   completed: 'success',
+  'in-progress': 'info',
   failed: 'critical',
   'awaiting-approval': 'warning',
   cancelled: 'neutral',
