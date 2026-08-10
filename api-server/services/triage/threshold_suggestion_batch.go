@@ -205,6 +205,29 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 		if response.AlertDefinition != nil {
 			alertName = response.AlertDefinition.AlarmName
 		}
+		// No numeric suggestion is possible (metric not fetchable / definition not parseable),
+		// but the events-table-only health verdict may still be actionable — persist it so the
+		// noisiest rules don't vanish as bare 'skipped' rows.
+		if recType := qualityOnlyRecommendation(response.AlertQuality); recType != "" {
+			fingerprint := na.AlertRuleKey
+			if ev.Fingerprint != nil && *ev.Fingerprint != "" {
+				fingerprint = *ev.Fingerprint
+			}
+			eventAggregationKey := ""
+			if ev.AggregationKey != nil {
+				eventAggregationKey = *ev.AggregationKey
+			}
+			qReason := "verdict from firing history and engagement only (no metric data): " + reason
+			if err := upsertQualityOnlySuggestion(ctx.GetContext(), db, na, fingerprint, eventAggregationKey,
+				qReason, alertName, recType, response); err != nil {
+				ctx.GetLogger().Warn("threshold_suggestion_batch: failed to upsert quality-only suggestion",
+					"alert_rule_key", na.AlertRuleKey, "error", err)
+				errCount.Add(1)
+				return
+			}
+			stored.Add(1)
+			return
+		}
 		upsertSkippedSuggestion(ctx.GetContext(), db, na, "skipped", reason, alertName)
 		return
 	}
@@ -307,14 +330,16 @@ func GetCachedSuggestion(ctx context.Context, db *sqlx.DB, alertRuleKey, cloudAc
 		ComputedAt         time.Time `db:"computed_at"`
 	}
 
+	// COALESCEs cover status='quality_only' rows, which have no metric/threshold columns.
 	err := db.GetContext(ctx, &row, `
-		SELECT source, alert_name, metric_name, metric_namespace,
-		       current_threshold, operator, aggregation,
-		       suggested_threshold, reason, confidence, estimated_reduction,
+		SELECT source, alert_name, COALESCE(metric_name, '') AS metric_name, metric_namespace,
+		       COALESCE(current_threshold, 0) AS current_threshold, operator, aggregation,
+		       COALESCE(suggested_threshold, 0) AS suggested_threshold,
+		       COALESCE(reason, '') AS reason, confidence, estimated_reduction,
 		       firing_analysis, metric_stats, alert_quality, method, computed_at
 		FROM event_threshold_suggestions
 		WHERE alert_rule_key = $1 AND cloud_account_id = $2
-		  AND status = 'ok'
+		  AND status IN ('ok', 'quality_only')
 		  AND computed_at > NOW() - INTERVAL '7 days'
 	`, alertRuleKey, cloudAccountID)
 	if err != nil {
@@ -662,6 +687,69 @@ func upsertSkippedSuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert, st
 	}
 }
 
+// upsertQualityOnlySuggestion stores a health verdict for a rule that has no numeric threshold
+// suggestion (metric not fetchable). status='quality_only' rows carry alert_quality,
+// firing_analysis and a metric_stats.recommendation_type so the suggestions UI can render them,
+// but no thresholds. Same don't-clobber rule as upsertSkippedSuggestion: never overwrite a fresh
+// 'ok' row — a previous successful computation wins for 7 days.
+func upsertQualityOnlySuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert, fingerprint, eventAggregationKey,
+	reason, alertName, recommendationType string, response ThresholdSuggestionResponse) error {
+	if alertName == "" {
+		alertName = na.AlertRuleKey
+	}
+
+	alertQualityJSON, err := json.Marshal(response.AlertQuality)
+	if err != nil {
+		return fmt.Errorf("failed to marshal alert quality: %w", err)
+	}
+	var firingAnalysisJSON []byte
+	if response.FiringAnalysis != nil {
+		if firingAnalysisJSON, err = json.Marshal(response.FiringAnalysis); err != nil {
+			return fmt.Errorf("failed to marshal firing analysis: %w", err)
+		}
+	}
+	metricStatsJSON, err := json.Marshal(map[string]any{"recommendation_type": recommendationType})
+	if err != nil {
+		return fmt.Errorf("failed to marshal metric stats: %w", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO event_threshold_suggestions
+		  (alert_rule_key, fingerprint, cloud_account_id, tenant_id, source, status, reason, alert_name,
+		   alert_quality, firing_analysis, metric_stats, event_aggregation_key, computed_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, 'quality_only', $6, $7, $8, $9, $10, NULLIF($11, ''), NOW(), NOW())
+		ON CONFLICT (alert_rule_key, cloud_account_id)
+		DO UPDATE SET
+		  status = 'quality_only',
+		  fingerprint = EXCLUDED.fingerprint,
+		  reason = EXCLUDED.reason,
+		  alert_name = COALESCE(NULLIF(EXCLUDED.alert_name, ''), event_threshold_suggestions.alert_name),
+		  alert_quality = EXCLUDED.alert_quality,
+		  firing_analysis = EXCLUDED.firing_analysis,
+		  metric_stats = EXCLUDED.metric_stats,
+		  -- Null out any prior successful computation's numeric/metric columns: this run fetched
+		  -- no metric, and readers now serve quality_only rows — stale thresholds must not be
+		  -- glued onto a firing-history-only verdict.
+		  metric_name = NULL,
+		  metric_namespace = NULL,
+		  current_threshold = NULL,
+		  operator = NULL,
+		  aggregation = NULL,
+		  suggested_threshold = NULL,
+		  confidence = NULL,
+		  estimated_reduction = NULL,
+		  method = NULL,
+		  query_metadata = NULL,
+		  event_aggregation_key = COALESCE(EXCLUDED.event_aggregation_key, event_threshold_suggestions.event_aggregation_key),
+		  computed_at = NOW(),
+		  updated_at = NOW()
+		WHERE event_threshold_suggestions.status != 'ok'
+		   OR event_threshold_suggestions.computed_at < NOW() - INTERVAL '7 days'
+	`, na.AlertRuleKey, fingerprint, na.CloudAccountID, na.TenantID, na.Source, reason, alertName,
+		alertQualityJSON, firingAnalysisJSON, metricStatsJSON, eventAggregationKey)
+	return err
+}
+
 // ThresholdSuggestionListItem represents a row in the listing view.
 type ThresholdSuggestionListItem struct {
 	ID                  string          `json:"id" db:"-"`
@@ -709,9 +797,11 @@ func ListThresholdSuggestions(ctx context.Context, db *sqlx.DB, tenantID string,
 		offset = 0
 	}
 
-	// Exclude review_alert from the actionable list — these are flagged-for-review, not clean
+	// Exclude review_alert from the actionable 'ok' list — these are flagged-for-review, not clean
 	// advice (Gate 1/4/5 route ceiling-pinned / baseline-mismatch / near-total-suppression here).
-	where := "WHERE tenant_id = $1 AND status = 'ok' AND COALESCE(metric_stats->>'recommendation_type', '') <> 'review_alert'"
+	// quality_only rows are included regardless: for rules with no fetchable metric, review_alert
+	// IS the verdict (e.g. never-resolving spam) and must surface.
+	where := "WHERE tenant_id = $1 AND (status = 'quality_only' OR (status = 'ok' AND COALESCE(metric_stats->>'recommendation_type', '') <> 'review_alert'))"
 	args := []interface{}{tenantID}
 	argIdx := 2
 

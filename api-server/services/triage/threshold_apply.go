@@ -84,6 +84,7 @@ type ApplySuggestionRow struct {
 	SuggestedDuration  int
 	ApplyStatus        string
 	ApplyMethod        string
+	Status             string
 	PreviousThreshold  *float64
 	PreviousDuration   *int
 	Found              bool
@@ -101,12 +102,13 @@ func getSuggestionForApply(ctx context.Context, db *sqlx.DB, alertRuleKey, cloud
 		MetricStats        *string  `db:"metric_stats"`
 		ApplyStatus        *string  `db:"apply_status"`
 		ApplyMethod        *string  `db:"apply_method"`
+		Status             string   `db:"status"`
 		PreviousThreshold  *float64 `db:"previous_threshold"`
 		PreviousDuration   *int     `db:"previous_duration"`
 	}
 	err := db.GetContext(ctx, &row, `
 		SELECT tenant_id, source, alert_name, operator, current_threshold, suggested_threshold,
-		       metric_stats, apply_status, apply_method, previous_threshold, previous_duration
+		       metric_stats, apply_status, apply_method, status, previous_threshold, previous_duration
 		FROM event_threshold_suggestions
 		WHERE alert_rule_key = $1 AND cloud_account_id = $2`,
 		alertRuleKey, cloudAccountID)
@@ -119,6 +121,7 @@ func getSuggestionForApply(ctx context.Context, db *sqlx.DB, alertRuleKey, cloud
 		CloudAccountID:    cloudAccountID,
 		TenantID:          row.TenantID,
 		Source:            row.Source,
+		Status:            row.Status,
 		PreviousThreshold: row.PreviousThreshold,
 		PreviousDuration:  row.PreviousDuration,
 		Found:             true,

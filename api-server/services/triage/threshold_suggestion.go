@@ -53,6 +53,21 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 		}
 	}
 
+	// Events-table-only quality analysis runs before the alert-definition extraction gate,
+	// so rules whose definition can't be parsed (e.g. Azure activity-log / scheduled-query
+	// rules with no fetchable metric) still get a health verdict on the response.
+	accountID := ""
+	if ev.CloudAccountId != nil {
+		accountID = *ev.CloudAccountId
+	}
+	labels := GetLabelsMap(ev)
+	alertRuleKey := ExtractAlertRuleKey(source, labels)
+	var alertQuality *AlertQualityScore
+	if alertRuleKey != "" {
+		alertQuality = computeAlertQuality(ctx, db, source, alertRuleKey, accountID, tenantID)
+	}
+	firingAnalysis := getFiringAnalysisForEvent(ctx, db, ev, source, accountID, tenantID)
+
 	// Extract alert definition based on source
 	var alertDef *AlertDefinition
 	var err error
@@ -76,9 +91,11 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 			errMsg = err.Error()
 		}
 		return ThresholdSuggestionResponse{
-			Available: false,
-			Source:    source,
-			Error:     errMsg,
+			Available:      false,
+			Source:         source,
+			FiringAnalysis: firingAnalysis,
+			AlertQuality:   alertQuality,
+			Error:          errMsg,
 		}
 	}
 
@@ -90,6 +107,8 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 			Available:       true,
 			Source:          source,
 			AlertDefinition: alertDef,
+			FiringAnalysis:  firingAnalysis,
+			AlertQuality:    alertQuality,
 			Suggestion: &ThresholdSuggestion{
 				RecommendationType: "not_eligible",
 				Reason:             reason,
@@ -98,24 +117,8 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 		}
 	}
 
-	// Get firing analysis
-	accountID := ""
-	if ev.CloudAccountId != nil {
-		accountID = *ev.CloudAccountId
-	}
-
-	firingAnalysis := getFiringAnalysisForEvent(ctx, db, ev, source, accountID, tenantID)
-
 	// Fetch metric history from source API
 	metricHistory := fetchMetricHistory(ctx, ev, alertDef, tenantID)
-
-	// Compute alert quality score
-	labels := GetLabelsMap(ev)
-	alertRuleKey := ExtractAlertRuleKey(source, labels)
-	var alertQuality *AlertQualityScore
-	if alertRuleKey != "" {
-		alertQuality = computeAlertQuality(ctx, db, source, alertRuleKey, accountID, tenantID)
-	}
 
 	// Compute suggestion. Prefer the baseline-fidelity path — segment the history into off-alert
 	// vs firing windows and diagnose deterministically — and fall back to the legacy statistical
@@ -2348,7 +2351,7 @@ func computeAlertQuality(ctx context.Context, db *sqlx.DB, source, alertRuleKey,
 }
 
 // classifyAlertQuality assigns classification and recommendation based on quality metrics.
-// Priority order matters: false_positive > broken > noisy_but_real > noisy_ignored > healthy.
+// Priority order matters: false_positive > no-lifecycle spam > broken > noisy_but_real > noisy_ignored > healthy.
 func classifyAlertQuality(score *AlertQualityScore) {
 	switch {
 	// 1. False positive: fires often, auto-resolves, nobody acts on it
@@ -2360,12 +2363,20 @@ func classifyAlertQuality(score *AlertQualityScore) {
 			score.Recommendation = "disable_alert"
 		}
 
-	// 2. Broken: never resolves (but only if instant events aren't dominating)
+	// 2. No-lifecycle spam: fires many times a day as instant-closed events (ends_at == starts_at,
+	// typical for activity-log style alerts with no resolution semantics) and nobody ever engages.
+	// Without this case such rules fall through to "healthy" because the broken case below
+	// deliberately excludes instant-dominated rules.
+	case score.FiringFrequency > 5 && score.InstantRate >= 0.5 && score.EngagementRate < 0.1:
+		score.Classification = "false_positive"
+		score.Recommendation = "disable_alert"
+
+	// 3. Broken: never resolves (but only if instant events aren't dominating)
 	case score.ResolutionRate < 0.1 && score.InstantRate < 0.5:
 		score.Classification = "broken"
 		score.Recommendation = "investigate"
 
-	// 3. Noisy but real: fires often, resolves, and humans act on it
+	// 4. Noisy but real: fires often, resolves, and humans act on it
 	case score.FiringFrequency > 1 && score.ResolutionRate > 0.5 && score.EngagementRate > 0.1:
 		score.Classification = "noisy_but_real"
 		if score.TransientRate > 0.7 {
@@ -2374,7 +2385,7 @@ func classifyAlertQuality(score *AlertQualityScore) {
 			score.Recommendation = "tune_threshold"
 		}
 
-	// 4. Noisy ignored: fires moderately often, resolves, but nobody acts
+	// 5. Noisy ignored: fires moderately often, resolves, but nobody acts
 	case score.FiringFrequency > 0.5 && score.ResolutionRate > 0.5 && score.EngagementRate < 0.1:
 		score.Classification = "false_positive"
 		if score.TransientRate > 0.7 {
@@ -2383,10 +2394,31 @@ func classifyAlertQuality(score *AlertQualityScore) {
 			score.Recommendation = "tune_threshold"
 		}
 
-	// 5. Healthy: low frequency or well-engaged
+	// 6. Healthy: low frequency or well-engaged
 	default:
 		score.Classification = "healthy"
 		score.Recommendation = "no_action"
+	}
+}
+
+// qualityOnlyRecommendation maps an alert-quality recommendation onto the
+// metric_stats.recommendation_type vocabulary the suggestions UI renders, for rules
+// where no numeric threshold suggestion is possible (metric not fetchable). A numeric
+// tune is off the table there, so tune_threshold degrades to review_alert. An empty
+// return means the verdict is not actionable and the rule keeps today's skipped status.
+func qualityOnlyRecommendation(q *AlertQualityScore) string {
+	if q == nil {
+		return ""
+	}
+	switch q.Recommendation {
+	case "disable_alert":
+		return "disable"
+	case "increase_duration":
+		return "increase_duration"
+	case "investigate", "tune_threshold":
+		return "review_alert"
+	default:
+		return ""
 	}
 }
 

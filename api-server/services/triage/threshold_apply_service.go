@@ -268,6 +268,18 @@ func GetThresholdApplyOptions(ctx *security.RequestContext, alertRuleKey, cloudA
 		Operator:         sug.Operator,
 	}
 
+	// quality_only rows have no numeric suggestion (metric not fetchable). A 'disable'
+	// verdict is threshold-free and can flow through the normal rewrite machinery; every
+	// other verdict has nothing mechanical to apply — mark both methods unavailable.
+	if sug.Status == "quality_only" && sug.RecommendationType != "disable" {
+		reason := "no numeric suggestion — verdict from firing history only; review the rule in the provider console"
+		out.Options = []ApplyOption{
+			{Method: "direct", Available: false, Reason: reason},
+			{Method: "pr", Available: false, Reason: reason},
+		}
+		return out, nil
+	}
+
 	rule, ruleErr := LoadSourceRule(ctx.GetContext(), db, cloudAccountID, sug.AlertName)
 
 	// Dry-run preview (no write).
