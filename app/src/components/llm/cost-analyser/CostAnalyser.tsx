@@ -228,6 +228,9 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
                   total={conversations?.page?.total ?? runs.length}
                   listCap={listCap}
                   accountNameById={accountNameById}
+                  startDate={filters.startDate}
+                  endDate={filters.endDate}
+                  accountLabel={effectiveAccountId ? accountNameById[effectiveAccountId] : undefined}
                   onSelectRun={openRun}
                   onAnalyse={openAnalyse}
                 />
