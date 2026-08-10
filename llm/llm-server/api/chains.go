@@ -1885,6 +1885,71 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		c.JSON(http.StatusOK, buildApiResponse(data, nil))
 	})
 
+	// ai-account-report backs the Cost Analyser dashboard's Accounts tab: the
+	// consolidated daily/MTD/prev-month cost report, one row per account. Same
+	// computation (core.GetAiCostAccountReport) as the Slack daily digest and
+	// the Nubi cost-report agent, so all three surfaces reconcile.
+	groupV2.POST("/ai-account-report", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_ai_account_report")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.AiCostAccountReportRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		logger := slog.With("account_ids", request.AccountIds, "reference_date", request.ReferenceDate)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		if request.ReferenceDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: reference_date is required"},
+			}))
+			return
+		}
+
+		data, err := core.HandleAiCostAccountReportApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
 	// usage-filters returns the option-sets that populate the Cost Analyser
 	// filter bar (distinct sources/models/providers/agents/statuses/users in
 	// the window + the caller's accessible accounts).

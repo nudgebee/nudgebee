@@ -11,6 +11,12 @@ import requests
 from botbuilder.schema import Activity, ActivityTypes
 
 from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, URLRoutes, settings
+from notifications_server.message_templates.slack.ai_cost_daily_report import (
+    TopModelRow,
+    TopSourceRow,
+    _top_models_reply_blocks,
+    _top_sources_reply_blocks,
+)
 from notifications_server.message_templates.slack.finding import (
     FINDING_CALLBACK_ID,
     SUPPRESS_ACTION_NAME,
@@ -146,6 +152,8 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             "skip_auto_optimize_execution": self.handle_skip_auto_optimize,
             "ai_chat_feedback": self.handle_ai_search_feedback,
             "workflow_approval_action": self.handle_approval_action,
+            "ai_cost_show_top_models": self.handle_show_ai_cost_top_models,
+            "ai_cost_show_top_sources": self.handle_show_ai_cost_top_sources,
         }
 
         handler = action_methods.get(action_name)
@@ -267,6 +275,38 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             action_name="skip_playbook_execution",
         )
         return json.dumps(self.action_service.skip_auto_optimize_execution(params=params))
+
+    def handle_show_ai_cost_top_models(self, channel_id, team_id, slack_user_id, user_email, data, action_params):
+        # "Top Models" button on the AI cost digest — rows are the compact
+        # arrays ai_cost_daily_report.py._compact_model_rows already put in
+        # the button's own value, so this never re-queries llm-server; it
+        # just re-renders the same table the digest already computed and
+        # posts it as a threaded reply under the digest message.
+        message = data.get("message", {})
+        thread_ts = message.get("thread_ts") or message.get("ts")
+        rows = [
+            TopModelRow(
+                model=r[0], mtd_cost_usd=r[1], call_count=r[2], p95_cost_per_call_usd=r[3], p99_cost_per_call_usd=r[4]
+            )
+            for r in action_params.get("rows", [])
+        ]
+        self.common_service.slack_reply_in_thread_as_blocks(
+            channel_id, team_id, thread_ts, blocks=_top_models_reply_blocks(rows)
+        )
+
+    def handle_show_ai_cost_top_sources(self, channel_id, team_id, slack_user_id, user_email, data, action_params):
+        # Mirrors handle_show_ai_cost_top_models for the source breakdown.
+        message = data.get("message", {})
+        thread_ts = message.get("thread_ts") or message.get("ts")
+        rows = [
+            TopSourceRow(
+                source=r[0], mtd_cost_usd=r[1], call_count=r[2], p95_cost_per_call_usd=r[3], p99_cost_per_call_usd=r[4]
+            )
+            for r in action_params.get("rows", [])
+        ]
+        self.common_service.slack_reply_in_thread_as_blocks(
+            channel_id, team_id, thread_ts, blocks=_top_sources_reply_blocks(rows)
+        )
 
     def perform_select_action(self, channel_id, team_id, user_email, data):
         action = data.get("actions", [])[0]

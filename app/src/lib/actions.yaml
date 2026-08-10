@@ -741,6 +741,19 @@ actions:
       - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
+  - name: ai_aggregate_account_cost_report
+    comment: Consolidated per-account AI cost report (daily/MTD/prev-month + top drivers) — same computation as the Slack digest and Nubi's ai_cost_report agent
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/ai-account-report'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   # Cross-tenant critique reads, no account/tenant scoping in the query.
   # Gated tenant_admin(_readonly)/super_admin(_readonly) — sees ALL tenants' data.
   - name: critiques_aggregate_all

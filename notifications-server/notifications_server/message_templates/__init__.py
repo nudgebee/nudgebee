@@ -26,6 +26,10 @@ from notifications_server.message_templates.slack.cloud_cost_summary import (
     get_cloud_cost_message_template,
     get_cloud_cost_summary_message_params,
 )
+from notifications_server.message_templates.slack.ai_cost_daily_report import (
+    get_ai_cost_account_report_message_template,
+    get_ai_cost_account_report_message_params,
+)
 from notifications_server.message_templates.slack.daily_highlight import (
     get_daily_recap_message_template,
     get_daily_recap_message_params,
@@ -229,6 +233,13 @@ template_mapping = {
         "ms_teams": get_grouped_slo_alerts_ms_teams_template,
         "google_chat": get_grouped_slo_alerts_gchat_template,
         "discord": get_discord_grouped_slo_alert_template,
+    },
+    "ai_cost_daily_report": {
+        "common_params": get_ai_cost_account_report_message_params,
+        "slack": get_ai_cost_account_report_message_template,
+        "ms_teams": None,
+        "google_chat": None,
+        "discord": None,
     },
     "cloud_cost_summary": {
         "common_params": get_cloud_cost_summary_message_params,

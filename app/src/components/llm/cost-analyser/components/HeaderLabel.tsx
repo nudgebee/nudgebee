@@ -18,11 +18,7 @@ export function HeaderLabel({ label, info, secondary }: { label: string; info: s
         </Box>
       )}
       <Tooltip title={info}>
-        <Box
-          component='span'
-          onClick={(e) => e.stopPropagation()}
-          sx={{ display: 'inline-flex', alignItems: 'center', color: 'var(--ds-gray-400)', cursor: 'help' }}
-        >
+        <Box component='span' onClick={(e) => e.stopPropagation()} sx={{ display: 'inline-flex', alignItems: 'center', color: 'var(--ds-gray-400)' }}>
           <InfoOutlinedIcon sx={{ fontSize: 13 }} />
         </Box>
       </Tooltip>

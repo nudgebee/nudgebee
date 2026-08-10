@@ -105,6 +105,57 @@ export interface UsageMetrics {
   storage?: CacheStorage | null;
 }
 
+/** One "what drove the cost" line (a model or a source) within a single account. */
+export interface AiCostDriver {
+  key: string;
+  cost_usd: number;
+}
+
+/** One account's row in the consolidated cost report (Accounts tab / Slack digest). */
+export interface AiCostAccountRow {
+  account_id: string;
+  account_name: string;
+  daily_cost_usd: number;
+  mtd_cost_usd: number;
+  prev_month_cost_usd: number;
+  avg_daily_this_month_usd: number;
+  avg_daily_prev_month_usd: number;
+  /** (avgDailyThisMonth - avgDailyPrevMonth) / avgDailyPrevMonth * 100; 0 when no prior baseline. */
+  pct_delta_avg_daily: number;
+  top_daily_by_model: AiCostDriver[];
+  top_daily_by_source: AiCostDriver[];
+  top_mtd_by_model: AiCostDriver[];
+  top_mtd_by_source: AiCostDriver[];
+}
+
+/** One model's tenant-wide MTD cost/call-count/percentile breakdown (top 10, cost-desc — from the Go query, not re-sorted here). */
+export interface AiCostTopModelRow {
+  model: string;
+  mtd_cost_usd: number;
+  call_count: number;
+  p95_cost_per_call_usd: number;
+  p99_cost_per_call_usd: number;
+}
+
+/** Same shape as AiCostTopModelRow, grouped by source instead of model (top 5, cost-desc). */
+export interface AiCostTopSourceRow {
+  source: string;
+  mtd_cost_usd: number;
+  call_count: number;
+  p95_cost_per_call_usd: number;
+  p99_cost_per_call_usd: number;
+}
+
+export interface AiCostAccountReport {
+  tenant_id: string;
+  reference_date: string; // YYYY-MM-DD
+  accounts: AiCostAccountRow[];
+  /** Tenant-wide (not per-account) — top models by MTD cost, with p95/p99 cost-per-call. */
+  top_models: AiCostTopModelRow[];
+  /** Tenant-wide (not per-account) — top sources by MTD cost, with p95/p99 cost-per-call. */
+  top_sources: AiCostTopSourceRow[];
+}
+
 /** One model's rolled-up calls + cost within a single conversation (list row). */
 export interface ConversationModelStat {
   model: string;
@@ -522,6 +573,31 @@ export async function listConversationCosts(req: ListConversationCostsRequest, s
     signal
   );
   return response?.data?.data?.ai_list_conversation_costs?.data ?? null;
+}
+
+/** Consolidated per-account cost report (Accounts tab) — same computation the
+ * Slack daily digest uses. referenceDate is the day being reported on
+ * (YYYY-MM-DD); accountIds empty = every account the caller may read. */
+export async function aggregateAccountCostReport(
+  req: { accountIds?: string[]; referenceDate: string },
+  signal?: AbortSignal
+): Promise<AiCostAccountReport | null> {
+  const query = `mutation AggregateAccountCostReport($accountIds: [String!], $referenceDate: String!) {
+    ai_aggregate_account_cost_report(request: { account_ids: $accountIds, reference_date: $referenceDate }) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(
+    query,
+    'AggregateAccountCostReport',
+    {
+      accountIds: arr(req.accountIds),
+      referenceDate: req.referenceDate,
+    },
+    undefined,
+    signal
+  );
+  return response?.data?.data?.ai_aggregate_account_cost_report?.data ?? null;
 }
 
 // ─── ai_list_agent_costs (Agents leaderboard) ──────────────────────────────────

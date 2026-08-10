@@ -303,6 +303,7 @@ type IConversationDao interface {
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
 	GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error)
+	GetAiCostAccountReport(accountIDs []string, referenceDate time.Time) (AiCostAccountReport, error)
 	GetUsageFilters(filter UsageMetricsFilter) (UsageFilters, error)
 	ListConversationCosts(filter UsageMetricsFilter, sortBy, sortDir string, limit, offset int) (ConversationCostList, error)
 	GetConversationTree(sessionID, accountID string) (ConversationTree, error)
