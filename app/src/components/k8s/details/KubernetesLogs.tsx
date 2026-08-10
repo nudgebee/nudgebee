@@ -1168,6 +1168,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                 providerOverride={logProvider && defaultProvider && logProvider !== defaultProvider ? logProvider : undefined}
                 operatorDescriptors={operatorDescriptors}
                 params={{ ...time }}
+                limit={logLimit}
                 queryItems={logQueryItems}
                 setQueryItems={setLogQueryItems}
                 _queryOperations={logOperations}

@@ -68,6 +68,7 @@ const ES_QUERY_LANGUAGES = [
  *   deleteDataOnQueryBlockDeletion?: (query_key: string) => void
  *   providerType?: string,
  *   initialEsIndex?: string,
+ *   limit?: number,
  * }} props
  */
 
@@ -92,6 +93,7 @@ const QueryModeSwitcher = ({
   providerType = '',
   initialQuery = '',
   initialEsIndex = '',
+  limit,
 }) => {
   const { assistantName } = useTenantBranding();
   const [mounted, setMounted] = useState(false);
@@ -400,6 +402,11 @@ const QueryModeSwitcher = ({
         // when the fetch runs against the override (e.g. Loki). Only sent when
         // overridden, mirroring the fetch path in KubernetesLogs.handleSubmit.
         ...(providerOverride ? { log_provider: providerOverride } : {}),
+        // Preview the query with the same row limit the fetch will use. Without
+        // it the backend falls back to the provider default (Pinot/Hive: 1000),
+        // so the generated SQL contradicted the toolbar's Limit selection — and
+        // in Code mode that SQL is executed verbatim, silently overriding it.
+        limit,
       });
 
       if (response?.data?.errors) {
@@ -1020,6 +1027,7 @@ QueryModeSwitcher.propTypes = {
   setQueryOperations: PropTypes.func,
   setLlmQueryResponse: PropTypes.func,
   setConversationId: PropTypes.func,
+  limit: PropTypes.number,
   qLEditor: PropTypes.string,
   setQLEditor: PropTypes.func,
   allowMultipleQueries: PropTypes.bool,

@@ -326,6 +326,7 @@ const observability = {
           start_time: data.start_time,
           end_time: data.end_time,
           ...(data.log_provider ? { log_provider: data.log_provider } : {}),
+          ...(data.limit ? { limit: data.limit } : {}),
         },
       });
       return response;

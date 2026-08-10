@@ -4930,6 +4930,7 @@ input FetchLogQueryRequest {
   log_provider_source: String
   start_time: bigint
   end_time: bigint
+  limit: Int
 }
 
 input WorkflowDeleteRequest {
