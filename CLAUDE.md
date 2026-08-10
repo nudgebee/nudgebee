@@ -11,19 +11,20 @@
 
 ## Quick Overview
 
-14 interconnected services (8 Go, 5 Python, 1 TypeScript) deployed on Kubernetes. Three-tier environment: main (dev) → test → prod.
+15 interconnected services (9 Go, 5 Python, 1 TypeScript) deployed on Kubernetes. Three-tier environment: main (dev) → test → prod.
 
 ## Module Structure
 
-### Go Services (8 modules)
+### Go Services (9 modules)
 1. `api-server/services/` - Core backend (Gin)
 2. `ticket-server/` - Ticket management
 3. `collector-server/cloud-collector/` - AWS/cloud data collection
 4. `collector-server/k8s-collector/relay-server/` - K8s relay gateway
-5. `llm/code-analysis/` - Code analysis engine
-6. `llm/llm-server/` - LLM inference service
-7. `app-e2e-tests/` - Integration tests
-8. `api-server/test_servicemap/` - Service map tests
+5. `collector-server/cost-server/` - Cost engine (OpenCost-based)
+6. `llm/code-analysis/` - Code analysis engine
+7. `llm/llm-server/` - LLM inference service
+8. `app-e2e-tests/` - Integration tests
+9. `api-server/test_servicemap/` - Service map tests
 
 ### Python Services (5+ modules)
 1. `ml-k8s-server/` - ML models & K8s autoscaling
@@ -402,4 +403,4 @@ npm ci --legacy-peer-deps
 ---
 
 **Last updated:** Based on actual tested commands from Makefiles, CI/CD workflows, and Dockerfiles.
-Verified: 8 Go + 5 Python + 1 TypeScript = 14 total modules.
+Verified: 9 Go + 5 Python + 1 TypeScript = 15 total modules.

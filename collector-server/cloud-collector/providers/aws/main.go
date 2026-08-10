@@ -1358,8 +1358,8 @@ func (a *awsProvider) QueryServiceMap(ctx providers.CloudProviderContext, accoun
 
 // shouldUseMultiSourceEngine checks if the multi-source engine should be used
 func (a *awsProvider) shouldUseMultiSourceEngine(account providers.Account) bool {
-	// Check environment variable for global toggle
-	if os.Getenv("ENABLE_MULTI_SOURCE_SERVICEMAP") == "true" {
+	// Global toggle (env: ENABLE_MULTI_SOURCE_SERVICEMAP)
+	if config.Config.EnableMultiSourceServicemap {
 		return true
 	}
 

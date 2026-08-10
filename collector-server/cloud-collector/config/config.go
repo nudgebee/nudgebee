@@ -114,6 +114,11 @@ type appConfig struct {
 	// INFORMATION_SCHEMA query and/or a longer refresh cadence.
 	CloudCollectorGcpBigqueryTableDiscoveryEnabled bool `mapstructure:"cloud_collector_gcp_bigquery_table_discovery_enabled"`
 
+	// EnableMultiSourceServicemap is the rollout toggle for the multi-source AWS
+	// service-map engine (VPC Flow Logs etc.) instead of the legacy AWS Config path.
+	// Env: ENABLE_MULTI_SOURCE_SERVICEMAP
+	EnableMultiSourceServicemap bool `mapstructure:"enable_multi_source_servicemap"`
+
 	// Request timeout in seconds for API handler context and HTTP server read/write
 	CloudCollectorRequestTimeoutSeconds int `mapstructure:"cloud_collector_request_timeout_seconds"`
 
@@ -206,6 +211,9 @@ func init() {
 
 	// Per-table BigQuery discovery is off by default — see CloudCollectorGcpBigqueryTableDiscoveryEnabled.
 	viper.SetDefault("cloud_collector_gcp_bigquery_table_discovery_enabled", false)
+
+	// Multi-source service-map engine is off by default — see EnableMultiSourceServicemap.
+	viper.SetDefault("enable_multi_source_servicemap", false)
 
 	viper.SetDefault("cloud_collector_server_cost_processing_workers_max", 1)
 	// Max number of trailing months of historical CUR data to backfill at new-account onboarding (0 disables).
