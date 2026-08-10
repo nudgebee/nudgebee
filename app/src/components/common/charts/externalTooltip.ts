@@ -138,8 +138,21 @@ export function makeExternalTooltip(formatValue: TooltipValueFormatter) {
     el.innerHTML = renderTable(title, rows, total);
 
     const rect = chart.canvas.getBoundingClientRect();
-    const left = rect.left + window.pageXOffset + tooltip.caretX + 12;
+    const preferredLeft = rect.left + window.pageXOffset + tooltip.caretX + 12;
     const top = rect.top + window.pageYOffset + tooltip.caretY + 12;
+
+    // Clamp horizontally so the tooltip never pushes the document past the
+    // viewport width (it would otherwise widen the page and add a scrollbar
+    // whenever a chart near the right edge is hovered). Flip to the left of
+    // the cursor if there isn't room on the right.
+    const viewportRight = window.pageXOffset + document.documentElement.clientWidth;
+    const tooltipWidth = el.offsetWidth;
+    let left = preferredLeft;
+    if (left + tooltipWidth > viewportRight) {
+      left = rect.left + window.pageXOffset + tooltip.caretX - tooltipWidth - 12;
+    }
+    left = Math.max(window.pageXOffset + 4, left);
+
     el.style.left = `${left}px`;
     el.style.top = `${top}px`;
     el.style.opacity = '1';
