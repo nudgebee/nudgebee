@@ -1091,6 +1091,7 @@ var conversationSortColumns = map[string]string{
 	"duration":   "wall_clock_seconds",
 	"llm_calls":  "llm_call_count",
 	"tokens":     "input_tokens",
+	"latency":    "avg_latency_seconds",
 }
 
 // ConversationModelStat is one model's rolled-up calls + cost within a single
@@ -1107,6 +1108,9 @@ type ConversationModelStat struct {
 
 // ConversationCostRow is one explorer row: a conversation with its rolled-up
 // cost, tokens, models, and structural counts (messages/agents/llm calls).
+// AvgLatencySeconds (total model time ÷ llm calls) is the per-call figure the
+// list's Latency column shows — returned so that column and the server-side
+// "latency" ORDER BY rank on exactly the same value.
 type ConversationCostRow struct {
 	ConversationID        string                  `json:"conversation_id"`
 	SessionID             string                  `json:"session_id"`
@@ -1119,6 +1123,7 @@ type ConversationCostRow struct {
 	EndedAt               time.Time               `json:"ended_at"`
 	WallClockSeconds      float64                 `json:"wall_clock_seconds"`
 	TotalModelTimeSeconds float64                 `json:"total_model_time_seconds"`
+	AvgLatencySeconds     float64                 `json:"avg_latency_seconds"`
 	CostUsd               float64                 `json:"cost_usd"`
 	InputTokens           int64                   `json:"input_tokens"`
 	OutputTokens          int64                   `json:"output_tokens"`
@@ -1158,6 +1163,7 @@ type conversationCostScan struct {
 	UpdatedAt             sql.NullTime   `db:"updated_at"`
 	WallClockSeconds      float64        `db:"wall_clock_seconds"`
 	TotalModelTimeSeconds float64        `db:"total_model_time_seconds"`
+	AvgLatencySeconds     float64        `db:"avg_latency_seconds"`
 	CostUsd               float64        `db:"cost_usd"`
 	InputTokens           int64          `db:"input_tokens"`
 	OutputTokens          int64          `db:"output_tokens"`
@@ -1239,6 +1245,7 @@ func (chat *ConversationDao) ListConversationCosts(filter UsageMetricsFilter, so
 				WHERE m.conversation_id = c.id
 			), 0)                                            AS wall_clock_seconds,
 			COALESCE(SUM(t.latency_seconds), 0)              AS total_model_time_seconds,
+			COALESCE(SUM(t.latency_seconds) / NULLIF(COUNT(t.id), 0), 0) AS avg_latency_seconds,
 			COALESCE(SUM(%s), 0)                             AS cost_usd,
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
@@ -1282,6 +1289,7 @@ func (chat *ConversationDao) ListConversationCosts(filter UsageMetricsFilter, so
 			StartedAt:             s.CreatedAt,
 			WallClockSeconds:      s.WallClockSeconds,
 			TotalModelTimeSeconds: s.TotalModelTimeSeconds,
+			AvgLatencySeconds:     s.AvgLatencySeconds,
 			CostUsd:               s.CostUsd,
 			InputTokens:           s.InputTokens,
 			OutputTokens:          s.OutputTokens,

@@ -126,7 +126,7 @@ func TestHandleUsageFiltersApi_InvalidStartDate(t *testing.T) {
 // TestConversationSortColumns_Whitelist documents the allowed ORDER BY targets
 // and asserts they are single trusted tokens (no injectable expressions).
 func TestConversationSortColumns_Whitelist(t *testing.T) {
-	for _, k := range []string{"cost", "start_time", "duration", "llm_calls", "tokens"} {
+	for _, k := range []string{"cost", "start_time", "duration", "llm_calls", "tokens", "latency"} {
 		col, ok := conversationSortColumns[k]
 		assert.True(t, ok, "expected %s sortable", k)
 		assert.NotEmpty(t, col)
