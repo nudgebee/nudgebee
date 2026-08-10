@@ -212,10 +212,7 @@ func toGrypePackage(idx int, p api.Package, d *distro.Distro) (grypePkg.Package,
 
 // toFinding flattens a grype match into our wire shape.
 func (e *Engine) toFinding(m match.Match, keyByPkgID map[grypePkg.ID]string) api.Finding {
-	meta, err := e.provider.VulnerabilityMetadata(m.Vulnerability.Reference)
-	if err != nil || meta == nil {
-		meta = nil
-	}
+	meta := m.Vulnerability.Metadata
 
 	f := api.Finding{
 		Key:      keyByPkgID[m.Package.ID],
