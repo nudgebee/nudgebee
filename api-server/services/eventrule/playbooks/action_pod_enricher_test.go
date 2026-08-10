@@ -36,10 +36,35 @@ func TestFilterPodsByNameNamespace(t *testing.T) {
 		assert.Len(t, list, 1)
 	})
 
-	t.Run("falls back to the raw response when nothing matches, instead of emptying it", func(t *testing.T) {
-		data := []any{pod("other-pod", "other-namespace")}
+	// Regression: this used to fall back to the raw, completely unfiltered
+	// response — observed on real dev-cluster traffic returning 525 unrelated
+	// pods (5.8MB) for a single already-deleted trivy-scan job pod. The target
+	// pod being genuinely gone (ephemeral job pod, or an OOMKilled pod
+	// Kubernetes already rescheduled under a new name) is common enough that
+	// dumping the whole account's pod list is worse than saying so directly.
+	t.Run("returns a small not-found marker when nothing matches, instead of the raw unfiltered response", func(t *testing.T) {
+		data := []any{pod("other-pod", "other-namespace"), pod("yet-another-pod", "yet-another-namespace")}
 		got := filterPodsByNameNamespace(data, "checkout-6c54595687-cjp9x", "prod")
-		assert.Equal(t, data, got)
+		list, ok := got.([]any)
+		assert.True(t, ok)
+		assert.Len(t, list, 1, "must not fall back to the full unfiltered list")
+		marker, ok := list[0].(map[string]any)
+		assert.True(t, ok)
+		assert.Equal(t, true, marker["pod_not_found"])
+		assert.Equal(t, "checkout-6c54595687-cjp9x", marker["requested_name"])
+		assert.Equal(t, "prod", marker["requested_namespace"])
+	})
+
+	t.Run("returns the not-found marker for an already-empty list too", func(t *testing.T) {
+		data := []any{}
+		got := filterPodsByNameNamespace(data, "checkout-6c54595687-cjp9x", "prod")
+		list, ok := got.([]any)
+		assert.True(t, ok)
+		assert.Len(t, list, 1)
+		marker, ok := list[0].(map[string]any)
+		assert.True(t, ok)
+		assert.Equal(t, true, marker["pod_not_found"])
+		assert.Equal(t, "checkout-6c54595687-cjp9x", marker["requested_name"])
 	})
 
 	t.Run("passes through non-list shapes unchanged", func(t *testing.T) {
