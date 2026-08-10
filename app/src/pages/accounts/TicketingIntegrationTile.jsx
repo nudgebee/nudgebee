@@ -34,6 +34,7 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
   const [editConfig, setEditConfig] = useState(null);
   const [loading, setLoading] = useState(false);
   const [disableConfig, setDisableConfig] = useState({});
+  const [deleteConfig, setDeleteConfig] = useState({});
   const [isChangingConfig, setIsChangingConfig] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [selectedNameFilter, setSelectedNameFilter] = useState('');
@@ -62,6 +63,10 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
         id: 'edit',
       });
     }
+    items.push({
+      label: 'Delete',
+      id: 'delete',
+    });
     return items;
   };
 
@@ -71,6 +76,8 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
     } else if (menuItem.id === 'edit') {
       setEditConfig(item);
       setOpenModal(true);
+    } else if (menuItem.id === 'delete') {
+      setDeleteConfig({ id: item.id, name: item.name });
     }
   };
 
@@ -159,6 +166,34 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
       });
   };
 
+  const handleDeleteConfig = () => {
+    setIsChangingConfig(true);
+    apiIntegrations
+      .deleteIntegrations({
+        integration_config_name: deleteConfig.name,
+        integration_name: tool,
+        source: 'user',
+      })
+      .then((res) => {
+        if (res?.data?.data?.integrations_delete_config?.status === 'success') {
+          snackbar.success(`${displayName} configuration deleted successfully`);
+          setDeleteConfig({});
+          listConfigurations();
+          apiTicketIntegrations.listTicketConfigurations({}, true).catch((e) => {
+            console.error('Failed to refresh ticket configurations cache', e);
+          });
+        } else {
+          snackbar.error(res?.data?.errors?.[0]?.message || `Failed to delete ${displayName} configuration`);
+        }
+      })
+      .catch(() => {
+        snackbar.error(`Failed to delete ${displayName} configuration`);
+      })
+      .finally(() => {
+        setIsChangingConfig(false);
+      });
+  };
+
   return (
     <>
       <Modal
@@ -179,6 +214,25 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
         }
       >
         {`Are you sure you want to ${disableConfig.active ? 'enable' : 'disable'} this "${disableConfig.name}" ${displayName} integration?`}
+      </Modal>
+      <Modal
+        handleClose={isChangingConfig ? () => {} : () => setDeleteConfig({})}
+        open={deleteConfig && Object.keys(deleteConfig).length > 0}
+        title={`Delete ${displayName} Integration`}
+        width='md'
+        loader={isChangingConfig}
+        actionButtons={
+          <>
+            <DsButton id='ticketing-integration-delete-cancel-btn' tone='secondary' onClick={() => setDeleteConfig({})} disabled={isChangingConfig}>
+              Cancel
+            </DsButton>
+            <DsButton id='ticketing-integration-delete-confirm-btn' tone='danger' loading={isChangingConfig} onClick={handleDeleteConfig}>
+              Delete
+            </DsButton>
+          </>
+        }
+      >
+        {`Are you sure you want to delete this "${deleteConfig.name}" ${displayName} integration? This action cannot be undone.`}
       </Modal>
       <AccountModalComponent openModal={openModal} handleClose={closeModal} tool={tool} editConfig={editConfig} />
       <ListingLayout id={`${tool}-integrations`}>
