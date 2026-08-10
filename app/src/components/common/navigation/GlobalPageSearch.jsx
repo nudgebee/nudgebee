@@ -2,10 +2,10 @@
  * GlobalPageSearch
  *
  * Cmd/Ctrl+K page search box shown in the app header. Self-contained: owns
- * the static + per-provider result lists, the "@account" scoping picker,
- * recent-search persistence, and the Cmd/Ctrl+K shortcut. Renders with zero
- * props — reads selectedCluster/allCluster from DataContext, the session
- * from NextAuth, and drives navigation itself.
+ * the static + per-provider result lists, the tenant's dashboards, the
+ * "@account" scoping picker, recent-search persistence, and the Cmd/Ctrl+K
+ * shortcut. Renders with zero props — reads selectedCluster/allCluster from
+ * DataContext, the session from NextAuth, and drives navigation itself.
  *
  * The trigger/popover/search-list chrome below is a trimmed-down port of
  * ds/FilterDropdown.jsx's single-select path: this box is never `multiple`
@@ -36,13 +36,14 @@ import { hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import apiDashboards from '@api1/dashboards';
 import homeApi from '@api1/home';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
 import AdminIconBlue from '@assets/header/AdminIconBlue.icon.svg';
 import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
 import TicketIconBlue from '@assets/header/TicketIconBlue.icon.svg';
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
-import { AutomateBlue, AgentIconBlue } from '@assets';
+import { AutomateBlue, AgentIconBlue, dashboardIcon1 } from '@assets';
 import {
   navSearchPages,
   accountScopedSearchFragments,
@@ -66,9 +67,36 @@ const VIRTUALIZATION_THRESHOLD = 200;
 const MAX_LIST_HEIGHT = 380;
 const POPOVER_WIDTH = ds.space.mul(0, 340);
 
+// The sidebar's dashboard icon, recoloured for this panel. dashboard.icon.svg
+// is drawn for the dark sidebar — its shapes are filled white, so dropped
+// straight onto this light surface it renders invisible. A CSS `fill` beats the
+// svg's own presentation attribute, so painting the paths with a --ds-* token
+// both makes it visible here and keeps it visible in dark mode (a filter-based
+// recolour, which the sidebar flyout uses in the other direction, wouldn't).
+//
+// An element rather than the raw import because OptionItem hands `icon` to
+// SafeIcon, which renders a valid element as-is — that's the only seam to wrap
+// the svg in, and it's the same one the "@account" picker's rows already use.
+const DashboardRowIcon = (
+  <Box
+    component='span'
+    sx={{
+      display: 'inline-flex',
+      flexShrink: 0,
+      width: 16,
+      height: 16,
+      '& svg': { width: 16, height: 16 },
+      '& svg path': { fill: 'var(--ds-gray-600)' },
+    }}
+  >
+    <SafeIcon src={dashboardIcon1} alt='' width={16} height={16} />
+  </Box>
+);
+
 // Icon shown per header-search row: the parent page's icon (same icons the
 // main nav uses for these sections), not a distinct icon per tab.
 const NAV_SEARCH_GROUP_ICON = {
+  Dashboards: DashboardRowIcon,
   Troubleshoot: TroubleshootIconBlue,
   Automation: AutomateBlue,
   'Agent Health': AgentIconBlue,
@@ -270,6 +298,35 @@ const navSearchAutomationItems = (fragments, accountId) =>
     };
   });
 
+// The deep link that opens one dashboard — the same URL the listing itself
+// writes when a dashboard is opened there: the id rides in a query param
+// because /dashboards is hash-routed and the hash picks the tab (see
+// CustomDashboards.jsx's DASHBOARD_PARAM).
+const dashboardSearchPath = (id) => `/dashboards?dashboard=${id}#list`;
+
+// Search rows for the tenant's own dashboards (not the /dashboards page's tabs,
+// which are plain static rows in navSearchPages). A dashboard is tenant-level —
+// it has no account of its own, each of its PANELS names the account it queries
+// — so unlike the provider rows above these carry no accountId.
+const navSearchDashboardItems = (dashboards) =>
+  dashboards.map((dashboard) => {
+    const path = dashboardSearchPath(dashboard.id);
+    return {
+      label: dashboard.title,
+      icon: NAV_SEARCH_GROUP_ICON.Dashboards,
+      // The page path, not this row's own deep link — the trailing path text is
+      // there to say where a row lands, and an opaque uuid says nothing.
+      type: '/dashboards',
+      value: path,
+      path,
+      group: 'Dashboards',
+      sectionLabel: 'Dashboards',
+      // Title is already matched through `label` — this only adds what the row
+      // doesn't show but is still worth finding a dashboard by.
+      searchText: `Dashboards ${dashboard.description || ''} ${(dashboard.tags || []).join(' ')}`,
+    };
+  });
+
 // Per-provider fragment list + base path for the "@account" scoped search —
 // keyed by cloud_provider.toUpperCase() since allCluster entries' casing
 // isn't guaranteed to match the mixed-case provider labels used elsewhere.
@@ -310,6 +367,20 @@ const ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE = /^\/(?:agentHealth)\?accountId=([^#]
 // self-healing path a renamed page already takes. A captured account is
 // re-resolved against allCluster, same reasoning as above.
 const AUTOMATION_SCOPED_SEARCH_PATH_RE = /^\/automation(?:\?(?:accountId|account)=([^#&]+))?#/;
+
+// Matches a dashboard row's value stamped by navSearchDashboardItems. Only used
+// to route a recent pick to the dashboard branch of resolveRecentOption — the
+// id isn't captured, since that branch re-resolves the whole value against the
+// live dashboard list anyway (a deleted dashboard then drops out of Recents,
+// same as a removed page already does).
+const DASHBOARD_SEARCH_PATH_RE = /^\/dashboards\?dashboard=/;
+
+// Rows asked of dashboards_list per open. 500 is that action's own maximum
+// (anything higher silently falls back to its default 200), and asking for the
+// maximum is what lets a short response be read as "this is every dashboard in
+// the tenant" — which is the precondition for pruning a recent pick whose
+// dashboard is missing from it (see the fetch effect below).
+const DASHBOARD_SEARCH_FETCH_LIMIT = 500;
 
 // Same provider-order + connection-status + alphabetical sort ClusterDropDown
 // itself uses (CustomDropdown.jsx's groupedOptions, groupByCloudProvider mode)
@@ -816,7 +887,12 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   //     active K8s cluster only rebuilds the ~47 K8s rows, not all ~200 rows
   //     across every provider (which a single combined useMemo would do,
   //     since any one of the four account ids changing invalidates it).
-  const [hasOpenedSearch, setHasOpenedSearch] = useState(false);
+  //
+  // Counted rather than flagged: the static rows only care that the box has
+  // been opened at least once (hasOpenedSearch below), but the dashboard fetch
+  // needs to re-run on *each* open, and a counter gives both off one state.
+  const [searchOpenSeq, setSearchOpenSeq] = useState(0);
+  const hasOpenedSearch = searchOpenSeq > 0;
   // Top-3 most-recently-selected search results for this tenant, re-read from
   // localStorage on every open (not just once) so a pick made in another tab
   // shows up here too. Only the `value` (path) is persisted — re-resolved
@@ -865,6 +941,68 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   const [scopedAccount, setScopedAccount] = useState(null);
   const [search, setSearch] = useState('');
   const mentionMode = !scopedAccount && hasMentionAccounts && search.startsWith('@');
+  // The tenant's dashboards, offered as results alongside pages. Re-read on
+  // every open (like the recent-search list above, and for the same reason:
+  // one created, renamed or deleted meanwhile should be reflected on the next
+  // open, not on the next full page load) but never per keystroke — filtering
+  // happens client-side, through the same ranking every other row goes
+  // through. A failure leaves the list empty and is only logged: page search
+  // must keep working for a user whose tenant has no dashboards, or who may
+  // not read them.
+  const [dashboards, setDashboards] = useState([]);
+  useEffect(() => {
+    if (!searchOpenSeq) {
+      return undefined;
+    }
+    let active = true;
+    apiDashboards
+      .listDashboardsBrief({ limit: DASHBOARD_SEARCH_FETCH_LIMIT })
+      .then((res) => {
+        if (!active) {
+          return;
+        }
+        // apiDashboards resolves with {data, errors} rather than throwing, so a
+        // GraphQL-level failure (a 403 on dashboards, say) arrives here with
+        // data null — checked explicitly so it's logged rather than read as
+        // "this tenant has no dashboards". Either way the previous list and the
+        // stored recents are left untouched: nothing below runs.
+        if (res?.errors) {
+          console.error('Failed to fetch dashboards for search:', res.errors);
+          return;
+        }
+        if (!res?.data) {
+          return;
+        }
+        setDashboards(res.data);
+        // A recent pick whose dashboard has since been deleted already stops
+        // rendering (resolveRecentOption can't match it any more), but the
+        // stored value would sit in the tenant's three-slot list forever. Drop
+        // it here, where a full listing is in hand to judge against.
+        //
+        // Only when the response is short of the page size: a full page means
+        // there may be more dashboards we haven't seen, and a value missing
+        // from a partial list is no proof the dashboard is gone. Recents for
+        // pages/accounts are left alone — those resolve against lists that
+        // load separately, so "unresolvable" there can just mean "not loaded
+        // yet".
+        if (res.data.length >= DASHBOARD_SEARCH_FETCH_LIMIT) {
+          return;
+        }
+        const live = new Set(res.data.map((dashboard) => dashboardSearchPath(dashboard.id)));
+        const stale = apiUser.getRecentPageSearches(data?.tenant?.id).filter((value) => DASHBOARD_SEARCH_PATH_RE.test(value) && !live.has(value));
+        if (stale.length) {
+          setRecentSearchValues(apiUser.removeRecentPageSearches(stale, data?.tenant?.id));
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch dashboards for search:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, [searchOpenSeq, data?.tenant?.id]);
+
+  const dashboardSearchItems = useMemo(() => navSearchDashboardItems(dashboards), [dashboards]);
 
   const k8sNavItems = useMemo(
     () => (hasOpenedSearch ? navSearchProviderItems(k8sDetailsSearchFragments, 'K8s', k8sSearchAccountId, '/kubernetes/details') : []),
@@ -986,6 +1124,9 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       if (staticMatch) {
         return isNavSearchItemVisible(staticMatch) ? staticMatch : null;
       }
+      if (DASHBOARD_SEARCH_PATH_RE.test(value)) {
+        return dashboardSearchItems.find((opt) => opt.value === value) || null;
+      }
       const automationMatch = AUTOMATION_SCOPED_SEARCH_PATH_RE.exec(value);
       if (automationMatch) {
         const [, accountId] = automationMatch;
@@ -1021,18 +1162,12 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       }
       return navSearchProviderItems(config.fragments, config.label, accountId, config.basePath).find((opt) => opt.value === value);
     },
-    [allCluster, isNavSearchItemVisible]
+    [allCluster, isNavSearchItemVisible, dashboardSearchItems]
   );
 
-  // Two lists under one plain caption each (opt.sectionLabel): recent picks
-  // under "Recents", then the full navSearchItems under "Suggested Pages" — a
-  // recent pick intentionally still appears in "Suggested Pages" too (as a
-  // separate option copy), not just "Recents". "Suggested Pages" is always tagged
-  // (even with zero recents, when it's the only section) for a consistent
-  // caption. "Recents" is prepended only once there's at least one recent
-  // pick. Still one flat array under the hood, so the ArrowUp/ArrowDown +
-  // Enter-to-select keyboard nav below works identically whether one or both
-  // sections are present.
+  // Recent picks, captioned "Recents". A recent pick intentionally still
+  // appears in its own section further down too (as a separate option copy),
+  // not just here.
   //
   // Recent rows additionally get `accountName`/`cloud_provider` stamped on
   // (when the recent pick carries an accountId) so OptionItem can render an
@@ -1040,20 +1175,19 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   // in the row, and (unlike a provider's current resolved account) isn't
   // necessarily the provider's current one — it's whatever account the user
   // was actually in when they picked it.
-  const navSearchItemsWithRecent = useMemo(() => {
-    const allOptions = navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'Suggested Pages' }));
-    if (recentSearchValues.length === 0) {
-      return allOptions;
-    }
-    const recentOptions = recentSearchValues
-      .map(resolveRecentOption)
-      .filter(Boolean)
-      .map((opt) => {
-        const account = opt.accountId ? allCluster?.find((c) => c.value === opt.accountId) : null;
-        return { ...opt, sectionLabel: 'Recents', accountName: account?.label, cloud_provider: account?.cloud_provider };
-      });
-    return [...recentOptions, ...allOptions];
-  }, [navSearchItems, recentSearchValues, resolveRecentOption, allCluster]);
+  const recentSearchOptions = useMemo(
+    () =>
+      recentSearchValues
+        .map(resolveRecentOption)
+        .filter(Boolean)
+        .map((opt) => {
+          const account = opt.accountId ? allCluster?.find((c) => c.value === opt.accountId) : null;
+          return { ...opt, sectionLabel: 'Recents', accountName: account?.label, cloud_provider: account?.cloud_provider };
+        }),
+    [recentSearchValues, resolveRecentOption, allCluster]
+  );
+
+  const suggestedPageOptions = useMemo(() => navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'Suggested Pages' })), [navSearchItems]);
 
   // Once an account is picked, results are scoped to just that account's
   // provider detail pages — reuses the same navSearchProviderItems helper the
@@ -1075,7 +1209,34 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
 
   // The full (unfiltered) option list for whichever mode is active — mirrors
   // ds/FilterDropdown.jsx's `options` prop.
-  const searchBoxOptions = mentionMode ? accountMentionOptions : scopedAccount ? scopedSearchItems : navSearchItemsWithRecent;
+  //
+  // Three peer sections under one plain caption each (opt.sectionLabel):
+  // "Recents", then the tenant's own "Dashboards", then "Suggested Pages".
+  // Each renders only when it has rows — a tenant with no dashboards (or a
+  // fresh user with no recents) simply never sees that caption, since
+  // SectionCaption fires off a contiguous run of options rather than off a
+  // declared list of sections. Dashboards sit *above* Suggested Pages
+  // deliberately: that list runs to ~200 static rows, so anything after it is
+  // effectively hidden until you scroll. Still one flat array under the hood,
+  // so the ArrowUp/ArrowDown + Enter-to-select keyboard nav below works
+  // identically however many sections are present.
+  //
+  // Dashboards stay out of the "@account" scoped list — a dashboard is
+  // tenant-level (its panels each carry their own account), so there's nothing
+  // there for an account scope to narrow.
+  //
+  // Memoized rather than written inline: filteredOptions is keyed on this
+  // array's identity, and a fresh array on every render would also re-fire
+  // OptionsList's scroll reset on every arrow keypress.
+  const searchBoxOptions = useMemo(() => {
+    if (mentionMode) {
+      return accountMentionOptions;
+    }
+    if (scopedAccount) {
+      return scopedSearchItems;
+    }
+    return [...recentSearchOptions, ...dashboardSearchItems, ...suggestedPageOptions];
+  }, [mentionMode, accountMentionOptions, scopedAccount, scopedSearchItems, recentSearchOptions, dashboardSearchItems, suggestedPageOptions]);
 
   // Filters searchBoxOptions by `search`. Supports glob wildcards `*` (any
   // sequence) and `?` (single char) — useful for long index/label lists.
@@ -1196,8 +1357,8 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   const searchPlaceholder = scopedAccount
     ? `Search for ${scopedAccount.label}…`
     : hasMentionAccounts
-    ? 'Search pages… (type @ to scope by account)'
-    : 'Search pages…';
+    ? 'Search pages or dashboards… (type @ to scope by account)'
+    : 'Search pages or dashboards…';
 
   // Only offered once a typed query has actually come up empty, and never in
   // mention mode — picking an account, not asking a question, is that mode's
@@ -1306,12 +1467,12 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   );
 
   // Fires once per popover open, before it actually opens: lazily builds the
-  // per-provider result rows on first open (see hasOpenedSearch above) and
-  // refreshes the recent-searches list (a pick made in another tab should
-  // show up here too).
+  // per-provider result rows on first open (see hasOpenedSearch above),
+  // re-reads the tenant's dashboards, and refreshes the recent-searches list
+  // (a pick made in another tab should show up here too).
   const openSearch = useCallback(
     (target) => {
-      setHasOpenedSearch(true);
+      setSearchOpenSeq((seq) => seq + 1);
       setRecentSearchValues(apiUser.getRecentPageSearches(data?.tenant?.id));
       setAnchorEl(target);
     },
@@ -1543,7 +1704,7 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
               textOverflow: 'ellipsis',
             }}
           >
-            Search pages or just ask…
+            Search pages, dashboards or just ask…
           </span>
           <Box component='kbd' sx={searchKeyChipSx}>
             Ctrl/⌘

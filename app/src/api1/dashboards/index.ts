@@ -6,6 +6,7 @@ import type {
   DashboardListRequest,
   DashboardResolveRequest,
   DashboardSaveRequest,
+  DashboardSummary,
   DashboardVersion,
   EntityQueryRequest,
   PanelQueryRequest,
@@ -33,6 +34,20 @@ const DASHBOARD_FIELDS = `
 export const LIST_DASHBOARDS = `
 query ListDashboards($request: DashboardListRequest!) {
   dashboards_list(request: $request) {${DASHBOARD_FIELDS}
+  }
+}`;
+
+// Same action as LIST_DASHBOARDS, without `definition`. The panel document is
+// by far the largest field on a dashboard, and a caller that only needs to name
+// and link a dashboard (the header's global search) would otherwise pull every
+// panel of every dashboard in the tenant.
+export const LIST_DASHBOARDS_BRIEF = `
+query ListDashboardsBrief($request: DashboardListRequest!) {
+  dashboards_list(request: $request) {
+    id
+    title
+    description
+    tags
   }
 }`;
 
@@ -115,6 +130,15 @@ type Result<T> = { data: T | null; errors?: unknown };
 const apiDashboards = {
   async listDashboards(request: DashboardListRequest): Promise<Result<Dashboard[]>> {
     const response = await queryGraphQL(LIST_DASHBOARDS, 'ListDashboards', { request });
+    return {
+      data: response?.data?.data?.dashboards_list ?? null,
+      errors: response?.data?.errors,
+    };
+  },
+
+  /** Title-and-id listing for pickers that link to a dashboard, not render one. */
+  async listDashboardsBrief(request: DashboardListRequest = {}): Promise<Result<DashboardSummary[]>> {
+    const response = await queryGraphQL(LIST_DASHBOARDS_BRIEF, 'ListDashboardsBrief', { request });
     return {
       data: response?.data?.data?.dashboards_list ?? null,
       errors: response?.data?.errors,

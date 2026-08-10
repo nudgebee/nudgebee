@@ -104,6 +104,9 @@ export interface Dashboard {
   version?: number;
 }
 
+/** What a listing that only links to dashboards reads — see listDashboardsBrief. */
+export type DashboardSummary = Pick<Dashboard, 'id' | 'title' | 'description' | 'tags'>;
+
 export interface DashboardBinding {
   id?: string;
   dashboard_id?: string;

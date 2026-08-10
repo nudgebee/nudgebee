@@ -614,6 +614,92 @@ const apiUser = {
     apiUser.storeUserPreferences(PREFERENCE_RECENT_PAGE_SEARCHES, map);
   },
 
+  // Drops `values` from the tenant's recent list and returns what's left, so a
+  // caller can write the result straight back into its own state. For entries
+  // whose target is gone for good (a deleted dashboard): the list is capped at
+  // RECENT_PAGE_SEARCHES_LIMIT, so a value that can never resolve again would
+  // otherwise hold one of those few slots until enough new picks push it out.
+  // A no-op (returning the untouched list) when nothing matches.
+  removeRecentPageSearches: function (values, tenantId) {
+    const currentList = apiUser.getRecentPageSearches(tenantId);
+    if (!values?.length || !tenantId) {
+      return currentList;
+    }
+    const dropped = new Set(values);
+    const updated = currentList.filter((v) => !dropped.has(v));
+    if (updated.length === currentList.length) {
+      return currentList;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const existing = prefs[PREFERENCE_RECENT_PAGE_SEARCHES] || {};
+    apiUser.storeUserPreferences(PREFERENCE_RECENT_PAGE_SEARCHES, { ...existing, [tenantId]: updated });
+    return updated;
+  },
+
+  // Whether the K8s-agent banner for a given cluster has been dismissed by the
+  // user. Stored as a single consolidated map instead of one localStorage key
+  // per cluster.
+  isK8sAgentSnackbarDismissed: function (clusterValue) {
+    if (!clusterValue) {
+      return false;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const map = prefs[PREFERENCE_K8S_AGENT_SNACKBAR] || {};
+    return !!map[clusterValue];
+  },
+
+  setK8sAgentSnackbarDismissed: function (clusterValue, dismissed) {
+    if (!clusterValue) {
+      return;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const map = { ...(prefs[PREFERENCE_K8S_AGENT_SNACKBAR] || {}) };
+    if (dismissed) {
+      map[clusterValue] = true;
+    } else {
+      delete map[clusterValue];
+    }
+    apiUser.storeUserPreferences(PREFERENCE_K8S_AGENT_SNACKBAR, map);
+  },
+
+  // One-time migration: fold any legacy per-cluster `latest-<clusterValue>-K8sAgentSnackbar`
+  // keys into the consolidated preference map, then delete the orphaned keys.
+  // Idempotent and safe to call on every mount. Wrapped in try/catch because
+  // localStorage access can throw (SecurityError/DOMException) in restricted
+  // contexts, and this runs on Header mount — a throw must not crash the app.
+  migrateLegacyK8sAgentSnackbarPrefs: function () {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+    try {
+      const legacyKeys = [];
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const storageKey = localStorage.key(i);
+        if (storageKey && storageKey.startsWith('latest-') && storageKey.endsWith('-K8sAgentSnackbar')) {
+          legacyKeys.push(storageKey);
+        }
+      }
+      if (legacyKeys.length === 0) {
+        return;
+      }
+      const prefs = apiUser.getUserPreferences() || {};
+      const map = { ...(prefs[PREFERENCE_K8S_AGENT_SNACKBAR] || {}) };
+      legacyKeys.forEach((storageKey) => {
+        // Only 'false' meant "dismissed"; anything else was an ephemeral shown-flag.
+        if (localStorage.getItem(storageKey) === 'false') {
+          const clusterValue = storageKey.slice('latest-'.length, -'-K8sAgentSnackbar'.length);
+          if (clusterValue) {
+            map[clusterValue] = true;
+          }
+        }
+        localStorage.removeItem(storageKey);
+      });
+      apiUser.storeUserPreferences(PREFERENCE_K8S_AGENT_SNACKBAR, map);
+    } catch (err) {
+      console.error('Failed to migrate legacy K8s agent snackbar preferences', err);
+    }
+  },
+
   getHistory: async function ({ accountId, module, limit, offset }) {
     if (accountId === 'demo') {
       return {

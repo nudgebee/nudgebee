@@ -40,6 +40,11 @@ const mockSetLastAccountIdForProvider = jest.fn();
 const mockGetRecentPageSearches = jest.fn().mockReturnValue([]);
 const mockAddRecentPageSearch = jest.fn();
 const mockStoreUserPreferences = jest.fn();
+const mockGetUserPreferences = jest.fn().mockReturnValue({});
+// Mirrors the real helper: drops the given values and returns what's left, so
+// a component that writes the result back into its own state stays consistent
+// with what the store would actually hold.
+const mockRemoveRecentPageSearches = jest.fn((values, tenantId) => mockGetRecentPageSearches(tenantId).filter((v) => !values.includes(v)));
 jest.mock('@api1/user', () => ({
   __esModule: true,
   default: {
@@ -48,8 +53,18 @@ jest.mock('@api1/user', () => ({
     getRecentPageSearches: (...args) => mockGetRecentPageSearches(...args),
     addRecentPageSearch: (...args) => mockAddRecentPageSearch(...args),
     storeUserPreferences: (...args) => mockStoreUserPreferences(...args),
+    getUserPreferences: (...args) => mockGetUserPreferences(...args),
+    removeRecentPageSearches: (...args) => mockRemoveRecentPageSearches(...args),
   },
   PREFERENCE_LAST_ACCOUNT_ID: 'last_account',
+}));
+
+const mockListDashboardsBrief = jest.fn().mockResolvedValue({ data: [] });
+jest.mock('@api1/dashboards', () => ({
+  __esModule: true,
+  default: {
+    listDashboardsBrief: (...args) => mockListDashboardsBrief(...args),
+  },
 }));
 
 const mockAiGenerateInvestigate = jest.fn();
@@ -64,7 +79,7 @@ jest.mock('uuid', () => ({
   v4: jest.fn(() => 'test-uuid-1234'),
 }));
 
-const openSearch = () => fireEvent.click(screen.getByText('Search pages or just ask…'));
+const openSearch = () => fireEvent.click(screen.getByText('Search pages, dashboards or just ask…'));
 const getSearchInput = () => screen.getByPlaceholderText(/search pages/i);
 
 describe('GlobalPageSearch', () => {
@@ -86,15 +101,15 @@ describe('GlobalPageSearch', () => {
 
   it('renders the trigger with the Ctrl/Cmd+K hint', () => {
     render(<GlobalPageSearch />);
-    expect(screen.getByText('Search pages or just ask…')).toBeInTheDocument();
+    expect(screen.getByText('Search pages, dashboards or just ask…')).toBeInTheDocument();
     expect(screen.getByText('K')).toBeInTheDocument();
   });
 
   it('opens the results popover on trigger click', () => {
     render(<GlobalPageSearch />);
     openSearch();
-    expect(screen.getByText('All Events')).toBeInTheDocument();
-    expect(screen.getByText('Triage Inbox')).toBeInTheDocument();
+    expect(screen.getByText('Troubleshoot All Events')).toBeInTheDocument();
+    expect(screen.getByText('Troubleshoot Triage Inbox')).toBeInTheDocument();
   });
 
   it('filters results by the path-segment acronym', () => {
@@ -102,7 +117,7 @@ describe('GlobalPageSearch', () => {
     openSearch();
     fireEvent.change(getSearchInput(), { target: { value: 'umu' } });
     expect(screen.getByText('Users')).toBeInTheDocument();
-    expect(screen.queryByText('All Events')).not.toBeInTheDocument();
+    expect(screen.queryByText('Troubleshoot All Events')).not.toBeInTheDocument();
   });
 
   it('hides Admin pages from results for a user without admin nav access', () => {
@@ -116,18 +131,20 @@ describe('GlobalPageSearch', () => {
   it('navigates and records a recent search when a result is clicked', async () => {
     render(<GlobalPageSearch />);
     openSearch();
-    fireEvent.click(screen.getByText('All Events'));
+    fireEvent.click(screen.getByText('Troubleshoot All Events'));
     expect(mockPush).toHaveBeenCalledWith('/troubleshoot#all-events/all');
     expect(mockAddRecentPageSearch).toHaveBeenCalledWith('/troubleshoot#all-events/all', 'tenant-1');
     // Picking a result closes the popover (MUI's exit transition unmounts
     // the content asynchronously, hence the wait).
-    await waitFor(() => expect(screen.queryByText('Triage Inbox')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Troubleshoot Triage Inbox')).not.toBeInTheDocument());
   });
 
   it('selects the keyboard-highlighted row on Enter', () => {
     render(<GlobalPageSearch />);
     openSearch();
     const input = getSearchInput();
+    // The pinned Ask AI row owns index 0, so the first result is two steps down.
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(mockPush).toHaveBeenCalledWith('/troubleshoot#all-events/all');
@@ -137,18 +154,18 @@ describe('GlobalPageSearch', () => {
     render(<GlobalPageSearch />);
     openSearch();
     fireEvent.keyDown(getSearchInput(), { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByText('All Events')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Troubleshoot All Events')).not.toBeInTheDocument());
   });
 
   it('toggles the popover with Ctrl+K', async () => {
     render(<GlobalPageSearch />);
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
-    expect(screen.getByText('All Events')).toBeInTheDocument();
+    expect(screen.getByText('Troubleshoot All Events')).toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
-    await waitFor(() => expect(screen.queryByText('All Events')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Troubleshoot All Events')).not.toBeInTheDocument());
   });
 
-  it('shows the All Pages caption and its provider-account legend even with no recents yet', () => {
+  it('shows the Suggested Pages caption even with no recents yet', () => {
     mockDataContextValue = {
       selectedCluster: null,
       allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
@@ -157,8 +174,7 @@ describe('GlobalPageSearch', () => {
     render(<GlobalPageSearch />);
     openSearch();
     expect(screen.queryByText('Recents')).not.toBeInTheDocument();
-    expect(screen.getByText('All Pages')).toBeInTheDocument();
-    expect(screen.getByText('AWS Prod')).toBeInTheDocument();
+    expect(screen.getByText('Suggested Pages')).toBeInTheDocument();
   });
 
   it('shows a Recents section for previously-picked pages, alongside the full list', () => {
@@ -166,12 +182,12 @@ describe('GlobalPageSearch', () => {
     render(<GlobalPageSearch />);
     openSearch();
     expect(screen.getByText('Recents')).toBeInTheDocument();
-    expect(screen.getByText('All Pages')).toBeInTheDocument();
-    // One copy in "Recents", one in "All Pages".
-    expect(screen.getAllByText('All Events')).toHaveLength(2);
+    expect(screen.getByText('Suggested Pages')).toBeInTheDocument();
+    // One copy in "Recents", one in "Suggested Pages".
+    expect(screen.getAllByText('Troubleshoot All Events')).toHaveLength(2);
   });
 
-  it('shows an account-name chip on a recent search that carries an accountId, and a provider legend under All Pages', () => {
+  it('shows an account-name chip on a recent search that carries an accountId', () => {
     mockGetRecentPageSearches.mockReturnValue(['/cloud-account/details/aws-1#summary']);
     mockDataContextValue = {
       selectedCluster: null,
@@ -181,11 +197,159 @@ describe('GlobalPageSearch', () => {
     render(<GlobalPageSearch />);
     openSearch();
     expect(screen.getByText('Recents')).toBeInTheDocument();
-    expect(screen.getByText('All Pages')).toBeInTheDocument();
-    // One "AWS Prod" chip on the Recents row (its resolved account), one more
-    // in the provider legend under "All Pages" (AWS is the only provider with
-    // a resolved account in this fixture).
-    expect(screen.getAllByText('AWS Prod')).toHaveLength(2);
+    expect(screen.getByText('Suggested Pages')).toBeInTheDocument();
+    // The chip on the Recents row, naming the account that pick was made in.
+    expect(screen.getAllByText('AWS Prod')).toHaveLength(1);
+  });
+
+  describe('dashboard results', () => {
+    const DASHBOARDS = [
+      { id: 'dash-1', title: 'Payments Latency', description: 'p99 by route', tags: ['payments'] },
+      { id: 'dash-2', title: 'Kafka Lag', description: '', tags: [] },
+    ];
+
+    beforeEach(() => {
+      mockListDashboardsBrief.mockResolvedValue({ data: DASHBOARDS });
+    });
+
+    it('shows a Dashboards section alongside Suggested Pages as soon as the panel opens', async () => {
+      render(<GlobalPageSearch />);
+      openSearch();
+      expect(await screen.findByText('Payments Latency')).toBeInTheDocument();
+      expect(screen.getByText('Dashboards')).toBeInTheDocument();
+      expect(screen.getByText('Kafka Lag')).toBeInTheDocument();
+      expect(screen.getByText('Suggested Pages')).toBeInTheDocument();
+    });
+
+    it('omits the Dashboards section entirely for a tenant with no dashboards', async () => {
+      mockListDashboardsBrief.mockResolvedValue({ data: [] });
+      render(<GlobalPageSearch />);
+      openSearch();
+      await waitFor(() => expect(mockListDashboardsBrief).toHaveBeenCalled());
+      expect(screen.getByText('Suggested Pages')).toBeInTheDocument();
+      expect(screen.queryByText('Dashboards')).not.toBeInTheDocument();
+    });
+
+    it('filters the dashboards by the typed query', async () => {
+      render(<GlobalPageSearch />);
+      openSearch();
+      expect(await screen.findByText('Payments Latency')).toBeInTheDocument();
+      fireEvent.change(getSearchInput(), { target: { value: 'payments' } });
+      expect(screen.getByText('Payments Latency')).toBeInTheDocument();
+      // Ranked away by the query, same as any non-matching page row.
+      expect(screen.queryByText('Kafka Lag')).not.toBeInTheDocument();
+    });
+
+    it('navigates to a dashboard deep link and records it as a recent search', async () => {
+      render(<GlobalPageSearch />);
+      openSearch();
+      expect(await screen.findByText('Kafka Lag')).toBeInTheDocument();
+      fireEvent.click(screen.getByText('Kafka Lag'));
+      expect(mockPush).toHaveBeenCalledWith('/dashboards?dashboard=dash-2#list');
+      expect(mockAddRecentPageSearch).toHaveBeenCalledWith('/dashboards?dashboard=dash-2#list', 'tenant-1');
+    });
+
+    it('re-resolves a recent dashboard pick, and drops one that no longer exists', async () => {
+      mockGetRecentPageSearches.mockReturnValue(['/dashboards?dashboard=dash-1#list', '/dashboards?dashboard=deleted#list']);
+      render(<GlobalPageSearch />);
+      openSearch();
+      // One copy under "Recents", one under "Dashboards" — the Recents copy
+      // only resolves once the listing lands, since that's what it's matched
+      // against. The deleted id resolves to nothing and leaves no row behind.
+      await waitFor(() => expect(screen.getAllByText('Payments Latency')).toHaveLength(2));
+      expect(screen.getByText('Recents')).toBeInTheDocument();
+      expect(screen.getAllByText('Kafka Lag')).toHaveLength(1);
+    });
+
+    it('prunes a deleted dashboard out of the stored recents, keeping the live ones', async () => {
+      mockGetRecentPageSearches.mockReturnValue([
+        '/dashboards?dashboard=dash-1#list',
+        '/dashboards?dashboard=deleted#list',
+        '/troubleshoot#all-events/all',
+      ]);
+      render(<GlobalPageSearch />);
+      openSearch();
+      await waitFor(() => expect(mockRemoveRecentPageSearches).toHaveBeenCalledWith(['/dashboards?dashboard=deleted#list'], 'tenant-1'));
+    });
+
+    it('leaves stored recents alone when the dashboard listing comes back a full page', async () => {
+      // A full page means there may be more dashboards beyond it, so a recent
+      // pick missing from it is no proof that dashboard is gone.
+      mockListDashboardsBrief.mockResolvedValue({
+        data: Array.from({ length: 500 }, (_, i) => ({ id: `bulk-${i}`, title: `Bulk ${i}`, description: '', tags: [] })),
+      });
+      mockGetRecentPageSearches.mockReturnValue(['/dashboards?dashboard=not-on-this-page#list']);
+      render(<GlobalPageSearch />);
+      openSearch();
+      await waitFor(() => expect(mockListDashboardsBrief).toHaveBeenCalled());
+      expect(mockRemoveRecentPageSearches).not.toHaveBeenCalled();
+    });
+
+    it('logs and keeps the panel usable when the listing resolves with GraphQL errors', async () => {
+      // The API layer resolves with {data, errors} instead of throwing, so this
+      // path never reaches the .catch below.
+      mockListDashboardsBrief.mockResolvedValue({ data: null, errors: [{ message: 'access denied for dashboards' }] });
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+      mockGetRecentPageSearches.mockReturnValue(['/dashboards?dashboard=dash-1#list']);
+      render(<GlobalPageSearch />);
+      openSearch();
+      await waitFor(() => expect(consoleError).toHaveBeenCalled());
+      expect(screen.getByText('Suggested Pages')).toBeInTheDocument();
+      expect(screen.queryByText('Dashboards')).not.toBeInTheDocument();
+      expect(mockRemoveRecentPageSearches).not.toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
+    it('leaves stored recents alone when the dashboard listing fails', async () => {
+      mockListDashboardsBrief.mockRejectedValue(new Error('boom'));
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      mockGetRecentPageSearches.mockReturnValue(['/dashboards?dashboard=dash-1#list']);
+      render(<GlobalPageSearch />);
+      openSearch();
+      await waitFor(() => expect(mockListDashboardsBrief).toHaveBeenCalled());
+      expect(mockRemoveRecentPageSearches).not.toHaveBeenCalled();
+      console.error.mockRestore();
+    });
+
+    it('re-reads the dashboards on every open, so one deleted meanwhile disappears', async () => {
+      render(<GlobalPageSearch />);
+      openSearch();
+      expect(await screen.findByText('Kafka Lag')).toBeInTheDocument();
+      fireEvent.keyDown(getSearchInput(), { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByText('Kafka Lag')).not.toBeInTheDocument());
+
+      mockListDashboardsBrief.mockResolvedValue({ data: [DASHBOARDS[0]] });
+      openSearch();
+      expect(await screen.findByText('Payments Latency')).toBeInTheDocument();
+      expect(screen.queryByText('Kafka Lag')).not.toBeInTheDocument();
+    });
+
+    it('keeps dashboards out of an @account-scoped search, which is account-level', async () => {
+      mockDataContextValue = {
+        selectedCluster: null,
+        allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
+        setSelectedCluster: mockSetSelectedCluster,
+      };
+      render(<GlobalPageSearch />);
+      openSearch();
+      expect(await screen.findByText('Payments Latency')).toBeInTheDocument();
+      fireEvent.change(getSearchInput(), { target: { value: '@' } });
+      fireEvent.click(screen.getByText('AWS Prod'));
+      // The box is now scoped, and says so in its placeholder.
+      fireEvent.change(screen.getByPlaceholderText(/search for aws prod/i), { target: { value: 'payments' } });
+      expect(screen.queryByText('Payments Latency')).not.toBeInTheDocument();
+    });
+
+    it('keeps page search working when the dashboard listing fails', async () => {
+      mockListDashboardsBrief.mockRejectedValue(new Error('boom'));
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      render(<GlobalPageSearch />);
+      openSearch();
+      await waitFor(() => expect(mockListDashboardsBrief).toHaveBeenCalled());
+      fireEvent.change(getSearchInput(), { target: { value: 'umu' } });
+      expect(screen.getByText('Users')).toBeInTheDocument();
+      console.error.mockRestore();
+    });
   });
 
   it('scopes results to a mentioned account and navigates into its detail page', () => {
@@ -198,7 +362,7 @@ describe('GlobalPageSearch', () => {
     openSearch();
     fireEvent.change(getSearchInput(), { target: { value: '@' } });
     expect(screen.getByText('AWS Prod')).toBeInTheDocument();
-    expect(screen.queryByText('All Events')).not.toBeInTheDocument();
+    expect(screen.queryByText('Troubleshoot All Events')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText('AWS Prod'));
     // The popover stays open, re-scoped to that account's pages. Several rows
@@ -275,16 +439,14 @@ describe('GlobalPageSearch', () => {
         query: 'zzzznotarealpage',
         session_id: 'test-uuid-1234',
       });
-      await waitFor(() =>
-        expect(mockWindowOpen).toHaveBeenCalledWith('/ask-nudgebee?accountId=aws-1&session_id=test-uuid-1234', '_blank', 'noopener')
-      );
+      await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/ask-nudgebee?accountId=aws-1&session_id=test-uuid-1234'));
     });
 
-    it('opens a blank chat in a new tab from the pinned button when no account is resolvable', () => {
+    it('opens a blank chat from the pinned button when no account is resolvable', () => {
       const { container } = render(<GlobalPageSearch />);
       openSearch();
       fireEvent.click(getPinnedAskAiButton(container));
-      expect(mockWindowOpen).toHaveBeenCalledWith('/ask-nudgebee', '_blank', 'noopener');
+      expect(mockPush).toHaveBeenCalledWith('/ask-nudgebee');
       expect(mockAiGenerateInvestigate).not.toHaveBeenCalled();
     });
   });
