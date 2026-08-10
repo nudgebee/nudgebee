@@ -32,6 +32,7 @@ Hard-fail (only for files new in this PR)
   - timestamp <= the max already on a reference branch (would be skipped)
   - reuses a V<N> already on a reference branch or on a sibling new file
   - malformed name / missing _V<N>_ / missing .up.sql
+  - empty .up.sql (scaffolded but never filled in)
 
 Warn (grandfathered legacy)
   - pre-existing duplicate V<N> labels, missing .down.sql, legacy naming
@@ -67,6 +68,64 @@ def parse(path):
         "name": m.group("name"),
         "dir": m.group("dir"),
     }
+
+
+def strip_sql_comments(text):
+    """Drop `--` line comments and `/* */` block comments, honouring nesting.
+
+    Postgres nests block comments, so a regex stopping at the first `*/` leaves
+    the tail of an outer comment behind and reads it as code — which matters
+    because wrapping a migration in /* */ to disable it is a common way to end
+    up with a file that applies as a no-op. An unterminated block comment runs
+    to EOF here, matching how Postgres would swallow the rest of the file.
+
+    String literals are not tracked: a comment marker inside a literal loses the
+    remainder of that line. That errs toward reporting a file as empty, never
+    toward passing an empty one.
+    """
+    out = []
+    i, n, depth = 0, len(text), 0
+    while i < n:
+        if depth:
+            if text.startswith("/*", i):
+                depth += 1
+                i += 2
+            elif text.startswith("*/", i):
+                depth -= 1
+                i += 2
+            else:
+                i += 1
+        elif text.startswith("/*", i):
+            depth += 1
+            i += 2
+        elif text.startswith("--", i):
+            nl = text.find("\n", i)
+            i = n if nl == -1 else nl + 1
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def has_executable_sql(filename):
+    """True if the file holds anything beyond comments and whitespace.
+
+    new-migration.sh scaffolds EMPTY files and hashes them into atlas.sum, so an
+    unfilled stub is internally consistent end to end: atlas applies 0 statements
+    and records the revision as successful, and the fresh-DB smoke test passes
+    while leaving the schema unmigrated (V844_tenant_scoped_llm_model_pricing).
+    Reading the contents is the only way to catch it.
+    """
+    try:
+        with open(os.path.join(APP_DIR, filename), "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return True  # unreadable: leave it to the other checks
+    # utf-8-sig drops a BOM (which str.strip() would not, so a BOM-only file
+    # would otherwise read as content); errors="replace" keeps a non-UTF8 byte
+    # from raising and failing the whole job on an encoding the DDL survives.
+    text = raw.decode("utf-8-sig", errors="replace")
+    return bool(strip_sql_comments(text).strip())
 
 
 def list_local():
@@ -124,11 +183,13 @@ def main():
     by_ts = defaultdict(set)
     by_v_all = defaultdict(set)
     pair = defaultdict(set)
+    filename_by_key = defaultdict(dict)
     for p in files:
         by_ts[p["ts"]].add((p["v"], p["name"]))
         if p["v"] is not None:
             by_v_all[p["v"]].add(p["ts"])
         pair[(p["ts"], p["v"], p["name"])].add(p["dir"])
+        filename_by_key[(p["ts"], p["v"], p["name"])][p["dir"]] = p["file"]
 
     def is_new(filename):
         # Newness keys on the filename, not the timestamp: a new file that
@@ -188,6 +249,13 @@ def main():
             errors.append(f"[E pairing] new migration {tag} has no matching .up.sql")
         if "down" not in pair[key]:
             warnings.append(f"[E pairing] new migration {p['ts']}_V{p['v']}_{p['name']} has no .down.sql")
+        # F: the .up.sql must actually contain SQL. Only .up.sql — an empty
+        # .down.sql is legitimate (E already warns when one is missing).
+        up_file = filename_by_key[key].get("up")
+        if up_file and not has_executable_sql(up_file):
+            errors.append(f"[F empty-migration] new migration {tag} has an empty .up.sql "
+                          f"(no executable SQL). Fill it in, then re-run "
+                          f"./new-migration.sh --regen-sum.")
 
     # Legacy hygiene warnings (informational only).
     for v, tss in sorted(by_v_all.items()):
