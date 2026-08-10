@@ -15,6 +15,9 @@ import apiDashboard from '@api1/home';
 import apiAccount from '@api1/account';
 import { canManage } from '@lib/auth';
 import { ds } from 'src/utils/colors';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (accountProvider: string) => <CloudProviderIcon cloud_provider={accountProvider} width='14px' height='14px' />;
 
 interface ChannelAccountMappingProps {
   provider: string;
@@ -55,7 +58,15 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
     try {
       const response = await apiDashboard.getCloudAccounts();
       if (Array.isArray(response)) {
-        setCloudAccounts(response.map((item: any) => ({ label: item.account_name, value: item.id, id: item.id, provider: item.cloud_provider })));
+        setCloudAccounts(
+          response.map((item: any) => ({
+            label: item.account_name,
+            value: item.id,
+            id: item.id,
+            provider: item.cloud_provider,
+            group: item.cloud_provider || 'Other',
+          }))
+        );
       }
     } catch (error) {
       console.error('Error loading cloud accounts:', error);
@@ -368,6 +379,8 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
             required
             value={selectedAccount}
             options={cloudAccounts}
+            grouped
+            groupIcon={renderAccountGroupIcon}
             onChange={(next) => setSelectedAccount(next)}
             disabled={isLoadingAccounts}
             placeholder={isLoadingAccounts ? 'Loading…' : 'Select cloud account'}

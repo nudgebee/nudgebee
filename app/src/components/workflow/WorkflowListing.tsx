@@ -1671,7 +1671,7 @@ const WorkflowListing: React.FC = () => {
     () =>
       Object.entries(accounts)
         .filter(([id]) => hasWriteAccess(id))
-        .map(([id, info]) => ({ value: id, label: info.name || id })),
+        .map(([id, info]) => ({ value: id, label: info.name || id, group: (info.cloud_provider || '').toUpperCase() || 'Other' })),
     [accounts]
   );
 

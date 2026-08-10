@@ -17,6 +17,9 @@ import { ds } from '@utils/colors';
 import apiUser from '@api1/user';
 import apiIntegrations from '@api1/integrations';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const PROVIDERS = ['anthropic', 'azure', 'bedrock', 'googleai', 'huggingface', 'openai', 'custom', 'sagemaker', 'vertexai'];
 
@@ -327,7 +330,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           snackbar.error('Failed to load cloud accounts');
           return;
         }
-        setAccounts(res.map((a) => ({ id: a.id, name: a.account_name })));
+        setAccounts(res.map((a) => ({ id: a.id, name: a.account_name, cloud_provider: a.cloud_provider })));
       } catch (err) {
         if (!cancelled) {
           // eslint-disable-next-line no-console
@@ -1368,7 +1371,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             multiple
             size='sm'
             loading={accountsLoading}
-            options={accounts.map((a) => ({ value: a.id, label: a.name || a.id }))}
+            options={accounts.map((a) => ({ value: a.id, label: a.name || a.id, group: a.cloud_provider || 'Other' }))}
+            grouped
+            groupIcon={renderAccountGroupIcon}
             value={selectedAccountIds}
             onChange={setSelectedAccountIds}
             label='Accounts'

@@ -25,6 +25,9 @@ import WidgetCard from '@ui/WidgetCard';
 import { ProgressBar } from '@ui/ProgressBar';
 import { Label } from '@ui/Label';
 import ScopeChip from '@components/llm/ScopeChip';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -783,7 +786,11 @@ const BudgetEditModal = ({ open, onClose, onSaved, config, maxCaps, systemDefaul
 
   const modalTitle = isEdit ? `Edit Budget - ${moduleLabels[config?.module] || ''}` : 'Create Budget Configuration';
 
-  const accountOptions = accounts.map((acc) => ({ value: acc.id, label: `${acc.account_name} (${acc.cloud_provider})` }));
+  const accountOptions = accounts.map((acc) => ({
+    value: acc.id,
+    label: `${acc.account_name} (${acc.cloud_provider})`,
+    group: acc.cloud_provider || 'Other',
+  }));
 
   return (
     <Modal
@@ -842,6 +849,8 @@ const BudgetEditModal = ({ open, onClose, onSaved, config, maxCaps, systemDefaul
                 value={entityId}
                 onChange={(next) => setEntityId(next)}
                 options={accountOptions}
+                grouped
+                groupIcon={renderAccountGroupIcon}
                 placeholder='Select an account'
                 disabled={isEdit}
                 size='sm'

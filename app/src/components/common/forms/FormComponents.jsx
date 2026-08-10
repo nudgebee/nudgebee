@@ -258,6 +258,8 @@ FormCard.propTypes = {
  *   maxLength?: number,
  *   disabled?: boolean,
  *   options?: any[],
+ *   grouped?: boolean,
+ *   groupIcon?: (group: string) => React.ReactNode,
  *   multiple?: boolean,
  *   onSelect?: (value: any) => void,
  *   isOptionsLoading?: boolean,
@@ -287,6 +289,8 @@ export const FormField = ({
   maxLength,
   disabled = false,
   options = [],
+  grouped = false,
+  groupIcon,
   multiple = false,
   onSelect,
   isOptionsLoading = false,
@@ -334,6 +338,8 @@ export const FormField = ({
             value={multiple ? value ?? [] : value ?? ''}
             onChange={(next) => onChange?.({ target: { value: next } })}
             options={options}
+            grouped={grouped}
+            groupIcon={groupIcon}
             minWidth={minWidth || '50%'}
             disabled={disabled}
             required={required}

@@ -21,6 +21,9 @@ import { DeleteIconRed as DeleteIcon, modalerror, AWSIcon, AzureIcon, GCPIcon, o
 import { Label } from '@ui/Label';
 import { Card } from '@ui/Card';
 import { sameIdSet } from '@utils/common';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const RBAC_TABS = {
   tabOptions: [
@@ -629,7 +632,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
           const allSelectedAccountIds = showSelectedAccounts.map((item) => item[0].drilldownQuery.id);
           const accountOpts = res
             .filter((m) => !allSelectedAccountIds.includes(m.id))
-            .map((u) => ({ label: u.account_name, value: u.id, cloud_provider: u.cloud_provider }));
+            .map((u) => ({ label: u.account_name, value: u.id, cloud_provider: u.cloud_provider, group: u.cloud_provider || 'Other' }));
           setAccountOptions(accountOpts);
           setAccountsLoaded(true);
         });
@@ -1065,6 +1068,8 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                         multiple
                         value={selectedAccounts}
                         options={accountOptions}
+                        grouped
+                        groupIcon={renderAccountGroupIcon}
                         onChange={(next) => setSelectedAccounts(next)}
                         placeholder='Select Accounts'
                         minWidth='100%'

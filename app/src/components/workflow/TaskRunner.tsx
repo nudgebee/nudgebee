@@ -17,6 +17,9 @@ import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { generateNodeCategories } from './constants/nodeCategories';
 import ActionDetailsSidebar from './ActionDetailsSidebar';
 import type { TaskDefinition } from '@components/workflow/types';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const renderCategoryOrTaskIcon = (icon: any, label: string, size: number) => {
   if (typeof icon === 'string' && !icon.includes('/') && !icon.includes('.')) {
@@ -49,7 +52,9 @@ const TaskRunner: React.FC = () => {
       .getCloudAccounts()
       .then((res: any) => {
         if (!Array.isArray(res)) return;
-        const writable = res.filter((a: any) => hasWriteAccess(a.id)).map((a: any) => ({ value: a.id, label: a.account_name || a.id }));
+        const writable = res
+          .filter((a: any) => hasWriteAccess(a.id))
+          .map((a: any) => ({ value: a.id, label: a.account_name || a.id, group: a.cloud_provider || 'Other' }));
         setAccountOptions(writable);
         // One writable account ⇒ no reason to make the user choose it.
         if (writable.length === 1) setAccountId(writable[0].value);
@@ -236,6 +241,8 @@ const TaskRunner: React.FC = () => {
                 label='Account'
                 placeholder='Select an account'
                 options={accountOptions}
+                grouped
+                groupIcon={renderAccountGroupIcon}
                 value={accountId || null}
                 onChange={(next) => setAccountId(next || '')}
                 required

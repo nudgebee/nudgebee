@@ -21,6 +21,19 @@
  *   <Select value={s}     onChange={(v) => …} options={…} />          ← single
  *   <Select multiple value={[…]} onChange={(arr) => …} options={…} /> ← multi
  *
+ * `grouped` renders options under collapsible section headers keyed by each
+ * option's `group` field — same contract and behavior as ds/FilterDropdown's
+ * grouped mode (`group` + `groupIcon(rawGroup)`, snakeToTitleCase'd header
+ * text, groups collapsed by default, auto-expanded while searching,
+ * selection-count badge on the header, auto-collapse to a flat list when the
+ * full options list spans only one group). In `multiple` mode the
+ * selected-first ordering applies WITHIN each group (selected rows above a
+ * divider inside their own section, mirroring FilterDropdown) instead of the
+ * flat list's global selected-first split, so options never leave their
+ * group. Unlike FilterDropdown there are no per-group Clear / Select All
+ * actions — the trigger-level clear (✕) and the list-level select-all row
+ * already cover both modes.
+ *
  * The `required` asterisk renders only alongside a non-empty `label`; when the
  * label is absent (undefined / null / empty / whitespace) the asterisk is
  * suppressed — it has nothing to attach to.
@@ -34,6 +47,7 @@
 import * as React from 'react';
 import { Box } from '@mui/material';
 import { ds } from '@utils/colors';
+import { snakeToTitleCase } from '@utils/common';
 import Tooltip from '@ui/Tooltip';
 import {
   OverlayCheckbox,
@@ -52,6 +66,8 @@ export interface SelectOption {
   label?: React.ReactNode;
   icon?: React.ReactNode;
   disabled?: boolean;
+  /** Section this option renders under when `grouped` is set. Missing ⇒ 'Other'. */
+  group?: string;
 }
 
 /** Options may be plain strings (label and value the same) or SelectOption objects. */
@@ -89,6 +105,17 @@ interface SelectBaseProps {
   searchPlaceholder?: string;
   /** Show a skeleton placeholder list in the popup while options load. */
   loading?: boolean;
+  /**
+   * Render options under collapsible section headers keyed by each option's
+   * `group` field. Groups start collapsed and auto-expand while searching,
+   * mirroring FilterDropdown's grouped mode; in `multiple` mode selected
+   * rows sort first within their own group (never globally). Auto-collapses
+   * to the flat list when the full options list spans only one group, where
+   * headers would be noise.
+   */
+  grouped?: boolean;
+  /** Renders beside each group header. Receives the raw (un-normalized) `group` value. */
+  groupIcon?: (group: string) => React.ReactNode;
   className?: string;
   id?: string;
   name?: string;
@@ -239,6 +266,8 @@ export function Select(props: SelectProps) {
     searchable,
     searchPlaceholder = 'Search…',
     loading = false,
+    grouped = false,
+    groupIcon,
     className,
     id,
     name,
@@ -267,14 +296,22 @@ export function Select(props: SelectProps) {
   const [anchorEl, setAnchorEl] = React.useState<HTMLElement | null>(null);
   const [popupWidth, setPopupWidth] = React.useState<number | undefined>();
   const [search, setSearch] = React.useState('');
+  const [openGroups, setOpenGroups] = React.useState<Record<string, boolean>>({});
   const open = Boolean(anchorEl);
+
+  const toggleGroup = (header: string) => setOpenGroups((prev) => ({ ...prev, [header]: !prev[header] }));
 
   // Auto-show search when there are many options; `searchable` prop overrides.
   const showSearch = searchable ?? options.length > 8;
 
-  // Reset search whenever the popup closes.
+  // Reset search + group expansion whenever the popup closes, so each open
+  // starts from the same collapsed-groups baseline (FilterDropdown's grouped
+  // list gets this for free by unmounting its popup content).
   React.useEffect(() => {
-    if (!open) setSearch('');
+    if (!open) {
+      setSearch('');
+      setOpenGroups({});
+    }
   }, [open]);
 
   // Case-insensitive substring match on the option's label (or value).
@@ -286,6 +323,32 @@ export function Select(props: SelectProps) {
       return labelStr.toLowerCase().includes(q);
     });
   }, [options, search]);
+
+  // Group headers only render when the full options list actually spans more
+  // than one group — with a single group (e.g. a tenant that has only K8s
+  // accounts) headers add noise, so we fall back to the flat list. Computed
+  // over `options` (not the search-filtered list) so a search that narrows to
+  // one group doesn't make the headers flicker mid-typing.
+  const effectiveGrouped = React.useMemo(() => {
+    if (!grouped) return false;
+    const distinctGroups = new Set(options.map((o) => snakeToTitleCase(o.group || 'Other')));
+    return distinctGroups.size > 1;
+  }, [grouped, options]);
+
+  // Ordered [headerText, {rawGroup, opts}] tuples over the filtered list.
+  // Insertion order — callers control group order via their options order,
+  // matching FilterDropdown's grouped mode.
+  const groupedFilteredOptions = React.useMemo(() => {
+    if (!effectiveGrouped) return null;
+    const map = new Map<string, { rawGroup: string; opts: SelectOption[] }>();
+    for (const o of filteredOptions) {
+      const rawGroup = o.group || 'Other';
+      const header = snakeToTitleCase(rawGroup);
+      if (!map.has(header)) map.set(header, { rawGroup, opts: [] });
+      map.get(header)!.opts.push(o);
+    }
+    return Array.from(map.entries());
+  }, [effectiveGrouped, filteredOptions]);
 
   // Set for O(1) membership checks in multi-select mode
   const selectedValueSet = React.useMemo(() => (props.multiple ? new Set(props.value) : null), [props.value, props.multiple]);
@@ -576,6 +639,114 @@ export function Select(props: SelectProps) {
             >
               {options.length === 0 ? 'No options available' : 'No results found'}
             </Box>
+          ) : effectiveGrouped && groupedFilteredOptions ? (
+            // Grouped mode: collapsible section per group, collapsed by
+            // default — mirrors FilterDropdown's grouped mode. While
+            // searching, a group that survived filtering matched at least one
+            // of its options, so it auto-expands to keep the match visible. A
+            // count badge marks groups holding selections so they stay
+            // findable while collapsed. In multi mode the selected-first
+            // ordering applies within each group — never globally — so rows
+            // don't leave their section.
+            groupedFilteredOptions.map(([header, { rawGroup, opts }]) => {
+              const isGroupOpen = search.trim().length > 0 || !!openGroups[header];
+              const selectedInGroup = opts.filter((opt) => isSelected(opt.value));
+              const unselectedInGroup = opts.filter((opt) => !isSelected(opt.value));
+              const orderedOpts = props.multiple ? [...selectedInGroup, ...unselectedInGroup] : opts;
+              return (
+                <React.Fragment key={header}>
+                  <Box
+                    role='button'
+                    tabIndex={0}
+                    onClick={() => toggleGroup(header)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggleGroup(header);
+                      }
+                    }}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: 'var(--ds-overlay-item-padding-md)',
+                      margin: '0 var(--ds-overlay-item-margin-x)',
+                      borderRadius: 'var(--ds-overlay-item-radius)',
+                      height: '36px',
+                      boxSizing: 'border-box',
+                      position: 'sticky',
+                      top: 0,
+                      zIndex: 10,
+                      backgroundColor: 'var(--ds-background-100)',
+                      cursor: 'pointer',
+                      '&:hover': { backgroundColor: 'var(--ds-gray-100)' },
+                    }}
+                  >
+                    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space.mul(0, 3), minWidth: 0 }}>
+                      {groupIcon && groupIcon(rawGroup)}
+                      <Box
+                        component='span'
+                        sx={{
+                          fontSize: 'var(--ds-text-caption)',
+                          fontWeight: 'var(--ds-font-weight-semibold)',
+                          color: 'var(--ds-gray-700)',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.02em',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {header}
+                      </Box>
+                      {selectedInGroup.length > 0 && (
+                        <Box
+                          component='span'
+                          sx={{
+                            backgroundColor: 'var(--ds-blue-600)',
+                            color: 'var(--ds-background-100)',
+                            borderRadius: ds.radius.sm,
+                            minWidth: ds.space.mul(0, 5),
+                            height: ds.space.mul(0, 9),
+                            padding: `0 ${ds.space[1]}`,
+                            fontSize: 'var(--ds-text-caption)',
+                            fontWeight: 'var(--ds-font-weight-semibold)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {selectedInGroup.length}
+                        </Box>
+                      )}
+                    </Box>
+                    <Chevron open={isGroupOpen} />
+                  </Box>
+                  {isGroupOpen && (
+                    <Box sx={{ paddingLeft: ds.space[3] }}>
+                      {orderedOpts.map((opt, idx) => (
+                        <React.Fragment key={`${header}-${opt.value}`}>
+                          {/* Divider between the group's selected block and its unselected rest (multi mode) */}
+                          {props.multiple && selectedInGroup.length > 0 && unselectedInGroup.length > 0 && idx === selectedInGroup.length && (
+                            <Box sx={{ borderBottom: '0.5px solid var(--ds-gray-200)', margin: '4px 10px' }} />
+                          )}
+                          <OverlayItem
+                            size='md'
+                            selected={isSelected(opt.value)}
+                            disabled={opt.disabled}
+                            icon={showOptionCheckbox ? <OverlayCheckbox checked={isSelected(opt.value)} /> : opt.icon}
+                            onClick={() => handleItemClick(opt)}
+                          >
+                            {opt.label ?? opt.value}
+                          </OverlayItem>
+                        </React.Fragment>
+                      ))}
+                    </Box>
+                  )}
+                </React.Fragment>
+              );
+            })
           ) : (
             <>
               {/* Selected items first (multi mode only — single keeps natural order) */}

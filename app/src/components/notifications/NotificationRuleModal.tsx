@@ -8,6 +8,7 @@ import { Modal } from '@ui/Modal';
 import { Link } from '@ui/Link';
 import React, { useEffect, useState } from 'react';
 import SafeIcon from '@shared/icons/SafeIcon';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiUser from '@api1/user';
 import {
   SlackIcon,
@@ -49,6 +50,8 @@ interface NotificationRuleModalProps {
   notificationRuleObject: any;
   editingSource?: string;
 }
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const isValidString = (s: string) => {
   const pattern = /^[A-Za-z0-9][\w\s_-]*$/;
@@ -269,6 +272,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         const clusters = filteredResponse.map((item: any) => ({
           label: item.account_name,
           value: item.id,
+          group: item.cloud_provider || 'Other',
         }));
         setClusterOption(clusters);
       } else {
@@ -1264,6 +1268,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                     }}
                     value={selectedCluster || null}
                     options={clusterOption}
+                    grouped
+                    groupIcon={renderAccountGroupIcon}
                     loading={loadingDropdown.clusters}
                     size='sm'
                   />
@@ -1295,6 +1301,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                     }}
                     value={selectedCluster || null}
                     options={clusterOption}
+                    grouped
+                    groupIcon={renderAccountGroupIcon}
                     loading={loadingDropdown.clusters}
                     size='sm'
                   />

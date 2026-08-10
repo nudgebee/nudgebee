@@ -18,6 +18,9 @@ import { STRUCTURED_FILTER_FIELDS, buildFilterExpression, parseFilterExpression 
 import { DOCS_BASE_URL, docsUrl } from '@lib/externalUrls';
 import { validateCron } from '@utils/cron';
 import ScheduleBuilder from './ScheduleBuilder';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 interface IntegrationConfigValue {
   name: string;
@@ -493,6 +496,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           label: a.account_name,
           value: a.id,
           cloud_provider: a.cloud_provider,
+          group: a.cloud_provider || 'Other',
         }));
       setK8sClusterOptions(options);
     } catch (error) {
@@ -974,7 +978,8 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         error=''
         fieldType='select'
         options={k8sClusterOptions}
-        groupByCloudProvider={true}
+        grouped
+        groupIcon={renderAccountGroupIcon}
         onSelect={() => {}}
         customRender={null}
         limitTags={0}
@@ -1346,7 +1351,8 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                     error=''
                     fieldType='select'
                     options={k8sClusterOptions}
-                    groupByCloudProvider={true}
+                    grouped
+                    groupIcon={renderAccountGroupIcon}
                     onSelect={() => {}}
                     customRender={null}
                     limitTags={0}

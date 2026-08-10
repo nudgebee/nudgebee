@@ -18,6 +18,9 @@ import { hasPermission, hasWriteAccess, isTenantAdmin } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { DeleteIconRed, EditNewIcon } from '@assets';
 import { ds } from 'src/utils/colors';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 type Scope = 'tenant' | 'account';
 
@@ -27,7 +30,7 @@ interface ConfigurationManagerProps {
    * tenant-level, so the account isn't implied by the route any more — this
    * modal picks its own, defaulting to the only one when there is only one.
    */
-  accountOptions: Array<{ value: string; label: string }>;
+  accountOptions: Array<{ value: string; label: string; group?: string }>;
   open: boolean;
   onClose: () => void;
 }
@@ -422,6 +425,8 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOpti
                   label='Account'
                   placeholder='Select an account'
                   options={accountOptions}
+                  grouped
+                  groupIcon={renderAccountGroupIcon}
                   value={accountId || null}
                   onChange={(next) => setAccountId(next || '')}
                   required

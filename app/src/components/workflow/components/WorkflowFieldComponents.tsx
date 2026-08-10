@@ -32,12 +32,15 @@ import { StreamLanguage } from '@codemirror/language';
 import { Button } from '@ui/Button';
 import { FormField } from '@shared/forms/FormComponents';
 import FilterDropdown from '@ui/FilterDropdown';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import ReorderableList from '@shared/ReorderableList';
 import { ds } from '@utils/colors';
 
 // Extend dayjs with UTC and timezone support
 dayjs.extend(utc);
 dayjs.extend(timezone);
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 /**
  * TimestampPicker Component
@@ -1299,7 +1302,8 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
         <FormField
           fieldType='select'
           options={cloudAccounts}
-          groupByCloudProvider
+          grouped
+          groupIcon={renderAccountGroupIcon}
           value={fieldValue ?? ''}
           onChange={(e: any) => handleFieldChange(fieldName, e.target.value)}
           placeholder='Select account'

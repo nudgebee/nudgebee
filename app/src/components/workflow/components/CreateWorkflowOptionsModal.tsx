@@ -9,6 +9,9 @@ import WidgetCard from '@ui/WidgetCard';
 import { workflowAddIcon, workflowAiIcon, workflowTemplateIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useTenantBranding } from '@hooks/useTenantBranding';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 interface CreateWorkflowOptionsModalProps {
   open: boolean;
@@ -58,6 +61,8 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
           label='Account'
           placeholder='Select an account'
           options={accountOptions}
+          grouped
+          groupIcon={renderAccountGroupIcon}
           value={selectedAccountId || null}
           onChange={(next) => onAccountChange(next || '')}
           help={accountChosen ? undefined : 'Pick the account this automation will run in.'}
