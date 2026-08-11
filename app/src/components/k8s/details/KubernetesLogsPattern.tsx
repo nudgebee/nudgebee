@@ -15,6 +15,7 @@ import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
 import { getAllowedNamespaces } from '@lib/auth';
 import { Box } from '@mui/material';
 import { Switch } from '@ui/Switch';
+import { Chip } from '@ui/Chip';
 import EmptyData from '@shared/EmptyData';
 import noDataImg from '@assets/Icon-no-data-available.svg';
 import { useData } from '@context/DataContext';
@@ -130,7 +131,24 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
   const { providerCapabilities } = useData();
   const logsProviderEntry = providerCapabilities.find((e: any) => e.provider_type === 'logs');
   const logsCaps = logsProviderEntry?.capabilities;
-  const supportsFeature = logsCaps?.supports_log_groups ?? null;
+  // Mirror the backend's own resolution order (getLogGroupSourceForAccount): the log
+  // provider gets first refusal, and when it can't group — Pinot, CloudWatch, Observe,
+  // Azure App Insights and Splunk have no QueryLogGroup — the metrics provider serves
+  // the groups instead. Gating on the logs entry alone made this tab claim "not
+  // supported" for accounts the log_group API would have answered, and left them worse
+  // off than accounts with no log provider at all (no logs entry → null → we fetch).
+  const metricsProviderEntry = providerCapabilities.find((e: any) => e.provider_type === 'metrics');
+  const metricsCaps = metricsProviderEntry?.capabilities;
+  const supportsFeature = logsCaps?.supports_log_groups || metricsCaps?.supports_log_groups ? true : logsCaps || metricsCaps ? false : null;
+  // Which provider actually answers, by the same order. Surfaced in the toolbar because
+  // the two are not interchangeable reads: Prometheus groups are counted from the
+  // container_log_messages_total metric, not from log lines, so their counts and time
+  // buckets behave differently from a Loki/ES-grouped result.
+  const logGroupsProvider = logsCaps?.supports_log_groups
+    ? logsProviderEntry?.provider
+    : metricsCaps?.supports_log_groups
+    ? metricsProviderEntry?.provider
+    : null;
   // Elasticsearch stores logs in indices; unlike label-based providers there is
   // no fixed index to query, so expose a freeSolo Index picker (mirrors the ES
   // index selector in the log-query builder) and thread the chosen index through
@@ -467,7 +485,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
           id='log-grouping-unsupported'
           img={noDataImg}
           heading='Log Grouping not supported'
-          subHeading='Your current log provider does not support log grouping.'
+          subHeading='Neither your log provider nor your metrics provider supports log grouping.'
           height='400px'
           sx={{ flexDirection: 'column', gap: 'var(--ds-space-4)', textAlign: 'center' }}
         />
@@ -498,6 +516,11 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
         <ListingLayout.Toolbar
           actions={
             <>
+              {logGroupsProvider && (
+                <Chip id='log-group-source' variant='tag' size='xs' tone='subtle'>
+                  {`Source: ${logGroupsProvider}`}
+                </Chip>
+              )}
               <CustomDateTimeRangePicker
                 passedSelectedDateTime={{
                   startTime: selectedDateRange.startDate,
