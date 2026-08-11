@@ -120,7 +120,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`api/`** — HTTP API handlers (conversations, agents, tools, RAG, events)
 - **`agents/`** — autonomous agent implementations (190+ agent files)
 - **`agents/core/`** — agent framework: planner, executor, critiquer logic
-- **`agents/prompts_repo/`** — all system prompts (Go-embedded via `svc.go`)
+- **`prompts/`** — all system prompts as YAML under `prompts/default/v1/` (Go-embedded via `prompts/loader.go`)
 - **`tools/`** — tool implementations for external system integrations
 - **`llms/`** — LLM provider clients (Bedrock, Azure, OpenAI, Vertex AI, etc.)
 - **`config/`** — service configuration management
@@ -206,7 +206,7 @@ Migrations are managed by golang-migrate. Files live in `api-server/migrations/m
 
 ### File Format & Loading
 
-Plain `.txt` files in `agents/prompts_repo/`. Loaded via Go `//go:embed` in `svc.go` (39 files total). Access via `prompts_repo.GetPrompt()`.
+YAML files under `prompts/default/v1/`, grouped into `planners/`, `agents/`, `_fragments/`, `_persona/`, `tools/`, `utilities/`. Embedded via `//go:embed all:default` in `prompts/loader.go` and resolved by the `prompts` package (experiment config → account override → global DB config → embedded file, 1-hour TTL cache). Access via `prompts.GetPrompt(ctx, module, accountID, args...)` / `prompts.RenderPrompt(...)`; the module-name → category map lives in `prompts/registry.go`. (Legacy note: this was previously `.txt` files under `agents/prompts_repo/` loaded via `svc.go` — that tree and package were removed in the YAML migration.)
 
 ### Template Syntax (5 systems in use)
 
@@ -218,9 +218,9 @@ Plain `.txt` files in `agents/prompts_repo/`. Loaded via Go `//go:embed` in `svc
 
 ### Shared vs Agent-Specific Prompts
 
-Shared (injected into all planner prompts): `context_continuity.txt`, `shared_time_handling_rules.txt`, `shared_data_protection_rules.txt`, `shared_code_analysis_rules.txt`.
+Shared fragments (`prompts/default/v1/_fragments/`, injected into planner prompts): `context_continuity.yaml`, `time_handling_rules.yaml`, `data_protection_rules.yaml`, `code_analysis_rules.yaml`, etc.
 
-Agent-specific: `agent_aws.txt`, `agent_k8s_debug.txt`, etc. — each agent loads its own.
+Agent-specific (`prompts/default/v1/agents/`): `aws.yaml`, `k8s_native.yaml`, `k8s_orchestrator.yaml`, `k8s_lean.yaml`, etc. — each agent loads its own.
 
 ### Prompt Message Structure & Caching
 
@@ -336,7 +336,7 @@ Explicit (`@aws_orchestrator` in query) or implicit (Router Agent infers via LLM
 
 ### 3. System Prompt Assembly
 
-Two parts combined: agent-specific prompt (domain expertise, investigation methodology) + ReAct3 base (`planner_react_3_base.txt`, iteration/notebook rules, tool list, time macros).
+Two parts combined: agent-specific prompt (domain expertise, investigation methodology) + ReAct3 base (`prompts/default/v1/planners/react_3_base.yaml`, iteration/notebook rules, tool list, time macros).
 
 ### 4. ReAct3 Loop
 
@@ -415,7 +415,7 @@ chore(deps): bump github.com/gin-contrib/pprof (#27311)
 
 **Adding a new agent:**
 1. Create `agents/agent_<n>.go`, implement `NBAgent` interface, register in `init()`
-2. Add system prompt to `agents/prompts_repo/`
+2. Add system prompt YAML to `prompts/default/v1/agents/` (and register the module in `prompts/registry.go`)
 3. Write tests in `agents/agent_<n>_test.go`
 
 **Adding a new tool:**
@@ -436,7 +436,7 @@ chore(deps): bump github.com/gin-contrib/pprof (#27311)
 - **Always run `make lint` after code changes.** CI will reject unlinted code.
 - **Always wrap errors** with `fmt.Errorf("context: %w", err)`. Never bare `return err`.
 - **Use `ctx.GetLogger()`** for logging in business logic, not raw `slog` calls.
-- **Do not modify files in `agents/prompts_repo/` without explicit instruction.** Prompt changes affect all agents and require careful testing.
+- **Do not modify files in `prompts/default/v1/` without explicit instruction.** Prompt changes affect all agents and require careful testing.
 - **Do not change core planner logic** (`executor_planner.go`, `planner_react_3.go`) for agent-specific bugs. Fix at the agent level first.
 - **Never hardcode credentials, account IDs, or API keys.** Use `config/config.go` and environment variables.
 - **Never log sensitive data** (tokens, credentials, PII).

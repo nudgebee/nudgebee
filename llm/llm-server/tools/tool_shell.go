@@ -399,14 +399,23 @@ func wrapShellError(rawError, originalCommand string) string {
 	return wrapCliError(rawError, shellErrorHint(rawError, originalCommand))
 }
 
-// dynamicWorkspaceFilePattern matches the <label>_<unix-nano>.<ext> shape that
-// fetch_logs (and the metrics_*/traces_* tools sharing this working directory
-// per the doc comment above) use for saved output. The <unix-nano> segment is
-// generated from time.Now().UnixNano() when the producing tool call actually
-// completes, so it cannot be known in advance — a missing file matching this
-// shape is very likely a same-turn guess at a file whose producing call
-// hasn't finished yet, not a stale cross-conversation file.
-var dynamicWorkspaceFilePattern = regexp.MustCompile(`\b(?:logs|metrics|traces)_[a-zA-Z0-9]+_\d{15,19}\.(?:txt|json)\b`)
+// dynamicWorkspaceFilePattern matches the names tools and the system write into
+// the per-conversation workspace: fetch_logs / metrics / traces tool output
+// (logs_/metrics_/traces_…) and offloaded investigation artifacts written by the
+// event-analyzer and planner guardrails (evidence_logs_/event_labels_/
+// event_investigation_context_/investigation_query_…). Their exact names are
+// assigned at write time — a unix timestamp for tool output, an event/message
+// UUID for offloaded artifacts — so a missing file of this shape is almost always
+// a guessed or reconstructed name, not a stale cross-conversation file. The model
+// should `ls` the workspace rather than invent filenames.
+//
+// The label/suffix segment is intentionally permissive ([a-zA-Z0-9._-]+, any
+// length, no fixed timestamp width): in production the model invents names with
+// short unix-second timestamps, hyphens, and pod-name segments that a strict
+// <unix-nano> pattern missed entirely, which let a piped `grep <guess> | head`
+// be reclassified as a benign no-match instead of surfacing the file-not-found
+// hint (see looksLikeMissingDynamicFile / shellErrorHint).
+var dynamicWorkspaceFilePattern = regexp.MustCompile(`\b(?:logs|metrics|traces|evidence_logs|event_labels|event_investigation_context|investigation_query)_[a-zA-Z0-9._-]+\.(?:txt|json)\b`)
 
 // looksLikeMissingDynamicFile reports whether response carries a "no such
 // file or directory" signal for a dynamic-workspace-shaped filename. In a
@@ -424,10 +433,15 @@ func shellErrorHint(rawError, originalCommand string) string {
 	case strings.Contains(lower, "unterminated quoted string"),
 		strings.Contains(lower, "syntax error: unterminated"):
 		return "Your command has unbalanced quotes. Common cause: nested escaping (\\\" inside a JSON-in-shell value). Try simpler quoting, write the payload to a /tmp/ file with cat <<'EOF', or split the command into two steps."
-	case strings.Contains(lower, "no such file or directory") && firstTokenIsFileReader(originalCommand) && dynamicWorkspaceFilePattern.MatchString(originalCommand):
-		return "File not found. This filename matches the pattern fetch_logs/metrics/traces tools use for saved output — its exact name is only known once that tool call actually completes. If you called the producing tool in the SAME batch as this command, that is why: wait for it to finish and use the exact file_ref from its result, in a later iteration. Run `ls -t logs_*.txt metrics_*.json traces_*.json 2>/dev/null | head -5` to see what's actually available right now."
 	case strings.Contains(lower, "no such file or directory") && firstTokenIsFileReader(originalCommand):
-		return "File not found. The workspace pod is per-account and persists across turns in the same conversation, but files created in a different conversation will NOT exist here. Recreate the file with the upstream command (e.g. `kubectl get ... > /tmp/...`) before grepping/catting it."
+		// One generic hint for every missing file-read: the advice is always
+		// "list the directory, do not guess". We deliberately do NOT branch on the
+		// filename shape here — the fix for a missing file is the same whether it
+		// was a reconstructed name, a system-offloaded artifact, a tool-output
+		// race, or a cross-conversation file. (dynamicWorkspaceFilePattern is only
+		// used for the harder classification job in looksLikeMissingDynamicFile,
+		// where combined stdout+stderr is genuinely ambiguous.)
+		return "File not found. Run `ls -la` first to see what is actually in the workspace before grepping/catting — do NOT guess or reconstruct filenames. Files written by tools or the system (fetch_logs/metrics/traces output, or offloaded evidence/query/label files) are named at write time; if you requested a producing tool in this SAME batch, wait for it to finish and use its file_ref in a later iteration. The workspace is per-account and persists across turns in this conversation, but files created in a different conversation will NOT exist here."
 	case strings.Contains(lower, "command not found"),
 		looksLikeShellNotFound(rawError):
 		return "Command not found in the workspace pod. Available CLIs include kubectl, aws, gcloud, az, gh, glab, helm, jq, curl, python3. If a specialized *_execute tool exists for this CLI (kubectl_execute, aws_execute, gcloud_execute, azure_execute, github_execute, gitlab_execute), prefer that tool."
