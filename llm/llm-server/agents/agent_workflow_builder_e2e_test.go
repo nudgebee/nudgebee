@@ -862,6 +862,20 @@ func TestWorkflowBuilderAgent_AgenticBuild(t *testing.T) {
 					triggers := def["triggers"].([]interface{})
 					trigger := triggers[0].(map[string]interface{})
 					assert.Equal(t, tc.expectTrigger, trigger["type"], "Expected trigger type %s", tc.expectTrigger)
+
+					// Asserting the type alone passed straight through #35383: a flat trigger
+					// ({"type":"schedule","cron":"..."}) still has the right type, but every key
+					// outside "type" is dropped on decode, so the automation saves with a trigger
+					// that can never fire. Check the settings actually survived.
+					if tc.expectTrigger != "manual" {
+						params, _ := trigger["params"].(map[string]interface{})
+						assert.NotEmpty(t, params,
+							"a %s trigger must carry its settings under \"params\" — top-level keys are discarded on decode", tc.expectTrigger)
+						for k := range trigger {
+							assert.True(t, triggerTopLevelKeys[k],
+								"trigger key %q is not part of the trigger schema and would be silently dropped; settings belong inside \"params\"", k)
+						}
+					}
 				}
 
 				if tc.expectTaskType != "" {
@@ -2126,4 +2140,105 @@ func TestWorkflowBuilder_UnlimitedPlanRevisions(t *testing.T) {
 	answer(PlanApprovalOptionApprove)
 	assert.NotEqual(t, core.ConversationStatusWaiting, resp.Status, "approval must build")
 	t.Logf("after approval: status=%s response=%.200s", resp.Status, strings.Join(resp.Response, "\n"))
+}
+
+// TestWorkflowBuilder_E2E_NonManualTriggerParamsAreNested is the acceptance check for #35383:
+// a non-manual trigger must come out of a real build with its settings under `params`.
+//
+// This is the assertion the suite was missing. TestWorkflowBuilderAgent_AgenticBuild checked
+// trigger["type"] only, which a flat trigger satisfies — {"type":"schedule","cron":"0 * * * *"}
+// has the right type and still loses its cron on decode, saving an automation that never fires.
+// Asserting against the working definition rather than the chat summary keeps this honest whether
+// the build returns raw JSON or an auto-saved markdown summary.
+func TestWorkflowBuilder_E2E_NonManualTriggerParamsAreNested(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping test: TEST_ACCOUNT not set")
+	}
+
+	accountId := os.Getenv("TEST_ACCOUNT")
+	userId := os.Getenv("TEST_USER")
+	tenantId := os.Getenv("TEST_TENANT")
+
+	cases := []struct {
+		name        string
+		sessionId   string
+		query       string
+		wantTrigger string
+		wantParam   string // the setting that used to be dropped when written flat
+	}{
+		{
+			name:        "schedule",
+			sessionId:   "ut-wb-trigger-params-schedule",
+			query:       "Create an automation with a schedule trigger that runs every hour and prints a summary",
+			wantTrigger: "schedule",
+			wantParam:   "cron",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := newWorkflowBuilderAgent(accountId)
+			sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
+			_ = core.DeleteConversationBySession(tc.sessionId, accountId, userId)
+
+			resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, tc.sessionId, tc.query,
+				core.ConversationSessionRequestWithEnableQueryRefinement(false))
+			assert.Nil(t, err)
+
+			answer := func(text string) {
+				t.Helper()
+				messageId, perr := uuid.Parse(resp.MessageId)
+				assert.Nil(t, perr)
+				agentId, perr := uuid.Parse(resp.AgentId)
+				assert.Nil(t, perr)
+				resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, tc.sessionId, text,
+					core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
+					core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
+				assert.Nil(t, err)
+			}
+
+			// Clear clarifying questions until the plan-approval prompt appears, then build.
+			for i := 0; i < 4 && resp.Status == core.ConversationStatusWaiting &&
+				!slices.Contains(resp.FollowupRequest.FollowupOptions, PlanApprovalOptionApprove); i++ {
+				answer("Skip")
+			}
+			if assert.Equal(t, core.ConversationStatusWaiting, resp.Status, "expected a plan-approval prompt") {
+				answer(PlanApprovalOptionApprove)
+			}
+
+			// Assert against the definition that would be saved, not the chat text.
+			if !assert.NotNil(t, agent.state.WorkingWorkflow, "build produced no definition") {
+				return
+			}
+			def, ok := agent.state.WorkingWorkflow["definition"].(map[string]interface{})
+			if !assert.True(t, ok, "definition missing from working workflow") {
+				return
+			}
+			triggers, _ := def["triggers"].([]interface{})
+			if !assert.NotEmpty(t, triggers, "definition has no triggers") {
+				return
+			}
+
+			built, _ := json.Marshal(triggers)
+			t.Logf("built triggers: %s", built)
+
+			var matched bool
+			for _, rt := range triggers {
+				trigger, ok := rt.(map[string]interface{})
+				if !ok || trigger["type"] != tc.wantTrigger {
+					continue
+				}
+				matched = true
+				for k := range trigger {
+					assert.True(t, triggerTopLevelKeys[k],
+						"trigger key %q is not part of the trigger schema and is dropped on decode; it belongs inside \"params\"", k)
+				}
+				params, _ := trigger["params"].(map[string]interface{})
+				if assert.NotEmpty(t, params, "a %s trigger must carry its settings under \"params\"", tc.wantTrigger) {
+					assert.Contains(t, params, tc.wantParam, "%s must be inside params, not at the trigger's top level", tc.wantParam)
+				}
+			}
+			assert.True(t, matched, "no %s trigger in the built definition", tc.wantTrigger)
+		})
+	}
 }

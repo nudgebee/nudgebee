@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -94,7 +95,7 @@ func TestWorkflowBuilderAgent_ToolInitWorkflow(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// Initialize workflow
-	result := agent.toolInitWorkflow(map[string]interface{}{
+	result := agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "test-workflow",
 		"triggers": []interface{}{
 			map[string]interface{}{"type": "manual"},
@@ -106,7 +107,7 @@ func TestWorkflowBuilderAgent_ToolInitWorkflow(t *testing.T) {
 
 	// Missing name
 	agent2 := newWorkflowBuilderAgent("test-account")
-	result = agent2.toolInitWorkflow(map[string]interface{}{})
+	result = agent2.toolInitWorkflow(nil, map[string]interface{}{})
 	assert.Contains(t, result, "Error")
 }
 
@@ -116,7 +117,7 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// Init workflow first
-	agent.toolInitWorkflow(map[string]interface{}{
+	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name":     "test-workflow",
 		"triggers": []interface{}{map[string]interface{}{"type": "manual"}},
 	})
@@ -200,7 +201,7 @@ func TestWorkflowBuilderAgent_ToolFinalize(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// Init and add a task
-	agent.toolInitWorkflow(map[string]interface{}{
+	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name":     "test-workflow",
 		"triggers": []interface{}{map[string]interface{}{"type": "manual"}},
 	})
@@ -231,7 +232,7 @@ func TestWorkflowBuilderAgent_ToolFinalize(t *testing.T) {
 // nil RequestContext is safe here.
 func TestWorkflowBuilderAgent_Finalize_CapturesChangeSummary(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
-	agent.toolInitWorkflow(map[string]interface{}{
+	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name":     "test-workflow",
 		"triggers": []interface{}{map[string]interface{}{"type": "manual"}},
 	})
@@ -251,7 +252,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// Step 1: Initialize workflow
-	result := agent.toolInitWorkflow(map[string]interface{}{
+	result := agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "pod-health-monitor",
 		"triggers": []interface{}{
 			map[string]interface{}{"type": "schedule", "params": map[string]interface{}{"cron": "*/30 * * * *"}},
@@ -506,7 +507,7 @@ func TestWorkflowBuilderAgent_LoadExistingAndModify(t *testing.T) {
 func TestWorkflowBuilderAgent_CoercionInFinalize(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
-	agent.toolInitWorkflow(map[string]interface{}{
+	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "coercion-test",
 	})
 	agent.toolAddTask(map[string]interface{}{
@@ -2046,7 +2047,7 @@ func TestToolInitWorkflow_ReInitGuard(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// First init — should succeed.
-	result := agent.toolInitWorkflow(map[string]interface{}{
+	result := agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "my-workflow",
 	})
 	assert.Contains(t, result, "initialized")
@@ -2061,7 +2062,7 @@ func TestToolInitWorkflow_ReInitGuard(t *testing.T) {
 	})
 
 	// Re-init should warn and refuse.
-	result = agent.toolInitWorkflow(map[string]interface{}{
+	result = agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "overwritten-name",
 	})
 	assert.Contains(t, result, "Warning")
@@ -2074,10 +2075,198 @@ func TestToolInitWorkflow_ReInitGuard(t *testing.T) {
 
 	// Re-init on empty workflow (no tasks) should succeed.
 	agent2 := newWorkflowBuilderAgent("test-account")
-	agent2.toolInitWorkflow(map[string]interface{}{"name": "first"})
-	result = agent2.toolInitWorkflow(map[string]interface{}{"name": "second"})
+	agent2.toolInitWorkflow(nil, map[string]interface{}{"name": "first"})
+	result = agent2.toolInitWorkflow(nil, map[string]interface{}{"name": "second"})
 	assert.Contains(t, result, "initialized")
 	assert.Equal(t, "second", agent2.state.WorkingWorkflow["name"])
+}
+
+// TestToolInitWorkflow_TriggerShape pins the trigger-shape contract (#35383). Roughly one in four
+// non-manual triggers arrived with settings at the trigger's top level instead of under `params`;
+// everything outside `type` is dropped on decode, so the automation saved with a trigger that could
+// never fire — and the user was told it worked.
+//
+// The rule is deliberately "only these four keys are legal", not a repair pass for the one bad
+// shape we observed, so the `config:` case below — which a normaliser would have turned into
+// structured junk — is rejected on the same rule as the flat one.
+func TestToolInitWorkflow_TriggerShape(t *testing.T) {
+	cases := []struct {
+		name       string
+		trigger    interface{}
+		wantReject bool
+		wantIn     string // substring the rejection must name, so the model can act on it
+	}{
+		{
+			name:       "flat webhook",
+			trigger:    map[string]interface{}{"type": "webhook", "integration_name": "my-hook", "filter": "x"},
+			wantReject: true,
+			wantIn:     `"integration_name"`,
+		},
+		{
+			name:       "flat schedule",
+			trigger:    map[string]interface{}{"type": "schedule", "cron": "0 9 * * *"},
+			wantReject: true,
+			wantIn:     `"cron"`,
+		},
+		{
+			name:       "flat event",
+			trigger:    map[string]interface{}{"type": "event", "event_type": "alert"},
+			wantReject: true,
+			wantIn:     `"event_type"`,
+		},
+		{
+			name:       "wrong container key",
+			trigger:    map[string]interface{}{"type": "webhook", "config": map[string]interface{}{"integration_name": "my-hook"}},
+			wantReject: true,
+			wantIn:     `"config"`,
+		},
+		{
+			name:       "params is not an object",
+			trigger:    map[string]interface{}{"type": "webhook", "params": "integration_name=my-hook"},
+			wantReject: true,
+			wantIn:     "must be an object",
+		},
+		{
+			name:       "trigger is not an object",
+			trigger:    "webhook",
+			wantReject: true,
+			wantIn:     "not an object",
+		},
+		{
+			name:       "missing type",
+			trigger:    map[string]interface{}{"params": map[string]interface{}{"cron": "0 9 * * *"}},
+			wantReject: true,
+			wantIn:     `no "type"`,
+		},
+		{
+			name:    "correctly nested webhook",
+			trigger: map[string]interface{}{"type": "webhook", "params": map[string]interface{}{"integration_name": "my-hook"}},
+		},
+		{
+			name:    "manual needs no params",
+			trigger: map[string]interface{}{"type": "manual"},
+		},
+		{
+			name:    "optimization with all-optional params omitted",
+			trigger: map[string]interface{}{"type": "optimization"},
+		},
+		{
+			// Shape only — whether a webhook supplies its required params is the server's call
+			// (#35384). Checking it here too would give the same mistake two owners.
+			name:    "webhook missing required params is not a shape error",
+			trigger: map[string]interface{}{"type": "webhook"},
+		},
+		{
+			// The regression tripwire: fix mode hydrates a STORED definition, which carries the
+			// server-managed `internal` block and canvas `layout`. Rejecting or relocating either
+			// would make every saved webhook automation un-editable.
+			name: "stored trigger with internal and layout",
+			trigger: map[string]interface{}{
+				"type":     "webhook",
+				"params":   map[string]interface{}{"integration_name": "my-hook"},
+				"internal": map[string]interface{}{"name": "wf-abc123-my-hook"},
+				"layout":   map[string]interface{}{"x": 400, "y": 100},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := newWorkflowBuilderAgent("test-account")
+			result := agent.toolInitWorkflow(nil, map[string]interface{}{
+				"name":     "shape-test",
+				"triggers": []interface{}{tc.trigger},
+			})
+
+			if !tc.wantReject {
+				assert.Contains(t, result, "initialized")
+				require.NotNil(t, agent.state.WorkingWorkflow)
+				def := agent.state.WorkingWorkflow["definition"].(map[string]interface{})
+				stored := def["triggers"].([]interface{})
+				require.Len(t, stored, 1)
+				// Accepted triggers are stored verbatim — this code never rewrites a definition.
+				wantJSON, err := json.Marshal(tc.trigger)
+				require.NoError(t, err)
+				gotJSON, err := json.Marshal(stored[0])
+				require.NoError(t, err)
+				assert.JSONEq(t, string(wantJSON), string(gotJSON), "an accepted trigger must be stored unchanged")
+				return
+			}
+
+			assert.Contains(t, result, "was NOT initialized")
+			assert.Contains(t, result, tc.wantIn)
+			// Nothing half-formed may be left behind for finalize to persist.
+			assert.Nil(t, agent.state.WorkingWorkflow, "a rejected init must not create a working workflow")
+		})
+	}
+}
+
+// TestToolInitWorkflow_TriggerShapeEscalates checks that a second malformed trigger in the same
+// build stops explaining and hands over the exact object to copy. Without this, a model that
+// misreads the first correction can burn the remaining loop iterations on one mistake.
+func TestToolInitWorkflow_TriggerShapeEscalates(t *testing.T) {
+	agent := newWorkflowBuilderAgent("test-account")
+	flat := []interface{}{map[string]interface{}{"type": "webhook", "integration_name": "my-hook"}}
+
+	first := agent.toolInitWorkflow(nil, map[string]interface{}{"name": "wf", "triggers": flat})
+	assert.Contains(t, first, "Fix the trigger(s) and call init_workflow again.")
+	assert.NotContains(t, first, "second malformed trigger")
+
+	second := agent.toolInitWorkflow(nil, map[string]interface{}{"name": "wf", "triggers": flat})
+	assert.Contains(t, second, "second malformed trigger")
+	// The escalation must carry the corrected object, not just more prose.
+	assert.Contains(t, second, `{"params":{"integration_name":"my-hook"},"type":"webhook"}`)
+}
+
+// TestTriggerShapeCorrection_RawAnswer covers the path that skips the tools entirely: the model
+// emits the whole definition as its final answer, which resolveToolLoopOutcome persists verbatim.
+// A fix confined to toolInitWorkflow would miss it.
+func TestTriggerShapeCorrection_RawAnswer(t *testing.T) {
+	flat := `{"name":"wf","definition":{"triggers":[{"type":"webhook","integration_name":"my-hook"}],"tasks":[]}}`
+	nested := `{"name":"wf","definition":{"triggers":[{"type":"webhook","params":{"integration_name":"my-hook"}}],"tasks":[]}}`
+
+	t.Run("malformed answer is corrected", func(t *testing.T) {
+		agent := newWorkflowBuilderAgent("test-account")
+		assert.Contains(t, agent.triggerShapeCorrection(nil, flat), `"integration_name"`)
+	})
+
+	t.Run("well-formed answer passes through", func(t *testing.T) {
+		agent := newWorkflowBuilderAgent("test-account")
+		assert.Empty(t, agent.triggerShapeCorrection(nil, nested))
+	})
+
+	t.Run("prose answer is not treated as a workflow", func(t *testing.T) {
+		agent := newWorkflowBuilderAgent("test-account")
+		assert.Empty(t, agent.triggerShapeCorrection(nil, "I could not build this automation."))
+	})
+
+	t.Run("correction budget is bounded", func(t *testing.T) {
+		agent := newWorkflowBuilderAgent("test-account")
+		for i := 0; i < maxTriggerShapeCorrections; i++ {
+			assert.NotEmpty(t, agent.triggerShapeCorrection(nil, flat), "correction %d should still be offered", i+1)
+		}
+		// Budget spent: return the answer as-is and let the save fail loudly against the server's
+		// own validation rather than spending every remaining iteration re-explaining.
+		assert.Empty(t, agent.triggerShapeCorrection(nil, flat))
+	})
+}
+
+// TestWorkflowSchema_DocumentsTriggerStructure guards the root-cause fix. The model wrote flat
+// triggers because the schema described trigger params in prose but never showed a trigger object
+// — TASK STRUCTURE spelled out `"params": {}`, triggers had no structure block at all, and the one
+// concrete example was {"type":"manual"}, the single type that takes no params.
+func TestWorkflowSchema_DocumentsTriggerStructure(t *testing.T) {
+	schema := getWorkflowSchema()
+	assert.Contains(t, schema, "## TRIGGER STRUCTURE:", "schema must show the trigger object, not only prose about its params")
+	assert.Contains(t, schema, `{"type": "webhook", "params": {"integration_name": "my-hook", "filter": "..."}}`,
+		"schema must show a non-manual trigger with nested params")
+
+	planning := getWorkflowPlanningContext()
+	assert.Contains(t, planning, `belongs INSIDE "params"`, "planning context must state the nesting rule")
+
+	tools := getWorkflowToolDescriptions()
+	assert.NotContains(t, tools, `"triggers": [{"type": "manual"}]`,
+		"init_workflow's example must not be the one trigger type that needs no params")
 }
 
 // TestParseAgentId verifies safe UUID parsing for agent IDs.

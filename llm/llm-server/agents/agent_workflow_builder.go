@@ -15,6 +15,7 @@ import (
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -258,6 +259,13 @@ type WorkflowBuilderAgent struct {
 	// behind a change — not just "has been updated". Transient per-request (set during runToolLoop, read
 	// in finalizeWithAutoSave); the agent is built fresh per turn so it never leaks across turns.
 	changeSummary string
+
+	// triggerShapeRejections counts how many times this build has been handed a malformed trigger
+	// (see triggerShapeIssues). Drives the escalation in triggerShapeMessage — the second offence
+	// gets the corrected object to copy rather than another explanation — and caps the in-loop
+	// correction of a raw-JSON answer so a model that will not fix its shape fails loudly instead
+	// of spending every remaining iteration on it. Transient per-loop: reset in runToolLoop.
+	triggerShapeRejections int
 }
 
 func newWorkflowBuilderAgent(accountId string) *WorkflowBuilderAgent {
@@ -353,6 +361,29 @@ func getWorkflowSchema() string {
   "timeout": "5m",                    // string duration (optional)
   "hooks": {...}                      // *Hooks (optional)
 }
+
+## TRIGGER STRUCTURE:
+{
+  "type": "string (required)",        // one of: manual, schedule, webhook, event, optimization
+  "params": {},                       // map[string]any — EVERY trigger setting lives in here
+  "layout": {"x": 0, "y": 0}          // optional canvas position
+}
+"type" and "params" are the ONLY keys you may write on a trigger. A trigger setting placed
+at the top level instead of inside "params" is DISCARDED when the definition is decoded,
+which produces a trigger that can never fire. The "Requires params:" lists below name the
+keys that go INSIDE "params" — they are never trigger-level keys.
+
+  WRONG: {"type": "webhook", "integration_name": "my-hook", "filter": "..."}
+  RIGHT: {"type": "webhook", "params": {"integration_name": "my-hook", "filter": "..."}}
+
+  WRONG: {"type": "schedule", "cron": "0 9 * * *"}
+  RIGHT: {"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}
+
+  WRONG: {"type": "event", "event_type": "alert"}
+  RIGHT: {"type": "event", "params": {"event_type": "alert"}}
+
+"manual" is the ONLY type that takes no params — {"type": "manual"} is complete as written.
+Do not generalise from it to the other four types.
 
 ## TRIGGER TYPES:
 - "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
@@ -2244,6 +2275,11 @@ func (a *WorkflowBuilderAgent) fetchTaskTypeNames(ctx *security.RequestContext) 
 func getWorkflowPlanningContext() string {
 	return `
 TRIGGER TYPES AND THEIR REQUIRED PARAMETERS:
+A trigger is {"type": "<type>", "params": {...}}. Every key listed as "Requires:" or
+"Optional:" below belongs INSIDE "params" — never at the top level of the trigger, where
+it is silently discarded. E.g. a webhook trigger is
+{"type": "webhook", "params": {"integration_name": "my-hook"}}, NOT
+{"type": "webhook", "integration_name": "my-hook"}.
 - "manual" → No params allowed. User runs the automation from the UI on demand. User-supplied inputs are read in tasks via {{ Inputs.<key> }}.
 - "schedule" → Requires: cron (5-field UTC string, e.g. "0 9 * * MON-FRI"). Optional: overlap_policy ("Skip"|"BufferOne"|"BufferAll"|"AllowAll"|"CancelOther"|"TerminateOther"; default "Skip"), catchup_window (Go time.ParseDuration syntax; valid units ns|us|ms|s|m|h ONLY; day/week units like "7d" are NOT supported — use hours: "168h" = 7 days; compound durations like "1h30m" ARE valid; default "60s"). IMPORTANT: Always set overlap_policy: "Skip" for monitoring automations to prevent overlapping runs.
 - "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the request body via {{ Inputs.webhook_payload }}.
@@ -2663,8 +2699,8 @@ func getWorkflowToolDescriptions() string {
 	tools := []workflowToolDef{
 		{
 			Name:        "init_workflow",
-			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER TYPES and getWorkflowPlanningContext for required params per type).",
-			Params:      `{"name": "string", "triggers": [{"type": "manual"}], "inputs": [{"id": "ns", "type": "string", "default": "nudgebee"}]}`,
+			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER STRUCTURE and TRIGGER TYPES for the params each one needs). A trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\" — a setting at the trigger's top level is rejected. Only \"manual\" needs no params.",
+			Params:      `{"name": "string", "triggers": [{"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}], "inputs": [{"id": "ns", "type": "string", "default": "nudgebee"}]}`,
 		},
 		{
 			Name:        "add_task",
@@ -2737,7 +2773,7 @@ func getWorkflowToolDescriptions() string {
 
 // toolInitWorkflow initializes the working workflow with name, triggers, and inputs.
 // If a workflow is already loaded with tasks, it refuses to silently overwrite them.
-func (a *WorkflowBuilderAgent) toolInitWorkflow(args map[string]interface{}) string {
+func (a *WorkflowBuilderAgent) toolInitWorkflow(ctx *security.RequestContext, args map[string]interface{}) string {
 	name, _ := args["name"].(string)
 	if name == "" {
 		return "Error: 'name' is required"
@@ -2759,6 +2795,18 @@ func (a *WorkflowBuilderAgent) toolInitWorkflow(args map[string]interface{}) str
 	}
 
 	if triggers, ok := args["triggers"].([]interface{}); ok && len(triggers) > 0 {
+		// Refuse a trigger the server cannot decode rather than storing it verbatim: every key
+		// outside `type` is dropped on decode, which used to save a trigger that could never fire
+		// and report it as success (#35383). Rejecting here keeps the working workflow untouched,
+		// so nothing half-formed is left behind for finalize to persist.
+		if issues := triggerShapeIssues(triggers); len(issues) > 0 {
+			a.triggerShapeRejections++
+			if ctx != nil {
+				ctx.GetLogger().Warn("workflow_builder: rejected malformed trigger shape from init_workflow",
+					"automation", name, "issue_count", len(issues), "attempt", a.triggerShapeRejections, "issues", issues)
+			}
+			return triggerShapeMessage(issues, a.triggerShapeRejections)
+		}
 		definition["triggers"] = triggers
 	} else {
 		definition["triggers"] = []interface{}{map[string]interface{}{"type": "manual"}}
@@ -3425,6 +3473,181 @@ var knownEventTriggerFields = map[string]bool{
 // free-form and cannot be linted statically).
 var eventFieldRefRegex = regexp.MustCompile(`\bevent\.([a-zA-Z_][a-zA-Z0-9_]*)`)
 
+// triggerTopLevelKeys is the complete set of keys a trigger object may carry. Source of truth:
+// model.Trigger in runbook-server/internal/model/workflow.go — `type`, `params`, `internal`,
+// `layout`. `internal` and `layout` are here because stored definitions carry them and fix mode
+// hydrates a stored definition verbatim; rejecting them would make every saved webhook automation
+// un-editable. A trigger type that gains a fifth key must be added here.
+var triggerTopLevelKeys = map[string]bool{
+	"type":     true,
+	"params":   true,
+	"internal": true,
+	"layout":   true,
+}
+
+// triggerShapeIssues reports every trigger the model wrote in a shape the runbook server cannot
+// decode. It checks SHAPE ONLY — whether a given type supplies the params it requires is the
+// server's call (#35384), so the two layers never second-guess each other.
+//
+// This exists because roughly one in four non-manual triggers arrived "flat"
+// (`{"type":"webhook","integration_name":"x"}`) instead of nested under `params`, and everything
+// outside `type` is dropped when the definition is decoded — saving a trigger that can never fire
+// (#35383). Deliberately a single rule (only the four keys above are legal) rather than a repair
+// pass for the one malformation we happened to observe: a model can emit `config: {...}`,
+// `parameters: {...}`, a doubly-nested `params.params`, or a bare string, and a normaliser would
+// silently turn several of those into structured junk. Rejecting and echoing the input back lets
+// the model diff what it sent against what was wanted, which generalises to shapes nobody listed.
+func triggerShapeIssues(triggers []interface{}) []string {
+	var issues []string
+	for i, rt := range triggers {
+		label := fmt.Sprintf("trigger %d", i+1)
+
+		t, ok := rt.(map[string]interface{})
+		if !ok {
+			issues = append(issues, fmt.Sprintf("%s is %T, not an object. A trigger is {\"type\": \"...\", \"params\": {...}}.", label, rt))
+			continue
+		}
+
+		triggerType, _ := t["type"].(string)
+		if strings.TrimSpace(triggerType) == "" {
+			issues = append(issues, fmt.Sprintf("%s has no \"type\". Valid types: manual, schedule, webhook, event, optimization.", label))
+			continue
+		}
+
+		if raw, present := t["params"]; present && raw != nil {
+			if _, isMap := raw.(map[string]interface{}); !isMap {
+				issues = append(issues, fmt.Sprintf("%s has \"params\" as %T; it must be an object: {\"type\": %q, \"params\": {...}}.", label, raw, triggerType))
+				continue
+			}
+		}
+
+		var stray []string
+		for k := range t {
+			if !triggerTopLevelKeys[k] {
+				stray = append(stray, k)
+			}
+		}
+		if len(stray) == 0 {
+			continue
+		}
+		sort.Strings(stray)
+
+		sent, _ := json.Marshal(t)
+		expected, _ := json.Marshal(nestStrayTriggerKeys(t))
+		issues = append(issues, fmt.Sprintf(
+			"%s puts %s at the top level, where the server discards them — the trigger would never fire.\n  You sent: %s\n  Expected: %s",
+			label, strings.Join(quoteAll(stray), ", "), sent, expected))
+	}
+	return issues
+}
+
+// nestStrayTriggerKeys returns a copy of the trigger with its stray top-level keys moved under
+// `params`. Used ONLY to render the corrected form inside an error message — the working workflow
+// is never mutated, so a stored trigger's server-managed `internal` block can never be buried
+// inside `params` by this code path.
+func nestStrayTriggerKeys(t map[string]interface{}) map[string]interface{} {
+	fixed := map[string]interface{}{}
+	params := map[string]interface{}{}
+	if existing, ok := t["params"].(map[string]interface{}); ok {
+		for k, v := range existing {
+			params[k] = v
+		}
+	}
+	for k, v := range t {
+		switch {
+		case k == "params":
+			// merged above
+		case triggerTopLevelKeys[k]:
+			fixed[k] = v
+		default:
+			params[k] = v
+		}
+	}
+	if len(params) > 0 {
+		fixed["params"] = params
+	}
+	return fixed
+}
+
+// quoteAll wraps each string in double quotes so key lists read as JSON keys in error messages.
+func quoteAll(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, strconv.Quote(k))
+	}
+	return out
+}
+
+// triggerShapeMessage renders the tool-result error for malformed triggers. On the second offence
+// in the same build it stops explaining and hands over the exact object to send, so a model that
+// misread the first correction cannot burn further iterations on the same mistake.
+func triggerShapeMessage(issues []string, attempt int) string {
+	var sb strings.Builder
+	sb.WriteString("Error: the automation was NOT initialized — ")
+	if len(issues) == 1 {
+		sb.WriteString("a trigger is not in the expected shape.\n\n")
+	} else {
+		fmt.Fprintf(&sb, "%d triggers are not in the expected shape.\n\n", len(issues))
+	}
+	sb.WriteString(strings.Join(issues, "\n\n"))
+	sb.WriteString("\n\nA trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\".")
+	if attempt >= 2 {
+		sb.WriteString("\n\nThis is the second malformed trigger in this build. Copy the \"Expected\" object above exactly as written and call init_workflow again — do not rewrite it.")
+	} else {
+		sb.WriteString("\nFix the trigger(s) and call init_workflow again.")
+	}
+	return sb.String()
+}
+
+// maxTriggerShapeCorrections bounds how many times one build may be sent back to fix a trigger's
+// shape. Two is deliberate: the first correction explains, the second hands over the exact object
+// to copy (triggerShapeMessage), and a model that ignores both is not going to be talked round —
+// better to let the save fail loudly against the server's own validation than to spend every
+// remaining iteration re-explaining.
+const maxTriggerShapeCorrections = 2
+
+// triggerShapeCorrection inspects a workflow-JSON answer the model wants to return directly and,
+// when its triggers are malformed, returns the correction to feed back into the loop. Returns ""
+// when the answer is fine, is not workflow JSON, or the correction budget is spent.
+//
+// The tool path is covered by toolInitWorkflow, but a model may skip the tools entirely and emit
+// the whole definition as its final answer — resolveToolLoopOutcome persists that verbatim. Doing
+// the check here rather than after the loop means the fix costs one more iteration of the budget
+// already allocated, instead of a second full tool loop.
+func (a *WorkflowBuilderAgent) triggerShapeCorrection(ctx *security.RequestContext, answer string) string {
+	if a.triggerShapeRejections >= maxTriggerShapeCorrections {
+		return ""
+	}
+
+	var wf map[string]interface{}
+	if err := json.Unmarshal([]byte(answer), &wf); err != nil {
+		return ""
+	}
+	var triggers []interface{}
+	if def, ok := wf["definition"].(map[string]interface{}); ok {
+		triggers, _ = def["triggers"].([]interface{})
+	}
+	if triggers == nil {
+		triggers, _ = wf["triggers"].([]interface{})
+	}
+	if len(triggers) == 0 {
+		return ""
+	}
+
+	issues := triggerShapeIssues(triggers)
+	if len(issues) == 0 {
+		return ""
+	}
+
+	a.triggerShapeRejections++
+	if ctx != nil {
+		ctx.GetLogger().Warn("workflow_builder: rejected malformed trigger shape in direct workflow answer",
+			"issue_count", len(issues), "attempt", a.triggerShapeRejections, "issues", issues)
+	}
+	return triggerShapeMessage(issues, a.triggerShapeRejections) +
+		"\n\nRe-send the complete automation JSON with the trigger(s) corrected."
+}
+
 // lintEventTriggers inspects each event-trigger filter for the mistakes that make a trigger silently
 // never fire — patterns observed across real builder output: `Inputs.event` used in a filter (filters
 // read `event.*` at root), references to non-existent top-level fields (e.g. event.reason /
@@ -3450,6 +3673,14 @@ func lintEventTriggers(workflow map[string]interface{}) []string {
 			continue
 		}
 		params, _ := t["params"].(map[string]interface{})
+		// An event trigger with no params at all matches nothing and can never fire. This used to
+		// fall through the empty-filter skip below — the lint stayed silent on exactly the shape it
+		// exists to catch (#35383). Narrow on purpose: only a missing/empty params block is an
+		// issue here. An empty *filter* is fine when event_type carries the match.
+		if len(params) == 0 {
+			issues = append(issues, "event trigger has no params — it needs at least one of `event_type` or `filter` under `params`, or it will never fire.")
+			continue
+		}
 		filter, _ := params["filter"].(string)
 		if strings.TrimSpace(filter) == "" {
 			continue
@@ -3742,7 +3973,7 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
 	case "init_workflow":
-		return a.toolInitWorkflow(args)
+		return a.toolInitWorkflow(ctx, args)
 	case "add_task":
 		return a.toolAddTask(args)
 	case "get_task":
@@ -3815,6 +4046,8 @@ func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext
 func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
 	// Fresh commit marker for this loop — set only by a finalize tool call.
 	a.loopFinalized = false
+	// Fresh correction budget per loop, so an edit turn is not penalised by a build turn.
+	a.triggerShapeRejections = 0
 
 	// Fetch task types once for all get_task_schema calls and schema-driven validation
 	tasksResp, _ := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
@@ -3908,6 +4141,13 @@ RULES:
 			finalContent = strings.TrimPrefix(finalContent, "```")
 			finalContent = strings.TrimSuffix(finalContent, "```")
 			finalContent = strings.TrimSpace(finalContent)
+			if correction := a.triggerShapeCorrection(ctx, finalContent); correction != "" {
+				messages = append(messages,
+					llms.TextParts(llms.ChatMessageTypeAI, finalContent),
+					llms.TextParts(llms.ChatMessageTypeHuman, correction),
+				)
+				continue
+			}
 			return finalContent, nil
 		}
 
@@ -3919,7 +4159,15 @@ RULES:
 			// No tool call and no final answer — check if content looks like raw JSON (workflow).
 			// Validate strictly: must be valid JSON with both "name" and "definition" keys.
 			if isRawWorkflowJSON(content) {
-				return strings.TrimSpace(content), nil
+				raw := strings.TrimSpace(content)
+				if correction := a.triggerShapeCorrection(ctx, raw); correction != "" {
+					messages = append(messages,
+						llms.TextParts(llms.ChatMessageTypeAI, raw),
+						llms.TextParts(llms.ChatMessageTypeHuman, correction),
+					)
+					continue
+				}
+				return raw, nil
 			}
 
 			// Nudge the LLM to use a tool or finish
