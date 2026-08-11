@@ -2242,3 +2242,117 @@ func TestWorkflowBuilder_E2E_NonManualTriggerParamsAreNested(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkflowBuilder_E2E_AccountIdIsTheSelectedAccountUUID is the acceptance check for #35391.
+//
+// The account is chosen before the builder is invoked — the Create Automation dialog requires it,
+// and the request carries it as account_id and nothing else (verified on the wire: no
+// current_cluster_id is sent from that surface). Two things must follow from that:
+//
+//  1. The builder must not ask which cluster/account to target. It asked on every observed run,
+//     offering every cloud account in the TENANT — two of them production — for an automation
+//     explicitly scoped to a dev account.
+//  2. Every cloud-CLI task must carry that account's UUID literally. The observed values were a
+//     display name ("k8s-dev", rejected by Postgres as 22P02), a config reference
+//     ("{{ Configs.k8s_dev_account_id }}", which saves live but bound to nothing because missing
+//     configs are auto-created empty), and no account_id at all.
+func TestWorkflowBuilder_E2E_AccountIdIsTheSelectedAccountUUID(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping test: TEST_ACCOUNT not set")
+	}
+
+	accountId := os.Getenv("TEST_ACCOUNT")
+	userId := os.Getenv("TEST_USER")
+	tenantId := os.Getenv("TEST_TENANT")
+	sessionId := "ut-wb-account-binding"
+
+	agent := newWorkflowBuilderAgent(accountId)
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
+	_ = core.DeleteConversationBySession(sessionId, accountId, userId)
+
+	// No current_cluster_id is set on the request — exactly what the Create Automation dialog sends.
+	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
+		"Every day at 9am, list the pods in namespace nudgebee whose restart count is above 3",
+		core.ConversationSessionRequestWithEnableQueryRefinement(false))
+	assert.Nil(t, err)
+
+	var questionsAsked []string
+	answer := func(text string) {
+		t.Helper()
+		messageId, perr := uuid.Parse(resp.MessageId)
+		assert.Nil(t, perr)
+		agentId, perr := uuid.Parse(resp.AgentId)
+		assert.Nil(t, perr)
+		resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId, text,
+			core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
+			core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
+		assert.Nil(t, err)
+	}
+
+	for i := 0; i < 4 && resp.Status == core.ConversationStatusWaiting &&
+		!slices.Contains(resp.FollowupRequest.FollowupOptions, PlanApprovalOptionApprove); i++ {
+		questionsAsked = append(questionsAsked, resp.FollowupRequest.Question)
+		answer("Skip")
+	}
+	if assert.Equal(t, core.ConversationStatusWaiting, resp.Status, "expected a plan-approval prompt") {
+		answer(PlanApprovalOptionApprove)
+	}
+
+	for _, question := range questionsAsked {
+		lower := strings.ToLower(question)
+		assert.NotContains(t, lower, "cluster",
+			"the account was already chosen; asking which cluster to use is the bug (#35391). Asked: %q", question)
+		assert.NotContains(t, lower, "which account",
+			"the account was already chosen; asking which account to use is the bug (#35391). Asked: %q", question)
+	}
+
+	if !assert.NotNil(t, agent.state.WorkingWorkflow, "build produced no definition") {
+		return
+	}
+	def, ok := agent.state.WorkingWorkflow["definition"].(map[string]interface{})
+	if !assert.True(t, ok, "definition missing from working workflow") {
+		return
+	}
+	tasks, _ := def["tasks"].([]interface{})
+	if !assert.NotEmpty(t, tasks, "definition has no tasks") {
+		return
+	}
+
+	built, _ := json.Marshal(tasks)
+	t.Logf("built tasks: %s", built)
+
+	var sawCloudCliTask bool
+	var assertAccountIds func(tasks []interface{})
+	assertAccountIds = func(tasks []interface{}) {
+		for _, rawTask := range tasks {
+			task, ok := rawTask.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			taskType, _ := task["type"].(string)
+			switch strings.ToLower(strings.TrimSpace(taskType)) {
+			case "k8s.cli", "cloud.aws.cli", "cloud.gcp.cli", "cloud.azure.cli":
+				sawCloudCliTask = true
+				taskId, _ := task["id"].(string)
+				params, _ := task["params"].(map[string]interface{})
+				raw, _ := params["account_id"].(string)
+				got := strings.TrimSpace(raw)
+
+				// Two outcomes are correct, and the prompt now prefers the first: omit account_id
+				// and let the engine default it to the automation's own account, or write that
+				// account's UUID literally. What must never appear is a display name or a
+				// {{ Configs.* }} reference — the values this build produced before the fix.
+				if got != "" {
+					assert.Equal(t, accountId, got,
+						"task %q (%s) set an account_id, so it must be the automation's own account as a literal UUID", taskId, taskType)
+				}
+			}
+			if nested, ok := task["tasks"].([]interface{}); ok {
+				assertAccountIds(nested)
+			}
+		}
+	}
+	assertAccountIds(tasks)
+
+	assert.True(t, sawCloudCliTask, "this prompt must produce a cloud-CLI task or it proves nothing")
+}

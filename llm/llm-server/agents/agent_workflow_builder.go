@@ -1333,7 +1333,10 @@ REGRESSION PREVENTION:
 - When fixing one task, do NOT change other tasks unless directly affected.
 
 CLOUD ACCOUNT IDs (account_id parameter):
-- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: the params.account_id MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above. NEVER use the display name. The runbook server validates account_id as a UUID and will reject the save with "invalid input syntax for type uuid" otherwise.`, intent, planSection, schema)
+- MANY task types take an optional params.account_id — the CLI tasks (k8s.cli, cloud.*.cli) but also tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever you set it, not just to CLI tasks. Call get_task_schema if you are unsure whether a task takes one.
+- account_id is OPTIONAL and defaults to the account the automation itself runs in — which is the account the user selected. If the task should target that account, PREFER OMITTING account_id entirely. Do not set it just to be explicit.
+- If you DO set it (only when targeting a DIFFERENT account than the automation's own), it MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above, written as a literal string. NEVER the display name — the runbook server validates account_id as a UUID and rejects the save with "invalid input syntax for type uuid".
+- NEVER point account_id at a config: "{{ Configs.some_account_id }}" is NOT acceptable. It is a value the builder already knows, and deferring it either saves the automation INACTIVE until someone creates the config, or resolves to a placeholder string at run time. Inline the UUID or omit the parameter.`, intent, planSection, schema)
 }
 
 // getEditSystemPrompt returns the system prompt for the unified agentic edit loop. It covers BOTH
@@ -1404,7 +1407,9 @@ core.foreach — ITEM VARIABLE:
 - The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly. Variable names are CASE-SENSITIVE: if item="issue", use {{ issue.title }}, NOT {{ Issue.title }}.
 
 CLOUD ACCOUNT IDs (account_id parameter):
-- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: params.account_id MUST be a UUID. If you see a non-UUID value (e.g. a display name), replace it with the matching UUID from the account environment. The runbook server rejects non-UUID account_id values.`, errorSection, targetSection, schema)
+- MANY task types take an optional params.account_id, not just the CLI tasks: tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever it appears.
+- Wherever params.account_id is set, it MUST be a literal UUID. If you see a non-UUID value (a display name, or a "{{ Configs.* }}" reference), replace it with the matching UUID from the account environment, or delete the parameter if the task should run against the automation's own account.
+- account_id is optional and defaults to the automation's own account, so REMOVING it is a legitimate fix when that is the intended target. It is not a way to silence an error about a DIFFERENT account you were asked to target.`, errorSection, targetSection, schema)
 }
 
 // buildAndValidate builds the workflow JSON from the approved plan using the agentic tool loop.
@@ -1605,6 +1610,175 @@ func walkTasksAndResolveAccountIds(tasks []interface{}, nameToId map[string]stri
 			walkTasksAndResolveAccountIds(nested, nameToId, unresolved)
 		}
 	}
+}
+
+// resolveAccountIdsInWorkingWorkflow runs resolveCloudAccountIds against the in-progress
+// definition and writes the result back, so a display name is corrected inside the tool loop
+// rather than at save time. Returns the actionable "unrecognized account_id" error when a value
+// is neither a UUID nor a configured account name; marshalling failures are non-fatal (the
+// definition is left untouched and the server produces the error path, as before).
+func (a *WorkflowBuilderAgent) resolveAccountIdsInWorkingWorkflow(ctx *security.RequestContext) error {
+	raw, err := json.Marshal(a.state.WorkingWorkflow)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: could not marshal working automation for account resolution", "error", err)
+		return nil
+	}
+
+	resolved, err := a.resolveCloudAccountIds(ctx, string(raw))
+	if err != nil {
+		return err
+	}
+
+	var updated map[string]interface{}
+	if err := json.Unmarshal([]byte(resolved), &updated); err != nil {
+		ctx.GetLogger().Warn("workflow_builder: could not re-read resolved automation, leaving it unchanged", "error", err)
+		return nil
+	}
+	a.state.WorkingWorkflow = updated
+	return nil
+}
+
+// lintCloudAccountIds reports tasks that SET an `account_id` to a value that will not resolve to
+// an account at run time. Deliberately task-type agnostic: 41 task types across tickets, dbms,
+// observability, scripting, github and rabbitmq declare an account-typed parameter, not just the
+// four cloud-CLI types, and any of them can be handed an unusable value.
+//
+// It does NOT require account_id to be present. The parameter is `Required: false` in every task
+// schema and the engine defaults it to the automation's own account
+// (`accountId := taskCtx.GetAccountID()`, e.g. runbook-server internal/tasks/k8s/cli.go:35), which
+// is precisely the account the user picked. Omitting it is correct, not a dropped field.
+//
+// What is caught is a value that is present, non-empty, and unusable:
+//
+//   - a `{{ Configs.<key> }}` reference whose config holds a non-UUID value. This is the shape
+//     observed live (#35391): it renders to something like "<TODO: set value>", which is
+//     non-empty, so the engine's default never kicks in and the task runs against a garbage id.
+//   - a `{{ Configs.<key> }}` reference to a config that does not exist. checkMissingConfigs saves
+//     these INACTIVE with a "create these configs" message (#31490) rather than letting the
+//     placeholder reach runtime — so this is not silent breakage, but it is still a dead-on-arrival
+//     automation for a value the builder already had in hand, and it is cheaper to fix in-loop.
+//
+// A reference that resolves to a UUID today is left alone — a working indirection, not this bug.
+// A display name is not checked here; resolveAccountIdsInWorkingWorkflow has already swapped it
+// for a UUID or failed with its own message by the time this runs.
+func (a *WorkflowBuilderAgent) lintCloudAccountIds(ctx *security.RequestContext, workflow map[string]interface{}) []string {
+	var tasks []interface{}
+	if def, ok := workflow["definition"].(map[string]interface{}); ok {
+		tasks, _ = def["tasks"].([]interface{})
+	}
+	if tasks == nil {
+		tasks, _ = workflow["tasks"].([]interface{})
+	}
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	// Only pay for the configs fetch when a template is actually in play. `available` is false
+	// when the config API could not be read at all — the template checks are then skipped
+	// entirely, because "we could not look it up" must not be reported as "it does not exist".
+	var configValues map[string]string
+	var configsFetched bool
+	lookupConfig := func(key string) (value string, found bool, available bool) {
+		if !configsFetched {
+			configsFetched = true
+			if ctx != nil {
+				values, err := fetchConfigValues(ctx, a.accountId)
+				if err != nil {
+					ctx.GetLogger().Warn("workflow_builder: lintCloudAccountIds: config API unreachable, skipping template checks", "error", err)
+				}
+				configValues = values
+			}
+		}
+		if configValues == nil {
+			return "", false, false
+		}
+		value, found = configValues[key]
+		return value, found, true
+	}
+
+	var issues []string
+	walkTasksAndLintAccountIds(tasks, lookupConfig, &issues)
+	return issues
+}
+
+// configTemplateKey extracts `foo` from `{{ Configs.foo }}` (any spacing). Returns "" when the
+// value is not a lone Configs reference — a composed expression is not something this lint can
+// evaluate, so it is left alone.
+var configTemplateKey = regexp.MustCompile(`^\{\{\s*Configs\.([A-Za-z0-9_.-]+)\s*\}\}$`)
+
+func walkTasksAndLintAccountIds(tasks []interface{}, lookupConfig func(string) (value string, found bool, available bool), issues *[]string) {
+	for _, rawTask := range tasks {
+		task, ok := rawTask.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		taskType, _ := task["type"].(string)
+		if taskType == "" {
+			taskType = "<untyped>"
+		}
+		taskId, _ := task["id"].(string)
+		if taskId == "" {
+			taskId = "<unnamed>"
+		}
+
+		params, _ := task["params"].(map[string]interface{})
+		accountId, _ := params["account_id"].(string)
+
+		// An absent or empty account_id is the engine's "use the automation's own account"
+		// default, which is the right account. Only a value that was actually set can be wrong.
+		if accountId = strings.TrimSpace(accountId); accountId != "" && configTemplateKey.MatchString(accountId) {
+			key := configTemplateKey.FindStringSubmatch(accountId)[1]
+			value, found, available := lookupConfig(key)
+			switch {
+			case !available:
+				// Configs could not be read; stay silent rather than guess.
+			case !found:
+				*issues = append(*issues, fmt.Sprintf(
+					"task '%s' (%s) sets `account_id` to %s, but no config named %q exists — the automation would save INACTIVE until someone creates it",
+					taskId, taskType, accountId, key))
+			case !isValidUUID(strings.TrimSpace(value)):
+				*issues = append(*issues, fmt.Sprintf(
+					"task '%s' (%s) sets `account_id` to %s, but config %q holds %q, which is not an account UUID",
+					taskId, taskType, accountId, key, value))
+			}
+		}
+
+		if nested, ok := task["tasks"].([]interface{}); ok {
+			walkTasksAndLintAccountIds(nested, lookupConfig, issues)
+		}
+	}
+}
+
+func cloudAccountLintMessage(issues []string) string {
+	return "Validation FAILED (account binding): the structure is valid but these tasks set an `account_id` that will not resolve:\n- " +
+		strings.Join(issues, "\n- ") +
+		"\n\nFix with modify_task, either way:\n" +
+		"- Set `account_id` to the literal UUID shown as id=<uuid> for that account in the ACCOUNT ENVIRONMENT block, or\n" +
+		"- Remove `account_id` entirely if the task should run against the automation's own account — the parameter is " +
+		"optional and defaults to exactly that.\n" +
+		"Do not use a display name and do not point it at a config. Then call validate again."
+}
+
+// fetchConfigValues returns the account's configs as key → value. Separate from
+// fetchExistingConfigKeys, which only needs the key set.
+func fetchConfigValues(ctx *security.RequestContext, accountId string) (map[string]string, error) {
+	resp, err := tools.DoRunbookRequest("GET", "configs", nil, accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return nil, err
+	}
+	var configs []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(resp, &configs); err != nil {
+		return nil, fmt.Errorf("failed to parse configs response: %w", err)
+	}
+	values := map[string]string{}
+	for _, c := range configs {
+		values[c.Key] = c.Value
+	}
+	return values, nil
 }
 
 // isValidUUID returns true if s parses as a UUID. Used to distinguish
@@ -2181,7 +2355,7 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 		parts = append(parts, "Default metrics provider: "+metricProvider.Provider+" (use observability.metrics)")
 	}
 
-	currentContext := a.currentContextSection()
+	currentContext := a.currentContextSection(ctx)
 	if len(parts) == 0 {
 		return currentContext
 	}
@@ -2202,28 +2376,73 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 
 // currentContextSection returns a prompt block naming the cluster/cloud-account the user is
 // currently viewing, instructing prompts to default to it instead of asking which account/cluster
-// to target (#30162). Returns "" when no current context was supplied (behavior then unchanged).
-func (a *WorkflowBuilderAgent) currentContextSection() string {
-	if a.currentCluster == "" && a.currentClusterId == "" {
-		return ""
+// to target (#30162). Returns "" only when the agent has no account at all.
+func (a *WorkflowBuilderAgent) currentContextSection(ctx *security.RequestContext) string {
+	label := a.currentCluster
+	id := a.currentClusterId
+
+	// Fall back to the account the agent is already scoped to. QueryConfig.CurrentCluster*
+	// only arrives from surfaces that render the global cluster dropdown, and the Create
+	// Automation dialog is not one of them — its request carries the chosen account as
+	// account_id and nothing else (#35391). Without this fallback the "do NOT ask" rule below
+	// never reaches the prompt from that surface, so the builder asks which cluster to use
+	// even though the user already picked one, and then targets whatever it was answered with.
+	if label == "" && id == "" {
+		id = a.accountId
+		label = a.ownAccountName(ctx)
 	}
 
-	label := a.currentCluster
+	if label == "" && id == "" {
+		return ""
+	}
 	if label == "" {
-		label = a.currentClusterId
+		label = id
 	}
 	idSuffix := ""
-	if a.currentClusterId != "" {
-		idSuffix = fmt.Sprintf(" (account_id=%s)", a.currentClusterId)
+	if id != "" && id != label {
+		// When the display name could not be resolved the label already IS the id; appending the
+		// suffix would render `"<uuid>" (account_id=<uuid>)` at the model.
+		idSuffix = fmt.Sprintf(" (account_id=%s)", id)
 	}
 
 	return fmt.Sprintf(
 		"\n\nCURRENT CONTEXT: The user is already working inside the cluster/account \"%s\"%s. "+
 			"Do NOT ask the user which account, cluster, or workspace to use. "+
-			"For a task that needs an `account_id` (k8s.cli, cloud.*.cli), default to THIS account/cluster when it fits the task's provider; "+
-			"otherwise pick the appropriate configured account from the ACCOUNT ENVIRONMENT above without asking. "+
+			"Tasks default to THIS account already — the optional `account_id` parameter (which many task types accept, "+
+			"not only the CLI ones) falls back to it when omitted, so leave it out unless a task must target a different account. "+
+			"When a task genuinely needs a different one, pick it from the ACCOUNT ENVIRONMENT above without asking, and write "+
+			"its UUID as a literal string — NEVER the display name, and NEVER a `{{ Configs.<key> }}` template. "+
 			"Only ask if no suitable account is configured.",
 		label, idSuffix)
+}
+
+// ownAccountName returns the display name of the agent's own cloud account, or "" when it cannot
+// be resolved. Used to label the current-context block with a name the user recognises rather
+// than a bare UUID.
+//
+// Takes no account parameter on purpose. ListAllToolConfigs' argument is the *scoping* account —
+// it resolves that account's tenant and lists the tenant's cloud accounts — so it must be the
+// agent's own account, not a lookup target. A version that accepted an arbitrary id to look up
+// would read as though that id also belonged in the scoping position, which would scope a listing
+// to a caller-supplied account and fail outright for any id that is not a cloud_accounts row.
+func (a *WorkflowBuilderAgent) ownAccountName(ctx *security.RequestContext) string {
+	if ctx == nil || a.accountId == "" {
+		return ""
+	}
+	allConfigs, err := toolcore.ListAllToolConfigs(ctx, a.accountId)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: ownAccountName: ListAllToolConfigs failed", "error", err)
+		return ""
+	}
+	for _, cfg := range allConfigs {
+		if !cloudAccountConfigTypes[strings.ToLower(cfg.Schema.ConfigType)] {
+			continue
+		}
+		if strings.EqualFold(cloudAccountId(cfg), a.accountId) {
+			return cfg.Name
+		}
+	}
+	return ""
 }
 
 // fetchTaskTypeNames fetches registered task type names from the runbook server.
@@ -3767,6 +3986,21 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 
 	// Apply type coercion before validation
 	coerceWorkflowTypes(a.state.WorkingWorkflow)
+
+	// Resolve cloud-account display names → UUIDs BEFORE the server sees the definition.
+	// This same swap runs again at save time, but the save is too late to help the loop: the
+	// runbook server validates account_id as a Postgres uuid, so a display name reaches
+	// validate as `invalid input syntax for type uuid: "k8s-dev" (22P02)` — an error the model
+	// cannot act on, and whose observed recovery was to delete account_id entirely (#35391).
+	if resolveErr := a.resolveAccountIdsInWorkingWorkflow(ctx); resolveErr != nil {
+		return fmt.Sprintf("Validation FAILED: %s\n\nFix the `account_id` on the named task(s) with modify_task, then call validate again.", resolveErr.Error())
+	}
+
+	// Local account lint: a cloud-CLI task with no resolvable account saves as an automation
+	// that looks live and runs against nothing. The server accepts both shapes (#35391).
+	if accountIssues := a.lintCloudAccountIds(ctx, a.state.WorkingWorkflow); len(accountIssues) > 0 {
+		return cloudAccountLintMessage(accountIssues)
+	}
 
 	// Local event-trigger lint: the server validates structure but accepts filters that reference
 	// non-existent fields (which save as ACTIVE-but-dead). Surface those so the agent fixes them.

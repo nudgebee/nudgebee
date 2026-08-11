@@ -1639,10 +1639,16 @@ func TestWorkflowBuilder_BuildSystemPromptHasAccountIdUUIDRule(t *testing.T) {
 	assert.Contains(t, prompt, "CLOUD ACCOUNT IDs", "build prompt must have a dedicated section for account_id rules")
 	assert.Contains(t, prompt, "account_id", "build prompt must mention account_id by name")
 	assert.Contains(t, prompt, "UUID", "build prompt must call out UUID requirement")
-	assert.Contains(t, prompt, "k8s.cli", "build prompt must enumerate k8s.cli")
-	assert.Contains(t, prompt, "cloud.aws.cli", "build prompt must enumerate cloud.aws.cli")
-	assert.Contains(t, prompt, "cloud.gcp.cli", "build prompt must enumerate cloud.gcp.cli")
-	assert.Contains(t, prompt, "cloud.azure.cli", "build prompt must enumerate cloud.azure.cli")
+	assert.Contains(t, prompt, "k8s.cli", "build prompt must name the CLI tasks as examples")
+
+	// The rule must NOT read as "these four task types only". 41 task types across tickets, dbms,
+	// observability, scripting, github and rabbitmq declare an account-typed parameter, and a
+	// model told the rule applies to CLI tasks will happily write a display name into a
+	// tickets.create account_id.
+	assert.Contains(t, prompt, "tickets.", "build prompt must show the rule reaches beyond CLI tasks")
+	assert.Contains(t, prompt, "OPTIONAL", "build prompt must say account_id is optional")
+	assert.Contains(t, prompt, "PREFER OMITTING",
+		"the engine defaults account_id to the automation's own account, so omitting it is the right default")
 }
 
 // TestWorkflowBuilder_EditSystemPromptHasAccountIdUUIDRule mirrors the build
@@ -1751,16 +1757,14 @@ func TestWorkflowBuilder_ParseTurnIntent(t *testing.T) {
 }
 
 // TestWorkflowBuilder_CurrentContextSection verifies the current-cluster context block (#30162):
-// emitted with a "do not ask which account/cluster" instruction when a context is set, empty otherwise.
+// emitted with a "do not ask which account/cluster" instruction, and empty only when the agent
+// has no account at all.
 func TestWorkflowBuilder_CurrentContextSection(t *testing.T) {
-	// No context → empty.
+	// Name + id from the viewing context → names both and instructs not to ask.
 	a := newWorkflowBuilderAgent("acct")
-	assert.Equal(t, "", a.currentContextSection())
-
-	// Name + id → names both and instructs not to ask.
 	a.currentCluster = "prod-eks"
 	a.currentClusterId = "11111111-2222-3333-4444-555555555555"
-	got := a.currentContextSection()
+	got := a.currentContextSection(nil)
 	assert.Contains(t, got, "CURRENT CONTEXT")
 	assert.Contains(t, got, "prod-eks")
 	assert.Contains(t, got, "account_id=11111111-2222-3333-4444-555555555555")
@@ -1769,9 +1773,34 @@ func TestWorkflowBuilder_CurrentContextSection(t *testing.T) {
 	// Id only (no display name) → falls back to the id as the label, still non-empty.
 	a2 := newWorkflowBuilderAgent("acct")
 	a2.currentClusterId = "abc"
-	got2 := a2.currentContextSection()
+	got2 := a2.currentContextSection(nil)
 	assert.Contains(t, got2, "CURRENT CONTEXT")
 	assert.Contains(t, got2, "abc")
+
+	// No agent account at all → nothing to default to, block omitted.
+	assert.Equal(t, "", newWorkflowBuilderAgent("").currentContextSection(nil))
+}
+
+// The Create Automation dialog sends the chosen account as the request's account_id and nothing
+// else — no QueryConfig.CurrentCluster*, verified on the wire. Before the fallback that made this
+// test necessary, currentContextSection returned "" from that surface, the "do NOT ask" rule never
+// reached the prompt, and the builder asked which cluster to target after the user had already
+// picked one — then wrote whatever it was answered with into account_id (#35391).
+func TestWorkflowBuilder_CurrentContextFallsBackToTheAgentAccount(t *testing.T) {
+	a := newWorkflowBuilderAgent("a2a30b02-0f67-42e5-a2ab-c658230fd798")
+
+	got := a.currentContextSection(nil)
+
+	assert.Contains(t, got, "CURRENT CONTEXT", "the account the builder is scoped to must reach the prompt")
+	assert.Contains(t, got, "a2a30b02-0f67-42e5-a2ab-c658230fd798")
+	assert.Contains(t, got, "Do NOT ask")
+	assert.Contains(t, got, "NEVER a `{{ Configs.<key> }}` template",
+		"the observed failure was a config reference, not a display name")
+
+	// The display name is unresolvable here (no ctx), so the label already IS the id. Naming it
+	// twice — `"<uuid>" (account_id=<uuid>)` — is noise in a prompt the model has to read.
+	assert.NotContains(t, got, "(account_id=",
+		"do not repeat the id as a suffix when it is already the label")
 }
 
 // TestWorkflowBuilder_BuildPromptHasTriggerPayloadAccess asserts the build

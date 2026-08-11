@@ -186,4 +186,6 @@ core.foreach — ITEM VARIABLE:
 - The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly. Variable names are CASE-SENSITIVE: if item="issue", use {{ issue.title }}, NOT {{ Issue.title }}.
 
 CLOUD ACCOUNT IDs (account_id parameter):
-- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: params.account_id MUST be a UUID. If you see a non-UUID value (e.g. a display name), replace it with the matching UUID from the account environment. The runbook server rejects non-UUID account_id values.
+- MANY task types take an optional params.account_id, not just the CLI tasks: tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever it appears.
+- Wherever params.account_id is set, it MUST be a literal UUID. If you see a non-UUID value (a display name, or a "{{ Configs.* }}" reference), replace it with the matching UUID from the account environment, or delete the parameter if the task should run against the automation's own account.
+- account_id is optional and defaults to the automation's own account, so REMOVING it is a legitimate fix when that is the intended target. It is not a way to silence an error about a DIFFERENT account you were asked to target.
