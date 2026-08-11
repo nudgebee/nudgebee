@@ -37,26 +37,34 @@ func CompareApplicationDeployment(context *security.RequestContext, request Appl
 		kind := app.Kind
 		accountId := request.AccountId
 		events := make([]map[string]interface{}, 0)
-		rows, err := dbms.Db.Queryx(`select * from events where subject_name=$1 and subject_namespace=$2 and subject_type=$3 and finding_type='configuration_change' and cloud_account_id = $4 order by created_at desc limit 2`, workload, namespace, strings.ToLower(kind), accountId)
-		if err != nil {
-			return []ApplicationDeploymentInsight{}, err
-		}
-		if rows != nil {
+		// Scoped to its own function so the cursor is released at the end of THIS
+		// iteration. A plain `defer rows.Close()` here would stack until
+		// CompareApplicationDeployment returns, holding one Postgres connection per
+		// application across the getApplicationMetrics relay round-trips below.
+		if err := func() error {
+			rows, err := dbms.Db.Queryx(`select * from events where subject_name=$1 and subject_namespace=$2 and subject_type=$3 and finding_type='configuration_change' and cloud_account_id = $4 order by created_at desc limit 2`, workload, namespace, strings.ToLower(kind), accountId)
+			if err != nil {
+				return err
+			}
+			if rows == nil {
+				return nil
+			}
 			defer func() {
-				err := rows.Close()
-				if err != nil {
-					slog.Error("anomaly: failed to close rows", "error", err)
+				if closeErr := rows.Close(); closeErr != nil {
+					slog.Error("anomaly: failed to close rows", "error", closeErr)
 				}
 			}()
 
 			for rows.Next() {
 				var event = make(map[string]interface{})
-				err = rows.MapScan(event)
-				if err != nil {
-					return []ApplicationDeploymentInsight{}, err
+				if err := rows.MapScan(event); err != nil {
+					return err
 				}
 				events = append(events, event)
 			}
+			return nil
+		}(); err != nil {
+			return []ApplicationDeploymentInsight{}, err
 		}
 		if len(events) == 0 {
 			return []ApplicationDeploymentInsight{}, nil
