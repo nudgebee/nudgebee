@@ -49,12 +49,51 @@ type modelPrice struct {
 	CachedInput   float64 `db:"cost_per_million_cached_input_tokens"`
 	CacheCreation float64 `db:"cost_per_million_cache_creation_tokens"`
 	Model         string  `db:"model_name"`
+	// TenantID is "" for a built-in/global row (tenant_id IS NULL) and a tenant uuid for a
+	// per-tenant override. llm_model_pricing gained tenant scoping (V861), so a single
+	// model_name can now carry BOTH a built-in and per-tenant override rows.
+	TenantID string `db:"tenant_id"`
+}
+
+// catalog is the loaded pricing snapshot, split so a tenant's override never bleeds onto
+// another tenant. A built-in (global) price is keyed by model_name; a tenant override is
+// keyed by tenant_id then model_name.
+type catalog struct {
+	builtin  map[string]modelPrice            // model_name → built-in price (tenant_id IS NULL)
+	byTenant map[string]map[string]modelPrice // tenant_id → model_name → override price
+}
+
+// resolve looks up model (with normalized-name fallbacks) in a single price map.
+func resolve(m map[string]modelPrice, model string) (modelPrice, bool) {
+	if mp, ok := m[model]; ok {
+		return mp, true
+	}
+	// Providers send real IDs (dated / dash-versioned); the catalog stores normalized names.
+	for _, cand := range normalizedCandidates(model) {
+		if mp, ok := m[cand]; ok {
+			return mp, true
+		}
+	}
+	return modelPrice{}, false
+}
+
+// lookup resolves the price for (tenant, model): the tenant's own override wins, else the
+// built-in (mirrors llm-server's ListModelPricing precedence — tenant, then global).
+func (c *catalog) lookup(tenantID, model string) (modelPrice, bool) {
+	if tenantID != "" {
+		if tm := c.byTenant[tenantID]; tm != nil {
+			if mp, ok := resolve(tm, model); ok {
+				return mp, true
+			}
+		}
+	}
+	return resolve(c.builtin, model)
 }
 
 // Pricer computes request cost (USD) from the llm_model_pricing catalog, cached
 // and refreshed. Unknown models cost 0 (can't estimate) and are logged once.
 type Pricer struct {
-	cur  atomic.Pointer[map[string]modelPrice]
+	cur  atomic.Pointer[catalog]
 	done chan struct{}
 	wg   sync.WaitGroup
 	once sync.Map // models already warned about
@@ -90,8 +129,7 @@ func (p *Pricer) rebuild() {
 	if err != nil {
 		slog.Error("pricing: metastore unavailable", "error", err)
 		if p.cur.Load() == nil {
-			m := map[string]modelPrice{}
-			p.cur.Store(&m)
+			p.cur.Store(&catalog{builtin: map[string]modelPrice{}, byTenant: map[string]map[string]modelPrice{}})
 		}
 		return
 	}
@@ -99,35 +137,40 @@ func (p *Pricer) rebuild() {
 	if err := db.QueryAndScan(&rows, `SELECT model_name,
 		cost_per_million_input_tokens, cost_per_million_output_tokens,
 		COALESCE(cost_per_million_cached_input_tokens, 0)   AS cost_per_million_cached_input_tokens,
-		COALESCE(cost_per_million_cache_creation_tokens, 0) AS cost_per_million_cache_creation_tokens
+		COALESCE(cost_per_million_cache_creation_tokens, 0) AS cost_per_million_cache_creation_tokens,
+		COALESCE(tenant_id::text, '')                       AS tenant_id
 		FROM llm_model_pricing`); err != nil {
 		slog.Error("pricing: load failed", "error", err)
 		return
 	}
-	m := make(map[string]modelPrice, len(rows))
+	c := &catalog{builtin: map[string]modelPrice{}, byTenant: map[string]map[string]modelPrice{}}
+	var tenantRows int
 	for _, r := range rows {
-		m[r.Model] = r
+		if r.TenantID == "" {
+			c.builtin[r.Model] = r
+			continue
+		}
+		tm := c.byTenant[r.TenantID]
+		if tm == nil {
+			tm = map[string]modelPrice{}
+			c.byTenant[r.TenantID] = tm
+		}
+		tm[r.Model] = r
+		tenantRows++
 	}
-	p.cur.Store(&m)
-	slog.Info("pricing: loaded catalog", "models", len(m))
+	p.cur.Store(c)
+	slog.Info("pricing: loaded catalog", "builtin_models", len(c.builtin), "tenant_override_rows", tenantRows, "tenants", len(c.byTenant))
 }
 
-// CostUSD estimates the cost of one request. Returns 0 for an unknown model.
-func (p *Pricer) CostUSD(model string, input, output, cacheRead, cacheWrite int) float64 {
+// CostUSD estimates the cost of one request for a given tenant. A tenant's own price override
+// wins over the built-in/global rate; an empty tenantID resolves against built-ins only.
+// Returns 0 for an unknown model.
+func (p *Pricer) CostUSD(tenantID, model string, input, output, cacheRead, cacheWrite int) float64 {
 	cat := p.cur.Load()
 	if cat == nil {
 		return 0
 	}
-	mp, ok := (*cat)[model]
-	if !ok {
-		// Providers send real IDs (dated / dash-versioned); the catalog stores
-		// normalized names. Try normalized fallbacks before giving up.
-		for _, cand := range normalizedCandidates(model) {
-			if mp, ok = (*cat)[cand]; ok {
-				break
-			}
-		}
-	}
+	mp, ok := cat.lookup(tenantID, model)
 	if !ok {
 		if _, warned := p.once.LoadOrStore(model, true); !warned {
 			slog.Warn("pricing: no catalog entry — cost counted as 0", "model", model)

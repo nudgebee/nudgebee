@@ -514,7 +514,9 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	// row carries the price as it was when the call ran (read paths sum this instead
 	// of re-pricing on every query). The same value reconciles the quota below.
 	if h.pricer != nil {
-		ev.CostUsd = h.pricer.CostUSD(ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
+		// Tenant-scoped: a tenant's own price override wins over the built-in rate (else the
+		// built-in), so one tenant's negotiated rate never bleeds onto another's cost.
+		ev.CostUsd = h.pricer.CostUSD(ev.TenantID, ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
 	}
 	// Skip recording non-inference admin calls (cache/list/countTokens) unless enabled
 	// — they have no model and 0 tokens, so they'd only clutter the dashboard. The

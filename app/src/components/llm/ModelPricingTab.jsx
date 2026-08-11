@@ -50,6 +50,10 @@ const PRICEABLE_PROVIDERS = [
   'sagemaker',
   'vertexai',
   'vertexai_endpoint',
+  // AI Gateway custom / Vertex-OpenAI (MaaS) models route on the vLLM lane, so their usage
+  // rows carry provider `vllm`. The gateway matches a price on model id (provider ignored),
+  // but allowing `vllm` lets a tenant enter the provider exactly as it appears on usage.
+  'vllm',
 ];
 
 const SOURCE_ANY = '';
@@ -471,7 +475,9 @@ const ModelPricingTab = ({ stickyTable = false }) => {
                   value={draft.provider}
                   onChange={(v) => setDraft({ ...draft, provider: v })}
                   placeholder='e.g. custom'
-                  help={`Must match the provider on the LLM config exactly. One of: ${PRICEABLE_PROVIDERS.join(', ')}.`}
+                  help={`Must match the provider shown on your usage rows. AI Gateway models (custom / Vertex-OpenAI) use "vllm" and are priced by model id. One of: ${PRICEABLE_PROVIDERS.join(
+                    ', '
+                  )}.`}
                 />
                 <Input
                   label='Model'
@@ -479,6 +485,7 @@ const ModelPricingTab = ({ stickyTable = false }) => {
                   value={draft.model}
                   onChange={(v) => setDraft({ ...draft, model: v })}
                   placeholder='e.g. Qwen/Qwen3.6-35B-A3B-FP8'
+                  help='The exact model id addressed on your usage rows (e.g. google/gemma-4-26b-a4b-it-maas for a Vertex MaaS model).'
                 />
               </>
             )}
