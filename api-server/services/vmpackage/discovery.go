@@ -96,6 +96,14 @@ type SweepHost struct {
 	RDNS      string   `json:"rdns,omitempty"`
 	OpenPorts []int    `json:"open_ports,omitempty"`
 	Sources   []string `json:"sources"`
+
+	// CloudIdentity is forager's cloud-instance-identity probe output (raw,
+	// unparsed multi-line key=value text — see resource_match.go's
+	// parseCloudInstanceIdentity), populated when this datasource has SSH
+	// credentials configured and the host answered on the SSH port. Empty
+	// otherwise: no SSH credentials, host unreachable/not SSH, or a
+	// non-cloud host that timed out on every provider's metadata service.
+	CloudIdentity string `json:"cloud_identity,omitempty"`
 }
 
 type discoverySweepResponse struct {

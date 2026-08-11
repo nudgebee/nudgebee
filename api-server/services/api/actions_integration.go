@@ -12,6 +12,7 @@ import (
 	"nudgebee/services/observability"
 	"nudgebee/services/security"
 	"nudgebee/services/user"
+	"nudgebee/services/vmpackage"
 	"strings"
 	"time"
 
@@ -493,6 +494,32 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			"options": result.Options,
 			"message": result.Message,
 		})
+		return
+
+	case "integrations_upsert_discovery_target":
+		reqMap, ok := actionPayload.Input["request"].(map[string]any)
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid or missing request payload"))
+			return
+		}
+		var request vmpackage.DiscoveryTargetRequest
+		if err := common.UnmarshalMapToStruct(reqMap, &request); err != nil {
+			slog.Error("integrations: failed to decode request", "error", err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := common.ValidateStruct(request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := vmpackage.UpsertDiscoveryTarget(ctx, request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, map[string]string{"status": "success"})
 		return
 
 	default:

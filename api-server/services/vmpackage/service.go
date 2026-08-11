@@ -68,10 +68,11 @@ func ScanPackages(ctx *security.RequestContext, req ScanRequest) (ScanResponse, 
 }
 
 // verifyCloudResource confirms the caller-supplied cloud_resource_id belongs
-// to this account+tenant before any SSH command runs, and returns its IP —
-// VM cloud_resourses rows are onboarded one-per-IP with resourse_id formatted
-// "vm-<ip>". VM-identity/merge (resolving a resource from raw discovery) is
-// out of scope here — the caller already knows which resource this scan is for.
+// to this account+tenant before any SSH command runs, and returns its IP.
+// Legacy VM cloud_resourses rows are onboarded one-per-IP with resourse_id
+// formatted "vm-<ip>", parsed directly; anything else (a resource_match.go
+// Tier-0/1/2 match or identity-created row, or a genuine cloud-collector
+// row) falls back to resolveResourceIP's meta-based extraction.
 func verifyCloudResource(cloudResourceID, accountID, tenantID string) (string, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -87,9 +88,12 @@ func verifyCloudResource(cloudResourceID, accountID, tenantID string) (string, e
 		}
 		return "", fmt.Errorf("vmpackage: verify cloud resource: %w", err)
 	}
-	ip, ok := strings.CutPrefix(resourceID, vmResourceIDPrefix)
-	if !ok {
-		return "", fmt.Errorf("vmpackage: cloud_resource_id %s has resourse_id %q, not a vm-<ip> resource", cloudResourceID, resourceID)
+	if ip, ok := strings.CutPrefix(resourceID, vmResourceIDPrefix); ok {
+		return ip, nil
+	}
+	ip, err := resolveResourceIP(dbms, cloudResourceID, accountID, tenantID)
+	if err != nil {
+		return "", fmt.Errorf("vmpackage: cloud_resource_id %s has resourse_id %q, not a vm-<ip> resource, and no IP could be recovered from it: %w", cloudResourceID, resourceID, err)
 	}
 	return ip, nil
 }

@@ -501,11 +501,16 @@ func (p *pgStore) UpsertAgentDatasources(ctx context.Context, accountID, agentTy
 
 		upsertedIDs[integrationID] = true
 
-		// Upsert integration-account mapping
+		// Upsert integration-account mapping. link_role='own' marks this as
+		// the account the agent itself runs in, distinct from a
+		// 'discovery_target' row a discovery integration may separately be
+		// given to name the cloud account whose network it scans (see
+		// vmpackage.ListDiscoveryDatasources) — both can coexist for the
+		// same integration_id/cloud_account_id under different roles.
 		_, err = p.db.ExecContext(ctx, `
-			INSERT INTO integrations_cloud_accounts (integration_id, cloud_account_id, tenant_id)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (integration_id, cloud_account_id, tenant_id) DO NOTHING
+			INSERT INTO integrations_cloud_accounts (integration_id, cloud_account_id, tenant_id, link_role)
+			VALUES ($1, $2, $3, 'own')
+			ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role) DO NOTHING
 		`, integrationID, accountID, tenantID)
 		if err != nil {
 			slog.Error("failed to upsert integration mapping, skipping datasource", "datasource", ds.Name, "err", err)

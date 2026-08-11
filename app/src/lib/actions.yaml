@@ -3323,6 +3323,18 @@ actions:
       timeout: 120
     permissions:
       - role: tenant_admin
+  - name: integrations_upsert_discovery_target
+    comment: Associate a discovery datasource with the cloud account whose network it scans, so scanned hosts can be matched against that account's cloud-collector resources instead of creating duplicate placeholder assets
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/integration'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: tenant_admin
   - name: k8s_cluster_groupings_v2
     comment: 'Per-cluster summary: node counts and CPU/memory capacity, workload counts by kind, pod counts by status (backs the cluster picker)'
     definition:

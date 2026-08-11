@@ -1351,6 +1351,12 @@ type Mutation {
   ): IntegrationTestConnectionResponse
 }
 
+type Mutation {
+  integrations_upsert_discovery_target(
+    request: DiscoveryTargetRequest!
+  ): DiscoveryTargetResponse
+}
+
 type Query {
   k8s_cluster_groupings_v2(
     where: K8sClusterGroupingsWhereRequest
@@ -4178,6 +4184,11 @@ input DeleteIntegrationConfigRequest {
 
 input IntegrationTestConnectionRequest {
   integration_id: String!
+}
+
+input DiscoveryTargetRequest {
+  integration_id: String!
+  cloud_account_id: String!
 }
 
 input IntegrationTestConnectionConfigRequest {
@@ -7617,6 +7628,10 @@ type CreateIntegrationConfigResponse {
 }
 
 type DeleteIntegrationConfigResponse {
+  status: String!
+}
+
+type DiscoveryTargetResponse {
   status: String!
 }
 

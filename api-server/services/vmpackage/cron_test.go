@@ -10,12 +10,12 @@ import (
 
 func TestListDiscoveryDatasources_FiltersIneligible(t *testing.T) {
 	mock := withMockDB(t)
-	rows := sqlmock.NewRows([]string{"integration_id", "tenant_id", "account_id", "labels"}).
-		AddRow("int-1", "tenant-1", "account-1", `{"actions":["discovery_sweep","discovery_inventory"],"allowed_cidrs":["172.31.0.0/28"],"pack_versions":[2]}`).
-		AddRow("int-2", "tenant-1", "account-2", `{"actions":["discovery_ldap"],"allowed_cidrs":["10.0.0.0/24"]}`).  // no discovery_sweep
-		AddRow("int-3", "tenant-2", "account-3", `{"actions":["discovery_sweep"],"allowed_cidrs":[]}`).              // empty allowed_cidrs
-		AddRow("int-4", "tenant-2", "account-4", `{"actions":["discovery_sweep"],"allowed_cidrs":["10.1.0.0/24"]}`). // sweep-only, no inventory
-		AddRow("int-5", "tenant-3", "account-5", ``)
+	rows := sqlmock.NewRows([]string{"integration_id", "tenant_id", "account_id", "target_account_id", "labels"}).
+		AddRow("int-1", "tenant-1", "account-1", "aws-account-1", `{"actions":["discovery_sweep","discovery_inventory"],"allowed_cidrs":["172.31.0.0/28"],"pack_versions":[2]}`).
+		AddRow("int-2", "tenant-1", "account-2", nil, `{"actions":["discovery_ldap"],"allowed_cidrs":["10.0.0.0/24"]}`).  // no discovery_sweep
+		AddRow("int-3", "tenant-2", "account-3", nil, `{"actions":["discovery_sweep"],"allowed_cidrs":[]}`).              // empty allowed_cidrs
+		AddRow("int-4", "tenant-2", "account-4", nil, `{"actions":["discovery_sweep"],"allowed_cidrs":["10.1.0.0/24"]}`). // sweep-only, no inventory, unassociated
+		AddRow("int-5", "tenant-3", "account-5", nil, ``)
 	mock.ExpectQuery("SELECT i.id::text AS integration_id").WillReturnRows(rows)
 
 	datasources, err := ListDiscoveryDatasources(mockDBManager)
@@ -26,15 +26,17 @@ func TestListDiscoveryDatasources_FiltersIneligible(t *testing.T) {
 	assert.Equal(t, []string{"discovery_sweep", "discovery_inventory"}, datasources[0].Labels.Actions)
 	assert.Equal(t, []string{"172.31.0.0/28"}, datasources[0].Labels.AllowedCIDRs)
 	assert.Equal(t, []int{2}, datasources[0].Labels.PackVersions)
+	assert.Equal(t, "aws-account-1", datasources[0].TargetAccountID)
 
 	assert.Equal(t, "int-4", datasources[1].IntegrationID)
 	assert.Empty(t, datasources[1].Labels.PackVersions)
+	assert.Empty(t, datasources[1].TargetAccountID, "unassociated datasource must resolve to an empty TargetAccountID, not error")
 }
 
 func TestGetDiscoveryDatasourceByID_Found(t *testing.T) {
 	mock := withMockDB(t)
-	rows := sqlmock.NewRows([]string{"tenant_id", "labels"}).
-		AddRow("tenant-1", `{"actions":["discovery_sweep","discovery_inventory"],"allowed_cidrs":["172.31.0.0/28"],"pack_versions":[2]}`)
+	rows := sqlmock.NewRows([]string{"tenant_id", "target_account_id", "labels"}).
+		AddRow("tenant-1", "aws-account-1", `{"actions":["discovery_sweep","discovery_inventory"],"allowed_cidrs":["172.31.0.0/28"],"pack_versions":[2]}`)
 	mock.ExpectQuery("SELECT i.tenant_id::varchar AS tenant_id").
 		WithArgs("int-1", "account-1").
 		WillReturnRows(rows)
@@ -45,12 +47,13 @@ func TestGetDiscoveryDatasourceByID_Found(t *testing.T) {
 	assert.Equal(t, "int-1", ds.IntegrationID)
 	assert.Equal(t, "tenant-1", ds.TenantID)
 	assert.Equal(t, "account-1", ds.AccountID)
+	assert.Equal(t, "aws-account-1", ds.TargetAccountID)
 	assert.Equal(t, []string{"172.31.0.0/28"}, ds.Labels.AllowedCIDRs)
 }
 
 func TestGetDiscoveryDatasourceByID_NotFound(t *testing.T) {
 	mock := withMockDB(t)
-	rows := sqlmock.NewRows([]string{"tenant_id", "labels"})
+	rows := sqlmock.NewRows([]string{"tenant_id", "target_account_id", "labels"})
 	mock.ExpectQuery("SELECT i.tenant_id::varchar AS tenant_id").
 		WithArgs("int-missing", "account-1").
 		WillReturnRows(rows)
@@ -62,8 +65,8 @@ func TestGetDiscoveryDatasourceByID_NotFound(t *testing.T) {
 
 func TestGetDiscoveryDatasourceByID_NoLongerEligible(t *testing.T) {
 	mock := withMockDB(t)
-	rows := sqlmock.NewRows([]string{"tenant_id", "labels"}).
-		AddRow("tenant-1", `{"actions":["discovery_ldap"],"allowed_cidrs":["172.31.0.0/28"]}`)
+	rows := sqlmock.NewRows([]string{"tenant_id", "target_account_id", "labels"}).
+		AddRow("tenant-1", nil, `{"actions":["discovery_ldap"],"allowed_cidrs":["172.31.0.0/28"]}`)
 	mock.ExpectQuery("SELECT i.tenant_id::varchar AS tenant_id").
 		WithArgs("int-1", "account-1").
 		WillReturnRows(rows)
@@ -71,6 +74,20 @@ func TestGetDiscoveryDatasourceByID_NoLongerEligible(t *testing.T) {
 	_, ok, err := GetDiscoveryDatasourceByID(mockDBManager, "int-1", "account-1")
 	require.NoError(t, err)
 	assert.False(t, ok)
+}
+
+func TestGetDiscoveryDatasourceByID_Unassociated(t *testing.T) {
+	mock := withMockDB(t)
+	rows := sqlmock.NewRows([]string{"tenant_id", "target_account_id", "labels"}).
+		AddRow("tenant-1", nil, `{"actions":["discovery_sweep","discovery_inventory"],"allowed_cidrs":["172.31.0.0/28"],"pack_versions":[2]}`)
+	mock.ExpectQuery("SELECT i.tenant_id::varchar AS tenant_id").
+		WithArgs("int-1", "account-1").
+		WillReturnRows(rows)
+
+	ds, ok, err := GetDiscoveryDatasourceByID(mockDBManager, "int-1", "account-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Empty(t, ds.TargetAccountID)
 }
 
 func TestResolveDiscoveryDatasourceKey_Found(t *testing.T) {
