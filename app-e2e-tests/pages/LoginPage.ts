@@ -2,8 +2,16 @@ import { Page, Locator } from "@playwright/test";
 import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { AUTH_STATE_DIR, TENANT_FILE_PATH } from "../tests/utils/paths";
 import { doDevLogin } from "./devLogin";
-import { registerWelcomeTourAutoDismiss, registerTourOverlayGuard } from "../tests/utils/helpers";
+import {
+  registerWelcomeTourAutoDismiss,
+  registerTourOverlayGuard,
+  readGlobalClusterValue,
+} from "../tests/utils/helpers";
 import { suppressTourPopups } from "../tests/utils/tourSuppression";
+
+// What a login actually settled on. Empty string means "not established by this
+// run", which is how verifySelection() knows to skip that half of the check.
+export type LoginSelection = { tenant: string; cluster: string };
 
 // Pages whose login (session + tenant, and optionally cluster) is already
 // established. Playwright gives every test a fresh page, so this never matches
@@ -13,7 +21,7 @@ import { suppressTourPopups } from "../tests/utils/tourSuppression";
 // the tenant dialog and cluster dropdown mid-journey. Pass { force: true } to
 // log in again anyway (tests that exercise the login flow itself, or that need
 // a different tenant/cluster).
-const establishedLogins = new WeakMap<Page, { clusterSelected: boolean }>();
+const establishedLogins = new WeakMap<Page, { clusterSelected: boolean; selection: LoginSelection }>();
 
 export class LoginPage {
   readonly page: Page;
@@ -269,24 +277,32 @@ export class LoginPage {
     }
   }
 
+  // The tenant lives in the NextAuth JWT (switching calls session update()), so
+  // it rides along in the cookies restored from storageState and one request
+  // over the context's cookie jar answers what a multi-step dialog would.
+  private async readSession(): Promise<{ tenant?: { name?: string }; hasMultipleTenantAccess?: boolean } | null> {
+    return this.page.request
+      .get("/api/auth/session")
+      .then((res) => (res.ok() ? res.json() : null))
+      .catch(() => null);
+  }
+
+  // The tenant the session currently holds, or "" when it carries none.
+  private async activeTenant(): Promise<string> {
+    const name = (await this.readSession())?.tenant?.name;
+    return typeof name === "string" ? name.trim() : "";
+  }
+
   /**
    * True when the Switch Tenant dialog can be skipped — either because there is
    * nothing to switch to, or because the session already holds the right tenant.
-   *
-   * Both answers come from /api/auth/session, read over the context's cookie jar:
-   * one request, versus a multi-step dialog that retries up to 6 times. The
-   * tenant lives in the NextAuth JWT (switching calls session update()), so it
-   * rides along in the cookies restored from storageState.
    *
    * Fail-safe: anything unknown — unreadable session, tenant absent from the
    * payload, no recorded tenant to compare against — returns false, so the
    * switch runs exactly as before.
    */
   private async isTenantAlreadyActive(): Promise<boolean> {
-    const session = await this.page.request
-      .get("/api/auth/session")
-      .then((res) => (res.ok() ? res.json() : null))
-      .catch(() => null);
+    const session = await this.readSession();
 
     const current = session?.tenant?.name;
     if (typeof current !== "string" || !current) {
@@ -307,7 +323,7 @@ export class LoginPage {
     // hasMultipleTenantAccess === tenants.length > 1). Without this, switchTenant()
     // spends its entire retry budget clicking for a control that was never
     // rendered, and still fails.
-    if (!session.hasMultipleTenantAccess) {
+    if (!session?.hasMultipleTenantAccess) {
       if (expected && current !== expected) {
         // Failing here beats both alternatives: letting switchTenant() burn its
         // 180s budget on a control that was never rendered, and silently running
@@ -375,7 +391,8 @@ export class LoginPage {
     }
   }
 
-  async selectHighestIterationCluster(): Promise<void> {
+  // Returns the cluster it settled on, so the caller can verify that exact name later.
+  async selectHighestIterationCluster(): Promise<string> {
     await this.clearAndTypeCluster("iteration");
     await this.page.locator("[role='option']").first().waitFor({ state: "visible", timeout: 10000 });
 
@@ -385,6 +402,7 @@ export class LoginPage {
     if (!clusterName) throw new Error("No iteration-N cluster found in cluster dropdown");
     console.log(`Auto-detected highest iteration cluster: ${clusterName}`);
     await this.selectCluster(clusterName);
+    return clusterName;
   }
 
   private async clearAndTypeCluster(clusterName: string) {
@@ -418,11 +436,8 @@ export class LoginPage {
     console.log(`Selected cluster: ${clusterName}`);
   }
 
-  // selectCluster defaults to true. global-setup passes false: it only needs an
-  // authenticated session cookie, and the (flaky) cluster dropdown is in-memory
-  // state re-selected per test anyway — running it in global-setup would make it
-  // a single point of failure that aborts the whole suite.
-  async doFullLogin(options: { selectCluster?: boolean; force?: boolean } = {}) {
+  // Returns what this login settled on, so global-setup can verify it before caching.
+  async doFullLogin(options: { selectCluster?: boolean; force?: boolean } = {}): Promise<LoginSelection> {
     const { selectCluster = true, force = false } = options;
 
     // Already logged in on this page: nothing to do, unless the caller now needs
@@ -431,11 +446,11 @@ export class LoginPage {
     if (established) {
       if (!selectCluster || established.clusterSelected) {
         console.log("Session already established on this page — skipping login");
-        return;
+        return established.selection;
       }
-      await this.selectConfiguredCluster();
-      establishedLogins.set(this.page, { clusterSelected: true });
-      return;
+      const selection = { ...established.selection, cluster: await this.selectConfiguredCluster() };
+      establishedLogins.set(this.page, { clusterSelected: true, selection });
+      return selection;
     }
 
     // storageState already carries the tour flags; re-seeded here for specs that build their own context.
@@ -443,10 +458,15 @@ export class LoginPage {
     await registerWelcomeTourAutoDismiss(this.page);
     await registerTourOverlayGuard(this.page);
 
+    // Dev signs in through its own LDAP flow, but the cluster is selected by the
+    // shared path below — doDevLogin used to drive the dropdown itself, which
+    // meant dev got neither the skip-when-already-selected fast path nor the
+    // read-back check. Tenant handling on dev is unchanged: no switch happens.
     if (process.env.E2E_ENVIRONMENT === "dev") {
-      await doDevLogin(this.page, { selectCluster });
-      establishedLogins.set(this.page, { clusterSelected: selectCluster });
-      return;
+      await doDevLogin(this.page);
+      const selection = { tenant: "", cluster: selectCluster ? await this.selectConfiguredCluster() : "" };
+      establishedLogins.set(this.page, { clusterSelected: selectCluster, selection });
+      return selection;
     }
 
     const username = process.env.LDAP_USERNAME || "";
@@ -479,23 +499,18 @@ export class LoginPage {
     // Self-guarding: returns immediately when already in the required tenant.
     await this.switchTenantWithRetry({ force });
     await this.waitForLoaderToDisappear();
-    if (selectCluster) {
-      await this.selectConfiguredCluster();
-    }
 
-    establishedLogins.set(this.page, { clusterSelected: selectCluster });
-  }
+    const selection: LoginSelection = {
+      tenant: await this.activeTenant(),
+      cluster: selectCluster ? await this.selectConfiguredCluster() : "",
+    };
 
-  // The cluster dropdown's committed value, or "" before it has hydrated.
-  private async activeCluster(): Promise<string> {
-    return this.clusterInput
-      .inputValue({ timeout: 10000 })
-      .then((v) => v.trim())
-      .catch(() => "");
+    establishedLogins.set(this.page, { clusterSelected: selectCluster, selection });
+    return selection;
   }
 
   // Selects the cluster named by CLUSTER_NAME/CLUSTER, or the highest iteration-N
-  // cluster when neither is set.
+  // cluster when neither is set, and returns the name it settled on.
   //
   // Skipped when the dropdown already holds the target: ClusterDropDown persists
   // the choice to localStorage (`nudgebee.userPreferences.last_account`) and
@@ -503,18 +518,18 @@ export class LoginPage {
   // storageState and restored for every test — the dropdown does not need
   // driving again. Only an explicitly named cluster can be checked this way;
   // without one, the target is not known until the options are read.
-  private async selectConfiguredCluster() {
+  private async selectConfiguredCluster(): Promise<string> {
     const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
 
     if (!explicitCluster) {
-      await this.selectHighestIterationCluster();
+      const resolved = await this.selectHighestIterationCluster();
       await this.waitForLoaderToDisappear();
-      return;
+      return resolved;
     }
 
-    if ((await this.activeCluster()) === explicitCluster) {
+    if ((await readGlobalClusterValue(this.page, 10000, explicitCluster)) === explicitCluster) {
       console.log(`Cluster check: already on "${explicitCluster}" — skipping cluster selection`);
-      return;
+      return explicitCluster;
     }
 
     await this.selectCluster(explicitCluster);
@@ -523,9 +538,48 @@ export class LoginPage {
     // Read back rather than trusting the click. A dropdown that committed a
     // different account would otherwise let the whole suite run green against
     // the wrong cluster's data — the failure this check exists to prevent.
-    const committed = await this.activeCluster();
+    const committed = await readGlobalClusterValue(this.page, 30000, explicitCluster);
     if (committed !== explicitCluster) {
       throw new Error(`Cluster selection did not commit: expected "${explicitCluster}", dropdown shows "${committed}"`);
+    }
+    return explicitCluster;
+  }
+
+  /**
+   * Fails unless a freshly reloaded page is genuinely on `selection`.
+   *
+   * doFullLogin() already reads the dropdown back, but that only proves the LIVE
+   * page is correct — not that the choice landed in the state about to be saved.
+   * The cluster survives via localStorage (`last_account`) and the tenant via the
+   * session cookie; if either fails to persist, every test restores a session on
+   * the wrong cluster/tenant and the suite runs green against the wrong data,
+   * because no spec asserts which one is active. This reload is the only step
+   * that exercises the restore path the tests will actually take.
+   *
+   * Throws, rather than warns, so global-setup never caches an unverified state.
+   */
+  async verifySelection(selection: LoginSelection): Promise<void> {
+    await this.navigate();
+    await this.waitForLoaderToDisappear();
+
+    if (selection.tenant) {
+      const active = await this.activeTenant();
+      if (active !== selection.tenant) {
+        throw new Error(
+          `Tenant did not persist: session is in "${active || "(none)"}", expected "${selection.tenant}"`,
+        );
+      }
+      console.log(`Verified tenant after reload: ${selection.tenant}`);
+    }
+
+    if (selection.cluster) {
+      const active = await readGlobalClusterValue(this.page, 30000, selection.cluster);
+      if (active !== selection.cluster) {
+        throw new Error(
+          `Cluster did not persist: dropdown shows "${active || "(empty)"}", expected "${selection.cluster}"`,
+        );
+      }
+      console.log(`Verified cluster after reload: ${selection.cluster}`);
     }
   }
 

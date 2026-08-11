@@ -155,6 +155,30 @@ export async function registerWelcomeTourAutoDismiss(page: Page): Promise<void> 
   });
 }
 
+// Cluster shown in the global dropdown, or "" if none resolves. Polls because the
+// accounts list loads async. Pass `expected` after a fresh selection: the input keeps
+// the previous label briefly, so the first non-empty read would be a false mismatch.
+export async function readGlobalClusterValue(page: Page, timeout = 30000, expected?: string): Promise<string> {
+  const clusterInput = page.locator("#auto-complete-global-cluster");
+  const visible = await clusterInput
+    .waitFor({ state: "visible", timeout })
+    .then(() => true)
+    .catch(() => false);
+  if (!visible) return "";
+
+  const deadline = Date.now() + timeout;
+  let lastValue = "";
+  while (Date.now() < deadline) {
+    const value = (await clusterInput.inputValue().catch(() => "")).trim();
+    if (value) {
+      lastValue = value;
+      if (!expected || value === expected) return value;
+    }
+    await page.waitForTimeout(250);
+  }
+  return lastValue;
+}
+
 export async function ensureSwitchEnabled(
   page: Page,
   selector: string,
