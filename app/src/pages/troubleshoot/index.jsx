@@ -4,6 +4,8 @@ import ErrorBoundary from '@shared/ErrorBoundary';
 import KubernetesEventsTable, { TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY } from '@components/events/KubernetesEvents';
 import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
 import TroubleshootSummary from '@components/troubleshoot/TroubleshootSummary';
+import NubiBriefing from '@components/troubleshoot/briefing/NubiBriefing';
+import BriefingFilters from '@components/troubleshoot/briefing/BriefingFilters';
 import { Box, CircularProgress } from '@mui/material';
 import { useMemo, useState, useEffect } from 'react';
 import AutoInvestigated from '@components/troubleshoot/AutoInvestigated';
@@ -119,6 +121,9 @@ const TroubleshootPage = () => {
   });
   const router = useRouter();
 
+  // The page-level scope, as a string, so it can drive the sub-tab remount key.
+  const scopeKey = `${router.query.accountIds ?? ''}|${router.query.start_time ?? ''}|${router.query.end_time ?? ''}`;
+
   // Gate the Investigations and Knowledge Graph tabs on the permission backing
   // each tab's primary API: Investigations reads ai_list_conversations
   // (→ ai_conversations:Read); Knowledge Graph reads kg_get_complete_graph
@@ -154,15 +159,17 @@ const TroubleshootPage = () => {
     // (only the widget's own filter), the list then matches the card exactly.
     clearPersistedFilters(TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY);
 
-    // Pin the cards' frozen 24h window onto the drill-down. The troubleshoot
-    // Events list otherwise defaults to the current week (KubernetesEvents
-    // getInitialTime), so a click would count 7 days against the card's 24h.
-    // start_time/end_time take precedence over that default and over persisted
-    // ranges (which we just cleared), so the list window matches the card.
+    // Pin the clicked widget's own window onto the drill-down. The briefing
+    // sends the window it counted over (it has a range picker of its own, so a
+    // frozen 24h would land the list on a different population than the number
+    // that was clicked); anything without one falls back to the frozen summary
+    // window. Either way start_time/end_time take precedence over
+    // KubernetesEvents' own default and over persisted ranges (just cleared),
+    // so the list window matches the widget.
     const rangedQuery = {
       ...query,
-      start_time: String(summaryRange.startDate.getTime()),
-      end_time: String(summaryRange.endDate.getTime()),
+      start_time: query.start_time ?? String(summaryRange.startDate.getTime()),
+      end_time: query.end_time ?? String(summaryRange.endDate.getTime()),
     };
 
     // Write the filter into the URL BEFORE switching to the Events tab and
@@ -248,9 +255,12 @@ const TroubleshootPage = () => {
 
       {selectedTab === 0 && (
         <div style={{ margin: '0px var(--ds-space-6)' }}>
-          <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center', marginTop: 'var(--ds-space-4)' }}>
-            <TroubleshootSummary range={summaryRange} onWidgetFilter={applyWidgetFilter} />
-          </Box>
+          {selectedSubTab <= 3 && (
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'var(--ds-space-4)' }}>
+              <BriefingFilters />
+            </Box>
+          )}
+          <NubiBriefing onDrillDown={applyWidgetFilter} />
           <Box id='troubleshoot-event-tabs' sx={{ marginBottom: 'var(--ds-space-2)' }}>
             <Tabs
               value={selectedSubTab}
@@ -261,11 +271,11 @@ const TroubleshootPage = () => {
               ariaLabel='Event grouping options'
             />
           </Box>
-          <ErrorBoundary key={`${selectedSubTab}-${widgetNonce}`}>
-            {selectedSubTab === 0 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='fingerprint' />}
-            {selectedSubTab === 1 && <KubernetesEventsTable isTroubleshootPage={true} />}
-            {selectedSubTab === 2 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='event_type' />}
-            {selectedSubTab === 3 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='app' />}
+          <ErrorBoundary key={`${selectedSubTab}-${widgetNonce}-${scopeKey}`}>
+            {selectedSubTab === 0 && <KubernetesGroupedEventsTable isTroubleshootPage={true} hideScopeFilters groupEventType='fingerprint' />}
+            {selectedSubTab === 1 && <KubernetesEventsTable isTroubleshootPage={true} hideScopeFilters />}
+            {selectedSubTab === 2 && <KubernetesGroupedEventsTable isTroubleshootPage={true} hideScopeFilters groupEventType='event_type' />}
+            {selectedSubTab === 3 && <KubernetesGroupedEventsTable isTroubleshootPage={true} hideScopeFilters groupEventType='app' />}
             {selectedSubTab === 4 && <TriageRulesManager />}
             {selectedSubTab === 5 && <ThresholdSuggestionsManager />}
             {selectedSubTab === 6 && <EventResolutions />}
@@ -276,7 +286,7 @@ const TroubleshootPage = () => {
       {selectedTab === 1 && (
         <div style={{ margin: '0px var(--ds-space-6)' }}>
           <Box sx={{ marginTop: 'var(--ds-space-4)' }}>
-            <TroubleshootSummary type='investigations' tab={selectedSubTab === 1 ? 'manual' : 'auto'} range={summaryRange} />
+            <TroubleshootSummary tab={selectedSubTab === 1 ? 'manual' : 'auto'} range={summaryRange} />
           </Box>
           <Box sx={{ marginBottom: 'var(--ds-space-2)' }}>
             <Tabs value={selectedSubTab} smallSize={true} onChange={setSelectedSubTab} options={filterOptions[1]} />

@@ -57,6 +57,7 @@ interface KubernetesGroupedEventsTableProps {
   accountId?: string;
   groupEventType: string;
   isTroubleshootPage: boolean;
+  hideScopeFilters?: boolean;
 }
 
 interface DateRange {
@@ -417,6 +418,8 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   accountId = '',
   groupEventType = 'fingerprint',
   isTroubleshootPage = false,
+  // Account + date live in the page-level scope bar on Troubleshoot.
+  hideScopeFilters = false,
 }) => {
   const componentId = 'Grouped Events';
   const router = useRouter();
@@ -1074,7 +1077,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
    * array shape so the visible set is identical to the BoxLayout2 path.
    */
   const filterDropdownsLegacyShape = [
-    ...(isTroubleshootPage
+    ...(isTroubleshootPage && !hideScopeFilters
       ? [
           {
             type: 'multi-dropdown',
@@ -1241,16 +1244,18 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         <ListingLayout.Toolbar
           actions={
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-              <CustomDateTimeRangePicker
-                passedSelectedDateTime={{
-                  startTime: selectedDateRange.startDate,
-                  endTime: selectedDateRange.endDate,
-                  shortcutClickTime: 0,
-                }}
-                onChange={({ selection }: { selection: { startTime: number; endTime: number; shortcutClickTime: number } }) =>
-                  handleDateRangeChange(selection)
-                }
-              />
+              {!hideScopeFilters && (
+                <CustomDateTimeRangePicker
+                  passedSelectedDateTime={{
+                    startTime: selectedDateRange.startDate,
+                    endTime: selectedDateRange.endDate,
+                    shortcutClickTime: 0,
+                  }}
+                  onChange={({ selection }: { selection: { startTime: number; endTime: number; shortcutClickTime: number } }) =>
+                    handleDateRangeChange(selection)
+                  }
+                />
+              )}
               <DownloadButton id='triage-inbox-download' size='sm' onClick={() => ({ tableId: componentId, fileName: `${componentId}.csv` })} />
             </Box>
           }

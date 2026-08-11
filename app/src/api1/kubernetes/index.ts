@@ -839,6 +839,15 @@ function buildEventFilterParams(query: any) {
       filterParams['priority'] = { _eq: query['priority'] };
     }
   }
+  // Nubi's rank, filtered independently of the source severity above so the
+  // briefing's "HIGH → P3" style drill-downs can constrain both at once.
+  if (query?.computed_priority) {
+    if (Array.isArray(query['computed_priority'])) {
+      filterParams['computed_priority'] = { _in: query['computed_priority'] };
+    } else {
+      filterParams['computed_priority'] = { _eq: query['computed_priority'] };
+    }
+  }
   if (query?.status) {
     if (Array.isArray(query['status'])) {
       filterParams['status'] = { _in: query['status'] };

@@ -1940,86 +1940,130 @@ const apiKubernetes1 = {
       throw err;
     }
   },
-  eventComparsion: async function (data: any) {
-    // Single round-trip powering the Troubleshoot summary cards. `current`/`previous`
-    // are whole-window aggregates (no group_by) so event_count, count_new_issues and
-    // count_priority_high come for free. The *_attention blocks count DISTINCT
-    // fingerprints with an OPEN/ACTION_REQUIRED event — matching what the Triage Inbox
-    // shows when filtered to those statuses (the distinct-over-fingerprint trick mirrors
-    // the aggregate block in kubernetes/index.ts getK8sEventGroupings).
-    const EVENT_COMPARISON = `
-    query EventComparison {
-      current: event_groupings_v2(
-        where: __WHERE__
-      ) {
+  // Single round-trip powering the always-on columns (A/B/C) of the Nubi briefing
+  // strip. Every block reads event_groupings_v2 over the same display window so
+  // the numbers reconcile against each other and against the Events list below.
+  //
+  // Two counting units are deliberately mixed and must not be confused:
+  //   - EVENTS (raw count(*))          — "events ingested", the correlation splits
+  //   - ISSUES (distinct fingerprints) — everything the user acts on
+  // Blocks that count issues carry the distinct-over-fingerprint transformation.
+  briefingAggregates: async function (data: {
+    startDate: string;
+    endDate: string;
+    bandStartDate: string;
+    stuckBeforeDate: string;
+    stuckAfterDate: string;
+    accountId?: string[] | string;
+  }) {
+    const DISTINCT_ISSUES = '[{name: "event_count", expr: "distinct", args: ["fingerprint"]}]';
+    const BRIEFING_AGGREGATES = `
+    query NubiBriefingAggregates {
+      window_totals: event_groupings_v2(where: __WHERE__) {
         rows {
           event_count
-          count_new_issues
-          count_new_issue_events
-          count_priority_high
         }
       }
 
-      previous: event_groupings_v2(
-        where: __WHERE1__
-      ) {
-        rows {
-          event_count
-          count_new_issues
-          count_new_issue_events
-          count_priority_high
-        }
-      }
-
-      current_attention: event_groupings_v2(
-        where: __WHERE_ATTN__, group_by: [], column_transformations: [{name: "event_count", expr: "distinct", args: ["fingerprint"]}], columns: ["event_count"]
+      window_issues: event_groupings_v2(
+        where: __WHERE__, group_by: [], column_transformations: ${DISTINCT_ISSUES}, columns: ["event_count"]
       ) {
         rows {
           event_count
         }
       }
 
-      previous_attention: event_groupings_v2(
-        where: __WHERE1_ATTN__, group_by: [], column_transformations: [{name: "event_count", expr: "distinct", args: ["fingerprint"]}], columns: ["event_count"]
+      by_rank: event_groupings_v2(
+        where: __WHERE__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
       ) {
         rows {
+          computed_priority
+          event_count
+        }
+      }
+
+      by_rank_30d: event_groupings_v2(
+        where: __WHERE_BAND__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
+      ) {
+        rows {
+          computed_priority
+          event_count
+        }
+      }
+
+      disagreement: event_groupings_v2(
+        where: __WHERE__, group_by: ["priority", "computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["priority", "computed_priority", "event_count"]
+      ) {
+        rows {
+          priority
+          computed_priority
+          event_count
+        }
+      }
+
+      by_signal_class: event_groupings_v2(
+        where: __WHERE__, group_by: ["aggregation_key"], columns: ["aggregation_key", "event_count"], order_by: [{column: "event_count", order: desc}], limit: 20
+      ) {
+        rows {
+          aggregation_key
+          event_count
+        }
+      }
+
+      firing_now: event_groupings_v2(
+        where: __WHERE_FIRING__, group_by: [], column_transformations: ${DISTINCT_ISSUES}, columns: ["event_count"]
+      ) {
+        rows {
+          event_count
+        }
+      }
+
+      stuck_firing: event_groupings_v2(
+        where: __WHERE_STUCK__, group_by: ["created_at"], column_transformations: [{name: "created_at", expr: "date_unit", args: ["day"]}], columns: ["created_at", "event_count"]
+      ) {
+        rows {
+          created_at
           event_count
         }
       }
     }
     `;
-    const currentRange = [{ created_at: { _gte: data.startDate } }, { created_at: { _lte: data.endDate } }];
-    const previousRange = [{ created_at: { _gte: data.previousStartDate } }, { created_at: { _lte: data.previousEndDate } }];
-    // Dashboard display filter — keep low-signal config-change records out of every
-    // summary KPI. Backend triaging is unaffected. See EXCLUDED_TRIAGE_AGGREGATION_KEYS.
+
+    // Same display filter the four legacy KPI cards and the Events list apply —
+    // low-signal config-change records never reach the briefing. Backend
+    // triaging is unaffected. See EXCLUDED_TRIAGE_AGGREGATION_KEYS.
     const excludeKeys = { aggregation_key: { _not_in: EXCLUDED_TRIAGE_AGGREGATION_KEYS } };
-    // Whole-window KPIs (Total Events, New Issues, High Severity) count every alert status
-    // (FIRING + RESOLVED + …), matching each card's "total volume" wording — we want all
-    // alerts, not just the currently-firing slice. The summary-widget drill-down passes
-    // status=ALL (see TroubleshootSummary) so the Troubleshoot Events list clears its
-    // default status=FIRING filter and the count you land on still matches the card
-    // (the mismatch guarded against in issue #32524). The *_attention blocks stay keyed
-    // off nb_status (triage backlog), mirroring the Triage Inbox.
-    // Scope to the selected account(s) so the cards match the account-scoped
-    // Events list. Omit when nothing is selected (all accounts). Mirrors the
-    // shape buildEventFilterParams uses for the list.
     const accountIds = Array.isArray(data.accountId) ? data.accountId.filter(Boolean) : data.accountId ? [data.accountId] : [];
     const accountFilter = accountIds.length > 0 ? { account_id: { _in: accountIds } } : {};
-    const request: any = { _and: currentRange, ...accountFilter, ...excludeKeys };
-    const request1: any = { _and: previousRange, ...accountFilter, ...excludeKeys };
-    const requestAttn: any = { _and: currentRange, ...accountFilter, nb_status: { _in: ['OPEN', 'ACTION_REQUIRED'] }, ...excludeKeys };
-    const request1Attn: any = { _and: previousRange, ...accountFilter, nb_status: { _in: ['OPEN', 'ACTION_REQUIRED'] }, ...excludeKeys };
+
+    const windowRange = [{ created_at: { _gte: data.startDate } }, { created_at: { _lte: data.endDate } }];
+    // The P0 recent-history line always looks back 30 days from the end of the
+    // display window, independent of how wide that window is — a lookback
+    // derived from the window itself would compare a number to itself. That is
+    // why by_rank_30d doesn't reuse __WHERE__.
+    const bandRange = [{ created_at: { _gte: data.bandStartDate } }, { created_at: { _lte: data.endDate } }];
+    // "Stuck firing" is a standing integrity check, not a window metric: alerts
+    // still FIRING long after they arrived. Bounded below so the scan can't walk
+    // the whole table on a large tenant.
+    const stuckRange = [{ created_at: { _gte: data.stuckAfterDate } }, { created_at: { _lte: data.stuckBeforeDate } }];
+
+    const base: any = { ...accountFilter, ...excludeKeys };
+    const request = { _and: windowRange, ...base };
+    const requestBand = { _and: bandRange, ...base };
+    const requestFiring = { _and: windowRange, status: { _eq: 'FIRING' }, ...base };
+    const requestStuck = { _and: stuckRange, status: { _eq: 'FIRING' }, ...base };
+
     try {
       return await queryGraphQL(
-        EVENT_COMPARISON.replace('__WHERE__', gqlStringify(request))
-          .replace('__WHERE1__', gqlStringify(request1))
-          .replace('__WHERE_ATTN__', gqlStringify(requestAttn))
-          .replace('__WHERE1_ATTN__', gqlStringify(request1Attn)),
-        'EventComparison',
+        BRIEFING_AGGREGATES.replaceAll('__WHERE__', gqlStringify(request))
+          .replaceAll('__WHERE_BAND__', gqlStringify(requestBand))
+          .replace('__WHERE_FIRING__', gqlStringify(requestFiring))
+          .replace('__WHERE_STUCK__', gqlStringify(requestStuck)),
+        'NubiBriefingAggregates',
         {}
       );
     } catch (err) {
-      console.error('Error in eventComparison:', err);
+      console.error('Error in briefingAggregates:', err);
       throw err;
     }
   },
