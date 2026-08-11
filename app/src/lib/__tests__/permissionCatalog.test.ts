@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import * as yaml from 'js-yaml';
+import yaml from 'js-yaml';
 import { classifyAction, buildCatalog, normalizeModule, type PermissionClass } from '@lib/permissionCatalog';
 
 // Pull every action name from actions.yaml (+ the EE overlay) directly, so this
@@ -77,6 +77,10 @@ describe('permissionCatalog', () => {
     // tenant_list_all: cross-tenant enumeration, super-admin only. Excluded by
     // name (its module `tenants` stays grantable for tenant-scoped reads).
     'tenant_list_all',
+    // webhook: rewrites the tenant-wide subject-mapping table that decides which
+    // subject every future alert is attributed to. Tenant-admin / super-admin
+    // operations work, not a delegable grant — non-grantable by module.
+    'webhook_subject_mappings_sync',
     // billing: the Billing tab was removed from the admin panel (PR #32989),
     // so there's no UI left for a billing grant to unlock. Non-grantable by
     // module; tenant_admin/tenant_admin_readonly still invoke these via
@@ -127,7 +131,7 @@ describe('permissionCatalog', () => {
 
   it('keeps non-grantable modules out of the catalog', () => {
     const modules = new Set(buildCatalog(ACTION_NAMES).map((e) => e.module));
-    for (const m of ['auth', 'nudgebee', 'product', 'relay', 'signup', 'userauths']) {
+    for (const m of ['auth', 'nudgebee', 'product', 'relay', 'signup', 'userauths', 'webhook']) {
       expect(modules.has(m)).toBe(false);
     }
   });
