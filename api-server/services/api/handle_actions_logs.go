@@ -121,14 +121,7 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 				c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 				return
 			}
-			labels := make([]observability.OutputLogLabel, len(indexFields))
-			for i, f := range indexFields {
-				labels[i] = observability.OutputLogLabel{
-					Label:      f.Field,
-					Attributes: f.Attributes,
-				}
-			}
-			c.JSON(200, labels)
+			c.JSON(200, observability.LabelsFromIndexFields(indexFields))
 			return
 		}
 

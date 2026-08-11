@@ -1314,6 +1314,12 @@ func pplFormatValue(val any) string {
 	switch v := val.(type) {
 	case string:
 		return "'" + pplEscapeString(v) + "'"
+	// Integers render bare and exactly. float64 cannot hold every int64 (only below
+	// 2^53), so epoch-nanosecond values would lose precision if routed through it.
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case int:
+		return fmt.Sprintf("%d", v)
 	case float64:
 		if v == float64(int64(v)) {
 			return fmt.Sprintf("%d", int64(v))

@@ -47,6 +47,7 @@ query FetchLogLabels {
   logs_list_labels(request: __WHERE__) {
     label
     attributes
+    data_type
   }
 }
 `;

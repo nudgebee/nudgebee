@@ -8008,6 +8008,10 @@ type FetchLogResponse {
 type OutputLogLabel {
   label: String!
   attributes: jsonb
+  # Provider-independent normalization of attributes:
+  # "string" | "number" | "bool" | "timestamp" | "unknown".
+  # Used to offer only the operators the label's type supports.
+  data_type: String
 }
 
 type OutputLogLabelValue {
@@ -8150,6 +8154,9 @@ type OperatorDescriptor {
   chip_label: String
   line_label: String
   kinds: [String!]!
+  # Label data types this operator accepts. Clients intersect this with the
+  # provider's supported operators to build a per-label operator menu.
+  applicable_data_types: [String!]
 }
 
 type AvailableProvider {

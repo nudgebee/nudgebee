@@ -691,6 +691,7 @@ const apiAccount = {
               chip_label
               line_label
               kinds
+              applicable_data_types
             }
           }
           capabilities {
@@ -703,6 +704,7 @@ const apiAccount = {
               chip_label
               line_label
               kinds
+              applicable_data_types
             }
           }
         }
@@ -738,6 +740,7 @@ const apiAccount = {
               chip_label
               line_label
               kinds
+              applicable_data_types
             }
           }
         }

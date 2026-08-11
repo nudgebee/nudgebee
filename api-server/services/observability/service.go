@@ -587,6 +587,20 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
+	// Reconcile the clause with the labels' data types: reject an operator the type
+	// cannot support (e.g. a regex on an INT column, which Pinot answers with a raw
+	// backend error), and render each value as the column's native type — the UI sends
+	// chip values as strings, so a numeric column would otherwise be compared against a
+	// quoted string. Runs here because field
+	// names are now in provider space — the space QueryLabels reports types in — and
+	// because keys the integration strips above should not be validated. Placed before
+	// GetQuery so the unsupported query is never built. The builder already hides these
+	// operators per label; this guards the callers that bypass it (code mode, saved
+	// URLs, the LLM agent, direct API). Fails open when the type cannot be established.
+	if err := applyLabelDataTypes(ctx, source, &fetchLogRequest); err != nil {
+		return FetchLogsResult{}, err
+	}
+
 	// Always-apply per-account default filters (e.g. a central Pinot scoped to
 	// cluster_id) configured on the log integration. AND them into the where clause
 	// here — after label-mapping and key-strip — so the operator-entered
@@ -1118,7 +1132,17 @@ func FetchLogLabels(ctx *security.RequestContext, fetchLogRequest FetchLogLabelR
 	if err != nil {
 		return nil, err
 	}
-	return source.QueryLabels(ctx, fetchLogRequest)
+	labels, err := source.QueryLabels(ctx, fetchLogRequest)
+	if err != nil {
+		return nil, err
+	}
+	// Normalize each provider's own type vocabulary (Pinot "INT", Signoz "int64",
+	// Hive "bigint", ES "long", …) into DataType here, at the one place every
+	// provider's labels pass through, so no provider has to implement anything.
+	for i := range labels {
+		labels[i].DataType = normalizeLabelDataType(labels[i].Attributes)
+	}
+	return labels, nil
 }
 
 func FetchLogLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
@@ -1470,10 +1494,14 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 	}
 
 	// Interface-derived capabilities: operator list, label mapping, optional interfaces.
+	// resolvedSource carries the source out of the switch so the operator descriptors
+	// below can pick up its operator↔data-type override, if it declares one.
+	var resolvedSource any
 	switch providerType {
 	case "logs":
 		source, err := getLogSource(provider, integrationSource)
 		if err == nil {
+			resolvedSource = source
 			caps.SupportedOperators = source.GetSupportedOperators()
 			_, caps.SupportsAutoQuery = source.(PlaybookQueryGenerator)
 			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
@@ -1488,6 +1516,7 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 	case "traces":
 		source, err := resolveTraceSource(ctx, accountId, provider, integrationSource, "")
 		if err == nil {
+			resolvedSource = source
 			caps.SupportedOperators = source.GetSupportedOperators()
 			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
 			// Skip the merge when accountId is empty: with no account the lookup
@@ -1503,6 +1532,7 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 	case "metrics":
 		source, err := getMetricsSource(provider, integrationSource)
 		if err == nil {
+			resolvedSource = source
 			caps.SupportedOperators = source.GetSupportedOperators()
 			// No metric label mapping today — metric sources don't implement
 			// GetLabelMapping; LabelMappings stays empty for metrics.
@@ -1511,7 +1541,12 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 		}
 	}
 
-	caps.SupportedOperatorDescriptors = query.DescribeOperators(caps.SupportedOperators)
+	// Descriptors carry the operator↔data-type matrix the UI filters its per-label
+	// operator menu with. Apply the source's override here — the single point where
+	// descriptors are built — so the menu the UI offers and the rule the log validator
+	// enforces resolve identically and can never drift apart.
+	caps.SupportedOperatorDescriptors = applyOperatorDataTypeOverrides(
+		query.DescribeOperators(caps.SupportedOperators), resolvedSource)
 	return caps
 }
 
@@ -2114,6 +2149,12 @@ func GetLogsQuery(ctx *security.RequestContext, fetchLogRequest FetchLogRequest)
 	filteringMap := getMergedLabelMapping(ctx, fetchLogRequest.AccountId, source)
 	fetchLogRequest.SortFields = convertOrderByWithMapping(fetchLogRequest.SortFields, filteringMap)
 	fetchLogRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchLogRequest.QueryRequest.Where, filteringMap)
+	// Mirror FetchLogs' data-type reconciliation: this endpoint is the preview that
+	// seeds the builder's raw-query editor, so it must both fail on the same input and
+	// emit the same literals, rather than handing back SQL that dies when submitted.
+	if err := applyLabelDataTypes(ctx, source, &fetchLogRequest); err != nil {
+		return OutputLogQuery{}, err
+	}
 	// Also mirror FetchLogs' always-apply default filters: this endpoint generates
 	// the SQL text that seeds the log builder's raw-query editor (Pinot's default
 	// mode), and once that text is submitted as a raw query, FetchLogs has no where

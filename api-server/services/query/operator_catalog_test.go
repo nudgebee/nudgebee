@@ -54,6 +54,87 @@ func validateCatalogEntry(t *testing.T, token string, desc OperatorDescriptor) {
 	for _, k := range desc.Kinds {
 		validateCatalogKind(t, token, desc, k)
 	}
+	if len(desc.ApplicableDataTypes) == 0 {
+		t.Errorf("descriptor for %q declares no ApplicableDataTypes — every operator must state the label data types it accepts", token)
+	}
+	for _, dt := range desc.ApplicableDataTypes {
+		switch dt {
+		case LabelTypeString, LabelTypeNumber, LabelTypeBool, LabelTypeTimestamp:
+		default:
+			t.Errorf("descriptor for %q declares unknown data type %q", token, dt)
+		}
+	}
+}
+
+// TestOperatorCatalogFallbackIsPermissive enforces the invariant that makes an
+// undetermined label type safe: every operator must accept LabelTypeString.
+//
+// String is the permissive type and the behavioural twin of the LabelTypeUnknown
+// fallback, so as long as this holds, a label whose type could not be determined can
+// never have an operator withheld or a query rejected. Tightening the string row
+// without realising it is also the fallback path would silently narrow every untyped
+// provider (Loki, Splunk, Loggly, Dynatrace) — this test blocks that.
+func TestOperatorCatalogFallbackIsPermissive(t *testing.T) {
+	for token, desc := range OperatorCatalog {
+		if !DataTypesApplyToType(desc.ApplicableDataTypes, LabelTypeString) {
+			t.Errorf("operator %q excludes %q — string is the permissive fallback for undetermined types and must always be accepted", token, LabelTypeString)
+		}
+		if !OperatorAppliesToType(token, LabelTypeUnknown) {
+			t.Errorf("operator %q rejects %q — an undetermined label type must never be narrowed", token, LabelTypeUnknown)
+		}
+	}
+}
+
+// TestOperatorAppliesToType covers the type axis and its fail-open rules.
+func TestOperatorAppliesToType(t *testing.T) {
+	tests := []struct {
+		name     string
+		token    string
+		dataType string
+		want     bool
+	}{
+		{"regex on string is valid", string(Regex), LabelTypeString, true},
+		{"regex on number is rejected — the reported bug", string(Regex), LabelTypeNumber, false},
+		{"contains on number is rejected — same failure as regex", string(Contains), LabelTypeNumber, false},
+		{"like on timestamp is rejected", string(Like), LabelTypeTimestamp, false},
+		{"eq on number is valid", string(Eq), LabelTypeNumber, true},
+		{"eq on bool is valid", string(Eq), LabelTypeBool, true},
+		{"neq on bool is valid", string(Nq), LabelTypeBool, true},
+		{"gt on number is valid", string(Gt), LabelTypeNumber, true},
+		{"gt on timestamp is valid", string(Gt), LabelTypeTimestamp, true},
+		{"gt on bool is rejected", string(Gt), LabelTypeBool, false},
+		{"unknown type fails open", string(Regex), LabelTypeUnknown, true},
+		{"empty type fails open", string(Regex), "", true},
+		{"unknown token fails open", "_bogus_token", LabelTypeNumber, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := OperatorAppliesToType(tt.token, tt.dataType); got != tt.want {
+				t.Errorf("OperatorAppliesToType(%q, %q) = %v, want %v", tt.token, tt.dataType, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsTypeRestrictedOperator guards the hot-path guard: only operators that can
+// actually fail type validation may report as restricted, otherwise every all-`_eq`
+// log query would pay for label-type discovery it can never need.
+func TestIsTypeRestrictedOperator(t *testing.T) {
+	restricted := []BinaryWhereClauseType{Regex, NRegex, Like, ILike, NLike, Contains, IContains, NIContains, Lt, Lte, Gt, Gte, Between}
+	for _, tok := range restricted {
+		if !IsTypeRestrictedOperator(string(tok)) {
+			t.Errorf("operator %q accepts a subset of types and must report as type-restricted", tok)
+		}
+	}
+	unrestricted := []BinaryWhereClauseType{Eq, Nq, In, NotIn, HasKey, IsNull}
+	for _, tok := range unrestricted {
+		if IsTypeRestrictedOperator(string(tok)) {
+			t.Errorf("operator %q accepts every type and must not trigger label-type discovery", tok)
+		}
+	}
+	if IsTypeRestrictedOperator("_bogus_token") {
+		t.Error("unknown token must not report as type-restricted")
+	}
 }
 
 func validateCatalogKind(t *testing.T, token string, desc OperatorDescriptor, kind string) {
