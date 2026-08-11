@@ -325,14 +325,46 @@ export function missingPermissionMessage(permission: string): string {
 // Groups, Audits, Notifications, Integrations, Ownership, and the EE Roles &
 // Permissions tab. Kept in sync with baseFilters in
 // app/src/pages/user-management/index.jsx.
+// Cross-tenant super admin (full, not the read-only flavor). Kept distinct from
+// isTenantWideRole() because destructive / write gates must not accept
+// super_admin_readonly.
+export function isSuperAdmin(): boolean {
+  return userData?.isSuperAdmin === true;
+}
+
 // Advisory mirror of the backend SecurityContext.CanManage(module, class): a
-// full tenant admin, OR a custom-role holder with the (module, class) grant.
+// full tenant admin, a full super admin, OR a custom-role holder with the
+// (module, class) grant.
 // Use to show/hide write actions in tenant-config surfaces (the Admin page).
-// tenant_admin_readonly is intentionally excluded (isTenantAdmin() is false for
-// it) so read-only admins never see write controls. The backend re-checks, so
-// this is purely to avoid surfacing actions that would 403.
+// tenant_admin_readonly and super_admin_readonly are intentionally excluded
+// (isTenantAdmin() / isSuperAdmin() are false for them) so read-only admins never
+// see write controls. The backend re-checks, so this is purely to avoid surfacing
+// actions that would 403.
 export function canManage(module: string, permissionClass: 'Read' | 'Write' | 'Execute'): boolean {
-  return isTenantAdmin() || hasPermission(module, permissionClass);
+  return isTenantAdmin() || isSuperAdmin() || hasPermission(module, permissionClass);
+}
+
+// Tenant Settings (the avatar-menu modal) splits into two questions, because
+// seeing the tenant's configuration and changing it are different privileges.
+//
+// VIEW — any tenant-wide role (including the read-only flavors) or a
+// `tenants:Read` grant. The reads behind the modal (tenant_attributes_v2,
+// featureflags_list, features_list) are all classified `tenants:Read` and
+// actions.yaml already grants them to the read-only roles, so this mirrors the
+// backend rather than being stricter than it.
+export function canViewTenantSettings(): boolean {
+  return isTenantWideRole() || hasPermission('tenants', 'Read') || canEditTenantSettings();
+}
+
+// EDIT — mirrors CanManage("tenants","Write") in
+// api-server/services/tenant/service.go, which gates all four writes the modal
+// makes (tenant_attribute_upsert / _delete, tenant_update_name,
+// featureflag_upsert). Note a `tenants:Write` grant still cannot flip the
+// privileged keys carved out in tenant/privileged_config.go (entitlement_bypass,
+// RBAC_K8S, …) — those stay tenant-admin/super-admin only, and the backend
+// rejects them per-key rather than per-request.
+export function canEditTenantSettings(): boolean {
+  return canManage('tenants', 'Write');
 }
 
 const ADMIN_SURFACE_MODULES = ['users', 'usergroups', 'audits', 'notifications', 'integrations', 'ownership', 'customroles', 'roles'];

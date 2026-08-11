@@ -276,13 +276,26 @@ func (sc *SecurityContext) GetScopedPermissionKeys() []string {
 	return keys
 }
 
-// CanManage gates a non-privilege tenant-config operation. It preserves the
-// existing tenant-admin behavior and additively accepts a matching custom-role
-// grant. NOTE: do NOT use this for privilege-administration handlers (role /
-// group / user-role assignment) — those must stay IsTenantAdmin()-only so a
-// custom role can never be used to escalate its own privileges.
+// CanManage gates a non-privilege tenant-config operation: a full tenant admin,
+// a full super admin, or a matching dynamic-RBAC custom-role grant. NOTE: do NOT
+// use this for privilege-administration handlers (role / group / user-role
+// assignment) — those must stay IsTenantAdmin()-only so a custom role can never
+// be used to escalate its own privileges.
+//
+// IsSuperAdmin is part of the gate because a super admin is a strict superset of
+// a tenant admin everywhere else in this file, and the per-key privilege
+// denylists these same handlers apply already read
+// `!IsTenantAdmin() && !IsSuperAdmin()` (see tenant/privileged_config.go) — i.e.
+// they assume a super admin has already cleared the coarse gate. Without it a
+// super admin who is not separately a tenant admin cleared the gateway
+// (rpcGateway elevates the session into allowed_roles) and was then rejected here
+// by every CanManage call site.
+//
+// The READ-ONLY flavors are deliberately excluded: IsTenantAdmin() is false for
+// tenant_admin_readonly and IsSuperAdminReadonly() is not consulted, so neither
+// can reach a write through this gate.
 func (sc *SecurityContext) CanManage(module string, class string) bool {
-	return sc.IsTenantAdmin() || sc.HasPermission(module, class)
+	return sc.IsTenantAdmin() || sc.IsSuperAdmin() || sc.HasPermission(module, class)
 }
 
 // CanReadAccountData reports whether the caller may READ data for accountId in

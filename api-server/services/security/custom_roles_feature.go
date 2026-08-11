@@ -29,7 +29,7 @@ const EnvDisableCustomRoles = "CUSTOM_ROLES_DISABLED"
 // product funnels through the two grant maps this switch populates
 // (HasPermission / HasScopedPermission), so when it returns false:
 //
-//	CanManage(module, class)            == IsTenantAdmin()
+//	CanManage(module, class)            == IsTenantAdmin() || IsSuperAdmin()
 //	CanReadAccountData(account, module) == HasAccountAccess(account, read)
 //	ScopedAccountIdsForModule(module)   == nil  (query engine denies as before)
 //	GetCustomPermissions()              == []   (empty session -> inert gateway)

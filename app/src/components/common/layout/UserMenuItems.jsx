@@ -2,7 +2,7 @@ import React from 'react';
 import { MenuItem, Typography, ListItemAvatar, Avatar, ListItemText } from '@mui/material';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { signOut } from 'next-auth/react';
-import { getUserSession, isTenantAdmin } from '@lib/auth';
+import { canViewTenantSettings, getUserSession, missingPermissionMessage } from '@lib/auth';
 import { SwitchTenentIconDark, LogoutIconDark, SettingsIcon, ApiIcon } from '@assets';
 import { ds } from 'src/utils/colors';
 import Tooltip from '@ui/Tooltip';
@@ -185,9 +185,17 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
     } else if (setting === 'Version') {
       return <VersionMenuItem key={setting} />;
     } else if (setting === 'Settings') {
+      // Rendered for everyone, disabled without the grant, so the entry is
+      // discoverable and names the permission to ask an admin for — rather than
+      // vanishing, which reads as "this tenant has no settings". `pointerEvents:
+      // 'auto'` on the label is what lets the tooltip fire on a disabled
+      // MenuItem (MUI sets pointer-events:none on the item itself); same idiom
+      // as VersionMenuItem above.
+      const canOpenSettings = canViewTenantSettings();
       return (
         <MenuItem
           key={setting}
+          disabled={!canOpenSettings}
           sx={{
             padding: 'var(--ds-overlay-item-padding-md)',
             margin: '0 var(--ds-overlay-item-margin-x)',
@@ -196,21 +204,25 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
             '&:hover': { backgroundColor: 'var(--ds-overlay-item-hover-bg)' },
           }}
           onClick={() => {
+            if (!canOpenSettings) return;
             setAnchorElUser(null);
             setOpenSettings(true);
           }}
         >
-          <Typography
-            textAlign='left'
-            fontSize={'var(--ds-text-body-lg)'}
-            display={'flex'}
-            alignItems={'center'}
-            gap={'var(--ds-space-2)'}
-            fontWeight={'400'}
-            color={'var(--ds-gray-700)'}
-          >
-            <SafeIcon src={SettingsIcon} alt='settings' /> Tenant Settings
-          </Typography>
+          <Tooltip title={canOpenSettings ? '' : missingPermissionMessage('tenants:Read')} placement='left' disableInteractive>
+            <Typography
+              textAlign='left'
+              fontSize={'var(--ds-text-body-lg)'}
+              display={'flex'}
+              alignItems={'center'}
+              gap={'var(--ds-space-2)'}
+              fontWeight={'400'}
+              color={'var(--ds-gray-700)'}
+              sx={{ pointerEvents: 'auto' }}
+            >
+              <SafeIcon src={SettingsIcon} alt='settings' /> Tenant Settings
+            </Typography>
+          </Tooltip>
         </MenuItem>
       );
     } else if (setting === 'API Tokens') {
@@ -265,9 +277,10 @@ export const generateMenuItems = (hasMultipleTenantAccess = false) => {
   if (hasMultipleTenantAccess) {
     menu.push('Switch Tenant');
   }
-  if (isTenantAdmin()) {
-    menu.push('Settings');
-  }
+  // Always listed. Entitlement is decided at render time (disabled + tooltip
+  // naming the missing grant) rather than by omitting the entry here, so a user
+  // who lacks the grant can see the surface exists and what to ask for.
+  menu.push('Settings');
 
   menu.push('API Tokens', 'Logout', 'Version');
 
