@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
@@ -34,13 +33,16 @@ const FetchLogsAgentName = "fetch_logs"
 type FetchLogsAgent struct {
 	accountId string
 	provider  services_server.ObservabilityProvider
-
-	labelsOnce sync.Once
-	fields     []string
-	indices    map[string]string
 }
 
 func init() {
+	common.CacheCreateNamespace(logLabelsCacheNS, common.CacheNamespaceWithExpiration(logLabelsCacheTTL))
+	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
+		if err := common.CacheDeleteWithTag(logLabelsCacheNS, logLabelsAccountTag(accountId)); err != nil {
+			slog.Debug("fetch_logs: unable to evict cached labels", "error", err, "account_id", accountId)
+		}
+	})
+
 	toolDescription := `Fetches logs for a resource and returns raw log content. Translates a natural-language log question into the right backend query (Loki/Signoz/ES JSON, Datadog facet syntax, or kubectl flags) and runs it. Saves output to a workspace file so it can be downloaded or grepped via shell_execute. The caller is responsible for the strategy — fetch_logs runs whatever query the question implies; it does not add implicit error filters or widen windows on its own. For investigations, ask for a broad chronological window so the trigger (config reload, deploy, antecedent context) surfaces before the symptom storm.`
 	toolInput := "Provide a natural-language log question (e.g. 'errors in <service> last 1h', 'why is <service> slow', 'logs for pod <workload>-<6-10 hex>-<5 alnum> in namespace <ns>')."
 	toolOutput := "JSON envelope: {\"query\": \"<rendered backend query>\", \"logs\": \"<raw lines or preview>\", \"file_ref\": \"<workspace file path or empty>\", \"provider\": \"<loki|es|datadog|kubectl>\", \"bundle_signal\": \"<category-tagged crash-bundle sweep against file_ref, computed server-side when the query wording asked for error content (error/fail/crash/timeout/oom/…); empty when it didn't fire>\", \"fallback_note\": \"<present only when the configured backend's query matched zero rows and the agent retried via kubectl — explains that this answer came from kubectl instead of the configured provider, so a zero-row backend result isn't mistaken for 'no logs exist'; absent otherwise>\"}"
@@ -216,7 +218,7 @@ func formatDiscoveryHint(candidates []string) string {
 }
 
 func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
-	fields, indices := a.labelsAndIndices(provider)
+	fields, indices := fetchLabelsAndIndices(a.accountId, provider)
 	jsonQuery, err := generateLogQuery(ctx, request, provider.Provider, fields, indices, provider.DefaultIndex)
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("loki/es query extraction: %w", err)), nil
@@ -260,22 +262,91 @@ func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.Request
 	return makeFetchResponse(a.GetName(), ddQuery, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
-// labelsAndIndices feeds the query-generator prompt real labels/indices instead
-// of guesses. The labelsOnce memo lives on a shared instance and is only valid
-// for the account's own provider — an override fetches fresh.
-func (a *FetchLogsAgent) labelsAndIndices(provider services_server.ObservabilityProvider) ([]string, map[string]string) {
-	if strings.EqualFold(provider.Provider, a.provider.Provider) {
-		a.labelsOnce.Do(func() { a.fields, a.indices = fetchLabelsAndIndices(a.accountId, provider) })
-		return a.fields, a.indices
-	}
-	return fetchLabelsAndIndices(a.accountId, provider)
+// logLabelsCacheNS caches discovered backend labels (and, for ES, the account's
+// index map) per account+provider. The label list is a HARD input to the
+// query-generation prompt — buildCanonicalLogQueryPrompt renders it as the
+// `canonical_name → backend_field` block — so it must be resolved BEFORE the
+// LLM call, on the critical path of every fetch. Discovery costs an HTTP
+// round-trip to services-server, which in turn queries the backend's own label
+// API. The previous per-instance sync.Once memo never helped: FetchLogsAgent is
+// reconstructed on every invocation (GetNBAgent → newFetchLogsAgentV2), so two
+// fetches in one investigation meant two full discoveries.
+const logLabelsCacheNS = "llm_log_labels"
+
+// logLabelsCacheTTL is deliberately shorter than logProviderCacheTTL: labels
+// track the workloads actually emitting logs, so a newly deployed app or
+// namespace should become queryable within minutes rather than half an hour.
+const logLabelsCacheTTL = 15 * time.Minute
+
+// logLabels is the cache payload for fetchLabelsAndIndices.
+//
+// ExpiresAt is stamped into the payload rather than left to the cache store:
+// the default in_memory backend (bigcache) silently ignores per-entry
+// expiration — gocache's BigcacheStore.Set drops the option and bigcache has
+// only one global LifeWindow, shared by every namespace and fixed by whichever
+// namespace initialises first. Without this stamp, logLabelsCacheTTL would be
+// decorative and the real TTL would be someone else's constant. A zero
+// ExpiresAt (entry written by an older build) reads as already-expired, which
+// degrades to a refetch — the safe direction.
+type logLabels struct {
+	Fields    []string          `json:"fields"`
+	Indices   map[string]string `json:"indices"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+// logLabelsCacheKey scopes the entry to the exact discovery inputs. The provider
+// name is normalised so config whitespace/casing can't split the entry, and
+// DefaultIndex is part of the key because ES label discovery is index-scoped
+// (QueryLogLabels passes it through as the `index` request field) — two indices
+// on the same account legitimately yield different field sets.
+func logLabelsCacheKey(accountId string, provider services_server.ObservabilityProvider) string {
+	return fmt.Sprintf("%s:%s:%s", accountId, strings.ToLower(strings.TrimSpace(provider.Provider)), provider.DefaultIndex)
+}
+
+// logLabelsAccountTag groups every provider/index entry belonging to one account
+// under a single tag, so the integration-change invalidator can evict them all
+// without having to enumerate the provider and index combinations that produced
+// the keys.
+func logLabelsAccountTag(accountId string) string {
+	return "account:" + accountId
 }
 
 // fetchLabelsAndIndices warns on an empty list rather than failing: the caller
 // then falls back to backend defaults that are wrong for ES/Signoz, and this
 // warn is the only signal an operator gets that an override named a backend the
 // account has no integration for.
+//
+// Results are cached for logLabelsCacheTTL. An empty label set is NEVER cached —
+// it means discovery failed (or the override named a backend this account has no
+// integration for), and pinning that would leave the query generator on wrong
+// backend defaults for the whole TTL, silently returning zero rows.
 func fetchLabelsAndIndices(accountId string, provider services_server.ObservabilityProvider) ([]string, map[string]string) {
+	// An empty accountId bypasses the cache entirely rather than keying on
+	// ":provider:index", which every empty-account caller would share. Discovery
+	// for an empty account fails upstream today (QueryLabels can't resolve a
+	// tenant) and an empty result is never cached, so this is unreachable — but
+	// a key that could be shared across tenants must not depend on a downstream
+	// error to stay empty. Mirrors the same guard in GetLogProvider.
+	var cacheKey string
+	if accountId != "" {
+		cacheKey = logLabelsCacheKey(accountId, provider)
+		if data, ok := common.CacheGet(logLabelsCacheNS, cacheKey); ok {
+			var cached logLabels
+			if err := common.UnmarshalJson(data, &cached); err != nil {
+				// Evict rather than leave it: the success path below overwrites
+				// this key anyway, but if discovery keeps failing (empty results
+				// are never cached) the unreadable bytes would otherwise linger
+				// and re-warn on every call.
+				slog.Warn("fetch_logs: cached labels unreadable, rediscovering", "account_id", accountId, "provider", provider.Provider)
+				if err := common.CacheDelete(logLabelsCacheNS, cacheKey); err != nil {
+					slog.Debug("fetch_logs: unable to evict unreadable label entry", "error", err, "account_id", accountId)
+				}
+			} else if time.Now().Before(cached.ExpiresAt) {
+				return cached.Fields, cached.Indices
+			}
+		}
+	}
+
 	labels := tools.NewNBLogToolWithProvider(accountId, provider).QueryLabels()
 	if len(labels) == 0 {
 		slog.Warn("fetch_logs: no provider labels — translator will fall back to backend defaults",
@@ -286,6 +357,16 @@ func fetchLabelsAndIndices(accountId string, provider services_server.Observabil
 		indices = utils.GetESAccountIndexConfig(accountId, "logs").Indices
 	}
 	slog.Info("fetch_logs: fetchLabelsAndIndices complete", "account_id", accountId, "provider", provider.Provider, "label_count", len(labels), "labels", labels, "indices", indices)
+
+	if len(labels) > 0 && cacheKey != "" {
+		if data, err := common.MarshalJson(logLabels{Fields: labels, Indices: indices, ExpiresAt: time.Now().Add(logLabelsCacheTTL)}); err != nil {
+			slog.Debug("fetch_logs: unable to serialize labels for cache", "error", err, "account_id", accountId)
+		} else if err := common.CacheSet(logLabelsCacheNS, cacheKey, data,
+			common.CacheSetWithExpiration(logLabelsCacheTTL),
+			common.CacheSetWithTags(logLabelsAccountTag(accountId))); err != nil {
+			slog.Debug("fetch_logs: unable to cache labels", "error", err, "account_id", accountId)
+		}
+	}
 	return labels, indices
 }
 

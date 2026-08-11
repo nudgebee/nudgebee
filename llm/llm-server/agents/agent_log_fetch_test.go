@@ -3,13 +3,16 @@ package agents
 import (
 	"encoding/json"
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -911,4 +914,104 @@ func TestFormatDiscoveryHint(t *testing.T) {
 		assert.Contains(t, hint, "nudgebee/relay-server-68868457d8-62cwv (pod)")
 		assert.Contains(t, hint, "retry fetch_logs with the corrected namespace/resource name")
 	})
+}
+
+// TestLogLabelsCacheKey pins the scoping of the label-discovery cache. Getting
+// this wrong is silent and expensive: too coarse a key serves one ES index's
+// field list for another index's query (the generator then emits fields that
+// don't exist and the query returns zero rows), while a key that varies on
+// incidental config whitespace/casing never hits and reinstates the
+// per-fetch discovery round-trip the cache exists to remove.
+func TestLogLabelsCacheKey(t *testing.T) {
+	acct := "11111111-2222-3333-4444-555555555555"
+
+	t.Run("provider name is normalised", func(t *testing.T) {
+		assert.Equal(t,
+			logLabelsCacheKey(acct, services_server.ObservabilityProvider{Provider: "loki"}),
+			logLabelsCacheKey(acct, services_server.ObservabilityProvider{Provider: "  Loki "}),
+		)
+	})
+
+	t.Run("default index is part of the key", func(t *testing.T) {
+		a := logLabelsCacheKey(acct, services_server.ObservabilityProvider{Provider: "es", DefaultIndex: "app-logs-*"})
+		b := logLabelsCacheKey(acct, services_server.ObservabilityProvider{Provider: "es", DefaultIndex: "nginx-access-*"})
+		assert.NotEqual(t, a, b, "ES label discovery is index-scoped — entries must not collide")
+	})
+
+	t.Run("accounts never share an entry", func(t *testing.T) {
+		other := "99999999-8888-7777-6666-555555555555"
+		p := services_server.ObservabilityProvider{Provider: "loki"}
+		assert.NotEqual(t, logLabelsCacheKey(acct, p), logLabelsCacheKey(other, p))
+	})
+}
+
+// TestFetchLabelsAndIndices_ServesCachedEntry asserts the cache-hit path
+// short-circuits before QueryLabels — i.e. a warm entry costs no
+// services-server round-trip. The test never provisions a backend, so a cache
+// miss would fall through to discovery and return empty; getting the seeded
+// values back is proof the short-circuit fired.
+func TestFetchLabelsAndIndices_ServesCachedEntry(t *testing.T) {
+	acct := "cache-hit-" + t.Name()
+	provider := services_server.ObservabilityProvider{Provider: "loki"}
+
+	seeded := logLabels{
+		Fields:    []string{"app", "namespace", "_body"},
+		Indices:   map[string]string{"logs": "app-logs-*"},
+		ExpiresAt: time.Now().Add(logLabelsCacheTTL),
+	}
+	data, err := common.MarshalJson(seeded)
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(logLabelsCacheNS, logLabelsCacheKey(acct, provider), data,
+		common.CacheSetWithExpiration(logLabelsCacheTTL),
+		common.CacheSetWithTags(logLabelsAccountTag(acct))))
+
+	fields, indices := fetchLabelsAndIndices(acct, provider)
+	assert.Equal(t, seeded.Fields, fields)
+	assert.Equal(t, seeded.Indices, indices)
+
+	t.Run("account tag evicts every entry for the account", func(t *testing.T) {
+		require.NoError(t, common.CacheDeleteWithTag(logLabelsCacheNS, logLabelsAccountTag(acct)))
+		_, ok := common.CacheGet(logLabelsCacheNS, logLabelsCacheKey(acct, provider))
+		assert.False(t, ok, "integration-change invalidation must drop the cached labels")
+	})
+}
+
+// TestFetchLabelsAndIndices_IgnoresExpiredEntry pins the stamped-expiry check.
+// bigcache (the default in_memory backend) ignores per-entry TTLs, so without
+// the stamp a stale label set would be served well past logLabelsCacheTTL —
+// keeping a newly deployed workload's labels out of the query-generator prompt
+// for as long as the global LifeWindow. An expired entry must read as a miss.
+func TestFetchLabelsAndIndices_IgnoresExpiredEntry(t *testing.T) {
+	acct := "expired-labels-" + t.Name()
+	provider := services_server.ObservabilityProvider{Provider: "loki"}
+
+	data, err := common.MarshalJson(logLabels{
+		Fields:    []string{"stale-label"},
+		ExpiresAt: time.Now().Add(-time.Minute),
+	})
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(logLabelsCacheNS, logLabelsCacheKey(acct, provider), data))
+
+	fields, _ := fetchLabelsAndIndices(acct, provider)
+	assert.NotContains(t, fields, "stale-label", "an expired entry must not be served")
+}
+
+// TestFetchLabelsAndIndices_EmptyAccountBypassesCache pins the empty-accountId
+// guard. Without it the cache key degrades to ":provider:index", which every
+// empty-account caller would share — a key not scoped to a tenant. Discovery
+// for an empty account fails upstream today, so nothing reaches the write path
+// anyway; this asserts the guard holds regardless of that downstream behaviour.
+func TestFetchLabelsAndIndices_EmptyAccountBypassesCache(t *testing.T) {
+	provider := services_server.ObservabilityProvider{Provider: "loki"}
+	sharedKey := logLabelsCacheKey("", provider)
+	// Best-effort clear; CacheDelete errors when the key is absent, which is the
+	// normal state here.
+	_ = common.CacheDelete(logLabelsCacheNS, sharedKey)
+
+	fields, indices := fetchLabelsAndIndices("", provider)
+	assert.Empty(t, fields)
+	assert.Empty(t, indices)
+
+	_, ok := common.CacheGet(logLabelsCacheNS, sharedKey)
+	assert.False(t, ok, "an empty accountId must never write to the tenant-less shared key")
 }

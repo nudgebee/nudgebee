@@ -386,7 +386,7 @@ func TestCanonicalLogQueryGeneration_Live(t *testing.T) {
 	// exactly as the agent does at request time.
 	agent := newFetchLogsAgentV2(account)
 	require.NotEmpty(t, agent.provider.Provider, "account has no services-server log provider configured")
-	agent.fields, agent.indices = fetchLabelsAndIndices(account, agent.provider)
+	fields, indices := fetchLabelsAndIndices(account, agent.provider)
 	ctx := security.NewRequestContextForTenantAccountAdmin(tenant, user, []string{account})
 
 	cases := []struct {
@@ -512,7 +512,7 @@ func TestCanonicalLogQueryGeneration_Live(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := core.NBAgentRequest{Query: tc.query, OriginalQuery: tc.query, AccountId: account, UserId: user}
-			out, err := generateCanonicalLogQuery(ctx, req, agent.provider, agent.fields, agent.indices)
+			out, err := generateCanonicalLogQuery(ctx, req, agent.provider, fields, indices)
 			require.NoError(t, err)
 			t.Logf("query=%q -> %s", tc.query, out)
 

@@ -562,7 +562,87 @@ func hasConnectedK8sAgent(accountId string) bool {
 	return connectedCount > 0
 }
 
+// logProviderCacheNS caches the resolved observability log provider per account.
+// Resolution costs an HTTP round-trip to services-server (get_default_provider),
+// and a single fetch_logs call resolves it three times over — once when the
+// LogAgent picks its provider-specific variant (agent_log.go), once at
+// FetchLogsAgent construction, and once more at logs_execute_v2 construction.
+// None of those share an instance, so without this every log fetch pays three
+// round-trips before the query-generation LLM call even starts.
+const logProviderCacheNS = "llm_log_provider"
+
+// logProviderCacheTTL matches the 30-minute TTL used by the other
+// integration-derived caches (llm_tool_config, MCP tools). The value only
+// changes when the account's integrations change, and that path already busts
+// this cache via RegisterToolCacheInvalidator, so the TTL is a backstop rather
+// than the primary freshness mechanism.
+const logProviderCacheTTL = 30 * time.Minute
+
+// cachedLogProvider wraps the provider with an explicit expiry stamp.
+//
+// The TTL is enforced here rather than delegated to the cache store because the
+// default in_memory backend (bigcache) ignores per-entry expiration — gocache's
+// BigcacheStore.Set drops the option, and bigcache exposes only one global
+// LifeWindow shared across every namespace. Stamping keeps logProviderCacheTTL
+// meaningful under either backend. A zero ExpiresAt (entry from an older build)
+// reads as expired and triggers a fresh resolve, which is the safe direction.
+type cachedLogProvider struct {
+	Provider  services_server.ObservabilityProvider `json:"provider"`
+	ExpiresAt time.Time                             `json:"expires_at"`
+}
+
+func init() {
+	common.CacheCreateNamespace(logProviderCacheNS, common.CacheNamespaceWithExpiration(logProviderCacheTTL))
+	core.RegisterToolCacheInvalidator(func(accountId string) {
+		if err := common.CacheDelete(logProviderCacheNS, accountId); err != nil {
+			slog.Debug("logs: unable to evict cached log provider", "error", err, "account_id", accountId)
+		}
+	})
+}
+
+// GetLogProvider resolves the account's observability log provider, memoised for
+// logProviderCacheTTL.
+//
+// Only a successful, non-empty resolution is cached. An error or an empty
+// provider falls through to a fresh lookup on the next call rather than pinning
+// a degraded result for the whole TTL — a transient services-server blip must
+// not silently route an account down the kubectl path for half an hour.
 func GetLogProvider(accountId string) (services_server.ObservabilityProvider, error) {
+	if accountId == "" {
+		return getLogProviderUncached(accountId)
+	}
+	if data, ok := common.CacheGet(logProviderCacheNS, accountId); ok {
+		var cached cachedLogProvider
+		if err := common.UnmarshalJson(data, &cached); err != nil {
+			// Evict rather than leave it: the success path below overwrites this
+			// key anyway, but if resolution keeps failing (an error or empty
+			// provider is never cached) the unreadable bytes would otherwise
+			// linger and re-warn on every call.
+			slog.Warn("logs: cached log provider is unreadable, resolving fresh", "account_id", accountId)
+			if err := common.CacheDelete(logProviderCacheNS, accountId); err != nil {
+				slog.Debug("logs: unable to evict unreadable provider entry", "error", err, "account_id", accountId)
+			}
+		} else if time.Now().Before(cached.ExpiresAt) {
+			return cached.Provider, nil
+		}
+	}
+
+	provider, err := getLogProviderUncached(accountId)
+	if err != nil || provider.Provider == "" {
+		return provider, err
+	}
+	data, err := common.MarshalJson(cachedLogProvider{Provider: provider, ExpiresAt: time.Now().Add(logProviderCacheTTL)})
+	if err != nil {
+		slog.Debug("logs: unable to serialize log provider for cache", "error", err, "account_id", accountId)
+		return provider, nil
+	}
+	if err := common.CacheSet(logProviderCacheNS, accountId, data, common.CacheSetWithExpiration(logProviderCacheTTL)); err != nil {
+		slog.Debug("logs: unable to cache log provider", "error", err, "account_id", accountId)
+	}
+	return provider, nil
+}
+
+func getLogProviderUncached(accountId string) (services_server.ObservabilityProvider, error) {
 	logConnectionProvider := "k8s"
 	providerFromServicesServer, err := getProvider(accountId, "logs", "")
 	if err == nil {

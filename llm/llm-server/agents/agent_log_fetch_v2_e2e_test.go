@@ -40,10 +40,10 @@ func TestGenerateCanonicalLogQuery_Live(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(tenant, user, nil)
 
 	a := newFetchLogsAgentV2(account)
-	a.fields, a.indices = fetchLabelsAndIndices(account, a.provider)
+	fields, indices := fetchLabelsAndIndices(account, a.provider)
 	t.Logf("provider=%q\n  label_mappings=%v\n  supported_operators=%v\n  backend_labels=%v\n  default_index=%q",
 		a.provider.Provider, a.provider.Capabilities.LabelMappings,
-		a.provider.Capabilities.SupportedOperators, a.fields, a.provider.DefaultIndex)
+		a.provider.Capabilities.SupportedOperators, fields, a.provider.DefaultIndex)
 
 	if strings.TrimSpace(a.provider.Provider) == "" {
 		t.Fatalf("account %s resolves to an empty log provider — canonical path is N/A (would route to kubectl)", account)
@@ -54,7 +54,7 @@ func TestGenerateCanonicalLogQuery_Live(t *testing.T) {
 		canonical[k] = true
 	}
 	backendLabels := map[string]bool{}
-	for _, f := range a.fields {
+	for _, f := range fields {
 		backendLabels[f] = true
 	}
 	allowedOps := map[string]bool{}
@@ -72,7 +72,7 @@ func TestGenerateCanonicalLogQuery_Live(t *testing.T) {
 
 	for i, q := range questions {
 		req := core.NBAgentRequest{UserId: user, AccountId: account, Query: q, OriginalQuery: q}
-		raw, err := generateCanonicalLogQuery(sc, req, a.provider, a.fields, a.indices)
+		raw, err := generateCanonicalLogQuery(sc, req, a.provider, fields, indices)
 		if !assert.NoErrorf(t, err, "q[%d]=%q generation failed", i, q) {
 			continue
 		}

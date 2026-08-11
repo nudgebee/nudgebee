@@ -408,7 +408,7 @@ func fetchResponseIsEmpty(resp core.NBAgentResponse) bool {
 // callers can inspect it consistently; it is empty when generation itself
 // failed (no query was ever produced).
 func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, string, error) {
-	fields, indices := a.labelsAndIndices(provider)
+	fields, indices := fetchLabelsAndIndices(a.accountId, provider)
 	jsonQuery, err := generateCanonicalLogQuery(ctx, request, provider, fields, indices)
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), "", nil

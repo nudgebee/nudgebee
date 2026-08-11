@@ -1,9 +1,13 @@
 package tools
 
 import (
+	"nudgebee/llm/common"
+	"nudgebee/llm/services_server"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestClampLogLimitForProvider pins the per-provider limit cap added 2026-06-22
@@ -111,4 +115,68 @@ func TestCloudProviderToObservabilityFallback(t *testing.T) {
 			assert.Equal(t, c.want, cloudProviderToObservabilityFallback(c.cloudProvider))
 		})
 	}
+}
+
+// TestGetLogProvider_ServesCachedEntry asserts the cache-hit path short-circuits
+// before the services-server round-trip. A single fetch_logs call resolves the
+// log provider three times (LogAgent construction, FetchLogsAgent construction,
+// logs_execute_v2 construction) and none of them share an instance, so this
+// short-circuit is what keeps those three calls to one round-trip.
+//
+// The seeded provider is deliberately NOT "k8s": on a cache miss the uncached
+// resolver returns the "k8s" default for a non-UUID account, so getting "loki"
+// back is unambiguous proof the cached value was served.
+func TestGetLogProvider_ServesCachedEntry(t *testing.T) {
+	acct := "cached-provider-" + t.Name()
+	seeded := services_server.ObservabilityProvider{
+		Provider:          "loki",
+		IntegrationSource: "integration",
+		DefaultIndex:      "app-logs-*",
+		Capabilities: services_server.ProviderCapabilities{
+			SupportedOperators: []string{"_eq", "_ilike"},
+			LabelMappings:      map[string]string{"app": "deployment.keyword", "namespace": "namespace"},
+		},
+	}
+
+	data, err := common.MarshalJson(cachedLogProvider{Provider: seeded, ExpiresAt: time.Now().Add(logProviderCacheTTL)})
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(logProviderCacheNS, acct, data, common.CacheSetWithExpiration(logProviderCacheTTL)))
+
+	got, err := GetLogProvider(acct)
+	require.NoError(t, err)
+	assert.Equal(t, seeded.Provider, got.Provider)
+	assert.Equal(t, seeded.IntegrationSource, got.IntegrationSource)
+	assert.Equal(t, seeded.DefaultIndex, got.DefaultIndex)
+	// Capabilities must survive the JSON round-trip: LabelMappings is what
+	// buildCanonicalLogQueryPrompt renders as the canonical_name → backend_field
+	// block. Losing it would silently drop the canonical vocabulary and push the
+	// generator onto provider-native guesses, which match zero rows on backends
+	// whose real keys differ (the exact failure the canonical path exists to fix).
+	assert.Equal(t, seeded.Capabilities.LabelMappings, got.Capabilities.LabelMappings)
+	assert.Equal(t, seeded.Capabilities.SupportedOperators, got.Capabilities.SupportedOperators)
+
+	t.Run("invalidation drops the entry", func(t *testing.T) {
+		require.NoError(t, common.CacheDelete(logProviderCacheNS, acct))
+		_, ok := common.CacheGet(logProviderCacheNS, acct)
+		assert.False(t, ok, "integration-change invalidation must drop the cached provider")
+	})
+}
+
+// TestGetLogProvider_IgnoresExpiredEntry pins the stamped-expiry check. The
+// default in_memory cache backend (bigcache) drops per-entry TTLs, so without
+// this check a cached provider would live until the global LifeWindow evicted
+// it — long past logProviderCacheTTL. The seeded entry is already expired, so
+// serving it would be the bug; falling through to a fresh resolve (which yields
+// the "k8s" default for this non-UUID account) is correct.
+func TestGetLogProvider_IgnoresExpiredEntry(t *testing.T) {
+	acct := "expired-provider-" + t.Name()
+	stale := services_server.ObservabilityProvider{Provider: "loki"}
+
+	data, err := common.MarshalJson(cachedLogProvider{Provider: stale, ExpiresAt: time.Now().Add(-time.Minute)})
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(logProviderCacheNS, acct, data))
+
+	got, err := GetLogProvider(acct)
+	require.NoError(t, err)
+	assert.NotEqual(t, "loki", got.Provider, "an expired entry must not be served")
 }
