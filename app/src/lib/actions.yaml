@@ -3739,7 +3739,6 @@ actions:
     permissions:
       - role: tenant_admin
     comment: panic-button rollback. Soft-deletes every manual_dependencies row for the tenant AND removes every source='manual' edge from the KG. tenant_admin only.
-  - name: insights_list
   - name: insights_aggregate
     comment: Aggregate insights into counts and summaries
     definition:
