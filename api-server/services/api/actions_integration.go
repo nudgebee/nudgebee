@@ -372,6 +372,16 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		return
 
 	case "webhook_subject_mappings_sync":
+		// Tenant admins and super admins only. The sync rewrites the tenant-wide
+		// webhook_subject_mappings table from every resolved incident in the
+		// connected Datadog / PagerDuty / Zenduty account, and that table decides
+		// which subject future alerts are attributed to — a bad sync silently
+		// misroutes the tenant's incidents. actions.yaml lists the same two roles;
+		// this is the half that holds if the action is ever reached another way.
+		if sc := ctx.GetSecurityContext(); !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
+			c.JSON(403, common.ErrorActionForbidden("only tenant admins can sync webhook subject mappings"))
+			return
+		}
 		var request integrations.WebhookSubjectMappingsSyncRequest
 		if err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))

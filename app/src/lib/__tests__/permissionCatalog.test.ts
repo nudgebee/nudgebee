@@ -77,6 +77,10 @@ describe('permissionCatalog', () => {
     // tenant_list_all: cross-tenant enumeration, super-admin only. Excluded by
     // name (its module `tenants` stays grantable for tenant-scoped reads).
     'tenant_list_all',
+    // webhook: rewrites the tenant-wide subject-mapping table that decides which
+    // subject every future alert is attributed to. Tenant-admin / super-admin
+    // operations work, not a delegable grant — non-grantable by module.
+    'webhook_subject_mappings_sync',
   ];
 
   it('classifies every action in actions.yaml except the non-grantable ones', () => {
@@ -120,7 +124,7 @@ describe('permissionCatalog', () => {
 
   it('keeps non-grantable modules out of the catalog', () => {
     const modules = new Set(buildCatalog(ACTION_NAMES).map((e) => e.module));
-    for (const m of ['auth', 'nudgebee', 'product', 'relay', 'signup', 'userauths']) {
+    for (const m of ['auth', 'nudgebee', 'product', 'relay', 'signup', 'userauths', 'webhook']) {
       expect(modules.has(m)).toBe(false);
     }
   });

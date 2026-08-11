@@ -235,7 +235,16 @@ const MODULE_OVERRIDES: Record<string, string> = {
 //               HasScopedPermission). Keeping `relay` here means a NEW relay action
 //               is non-grantable until it too is explicitly re-homed. Built-in roles
 //               are unaffected — they pass via actions.yaml `permissions:`.
-const NON_GRANTABLE_MODULES = new Set<string>(['auth', 'nudgebee', 'product', 'relay', 'roles', 'signup', 'userauths', 'userroles']);
+//   webhook   — the module's only action, webhook_subject_mappings_sync, reads every
+//               resolved incident of the tenant out of the connected Datadog /
+//               PagerDuty / Zenduty account and rewrites the tenant-wide
+//               webhook_subject_mappings table from them. That table decides which
+//               subject every future alert is attributed to, so a bad sync silently
+//               misroutes the tenant's incidents. It is tenant-admin (and super-admin)
+//               operations work, not a delegable grant, so the module is non-grantable
+//               and stops appearing as a tenant-level permission in the role editor.
+//               SyncWebhookSubjectMappings re-checks the same two roles server-side.
+const NON_GRANTABLE_MODULES = new Set<string>(['auth', 'nudgebee', 'product', 'relay', 'roles', 'signup', 'userauths', 'userroles', 'webhook']);
 
 // Individual actions that are never grantable, even though their module is.
 // Same fail-closed mechanism as NON_GRANTABLE_MODULES, keyed by raw action name
@@ -318,6 +327,9 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   messagingplatforms: 'tenant',
   config: 'tenant',
   audits: 'tenant',
+  // Non-grantable (see NON_GRANTABLE_MODULES) — kept here, like `roles` and
+  // `userroles` above, so the scope of the module is still recorded even though
+  // the role editor never renders it.
   webhook: 'tenant',
   // ownership: handlers gate on requireTenantAdmin()/requireTenant(), no
   // HasAccountAccess — tenant-wide governance, not per-account data.
