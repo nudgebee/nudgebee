@@ -23,7 +23,7 @@ import ModelPricingTab from '@components/llm/ModelPricingTab';
 import GlobalContextTab from '@components/llm/GlobalContextTab';
 import UserFeedbackTab from '@components/llm/UserFeedbackTab';
 import { BCortexFlagContext, isOSSDeploymentMode, useBCortexEnabled } from '@hooks/useBCortexEnabled';
-import { getSessionAccountIds, hasFeatureAccess, isTenantAdmin, isTenantWideRole } from '@lib/auth';
+import { getSessionAccountIds, hasFeatureAccess, hasPermission, isTenantAdmin, isTenantWideRole } from '@lib/auth';
 import {
   AgentIcon,
   ToolsIcon,
@@ -211,12 +211,23 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
       if (isTenantWideRole() || getSessionAccountIds().length > 0) {
         baseTabsConfig.push({ id: 'user-feedback', icon: FeedbackBlueIcon, label: 'User Feedback', alt: 'user-feedback', size: 16 });
       }
-      // Gateway admin config (routing rules + quotas) is a tenant-admin surface.
-      if (isSuperAdmin || isTenantAdminUser) {
+      // Gateway admin config (routing rules + quotas) is a tenant-admin surface,
+      // and is also delegable through dynamic RBAC: `llm_gateway_*` classifies to
+      // the tenant-scoped `llm` module (@lib/permissionCatalog), so an `llm:Read`
+      // grant clears the gateway for every read this tab makes. Gating on
+      // isTenantAdmin() alone made the grant unreachable — the holder is not a
+      // tenant admin, so the tab was never pushed and the permission an admin had
+      // just ticked did nothing.
+      if (isSuperAdmin || isTenantAdminUser || hasPermission('llm', 'Read')) {
         baseTabsConfig.push({ id: 'gateway-config', icon: HubOutlinedIcon, label: 'Gateway', alt: 'gateway-config', size: 16 });
-        // Egress Filter (per-tenant LLM secret-DLP mode) is a tenant-admin,
-        // enterprise surface — same gate as Gateway. The OSS build stubs the
-        // tab component to () => null via the dynamic-import strip above.
+      }
+      // Egress Filter (per-tenant LLM secret-DLP mode) is the same shape, but a
+      // SEPARATE grant: `egressfilter_*` is its own module, so it gets its own
+      // gate rather than riding along with Gateway — an admin who delegates only
+      // secret-DLP policy must not thereby hand over gateway routing and quotas.
+      // The OSS build stubs the tab component to () => null via the dynamic-import
+      // strip above.
+      if (isSuperAdmin || isTenantAdminUser || hasPermission('egressfilter', 'Read')) {
         baseTabsConfig.push({ id: 'egress-filter', icon: ShieldOutlinedIcon, label: 'Egress Filter', alt: 'egress-filter', size: 16 });
       }
 

@@ -352,16 +352,45 @@ const PageLayout = ({ children }) => {
   const menuItems = useMemo(() => {
     const isAdmin = !!(session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin'));
     const canReadAccount = hasReadAccess(selectedCluster?.value);
+    // Each sub-item carries the module it actually reads. This used to be implicit
+    // — the parent's single `recommendations` gate stood in for the whole section —
+    // but the parent now also opens for `llm:Read` (AI Gateway below), and without
+    // per-sub-item modules that grant would light up Summary / Recommendations /
+    // Resolutions / Auto Optimize too, which it does not entitle. The two
+    // feature-flagged entries below are conditionally INCLUDED rather than gated,
+    // so for a grants-only user their `module` is redundant with the condition
+    // that admitted them — AI Gateway still carries one so the entry stays gated
+    // on its own if that condition is ever loosened. LLM Analyser's surface spans
+    // several `ai_*` sub-modules with no single right answer, and its `canReadAccount`
+    // condition is already false for every grants-only user, so it declares none
+    // rather than guess one and hide the tab from a legitimate holder.
     const optimizeSections = [
-      { text: 'Summary', path: '/optimise#summary', id: 'sidenav-optimise-summary', icon: OptimizeSummaryIcon },
-      { text: 'Recommendations', path: '/optimise#recommendations', id: 'sidenav-optimise-recommendations', icon: RecommendationIcon },
-      { text: 'Resolutions', path: '/optimise#resolutions', id: 'sidenav-optimise-resolutions', icon: RecommendationResolutionIcon },
-      { text: 'Auto Optimize', path: '/optimise#auto-optimize', id: 'sidenav-optimise-auto-optimize', icon: AutomateBlue },
+      { text: 'Summary', path: '/optimise#summary', id: 'sidenav-optimise-summary', module: 'recommendations', icon: OptimizeSummaryIcon },
+      {
+        text: 'Recommendations',
+        path: '/optimise#recommendations',
+        id: 'sidenav-optimise-recommendations',
+        module: 'recommendations',
+        icon: RecommendationIcon,
+      },
+      {
+        text: 'Resolutions',
+        path: '/optimise#resolutions',
+        id: 'sidenav-optimise-resolutions',
+        module: 'recommendations',
+        icon: RecommendationResolutionIcon,
+      },
+      { text: 'Auto Optimize', path: '/optimise#auto-optimize', id: 'sidenav-optimise-auto-optimize', module: 'autooptimize', icon: AutomateBlue },
       ...(isUiFeatureEnabled('llmAnalyser') && canReadAccount
         ? [{ text: 'LLM Analyser', path: '/optimise#cost-analyser', id: 'sidenav-optimise-cost-analyser', icon: LLMConsumptionIcon }]
         : []),
-      ...(isUiFeatureEnabled('llmGateway') && canReadAccount
-        ? [{ text: 'AI Gateway', path: '/optimise#ai-gateway', id: 'sidenav-optimise-ai-gateway', icon: IntegrationsIcon }]
+      // `llm` is a TENANT-scoped module (@lib/permissionCatalog): the gateway usage
+      // API resolves the tenant from the session and takes no account, so the
+      // per-account `canReadAccount` check cannot see an `llm:Read` grant — a
+      // grants-only holder has empty session account ids by design, so it returns
+      // false and the entry disappeared for exactly the users who were granted it.
+      ...(isUiFeatureEnabled('llmGateway') && (canReadAccount || hasPermission('llm', 'Read'))
+        ? [{ text: 'AI Gateway', path: '/optimise#ai-gateway', id: 'sidenav-optimise-ai-gateway', module: 'llm', icon: IntegrationsIcon }]
         : []),
     ];
 
@@ -417,7 +446,10 @@ const PageLayout = ({ children }) => {
         icon: WhiteOptimizeIcon,
         text: 'Optimize',
         id: 'optimize-sidenavbutton',
-        module: 'recommendations',
+        // The union of the modules its sub-items declare, so the section opens for
+        // any grant that entitles something inside it — and the sub-item gates
+        // decide what is actually reachable once it is open.
+        modules: ['recommendations', 'autooptimize', 'llm'],
         subItems: optimizeSections,
       },
       {
@@ -490,10 +522,20 @@ const PageLayout = ({ children }) => {
       });
     }
     if (!isGrantsOnlyUser(selectedCluster?.value)) return items;
-    const gate = (entry) =>
-      entry.module && !hasPermission(entry.module, 'Read')
-        ? { ...entry, disabled: true, disabledTooltip: missingPermissionMessage(`${entry.module}:Read`) }
+    // An entry is reachable when the user holds :Read on ANY of the modules behind
+    // it. Almost every entry has exactly one (`module`); `Optimize` declares two
+    // (`modules`) because its AI Gateway sub-item is a tenant-scoped `llm` surface
+    // with nothing to do with the `recommendations` module the rest of the section
+    // reads. Gating the section on `recommendations` alone greyed the parent out
+    // for an `llm:Read` holder — and a disabled parent gets pointerEvents:'none',
+    // so its flyout never opens and the granted sub-item stayed unreachable even
+    // though the sub-item itself was enabled. The tooltip names the primary module.
+    const gate = (entry) => {
+      const modules = entry.modules ?? (entry.module ? [entry.module] : []);
+      return modules.length > 0 && !modules.some((m) => hasPermission(m, 'Read'))
+        ? { ...entry, disabled: true, disabledTooltip: missingPermissionMessage(`${modules[0]}:Read`) }
         : entry;
+    };
     return items.map((item) => {
       const subItems = item.subItems?.map(gate);
       const gated = gate({ ...item, ...(subItems ? { subItems } : {}) });

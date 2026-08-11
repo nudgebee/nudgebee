@@ -32,7 +32,7 @@ import { toast as snackbar } from '@ui/Toast';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
-import { hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
+import { hasPermission, hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
 import apiAskNudgebee from '@api1/ask-nudgebee';
@@ -1052,7 +1052,10 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   // hasReadAccess(selectedCluster?.value) mirrors the page's own per-account
   // check.
   const canAccessLlmAnalyser = isUiFeatureEnabled('llmAnalyser') && hasReadAccess(selectedCluster?.value);
-  const canAccessAiGateway = isUiFeatureEnabled('llmGateway') && hasReadAccess(selectedCluster?.value);
+  // The `llm:Read` disjunct mirrors the page too: the gateway usage API is
+  // tenant-scoped, so hasReadAccess (per-account) never sees that grant and the
+  // row went missing for grant holders. Keep in lockstep with optimise/index.jsx.
+  const canAccessAiGateway = isUiFeatureEnabled('llmGateway') && (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read'));
 
   // Provider-agnostic "some account" resolution — used by Automation/Agent
   // Health's search entries (no K8s/AWS/Azure/GCP concept to key
