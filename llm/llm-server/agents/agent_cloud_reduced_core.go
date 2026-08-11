@@ -30,7 +30,6 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 		cliToolName,
 		ServiceDependencyGraph,
 		EventsAgentName,
-		ResourceSearchAgentName,
 		RecommendationsAgentName,
 		// websearch is preloaded so the model can ground cloud-specific
 		// error-message / API-version investigation questions ("what does
@@ -44,6 +43,18 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 		// by keyword directly, without an extra delegate_agent+search_tools hop.
 		// Same invariant PR #34819 established across every orchestrator.
 		tools.SearchSkillsToolName,
+	}
+	// Resource/region discovery differs by cloud. AWS has no cross-region list, so an
+	// unknown region forces a blind per-region CLI fan-out; the direct DB tool
+	// cloud_resource_search_execute resolves the real region from inventory in one lookup,
+	// and aws_lean.yaml steers there. So AWS swaps the 12-30s resource_search AGENT for the
+	// direct tool — loading both only tempts the model onto the slow path. gcloud/az aggregate
+	// across zones/locations (no fan-out problem) and have no direct tool, so they KEEP the
+	// cross-cloud resource_search agent as their resource-search path.
+	if cliToolName == tools.ToolExecuteAwsCliCommand {
+		names = append(names, tools.ToolCloudResourceSearch)
+	} else {
+		names = append(names, ResourceSearchAgentName)
 	}
 	if config.Config.RemediationAgentEnabled {
 		names = append(names, RemediationAgentName)

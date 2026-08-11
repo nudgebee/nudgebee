@@ -69,10 +69,11 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 
 	// Every lean core must contain these — the shared "reach + investigate"
 	// backbone that makes lean actually work.
+	// NB: resource search is intentionally NOT shared — it splits by cloud (asserted
+	// separately below): AWS uses the direct DB tool, gcp/azure keep the agent.
 	sharedRequired := []string{
 		ServiceDependencyGraph,
 		EventsAgentName,
-		ResourceSearchAgentName,
 		RecommendationsAgentName,
 		DelegateAgentToolName,
 		SearchToolsToolName,
@@ -134,6 +135,33 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 			assert.LessOrEqual(t, len(tt.names), 15,
 				"%s reduced core has %d tools; lean should stay ≤15 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
 				tt.name, len(tt.names))
+		})
+	}
+
+	// Resource search splits by cloud. AWS has no cross-region list, so an unknown
+	// region forces a blind per-region CLI fan-out; the direct DB tool
+	// cloud_resource_search_execute resolves it in one lookup and aws_lean.yaml steers
+	// there — so AWS carries the direct tool and NOT the 12-30s resource_search agent
+	// (loading both tempts the model onto the slow path). gcp/azure aggregate across
+	// zones/locations (no fan-out problem) and have no direct tool, so they keep the
+	// agent and must NOT carry the direct tool.
+	t.Run("aws_lean_has_direct_resolver_not_agent", func(t *testing.T) {
+		aws := cloudLeanCoreToolNames(tools.ToolExecuteAwsCliCommand)
+		assert.True(t, containsTool(aws, tools.ToolCloudResourceSearch),
+			"aws_lean must preload cloud_resource_search_execute (direct region resolver)")
+		assert.False(t, containsTool(aws, ResourceSearchAgentName),
+			"aws_lean must NOT also preload the resource_search agent — the direct tool + prompt cover it; both invites the slow path")
+	})
+	for _, cli := range []struct{ name, cliTool string }{
+		{"gcp_lean", tools.ToolExecuteGcpCliCommand},
+		{"azure_lean", tools.ToolExecuteAzureCliCommand},
+	} {
+		t.Run(cli.name+"_has_agent_not_direct", func(t *testing.T) {
+			names := cloudLeanCoreToolNames(cli.cliTool)
+			assert.True(t, containsTool(names, ResourceSearchAgentName),
+				"%s must keep the resource_search agent — no direct tool, no region fan-out problem", cli.name)
+			assert.False(t, containsTool(names, tools.ToolCloudResourceSearch),
+				"%s must NOT preload the direct cloud_resource_search_execute — keep lean minimal", cli.name)
 		})
 	}
 }
