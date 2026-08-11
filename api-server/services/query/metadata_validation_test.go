@@ -134,6 +134,23 @@ func TestNotificationRuleTablesUseAccountScopedSecurityMetadata(t *testing.T) {
 	}
 }
 
+// The Tenant Settings modal reads these two. Both are tenant-scoped with NO
+// account_id column, so a caller who is not a tenant-wide admin and holds no
+// module grant falls into the account-restriction branch of query/service.go and
+// gets "account id column not found" — a 400 that renders the whole modal blank.
+// Naming the module is what lets a `tenants:Read` grant read them, and it must
+// stay in lockstep with permissionCatalog.ts, where tenant_* and featureflag_*
+// both classify to `tenants`.
+func TestTenantSettingTablesUseTenantPermissionModule(t *testing.T) {
+	for _, name := range []string{"tenant_attributes_v2", "feature_flag_v2"} {
+		t.Run(name, func(t *testing.T) {
+			def, ok := table_metadata[name]
+			assert.True(t, ok, "table %s should exist", name)
+			assert.Equal(t, "tenants", def.PermissionModule, "table %s should map to the tenants permission module", name)
+		})
+	}
+}
+
 func TestIntegrationTablesUseTenantScopedPermissionMetadata(t *testing.T) {
 	for _, name := range []string{"integrations_get_all_accounts", "admin_get_integrations_v2", "admin_get_integrations_grouping_v2"} {
 		t.Run(name, func(t *testing.T) {

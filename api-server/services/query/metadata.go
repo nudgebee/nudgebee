@@ -6870,6 +6870,14 @@ var table_metadata = map[string]TableDefinition{
 		Name:               "tenant_attributes_v2",
 		Def:                "tenant_attrs",
 		TenantIdColumnName: "tenant_id",
+		// Tenant attributes are tenant settings, so tenant_attributes_v2 classifies
+		// as tenants:Read at the gateway (app/src/lib/permissionCatalog.ts). Without
+		// naming the module here the query engine does not accept that grant, and
+		// because this table has no AccountIdColumnName the caller falls into the
+		// account-restriction branch of service.go and gets "account id column not
+		// found in table tenant_attributes_v2" — a 400, not a 403. Same lockstep
+		// requirement as feature_flag_v2 below.
+		PermissionModule: "tenants",
 		Columns: map[string]ColumnDefinition{
 			"id":        {Type: ColumnDefinitionTypeString, Def: "id"},
 			"name":      {Type: ColumnDefinitionTypeString, Def: "name"},
