@@ -282,14 +282,14 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 		// so it never leaks to the terminal response, the UI, or the summarizer.
 		if plan.IsDuplicateCacheHit {
 			obs = duplicateCallNotice + obs
-		} else if plan.RepeatedResultCount > 1 {
-			obs = repeatedResultNotice(plan.RepeatedResultCount) + obs
-		} else if plan.TrivialResultRepeatCount > 1 {
-			// Trivial-result loop: same tool returned empty/null enough times this
-			// turn to trip the threshold. Notice explicitly names "no matches" as
-			// a valid conclusion so a legit multi-region sweep terminates on it
-			// too — same signal for both the retry-loop and legit-sweep endings.
-			obs = trivialResultNotice(plan.Action.Tool, plan.TrivialResultRepeatCount) + obs
+		} else if plan.NoProgressRepeatCount > 0 {
+			// Generic no-progress loop: same tool has returned error / empty /
+			// byte-identical outcomes consecutively enough times this turn to
+			// trip noProgressLoopThreshold. Replaces three prior per-class
+			// notices (byte-identical / trivial-result / access-denied) with
+			// ONE that covers 403 / 503 / 429 / empty / typo / anything new
+			// by construction — see isNoProgressStep in executor_planner.go.
+			obs = noProgressNotice(plan.Action.Tool, plan.NoProgressRepeatCount) + obs
 		}
 
 		// PRUNING: Minimize fixed failures

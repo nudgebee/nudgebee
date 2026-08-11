@@ -232,24 +232,18 @@ type NBAgentPlannerToolActionStep struct {
 	// WITHOUT polluting the stored Observation (so it never reaches the terminal
 	// response, GetToolInvocations/UI, or the summarizer). Never set on terminal steps.
 	IsDuplicateCacheHit bool `json:"-"`
-	// RepeatedResultCount is how many times this exact observation has now come back
-	// from this tool under DIFFERENT inputs (1 = not a repeat; 2 = second occurrence).
-	// The turn cache keys on the input, so a model that varies its command every
-	// iteration while making the same mistake never hits it. Drives an escalating
-	// scratchpad notice — the count is the point, since a static hint demonstrably
-	// does not break these loops. Transient and render-only, like IsDuplicateCacheHit.
-	RepeatedResultCount int `json:"-"`
-	// TrivialResultRepeatCount is how many times this tool has now returned trivial
-	// output (`[]`, `null`, "no data") in THIS turn, INCLUDING the current step.
-	// Complementary to RepeatedResultCount, which deliberately skips trivial to
-	// protect legit multi-region sweeps: this counter still fires, but only at a
-	// higher threshold (see trivialResultThreshold in executor_planner.go) so we
-	// distinguish "actively stuck retrying" from "scanning and mostly empty."
-	// Tool-agnostic — the same signal for shell/kubectl/postgres/github/aws/gcp/az.
-	// Transient and render-only, like RepeatedResultCount.
-	TrivialResultRepeatCount int                                `json:"-"`
-	References               []toolcore.NBToolResponseReference `json:"references"`
-	Followup                 *FollowupRequest                   `json:"followup,omitempty"`
+	// NoProgressRepeatCount is how many CONSECUTIVE same-tool no-progress calls
+	// have led up to and include this step in the current turn. "No progress" =
+	// status=failure OR status=empty-result OR trivial observation OR byte-identical
+	// to a prior same-tool observation under a different input. Consolidates the
+	// three prior per-class counters (byte-identical, trivial-result, access-denied)
+	// into ONE tool-agnostic signal — see countConsecutiveNoProgressForTool and
+	// isNoProgressStep in executor_planner.go. Drives the noProgressNotice
+	// scratchpad prefix when >= noProgressLoopThreshold. Transient and render-only,
+	// like IsDuplicateCacheHit — never enters persisted step / UI / summarizer.
+	NoProgressRepeatCount int                                `json:"-"`
+	References            []toolcore.NBToolResponseReference `json:"references"`
+	Followup              *FollowupRequest                   `json:"followup,omitempty"`
 	// Metadata carries tool-execution telemetry (exit status, duration,
 	// stderr, truncation) used by the prompt-assembly seams to append a
 	// trailing `[exitStatus: N | executionDuration: Xms]` footer to the

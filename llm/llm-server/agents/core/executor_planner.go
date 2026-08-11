@@ -484,11 +484,12 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		}
 
 		// No-progress brake (flag-gated, stats-based): the executor already counts
-		// identical (RepeatedResultCount) and trivial/empty (TrivialResultRepeatCount)
-		// results and escalates a scratchpad notice — but a notice "demonstrably does
-		// not break these loops." When those outcome counters cross the brake
-		// threshold, the model is fishing (re-formulating queries that keep coming
-		// back empty/identical). Break and fall through to summarizeConversation with
+		// consecutive same-tool no-progress calls in NoProgressRepeatCount (which
+		// unifies the prior byte-identical / trivial-result / access-denied counters
+		// — see countConsecutiveNoProgressForTool). A static notice "demonstrably
+		// does not break these loops." When the counter crosses the brake threshold
+		// the model is fishing (re-formulating queries that keep coming back
+		// empty / identical). Break and fall through to summarizeConversation with
 		// what's been gathered. Keys on OUTCOMES, not command sameness.
 		if config.Config.LlmServerNoProgressBrakeEnabled {
 			brakeAt := config.Config.LlmServerNoProgressBrakeThreshold
@@ -500,7 +501,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 				if stepIsStuck(&steps[j], brakeAt) {
 					e.ctx.GetLogger().Warn("plannerexecutor: no-progress brake — breaking; tool stuck on repeated/trivial results (fishing)",
 						"agent", e.agent.GetName(), "iteration", i, "tool", steps[j].Action.Tool,
-						"repeated", steps[j].RepeatedResultCount, "trivial", steps[j].TrivialResultRepeatCount, "threshold", brakeAt)
+						"noProgressCount", steps[j].NoProgressRepeatCount, "threshold", brakeAt)
 					stuck = true
 					break
 				}
@@ -1688,14 +1689,14 @@ func isNoMatchEnvelope(data string) bool {
 		strings.Contains(data, `"no_matches": true`)
 }
 
-// stepIsStuck reports whether a step's outcome-based repeat counters have crossed
-// the no-progress brake threshold — the model has driven this tool to the same
-// identical result (RepeatedResultCount) or to trivial/empty output
-// (TrivialResultRepeatCount) enough times this turn that it's fishing, not
-// progressing. Command-agnostic: keys on the OUTCOME counters the executor
-// already maintains, not on command sameness (the model re-formulates).
+// stepIsStuck reports whether the executor's consecutive no-progress counter
+// for this step has crossed the brake threshold — the model has driven this
+// tool through enough failure / trivial / byte-identical outcomes in a row
+// this turn that it's fishing, not progressing. Command-agnostic: keys on the
+// unified NoProgressRepeatCount the executor already maintains, not on command
+// sameness (the model re-formulates the query rather than repeating it).
 func stepIsStuck(step *NBAgentPlannerToolActionStep, threshold int) bool {
-	return step.RepeatedResultCount >= threshold || step.TrivialResultRepeatCount >= threshold
+	return step.NoProgressRepeatCount >= threshold
 }
 
 // formatToolMetadataFooter renders the trailing
@@ -2351,36 +2352,24 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		SubAgentEvidence: observation.SubAgentEvidence,
 		IsCircuitOpen:    observation.IsCircuitOpen,
 	}
-	if !observation.IsTerminal && status != ToolStatusEmptyResult {
-		if n := e.countIdenticalPriorObservations(action, observation.Data); n > 0 {
-			result.RepeatedResultCount = n + 1 // this occurrence included
-			e.ctx.GetLogger().Warn("plannerexecutor: tool returned a result identical to earlier calls with different input",
-				"tool", action.Tool, "toolId", action.ToolID, "occurrences", result.RepeatedResultCount)
-			common.MetricsToolOperationsTotal(implType, toolName, "repeated_result", accountID)
-		}
-	}
-	// Separate signal: same tool returning trivial (`[]`, `null`, "no data")
-	// output repeatedly. countIdenticalPriorObservations deliberately skips
-	// trivial to protect the legit multi-region sweep case (a scan over regions
-	// where most come back empty), but a specific pathological pattern still
-	// slips through: the model keeps retrying the SAME query with varied
-	// filter/format flags (`--output table` → `--output json` → `--output text`
-	// → jq) on empty output, believing the OUTPUT FORMAT is broken rather than
-	// concluding "no matches" or "field name is mis-cased." This class hit
-	// every non-Gemini production loop in the 7d sweep (session 9ac1beed had
-	// 12 aws_execute + shell_execute calls all returning trivial on a mis-cased
-	// `--query DbInstanceIdentifier` — 2 wasted turns for a 1-char typo). The
-	// counter fires at trivialResultThreshold; the sweep case is preserved
-	// because the notice text explicitly names "no matches" as a valid
-	// conclusion, which is exactly what a legitimate sweep should conclude.
-	// Tool-agnostic by construction — works for shell/kubectl/postgres/github/
-	// aws/gcp/az uniformly.
-	if !observation.IsTerminal && isTrivialObservation(observation.Data) {
-		if n := e.countTrivialResultsForTool(action); n >= trivialResultThreshold {
-			result.TrivialResultRepeatCount = n + 1
-			e.ctx.GetLogger().Warn("plannerexecutor: tool returned trivial/empty result repeatedly this turn",
-				"tool", action.Tool, "toolId", action.ToolID, "occurrences", result.TrivialResultRepeatCount)
-			common.MetricsToolOperationsTotal(implType, toolName, "trivial_result_loop", accountID)
+	// Single generic loop-breaker: same tool returning "no progress" outcomes
+	// consecutively. Replaces the previous per-error-class counters
+	// (byte-identical, trivial-result, access-denied) — one detector covers
+	// 403 / 503 / 429 / empty / byte-identical / anything new, using signals
+	// the executor already computes (status + isTrivialObservation) plus a
+	// byte-identical guard for the specific "status=success but stuck"
+	// subclass (the DBInstanceIdentifier mis-typo pattern from the OG DB
+	// audit). Rationale: per-class detectors don't scale — each new error
+	// shape needs its own counter + notice + tests. This generic version
+	// catches any current or future unproductive-response pattern by
+	// construction. Tool-agnostic — same signal for shell / kubectl /
+	// postgres / github / aws / gcp / az uniformly.
+	if !observation.IsTerminal {
+		if n := e.countConsecutiveNoProgressForTool(action, result); n >= noProgressLoopThreshold {
+			result.NoProgressRepeatCount = n
+			e.ctx.GetLogger().Warn("plannerexecutor: tool returned no-progress (error / empty / byte-identical to prior) consecutively this turn",
+				"tool", action.Tool, "toolId", action.ToolID, "occurrences", result.NoProgressRepeatCount)
+			common.MetricsToolOperationsTotal(implType, toolName, "no_progress_loop", accountID)
 		}
 	}
 
@@ -2408,59 +2397,109 @@ func isTrivialObservation(observation string) bool {
 	return false
 }
 
-// countIdenticalPriorObservations returns how many earlier steps in this run drove the
-// same tool with a DIFFERENT input yet produced the byte-identical observation — the
-// signal that the model is rewriting its command without changing the outcome.
+// isNoProgressStep reports whether a completed tool step advanced the
+// investigation. "No progress" is intentionally broad — anything the model
+// cannot productively act on:
 //
-// The COUNT matters, not just the fact. A static hint does not break these loops: a
-// 7-day DB sweep found a run where shell_execute returned the same "File not found"
-// recovery hint to 16 different commands and the model kept going. Escalating with an
-// explicit occurrence number is a different signal from repeating the same sentence.
+//   - Explicit failure: status = ToolStatusFailure (any error class — 403,
+//     404, 503, 429, invalid-flag, timeout — all covered).
+//   - Structured empty: status = ToolStatusEmptyResult (the empty-envelope
+//     path the executor uses when a tool returns success-with-no-rows).
+//   - Trivial observation: `[]`, `{}`, `null`, "", the no-data sentinel —
+//     covers the case where a tool returned success + exit 0 but the raw
+//     output was empty (backup for callers that didn't tag EmptyResult).
 //
-// Callers must also skip ToolStatusEmptyResult steps, which additionally covers the
-// structured no-match envelope; this helper only sees the observation text.
-func (e *plannerExecutor) countIdenticalPriorObservations(action NBAgentPlannerToolAction, observation string) int {
-	if isTrivialObservation(observation) {
+// Deliberately does NOT parse error text for specific classes (denied /
+// rate-limit / not-found). Per-class detection was the design that came
+// before this consolidation and didn't scale — every new CLI error shape
+// meant another counter, another notice, another test file. This uses only
+// signals the executor already computes.
+func isNoProgressStep(s NBAgentPlannerToolActionStep) bool {
+	return s.Status == ToolStatusFailure ||
+		s.Status == ToolStatusEmptyResult ||
+		isTrivialObservation(s.Observation)
+}
+
+// countConsecutiveNoProgressForTool walks the turn's steps back-to-front
+// counting consecutive same-tool no-progress outcomes. Steps for OTHER tools
+// are skipped (don't break the chain — they're unrelated work). The first
+// same-tool step that DID make progress breaks the chain.
+//
+// The current step is passed in explicitly (via `current`) because it hasn't
+// been appended to e.steps yet at the call site — the caller decides whether
+// to fire the notice based on the returned count INCLUDING the current step.
+// Byte-identical-to-any-prior-same-tool-step also counts as no-progress
+// (guards the OG DBInstanceIdentifier subclass: status=success but stuck).
+//
+// Once the walk crosses a genuine-progress step that happens to match the
+// current observation (i.e. we're detecting a repeated-success loop), any
+// steps ENTERED BEFORE THAT progress step only count if they ALSO match the
+// observation. Without that guard an old failure that predated real progress
+// gets retroactively absorbed into the chain, inflating the count and firing
+// the loop-breaker on what is really just the second repeat of a good answer.
+func (e *plannerExecutor) countConsecutiveNoProgressForTool(action NBAgentPlannerToolAction, current NBAgentPlannerToolActionStep) int {
+	if !isNoProgressStep(current) && !e.matchesAnyPriorSameToolObservation(action, current.Observation) {
 		return 0
 	}
-	n := 0
-	for _, s := range e.steps {
-		if s.Action.Tool == action.Tool && s.Action.ToolInput != action.ToolInput && s.Observation == observation {
-			n++
+	n := 1 // current step
+	// Flips once we've counted a "progress-but-duplicate" step; from then on
+	// we only accept OLDER steps that share the same observation. Failures
+	// or trivial-empties older than a matched progress step are unrelated
+	// history and must not be counted.
+	onlyMatchObservation := false
+	for i := len(e.steps) - 1; i >= 0; i-- {
+		s := e.steps[i]
+		if s.Action.Tool != action.Tool {
+			continue // other tool — skip, don't reset
 		}
+		matchesObs := !isTrivialObservation(current.Observation) && s.Observation == current.Observation
+		if onlyMatchObservation {
+			if matchesObs {
+				n++
+				continue
+			}
+			break
+		}
+		if isNoProgressStep(s) || matchesObs {
+			n++
+			if !isNoProgressStep(s) {
+				// This step was genuine progress that happens to match the
+				// current observation — future (older) steps must also match.
+				onlyMatchObservation = true
+			}
+			continue
+		}
+		break // same-tool success — chain ends
 	}
 	return n
 }
 
-// countTrivialResultsForTool returns how many prior steps in this run used the
-// same tool AND produced a trivial observation. Independent from
-// countIdenticalPriorObservations — this counts across the trivial short-circuit
-// that the other helper enforces to protect legit multi-region sweeps. Only
-// gated behind trivialResultThreshold at the call site so the sweep case
-// (many regions, most empty) still fires the notice, but at a threshold that
-// matches "you're clearly stuck retrying" not "you're scanning correctly."
-// Model reads the notice, sees `no matches` as a valid conclusion, and
-// terminates the scan — same behavior we'd want for both the retry-loop
-// and legit-sweep outcomes.
-func (e *plannerExecutor) countTrivialResultsForTool(action NBAgentPlannerToolAction) int {
-	n := 0
+// matchesAnyPriorSameToolObservation is the byte-identical guard: returns
+// true when `obs` (non-trivial) matches ANY prior same-tool step's
+// observation under a DIFFERENT input. Preserves the OG DBInstanceIdentifier
+// detection: status=success + non-trivial observation + repeats across
+// rewritten commands = model is stuck on the same argument-level mistake.
+func (e *plannerExecutor) matchesAnyPriorSameToolObservation(action NBAgentPlannerToolAction, obs string) bool {
+	if isTrivialObservation(obs) {
+		return false
+	}
 	for _, s := range e.steps {
-		if s.Action.Tool == action.Tool && isTrivialObservation(s.Observation) {
-			n++
+		if s.Action.Tool == action.Tool && s.Action.ToolInput != action.ToolInput && s.Observation == obs {
+			return true
 		}
 	}
-	return n
+	return false
 }
 
-// trivialResultThreshold is the count at which we start injecting the
-// trivial-result loop notice. Set to 3 so the FOURTH trivial-result call
-// (n=3 prior + this one) is the first with the notice. Chosen empirically:
-// the 7d loop sweep showed the median problematic pattern hits 4-5 identical
-// empty responses before the model breaks out on its own; firing at 4 catches
-// the tail without noisy false positives on 2-3 turn legit checks
-// (e.g. "check both prod and staging namespaces — both empty" is 2 trivials
-// and shouldn't fire).
-const trivialResultThreshold = 3
+// noProgressLoopThreshold is the CONSECUTIVE-count at which the notice
+// starts firing. Set to 3 so the THIRD consecutive no-progress call is
+// the first with the notice. Chosen empirically from the 7d prod loop
+// distribution: the median problematic pattern hits 4-5 consecutive
+// unproductive calls before the model breaks out on its own; firing at
+// 3 catches the tail without noisy false positives on 1-2 turn legit
+// checks ("prod + staging both empty" = 2 consecutive trivials and
+// shouldn't fire).
+const noProgressLoopThreshold = 3
 
 func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string, questionOverride string) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
 	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType, confirmationKey, questionOverride)

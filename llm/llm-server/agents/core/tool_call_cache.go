@@ -62,56 +62,41 @@ func (c *turnToolCallCache) Stats() (hits, misses, entries int64) {
 // so it never reaches the terminal response, GetToolInvocations/UI, or the summarizer.
 const duplicateCallNotice = "⚠️ ALREADY EXECUTED THIS TURN: this tool call (or a normalized-equivalent one) was already run earlier in this turn and the result below is UNCHANGED. Do NOT repeat it — reason from this result, take a DIFFERENT action, or finalize your answer.\n\n"
 
-// repeatedResultNotice covers what duplicateCallNotice cannot: a DIFFERENT input to
-// the same tool that produced the IDENTICAL result. The turn cache keys on the input,
-// so rephrasing the command every iteration walks straight past it. That is the exact
-// shape of the expensive failure — a model that mis-typed one argument (a case-typo'd
-// `--query` field) rewrote its command six times, got the same null result each time,
-// and diagnosed the CLI instead of its own input. Naming the pattern is what redirects
-// it from "the tool is broken" to "my argument is wrong". Render-only, like the notice
-// above, so it never reaches the terminal response, the UI, or the summarizer.
-// repeatedResultNotice escalates with the occurrence count. A 7-day DB sweep found a
-// single run where shell_execute returned the same "File not found" recovery hint to
-// 16 different commands and the model kept rewriting the command — a static sentence
-// repeated verbatim reads as part of the output, not as a signal. Naming the number is
-// what makes the repetition itself visible.
-func repeatedResultNotice(occurrences int) string {
-	if occurrences >= repeatedResultEscalateAt {
-		return fmt.Sprintf("🛑 STOP — IDENTICAL RESULT %d TIMES: %d different commands to this tool have all returned the byte-identical output below. Continuing to vary the command WILL NOT change it. Either (a) the resource genuinely does not exist / is empty, or (b) your arguments are wrong in a way you keep repeating (check field-name casing and paths against the raw output). Do NOT issue another variation of this command — use a different tool, or answer with what you have.\n\n", occurrences, occurrences)
-	}
-	return "⚠️ SAME RESULT AS AN EARLIER CALL: you changed the command but got a byte-identical result from this tool. Re-running variations will not change it. The problem is most likely in your ARGUMENTS — check field names against the raw output (they are case-sensitive), or take a genuinely different approach.\n\n"
-}
-
-// repeatedResultEscalateAt is the occurrence count at which the advisory notice becomes
-// a stop directive. Chosen from the 7-day distribution of repeat groups: 185 groups
-// stopped at 2 occurrences (advisory is enough / the loop self-terminated), while the
-// 152 groups that reached 3+ accounted for 321 of the 506 wasted calls — 63%.
-const repeatedResultEscalateAt = 3
-
-// trivialResultNotice covers the retry-on-empty-result pattern that
-// repeatedResultNotice's byte-identical guard doesn't catch: the same tool has
-// returned trivial output (`[]`, `null`, "no data") N+ times in this turn.
-// Two distinct real-world causes converge on this signal:
-//  1. Retry loop — the model concludes the OUTPUT FORMAT is broken and
-//     rewrites with --output table → --output json → --output text / jq, all
-//     with the same mis-cased filter field, all returning trivially empty.
-//     Case study: 7d sweep session 9ac1beed had 12 aws_execute + shell_execute
-//     calls on `--query DbInstanceIdentifier` (should be DBInstanceIdentifier).
-//  2. Legit multi-region/namespace sweep where most or all come back empty.
+// noProgressNotice is the ONE loop-breaker notice that replaces the previous
+// per-error-class detectors (byte-identical / trivial-result / access-denied).
+// Fires when the same tool has returned no-progress outcomes (error, empty,
+// or byte-identical to prior) for `occurrences` CONSECUTIVE calls in this
+// turn — see isNoProgressStep + countConsecutiveNoProgressForTool in
+// executor_planner.go.
 //
-// The notice text handles both correctly: naming "no matches" as a valid
-// conclusion is exactly what a sweep should conclude on empty regions, AND
-// what the retry-loop model needs to hear to stop varying the command.
+// Design shift from the per-class detectors: this one notice must cover the
+// union of what the three prior notices said, because it fires for any of
+// their conditions and we don't want to lose their recovery advice. Signals
+// intentionally named:
+//
+//   - "typo" — was the byte-identical / DBInstanceIdentifier subclass
+//   - "permission" — was the access-denied class (gcloud IAM at 50% of errors)
+//   - "no matches is a valid answer" — was the trivial-result class, and
+//     names empty-as-a-valid-outcome so legit multi-region sweeps terminate
+//     correctly on the notice too (same signal for both loop and sweep endings)
+//   - "different approach" — a non-retry action the model can take
+//
 // Rendered at scratchpad-build time — never reaches the terminal response,
 // the UI, or the summarizer.
-func trivialResultNotice(toolName string, occurrences int) string {
+func noProgressNotice(toolName string, occurrences int) string {
 	return fmt.Sprintf(
-		"🛑 EMPTY RESULT %d TIMES — STOP RETRYING: `%s` has returned trivial/empty output (`[]`, `null`, or \"no data\") %d times this turn. "+
-			"Empty output IS a valid CLI response, not a format bug — retrying with different --output flags, jq piping, or format variations will produce the same empty result. "+
-			"Either: (a) accept that no matching resources/rows exist and answer with what you have, or "+
-			"(b) if you used a --query / --filter / -o jsonpath / WHERE clause with a specific field name, verify field-name CASING against a raw un-filtered sample (JMESPath / JSONPath / SQL identifiers are case-sensitive), or "+
-			"(c) switch to a genuinely different tool or approach. Do NOT issue another format variation of this command.\n\n",
-		occurrences, toolName, occurrences,
+		"🛑 STOP — NO PROGRESS FROM `%s` OVER %d CONSECUTIVE CALLS: this tool has returned an error, empty output, or a byte-identical result %d times in a row this turn. "+
+			"Whatever variation you're planning next has the same shape as recent attempts and will very likely produce the same unproductive outcome. "+
+			"Common causes at this pattern (any one may apply): "+
+			"(a) a typo in the filter / projection / field name (case-sensitive — verify against a raw un-filtered sample), "+
+			"(b) the credentials don't have permission for this resource / API (IAM decisions are deterministic — retries against different projects/regions under the same credentials won't help), "+
+			"(c) the resource genuinely doesn't exist or no matches exist (this IS a valid answer — accept it and answer with what you have), "+
+			"(d) a transient outage or rate limit (retrying immediately won't help; back off or switch tools). "+
+			"Recovery paths (pick one — do NOT rewrite the same command shape again): "+
+			"(1) accept the outcome and answer with what you have, "+
+			"(2) switch to a different tool or a specialized agent (e.g. finops for cost/billing, workflow for automation), "+
+			"(3) if you were exploring, enumerate ONE known-accessible scope instead of guessing at more.\n\n",
+		toolName, occurrences, occurrences,
 	)
 }
 
