@@ -104,6 +104,25 @@ export async function navigateToIntegrationsPage(page: Page): Promise<Integratio
   return loginAndGoToIntegrations(page);
 }
 
+// Accounts sit inside collapsed groups, so the option only enters the DOM once the search box force-opens them.
+export async function selectAccountFromDropdown(
+  page: Page,
+  dropdown: Locator,
+  accountName: string,
+): Promise<void> {
+  await dropdown.click();
+  const search = page.getByPlaceholder("Search...").first();
+  await expect(search).toBeVisible({ timeout: 10000 });
+  await search.fill(accountName);
+  const option = page
+    .locator('[role="option"]')
+    .filter({ hasText: new RegExp(`^${accountName}$`) })
+    .first();
+  await expect(option).toBeVisible({ timeout: 10000 });
+  await option.click();
+  await dropdown.press("Escape");
+}
+
 /**
  * Returns true if connection test succeeded (save can proceed).
  * Returns false if backend was unreachable / timed out (skipOnBackendError: true).

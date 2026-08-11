@@ -6,6 +6,7 @@ import {
   deleteIntegration,
   disableIntegration,
   enableIntegration,
+  selectAccountFromDropdown,
 } from "./util";
 import { IntegrationLocators } from "./IntegrationLocators";
 
@@ -83,16 +84,7 @@ test.describe.serial("MCP Account Integration", () => {
     await locators.mcpConfigNameInput.fill(configName);
 
     await locators.mcpAccountIdDropdown.waitFor({ state: "visible", timeout: 10000 });
-    await locators.mcpAccountIdDropdown.click();
-    const clusterOption = locators.mcpAccountIdOption(clusterName).first();
-    const isOptionVisible = await clusterOption.isVisible({ timeout: 5000 }).catch(() => false);
-    if (!isOptionVisible) {
-      console.log(`Cluster option '${clusterName}' not visible yet — retrying dropdown click`);
-      await locators.mcpAccountIdDropdown.click();
-    }
-    await clusterOption.waitFor({ state: "visible", timeout: 10000 });
-    await clusterOption.click();
-    await locators.mcpAccountIdDropdown.press("Escape");
+    await selectAccountFromDropdown(page, locators.mcpAccountIdDropdown, clusterName);
 
     await locators.mcpUrlInput.waitFor({ state: "visible", timeout: 10000 });
     await locators.mcpUrlInput.fill(process.env.MCP_URL!);

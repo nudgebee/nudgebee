@@ -7,6 +7,7 @@ import {
   deleteIntegration,
   disableIntegration,
   enableIntegration,
+  selectAccountFromDropdown,
 } from "./util";
 
 const requiredEnv = ["CLICKHOUSE_INTEGRATION_CONFIG_NAME", "CLICKHOUSE_SECRET"];
@@ -61,9 +62,7 @@ test.describe.serial("Clickhouse Account Integration", () => {
     await locators.addClickhouseAccountBtn.click();
 
     await locators.clickhouseConfigNameInput.fill(configName);
-    await locators.clickhouseAccountIdDropdown.click();
-    await locators.clickhouseAccountIdOption(process.env.CLUSTER!).first().click();
-    await locators.clickhouseAccountIdDropdown.press("Escape");
+    await selectAccountFromDropdown(page, locators.clickhouseAccountIdDropdown, process.env.CLUSTER!);
     await locators.clickhouseK8sSecretInput.fill(process.env.CLICKHOUSE_SECRET!);
 
     const connectionOk = await testConnection(page, {

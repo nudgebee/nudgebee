@@ -78,7 +78,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly postgresqlBtn!: Locator;
   readonly addPostgresqlAccountBtn!: Locator;
   readonly postgresqlAccountIdDropdown: Locator;
-  readonly postgresqlAccountIdOption: (name: string) => Locator;
   readonly postgresqlAccountIdCloseBtn: Locator;
   readonly postgresqlHostInput!: Locator;
   readonly postgresqlConfigNameInput!: Locator;
@@ -91,7 +90,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly clickhouseBtn!: Locator;
   readonly addClickhouseAccountBtn!: Locator;
   readonly clickhouseAccountIdDropdown: Locator;
-  readonly clickhouseAccountIdOption: (name: string) => Locator;
   readonly clickhouseAccountIdCloseBtn: Locator;
   readonly clickhouseHostInput!: Locator;
   readonly clickhouseConfigNameInput!: Locator;
@@ -103,7 +101,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly redisBtn!: Locator;
   readonly addRedisAccountBtn!: Locator;
   readonly redisAccountIdDropdown: Locator;
-  readonly redisAccountIdOption: (name: string) => Locator;
   readonly redisAccountIdCloseBtn: Locator;
   readonly redisHostInput!: Locator;
   readonly redisConfigNameInput!: Locator;
@@ -115,7 +112,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly rabbitmqBtn!: Locator;
   readonly addRabbitmqAccountBtn!: Locator;
   readonly rabbitmqAccountIdDropdown: Locator;
-  readonly rabbitmqAccountIdOption: (name: string) => Locator;
   readonly rabbitmqAccountIdCloseBtn: Locator;
   readonly rabbitmqConfigNameInput!: Locator;
   readonly rabbitmqK8sSecretInput!: Locator;
@@ -126,7 +122,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly argocdBtn!: Locator;
   readonly addArgocdAccountBtn!: Locator;
   readonly argocdAccountIdDropdown!: Locator;
-  readonly argocdAccountIdOption: (name: string) => Locator;
   readonly argocdAccountIdCloseBtn!: Locator;
   readonly argocdConfigNameInput!: Locator;
   readonly argocdK8sSecretInput!: Locator;
@@ -139,7 +134,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly confluenceBtn!: Locator;
   readonly addConfluenceAccountBtn!: Locator;
   readonly confluenceAccountIdDropdown!: Locator;
-  readonly confluenceAccountIdOption: (name: string) => Locator;
   readonly confluenceAccountIdCloseBtn!: Locator;
   readonly confluenceHostInput!: Locator;
   readonly confluenceConfigNameInput!: Locator;
@@ -154,7 +148,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly sshBtn!: Locator;
   readonly addSshAccountBtn!: Locator;
   readonly sshAccountIdDropdown: Locator;
-  readonly sshAccountIdOption: (name: string) => Locator;
   readonly sshAccountIdCloseBtn!: Locator;
   readonly sshConfigNameInput!: Locator;
   readonly sshK8sSecretInput!: Locator;
@@ -239,7 +232,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly addMcpAccountBtn!: Locator;
   readonly mcpConfigNameInput!: Locator;
   readonly mcpAccountIdDropdown!: Locator;
-  readonly mcpAccountIdOption: (name: string) => Locator;
   readonly mcpUrlInput!: Locator;
   readonly mcpLlmInstructionsInput!: Locator;
   readonly mcpSuccessToast!: Locator;
@@ -374,9 +366,6 @@ export class IntegrationLocators extends CommonLocators {
       "#auto-complete-account-id",
     );
 
-    this.postgresqlAccountIdOption = (name: string) =>
-      page.locator("div").filter({ hasText: new RegExp(`^${name}$`) });
-
     this.postgresqlAccountIdCloseBtn = page.getByRole("button", {
       name: "Close",
     });
@@ -411,9 +400,6 @@ export class IntegrationLocators extends CommonLocators {
       "#auto-complete-account-id",
     );
 
-    this.clickhouseAccountIdOption = (name: string) =>
-      page.locator("div").filter({ hasText: new RegExp(`^${name}$`) });
-
     this.clickhouseAccountIdCloseBtn = page.getByRole("button", {
       name: "Close",
     });
@@ -442,8 +428,6 @@ export class IntegrationLocators extends CommonLocators {
       name: "Add Redis Account",
     });
     this.redisAccountIdDropdown = page.locator("#auto-complete-account-id");
-    this.redisAccountIdOption = (name: string) =>
-      page.locator("div").filter({ hasText: new RegExp(`^${name}$`) });
     this.redisAccountIdCloseBtn = page.getByRole("button", {
       name: "Close",
     });
@@ -472,8 +456,6 @@ export class IntegrationLocators extends CommonLocators {
       name: "Add Rabbitmq Account",
     });
     this.rabbitmqAccountIdDropdown = page.locator("#auto-complete-account-id");
-    this.rabbitmqAccountIdOption = (name: string) =>
-      page.locator("div").filter({ hasText: new RegExp(`^${name}$`) });
     this.rabbitmqAccountIdCloseBtn = page.getByRole("button", {
       name: "Close",
     });
@@ -501,8 +483,6 @@ export class IntegrationLocators extends CommonLocators {
       name: "Add Argocd Account",
     });
     this.argocdAccountIdDropdown = page.locator("#auto-complete-account-id");
-    this.argocdAccountIdOption = (name: string) =>
-      page.locator("div").filter({ hasText: new RegExp(`^${name}$`) });
     this.argocdAccountIdCloseBtn = page.getByRole("button", {
       name: "Close",
     });
@@ -533,8 +513,6 @@ export class IntegrationLocators extends CommonLocators {
     this.confluenceAccountIdDropdown = page.locator(
       "#auto-complete-account-id",
     );
-    this.confluenceAccountIdOption = (name: string) =>
-      page.locator("div").filter({ hasText: new RegExp(`^${name}$`) });
     this.confluenceAccountIdCloseBtn = page.locator(
       "#auto-complete-account-id",
     );
@@ -560,8 +538,6 @@ export class IntegrationLocators extends CommonLocators {
     this.sshBtn = page.locator("#Ssh-section-card");
     this.addSshAccountBtn = page.locator("#add-ssh-account-btn");
     this.sshAccountIdDropdown = page.locator("#auto-complete-account-id");
-    this.sshAccountIdOption = (name: string) =>
-      page.locator("div").filter({ hasText: new RegExp(`^${name}$`) });
     this.sshAccountIdCloseBtn = page.getByRole("button", {
       name: "Close",
     });
@@ -706,8 +682,6 @@ export class IntegrationLocators extends CommonLocators {
     this.addMcpAccountBtn = page.locator("#add-mcp-account-btn");
     this.mcpConfigNameInput = page.locator("#integration-config-name");
     this.mcpAccountIdDropdown = page.locator("#auto-complete-account-id");
-    this.mcpAccountIdOption = (name: string) =>
-      page.locator("div").filter({ hasText: new RegExp(`^${name}$`) });
     this.mcpUrlInput = page.locator("#url");
     this.mcpLlmInstructionsInput = page.locator("#llm-instructions");
     this.mcpSuccessToast = page.getByText("account created successfully", {

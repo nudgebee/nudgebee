@@ -7,6 +7,7 @@ import {
   deleteIntegration,
   disableIntegration,
   enableIntegration,
+  selectAccountFromDropdown,
 } from "./util";
 
 // The Postgres integration steps, extracted from Postgresql.spec.ts so both that
@@ -58,9 +59,7 @@ export async function addPostgresIntegration(page: Page, { configName, secret, c
   await locators.addPostgresqlAccountBtn.click();
 
   await locators.postgresqlConfigNameInput.fill(configName);
-  await locators.postgresqlAccountIdDropdown.click();
-  await locators.postgresqlAccountIdOption(cluster).first().click();
-  await locators.postgresqlAccountIdDropdown.press("Escape");
+  await selectAccountFromDropdown(page, locators.postgresqlAccountIdDropdown, cluster);
   await locators.postgresqlK8sSecretInput.fill(secret);
 
   await testConnection(page, {

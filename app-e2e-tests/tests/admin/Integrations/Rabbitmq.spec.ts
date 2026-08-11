@@ -8,6 +8,7 @@ import {
   deleteIntegration,
   disableIntegration,
   enableIntegration,
+  selectAccountFromDropdown,
 } from "./util";
 
 const requiredEnv = [
@@ -63,9 +64,7 @@ test.describe.serial("RabbitMQ Account Integration", () => {
     await locators.rabbitmqBtn.click();
     await locators.addRabbitmqAccountBtn.click();
 
-    await locators.rabbitmqAccountIdDropdown.click();
-    await locators.rabbitmqAccountIdOption(process.env.CLUSTER!).first().click();
-    await locators.rabbitmqAccountIdDropdown.press("Escape");
+    await selectAccountFromDropdown(page, locators.rabbitmqAccountIdDropdown, process.env.CLUSTER!);
     await locators.rabbitmqConfigNameInput.fill(configName);
     await locators.rabbitmqK8sSecretInput.fill(process.env.RABBITMQ_SECRET!);
 
