@@ -27,7 +27,7 @@ func newTestLoader() *PromptLoader {
 func TestGetPrompt_BasicLoad(t *testing.T) {
 	loader := newTestLoader()
 	resp, err := loader.GetPrompt(context.Background(), PromptRequest{
-		Name:     "k8s_orchestrator",
+		Name:     "k8s_lean",
 		Category: CategoryAgents,
 		Provider: "default",
 	})
@@ -53,7 +53,7 @@ func TestGetPrompt_MissingName(t *testing.T) {
 func TestGetPrompt_MissingCategory(t *testing.T) {
 	loader := newTestLoader()
 	_, err := loader.GetPrompt(context.Background(), PromptRequest{
-		Name:     "k8s_orchestrator",
+		Name:     "k8s_lean",
 		Category: "",
 		Provider: "default",
 	})
@@ -63,7 +63,7 @@ func TestGetPrompt_MissingCategory(t *testing.T) {
 func TestGetPrompt_InvalidCategory(t *testing.T) {
 	loader := newTestLoader()
 	_, err := loader.GetPrompt(context.Background(), PromptRequest{
-		Name:     "k8s_orchestrator",
+		Name:     "k8s_lean",
 		Category: PromptCategory("invalid"),
 		Provider: "default",
 	})
@@ -85,7 +85,7 @@ func TestGetPrompt_UnknownPromptName(t *testing.T) {
 func TestGetPrompt_EmptyProviderNormalizesToDefault(t *testing.T) {
 	loader := newTestLoader()
 	resp, err := loader.GetPrompt(context.Background(), PromptRequest{
-		Name:     "k8s_orchestrator",
+		Name:     "k8s_lean",
 		Category: CategoryAgents,
 		Provider: "", // should normalize to "default"
 	})
@@ -102,7 +102,7 @@ func TestGetPrompt_ProviderFallsBackToDefault(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			resp, err := loader.GetPrompt(context.Background(), PromptRequest{
-				Name:     "k8s_orchestrator",
+				Name:     "k8s_lean",
 				Category: CategoryAgents,
 				Provider: provider,
 			})
@@ -111,7 +111,7 @@ func TestGetPrompt_ProviderFallsBackToDefault(t *testing.T) {
 
 			// Content should match the default file
 			defaultResp, _ := loader.GetPrompt(context.Background(), PromptRequest{
-				Name:     "k8s_orchestrator",
+				Name:     "k8s_lean",
 				Category: CategoryAgents,
 				Provider: "default",
 			})
@@ -125,7 +125,7 @@ func TestGetPrompt_ProviderFallsBackToDefault(t *testing.T) {
 
 func TestCache_HitOnSecondLoad(t *testing.T) {
 	loader := newTestLoader()
-	req := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default"}
+	req := PromptRequest{Name: "k8s_lean", Category: CategoryAgents, Provider: "default"}
 
 	resp1, err := loader.GetPrompt(context.Background(), req)
 	require.NoError(t, err)
@@ -139,8 +139,8 @@ func TestCache_HitOnSecondLoad(t *testing.T) {
 
 func TestCache_AccountIsolation(t *testing.T) {
 	loader := newTestLoader()
-	req1 := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default", AccountID: "acc-1"}
-	req2 := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default", AccountID: "acc-2"}
+	req1 := PromptRequest{Name: "k8s_lean", Category: CategoryAgents, Provider: "default", AccountID: "acc-1"}
+	req2 := PromptRequest{Name: "k8s_lean", Category: CategoryAgents, Provider: "default", AccountID: "acc-2"}
 
 	loader.GetPrompt(context.Background(), req1) //nolint
 	loader.GetPrompt(context.Background(), req2) //nolint
@@ -156,13 +156,13 @@ func TestCache_AccountIsolation(t *testing.T) {
 
 func TestCache_PromptIsolation(t *testing.T) {
 	loader := newTestLoader()
-	req1 := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default"}
+	req1 := PromptRequest{Name: "k8s_lean", Category: CategoryAgents, Provider: "default"}
 	req2 := PromptRequest{Name: "k8s_native", Category: CategoryAgents, Provider: "default"}
 
 	loader.GetPrompt(context.Background(), req1) //nolint
 	loader.GetPrompt(context.Background(), req2) //nolint
 
-	loader.ClearCacheForPrompt("k8s_orchestrator", CategoryAgents)
+	loader.ClearCacheForPrompt("k8s_lean", CategoryAgents)
 
 	r1, _ := loader.GetPrompt(context.Background(), req1)
 	r2, _ := loader.GetPrompt(context.Background(), req2)
@@ -172,7 +172,7 @@ func TestCache_PromptIsolation(t *testing.T) {
 
 func TestCache_ClearAll(t *testing.T) {
 	loader := newTestLoader()
-	req := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default"}
+	req := PromptRequest{Name: "k8s_lean", Category: CategoryAgents, Provider: "default"}
 
 	loader.GetPrompt(context.Background(), req) //nolint
 	loader.ClearCache()
@@ -188,7 +188,7 @@ func TestCache_Expiration(t *testing.T) {
 		cache: NewPromptCache(100 * time.Millisecond),
 		fs:    embeddedFS,
 	}
-	req := PromptRequest{Name: "k8s_orchestrator", Category: CategoryAgents, Provider: "default"}
+	req := PromptRequest{Name: "k8s_lean", Category: CategoryAgents, Provider: "default"}
 
 	loader.GetPrompt(context.Background(), req) //nolint
 	time.Sleep(150 * time.Millisecond)
@@ -206,7 +206,7 @@ func TestAllCategories_SampleLoad(t *testing.T) {
 		name     string
 		category PromptCategory
 	}{
-		{"k8s_orchestrator", CategoryAgents},
+		{"k8s_lean", CategoryAgents},
 		{"react_3_base", CategoryPlanners},
 		{"remediation_generate", CategoryTools},
 		{"response_formatter", CategoryUtilities},
@@ -265,7 +265,7 @@ func TestPromptContent_NoTODOMarkers(t *testing.T) {
 
 func TestGetAvailableVersions(t *testing.T) {
 	loader := newTestLoader()
-	versions := loader.GetAvailableVersions("k8s_orchestrator", CategoryAgents, "default")
+	versions := loader.GetAvailableVersions("k8s_lean", CategoryAgents, "default")
 	assert.NotEmpty(t, versions)
 	assert.Contains(t, versions, "v1")
 }

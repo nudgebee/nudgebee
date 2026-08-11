@@ -38,8 +38,4 @@ func TestK8sDebugAgents_PreloadFinops(t *testing.T) {
 		assert.Contains(t, names, FinOpsAgentName)
 	})
 
-	t.Run("full orchestrator resolved set includes finops", func(t *testing.T) {
-		names := resolvedNames(getSupportedTools(sc, testAccountId, "k8s_debug_finops_inclusion", KubectlAgentName))
-		assert.Contains(t, names, FinOpsAgentName)
-	})
 }

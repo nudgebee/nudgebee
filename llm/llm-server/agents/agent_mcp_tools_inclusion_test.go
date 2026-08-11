@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"testing"
 
@@ -40,19 +41,21 @@ func TestAllAgents_IncludeMCPIntegrationTools(t *testing.T) {
 		{
 			name: "k8s_debug",
 			getTools: func() []toolcore.NBTool {
-				return getSupportedTools(sc, testAccountId, "k8s_debug", KubectlAgentName)
+				// Lean-only k8s orchestrator: MCP inclusion comes via getTrimmedK8sSupportedTools.
+				return getTrimmedK8sSupportedTools(sc, testAccountId, AgentK8sOrchestratorName)
 			},
 		},
 		{
 			name: "gcp_debug",
 			getTools: func() []toolcore.NBTool {
-				return getGcpPlannerSupportedTools(sc, testAccountId, "gcp_orchestrator", false)
+				// Lean-only cloud orchestrator: MCP inclusion comes via getCloudLeanSupportedTools.
+				return getCloudLeanSupportedTools(sc, testAccountId, AgentGcpOrchestratorName, tools.ToolExecuteGcpCliCommand)
 			},
 		},
 		{
 			name: "azure_debug",
 			getTools: func() []toolcore.NBTool {
-				return getAzurePlannerSupportedTools(sc, testAccountId, "azure_orchestrator", false)
+				return getCloudLeanSupportedTools(sc, testAccountId, AgentAzureOrchestratorName, tools.ToolExecuteAzureCliCommand)
 			},
 		},
 		{

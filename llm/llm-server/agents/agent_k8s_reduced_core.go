@@ -47,6 +47,10 @@ func trimmedK8sCoreToolNames() []string {
 		FinOpsAgentName,
 		DelegateAgentToolName,
 		SearchToolsToolName,
+		// search_skills preload preserved so the model can query knowledge bases
+		// by keyword directly, without an extra delegate_agent+search_tools hop.
+		// Same invariant PR #34819 established across every orchestrator.
+		tools.SearchSkillsToolName,
 	}
 	if config.Config.RemediationAgentEnabled {
 		names = append(names, RemediationAgentName)

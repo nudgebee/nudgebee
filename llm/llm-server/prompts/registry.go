@@ -29,15 +29,11 @@ const (
 	PromptAws                                = "aws"
 	PromptAwsLean                            = "aws_lean"
 	PromptAwsObservability                   = "aws_observability"
-	PromptAwsOrchestrator                    = "aws_orchestrator"
 	PromptAzureLean                          = "azure_lean"
-	PromptAzureOrchestrator                  = "azure_orchestrator"
 	PromptFinops                             = "finops"
 	PromptGcpLean                            = "gcp_lean"
-	PromptGcpOrchestrator                    = "gcp_orchestrator"
 	PromptK8sLean                            = "k8s_lean"
 	PromptK8sNative                          = "k8s_native"
-	PromptK8sOrchestrator                    = "k8s_orchestrator"
 	PromptWebhookSubjectExtractor            = "webhook_subject_extractor"
 	PromptAgentRewriteToolInput              = "agent_rewrite_tool_input"
 	PromptReact3Base                         = "react_3_base"
@@ -92,15 +88,11 @@ var promptCategories = map[string]PromptCategory{
 	PromptAws:                                CategoryAgents,
 	PromptAwsLean:                            CategoryAgents,
 	PromptAwsObservability:                   CategoryAgents,
-	PromptAwsOrchestrator:                    CategoryAgents,
 	PromptAzureLean:                          CategoryAgents,
-	PromptAzureOrchestrator:                  CategoryAgents,
 	PromptFinops:                             CategoryAgents,
 	PromptGcpLean:                            CategoryAgents,
-	PromptGcpOrchestrator:                    CategoryAgents,
 	PromptK8sLean:                            CategoryAgents,
 	PromptK8sNative:                          CategoryAgents,
-	PromptK8sOrchestrator:                    CategoryAgents,
 	PromptWebhookSubjectExtractor:            CategoryAgents,
 	PromptAgentRewriteToolInput:              CategoryPlanners,
 	PromptReact3Base:                         CategoryPlanners,

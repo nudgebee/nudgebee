@@ -2,38 +2,23 @@ package agents
 
 import (
 	"log/slog"
-	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
-	"nudgebee/llm/tools"
-	toolcore "nudgebee/llm/tools/core"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
 
-	"github.com/samber/lo"
+	toolcore "nudgebee/llm/tools/core"
 )
 
+// Lean-only (plus opt-in native): delegating/direct dropped 2026-08-11 (#32503 Phase 1).
+// The K8s orchestrator now runs the lean-loop implementation under the primary
+// handle by default, with an opt-in K8s-native mode for kubectl-first accounts.
+// The always-direct / always-delegating eval handles were removed with the collapse.
 const AgentK8sOrchestratorName = "k8s_orchestrator"
-
-// AgentK8sOrchestratorDirectName is an explicit, @-invocable handle that always runs the
-// direct-kubectl (v2) behavior regardless of the configured K8sOrchestratorMode. The
-// router selects it via ResolveK8sOrchestratorOverride when per-request /
-// env mode is "direct", and can also be invoked via `@k8s_orchestrator_direct` (or
-// the legacy alias `@k8s_orchestrator_2`) for live eval alongside `@k8s_orchestrator`.
-// Both names share ONE implementation; only (name, useKubectlDirect) differ.
-const AgentK8sOrchestratorDirectName = "k8s_orchestrator_direct"
-
-// AgentK8sOrchestratorDelegatingName is the always-delegating (v1) handle. Symmetric
-// to AgentK8sOrchestratorDirectName (always-direct v2). Registered separately
-// from the primary AgentK8sOrchestratorName so per-request
-// K8sOrchestratorMode="delegating" can force v1 regardless of what env has
-// selected for the primary handle (native / direct / lean).
-const AgentK8sOrchestratorDelegatingName = "k8s_orchestrator_delegating"
 
 func init() {
 	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestratorName, func(accountId string) (core.NBAgent, error) {
@@ -48,38 +33,6 @@ func init() {
 		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorName)
 	})
 
-	// Explicit always-direct eval handle (see AgentK8sOrchestratorDirectName). Same
-	// implementation, distinct name → distinct cache key, invocable by @name only.
-	// Legacy aliases k8s_orchestrator_2 / k8s_debug_2 kept so existing stored
-	// conversation history + @-invocations keep resolving after the rename.
-	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestratorDirectName, func(accountId string) (core.NBAgent, error) {
-		return newK8sOrchestratorDirectAgent(accountId), nil
-	}, "k8s_orchestrator_2", "k8s_debug_2", "k8s_debug_direct")
-	core.RegisterAgentCacheInvalidator(func(accountId string, agentName string) {
-		if agentName == "" || agentName == AgentK8sOrchestratorDirectName {
-			InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorDirectName)
-		}
-	})
-	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
-		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorDirectName)
-	})
-
-	// Explicit always-delegating (v1) handle (see AgentK8sOrchestratorDelegatingName).
-	// Mirrors AgentK8sOrchestratorDirectName — same implementation, useKubectlDirect
-	// set to false, distinct cache key. Enables per-request "delegating" to
-	// force v1 even when env selects a different variant for the primary.
-	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestratorDelegatingName, func(accountId string) (core.NBAgent, error) {
-		return newK8sOrchestratorDelegatingAgent(accountId), nil
-	}, "k8s_debug_delegating")
-	core.RegisterAgentCacheInvalidator(func(accountId string, agentName string) {
-		if agentName == "" || agentName == AgentK8sOrchestratorDelegatingName {
-			InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorDelegatingName)
-		}
-	})
-	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
-		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorDelegatingName)
-	})
-
 	common.CacheSubscribe("agent_invalidation", func(message string) {
 		parts := strings.Split(message, ":")
 		if len(parts) == 2 {
@@ -92,201 +45,97 @@ func init() {
 // K8sOrchestratorMode* are the values of config llm_server_k8s_orchestrator_mode,
 // the single boot-time knob for what the router-selected k8s_orchestrator runs.
 const (
-	K8sOrchestratorModeDelegating = "delegating" // v1: delegate kubectl to the sub-agent (fallback for unknown mode)
-	K8sOrchestratorModeDirect     = "direct"     // v2: hold kubectl_execute, run kubectl directly
-	K8sOrchestratorModeLean       = "lean"       // reduced tool core + minimal prompt — the DEFAULT (validated no regression)
-	K8sOrchestratorModeNative     = "native"     // K8s-native: kubectl-first, no cloud/NL-wrapper sub-agents (see agent_k8s_orchestrator_native.go)
+	K8sOrchestratorModeLean   = "lean"   // reduced tool core + minimal prompt — the DEFAULT
+	K8sOrchestratorModeNative = "native" // K8s-native: kubectl-first, no cloud/NL-wrapper sub-agents (see agent_k8s_orchestrator_native.go)
 )
 
 // newK8sOrchestratorAgent is the primary, router-selected agent. Its behavior is
 // chosen by config.K8sOrchestratorMode (boot-time; rollback = change + redeploy).
-// Running lean/direct under the primary name keeps routing, stored history, and
-// the @k8s_debug aliases unchanged — only prompt/critique/kubectl behavior differ.
-// The configured default is "lean" (llm_server_k8s_orchestrator_mode); an
-// unknown/typo value falls back to delegating (v1).
+// Only lean and native remain after the delegating/direct collapse in #32503 Phase 1.
+// Unknown/empty falls back to lean (the production default).
 func newK8sOrchestratorAgent(accountId string) core.NBAgent {
-	switch strings.ToLower(strings.TrimSpace(config.Config.K8sOrchestratorMode)) {
-	case K8sOrchestratorModeLean:
-		return newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorName)
-	case K8sOrchestratorModeDirect:
-		return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, true)
-	case K8sOrchestratorModeNative:
+	if strings.ToLower(strings.TrimSpace(config.Config.K8sOrchestratorMode)) == K8sOrchestratorModeNative {
 		return newK8sNativeAgentNamed(accountId, AgentK8sOrchestratorName)
-	default:
-		return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, false)
 	}
+	return newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorName)
 }
 
-// newK8sOrchestratorDirectAgent is the always-direct eval handle (see AgentK8sOrchestratorDirectName):
-// v2 behavior regardless of the flag, for live side-by-side comparison against the primary.
-func newK8sOrchestratorDirectAgent(accountId string) core.NBAgent {
-	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorDirectName, true)
+// K8sLeanAgent is the K8s lean-loop orchestrator: the reduced k8s core
+// (kubectl_execute + logs/events/metrics/traces + resource_search + SDG +
+// recommendations + websearch + finops + delegate_agent + search_tools +
+// search_skills) plus a short principle-level prompt (agent_k8s_lean). Every
+// specialist (databases, helm, cloud CLIs, …) is dropped from context and
+// reached on-demand via search_tools + delegate_agent. Everything else —
+// including the answer critique — runs through the same ReAct3 planner under
+// the standard gates.
+type K8sLeanAgent struct {
+	accountId string
+	// name is the handle this instance runs under. Currently always
+	// AgentK8sOrchestratorName; retained to keep the distinct-name → distinct
+	// cache key contract intact for any future eval handles.
+	name string
 }
 
-// newK8sOrchestratorDelegatingAgent is the always-delegating eval handle (see
-// AgentK8sOrchestratorDelegatingName): v1 behaviour (kubectl sub-agent) regardless
-// of env, symmetric to newK8sOrchestratorDirectAgent.
-func newK8sOrchestratorDelegatingAgent(accountId string) core.NBAgent {
-	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorDelegatingName, false)
+func newK8sLeanAgentNamed(accountId, name string) *K8sLeanAgent {
+	return &K8sLeanAgent{accountId: accountId, name: name}
 }
 
-// newK8sOrchestratorAgentMode builds the primary-named agent in an explicit kubectl
-// mode. Tests use it to exercise delegating (false) and direct (true) behavior.
-func newK8sOrchestratorAgentMode(accountId string, useKubectlDirect bool) core.NBAgent {
-	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, useKubectlDirect)
-}
+func (l *K8sLeanAgent) GetName() string { return l.name }
 
-// newK8sOrchestratorAgentNamed is the shared constructor. name drives identity and the
-// cache key (so the primary and the eval handle stay isolated); useKubectlDirect drives
-// the kubectl tool, the prompt's {{if .use_kubectl_direct}} branch, and the log filter.
-func newK8sOrchestratorAgentNamed(accountId, name string, useKubectlDirect bool) core.NBAgent {
-	return &K8sOrchestratorAgent{
-		accountId:        accountId,
-		name:             name,
-		useKubectlDirect: useKubectlDirect,
-	}
-}
-
-type K8sOrchestratorAgent struct {
-	accountId        string
-	name             string
-	useKubectlDirect bool
-}
-
-func (l *K8sOrchestratorAgent) GetName() string {
-	return l.name
-}
-
-func (a *K8sOrchestratorAgent) GetNameAliases() []string {
-	switch a.name {
-	case AgentK8sOrchestratorDelegatingName:
-		return []string{"Debugger (Delegating)", "k8s_debug_delegating"}
-	case AgentK8sOrchestratorDirectName:
-		// Legacy aliases kept for back-compat after the rename.
-		return []string{"Debugger (Direct)", "k8s_debug_direct", "k8s_orchestrator_2", "k8s_debug_2"}
-	}
+func (l *K8sLeanAgent) GetNameAliases() []string {
 	return []string{"Debugger", "k8s_debug"}
 }
 
-func (l *K8sOrchestratorAgent) GetDescription() string {
-	return `SRE/DevOps Troubleshooting expert, with expertise on Kubernetes, AWS, GCP, Azure, CloudNative, Helm, Security, Programming, Prometheus, Loki, ELK, Github, Optimization, Jira, SQL, Databases etc`
+func (l *K8sLeanAgent) GetDescription() string {
+	return `Lean-loop SRE/DevOps troubleshooting orchestrator: minimal principle-level prompt, direct kubectl/helm, specialists reached on-demand via search_tools + delegate_agent.`
 }
 
-func (l *K8sOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	// v2 (direct) holds kubectl_execute and runs kubectl itself; v1 (delegating)
-	// holds the kubectl sub-agent. Cache keys off GetName(); since the mode is fixed
-	// per deploy by the global flag, only one tool set is ever cached in production.
-	kubectlTool := KubectlAgentName
-	if l.useKubectlDirect {
-		kubectlTool = tools.ToolExecuteKubectlCommand
-	}
-	return getSupportedTools(ctx, l.accountId, l.GetName(), kubectlTool)
-}
-
-func (l *K8sOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	// useKubectlDirect drives the prompt's {{if .use_kubectl_direct}} blocks: run
-	// kubectl_execute directly (v2) vs route kubectl work through the `kubectl` sub-agent (v1).
-	return renderK8sDebugReactPrompt(ctx, query, l.useKubectlDirect)
-}
-
-// UpdateToolResponseForPlanner condenses kubectl_execute log output for the planner
-// when running kubectl directly (v2). In delegating mode (v1) the kubectl sub-agent
-// does its own filtering, so this is a passthrough.
-func (l *K8sOrchestratorAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
-	if l.useKubectlDirect {
-		return filterKubectlLogResponse(toolRequest, toolResponse)
-	}
-	return toolResponse
-}
-
-// renderK8sDebugReactPrompt renders the shared agent_k8s_debug_react prompt for both
-// k8s orchestrators. The useKubectlDirect flag drives the {{if .use_kubectl_direct}}
-// blocks in the prompt file: false = delegate kubectl work to the `kubectl` sub-agent,
-// true = hold and run `kubectl_execute` directly. All kubectl guidance lives in the
-// prompt file (gated by that flag), not appended here in Go, so the two orchestrators
-// cannot drift apart.
-func renderK8sDebugReactPrompt(ctx *security.RequestContext, query core.NBAgentRequest, useKubectlDirect bool) core.NBAgentPrompt {
-	promptKey := prompts.PromptK8sOrchestrator
-
-	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), promptKey, query.AccountId)
-	if promptErr != nil {
-		// Return nothing rather than continue: this whole NBAgentPrompt is derived
-		// from promptText by ParsePromptToNBAgentPrompt below, so an empty load
-		// yields an empty prompt either way — returning here just says so plainly.
-		// MustResolveAll covers default/v1 at startup; this catches a malformed
-		// provider- or version-specific override added later.
-		ctx.GetLogger().Error("k8s orchestrator: system prompt failed to load", "error", promptErr)
-		return core.NBAgentPrompt{}
-	}
-
-	// Resolve all template placeholders in a single pass.
-	// Include all known shared-rule partials so account-specific versioned prompts that still
-	// reference older keys (e.g. {{.time_handling_rules}}) render correctly instead of causing
-	// a template execution failure and falling back to a minimal prompt.
-	tmplData := map[string]any{
-		"remediation_enabled":   config.Config.RemediationAgentEnabled,
-		"watch_enabled":         config.Config.WatchEnabled,
-		"data_protection_rules": prompts.GetPrompt(ctx.GetContext(), prompts.PromptDataProtectionRules, ""),
-		"code_analysis_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptCodeAnalysisRules, ""),
-		"time_handling_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptTimeHandlingRules, ""),
-		"use_kubectl_direct":    useKubectlDirect,
-		"memory_nudge":          memoryNudgeIfEnabled(),
-	}
-	// Render conditional blocks ({{if .remediation_enabled}}, {{.data_protection_rules}}, etc.).
-	// Two-pass strategy:
-	//   1. missingkey=error — catches prompts that reference unknown keys so we can log a warning.
-	//   2. missingkey=zero  — re-renders with unknown keys as "" so the full prompt is preserved.
-	// On any parse error we keep the original promptText so the agent retains its full instructions.
-	t, err := template.New("k8s_debug").Option("missingkey=error").Parse(promptText)
-	if err != nil {
-		slog.ErrorContext(ctx.GetContext(), "failed to parse k8s_debug prompt template, using raw prompt", "error", err)
-		// promptText unchanged — preserve full agent instructions
-	} else {
-		var buf strings.Builder
-		if err = t.Execute(&buf, tmplData); err != nil {
-			// Log so we know which account's versioned prompt has an unknown key and can fix it.
-			slog.WarnContext(ctx.GetContext(), "k8s_debug prompt template has unknown keys, re-rendering with zero fallback", "error", err, "account_id", query.AccountId)
-			buf.Reset()
-			// Re-parse with missingkey=zero so unknown keys render as "" rather than failing.
-			if t2, err2 := template.New("k8s_debug").Option("missingkey=zero").Parse(promptText); err2 == nil {
-				if err2 = t2.Execute(&buf, tmplData); err2 == nil {
-					promptText = buf.String()
-				} else {
-					slog.ErrorContext(ctx.GetContext(), "failed to execute k8s_debug prompt template (zero pass), using raw prompt", "error", err2)
-					// promptText unchanged — preserve full agent instructions
-				}
-			}
-		} else {
-			promptText = buf.String()
-		}
-	}
-
-	// Parse structured prompt file: extracts Role, Instructions, Constraints, OutputFormat, Examples
-	prompt := core.ParsePromptToNBAgentPrompt(promptText)
-
-	// ToolUsage intentionally left unset: the planner already renders each tool's
-	// Description() once via {{.tool_descriptions}}. Copying the same Description()
-	// into ToolUsage produced a redundant second render in the
-	// <tool_usage_instructions> block of this orchestrator's (account-cached) prompt.
-
-	return prompt
-}
-
-func (l *K8sOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
+func (l *K8sLeanAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
+func (l *K8sLeanAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
+func (l *K8sLeanAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+
 // IsWatchCapable: drives action sub-agents (restart/scale/rollout) whose outcome
 // completes later, so it may register a background watch.
-func (l *K8sOrchestratorAgent) IsWatchCapable() bool { return true }
+func (l *K8sLeanAgent) IsWatchCapable() bool { return true }
 
-func (l *K8sOrchestratorAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+// NB: no CritiqueEnabled() method on purpose — the orchestrator does not
+// implement NBAgentReActPlannerCritiqueSupport, so critique is governed by the
+// standard gate (LlmServerReActCritiqueEnabled && top-level && investigation).
+
+func (l *K8sLeanAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+	// Reduced k8s core (kubectl_execute + logs/events/metrics/traces + SDG +
+	// resource_search + recommendations + delegate_agent + search_tools);
+	// specialists reached on-demand via search_tools + delegate_agent.
+	return getTrimmedK8sSupportedTools(ctx, l.accountId, l.GetName())
 }
 
-func (l *K8sOrchestratorAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptK8sLean, query.AccountId)
+	if promptErr != nil {
+		// Return nothing rather than continue: everything appended below is
+		// decoration, so carrying on yields a "system prompt" that is just a memory
+		// nudge — worse than empty, because it looks like a prompt. MustResolveAll
+		// covers default/v1 at startup; this catches a malformed provider- or
+		// version-specific override added later.
+		ctx.GetLogger().Error("k8s orchestrator: system prompt failed to load", "error", promptErr)
+		return core.NBAgentPrompt{}
+	}
+	if nudge := memoryNudgeIfEnabled(); nudge != "" {
+		promptText += "\n\n" + nudge
+	}
+	return core.ParsePromptToNBAgentPrompt(promptText)
 }
+
+// UpdateToolResponseForPlanner reuses the shared kubectl log condenser (the lean
+// agent runs kubectl directly, so raw log output lands in its own scratchpad).
+func (l *K8sLeanAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
+	return filterKubectlLogResponse(toolRequest, toolResponse)
+}
+
+// ---- shared cache + memory-nudge helpers (used by lean + native) ----
 
 type agentSupportedToolsCache struct {
 	mutex sync.RWMutex
@@ -346,9 +195,6 @@ func InvalidateAgentSupportedToolsCache(accountId string, agentName string) {
 	agentSupportedToolsCacheInstance.delete(accountId, agentName)
 }
 
-// getSupportedTools builds the k8s orchestrator tool list. kubectlTool is the first
-// base tool: KubectlAgentName for the delegating orchestrator, or
-// tools.ToolExecuteKubectlCommand for the direct orchestrator that runs kubectl itself.
 // appendMemoryToolName adds the on-demand memory tool (path B) to a tool-name
 // list when LLM_MEMORY_TOOL_ENABLED is set, so every top-level orchestrator
 // (k8s + cloud) exposes it consistently. Independent of the RAG-inject path.
@@ -371,92 +217,4 @@ func memoryNudgeIfEnabled() string {
 		return memoryToolNudge
 	}
 	return ""
-}
-
-func getSupportedTools(ctx *security.RequestContext, accountId string, agentName string, kubectlTool string) []toolcore.NBTool {
-	var staticTools []toolcore.NBTool
-
-	if cached, ok := agentSupportedToolsCacheInstance.get(accountId, agentName); ok {
-		staticTools = cached
-	} else {
-		var toolNames []string
-		_, agentToolNames, _ := core.AgentAdditionalInstructionsAndToolsAndConfigs(ctx, accountId, agentName)
-		if len(agentToolNames) > 0 {
-			slog.Info("Agent has configured tools", "agent", agentName, "tools", agentToolNames)
-			toolNames = agentToolNames
-		} else {
-
-			baseTools := []string{kubectlTool, LogsAgentName, WebSearchAgentName, PostgresAgentName, EventsAgentName, TracesAgentName, MetricsAgentName, RedisAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RabbitMQAgentName, SecurityAgentName, HelmAgentName, GithubAgentName, getTicketAgentName(), WorkflowAgentName, ServiceDependencyGraph, VisualizationAgentName, RecommendationsAgentName, aws.AwsAgentName, aws.AgentAwsObservabilityName, GcpAgentName, AzureAgentName, ResourceSearchAgentName, ServerAgentName, AgentCodeAnalyzer, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
-
-			// Conditionally add remediation agent based on feature flag
-			if config.Config.RemediationAgentEnabled {
-				baseTools = append(baseTools, RemediationAgentName)
-				slog.Debug("Remediation agent enabled", "accountId", accountId, "agent", agentName)
-			}
-
-			baseTools = append(baseTools, toolcore.ToolExecuteShellCommand)
-
-			// Conditionally add think tool for complex investigations
-			if config.Config.LlmServerThinkToolEnabled {
-				baseTools = append(baseTools, tools.ThinkToolName)
-			}
-
-			// On-demand memory tool (path B), gated by LLM_MEMORY_TOOL_ENABLED.
-			baseTools = appendMemoryToolName(baseTools)
-
-			// Unmentioned cost/spend questions default-route to this agent (the
-			// router reaches finops only via @mention), so preload finops as a
-			// callable sub-agent. Default list only — admin-pinned tool lists are
-			// deliberately not extended (finops carries write tools).
-			baseTools = append(baseTools, FinOpsAgentName)
-
-			toolNames = baseTools
-		}
-
-		if core.IsAgentsFollowupEnabled() {
-			toolNames = append(toolNames, FollowupAgentName)
-		}
-
-		// Add Datadog debug as an optional extra tool
-		toolNames = append(toolNames, AgentDatadogOrchestratorName)
-
-		enabledTools := toolcore.GetEnabledNBTools(ctx, accountId)
-		enabledMap := make(map[string]toolcore.NBTool)
-		for _, t := range enabledTools {
-			enabledMap[strings.ToLower(t.Name())] = t
-		}
-
-		agentTools := []toolcore.NBTool{}
-		for _, name := range toolNames {
-			if t, ok := enabledMap[strings.ToLower(name)]; ok {
-				agentTools = append(agentTools, t)
-			}
-		}
-
-		staticTools = lo.UniqBy(agentTools, func(t toolcore.NBTool) string {
-			return t.Name()
-		})
-		agentSupportedToolsCacheInstance.set(accountId, agentName, staticTools)
-	}
-
-	// Always merge the per-account sources fresh — MCP integrations and the
-	// account's AI-invocable automations both have dynamic names a static list
-	// cannot carry, and both keep their own caches that correctly avoid caching
-	// transient failures.
-	//
-	// The automations are here because, held only by the automation sub-agent,
-	// one is reachable only after the orchestrator delegates to it — the hop that
-	// registering automations as tools exists to remove. Free on accounts without
-	// the feature flag: the source returns nothing at all.
-	dynamicTools := toolcore.ListAccountSourcedTools(accountId)
-	if len(dynamicTools) == 0 {
-		return staticTools
-	}
-
-	merged := make([]toolcore.NBTool, len(staticTools), len(staticTools)+len(dynamicTools))
-	copy(merged, staticTools)
-	merged = append(merged, dynamicTools...)
-	return lo.UniqBy(merged, func(t toolcore.NBTool) string {
-		return t.Name()
-	})
 }

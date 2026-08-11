@@ -340,7 +340,9 @@ func (a *FinOpsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore
 		// MetricsAgentName routes to the account's configured metrics provider
 		// (Prometheus/Datadog/Elasticsearch) instead of hardcoding Prometheus.
 		MetricsAgentName,
-		KubectlAgentName,
+		// TODO(#32503 Phase 3): kubectl safety rules were previously in
+		// agent_kubectl.go's system prompt; migrate to KubectlExecuteTool.ToolPrompt().
+		tools.ToolExecuteKubectlCommand,
 		ResourceSearchAgentName,
 
 		// Existing direct tools (reused unchanged)

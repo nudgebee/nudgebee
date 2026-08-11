@@ -20,7 +20,7 @@ import (
 // LOWERS depth (llm_calls / tool_calls) by cutting the fishing tail, without
 // changing the median clean case.
 //
-// Reuses the harness in agent_k8s_orchestrator_2_e2e_test.go. Set NOPB_ENFORCE=1
+// Reuses the shared harness in e2e_metrics_helpers_test.go. Set NOPB_ENFORCE=1
 // to fail if brake-ON increases depth; default is data-capture.
 var noProgressQueries = []labeledQuery{
 	{"resolution-fishing", "Investigate the root cause of elevated 5xx error rates for the checkout-service in the production-eu cluster during the last 15 minutes. Correlate its application logs, distributed traces and container memory metrics."},
@@ -29,7 +29,8 @@ var noProgressQueries = []labeledQuery{
 func TestNoProgressBrake_AB(t *testing.T) {
 	accountId, userId, tenant := requireE2EEnv(t)
 	sc := security.NewRequestContextForTenantAccountAdmin(tenant, userId, []string{accountId})
-	agent := newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorLeanName)
+	// Post-#32503 Phase 1: the primary k8s_orchestrator IS lean; instantiate it directly.
+	agent := newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorName)
 
 	for i, lq := range noProgressQueries {
 		t.Run(lq.kind, func(t *testing.T) {

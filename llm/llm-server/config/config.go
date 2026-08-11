@@ -490,41 +490,14 @@ type appConfig struct {
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
 	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
 	LogAgentV2Enabled bool `mapstructure:"llm_server_log_agent_v2_enabled"`
-	// K8sOrchestratorMode selects what the router-selected k8s_orchestrator runs.
-	// Boot-time, per-deploy (rollback = change + redeploy). One of:
-	//   "delegating" (default) — v1: route kubectl work through the `kubectl` sub-agent
-	//   "direct"               — v2: hold `kubectl_execute` and run kubectl directly
-	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + critique off
-	// Unknown/empty falls back to "delegating". Replaces the former
-	// llm_server_k8s_orchestrator_{v2,lean}_enabled booleans. The @k8s_orchestrator_2
-	// (always direct) and @k8s_orchestrator_lean (always lean) eval handles are
-	// unaffected by this — they exist for side-by-side A/B regardless of mode.
+	// K8sOrchestratorMode selects which K8s orchestrator implementation the
+	// router-selected k8s_orchestrator runs. Boot-time, per-deploy (rollback =
+	// change + redeploy). Post-#32503 Phase 1 only two modes remain:
+	//   "lean" (default) — reduced tool core + minimal principle-level prompt
+	//   "native"         — K8s-native: kubectl-first, no cloud/NL-wrapper sub-agents
+	// Unknown/empty falls back to "lean". The AWS/GCP/Azure orchestrators are
+	// lean-only after the collapse and no longer read a per-cloud mode setting.
 	K8sOrchestratorMode string `mapstructure:"llm_server_k8s_orchestrator_mode"`
-	// AwsOrchestratorMode selects what the router-selected aws_orchestrator runs.
-	// Boot-time, per-deploy (rollback = change + redeploy). One of:
-	//   "delegating" (default) — v1: route AWS resource CLI through the `aws` sub-agent
-	//   "direct"               — v2: hold `aws_execute` and run the AWS CLI directly
-	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + direct aws_execute
-	// (`aws_observability` stays delegated in all.) Unknown/empty falls back to
-	// "delegating". The @aws_orchestrator_2 (always direct) and @aws_orchestrator_lean
-	// (always lean) eval handles are unaffected — they exist for side-by-side A/B.
-	AwsOrchestratorMode string `mapstructure:"llm_server_aws_orchestrator_mode"`
-	// GcpOrchestratorMode selects what the router-selected gcp_orchestrator runs.
-	// Boot-time, per-deploy (rollback = change + redeploy). One of:
-	//   "delegating" (default) — v1: route GCP resource CLI through the `gcp` sub-agent
-	//   "direct"               — v2: hold `gcloud_execute` and run the gcloud CLI directly
-	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + direct gcloud_execute
-	// Unknown/empty falls back to "delegating". The @gcp_orchestrator_2 (always direct) and
-	// @gcp_orchestrator_lean (always lean) eval handles are unaffected — they exist for side-by-side A/B.
-	GcpOrchestratorMode string `mapstructure:"llm_server_gcp_orchestrator_mode"`
-	// AzureOrchestratorMode selects what the router-selected azure_orchestrator runs.
-	// Boot-time, per-deploy (rollback = change + redeploy). One of:
-	//   "delegating" (default) — v1: route Azure resource CLI through the `azure` sub-agent
-	//   "direct"               — v2: hold `azure_execute` and run the az CLI directly
-	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + direct azure_execute
-	// Unknown/empty falls back to "delegating". The @azure_orchestrator_2 (always direct) and
-	// @azure_orchestrator_lean (always lean) eval handles are unaffected — they exist for side-by-side A/B.
-	AzureOrchestratorMode string `mapstructure:"llm_server_azure_orchestrator_mode"`
 	// TraceAgentV2Enabled gates the canonical, provider-independent traces agent
 	// (TracesDefaultAgentV2). Global per-deploy toggle; default false.
 	TraceAgentV2Enabled                    bool   `mapstructure:"llm_server_trace_agent_v2_enabled"`
@@ -1227,11 +1200,9 @@ func init() {
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
-	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
+	// k8s_orchestrator mode: lean (default) | native. Cloud orchestrators are
+	// lean-only after the #32503 Phase 1 collapse — no per-cloud mode setting.
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
-	viper.SetDefault("llm_server_aws_orchestrator_mode", "lean")
-	viper.SetDefault("llm_server_gcp_orchestrator_mode", "lean")
-	viper.SetDefault("llm_server_azure_orchestrator_mode", "lean")
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)

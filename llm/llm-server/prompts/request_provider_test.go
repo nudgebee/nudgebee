@@ -58,7 +58,7 @@ func TestCache_HitPreservesExperimentMetadata(t *testing.T) {
 		fs:    embeddedFS,
 	}
 	req := PromptRequest{
-		Name:      "k8s_orchestrator",
+		Name:      "k8s_lean",
 		Category:  CategoryAgents,
 		Provider:  "default",
 		AccountID: "acct-1",

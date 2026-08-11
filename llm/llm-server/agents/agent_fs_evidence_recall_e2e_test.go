@@ -24,7 +24,7 @@ import (
 // "grep the file" handle, so the sub-agent should recall instead of re-run:
 // expect flag-on to hold or LOWER llm_calls / obs_bytes, never raise them.
 //
-// Reuses the harness in agent_k8s_orchestrator_2_e2e_test.go (runMetrics,
+// Reuses the shared harness in e2e_metrics_helpers_test.go (runMetrics,
 // runAgentQuery, requireE2EEnv, sessionSlug, logMetrics).
 //
 // Data capture is the default; set FSEV_MAX_DEPTH_RATIO (e.g. 1.05) to fail
@@ -50,7 +50,8 @@ func TestFsEvidenceRecall_AB(t *testing.T) {
 
 	// Default agent (lean) — it delegates to the ReAct logs sub-agent whose
 	// internal loop is where the compression memory-loss and re-fetch happen.
-	agent := newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorLeanName)
+	// Post-#32503 Phase 1: the primary k8s_orchestrator IS lean.
+	agent := newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorName)
 
 	orig := config.Config.LlmServerFsEvidenceRecallEnabled
 	t.Cleanup(func() { config.Config.LlmServerFsEvidenceRecallEnabled = orig })

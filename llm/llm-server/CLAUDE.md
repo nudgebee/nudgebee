@@ -220,7 +220,7 @@ YAML files under `prompts/default/v1/`, grouped into `planners/`, `agents/`, `_f
 
 Shared fragments (`prompts/default/v1/_fragments/`, injected into planner prompts): `context_continuity.yaml`, `time_handling_rules.yaml`, `data_protection_rules.yaml`, `code_analysis_rules.yaml`, etc.
 
-Agent-specific (`prompts/default/v1/agents/`): `aws.yaml`, `k8s_native.yaml`, `k8s_orchestrator.yaml`, `k8s_lean.yaml`, etc. — each agent loads its own.
+Agent-specific (`prompts/default/v1/agents/`): `aws.yaml`, `k8s_native.yaml`, `k8s_lean.yaml`, `aws_lean.yaml`, `gcp_lean.yaml`, `azure_lean.yaml`, etc. — each agent loads its own. (The `*_orchestrator.yaml` files were removed in the #32503 Phase 1 lean-only collapse; primary orchestrators now load the `*_lean.yaml` prompts directly.)
 
 ### Prompt Message Structure & Caching
 

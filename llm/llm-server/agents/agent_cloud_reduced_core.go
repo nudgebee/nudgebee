@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/samber/lo"
@@ -39,6 +40,10 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 		WebSearchAgentName,
 		DelegateAgentToolName,
 		SearchToolsToolName,
+		// search_skills preload preserved so the model can query knowledge bases
+		// by keyword directly, without an extra delegate_agent+search_tools hop.
+		// Same invariant PR #34819 established across every orchestrator.
+		tools.SearchSkillsToolName,
 	}
 	if config.Config.RemediationAgentEnabled {
 		names = append(names, RemediationAgentName)
