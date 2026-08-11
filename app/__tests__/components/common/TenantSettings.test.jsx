@@ -263,4 +263,36 @@ describe('TenantSettings', () => {
       expect(input).toBeDisabled();
     });
   });
+
+  describe('read-only viewer (tenants:Read, no write grant)', () => {
+    const { canEditTenantSettings } = require('@lib/auth');
+
+    beforeEach(() => canEditTenantSettings.mockReturnValue(false));
+    afterEach(() => canEditTenantSettings.mockReturnValue(true));
+
+    it('drops Save and offers Close instead of Cancel', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      expect(screen.queryByTestId('btn-Save')).not.toBeInTheDocument();
+      expect(screen.getByTestId('btn-Close')).toBeInTheDocument();
+    });
+
+    it('explains why, naming the grant to ask for', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      expect(screen.getByText(/You need the "tenants:Write" permission/)).toBeInTheDocument();
+    });
+
+    it('renders the tenant name field read-only', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      // The whole form is inert for a viewer, so the backend write gate is never
+      // reached from the UI — Tenant Name stands in for every field here.
+      const input = screen.getByLabelText(/Tenant Name/i);
+      expect(input).toBeDisabled();
+    });
+  });
 });
