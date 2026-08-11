@@ -6,6 +6,7 @@ import (
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,13 @@ import (
 	"github.com/samber/lo"
 	"golang.org/x/exp/maps"
 )
+
+// gcpRegionShape matches a real GCP regional value (geo-direction-number, e.g.
+// us-central1, asia-south1). It deliberately rejects "global" and multi-region
+// codes ("us", "eu", "asia") that also appear in cloud_resourses.region for
+// global/storage/billing rows — GCP's per-region crawl is not graceful and can
+// fail a whole service on such a value.
+var gcpRegionShape = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+$`)
 
 func getResourcesInternal(ctx *security.RequestContext, accountId string, request providers.ListResourceRequest) (providers.ListResourcesResponse, providers.Account, error) {
 	if request.ServiceName == "" || accountId == "" {
@@ -258,6 +266,45 @@ func StoreResources(ctx *security.RequestContext, accountId string, serviceName 
 				Count:    0,
 				Duration: time.Since(t0),
 			}, err
+		}
+
+		// GCP: widen to the account's full cross-service region footprint so a
+		// service locked to a partial first scan is still crawled everywhere the
+		// account operates — breaks the #31101 partial-first-scan lock-in beyond
+		// the networking escape-hatch, using only already-collected, valid
+		// regions (no new dependency). AWS/Azure keep the existing empty-only
+		// fallback below to avoid widening their throttle-sensitive per-region
+		// fan-out (#34455).
+		if strings.EqualFold(accountInfo.CloudProvider, "gcp") && !isGlobalAwsService(serviceName) {
+			var footprint []string
+			// Only real regional values (geo-direction-number, e.g. us-central1).
+			// cloud_resourses also holds "global" and multi-region codes (US, us,
+			// asia) from global/storage resources; GCP's per-region crawl errors
+			// on those, and its loop fails the whole service on the first bad
+			// region (providers/gcloud/main.go — no graceful per-region skip).
+			footprintQuery := `select distinct region from cloud_resourses
+							   where account = $1 and is_active = true
+							   and region ~ '^[a-z]+-[a-z]+[0-9]+$'
+							   order by region limit 50`
+			if ferr := dbms.QueryAndScan(&footprint, footprintQuery, accountId); ferr != nil {
+				// Non-fatal: widening is best-effort. The per-service regions
+				// derived above are still usable, so log and fall through with an
+				// empty footprint rather than skipping the whole service crawl.
+				ctx.GetLogger().Warn("unable to fetch cross-service regions, proceeding with per-service regions", "error", ferr, "service", serviceName)
+			}
+			// Union per-service + footprint, then keep only real regional values.
+			// The per-service query above is unfiltered and can carry "global" or
+			// a multi-region code ("us"); drop them here too so nothing invalid
+			// reaches the (non-graceful) GCP per-region crawl.
+			widened := lo.Filter(lo.Union(regions, footprint), func(r string, _ int) bool {
+				return gcpRegionShape.MatchString(r)
+			})
+			if len(widened) != len(regions) {
+				ctx.GetLogger().Info("resolved GCP crawl regions from account footprint",
+					"service", serviceName, "account", accountId,
+					"per_service_regions", len(regions), "resolved_regions", len(widened))
+			}
+			regions = widened
 		}
 
 		// If no regions found for this service, try regions from other services in the account.
