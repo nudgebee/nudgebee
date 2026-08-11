@@ -1466,7 +1466,12 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 		return nil, err
 	}
 	slog.Info("Using OpenAI LLM", "model", modelName, "agentName", agentName, "apiType", apiType)
-	return llm, nil
+	// Strip llm-server-internal thinking keys (ThinkingBudget/ThinkingLevel) from Metadata so
+	// they never serialize into the outbound OpenAI `metadata` field — the langchaingo openai
+	// client only filters "openai:"-prefixed keys, and strict OpenAI-compatible providers (Vertex
+	// via the NB AI Gateway) reject non-string metadata. Covers `custom` too (getCustomLLM
+	// delegates here). See openai_thinking_metadata.go.
+	return wrapStripInternalThinkingMetadata(llm), nil
 }
 
 // getCustomLLM serves any provider exposing OpenAI's Chat Completions
