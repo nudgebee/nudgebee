@@ -96,6 +96,13 @@ interface SelectBaseProps {
   /** Min-width of the trigger AND the popup. Popup matches trigger width by default. */
   minWidth?: string | number;
   /**
+   * Explicit width for the popup panel, overriding the default (match trigger
+   * width). Use when the trigger is intentionally compact (e.g. a toolbar
+   * filter) but the option labels are long enough to truncate. Mirrors
+   * `FilterDropdown`'s `popoverWidth`.
+   */
+  popoverWidth?: string | number;
+  /**
    * Show a search input above the option list. Defaults to `true` when there
    * are more than 8 options, `false` otherwise. Pass explicit `true`/`false`
    * to override.
@@ -263,6 +270,7 @@ export function Select(props: SelectProps) {
     disabled,
     size = 'md',
     minWidth,
+    popoverWidth,
     searchable,
     searchPlaceholder = 'Search…',
     loading = false,
@@ -604,7 +612,7 @@ export function Select(props: SelectProps) {
         onClose={() => setAnchorEl(null)}
         side='bottom'
         align='start'
-        width={popupWidth}
+        width={popoverWidth ?? popupWidth}
         role='listbox'
         disableAutoFocusItem={showSearch}
         disablePortal={disablePortal}

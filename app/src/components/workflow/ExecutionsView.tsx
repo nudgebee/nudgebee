@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/router';
-import { Alert, Box, Typography, Select, MenuItem, FormControl } from '@mui/material';
+import { Alert, Box, Typography } from '@mui/material';
+import { Select } from '@ui/Select';
 import { Button } from '@ui/Button';
 import {
   ContentCopy,
@@ -1115,50 +1116,28 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                   <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], fontWeight: 'var(--ds-font-weight-medium)' }}>
                     Status:
                   </Typography>
-                  <FormControl size='small' sx={{ minWidth: 90 }}>
-                    <Select
-                      value={selectedStatus}
-                      onChange={(e) => onStatusChange(e.target.value)}
-                      sx={{
-                        fontSize: 'var(--ds-text-caption)',
-                        height: '30px',
-                        '& .MuiSelect-select': { padding: 'var(--ds-space-1) var(--ds-space-2)' },
-                      }}
-                    >
-                      <MenuItem value='All'>All</MenuItem>
-                      <MenuItem value='Running'>Running</MenuItem>
-                      <MenuItem value='Completed'>Completed</MenuItem>
-                      <MenuItem value='Failed'>Failed</MenuItem>
-                      <MenuItem value='Canceled'>Canceled</MenuItem>
-                      <MenuItem value='Terminated'>Terminated</MenuItem>
-                      <MenuItem value='Timed Out'>Timed Out</MenuItem>
-                      <MenuItem value='Continued As New'>Continued As New</MenuItem>
-                      <MenuItem value='Unspecified'>Unspecified</MenuItem>
-                    </Select>
-                  </FormControl>
+                  <Select
+                    size='sm'
+                    minWidth={90}
+                    popoverWidth={180}
+                    clearable={false}
+                    value={selectedStatus}
+                    options={['All', 'Running', 'Completed', 'Failed', 'Canceled', 'Terminated', 'Timed Out', 'Continued As New', 'Unspecified']}
+                    onChange={(next) => onStatusChange(next)}
+                  />
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                   <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], fontWeight: 'var(--ds-font-weight-medium)' }}>
                     Ver:
                   </Typography>
-                  <FormControl size='small' sx={{ minWidth: 80 }}>
-                    <Select
-                      value={selectedVersion}
-                      onChange={(e) => setSelectedVersion(e.target.value)}
-                      sx={{
-                        fontSize: 'var(--ds-text-caption)',
-                        height: '30px',
-                        '& .MuiSelect-select': { padding: 'var(--ds-space-1) var(--ds-space-2)' },
-                      }}
-                    >
-                      <MenuItem value='All'>All</MenuItem>
-                      {distinctVersions.map((v) => (
-                        <MenuItem key={v} value={v}>
-                          v{v}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
+                  <Select
+                    size='sm'
+                    minWidth={80}
+                    clearable={false}
+                    value={selectedVersion}
+                    options={['All', ...distinctVersions.map((v) => ({ value: v, label: `v${v}` }))]}
+                    onChange={(next) => setSelectedVersion(next)}
+                  />
                 </Box>
               </Box>
             )}

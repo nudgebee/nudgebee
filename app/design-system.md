@@ -1079,22 +1079,23 @@ Form-field value picker. Single by default; `multiple` discriminates a union. Bu
 
 **Common props (both modes):**
 
-| Prop                       | Type                         | Default               | Req                            |
-| -------------------------- | ---------------------------- | --------------------- | ------------------------------ |
-| `options`                  | `(string \| SelectOption)[]` | —                     | ✓                              |
-| `label`                    | `ReactNode`                  | —                     | —                              |
-| `instructionText` / `help` | `ReactNode`                  | —                     | —                              |
-| `error`                    | `string`                     | —                     | —                              |
-| `placeholder`              | `string`                     | —                     | —                              |
-| `required`                 | `boolean`                    | —                     | —                              |
-| `clearable`                | `boolean`                    | `true`                | — (suppressed when `required`) |
-| `disabled`                 | `boolean`                    | —                     | —                              |
-| `size`                     | `'sm' \| 'md' \| 'lg'`       | —                     | —                              |
-| `minWidth`                 | `string \| number`           | —                     | —                              |
-| `searchable`               | `boolean`                    | `true` if > 8 options | —                              |
-| `searchPlaceholder`        | `string`                     | `'Search…'`           | —                              |
-| `loading`                  | `boolean`                    | —                     | —                              |
-| `disablePortal`            | `boolean`                    | —                     | —                              |
+| Prop                       | Type                         | Default               | Req                                                     |
+| -------------------------- | ---------------------------- | --------------------- | ------------------------------------------------------- |
+| `options`                  | `(string \| SelectOption)[]` | —                     | ✓                                                       |
+| `label`                    | `ReactNode`                  | —                     | —                                                       |
+| `instructionText` / `help` | `ReactNode`                  | —                     | —                                                       |
+| `error`                    | `string`                     | —                     | —                                                       |
+| `placeholder`              | `string`                     | —                     | —                                                       |
+| `required`                 | `boolean`                    | —                     | —                                                       |
+| `clearable`                | `boolean`                    | `true`                | — (suppressed when `required`)                          |
+| `disabled`                 | `boolean`                    | —                     | —                                                       |
+| `size`                     | `'sm' \| 'md' \| 'lg'`       | —                     | —                                                       |
+| `minWidth`                 | `string \| number`           | —                     | —                                                       |
+| `popoverWidth`             | `string \| number`           | trigger width         | — (widen panel for long labels under a compact trigger) |
+| `searchable`               | `boolean`                    | `true` if > 8 options | —                                                       |
+| `searchPlaceholder`        | `string`                     | `'Search…'`           | —                                                       |
+| `loading`                  | `boolean`                    | —                     | —                                                       |
+| `disablePortal`            | `boolean`                    | —                     | —                                                       |
 
 **Single** (`multiple` omitted/`false`): `value: string \| null` (✓), `onChange: (next: string) => void` (✓).
 **Multi** (`multiple: true`): `value: string[]` (✓), `onChange: (next: string[]) => void` (✓), `maxChips?` (default 2), `hideOptionCheckbox?`.
@@ -1360,9 +1361,10 @@ Action menu (composes the shared overlay primitives). **Variants:** `align` `sta
 | `onRefresh` / `refreshLabel` | `() => void` / `string`            | — / `'Refresh'` | —   |
 | `headerActions`              | `ReactNode`                        | —               | —   |
 | `onClose`                    | `() => void`                       | —               | —   |
+| `className`                  | `string` (→ overlay root)          | —               | —   |
 | `disablePortal`              | `boolean`                          | `false`         | —   |
 
-`DropdownMenuItem` = action `{ label, onSelect (✓), icon?, kbd?, tone?, disabled?, searchText? }` · `{ type: 'section', label }` · `{ type: 'separator' }`.
+`DropdownMenuItem` = action `{ label, onSelect (✓), icon?, description?, kbd?, tone?, disabled?, searchText? }` · `{ type: 'section', label }` · `{ type: 'separator' }`. `description` renders a dimmed second line under the label (two-line item) — e.g. a preset value or a short "what this does" hint.
 **Don't:** > 7 items without sections; multi-step action behind an item (open a Modal); nest > 1 level.
 
 #### `ThreeDotsMenu` — `import ThreeDotsMenu from '@ui/ThreeDotsMenu'` (default export, `.jsx`)

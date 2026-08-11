@@ -1,20 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  Box,
-  Typography,
-  TextField,
-  Select,
-  MenuItem,
-  FormControl,
-  Chip,
-  Switch,
-  FormControlLabel,
-  ToggleButtonGroup,
-  ToggleButton,
-  Autocomplete,
-} from '@mui/material';
+import { Box, Typography, TextField, Chip, Switch, FormControlLabel, ToggleButtonGroup, ToggleButton, Autocomplete } from '@mui/material';
 import { Add, Delete, DragIndicator, Visibility, VisibilityOff, ExpandMore, ExpandLess, Code, ViewList } from '@mui/icons-material';
 import { Input } from '@ui/Input';
+import { Select } from '@ui/Select';
 import CollapsableCard from '@ui/CollapsableCard';
 import TemplateTextField from './TemplateTextField';
 import { DateTimePicker } from '@mui/x-date-pickers/DateTimePicker';
@@ -440,16 +428,13 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({
     // Options/enum - render dropdown
     if (options && options.length > 0) {
       return (
-        <Select size='small' fullWidth value={fieldValue ?? fieldSchema.default ?? ''} onChange={(e) => onFieldChange(e.target.value)} displayEmpty>
-          <MenuItem value=''>
-            <em>Select {fieldSchema.title || fieldName}</em>
-          </MenuItem>
-          {options.map((option) => (
-            <MenuItem key={option} value={option}>
-              {option}
-            </MenuItem>
-          ))}
-        </Select>
+        <Select
+          size='sm'
+          placeholder={`Select ${fieldSchema.title || fieldName}`}
+          value={(fieldValue ?? fieldSchema.default) || null}
+          options={options}
+          onChange={(next) => onFieldChange(next ?? '')}
+        />
       );
     }
 
@@ -796,27 +781,15 @@ export const DurationInput: React.FC<DurationInputProps> = ({ value, onChange, e
             size='sm'
           />
         </Box>
-        <FormControl size='small' sx={{ minWidth: '100px' }}>
-          <Select
-            value={unit}
-            onChange={(e) => handleUnitChange(e.target.value)}
-            disabled={disabled}
-            sx={{
-              borderRadius: 'var(--ds-radius-md)',
-              backgroundColor: 'white',
-              fontSize: 'var(--ds-text-body-lg)',
-              '& fieldset': {
-                borderColor: 'var(--ds-brand-200)',
-              },
-            }}
-          >
-            {DURATION_UNITS.map((u) => (
-              <MenuItem key={u.value} value={u.value}>
-                {u.label}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        <Select
+          size='sm'
+          minWidth='100px'
+          clearable={false}
+          value={unit}
+          disabled={disabled}
+          options={DURATION_UNITS.map((u) => ({ value: u.value, label: u.label }))}
+          onChange={(next) => handleUnitChange(next)}
+        />
       </Box>
       {error && (
         <Typography variant='body2' sx={{ color: 'var(--ds-red-500)', fontSize: 'var(--ds-text-small)', mt: 0.5 }}>
@@ -1324,22 +1297,13 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
     if (options && options.length > 0) {
       return (
         <Select
-          size='small'
-          fullWidth
-          value={fieldValue ?? fieldSchema.default ?? ''}
-          onChange={(e) => handleFieldChange(fieldName, e.target.value)}
+          size='sm'
+          placeholder={`Select ${fieldSchema.title || fieldName}`}
+          value={(fieldValue ?? fieldSchema.default) || null}
           disabled={disabled}
-          displayEmpty
-        >
-          <MenuItem value=''>
-            <em>Select {fieldSchema.title || fieldName}</em>
-          </MenuItem>
-          {options.map((option) => (
-            <MenuItem key={option} value={option}>
-              {option}
-            </MenuItem>
-          ))}
-        </Select>
+          options={options}
+          onChange={(next) => handleFieldChange(fieldName, next ?? '')}
+        />
       );
     }
 

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Typography, Tooltip } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import { DragIndicator } from '@mui/icons-material';
 
 interface DraggableOutputFieldProps {

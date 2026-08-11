@@ -58,6 +58,13 @@ export interface OverlaySurfaceProps {
    */
   keepMounted?: boolean;
   children: React.ReactNode;
+  /**
+   * Class applied to the overlay root (the portaled MUI Menu / Modal root, not
+   * the paper). Needed for host integrations that inspect the DOM ancestry of a
+   * click — e.g. ReactFlow's `nodrag`/`nopan`, so a click on the menu or its
+   * backdrop isn't treated as a canvas node click.
+   */
+  className?: string;
   /** Escape hatch for forwarding additional MUI Menu slot props. */
   slotProps?: MenuProps['slotProps'];
 }
@@ -101,6 +108,7 @@ export function OverlaySurface({
   disablePortal = true,
   keepMounted = false,
   children,
+  className,
   slotProps,
 }: OverlaySurfaceProps) {
   const itemRole = role === 'listbox' ? 'option' : 'menuitem';
@@ -110,6 +118,7 @@ export function OverlaySurface({
       anchorEl={anchorEl}
       open={open}
       onClose={onClose}
+      className={className}
       disablePortal={disablePortal}
       keepMounted={keepMounted}
       anchorOrigin={deriveAnchorOrigin(side, align)}
@@ -176,6 +185,12 @@ const ITEM_TONE_COLOR: Record<OverlayItemTone, string> = {
 export interface OverlayItemProps {
   /** Main label content. */
   children: React.ReactNode;
+  /**
+   * Optional secondary line rendered under the label (two-line item). Renders
+   * as a dimmed caption; caller-provided nodes (e.g. a monospace <Typography>)
+   * keep their own styling. Each line truncates independently with an ellipsis.
+   */
+  description?: React.ReactNode;
   size?: OverlayItemSize;
   tone?: OverlayItemTone;
   /** Selected state — value-pickers only (Select / MultiSelect / FilterDropdown). */
@@ -244,6 +259,7 @@ function OverlayItemLabel({ children }: { children: string }) {
 
 export function OverlayItem({
   children,
+  description,
   size = 'md',
   tone = 'default',
   selected = false,
@@ -297,8 +313,37 @@ export function OverlayItem({
       {/* Label — truncates with an ellipsis instead of overflowing the panel
           width (which would force the scroll box's overflow-x to `auto` and
           show a horizontal scrollbar). String labels get a hover tooltip with
-          the full text, but only when actually clipped (see OverlayItemLabel). */}
-      {typeof children === 'string' ? (
+          the full text, but only when actually clipped (see OverlayItemLabel).
+          With `description` set the row becomes a two-line stack: the label on
+          top, a dimmed caption below — each line truncates independently. */}
+      {description != null ? (
+        <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: ds.space[0] }}>
+          {/* Row wrapper so OverlayItemLabel's internal `flex:1` truncates the
+              label horizontally rather than stretching it down the column. */}
+          {typeof children === 'string' ? (
+            <Box sx={{ display: 'flex', minWidth: 0 }}>
+              <OverlayItemLabel>{children}</OverlayItemLabel>
+            </Box>
+          ) : (
+            <Box component='span' sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'inherit' }}>
+              {children}
+            </Box>
+          )}
+          <Box
+            component='span'
+            sx={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontSize: 'var(--ds-text-caption)',
+              fontWeight: 'var(--ds-font-weight-regular)',
+              color: 'var(--ds-gray-500)',
+            }}
+          >
+            {description}
+          </Box>
+        </Box>
+      ) : typeof children === 'string' ? (
         <OverlayItemLabel>{children}</OverlayItemLabel>
       ) : (
         <Box component='span' sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

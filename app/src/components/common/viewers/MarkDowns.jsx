@@ -1,18 +1,3 @@
-/**
- * MarkDowns — markdown renderer with mermaid diagrams + run/copy buttons on code blocks.
- *
- * CSS-ONLY token conformance notes (per Track A §12 audit, 2026-05-07):
- *   - Inline SVG `fill="..."` attributes use literal hex (e.g. fill="#FFFFFF").
- *     Browsers don't resolve `var(--ds-*)` inside SVG presentation attributes.
- *     Accepted exception. See lines with `<svg ... fill="#FFFFFF">` strings.
- *   - PNG-export wrapper (`downloadMermaidAsPNG`) hardcodes `#ffffff` for the
- *     off-screen rasterization background. html-to-image rasterizes a detached
- *     DOM node; CSS variables don't resolve in that context. Accepted exception.
- *   - Translucent-white-on-dark UI affordances (`rgba(255, 255, 255, 0.1/0.2)`)
- *     for code-block button hover states have no DS token equivalent
- *     (gray-alpha is rgba(0,0,0,...), not white-alpha). Accepted exception
- *     until a `--ds-white-alpha-*` token is introduced.
- */
 import { Box } from '@mui/material';
 import { useRef, useEffect, useState, useMemo } from 'react';
 import PropTypes from 'prop-types';
@@ -20,12 +5,11 @@ import dynamic from 'next/dynamic';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { withErrorBoundary, reportHandledError } from '@shared/ErrorBoundary';
+import { ds } from 'src/utils/colors';
 import DownloadIcon from '@assets/download-f.svg';
-import Menu from '@mui/material/Menu';
-import MenuItem from '@mui/material/MenuItem';
-import { snackbar } from '../snackbarService';
+import { DropdownMenu } from '@ui/DropdownMenu';
+import { toast as snackbar } from '@ui/Toast';
 import { createRoot } from 'react-dom/client';
-import { ds } from '@utils/colors';
 
 // Diagram rendering needs heavy, diagram-only libraries: `mermaid`, `chart.js` /
 // `react-chartjs-2` (via MermaidChartJS) and `html-to-image`. MarkDowns is reached
@@ -120,7 +104,7 @@ const MARKED_OPTIONS = {
 };
 
 const defaultStyles = {
-  fontFamily: 'var(--ds-font-sans)',
+  fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
   fontSize: 'var(--ds-text-body)',
   color: 'var(--ds-gray-700)',
   lineHeight: 1.5,
@@ -129,28 +113,28 @@ const defaultStyles = {
   },
   '& h1, & h2, & h3, & h4, & h5, & h6': {
     margin: 0,
-    fontFamily: 'var(--ds-font-sans)',
+    fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
     fontWeight: 'var(--ds-font-weight-medium)',
     lineHeight: 1.2,
     //scrollMarginTop: '8px',
   },
   '& h1': {
     fontSize: 'var(--ds-text-title)',
-    color: 'var(--ds-gray-700)',
+    color: ds.gray[700],
     fontWeight: 'var(--ds-font-weight-medium)',
     letterSpacing: '-0.025em',
     marginBottom: 'var(--ds-space-3)',
     paddingBottom: 'var(--ds-space-1)',
-    borderBottom: '1px solid var(--ds-gray-200)',
+    borderBottom: '1px solid var(--ds-brand-150)',
   },
   '& h2': {
     fontSize: 'var(--ds-text-body-lg)',
-    color: 'var(--ds-gray-700)',
+    color: ds.gray[700],
     fontWeight: 'var(--ds-font-weight-medium)',
     marginTop: 'var(--ds-space-5)',
     marginBottom: 'var(--ds-space-3)',
     paddingBottom: 'var(--ds-space-2)',
-    borderBottom: '1px solid var(--ds-gray-200)',
+    borderBottom: `1px solid color-mix(in srgb, ${ds.gray[300]} 73%, transparent)`,
   },
   '& h3': {
     fontSize: 'var(--ds-text-body-lg)',
@@ -168,45 +152,51 @@ const defaultStyles = {
     marginTop: 'var(--ds-space-1)',
     fontWeight: 'var(--ds-font-weight-regular)',
     marginBottom: 'var(--ds-space-4)',
-    color: 'var(--ds-gray-700)',
+    color: ds.gray[700],
     lineHeight: 1.6,
     '& code': {
-      backgroundColor: 'var(--ds-gray-100)',
+      backgroundColor: 'var(--ds-background-200)',
       padding: 'var(--ds-space-1) var(--ds-space-1)',
       borderRadius: 'var(--ds-radius-sm)',
       margin: '0 var(--ds-space-1)',
       fontSize: 'var(--ds-text-caption)',
-      color: 'var(--ds-gray-700)',
-      fontFamily: 'var(--ds-font-mono)',
-      border: '1px solid var(--ds-gray-200)',
+      color: ds.gray[700],
+      fontFamily: '"Roboto Mono", monospace',
+      border: `1px solid ${ds.gray[200]}`,
     },
     '& strong, & b': {
       fontWeight: 'var(--ds-font-weight-medium)',
-      color: 'var(--ds-gray-700)',
+      color: ds.gray[700],
+      marginBottom: 'var(--ds-space-7) !important',
     },
   },
   '& a': {
-    color: 'var(--ds-blue-600)',
+    color: 'var(--ds-blue-500)',
     textDecoration: 'none',
     fontSize: 'var(--ds-text-body)',
     transition: 'all 0.2s ease',
     '&:hover': {
-      borderBottom: '1px solid var(--ds-blue-400)',
-      backgroundColor: 'var(--ds-gray-100)',
+      borderBottom: '1px solid  var(--ds-blue-400)',
+      backgroundColor: 'var(--ds-background-200)',
     },
   },
-  '& ul, & ol': {
+  '& ul': {
     paddingLeft: 'var(--ds-space-4)',
+  },
+  '& ol': {
+    paddingLeft: 'var(--ds-space-6)',
+  },
+  '& ul, & ol': {
     marginBottom: 'var(--ds-space-5)',
     '& li': {
       marginBottom: 'var(--ds-space-1)',
-      color: 'var(--ds-gray-700)',
+      color: ds.gray[700],
       position: 'relative',
       paddingLeft: '0px',
       lineHeight: 1.6,
       fontWeight: 'var(--ds-font-weight-regular)',
       '&::marker': {
-        color: 'var(--ds-gray-700)',
+        color: ds.gray[700],
       },
       '& p': {
         marginTop: 0,
@@ -214,26 +204,26 @@ const defaultStyles = {
       },
       '& strong, & b': {
         fontWeight: 'var(--ds-font-weight-regular)',
-        color: 'var(--ds-gray-700)',
+        color: ds.gray[700],
       },
       '& code': {
-        backgroundColor: 'var(--ds-gray-100)',
+        backgroundColor: 'var(--ds-background-200)',
         padding: 'var(--ds-space-1) var(--ds-space-1)',
         borderRadius: 'var(--ds-radius-sm)',
         margin: '0 var(--ds-space-1)',
         fontSize: 'var(--ds-text-caption)',
-        color: 'var(--ds-gray-700)',
-        fontFamily: 'var(--ds-font-mono)',
-        border: '1px solid var(--ds-gray-200)',
+        color: ds.gray[700],
+        fontFamily: '"Roboto Mono", monospace',
+        border: `1px solid ${ds.gray[200]}`,
       },
     },
   },
   '& blockquote': {
-    borderLeft: '4px solid var(--ds-gray-300)',
-    backgroundColor: 'var(--ds-gray-100)',
+    borderLeft: `${ds.space[1]} solid ${ds.gray[300]}`,
+    backgroundColor: 'var(--ds-background-200)',
     padding: 'var(--ds-space-3) var(--ds-space-4)',
     margin: 'var(--ds-space-4) 0',
-    color: 'var(--ds-gray-700)',
+    color: ds.gray[700],
     fontStyle: 'italic',
     borderRadius: '0 var(--ds-radius-md) var(--ds-radius-md) 0',
     '& p': {
@@ -244,10 +234,10 @@ const defaultStyles = {
     },
   },
   '& pre': {
-    backgroundColor: 'var(--ds-gray-700)',
-    color: 'var(--ds-gray-200) !important',
-    padding: 'var(--ds-space-3) var(--ds-space-4) !important',
-    borderRadius: 'var(--ds-radius-md)',
+    backgroundColor: 'var(--ds-brand-500)',
+    color: 'var(--ds-brand-150) !important',
+    padding: `var(--ds-space-3) ${ds.space.mul(1, 16)} var(--ds-space-3) var(--ds-space-4) !important`,
+    borderRadius: 'var(--ds-radius-lg)',
     marginBottom: 'var(--ds-space-4)',
     whiteSpace: 'pre-wrap',
     wordWrap: 'break-word',
@@ -257,7 +247,7 @@ const defaultStyles = {
     '& code': {
       color: 'inherit !important',
       fontSize: 'var(--ds-text-body)',
-      fontFamily: 'var(--ds-font-mono)',
+      fontFamily: '"Roboto Mono", monospace',
       lineHeight: 1.6,
       backgroundColor: 'transparent !important',
       padding: 0,
@@ -275,7 +265,7 @@ const defaultStyles = {
       outline: 'none',
       boxShadow: 'none',
       '& button': {
-        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+        backgroundColor: `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`,
         border: 'none',
         outline: 'none',
         boxShadow: 'none',
@@ -285,7 +275,7 @@ const defaultStyles = {
   '& hr': {
     border: 'none',
     height: '1px',
-    backgroundColor: 'var(--ds-gray-200)',
+    backgroundColor: 'var(--ds-brand-150)',
     margin: 'var(--ds-space-5) 0',
     position: 'relative',
     '&::before': {
@@ -317,8 +307,8 @@ const defaultStyles = {
     borderCollapse: 'separate',
     borderSpacing: 0,
     '& th': {
-      backgroundColor: 'var(--ds-blue-100)',
-      color: 'var(--ds-gray-700)',
+      backgroundColor: ds.blue[100],
+      color: ds.gray[700],
       padding: 'var(--ds-space-2) var(--ds-space-4)',
       fontWeight: 'var(--ds-font-weight-medium)',
       textAlign: 'left',
@@ -327,8 +317,8 @@ const defaultStyles = {
     },
     '& td': {
       padding: 'var(--ds-space-2) var(--ds-space-4)',
-      borderBottom: '1px solid var(--ds-gray-200)',
-      color: 'var(--ds-gray-700)',
+      borderBottom: `1px solid ${ds.gray[200]}`,
+      color: ds.gray[700],
       fontSize: 'var(--ds-text-body)',
       transition: 'background-color 0.2s ease',
       // Caps a prose-heavy cell so one long sentence can't stretch the table off
@@ -338,25 +328,27 @@ const defaultStyles = {
       overflowWrap: 'break-word',
     },
     '& tr:hover td': {
-      backgroundColor: 'var(--ds-gray-100)',
+      backgroundColor: 'var(--ds-background-200)',
     },
   },
   '& img': {
     maxWidth: `${ds.space.mul(0, 300)} !important`,
     height: 'auto !important',
-    borderRadius: 'var(--ds-radius-md)',
+    borderRadius: 'var(--ds-radius-lg)',
     display: 'block',
     margin: 'var(--ds-space-4) auto',
-    boxShadow: '0 4px 6px -1px var(--ds-gray-alpha-200), 0 2px 4px -1px var(--ds-gray-alpha-100)',
+    boxShadow: `0 ${ds.space[1]} ${ds.space.mul(0, 3)} -1px color-mix(in srgb, ${ds.gray[500]} 10%, transparent), 0 ${ds.space[0]} ${
+      ds.space[1]
+    } -1px color-mix(in srgb, ${ds.gray[300]} 6%, transparent)`,
   },
   '& kbd': {
-    backgroundColor: 'var(--ds-gray-100)',
-    border: '1px solid var(--ds-gray-200)',
-    borderBottom: '3px solid var(--ds-gray-300)',
+    backgroundColor: 'var(--ds-background-200)',
+    border: '1px solid var(--ds-brand-150)',
+    borderBottom: '3px solid var(--ds-brand-200)',
     borderRadius: 'var(--ds-radius-sm)',
     padding: 'var(--ds-space-1) var(--ds-space-1)',
     fontSize: 'var(--ds-text-caption)',
-    fontFamily: 'var(--ds-font-mono)',
+    fontFamily: '"Roboto Mono", monospace',
   },
   '& details': {
     marginBottom: 'var(--ds-space-3)',
@@ -366,14 +358,14 @@ const defaultStyles = {
       fontWeight: 'var(--ds-font-weight-medium)',
       padding: 'var(--ds-space-1) 0',
       '&:hover': {
-        color: 'var(--ds-blue-700)',
+        color: 'var(--ds-gray-700)',
       },
     },
   },
   '& .mermaid': {
     backgroundColor: 'var(--ds-background-100)',
     padding: 'var(--ds-space-4)',
-    borderRadius: 'var(--ds-radius-md)',
+    borderRadius: 'var(--ds-radius-lg)',
     overflowX: 'auto',
   },
 };
@@ -479,8 +471,8 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
   const downloadMermaidAsPNG = async (svgElement, fileName = 'diagram.png', scale = 4) => {
     const wrapper = document.createElement('div');
     try {
-      wrapper.style.background = '#ffffff';
-      wrapper.style.padding = '20px';
+      wrapper.style.background = ds.background[100];
+      wrapper.style.padding = ds.space.mul(0, 10);
       wrapper.style.display = 'inline-block';
 
       const svgClone = svgElement.cloneNode(true);
@@ -489,7 +481,7 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
 
       const { toPng } = await import('html-to-image');
       const dataUrl = await toPng(wrapper, {
-        backgroundColor: '#ffffff',
+        backgroundColor: 'var(--ds-background-100)',
         pixelRatio: scale,
         cacheBust: true,
         style: {
@@ -511,54 +503,25 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
   };
 
   const Dropdown = ({ svg, index, onDownloadPNG, onDownloadSVG }) => {
-    const [anchorEl, setAnchorEl] = useState(null);
-    const open = Boolean(anchorEl);
-
-    const handleOpen = (e) => {
-      setAnchorEl(e.currentTarget);
-    };
-
-    const handleClose = () => {
-      setAnchorEl(null);
-    };
-
     return (
-      <>
-        <button
-          onClick={handleOpen}
-          style={{
-            all: 'unset',
-            position: 'absolute',
-            inset: 0,
-            cursor: 'pointer',
-          }}
-        />
-        <Menu
-          anchorEl={anchorEl}
-          open={open}
-          onClose={handleClose}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-          transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        >
-          <MenuItem
-            onClick={() => {
-              handleClose();
-              onDownloadPNG(svg, `mermaid-diagram-${index + 1}.png`);
+      <DropdownMenu
+        align='end'
+        disablePortal={false}
+        trigger={
+          <button
+            style={{
+              all: 'unset',
+              position: 'absolute',
+              inset: 0,
+              cursor: 'pointer',
             }}
-          >
-            Download PNG
-          </MenuItem>
-
-          <MenuItem
-            onClick={() => {
-              handleClose();
-              onDownloadSVG(svg, `mermaid-diagram-${index + 1}.svg`);
-            }}
-          >
-            Download SVG
-          </MenuItem>
-        </Menu>
-      </>
+          />
+        }
+        items={[
+          { label: 'Download PNG', onSelect: () => onDownloadPNG(svg, `mermaid-diagram-${index + 1}.png`) },
+          { label: 'Download SVG', onSelect: () => onDownloadSVG(svg, `mermaid-diagram-${index + 1}.svg`) },
+        ]}
+      />
     );
   };
 
@@ -574,14 +537,14 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
     btn.className = 'download-mermaid-btn';
 
     Object.assign(btn.style, {
-      height: ds.space[5],
-      width: ds.space[5],
+      height: ds.space.mul(0, 12),
+      width: ds.space.mul(0, 12),
       display: 'flex',
       justifyContent: 'center',
       alignItems: 'center',
       cursor: 'pointer',
       borderRadius: 'var(--ds-radius-sm)',
-      border: '0.5px solid var(--ds-gray-300)',
+      border: '0.5px solid var(--ds-brand-200)',
       background: 'var(--ds-background-100)',
       padding: '0',
     });
@@ -807,15 +770,15 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
             position: 'absolute',
             top: ds.space[1],
             right: ds.space[6],
-            background: 'var(--ds-green-500)',
+            background: `color-mix(in srgb, ${ds.green[500]} 80%, transparent)`,
             border: 'none',
             color: 'var(--ds-background-100)',
             padding: 'var(--ds-space-1)',
             borderRadius: 'var(--ds-radius-sm)',
             cursor: canRunCode ? 'pointer' : 'not-allowed',
             opacity: canRunCode ? '1' : '0.4',
-            width: ds.space[5],
-            height: ds.space[5],
+            width: ds.space.mul(0, 12),
+            height: ds.space.mul(0, 12),
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -827,11 +790,11 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
           runButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="#FFFFFF"><path d="M8 5v14l11-7z"/></svg>';
 
           runButton.addEventListener('mouseenter', () => {
-            runButton.style.backgroundColor = 'var(--ds-green-600)';
+            runButton.style.backgroundColor = ds.green[500];
           });
 
           runButton.addEventListener('mouseleave', () => {
-            runButton.style.backgroundColor = 'var(--ds-green-500)';
+            runButton.style.backgroundColor = `color-mix(in srgb, ${ds.green[500]} 80%, transparent)`;
           });
 
           runButton.addEventListener('click', () => {
@@ -853,14 +816,14 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
           position: 'absolute',
           top: ds.space[1],
           right: ds.space[1],
-          background: 'rgba(255, 255, 255, 0.1)',
+          background: `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`,
           border: 'none',
-          color: 'var(--ds-gray-200)',
+          color: 'var(--ds-brand-150)',
           padding: 'var(--ds-space-1)',
           borderRadius: 'var(--ds-radius-sm)',
           cursor: 'pointer',
-          width: ds.space[5],
-          height: ds.space[5],
+          width: ds.space.mul(0, 12),
+          height: ds.space.mul(0, 12),
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -874,11 +837,11 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
           : '<svg width="12" height="12" viewBox="0 0 24 24" fill="#FFFFFF"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
 
         copyButton.addEventListener('mouseenter', () => {
-          copyButton.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+          copyButton.style.backgroundColor = `color-mix(in srgb, ${ds.background[100]} 20%, transparent)`;
         });
 
         copyButton.addEventListener('mouseleave', () => {
-          copyButton.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+          copyButton.style.backgroundColor = `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`;
         });
 
         copyButton.addEventListener('click', () => handleCopy(codeText, index));
@@ -923,7 +886,7 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
     width: '100%',
     padding: 'var(--ds-space-4)',
     fontSize: 'var(--ds-text-small) !important',
-    borderRadius: 'var(--ds-radius-md)',
+    borderRadius: 'var(--ds-radius-lg)',
     maxHeight: ds.space.mul(0, 250),
     overflowY: 'auto',
     overflowX: 'hidden',

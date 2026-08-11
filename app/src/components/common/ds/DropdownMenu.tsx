@@ -5,7 +5,8 @@
  *              side  = 'bottom' | 'top' | 'left' | 'right'
  *              size  = 'sm' | 'md'
  *              item.tone = 'default' | 'danger'
- *              composition: items | sections | +kbd | +icons (auto from item shape)
+ *              composition: items | sections | +kbd | +icons | +description
+ *                (auto from item shape; `description` renders a two-line item)
  *              searchable = boolean (optional sticky search header — geometry/styling
  *                lifted verbatim from `ds/FilterDropdown` so the two
  *                primitives stay visually identical)
@@ -55,6 +56,12 @@ export type DropdownMenuItemTone = OverlayItemTone;
 export interface DropdownMenuItemAction {
   type?: 'item';
   label: React.ReactNode;
+  /**
+   * Optional secondary line under the label (two-line item) — e.g. a preset's
+   * value, a task reference, or a short "what this does" hint. Renders as a
+   * dimmed caption; a caller-provided node keeps its own styling.
+   */
+  description?: React.ReactNode;
   icon?: React.ReactNode;
   /** Keyboard shortcut hint (right-aligned). e.g. "⌘D" */
   kbd?: string;
@@ -133,6 +140,13 @@ export interface DropdownMenuProps {
   headerActions?: React.ReactNode;
   /** Called after any item.onSelect (or after dismissal) */
   onClose?: () => void;
+  /**
+   * Class applied to the overlay root (portaled Menu/Modal root). Use for host
+   * integrations that inspect a click's DOM ancestry — e.g. pass `'nodrag nopan'`
+   * when the trigger lives inside a ReactFlow node so clicking the menu or its
+   * backdrop isn't handled as a canvas node click.
+   */
+  className?: string;
   disablePortal?: boolean;
   /**
    * Mount the panel (hidden) before first open so item icons that lazy-load
@@ -194,6 +208,7 @@ export function DropdownMenu({
   refreshLabel = 'Refresh',
   headerActions,
   onClose,
+  className,
   disablePortal = true,
   keepMounted = false,
 }: DropdownMenuProps) {
@@ -251,6 +266,7 @@ export function DropdownMenu({
         side={side}
         minWidth={minWidth}
         role='menu'
+        className={className}
         disablePortal={disablePortal}
         keepMounted={keepMounted}
       >
@@ -375,6 +391,7 @@ export function DropdownMenu({
                           disabled={subItem.disabled}
                           selected={subItem.active}
                           icon={subItem.icon}
+                          description={subItem.description}
                           kbd={subItem.kbd}
                           id={subItem.id}
                           onClick={() => handleSelect(subItem)}
@@ -394,6 +411,7 @@ export function DropdownMenu({
                   disabled={item.disabled}
                   selected={item.active}
                   icon={item.icon}
+                  description={item.description}
                   kbd={item.kbd}
                   id={item.id}
                   onClick={() => handleSelect(item)}
