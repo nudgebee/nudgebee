@@ -809,7 +809,16 @@ export async function listUserTenantRoles(username: string, tenantId: string) {
   const response = await queryGraphQL(query, 'UserTenantRoles', {
     object: { username, tenant_id: tenantId },
   });
+  // queryGraphQL does not throw on GraphQL / gateway failures — it returns them in
+  // response.data.errors with response.data.data absent. Surface that so callers can
+  // tell a *failed* lookup apart from a user who genuinely holds no roles in the
+  // tenant (the normal case for custom-role-only access). The status/missing-response
+  // checks cover the failure shapes that carry no errors array: the 502/503 the server
+  // gateway returns when it is unavailable or cannot handle the operation, and the
+  // bare `undefined` queryGraphQL resolves to when a server-side call throws outright.
+  const errored = !response || response.status !== 200 || (Array.isArray(response.data?.errors) && response.data.errors.length > 0);
   return {
+    errored,
     data: response?.data?.data?.users_list_tenant_roles?.roles || [],
     tenantName: response?.data?.data?.users_list_tenant_roles?.tenant_name,
   };

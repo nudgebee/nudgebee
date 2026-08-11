@@ -33,7 +33,6 @@ import {
   getUserSuperAdminRole,
   getTenantIdByName,
 } from '@lib/UserService';
-import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/userPermissionMapper';
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
@@ -84,8 +83,8 @@ export interface NudgebeeSession extends Session {
   // isn't a page can gate on them. The pages that own these surfaces read the
   // same env vars in their own getServerSideProps; this carries the values to
   // components mounted elsewhere — the guided-tour catalog in the header has to
-  // know whether /optimise will render the AI Gateway tab before offering its
-  // guide.
+  // know whether /optimise will render the LLM Analyser / AI Gateway tabs before
+  // offering their guides.
   //
   // Deliberately NOT promoted via next.config.js `env:` (which inlines at BUILD
   // time and would freeze the value into the image): these arrive at runtime
@@ -96,6 +95,7 @@ export interface NudgebeeSession extends Session {
 
 /** Deployment-level UI toggles read from the pod environment at request time. */
 export interface UiFeatureFlags {
+  llmAnalyser: boolean;
   llmGateway: boolean;
 }
 
@@ -110,6 +110,49 @@ function cleanupUserAccessCache() {
       _userAccessUpdateCache.delete(key);
     }
   }
+}
+
+function adapterUserUpdateDataOnUserRoles(
+  user_roles: any[],
+  roles: string[],
+  accountIds: string[],
+  readonlyAccountIds: string[],
+  namespacedAccountIds: string[],
+  namespacedReadOnlyAccountIds: string[],
+  k8sNamespaces: any,
+  tenantId?: string
+) {
+  user_roles?.forEach((r: any) => {
+    if (r.entity_type && r.entity_type == 'tenant') {
+      if (!tenantId || r.entity_id === tenantId) {
+        roles.push(r.role);
+      }
+    } else if (r.entity_type && r.entity_type == 'account' && r.role == 'account_admin_readonly') {
+      roles.push(r.role);
+      readonlyAccountIds.push(r.entity_id);
+    } else if (r.entity_type && r.entity_type == 'account' && r.role == 'account_admin') {
+      roles.push(r.role);
+      accountIds.push(r.entity_id);
+    } else if (r.entity_type && r.entity_type == 'k8s_namespace' && r.role == 'k8s_namespace_admin') {
+      roles.push(r.role);
+      const entity = r.entity_id?.split(':');
+      if (!k8sNamespaces[entity[0]]) {
+        k8sNamespaces[entity[0]] = [entity[1]];
+      } else {
+        k8sNamespaces[entity[0]].push(entity[1]);
+      }
+      namespacedAccountIds.push(entity[0]);
+    } else if (r.entity_type && r.entity_type == 'k8s_namespace' && r.role == 'k8s_namespace_admin_readonly') {
+      roles.push(r.role);
+      const entity = r.entity_id?.split(':');
+      if (!k8sNamespaces[entity[0]]) {
+        k8sNamespaces[entity[0]] = [entity[1]];
+      } else {
+        k8sNamespaces[entity[0]].push(entity[1]);
+      }
+      namespacedReadOnlyAccountIds.push(entity[0]);
+    }
+  });
 }
 
 export async function adapterUser(user: any): Promise<NudgebeeUser> {
@@ -143,9 +186,6 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
 
   const groups = user.groups ?? [];
   for (const group of groups) {
-    if (!groupBelongsToTenant(group, tenant.id)) {
-      continue;
-    }
     const groupRoles = group.user_group.group_roles ?? [];
     adapterUserUpdateDataOnUserRoles(
       groupRoles,
@@ -165,7 +205,7 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
   namespacedAccountIds = [...new Set(namespacedAccountIds)];
   namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
 
-  if (accountIds.length > 0 || readonlyAccountIds.length > 0 || namespacedAccountIds.length > 0 || namespacedReadOnlyAccountIds.length > 0) {
+  if (accountIds.length > 0 || readonlyAccountIds.length > 0) {
     // Narrow role-granted account ids to those that belong to the selected tenant.
     const resp = await getAccountByTenant(tenant.id);
     const tenantAccounts: string[] = resp.data?.cloud_accounts?.map((a: any) => a.id) ?? [];
@@ -174,13 +214,6 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
       readonlyAccountIds = readonlyAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedAccountIds = namespacedAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedReadOnlyAccountIds = namespacedReadOnlyAccountIds.filter((a) => tenantAccounts.includes(a));
-      // k8sNamespaces is keyed by account id — prune it alongside the id lists, or a
-      // namespace grant on another tenant's account stays visible in the session.
-      for (const accountId of Object.keys(k8sNamespaces)) {
-        if (!tenantAccounts.includes(accountId)) {
-          delete k8sNamespaces[accountId];
-        }
-      }
     } else {
       // No tenant accounts resolved. This session scope is ADVISORY — the backend
       // re-authorizes every request — so we deliberately keep the user's explicit role
@@ -240,7 +273,7 @@ export function GQLAdapter() {
       return await adapterUser(user);
     }
     if (response.errors) {
-      console.log('getUserByEmail Error', JSON.stringify(response));
+      console.error('getUserByEmail Error', JSON.stringify(response));
     }
     return null;
   }
@@ -259,7 +292,7 @@ export function GQLAdapter() {
         throw new Error('User Account is suspended');
       } else if (accountsData.user.status === 'inactive') {
         //first time login flow
-        console.log(`getUserByAccount: user ${accountsData.user.id} is inactive, first time login`);
+        console.warn(`getUserByAccount: user ${accountsData.user.id} is inactive, first time login`);
         return null;
       }
       const transformedUser = await adapterUser(accountsData.user);
@@ -281,7 +314,7 @@ export function GQLAdapter() {
       accessed_at: new Date().toISOString(),
     });
     if (response.errors) {
-      console.log('unable to link account', response.errors);
+      console.error('unable to link account', response.errors);
       throw Error('Unable to Link User');
     }
     account.id = response.data.id;
@@ -311,23 +344,19 @@ export function GQLAdapter() {
     };
   }
 
-  async function getSessionAndUser(sessionToken: string) {
-    console.log('getSessionAndUser', sessionToken);
+  async function getSessionAndUser(_sessionToken: string) {
     return null;
   }
 
-  async function updateSession(session: Partial<AdapterSession> & Pick<AdapterSession, 'sessionToken'>) {
-    console.log('updateSession', session);
+  async function updateSession(_session: Partial<AdapterSession> & Pick<AdapterSession, 'sessionToken'>) {
     return null;
   }
 
-  async function deleteSession(sessionToken: string) {
-    console.log('deleteSession', sessionToken);
+  async function deleteSession(_sessionToken: string) {
     return null;
   }
 
   async function createVerificationToken(verificationToken: VerificationToken) {
-    console.log('createVerificationToken called for:', verificationToken.identifier);
     const user = await getUserByUsername({ username: verificationToken.identifier, fetchRoles: false, fetchAccounts: true, fetchGroups: true });
     let userAccount = null;
     if (user.data && user.data.users.length > 0) {
@@ -339,18 +368,10 @@ export function GQLAdapter() {
       return verificationToken;
     }
 
-    console.log(
-      'createVerificationToken: user found, id:',
-      userAccount.id,
-      'email auths:',
-      userAccount.user_auths.filter((f: any) => f.provider_type === 'email' && f.provider === 'email').length
-    );
-
     if (userAccount.user_auths.length > 0) {
       const userAuth = userAccount.user_auths.filter((f: any) => f.provider_type === 'email' && f.provider === 'email')[0];
       if (userAuth) {
         //delete existing auth
-        console.log('createVerificationToken: deleting old auth entry:', userAuth.id);
         await deleteUserAuth(userAuth.id);
       }
     }
@@ -368,29 +389,27 @@ export function GQLAdapter() {
     });
 
     if (response.errors) {
-      console.log('unable to store tokens', response.errors);
+      console.error('unable to store tokens', response.errors);
       throw Error('Unable to Generate Verification Token');
     }
-    console.log('createVerificationToken: auth entry created successfully, id:', response.data?.id);
     return verificationToken;
   }
 
   async function useVerificationToken(params: { identifier: string; token: string }) {
-    console.log('useVerificationToken called for identifier:', params.identifier);
     const credResp = await getUserByUsernameAndAccountProviderAndCredential({
       userName: params.identifier,
       accountProvider: 'email',
       fetchAccounts: true,
     });
     if (!credResp?.data?.user_auths || credResp.data.user_auths.length === 0) {
-      console.log('useVerificationToken: no user_auths found for', params.identifier, 'raw response:', JSON.stringify(credResp));
+      console.warn('useVerificationToken: no user_auths found for', params.identifier, 'raw response:', JSON.stringify(credResp));
       return null;
     }
 
     const authEntry = credResp.data.user_auths[0];
     const userAccount = authEntry.user;
     if (!userAccount || userAccount.status === 'suspended') {
-      console.log('useVerificationToken: user not found or suspended for', params.identifier, 'status:', userAccount?.status);
+      console.warn('useVerificationToken: user not found or suspended for', params.identifier, 'status:', userAccount?.status);
       return null;
     }
 
@@ -426,7 +445,7 @@ export function GQLAdapter() {
       };
     }
 
-    console.log(
+    console.warn(
       'useVerificationToken: credential mismatch for',
       params.identifier,
       'hasCredential:',
@@ -557,13 +576,18 @@ if (process.env.EMAIL_SERVER_HOST && (process.env.NEXTAUTH_MAGICLINK_CREDS_ENABL
         // to the end user — keep the diagnostic detail in server logs and the
         // outward-facing copy comes from app/src/pages/auth/error.tsx.
         const notificationServiceUrl = process.env.NOTIFICATION_SERVICE_URL ?? 'http://notifications:80';
+        const notificationToken = process.env.NOTIFICATION_SERVER_TOKEN;
         try {
-          await axios.post(`${notificationServiceUrl}/api/emails/send`, {
-            recipients: email,
-            subject: 'Sign in to your account',
-            template: 'magic_link',
-            template_params: { magic_link_url: url },
-          });
+          await axios.post(
+            `${notificationServiceUrl}/api/emails/send`,
+            {
+              recipients: email,
+              subject: 'Sign in to your account',
+              template: 'magic_link',
+              template_params: { magic_link_url: url },
+            },
+            notificationToken ? { headers: { 'X-ACTION-TOKEN': notificationToken } } : undefined
+          );
         } catch (err: any) {
           // axios throws on non-2xx by default. Capture status + body when
           // available, plus the raw error code for network failures
@@ -705,10 +729,10 @@ export async function ensureAllowedDomainsSet(email: string, tenantId?: string) 
         tenantId
       );
       await getTenantAttributes(true); // refresh cache
-      console.log(`Set allowed_domains for tenant ${tenantId}: [${domain}]`);
+      console.warn(`Set allowed_domains for tenant ${tenantId}: [${domain}]`);
     }
   } catch (e) {
-    console.log('Failed to set allowed_domains for tenant', e);
+    console.error('Failed to set allowed_domains for tenant', e);
   }
 }
 
@@ -731,7 +755,7 @@ async function getOrCreateBootstrapAdminUser(email: string) {
   if (!access.allowed) {
     throw Error('NO_TENANT_ACCESS');
   }
-  console.log('user not found, bootstrapping first admin', email);
+  console.warn('user not found, bootstrapping first admin', email);
 
   // When bootstrap-check returns tenant_id="" (no pre-provisioned tenant
   // for this deployment), the backend OnboardUser auto-creates a tenant.
@@ -744,7 +768,7 @@ async function getOrCreateBootstrapAdminUser(email: string) {
     role: access.role || 'tenant_admin',
   });
   if (response.errors) {
-    console.log('unable to create user', response.errors);
+    console.error('unable to create user', response.errors);
     throw Error('Unable to Create User');
   }
 
@@ -865,10 +889,9 @@ if (process.env.NEXTAUTH_LDAP_URI) {
         try {
           const searchFilter = process.env.NEXTAUTH_LDAP_LOGIN_FILTER ?? '(uid=%s)';
           const searchDn = searchFilter.replace('%s', credentials.username);
-          console.log('searchDn', searchDn);
           await client.bind(searchDn, credentials.password);
         } catch (e) {
-          console.log('LDAP Auth Error', e);
+          console.error('LDAP Auth Error', e);
           throw Error('Invalid Credentials');
         } finally {
           await client.unbind();
@@ -895,8 +918,6 @@ if (process.env.NEXTAUTH_LDAP_URI) {
             filter: searchFilter,
             attributes: [ldapAttributeEmail, ldapAttributeGroup, ldapAttributeName, ldapAttributeFirstName, ldapAttributeLastName],
           };
-
-          console.log('searchOptions', searchOptions, process.env.NEXTAUTH_LDAP_SEARCH_DN);
 
           const { searchEntries } = await client.search(process.env.NEXTAUTH_LDAP_SEARCH_DN ?? '', searchOptions);
           if (searchEntries.length > 0) {
@@ -956,14 +977,11 @@ if (process.env.NEXTAUTH_LDAP_URI) {
             } else {
               groups = groups.map((r) => r.toString());
             }
-            console.log('userLdapDetails Groups', groups);
             const groupUpdated: string[] = groups
               .filter((r) => r != '' && groupMapping[r])
               .map((r) => {
                 return groupMapping[r];
               });
-
-            console.log('userLdapDetails', email, credentials.username, nameStr, groupUpdated, groupMapping);
 
             // License-bound deployments (tenantId set by a real license) go
             // through the registered tenant-user resolver. Singleton-tenant
@@ -982,7 +1000,7 @@ if (process.env.NEXTAUTH_LDAP_URI) {
             return await getOrCreateBootstrapAdminUser(normalizedEmail);
           }
         } catch (e: any) {
-          console.log('Unable to search attributes', e);
+          console.error('Unable to search attributes', e);
           // Re-throw NO_TENANT_ACCESS error specifically
           if (e?.message === 'NO_TENANT_ACCESS') {
             throw e;
@@ -1129,38 +1147,34 @@ async function jwtUpdateTokenForOAuth(token: any, user: any, oauthAccount: any, 
 }
 
 async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: string | undefined) {
-  console.log(
-    'jwtUpdateTokenOnUpdateTrigger:',
-    JSON.stringify({
-      trigger,
-      tenantName: session?.tenantName,
-      tenantId: session?.tenantId,
-      userEmail: session?.user?.email,
-      tokenTenant: token?.tenant,
-    })
-  );
   if (trigger === 'update' && (session.tenantId || session.tenantName)) {
     const userEmail = session.user?.email ?? '';
     let tenantId = session.tenantId;
     if (!tenantId && session.tenantName) {
       const isSuperAdmin = !!(token.isSuperAdmin || token.isSuperAdminReadonly);
       tenantId = await getTenantIdByName(session.tenantName, userEmail, isSuperAdmin);
-      console.log('getTenantIdByName result:', JSON.stringify({ tenantName: session.tenantName, userEmail, isSuperAdmin, tenantId }));
     }
     if (!tenantId) {
-      console.log('jwtUpdateTokenOnUpdateTrigger: tenantId is null, aborting switch');
+      console.warn('jwtUpdateTokenOnUpdateTrigger: tenantId is null, aborting switch');
       return;
     }
     const currentTenantId = typeof token.tenant === 'object' ? token.tenant?.id : token.tenant;
     const response = await listUserTenantRoles(userEmail, tenantId);
     const tenantName = response.tenantName;
-    console.log(
-      'jwtUpdateTokenOnUpdateTrigger: tenant comparison:',
-      JSON.stringify({ newTenantId: tenantId, currentTenantId, newTenantName: tenantName, rolesCount: response?.data?.length })
-    );
+    if (response.errored) {
+      // Empty roles from a *failed* lookup are indistinguishable from "holds no
+      // roles"; switching on them would move the default tenant in the database
+      // while leaving the token on the old one.
+      console.warn('jwtUpdateTokenOnUpdateTrigger: tenant-roles lookup failed, aborting switch');
+      return;
+    }
 
     if (tenantId && tenantId !== currentTenantId) {
-      await updateTenantUser(tenantId, session.user.email);
+      // `updated` counts the tenant_users rows flipped to is_default; the upstream
+      // handler refuses (0 rows / error) for a user who is not a member of the
+      // tenant, so this doubles as the membership check for the fallback below.
+      const update = await updateTenantUser(tenantId, session.user.email);
+      const isTenantMember = (update?.data?.data?.users_update_default_tenant?.updated ?? 0) > 0;
       if (response?.data?.length > 0) {
         token.tenant = { id: tenantId, name: tenantName };
         const roles = [];
@@ -1213,6 +1227,29 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
         token.namespacedAccountIds = [];
         token.namespacedReadOnlyAccountIds = [];
         token.k8sNamespaces = {};
+      } else if (isTenantMember) {
+        // Member of the tenant holding no built-in role rows — the normal shape
+        // for dynamic-RBAC access, whose grants live in custom_role_assignments
+        // and are invisible to users_list_tenant_roles. Without this the switch
+        // silently no-ops: the default tenant moves in the database while the
+        // token stays on the old one. Grants for the new tenant are resolved by
+        // the custom-permission pass that runs right after this function.
+        token.tenant = { id: tenantId, name: tenantName };
+        token.roles = [];
+        token.accountIds = [];
+        token.readOnlyAccountIds = [];
+        token.namespacedAccountIds = [];
+        token.namespacedReadOnlyAccountIds = [];
+        token.k8sNamespaces = {};
+      }
+    } else if (tenantId && tenantId === currentTenantId && tenantName) {
+      // Same tenant id but the fresh lookup returned a different display name →
+      // the tenant was renamed (issue #32696), not switched. Refresh only the
+      // cached name so the sidebar and session.tenant.name reflect it
+      // immediately; roles/accounts are unchanged, so leave them untouched.
+      const currentTenantName = typeof token.tenant === 'object' ? token.tenant?.name : undefined;
+      if (tenantName !== currentTenantName) {
+        token.tenant = { id: tenantId, name: tenantName };
       }
     }
   }
@@ -1350,7 +1387,7 @@ export const authOptions: NextAuthOptions = {
         }
         return token;
       } catch (error) {
-        console.log('jwt, unable to handle jwt token ', error);
+        console.error('jwt, unable to handle jwt token ', error);
       }
       return {};
     },
@@ -1392,8 +1429,9 @@ export const authOptions: NextAuthOptions = {
         nudgeBeeSession.appVersion = process.env.NEXT_PUBLIC_APP_VERSION;
         // Read per request (this callback runs server-side on every session
         // fetch), so flipping the pod's env takes effect without a rebuild or a
-        // re-login. Mirrors how /optimise reads the same var.
+        // re-login. Mirrors how /optimise reads the same two vars.
         nudgeBeeSession.uiFeatures = {
+          llmAnalyser: process.env.UI_ENABLE_LLM_ANALYSER === 'true',
           llmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
         };
         nudgeBeeSession.isSuperAdmin = !!token.isSuperAdmin;
@@ -1420,13 +1458,13 @@ export const authOptions: NextAuthOptions = {
               } else {
                 _userAccessUpdateCache.delete(userKey);
               }
-              console.log('unable to update user access time ', err);
+              console.warn('unable to update user access time ', err);
             }
           }
         }
         return nudgeBeeSession;
       } catch (error) {
-        console.log('session, unable to get session ', error);
+        console.error('session, unable to get session ', error);
       }
       return { expires: new Date(1970, 1, 1).toISOString() };
     },
@@ -1465,13 +1503,12 @@ export const authOptions: NextAuthOptions = {
           return url;
         }
       } catch {
-        console.log('redirect called, invalid url', url);
+        console.warn('redirect called, invalid url', url);
         return baseUrl;
       }
       return baseUrl;
     },
-    async signIn({ user, account, email }) {
-      console.log('signIn called', user, account, email);
+    async signIn({ user, account }) {
       if (user?.email) {
         user.email = user.email.toLowerCase();
       }
@@ -1506,7 +1543,7 @@ export const authOptions: NextAuthOptions = {
                     break; // stop at the first match
                   }
                 } catch (e) {
-                  console.log('Failed to parse allowedDomain -', e, allowedDomains);
+                  console.error('Failed to parse allowedDomain -', e, allowedDomains);
                 }
               }
             }
@@ -1557,7 +1594,7 @@ export const authOptions: NextAuthOptions = {
                 return false;
               }
               user.id = newUser.data.id;
-              console.log(`Successfully onboarded and linked saas account for ${user.email}`);
+              console.warn(`Successfully onboarded and linked saas account for ${user.email}`);
               return true; // Successfully onboarded and linked
             }
             console.error('Failed to get new user ID or account details after saas onboarding.');
@@ -1567,7 +1604,7 @@ export const authOptions: NextAuthOptions = {
             return false;
           }
         } else {
-          console.log(`User with email ${user.email} not found and no tenant routing matched. Self-onboarding via OAuth is disabled.`);
+          console.warn(`User with email ${user.email} not found and no tenant routing matched. Self-onboarding via OAuth is disabled.`);
           return false;
         }
       }
