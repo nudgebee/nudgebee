@@ -25,9 +25,10 @@ const recommendationView = `
 					ELSE r.recommendation ->> 'namespace'
 				END
         	) AS namespace,
+			COALESCE(cr.service_name, r.recommendation ->> 'service_name') AS service,
 			cr.name AS resource_name,
 			r.recommendation ->> 'controller_name'::text AS controller_name,
-			(r.recommendation ->> 'estimated_saving'::text)::numeric AS estimated_saving,
+			COALESCE((r.recommendation ->> 'estimated_saving'::text)::numeric, r.estimated_savings) AS estimated_saving,
 			r.created_at,
 			r.updated_at,
 			r.recommendation::text AS recommendation,
@@ -62,7 +63,7 @@ func (m RecommendationExecuteTool) GetType() core.NBToolType {
 }
 
 func (m RecommendationExecuteTool) Description() string {
-	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, resource_name, estimated_saving, category, severity, status, rule_name, is_dismissed, dismissed_reason, snoozed_until, recommendation."
+	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, service, resource_name, estimated_saving, category, severity, status, rule_name, is_dismissed, dismissed_reason, snoozed_until, recommendation."
 }
 
 func (m RecommendationExecuteTool) InputSchema() core.ToolSchema {
