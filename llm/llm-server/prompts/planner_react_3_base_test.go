@@ -10,9 +10,10 @@ import (
 // shell-related block to strategy/routing content only (A content per
 // the A/B separation):
 //
-//   - "DO NOT use shell_execute for code/repo work — use agent_code_2"
+//   - "DO NOT use shell_execute for code/repo work — use code_analyzer"
 //   - "Specialized agents over raw shell" (kubectl/aws/gcp/azure)
-//   - Cross-tool artifact handling (`<artifacts>` tag → grep on logs_*.txt)
+//   - Cross-tool artifact handling (tool observations name the exact saved
+//     file / the "Evidence already gathered" index → grep that exact file)
 //
 // Tool mechanics (the B content — workspace cwd, /tmp/ scope,
 // .nb_profile, no_matches semantic, credential auto-injection) belong
@@ -25,13 +26,14 @@ func TestPlannerReact3Base_ShellGuidanceIsStrategyOnly(t *testing.T) {
 	// across multiple tools that can't live in any single tool's
 	// description.
 	required := []string{
-		"Specialized Agents vs. Shell",     // routing rule: prefer kubectl/aws/gcp/azure over raw shell
-		"agent_code_2",                     // routing rule: code/repo work uses agent_code_2
-		"Artifacts & Files",                // cross-tool: how shell consumes other tools' file output
-		"`<artifacts>`",                    // names the contract surface other tools emit
-		"Do the work in one shell command", // efficiency: chain steps in shell, don't iterate via per-call round-trips
-		"not a sequence of separate",       // names the failure mode (round-trip per call) the rule prevents
-		"your own reasoning between them",  // explicit LLM-POV framing (no "planner" jargon the LLM has no model of)
+		"Specialized Agents vs. Shell",          // routing rule: prefer kubectl/aws/gcp/azure over raw shell
+		"code_analyzer",                         // routing rule: code/repo work uses code_analyzer
+		"Artifacts & Files",                     // cross-tool: how shell consumes other tools' file output
+		"Evidence already gathered",             // points at the real file-ref channel (the evidence index), not a dead <artifacts> tag
+		"never guess or reconstruct a filename", // anti-hallucination: use the exact name, don't invent one
+		"Do the work in one shell command",      // efficiency: chain steps in shell, don't iterate via per-call round-trips
+		"not a sequence of separate",            // names the failure mode (round-trip per call) the rule prevents
+		"your own reasoning between them",       // explicit LLM-POV framing (no "planner" jargon the LLM has no model of)
 	}
 	for _, snippet := range required {
 		assert.Contains(t, GetPromptForTest(PromptReact3Base), snippet,

@@ -480,7 +480,11 @@ type appConfig struct {
 	// large observation is compressed in the scratchpad, replace the dead-end
 	// truncation marker with a live handle to the workspace file the tool already
 	// saved (its Type:"file" reference), so the model can grep it back instead of
-	// re-running the tool. Default false — feature-flagged for A/B measurement.
+	// re-running the tool; the same file refs are also surfaced cross-message via
+	// the evidence index. Default true — graduated from A/B after prod validation
+	// (the model reliably greps offloaded files, ~95% bounded); set false to
+	// disable. Both consumers are render-only and bounded; the write side (tools
+	// persisting Type:"file" refs) is always-on, so flipping this needs no backfill.
 	// See llm/llm-server/WORKSPACE_FS_EVIDENCE_RECALL_SPEC.md.
 	LlmServerFsEvidenceRecallEnabled bool `mapstructure:"llm_server_fs_evidence_recall_enabled"`
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
@@ -1219,7 +1223,7 @@ func init() {
 	// comments above — this default is computed, not hand-picked, so it can't
 	// silently drift out of sync with the HTTP client timeout it must stay under.
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
-	viper.SetDefault("llm_server_fs_evidence_recall_enabled", false)
+	viper.SetDefault("llm_server_fs_evidence_recall_enabled", true)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
