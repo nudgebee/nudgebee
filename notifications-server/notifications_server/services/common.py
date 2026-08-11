@@ -1047,7 +1047,11 @@ class CommonService:
 
     def get_user_info(self, platform, team_id, user_id):
         if platform == "slack":
-            bot = load_installation_by_team(self.session, team_id, "slack")
+            # app_id disambiguates when more than one Slack app shares this
+            # team_id (see get_slack_installation) — without it this silently
+            # falls back to "integration row wins over legacy", which may not
+            # be the app that actually owns the click/event being handled.
+            bot = load_installation_by_team(self.session, team_id, "slack", app_id=self.app_id)
             if not bot:
                 LOG.info("Could not complete action for %s, no installation found for team: %s ", platform, team_id)
                 return None

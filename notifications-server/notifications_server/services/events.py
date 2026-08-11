@@ -376,6 +376,11 @@ class Events:
                 "team_id": team_id,
                 "session_id": session_id,
                 "platform": "slack",
+                # Carried so a later async follow-up (delivered via the
+                # llm-server webhook, which has no Slack event of its own to
+                # read api_app_id from) still resolves the bot that actually
+                # owns this thread when multiple Slack apps share a team_id.
+                "app_id": self.common_service.app_id,
             },
         )
 
@@ -421,6 +426,8 @@ class Events:
                 "team_id": team_id,
                 "session_id": session_id,
                 "platform": "slack",
+                # See _check_history_for_conversation for why this is cached.
+                "app_id": self.common_service.app_id,
             }
             self.cache.cache_event_entry(thread_ts, event_entry)
             self._request_cluster_confirmation(channel_id, team_id, thread_ts, user_email, slack_user_id)
@@ -460,6 +467,7 @@ class Events:
                 is_thread=is_thread,
                 slack_user_id=slack_user_id,
                 session_id=f"event-{session_id}",
+                app_id=self.common_service.app_id,
             )
 
             # Cache updated entry under thread_ts
@@ -499,6 +507,7 @@ class Events:
             "team_id": team_id,
             "session_id": session_id,
             "platform": "slack",
+            "app_id": self.common_service.app_id,
         }
         self.cache.cache_event_entry(thread_ts, event_entry)
         self._request_cluster_confirmation(channel_id, team_id, thread_ts, user_email, slack_user_id)
@@ -1535,6 +1544,24 @@ class Events:
         except (json.JSONDecodeError, KeyError) as e:
             LOG.warning(f"Failed to parse follow-up response as JSON: {e}. Using raw response.")
             self.reply(channel_id, team_id, thread_ts, payload.response)
+        except Exception as e:
+            # Mirrors handle_final_response/handle_error_response's outer catch.
+            # Without this, a failure while posting the follow-up (e.g. the
+            # resolved Slack installation is the wrong app when two bots share
+            # a team_id, or any other Slack API error) propagated uncaught up
+            # to the /llm/response route, which turned it into a 500 that
+            # llm-server only logs at Debug. The question never reached the
+            # thread, so the user had no way to answer it and the conversation
+            # sat WAITING indefinitely.
+            LOG.error(f"Failed to send follow-up question to Slack: {e}", exc_info=True)
+            slack_user_id = cached_entry.get("slack_user_id") if cached_entry else None
+            message = get_generic_error_message()
+            if slack_user_id:
+                message = f"<@{slack_user_id}> {message}"
+            try:
+                self.reply(channel_id, team_id, thread_ts, message)
+            except Exception as reply_err:
+                LOG.error(f"Failed to send fallback error message to Slack: {reply_err}", exc_info=True)
 
     def handle_error_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         """Tell the thread the run failed. ``payload.response`` is a raw upstream

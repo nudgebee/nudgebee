@@ -690,6 +690,12 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
                 "channel_id": context.channel_id,
                 "team_id": context.team_id,
                 "session_id": f"{context.channel_id}-{context.thread_ts}",
+                # Carried so the llm-server async /llm/response webhook (no Slack
+                # event of its own to read api_app_id from) still resolves the
+                # same app this analysis is running as, instead of falling back
+                # to ambiguous team_id-only resolution. See conversation_id-cache
+                # app_id propagation in routers/llm_callbacks.py.
+                "app_id": context.app_id,
             }
             service.event_service.cache.cache_event_entry(thread_ts=context.thread_ts, event_entry=event_entry)
 
