@@ -6929,6 +6929,7 @@ var table_metadata = map[string]TableDefinition{
 					(SELECT json_agg(json_build_object(
 						'name', ug.name,
 						'id', ug.id,
+						'tenant', ug.tenant,
 						'description', ug.description,
 						'group_roles', COALESCE(
 							(SELECT json_agg(json_build_object(
@@ -7024,6 +7025,7 @@ var table_metadata = map[string]TableDefinition{
 					(SELECT json_agg(json_build_object(
 						'name', ug.name,
 						'id', ug.id,
+						'tenant', ug.tenant,
 						'group_roles', COALESCE(
 							(SELECT json_agg(json_build_object(
 								'role', gr.role,
@@ -9559,7 +9561,8 @@ var table_metadata = map[string]TableDefinition{
 						'id', ur.id,
 						'role', ur.role,
 						'entity_type', ur.entity_type,
-						'entity_id', ur.entity_id
+						'entity_id', ur.entity_id,
+						'tenant_id', ur.tenant_id
 					))
 					FROM user_roles ur
 					WHERE ur.user_id = u.id),

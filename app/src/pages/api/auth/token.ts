@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { createHash } from 'crypto';
 import { validateHashedPassword, encodeSessionJWT, encrypt } from '@lib/internal';
 import { updateUserAccountAccessed, getUserByUsernameAndAccountProviderAndCredential } from '@lib/UserService';
+import { roleBelongsToTenant } from '@lib/userPermissionMapper';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const data = req.body;
@@ -87,6 +88,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const roles: string[] = [];
 
     for (const ur of userAccount.user.user_roles) {
+      // The token is bound to one tenant — role rows granted in a different tenant
+      // must not widen it (see roleBelongsToTenant for the fail-open rationale).
+      if (!roleBelongsToTenant(ur, userAccount.tenant_id)) {
+        continue;
+      }
       if (ur.entity_type && ur.entity_type == 'tenant' && ur.entity_id == userAccount.tenant_id) {
         roles.push(ur.role);
       } else if (ur.entity_type && ur.entity_type == 'account') {
