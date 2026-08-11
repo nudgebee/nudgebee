@@ -254,6 +254,12 @@ type WorkflowBuilderAgent struct {
 	// Transient per-loop: reset at the top of runToolLoop, not persisted in state.
 	loopFinalized bool
 
+	// finalizedSnapshot is the definition as it stood at the last finalize call in this loop.
+	// Used to tell a legitimate re-finalize (the model changed something and finalized again)
+	// from the thrash of re-finalizing an unchanged definition. Transient per-loop: reset in
+	// runToolLoop alongside loopFinalized.
+	finalizedSnapshot string
+
 	// changeSummary is the agent-authored explanation of WHAT it changed and WHY, captured from the
 	// finalize tool call and surfaced in the build/edit summary so the user sees the reasoning/approach
 	// behind a change — not just "has been updated". Transient per-request (set during runToolLoop, read
@@ -2749,7 +2755,7 @@ func getWorkflowToolDescriptions() string {
 		},
 		{
 			Name:        "finalize",
-			Description: "Finalize and return the complete automation JSON. Call this only after validate returns OK. ALWAYS pass change_summary: 1-3 plain-language sentences explaining WHAT you changed/built and WHY (the approach and reasoning), so the user understands the change instead of only seeing that it happened.",
+			Description: "Mark the automation complete and return its JSON. Call this ONCE, only after validate returns OK. This tool does NOT save by itself and does not return an automation id, so calling it again changes nothing. ALWAYS pass change_summary: 1-3 plain-language sentences explaining WHAT you changed/built and WHY (the approach and reasoning), so the user understands the change instead of only seeing that it happened.",
 			Params:      `{"change_summary": "Added a dedup guard so a repeat event with the same fingerprint, subject name, and namespace reuses the existing incident channel instead of creating a new one."}`,
 		},
 		{
@@ -2829,14 +2835,14 @@ func (a *WorkflowBuilderAgent) toolInitWorkflow(ctx *security.RequestContext, ar
 }
 
 // toolAddTask adds a task to the working workflow.
-func (a *WorkflowBuilderAgent) toolAddTask(args map[string]interface{}) string {
+func (a *WorkflowBuilderAgent) toolAddTask(ctx *security.RequestContext, args map[string]interface{}) string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized. Call init_workflow first."
 	}
 
 	taskId, _ := args["id"].(string)
 	if taskId == "" {
-		return "Error: task 'id' is required"
+		return missingKeyError(ctx, "add_task", "id", args)
 	}
 	taskType, _ := args["type"].(string)
 	if taskType == "" {
@@ -2917,14 +2923,14 @@ func (a *WorkflowBuilderAgent) toolGetTask(args map[string]interface{}) string {
 }
 
 // toolModifyTask replaces a task's definition in the working workflow.
-func (a *WorkflowBuilderAgent) toolModifyTask(args map[string]interface{}) string {
+func (a *WorkflowBuilderAgent) toolModifyTask(ctx *security.RequestContext, args map[string]interface{}) string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized."
 	}
 
 	taskId, _ := args["task_id"].(string)
 	if taskId == "" {
-		return "Error: 'task_id' is required"
+		return missingKeyError(ctx, "modify_task", "task_id", args)
 	}
 
 	definition, ok := a.state.WorkingWorkflow["definition"].(map[string]interface{})
@@ -3569,6 +3575,46 @@ func nestStrayTriggerKeys(t map[string]interface{}) map[string]interface{} {
 	return fixed
 }
 
+// missingKeyError reports a tool call rejected for a missing required key, naming the keys that
+// WERE supplied — in the log for us, and in the tool result for the model.
+//
+// The bare "Error: task 'id' is required" it replaces was undiagnosable: a run where 11 of 18
+// add_task calls failed identically left no record of what the model actually sent, so there was
+// no way to tell a renamed key from a nested payload from a non-string value (#35390). Echoing the
+// received keys back is the same tactic the trigger-shape guard uses — the model can diff what it
+// sent against what was wanted, which beats repeating a demand it has already failed to meet.
+func missingKeyError(ctx *security.RequestContext, tool, wanted string, args map[string]interface{}) string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	if ctx != nil {
+		ctx.GetLogger().Warn("workflow_builder: rejected tool call with a missing required key",
+			"tool", tool, "missing_key", wanted, "received_keys", keys)
+	}
+
+	// The key can be present and still rejected — an empty string, or a value that is not a
+	// string at all. Saying "requires \"id\" at the top level" while listing "id" among the keys
+	// received reads as a contradiction, and a model that cannot tell which of the three
+	// failures it hit is liable to re-send the same payload. Name the actual one.
+	if value, present := args[wanted]; present {
+		if str, isString := value.(string); isString && strings.TrimSpace(str) == "" {
+			return fmt.Sprintf("Error: %s received %q but it was empty. You sent: %s. Re-send with a non-empty %q.",
+				tool, wanted, strings.Join(quoteAll(keys), ", "), wanted)
+		}
+		return fmt.Sprintf("Error: %s requires %q to be a string; you sent %T. You sent: %s. Re-send with %q as a string.",
+			tool, wanted, value, strings.Join(quoteAll(keys), ", "), wanted)
+	}
+
+	if len(keys) == 0 {
+		return fmt.Sprintf("Error: %s requires %q, and no parameters were received at all. Send the tool input as a JSON object: {%q: \"...\", ...}.", tool, wanted, wanted)
+	}
+	return fmt.Sprintf("Error: %s requires %q at the top level, and it was not among the keys you sent: %s. Re-send the call with %q as a top-level string key.",
+		tool, wanted, strings.Join(quoteAll(keys), ", "), wanted)
+}
+
 // quoteAll wraps each string in double quotes so key lists read as JSON keys in error messages.
 func quoteAll(keys []string) []string {
 	out := make([]string, 0, len(keys))
@@ -3963,7 +4009,14 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 	var args map[string]interface{}
 	if toolInput != "" {
 		if err := json.Unmarshal([]byte(toolInput), &args); err != nil {
-			// Try to handle non-JSON inputs
+			// Try to handle non-JSON inputs. Log first: this branch used to swallow the
+			// payload whole, so a run where every add_task failed with "task 'id' is
+			// required" left no way to tell a malformed <tool_input> from a wrong key
+			// name (#35390). The preview is capped because a task payload can be large.
+			if ctx != nil {
+				ctx.GetLogger().Warn("workflow_builder: tool input is not valid JSON, wrapping as {\"input\": ...}",
+					"tool", toolName, "error", err, "input_preview", core.TruncateHead(toolInput, 500))
+			}
 			args = map[string]interface{}{"input": toolInput}
 		}
 	}
@@ -3975,11 +4028,11 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 	case "init_workflow":
 		return a.toolInitWorkflow(ctx, args)
 	case "add_task":
-		return a.toolAddTask(args)
+		return a.toolAddTask(ctx, args)
 	case "get_task":
 		return a.toolGetTask(args)
 	case "modify_task":
-		return a.toolModifyTask(args)
+		return a.toolModifyTask(ctx, args)
 	case "delete_task":
 		return a.toolDeleteTask(args)
 	case "list_tasks":
@@ -4000,7 +4053,21 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 		}
 		// finalize is the loop's commit point: only a finalized loop may persist
 		// mutated working state (see resolveToolLoopOutcome).
+		//
+		// Re-finalizing an unchanged definition is a no-op that reads as success, which is
+		// how one build spent nine calls in 31 seconds re-marshalling the same 2520 bytes
+		// (#35390). The result is deliberately not the JSON: an identical reply is exactly
+		// what invites another identical call.
+		snapshot := a.workflowSnapshot()
+		if a.loopFinalized && snapshot != "" && snapshot == a.finalizedSnapshot {
+			if ctx != nil {
+				ctx.GetLogger().Warn("workflow_builder: repeated finalize on an unchanged automation", "mode", a.state.Mode)
+			}
+			return "Error: this automation was already finalized and nothing has changed since. finalize does not save " +
+				"by itself, so calling it again changes nothing. Emit your <final_answer> now."
+		}
 		a.loopFinalized = true
+		a.finalizedSnapshot = snapshot
 		return a.toolFinalize()
 	case "list_executions":
 		return a.toolListExecutions(ctx, args)
@@ -4046,6 +4113,7 @@ func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext
 func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
 	// Fresh commit marker for this loop — set only by a finalize tool call.
 	a.loopFinalized = false
+	a.finalizedSnapshot = ""
 	// Fresh correction budget per loop, so an edit turn is not penalised by a build turn.
 	a.triggerShapeRejections = 0
 

@@ -123,7 +123,7 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	})
 
 	// Add task
-	result := agent.toolAddTask(map[string]interface{}{
+	result := agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "get-pods",
 		"type": "k8s.cli",
 		"params": map[string]interface{}{
@@ -134,7 +134,7 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	assert.Contains(t, result, "1 task(s)")
 
 	// Add duplicate task should fail
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "get-pods",
 		"type": "k8s.cli",
 		"params": map[string]interface{}{
@@ -153,7 +153,7 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	assert.Contains(t, result, "not found")
 
 	// Modify task
-	result = agent.toolModifyTask(map[string]interface{}{
+	result = agent.toolModifyTask(nil, map[string]interface{}{
 		"task_id": "get-pods",
 		"id":      "get-pods",
 		"type":    "k8s.cli",
@@ -168,7 +168,7 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	assert.Contains(t, result, "get pods -n production -o json")
 
 	// Add second task
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "notify",
 		"type":       "notifications.im",
 		"depends_on": []interface{}{"get-pods"},
@@ -205,7 +205,7 @@ func TestWorkflowBuilderAgent_ToolFinalize(t *testing.T) {
 		"name":     "test-workflow",
 		"triggers": []interface{}{map[string]interface{}{"type": "manual"}},
 	})
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "print-hello",
 		"type": "core.print",
 		"params": map[string]interface{}{
@@ -236,7 +236,7 @@ func TestWorkflowBuilderAgent_Finalize_CapturesChangeSummary(t *testing.T) {
 		"name":     "test-workflow",
 		"triggers": []interface{}{map[string]interface{}{"type": "manual"}},
 	})
-	agent.toolAddTask(map[string]interface{}{"id": "print-hello", "type": "core.print"})
+	agent.toolAddTask(nil, map[string]interface{}{"id": "print-hello", "type": "core.print"})
 
 	cs := "Added a print task so the run logs Hello."
 	result := agent.executeWorkflowTool(nil, "finalize", `{"change_summary": "`+cs+`"}`, "")
@@ -264,7 +264,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	assert.Contains(t, result, "initialized")
 
 	// Step 2: Add k8s task
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "get-pods",
 		"type": "k8s.cli",
 		"params": map[string]interface{}{
@@ -274,7 +274,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	assert.Contains(t, result, "added")
 
 	// Step 3: Add transform task
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "check-health",
 		"type":       "data.transform",
 		"depends_on": []interface{}{"get-pods"},
@@ -288,7 +288,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	assert.Contains(t, result, "2 task(s)")
 
 	// Step 4: Add notification task with condition
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "send-alert",
 		"type":       "notifications.im",
 		"depends_on": []interface{}{"check-health"},
@@ -315,7 +315,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	result = agent.toolGetTask(map[string]interface{}{"task_id": "get-pods"})
 	assert.Contains(t, result, "Inputs.namespace")
 
-	result = agent.toolModifyTask(map[string]interface{}{
+	result = agent.toolModifyTask(nil, map[string]interface{}{
 		"task_id": "get-pods",
 		"id":      "get-pods",
 		"type":    "k8s.cli",
@@ -331,7 +331,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	assert.NotContains(t, result, "Inputs.namespace")
 
 	// Step 7: Add a fourth task, then delete it
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "log-result",
 		"type":       "core.print",
 		"depends_on": []interface{}{"send-alert"},
@@ -438,7 +438,7 @@ func TestWorkflowBuilderAgent_LoadExistingAndModify(t *testing.T) {
 	assert.Contains(t, result, "top pods -n default")
 
 	// Fix 1: wrong namespace in fetch-metrics
-	result = agent.toolModifyTask(map[string]interface{}{
+	result = agent.toolModifyTask(nil, map[string]interface{}{
 		"task_id": "fetch-metrics",
 		"id":      "fetch-metrics",
 		"type":    "k8s.cli",
@@ -450,7 +450,7 @@ func TestWorkflowBuilderAgent_LoadExistingAndModify(t *testing.T) {
 	result = agent.toolGetTask(map[string]interface{}{"task_id": "send-report"})
 	assert.Contains(t, result, "#daily-reports")
 
-	result = agent.toolModifyTask(map[string]interface{}{
+	result = agent.toolModifyTask(nil, map[string]interface{}{
 		"task_id":    "send-report",
 		"id":         "send-report",
 		"type":       "notifications.im",
@@ -464,7 +464,7 @@ func TestWorkflowBuilderAgent_LoadExistingAndModify(t *testing.T) {
 	assert.Contains(t, result, "updated")
 
 	// Add a new task: also send email
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "send-email",
 		"type":       "notifications.email",
 		"depends_on": []interface{}{"summarize"},
@@ -510,7 +510,7 @@ func TestWorkflowBuilderAgent_CoercionInFinalize(t *testing.T) {
 	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "coercion-test",
 	})
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "task-1",
 		"type": "http.request",
 		"params": map[string]interface{}{
@@ -2053,7 +2053,7 @@ func TestToolInitWorkflow_ReInitGuard(t *testing.T) {
 	assert.Contains(t, result, "initialized")
 
 	// Add a task.
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "task-1",
 		"type": "core.print",
 		"params": map[string]interface{}{
