@@ -14,7 +14,7 @@ numpy = "^1.26.2"
 gunicorn = "23.0.0"
 
 # stubs
-boto3-stubs = "1.43.62"
+boto3-stubs = "1.43.67"
 pandas-stubs = "2.0.3.230814"
 types-tensorflow = "2.18.0.20260724"
 sqlalchemy-stubs = "0.4"
