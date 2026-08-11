@@ -957,6 +957,115 @@ func TestFilterResourcesByRelevance(t *testing.T) {
 		got := tool.filterResourcesByRelevance(makeResources("my-api-server"), "llm-server")
 		assert.Empty(t, got, "resource containing only generic term 'server' should be filtered")
 	})
+
+	t.Run("namespace-scoped query keeps in-namespace results whose names don't match", func(t *testing.T) {
+		// The false-empty bug: real pods don't carry the namespace in their NAME,
+		// so name-only matching dropped every result for a namespace-scoped query.
+		input := []K8sResourceInfo{
+			{Name: "cloud-collector-server-7857d9b98d-drrnt", Type: "pods", Namespace: "nudgebee"},
+			{Name: "relay-server-abc", Type: "pods", Namespace: "nudgebee"},
+		}
+		got := tool.filterResourcesByRelevance(input, "nudgebee")
+		assert.Len(t, got, 2, "in-namespace pods must survive a namespace-scoped query")
+	})
+
+	t.Run("namespace match does not re-admit out-of-namespace junk (guard intact)", func(t *testing.T) {
+		input := []K8sResourceInfo{
+			{Name: "cloud-collector-server-x", Type: "pods", Namespace: "nudgebee"}, // kept (ns matches)
+			{Name: "unrelated-workload", Type: "pods", Namespace: "demo"},           // dropped (neither matches)
+		}
+		got := tool.filterResourcesByRelevance(input, "nudgebee")
+		assert.Len(t, got, 1)
+		assert.Equal(t, "nudgebee", got[0].Namespace)
+	})
+
+	t.Run("resource-type word alone does not over-prune", func(t *testing.T) {
+		// "deployments" is a TYPE, not an identity — real deployment names don't
+		// contain it, so treating it as a term dropped everything. Now stoplisted,
+		// so a type-only query leaves the results unfiltered instead of empty.
+		input := makeResources("checkout", "orders", "payments")
+		got := tool.filterResourcesByRelevance(input, "deployments")
+		assert.Len(t, got, 3, "a bare resource-type query must not drop real results")
+	})
+
+	t.Run("multi-word query with spaces does not over-prune", func(t *testing.T) {
+		// "llm server" must tokenize on the space to "llm" and match "llm-server-abc";
+		// otherwise the whole "llm server" string matches no hyphenated name.
+		input := makeResources("llm-server-abc", "unrelated-pod")
+		got := tool.filterResourcesByRelevance(input, "llm server")
+		assert.Len(t, got, 1)
+		assert.Equal(t, "llm-server-abc", got[0].Name)
+	})
+}
+
+func TestResourceMatchesTerms(t *testing.T) {
+	t.Run("name matches", func(t *testing.T) {
+		assert.True(t, ResourceMatchesTerms("checkout-svc", "demo", []string{"checkout"}))
+	})
+	t.Run("namespace matches when name does not (the fix)", func(t *testing.T) {
+		assert.True(t, ResourceMatchesTerms("cloud-collector-server-x", "nudgebee", []string{"nudgebee"}))
+	})
+	t.Run("neither matches is dropped (guard preserved)", func(t *testing.T) {
+		assert.False(t, ResourceMatchesTerms("unrelated-workload", "demo", []string{"nudgebee"}))
+	})
+	t.Run("namespace is whole-value, not substring (no flood)", func(t *testing.T) {
+		// "prod" (from "prod-checkout") must NOT match namespace "orders-prod"
+		// and keep every resource in it — only an exact namespace term matches.
+		assert.False(t, ResourceMatchesTerms("some-unrelated-pod", "orders-prod", []string{"prod"}))
+		assert.True(t, ResourceMatchesTerms("some-unrelated-pod", "orders-prod", []string{"orders-prod"}))
+	})
+	t.Run("backward compatible with name-only helper", func(t *testing.T) {
+		assert.Equal(t, ResourceNameMatchesTerms("llm-server", []string{"llm"}),
+			ResourceMatchesTerms("llm-server", "", []string{"llm"}))
+	})
+}
+
+func TestIsK8sTypeOrScopeWord(t *testing.T) {
+	// Every type/scope word (from the canonical k8sResourceTypeMappings + the few
+	// spellings supplemented) must be recognized, so it's never matched against
+	// resource names. Covers the full list flagged in review.
+	for _, w := range []string{
+		"namespace", "namespaces", "ns",
+		"deployment", "deployments", "deploy", "statefulset", "daemonset",
+		"service", "services", "svc", "ingress", "ingresses",
+		"node", "nodes", "replicaset", "replicasets", "rs",
+		"pvc", "pv", "persistentvolume", "persistentvolumes", "persistentvolumeclaim", "persistentvolumeclaims",
+		"serviceaccount", "serviceaccounts",
+		"role", "roles", "rolebinding", "rolebindings", "clusterrole", "clusterrolebindings",
+		"networkpolicy", "netpol", "storageclass", "storageclasses",
+		"crd", "crds", "customresourcedefinition", "customresourcedefinitions",
+		"workload", "workloads", "secret", "secrets", "configmap", "job", "cronjob",
+		"apps", "servers", "apis", "clusters", "clouds", // plurals of generic scope words
+		"Deployments", // case-insensitive
+	} {
+		assert.Truef(t, IsK8sTypeOrScopeWord(w), "%q should be a type/scope stopword", w)
+	}
+	// Real identities must NOT be stopwords.
+	for _, w := range []string{"checkout", "nudgebee", "payments", "orders-db", "llm"} {
+		assert.Falsef(t, IsK8sTypeOrScopeWord(w), "%q must not be a stopword", w)
+	}
+}
+
+func TestCloudResourceMatchesTerms(t *testing.T) {
+	t.Run("name matches", func(t *testing.T) {
+		assert.True(t, CloudResourceMatchesTerms("orders-db", "rds", "us-west-2", []string{"orders"}))
+	})
+	t.Run("service matches when name does not (the fix)", func(t *testing.T) {
+		assert.True(t, CloudResourceMatchesTerms("db-primary-1", "rds", "us-west-2", []string{"rds"}))
+	})
+	t.Run("region matches when name does not (the fix)", func(t *testing.T) {
+		assert.True(t, CloudResourceMatchesTerms("db-primary-1", "rds", "us-west-2", []string{"us-west-2"}))
+	})
+	t.Run("unrelated service/region is dropped (guard preserved)", func(t *testing.T) {
+		assert.False(t, CloudResourceMatchesTerms("db-primary-1", "rds", "eu-central-1", []string{"lambda"}))
+	})
+	t.Run("region is whole-value, not substring (no flood)", func(t *testing.T) {
+		// "west" (from "west-coast-app") must NOT match region "us-west-2" and keep
+		// every resource in the region. It only survives if the NAME matches.
+		assert.False(t, CloudResourceMatchesTerms("payments-db", "rds", "us-west-2", []string{"west"}))
+		assert.True(t, CloudResourceMatchesTerms("west-coast-app", "ec2", "us-west-2", []string{"west"}))   // name match
+		assert.True(t, CloudResourceMatchesTerms("payments-db", "rds", "us-west-2", []string{"us-west-2"})) // exact region
+	})
 }
 
 func TestResourceSearchTool_SearchDbForResources(t *testing.T) {

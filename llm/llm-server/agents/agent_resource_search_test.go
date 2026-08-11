@@ -24,8 +24,8 @@ func TestExtractResourceQueryTerms(t *testing.T) {
 		},
 		{
 			query:    "search for llm server deployment",
-			wantAll:  []string{"llm", "deployment"},
-			wantNone: []string{"search", "for", "server"}, // "server" is generic
+			wantAll:  []string{"llm"},
+			wantNone: []string{"search", "for", "server", "deployment"}, // "server" generic; "deployment" is a k8s TYPE word, not an identity
 		},
 		{
 			query:    "find all postgres instances across my cluster",
