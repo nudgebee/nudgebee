@@ -33,6 +33,7 @@ import {
   getUserSuperAdminRole,
   getTenantIdByName,
 } from '@lib/UserService';
+import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/userPermissionMapper';
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
@@ -112,49 +113,6 @@ function cleanupUserAccessCache() {
   }
 }
 
-function adapterUserUpdateDataOnUserRoles(
-  user_roles: any[],
-  roles: string[],
-  accountIds: string[],
-  readonlyAccountIds: string[],
-  namespacedAccountIds: string[],
-  namespacedReadOnlyAccountIds: string[],
-  k8sNamespaces: any,
-  tenantId?: string
-) {
-  user_roles?.forEach((r: any) => {
-    if (r.entity_type && r.entity_type == 'tenant') {
-      if (!tenantId || r.entity_id === tenantId) {
-        roles.push(r.role);
-      }
-    } else if (r.entity_type && r.entity_type == 'account' && r.role == 'account_admin_readonly') {
-      roles.push(r.role);
-      readonlyAccountIds.push(r.entity_id);
-    } else if (r.entity_type && r.entity_type == 'account' && r.role == 'account_admin') {
-      roles.push(r.role);
-      accountIds.push(r.entity_id);
-    } else if (r.entity_type && r.entity_type == 'k8s_namespace' && r.role == 'k8s_namespace_admin') {
-      roles.push(r.role);
-      const entity = r.entity_id?.split(':');
-      if (!k8sNamespaces[entity[0]]) {
-        k8sNamespaces[entity[0]] = [entity[1]];
-      } else {
-        k8sNamespaces[entity[0]].push(entity[1]);
-      }
-      namespacedAccountIds.push(entity[0]);
-    } else if (r.entity_type && r.entity_type == 'k8s_namespace' && r.role == 'k8s_namespace_admin_readonly') {
-      roles.push(r.role);
-      const entity = r.entity_id?.split(':');
-      if (!k8sNamespaces[entity[0]]) {
-        k8sNamespaces[entity[0]] = [entity[1]];
-      } else {
-        k8sNamespaces[entity[0]].push(entity[1]);
-      }
-      namespacedReadOnlyAccountIds.push(entity[0]);
-    }
-  });
-}
-
 export async function adapterUser(user: any): Promise<NudgebeeUser> {
   let tenant: any = {};
   let roles: string[] = [];
@@ -186,6 +144,9 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
 
   const groups = user.groups ?? [];
   for (const group of groups) {
+    if (!groupBelongsToTenant(group, tenant.id)) {
+      continue;
+    }
     const groupRoles = group.user_group.group_roles ?? [];
     adapterUserUpdateDataOnUserRoles(
       groupRoles,
@@ -205,7 +166,7 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
   namespacedAccountIds = [...new Set(namespacedAccountIds)];
   namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
 
-  if (accountIds.length > 0 || readonlyAccountIds.length > 0) {
+  if (accountIds.length > 0 || readonlyAccountIds.length > 0 || namespacedAccountIds.length > 0 || namespacedReadOnlyAccountIds.length > 0) {
     // Narrow role-granted account ids to those that belong to the selected tenant.
     const resp = await getAccountByTenant(tenant.id);
     const tenantAccounts: string[] = resp.data?.cloud_accounts?.map((a: any) => a.id) ?? [];
@@ -214,6 +175,13 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
       readonlyAccountIds = readonlyAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedAccountIds = namespacedAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedReadOnlyAccountIds = namespacedReadOnlyAccountIds.filter((a) => tenantAccounts.includes(a));
+      // k8sNamespaces is keyed by account id — prune it alongside the id lists, or a
+      // namespace grant on another tenant's account stays visible in the session.
+      for (const accountId of Object.keys(k8sNamespaces)) {
+        if (!tenantAccounts.includes(accountId)) {
+          delete k8sNamespaces[accountId];
+        }
+      }
     } else {
       // No tenant accounts resolved. This session scope is ADVISORY — the backend
       // re-authorizes every request — so we deliberately keep the user's explicit role
