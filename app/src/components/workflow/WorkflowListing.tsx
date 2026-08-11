@@ -18,7 +18,7 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
-import { hasWriteAccess, hasFeatureAccess, getUserSession, getCurrentTenant } from '@lib/auth';
+import { hasWriteAccess, hasPermission, missingPermissionMessage, hasFeatureAccess, getUserSession, getCurrentTenant } from '@lib/auth';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import { readPersistedAccounts, writePersistedAccounts } from './utils/accountFilterPersistence';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
@@ -318,6 +318,10 @@ const WorkflowListing: React.FC = () => {
   });
   // id → { name, cloud_provider } for the filter options and the Account column.
   const [accounts, setAccounts] = useState<Record<string, AccountInfo>>({});
+  // Whether the accounts call has come back, however it went. Distinguishes "still
+  // loading" from "loaded and the user can see no account", which the create button's
+  // tooltip has to tell apart to name the right missing permission.
+  const [accountsResolved, setAccountsResolved] = useState<boolean>(false);
   const [selectedStatus, setSelectedStatus] = useState<string>((router?.query?.status as string) || persistedSeed.status || 'All');
   const [selectedLastExecutionStatus, setSelectedLastExecutionStatus] = useState<string>(
     (router?.query?.last_execution_status as string) || persistedSeed.last_execution_status || 'All'
@@ -1632,11 +1636,14 @@ const WorkflowListing: React.FC = () => {
     apiHome
       .getCloudAccounts()
       .then((res: any) => {
-        if (!isMountedRef.current || !Array.isArray(res)) return;
+        if (!isMountedRef.current) return;
+        setAccountsResolved(true);
+        if (!Array.isArray(res)) return;
         setAccounts(Object.fromEntries(res.map((v: any) => [v.id, { name: v.account_name, cloud_provider: v.cloud_provider || '' }])));
       })
       .catch(() => {
         /* names degrade to ids */
+        if (isMountedRef.current) setAccountsResolved(true);
       });
   }, []);
 
@@ -1667,13 +1674,37 @@ const WorkflowListing: React.FC = () => {
   // Creating an automation still needs exactly one account, and it must be one
   // the user can write to — the read-only accounts that legitimately appear in
   // the filter above would only fail at submit time.
+  //
+  // Writable means the built-in account write role OR a tenant-global
+  // workflows:Write custom grant, which is exactly the union runbook-server's
+  // CreateWorkflow authorizes (HasAccountAccess(Create) || canWriteWorkflows) and
+  // the same expression WorkflowBuilderNotebook already uses for `canEdit`. Without
+  // the grant half, a read-only tenant admin holding workflows:Write had every
+  // account filtered out and lost the Create button entirely, even though both the
+  // gateway and the service would have allowed the create.
   const writableAccountOptions = useMemo(
     () =>
       Object.entries(accounts)
-        .filter(([id]) => hasWriteAccess(id))
+        .filter(([id]) => hasWriteAccess(id) || hasPermission('workflows', 'Write'))
         .map(([id, info]) => ({ value: id, label: info.name || id, group: (info.cloud_provider || '').toUpperCase() || 'Other' })),
     [accounts]
   );
+
+  // Why the create button is off, when it is. Two different causes, and naming the
+  // wrong one sends the user to their admin asking for a permission they already
+  // hold: the picker is fed by the account catalog (accounts_list → accounts:Read),
+  // so a custom role granted workflows:Write but NOT accounts:Read sees zero
+  // accounts — nothing to do with workflows:Write. Undefined while the accounts
+  // call is still in flight, so a momentary empty list never accuses anyone.
+  const createDisabledReason = useMemo(() => {
+    if (writableAccountOptions.length > 0 || !accountsResolved) {
+      return undefined;
+    }
+    if (Object.keys(accounts).length === 0) {
+      return 'No cloud account is available to create an automation in. If your role does not include the "accounts:Read" permission, ask an admin to grant it.';
+    }
+    return missingPermissionMessage('workflows:Write');
+  }, [writableAccountOptions, accountsResolved, accounts]);
 
   // Account the create/AI flows write into, chosen in the create modal.
   const [createAccountId, setCreateAccountId] = useState<string>('');
@@ -2025,18 +2056,21 @@ const WorkflowListing: React.FC = () => {
                 >
                   Configs
                 </DsButton>
-                {writableAccountOptions.length > 0 && (
-                  <DsButton
-                    id='workflow-listing-create-btn'
-                    tone='primary'
-                    size='md'
-                    composition='text+icon'
-                    icon={<SafeIcon style={{ height: '14px', width: '14px' }} src={addIconWhite} alt='create automation' />}
-                    onClick={handleCreateWorkflow}
-                  >
-                    Create Automation
-                  </DsButton>
-                )}
+                {/* Disabled rather than hidden: a viewer with no writable account still
+                    needs to see that creating automations is a thing, and the tooltip
+                    names the exact thing that is missing (see createDisabledReason). */}
+                <DsButton
+                  id='workflow-listing-create-btn'
+                  tone='primary'
+                  size='md'
+                  composition='text+icon'
+                  icon={<SafeIcon style={{ height: '14px', width: '14px' }} src={addIconWhite} alt='create automation' />}
+                  onClick={handleCreateWorkflow}
+                  disabled={writableAccountOptions.length === 0}
+                  tooltip={createDisabledReason}
+                >
+                  Create Automation
+                </DsButton>
               </>
             }
           >

@@ -2,7 +2,7 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { useEffect } from 'react';
 import { Box, CircularProgress, Typography } from '@mui/material';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasPermission } from '@lib/auth';
 
 const WorkflowBuilderNoteBook = dynamic(() => import('@components/workflow/WorkflowBuilderNotebook'), {
   ssr: false,
@@ -31,7 +31,10 @@ const WorkflowPage = () => {
 
   const isNewWorkflow = workflowId === 'new';
   const accountIdStr = typeof accountId === 'string' ? accountId : undefined;
-  const canEdit = hasWriteAccess(accountIdStr);
+  // Same union WorkflowBuilderNotebook uses for its own `canEdit`: a pure custom-role
+  // holder (workflows:Write) has no built-in account role, so hasWriteAccess alone
+  // bounced them off /automation/new even though the create is authorized end to end.
+  const canEdit = hasWriteAccess(accountIdStr) || hasPermission('workflows', 'Write');
 
   // Read-only users cannot create new workflows — bounce them back to the list.
   useEffect(() => {
