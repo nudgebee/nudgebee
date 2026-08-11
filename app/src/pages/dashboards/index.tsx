@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import { useRouter } from 'next/router';
+import { Box } from '@mui/material';
 import CustomDashboards from '@components/k8s/dashboards/CustomDashboards';
 import DashboardSkeleton from '@components/k8s/dashboards/DashboardSkeleton';
 import KubernetesApplicationGrouping from '@components/k8s/landing/k8sGrouping/KubernetesApplicationGrouping';
@@ -7,35 +8,18 @@ import ErrorBoundary from '@shared/ErrorBoundary';
 import { useData } from '@context/DataContext';
 import homeApi from '@api1/home';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
-import { dashboardIcon1, ApplicationsIcon } from '@assets';
+import { ds } from '@utils/colors';
 
-/**
- * Custom dashboards, as a top-level page.
- *
- * Previously the third tab of /kubernetes. A dashboard panel may query any
- * connected account — cloud accounts and integrations as much as clusters — so
- * living under Kubernetes both understated what it does and buried it three
- * tabs deep. Application Grouping followed it here for the same reason: a group
- * is a saved view over accounts, not a property of one cluster, and /kubernetes
- * is now a redirector to the in-scope cluster's detail page.
- */
-const tabOptions = [
-  { name: 'Dashboard List', id: 'dashboard-list', fragment: 'list', value: 0, disabled: false, icon: dashboardIcon1 },
-  { name: 'Application Grouping', id: 'application-grouping', fragment: 'groups', value: 1, disabled: false, betaIcon: true, icon: ApplicationsIcon },
-];
+/** Custom dashboards, as a top-level page. Previously the third tab of /kubernetes. */
+
+/** Anything else — including no hash at all — is the dashboard list. */
+const GROUPING_FRAGMENT = 'groups';
 
 const DashboardsPage: React.FC = () => {
+  const router = useRouter();
   const { allCluster, setAllCluster } = useData();
   /*
    * Whether the account list is still arriving.
-   *
-   * The list backs every panel's account picker, and CustomDashboards reads an
-   * empty one as "no accounts are connected" — so without this the page opens
-   * on "Connect a cloud account to build dashboards" and then swaps to the
-   * listing a moment later, telling a tenant with accounts that it has none.
-   *
-   * Under /kubernetes that page had already fetched it; landing here directly,
-   * or reloading on this URL, has not.
    */
   const [loadingAccounts, setLoadingAccounts] = useState(!allCluster?.length);
   const [selectedTab, setSelectedTab] = useState<number | null>(null);
@@ -64,25 +48,21 @@ const DashboardsPage: React.FC = () => {
 
   useEffect(() => {
     // window.location.hash, not router.asPath: on an auto-statically-optimized
-    // page asPath can still be the server-rendered value on mount, which drops
-    // the hash and would open `#groups` on the list tab. This is also the source
-    // AnchorComponent picks its own initial tab from, so the bar and the body
-    // cannot disagree. Reading it in an effect keeps it off the SSR render.
     const hash = window.location.hash.replace('#', '');
-    const tab = tabOptions.find((option) => option.fragment === hash);
-    setSelectedTab(tab ? tab.value : 0);
-  }, []);
+    setSelectedTab(hash === GROUPING_FRAGMENT ? 1 : 0);
+  }, [router.asPath]);
 
   return (
-    <>
-      <AnchorComponent manageRoute={true} filterOptions={tabOptions} onChangeFilter={(val: number) => setSelectedTab(val)} />
-      <ErrorBoundary key={selectedTab ?? 'none'}>
+    <ErrorBoundary key={selectedTab ?? 'none'}>
+      {/* Top gutter for the bodies that render as a card. An open dashboard
+          pulls back out of it — its toolbar is pinned under the app header. */}
+      <Box sx={{ pt: ds.space[5] }}>
         {/* The same skeleton CustomDashboards shows while it loads a deep-linked
             dashboard, so the two consecutive waits read as one. */}
         {selectedTab === 0 && (loadingAccounts ? <DashboardSkeleton /> : <CustomDashboards />)}
         {selectedTab === 1 && <KubernetesApplicationGrouping />}
-      </ErrorBoundary>
-    </>
+      </Box>
+    </ErrorBoundary>
   );
 };
 

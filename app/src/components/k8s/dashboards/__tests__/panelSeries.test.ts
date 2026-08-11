@@ -125,7 +125,15 @@ describe('alignSeries', () => {
   });
 
   it('is empty for no series', () => {
-    expect(alignSeries([])).toEqual({ labels: [], series: [] });
+    expect(alignSeries([])).toEqual({ labels: [], timestamps: [], series: [] });
+  });
+
+  it('reports the axis in milliseconds beside the printed labels', () => {
+    // The chart formats its own ticks and tooltip from these; the provider
+    // answered in seconds, and charting those would date every point to 1970.
+    const aligned = alignSeries([{ label: 'a', timestamps: [1_755_000_000, 1_755_000_060], values: [1, 2] }]);
+    expect(aligned.timestamps).toEqual([1_755_000_000_000, 1_755_000_060_000]);
+    expect(aligned.timestamps).toHaveLength(aligned.labels.length);
   });
 });
 

@@ -17,24 +17,22 @@ import { ds } from '@utils/colors';
 import { downloadJsonFile, filenameSlug } from '@utils/fileDownload';
 import apiDashboards, { type AccountOption, type Dashboard, type DashboardBinding } from '@api1/dashboards';
 import DashboardView from './DashboardView';
-import DashboardEditor from './DashboardEditor';
 import DashboardSkeleton from './DashboardSkeleton';
 import ImportDashboardModal from './ImportDashboardModal';
 import TemplateGalleryModal from './TemplateGalleryModal';
 
-type Mode = { name: 'list' } | { name: 'view'; id: string } | { name: 'edit'; id: string | null };
+type Mode = { name: 'list' } | { name: 'view'; id: string } | { name: 'create' };
+
+/** The shape a dashboard that has never been saved starts from. */
+const BLANK_DASHBOARD: Dashboard = { id: '', title: '', description: '', definition: { panels: [] } };
 
 /** Account kinds a panel can actually query. Everything else in `accounts_list`
  *  (slack, …) is an integration, not an observability source. */
 const QUERYABLE_ACCOUNT_TYPES = new Set(['cloud', 'kubernetes']);
 
 /**
- * Query parameter naming the open dashboard.
- *
- * A parameter rather than a hash segment because this page is hash-routed —
- * `#dashboards` selects the tab, and AnchorComponent matches that fragment
- * whole. It drops this parameter when you switch tabs, the same way it drops
- * `integration`.
+ * Query parameter naming the open dashboard. A parameter rather than a hash segment because this page
+ * is hash-routed — `#dashboards` selects the tab, and AnchorComponent matches that fragment whole.
  */
 const DASHBOARD_PARAM = 'dashboard';
 
@@ -43,26 +41,14 @@ const CustomDashboards: React.FC = () => {
   const router = useRouter();
 
   // A dashboard has no account of its own — each PANEL names the account it
-  // queries, because the observability backends resolve the Prometheus (or
-  // Datadog / …) integration from account_id and reject an empty one. So there
-  // is no account filter on this page; the list is the tenant's dashboards, and
-  // the account choice lives in the panel editor.
-  //
-  // Deliberately NOT filtered to K8s: a panel may query any connected account,
-  // and the editor's Account type filter is built from these cloud_providers.
   const accountOptions: AccountOption[] = React.useMemo(
     () =>
       (allCluster || [])
         .filter((c: any) => c.value !== 'demo')
         // `accounts_list` mixes integrations in with cloud accounts — Slack
-        // arrives as cloud_provider='Slack' — and nothing observable can be
-        // queried from those. Exclude only kinds we KNOW are not queryable, so a
-        // missing account_type (older transformClusters) hides nothing rather
-        // than emptying the whole picker.
         .filter((c: any) => !c.account_type || QUERYABLE_ACCOUNT_TYPES.has(c.account_type))
-        // `kind` is what lets the template gallery pre-select a scope per panel:
-        // a PromQL widget needs a kubernetes account, and only this field says
-        // which of the connected accounts is one.
+        // `kind` is what lets the template gallery pre-select a scope per panel: a PromQL widget needs a
+        // kubernetes account, and only this field says which of the connected accounts is one.
         .map((c: any) => ({ label: c.label || c.value, value: c.value, cloud_provider: c.cloud_provider || '', kind: c.account_type || '' })),
     [allCluster]
   );
@@ -80,19 +66,16 @@ const CustomDashboards: React.FC = () => {
   const [deleting, setDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  /** An unsaved dashboard — blank, or built from a template — waiting to be authored. */
+  const [draftDashboard, setDraftDashboard] = useState<Dashboard | null>(null);
   /**
-   * An unsaved dashboard built from a template, waiting for the editor.
-   *
-   * Held here rather than on `Mode` because the editor reads it through the same
-   * `dashboard` prop a real one arrives on — a draft is just a dashboard without
-   * an id, and giving it a separate route through the editor would fork every
-   * behaviour that follows.
+   * Opens the next viewed dashboard straight in edit mode. Set by the listing's
+   * edit action, which means "edit this", not "look at this".
    */
-  const [templateDraft, setTemplateDraft] = useState<Dashboard | null>(null);
+  const [openEditing, setOpenEditing] = useState(false);
 
-  // Mirrors the backend gate: anyone who can write to at least one account may
-  // author dashboards, and the panels they may point at are checked per account
-  // on save.
+  // Mirrors the backend gate: anyone who can write to at least one account may author dashboards, and the
+  // panels they may point at are checked per account on save.
   const canWrite = accountOptions.some((o) => hasWriteAccess(o.value));
 
   // The URL is what says which dashboard is open, so a link to one survives a
@@ -103,12 +86,7 @@ const CustomDashboards: React.FC = () => {
   const modeRef = useRef(mode);
   modeRef.current = mode;
 
-  /**
-   * Writes (or clears) the open dashboard in the URL.
-   *
-   * Built as a string rather than through `router.push({ query })` because the
-   * tab itself lives in the hash, and the object form drops it.
-   */
+  /** Writes (or clears) the open dashboard in the URL. */
   const setRouteId = useCallback(
     (id: string | null) => {
       const [pathAndQuery, hash] = (router.asPath || '').split('#');
@@ -135,9 +113,6 @@ const CustomDashboards: React.FC = () => {
         setDashboards(res.data);
       } finally {
         // `finally` rather than a trailing call: an early return above (or an
-        // exception, should the API layer ever start throwing) must not leave
-        // the table spinning forever. No `catch` — there is no error path here
-        // worth inventing, only cleanup worth guaranteeing.
         if (!signal.cancelled) setLoading(false);
       }
     },
@@ -154,9 +129,8 @@ const CustomDashboards: React.FC = () => {
     };
   }, [mode.name, routeId, loadList]);
 
-  // Opening is driven by the URL alone: every entry point (a click, a pasted
-  // link, Back) writes the parameter, and this is the single place that turns
-  // it into a loaded dashboard.
+  // Opening is driven by the URL alone: every entry point (a click, a pasted link, Back) writes the
+  // parameter, and this is the single place that turns it into a loaded dashboard.
   useEffect(() => {
     if (!router.isReady) return undefined;
     if (!routeId) {
@@ -182,34 +156,16 @@ const CustomDashboards: React.FC = () => {
     };
   }, [router.isReady, routeId, setRouteId]);
 
-  const openForEdit = async (id: string) => {
-    const res = await apiDashboards.getDashboard(id);
-    if (res.errors || !res.data) {
-      snackbar.error('Could not open that dashboard.');
-      return;
-    }
-    setSelected({ dashboard: res.data.dashboard, bindings: res.data.bindings || [] });
-    setMode({ name: 'edit', id });
+  /** Opens a dashboard for authoring — the same screen as viewing it, already in edit mode. */
+  const openForEdit = (id: string) => {
+    setOpenEditing(true);
+    setRouteId(id);
   };
 
-  /**
-   * Downloads a dashboard as JSON.
-   *
-   * The file carries exactly the fields a save takes — title, description and
-   * the panel document — and deliberately NOT the id, tenant or timestamps:
-   * those belong to this row, not to the dashboard's design, and carrying them
-   * into another tenant's copy only invites confusion about which is which.
-   *
-   * This is our own panel model rather than Grafana's, because the fields our
-   * panels add — the account scope, entity queries, command datasources — have
-   * no Grafana equivalent and would be silently dropped by that translation.
-   */
+  /** Downloads a dashboard as JSON. */
   const exportDashboard = (dashboard: Dashboard) => {
     const panels = dashboard.definition?.panels || [];
     // Panels name accounts by id, which is opaque in any other tenant. This
-    // block names them so the importer's mapping rows read "prod-payments"
-    // rather than a UUID. It is metadata about the file, not part of the panel
-    // model — the importer reads it for labels and drops it.
     const referenced = new Set(panels.flatMap((p) => p.account_ids || []));
     const accounts = Object.fromEntries(
       [...referenced].map((id) => {
@@ -257,21 +213,26 @@ const CustomDashboards: React.FC = () => {
     );
   }
 
-  if (mode.name === 'edit') {
+  /*
+   * A dashboard that does not exist yet. It goes to the SAME screen a saved one does, opened in edit
+   * mode.
+   */
+  if (mode.name === 'create' && draftDashboard) {
     return (
-      <DashboardEditor
-        accountOptions={accountOptions}
-        // A template hands over an unsaved draft, which the editor treats as a
-        // new dashboard because it carries no id — same screen, same Save, so
-        // there is no template-shaped variant of the editor to maintain.
-        dashboard={mode.id ? selected?.dashboard || null : templateDraft}
-        onCancel={() => {
-          setTemplateDraft(null);
+      <DashboardView
+        dashboard={draftDashboard}
+        accounts={accountOptions}
+        canEdit
+        initialEditing
+        onBack={() => {
+          setDraftDashboard(null);
           setMode({ name: 'list' });
         }}
-        onSaved={(saved) => {
-          setTemplateDraft(null);
-          setSelected({ dashboard: saved, bindings: selected?.bindings || [] });
+        // The create answers with the stored dashboard — the first time this
+        // page learns the new id, and what it routes to.
+        onChange={(saved) => {
+          setDraftDashboard(null);
+          setSelected({ dashboard: saved, bindings: [] });
           setMode({ name: 'view', id: saved.id });
           setRouteId(saved.id);
         }}
@@ -285,9 +246,13 @@ const CustomDashboards: React.FC = () => {
         dashboard={selected.dashboard}
         accounts={accountOptions}
         canEdit={canWrite && !selected.dashboard.is_builtin}
-        onBack={() => setRouteId(null)}
-        // Panels and the title are edited in place; each save answers with the
-        // stored dashboard, which becomes what this page holds.
+        initialEditing={openEditing}
+        onBack={() => {
+          setOpenEditing(false);
+          setRouteId(null);
+        }}
+        // Panels, title and description are edited in place; each save answers
+        // with the stored dashboard, which becomes what this page holds.
         onChange={(saved) => setSelected((prev) => ({ dashboard: saved, bindings: prev?.bindings || [] }))}
       />
     );
@@ -306,9 +271,8 @@ const CustomDashboards: React.FC = () => {
     { name: 'Action', width: '18%' },
   ];
 
-  // CustomTable renders `component || text` — a cell carrying only `value`
-  // renders blank, which is why Panels and Updated At were empty. `value` is
-  // kept alongside for the CSV export path.
+  // CustomTable renders `component || text` — a cell carrying only `value` renders blank, which is why Panels
+  // and Updated At were empty.
   const tableData = dashboards.map((d) => [
     {
       value: d.title,
@@ -402,7 +366,14 @@ const CustomDashboards: React.FC = () => {
                 <Button tone='secondary' onClick={() => setImportOpen(true)} id='open-import-dashboard-btn' data-testid='open-import-dashboard-btn'>
                   Import dashboard
                 </Button>
-                <Button onClick={() => setMode({ name: 'edit', id: null })} id='new-dashboard-btn' data-testid='new-dashboard-btn'>
+                <Button
+                  onClick={() => {
+                    setDraftDashboard(BLANK_DASHBOARD);
+                    setMode({ name: 'create' });
+                  }}
+                  id='new-dashboard-btn'
+                  data-testid='new-dashboard-btn'
+                >
                   New dashboard
                 </Button>
               </Stack>
@@ -434,14 +405,11 @@ const CustomDashboards: React.FC = () => {
         open={templatesOpen}
         accountOptions={accountOptions}
         onClose={() => setTemplatesOpen(false)}
-        // Into the editor, not straight onto a saved dashboard. A template is a
-        // starting point, and the first thing anyone does with one is change a
-        // panel — creating it first would mean editing something that already
-        // exists, and abandoning it would leave a dashboard to delete.
+        // Onto the dashboard itself, in edit mode — not onto a saved dashboard
         onDraft={(draft) => {
           setTemplatesOpen(false);
-          setTemplateDraft(draft);
-          setMode({ name: 'edit', id: null });
+          setDraftDashboard(draft);
+          setMode({ name: 'create' });
         }}
       />
 
@@ -449,13 +417,13 @@ const CustomDashboards: React.FC = () => {
         open={importOpen}
         accountOptions={accountOptions}
         onClose={() => setImportOpen(false)}
-        // Straight into the editor: an import lands panels the author has never
-        // seen, and the warnings list is only actionable with the panels in front
-        // of them.
+        // Straight into edit mode: an import lands panels the author has never
         onImported={(saved) => {
           setImportOpen(false);
           setSelected({ dashboard: saved, bindings: [] });
-          setMode({ name: 'edit', id: saved.id });
+          setOpenEditing(true);
+          setMode({ name: 'view', id: saved.id });
+          setRouteId(saved.id);
         }}
       />
 

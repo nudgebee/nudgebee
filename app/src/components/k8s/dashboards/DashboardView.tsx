@@ -1,24 +1,43 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
+import {
+  closestCenter,
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core';
+import { arrayMove, rectSortingStrategy, SortableContext, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { Button } from '@ui/Button';
 import { Chip } from '@ui/Chip';
+import { DropdownMenu } from '@ui/DropdownMenu';
 import { EmptyState } from '@ui/EmptyState';
 import { Input } from '@ui/Input';
-import { ListingLayout } from '@ui/ListingLayout';
+import { Modal } from '@ui/Modal';
 import { snackbar } from '@ui/Toast';
 import Tooltip from '@ui/Tooltip';
-import CheckIcon from '@mui/icons-material/Check';
-import CloseIcon from '@mui/icons-material/Close';
+import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import LibraryBooksOutlinedIcon from '@mui/icons-material/LibraryBooksOutlined';
+import BackButton from '@shared/buttons/BackButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { downloadIcon, RefreshIcon, writeIconLight } from '@assets';
 import { ds } from '@utils/colors';
 import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, type Panel } from '@api1/dashboards';
 import DashboardPanel from './DashboardPanel';
+import SortablePanel from './SortablePanel';
+import usePanelResize from './usePanelResize';
 import { downloadNodeAsPng, waitForPanels } from './panelImage';
 import PanelEditorModal from './PanelEditorModal';
 import PanelLibraryModal from './PanelLibraryModal';
-import { blankPanel } from './panelDefaults';
+import { blankPanel, panelMinHeight, panelSpan } from './panelDefaults';
 import type { VariableValues } from './templating';
 
 interface Props {
@@ -31,15 +50,24 @@ interface Props {
   /** Hands back the saved dashboard after an in-place edit, so the host restates it. */
   onChange?: (saved: Dashboard) => void;
   canEdit?: boolean;
+  /**
+   * Opens straight in edit mode. Set by every path that arrives here to author
+   * rather than to read — a template, New dashboard, the listing's edit action.
+   */
+  initialEditing?: boolean;
 }
 
 const HOUR_MS = 60 * 60 * 1000;
 
-const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, onChange, canEdit }) => {
+/** Where the toolbar parks. */
+const APP_HEADER_HEIGHT = `calc(${ds.space.mul(0, 28)} + 2px)`;
+
+/** Gap between panels, in px. */
+const GRID_GAP = 10;
+
+const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, onChange, canEdit, initialEditing = false }) => {
   // Opens on the last hour: a dashboard is read live, and an hour keeps the
   // per-panel provider queries cheap enough to fan out across accounts.
-  // `shortcutClickTime` is what makes the picker read "Last 1 Hour" rather than
-  // a date range, and is carried back on every change so the label stays right.
   const [range, setRange] = useState(() => {
     const now = Date.now();
     return { startDate: now - HOUR_MS, endDate: now, shortcutClickTime: HOUR_MS };
@@ -48,12 +76,8 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   const [refreshToken, setRefreshToken] = useState(0);
 
   /**
-   * Exporting the whole dashboard as an image.
-   *
-   * `capturing` overrides every panel's scroll gate — panels below the fold
-   * have deliberately not fetched, and would rasterise as skeletons. It stays
-   * on after the capture: having paid for those queries, throwing the results
-   * away so the panels reload on scroll would be worse than keeping them.
+   * Exporting the whole dashboard as an image. `capturing` overrides every panel's scroll gate —
+   * panels below the fold have deliberately not fetched, and would rasterise as skeletons.
    */
   const gridRef = React.useRef<HTMLDivElement | null>(null);
   const [capturing, setCapturing] = useState(false);
@@ -83,11 +107,8 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   };
 
   /**
-   * Refreshes every panel.
-   *
-   * A relative range ("Last 1 Hour") has to be re-evaluated against now —
-   * refetching the same fixed window would return the same data and read as a
-   * broken button. An absolute range is left alone and only the token moves.
+   * Refreshes every panel. A relative range ("Last 1 Hour") has to be re-evaluated against now —
+   * refetching the same fixed window would return the same data and read as a broken button.
    */
   const refreshAll = () => {
     setRange((prev) => (prev.shortcutClickTime > 0 ? { ...prev, startDate: Date.now() - prev.shortcutClickTime, endDate: Date.now() } : prev));
@@ -98,40 +119,57 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   // variables of their own.
   const variables = useMemo(() => context || {}, [context]);
 
-  // Account narrowing is per PANEL, not per dashboard — each panel is scoped to
-  // its own accounts, so a shared filter would offer accounts most panels never
-  // query. The control lives in DashboardPanel's header.
-  const panels = dashboard.definition?.panels || [];
+  // Account narrowing is per PANEL, not per dashboard — each panel is scoped to its own accounts, so a shared
+  // filter would offer accounts most panels never query.
+  const savedPanels = dashboard.definition?.panels || [];
 
   /*
-   * Editing happens HERE rather than on a separate editor screen: a panel is
-   * authored against what the dashboard is currently showing, and bouncing to a
-   * form-only page loses that. Every edit is written straight through to the
-   * dashboard, so there is no unsaved-changes state to lose on a reload.
+   * Editing happens HERE rather than on a separate editor screen: a panel is authored against what the
+   * dashboard is currently showing, and bouncing to a form-only page loses that.
    */
+  /** A dashboard with no id has never been written. */
+  const isNew = !dashboard.id;
+
+  const [draftPanels, setDraftPanels] = useState<Panel[] | null>(initialEditing ? savedPanels.slice() : null);
+  // Title and description are edited in the toolbar itself while in edit mode,
+  // and committed by the same Save as the layout — there is no separate rename.
+  const [titleDraft, setTitleDraft] = useState(dashboard.title);
+  const [descriptionDraft, setDescriptionDraft] = useState(dashboard.description || '');
+
+  const editing = draftPanels !== null;
+  const panels = draftPanels ?? savedPanels;
+  // Cheap because a definition is a few dozen small objects, and it compares
+  // what actually gets written rather than tracking a dirty flag per gesture.
+  const dirty =
+    editing &&
+    (isNew ||
+      titleDraft !== dashboard.title ||
+      descriptionDraft !== (dashboard.description || '') ||
+      JSON.stringify(draftPanels) !== JSON.stringify(savedPanels));
+
   const [editingPanel, setEditingPanel] = useState<Panel | null>(null);
   const [panelModalOpen, setPanelModalOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [titleDraft, setTitleDraft] = useState('');
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  /** The panel awaiting delete confirmation. Held whole so the prompt can name it. */
+  const [pendingDelete, setPendingDelete] = useState<Panel | null>(null);
+  /** The panel under the cursor mid-drag; drives the DragOverlay. */
+  const [activeId, setActiveId] = useState<number | null>(null);
 
-  /**
-   * Writes the dashboard back.
-   *
-   * `bindings` is deliberately omitted rather than sent empty: the service
-   * replaces bindings wholesale when the field is present, so sending [] from a
-   * screen that does not edit them would silently delete any that exist. The
-   * rest of `definition` is carried through for the same reason.
-   */
-  const persist = async (change: { title?: string; panels?: Panel[] }): Promise<boolean> => {
+  /** Writes the dashboard back. */
+  const persist = async (change: { title?: string; description?: string; panels?: Panel[] }): Promise<boolean> => {
     setSaving(true);
     try {
       const res = await apiDashboards.saveDashboard({
+        // Empty on a dashboard that has never been written — `saveDashboard`
+        // reads that as a create rather than an update.
         id: dashboard.id,
         title: change.title ?? dashboard.title,
-        description: dashboard.description,
-        definition: { ...EMPTY_DEFINITION, ...(dashboard.definition || {}), panels: change.panels ?? panels },
+        description: change.description ?? dashboard.description,
+        // Falls back to the SAVED panels, never the draft: renaming mid-edit
+        // must not smuggle an unsaved layout along with the new title.
+        definition: { ...EMPTY_DEFINITION, ...(dashboard.definition || {}), panels: change.panels ?? savedPanels },
       });
 
       // The gateway reports handler failures in `errors`, not by throwing, so a
@@ -155,155 +193,356 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   };
 
   /**
-   * A library widget opens in the panel editor rather than landing directly:
-   * it arrives with its account already pre-filled from the datasource, and the
-   * editor is where that choice — and the query behind it — is visible while
-   * both are still free to change.
+   * A library widget lands on the dashboard directly. It used to open in the panel editor first, so
+   * the pre-filled account and query were read before anything was committed.
    */
-  const openLibraryPanel = (panel: Panel) => {
-    setLibraryOpen(false);
-    setEditingPanel(panel);
-    setPanelModalOpen(true);
+  const addLibraryPanel = async (panel: Panel) => {
+    if (!(await savePanel(panel, { silent: true }))) return;
+    snackbar.success(`“${panel.title}” added to the dashboard`);
   };
 
-  const savePanel = async (panel: Panel) => {
+  /** Resolves true once the panel is on the dashboard — buffered in edit mode, written otherwise. */
+  const savePanel = async (panel: Panel, options?: { silent?: boolean }): Promise<boolean> => {
     const isNew = !panels.some((p) => p.id === panel.id);
     const next = isNew ? [...panels, panel] : panels.map((p) => (p.id === panel.id ? panel : p));
-    if (!(await persist({ panels: next }))) return;
-    snackbar.success(isNew ? 'Panel added' : 'Panel updated');
+
+    // In edit mode this joins the buffered layout instead of being written on
+    // its own — otherwise Discard would revert where a panel sits but keep the
+    // content change made in the same sitting, which is a confusing half-undo.
+    if (editing) {
+      setDraftPanels(next);
+      setPanelModalOpen(false);
+      setEditingPanel(null);
+      return true;
+    }
+
+    if (!(await persist({ panels: next }))) return false;
+    // `persist` reports its own failures, so silence here only ever suppresses a
+    // success the caller is about to word better.
+    if (!options?.silent) snackbar.success(isNew ? 'Panel added' : 'Panel updated');
     setPanelModalOpen(false);
     setEditingPanel(null);
+    return true;
   };
 
-  const startRename = () => {
+  /* ---------------------------------------------------------------------- *
+   * Edit mode
+   * ---------------------------------------------------------------------- */
+
+  const enterEdit = () => {
     setTitleDraft(dashboard.title);
-    setRenaming(true);
+    setDescriptionDraft(dashboard.description || '');
+    setDraftPanels(savedPanels.slice());
   };
 
-  const commitRename = async () => {
+  /** Leaves edit mode, asking first if there is anything to lose. */
+  const requestExit = () => {
+    if (dirty) {
+      setConfirmDiscard(true);
+      return;
+    }
+    // A never-saved dashboard has nothing to fall back to — leaving edit mode
+    // means leaving the screen.
+    if (isNew) {
+      onBack?.();
+      return;
+    }
+    setDraftPanels(null);
+  };
+
+  const discardEdits = () => {
+    setConfirmDiscard(false);
+    if (isNew) {
+      onBack?.();
+      return;
+    }
+    setTitleDraft(dashboard.title);
+    setDescriptionDraft(dashboard.description || '');
+    setDraftPanels(null);
+  };
+
+  const saveLayout = async () => {
+    if (!draftPanels) return;
     const title = titleDraft.trim();
+    // The server rejects an untitled dashboard, and a create started from the
+    // blank New dashboard path arrives with nothing in the field.
     if (!title) {
       snackbar.error('Give the dashboard a title.');
       return;
     }
-    // Nothing to write — closing beats a "saved" toast for a no-op.
-    if (title === dashboard.title) {
-      setRenaming(false);
+    // Nothing changed — leaving quietly beats a request and a "saved" toast.
+    if (!dirty) {
+      setDraftPanels(null);
       return;
     }
-    if (!(await persist({ title }))) return;
-    snackbar.success('Dashboard renamed');
-    setRenaming(false);
+    if (!(await persist({ title, description: descriptionDraft.trim(), panels: draftPanels }))) return;
+    snackbar.success(isNew ? 'Dashboard created' : 'Dashboard saved');
+    // On a create the host swaps this screen for the saved dashboard; dropping
+    // the draft here is what returns it to read-only in both cases.
+    setDraftPanels(null);
   };
 
-  return (
-    <ListingLayout id='dashboard-view'>
-      <ListingLayout.Toolbar
-        actions={
-          // Time range sits before Add panel: it changes what you are looking
-          // at, and the action that adds to the page goes last.
-          <Stack direction='row' gap={1} alignItems='center'>
-            <CustomDateTimeRangePicker
-              onChange={(ranges: any) =>
-                setRange({
-                  startDate: ranges.selection.startTime,
-                  endDate: ranges.selection.endTime,
-                  shortcutClickTime: ranges.selection.shortcutClickTime || 0,
-                })
-              }
-              passedSelectedDateTime={{ startTime: range.startDate, endTime: range.endDate, shortcutClickTime: range.shortcutClickTime }}
+  /*
+   * Deleting asks first, even though the change is buffered and Discard would
+   * undo it: Discard is all-or-nothing, so recovering one panel deleted by
+   * mistake means throwing away every other change made in the same sitting.
+   */
+  const confirmDeletePanel = () => {
+    setDraftPanels((prev) => (prev ? prev.filter((p) => p.id !== pendingDelete?.id) : prev));
+    setPendingDelete(null);
+  };
+
+  /**
+   * Commits one resize step. Called only when the drag crosses into a new legal
+   * width, not on every mouse move.
+   */
+  const handleResize = useCallback((panelId: number, width: number) => {
+    setDraftPanels((prev) => (prev ? prev.map((p) => (p.id === panelId ? { ...p, grid_pos: { ...p.grid_pos, w: width } } : p)) : prev));
+  }, []);
+
+  const { resizingId, startResize } = usePanelResize({ gridRef, gap: GRID_GAP, onResize: handleResize });
+
+  /*
+   * Pointer needs a few px of travel before it counts as a drag, or clicking the handle to focus it would
+   * fling the panel.
+   */
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const handleDragStart = (event: DragStartEvent) => setActiveId(Number(event.active.id));
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over || active.id === over.id || !draftPanels) return;
+    const from = draftPanels.findIndex((p) => p.id === active.id);
+    const to = draftPanels.findIndex((p) => p.id === over.id);
+    // A panel deleted mid-drag leaves dnd-kit holding an id that no longer
+    // resolves; moving to index -1 would drop it off the front of the array.
+    if (from === -1 || to === -1) return;
+    // Array order IS the layout order — there are no coordinates to rewrite.
+    setDraftPanels(arrayMove(draftPanels, from, to));
+  };
+
+  const activePanel = activeId === null ? null : panels.find((p) => p.id === activeId) || null;
+
+  const openPanelEditor = (panel: Panel) => {
+    setEditingPanel(panel);
+    setPanelModalOpen(true);
+  };
+
+  /*
+   * The panel grid, in both modes.
+   */
+  const grid = (
+    <Box ref={gridRef} sx={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: `${GRID_GAP}px`, background: ds.background[300] }}>
+      {panels.map((panel) =>
+        editing ? (
+          <SortablePanel
+            key={panel.id}
+            panel={panel}
+            accounts={accounts}
+            variables={variables}
+            startTime={range.startDate}
+            endTime={range.endDate}
+            refreshToken={refreshToken}
+            resizing={resizingId === panel.id}
+            // The drag starts from the width the panel currently has, so the
+            // snap points are measured from where the user grabbed it.
+            onResizeStart={(event) => startResize(panel.id, panelSpan(panel), event)}
+            onEdit={() => openPanelEditor(panel)}
+            onDelete={() => setPendingDelete(panel)}
+          />
+        ) : (
+          <Box
+            key={panel.id}
+            sx={{
+              // gridPos.w is in 12ths, mirroring the Grafana panel model. The
+              // legacy renderer ignored it and stacked every panel full-width.
+              gridColumn: `span ${panelSpan(panel)}`,
+              minHeight: panelMinHeight(panel),
+            }}
+          >
+            <DashboardPanel
+              panel={panel}
+              accounts={accounts}
+              variables={variables}
+              startTime={range.startDate}
+              endTime={range.endDate}
+              refreshToken={refreshToken}
+              forceLoad={capturing}
+              onEdit={canEdit ? () => openPanelEditor(panel) : undefined}
             />
-            <Tooltip title='Refresh all panels'>
+          </Box>
+        )
+      )}
+    </Box>
+  );
+
+  /*
+   * Time range sits before the actions: it changes what you are looking at, and what adds to the page
+   * goes last. None of the three reading controls appear in edit mode.
+   */
+  const actions = (
+    <Stack direction='row' gap={1} alignItems='center'>
+      {!editing && (
+        <>
+          <CustomDateTimeRangePicker
+            onChange={(ranges: any) =>
+              setRange({
+                startDate: ranges.selection.startTime,
+                endDate: ranges.selection.endTime,
+                shortcutClickTime: ranges.selection.shortcutClickTime || 0,
+              })
+            }
+            passedSelectedDateTime={{ startTime: range.startDate, endTime: range.endDate, shortcutClickTime: range.shortcutClickTime }}
+          />
+          <Tooltip title='Refresh all panels'>
+            <Button
+              tone='secondary'
+              composition='icon-only'
+              aria-label='Refresh dashboard'
+              icon={<SafeIcon src={RefreshIcon} alt='refresh' width={16} height={16} />}
+              onClick={refreshAll}
+              id='dashboard-refresh-btn'
+              data-testid='dashboard-refresh-btn'
+            />
+          </Tooltip>
+          {/* Loads every panel first, including the ones below the fold, so the
+              image is the whole dashboard rather than the part scrolled past. */}
+          <Tooltip title='Export the whole dashboard as a PNG'>
+            <Button
+              tone='secondary'
+              composition='icon-only'
+              aria-label='Export dashboard as image'
+              icon={<SafeIcon src={downloadIcon} alt='export' width={16} height={16} />}
+              onClick={exportPng}
+              loading={exporting}
+              disabled={exporting || panels.length === 0}
+              id='dashboard-export-png-btn'
+              data-testid='dashboard-export-png-btn'
+            />
+          </Tooltip>
+        </>
+      )}
+      {/* Adding a panel is an edit, so both entry points live inside edit mode
+          with the rest of them. Outside it the bar carries one button. */}
+      {canEdit && !editing && (
+        <Button
+          onClick={enterEdit}
+          icon={<SafeIcon src={writeIconLight} alt='edit' width={16} height={16} />}
+          id='dashboard-edit-btn'
+          data-testid='dashboard-edit-btn'
+        >
+          Edit
+        </Button>
+      )}
+      {canEdit && editing && (
+        <>
+          {/* One button, two ways to fill it — a blank panel and the library
+              are the same act with a different starting point, and side by side
+              they read as competing choices. */}
+          <DropdownMenu
+            align='end'
+            trigger={
               <Button
                 tone='secondary'
-                composition='icon-only'
-                aria-label='Refresh dashboard'
-                icon={<SafeIcon src={RefreshIcon} alt='refresh' width={16} height={16} />}
-                onClick={refreshAll}
-                id='dashboard-refresh-btn'
-                data-testid='dashboard-refresh-btn'
-              />
-            </Tooltip>
-            {/* Loads every panel first, including the ones below the fold, so
-                the image is the whole dashboard rather than the part scrolled
-                past. */}
-            <Tooltip title='Export the whole dashboard as a PNG'>
-              <Button
-                tone='secondary'
-                composition='icon-only'
-                aria-label='Export dashboard as image'
-                icon={<SafeIcon src={downloadIcon} alt='export' width={16} height={16} />}
-                onClick={exportPng}
-                loading={exporting}
-                disabled={exporting || panels.length === 0}
-                id='dashboard-export-png-btn'
-                data-testid='dashboard-export-png-btn'
-              />
-            </Tooltip>
-            {canEdit && (
-              <>
-                <Button
-                  tone='secondary'
-                  onClick={() => setLibraryOpen(true)}
-                  disabled={saving}
-                  id='dashboard-add-from-library-btn'
-                  data-testid='dashboard-add-from-library-btn'
-                >
-                  Add from library
-                </Button>
-                <Button onClick={openNewPanel} disabled={saving} id='dashboard-add-panel-btn' data-testid='dashboard-add-panel-btn'>
-                  Add panel
-                </Button>
-              </>
-            )}
-          </Stack>
-        }
-      >
-        {onBack && (
-          <Button tone='secondary' onClick={onBack} id='dashboard-back-btn'>
-            Back
+                icon={<KeyboardArrowDownIcon sx={{ fontSize: 18 }} />}
+                iconPlacement='end'
+                disabled={saving}
+                id='dashboard-add-panel-btn'
+                data-testid='dashboard-add-panel-btn'
+              >
+                Add panel
+              </Button>
+            }
+            // Library first: picking a ready-made widget is the commoner answer
+            // than authoring a query from nothing, so it leads.
+            items={[
+              {
+                id: 'add-from-library',
+                label: 'From library',
+                icon: <LibraryBooksOutlinedIcon sx={{ fontSize: 17 }} />,
+                onSelect: () => setLibraryOpen(true),
+              },
+              { id: 'add-blank-panel', label: 'Blank panel', icon: <AddOutlinedIcon sx={{ fontSize: 17 }} />, onSelect: openNewPanel },
+            ]}
+          />
+          <Button tone='secondary' onClick={requestExit} disabled={saving} id='dashboard-discard-btn' data-testid='dashboard-discard-btn'>
+            Discard
           </Button>
-        )}
-        {renaming ? (
-          <Stack direction='row' alignItems='center' gap={0.5} sx={{ minWidth: 0 }}>
-            <Input
-              value={titleDraft}
-              onChange={setTitleDraft}
-              // Frozen while the rename is in flight — the request already
-              // carries the name, so a later keystroke would be lost.
-              disabled={saving}
-              placeholder='Dashboard name'
-              // Enter commits and Escape abandons, so the rename can be driven
-              // without reaching for the two buttons.
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitRename();
-                if (e.key === 'Escape') setRenaming(false);
-              }}
-            />
-            <Tooltip title='Save name'>
-              <Button
-                tone='ghost'
-                composition='icon-only'
-                aria-label='Save dashboard name'
-                icon={<CheckIcon sx={{ fontSize: 18, color: ds.green[600] }} />}
-                onClick={commitRename}
+          <Button onClick={saveLayout} loading={saving} disabled={saving} id='dashboard-save-btn' data-testid='dashboard-save-btn'>
+            Save
+          </Button>
+        </>
+      )}
+    </Stack>
+  );
+
+  return (
+    <Box>
+      {/*
+       * The dashboard's own bar, pinned under the app header.
+       *
+       * It carries what the whole page is scoped by — which dashboard, over
+       * what window — so it has to stay reachable through a dashboard that is
+       * several screens tall. Parked against the header rather than floating
+       * below it so the two read as one piece of chrome.
+       */}
+      <Box
+        id='dashboard-toolbar'
+        sx={{
+          position: 'sticky',
+          top: APP_HEADER_HEIGHT,
+          // Over the panels scrolling beneath.
+          zIndex: 3,
+          /*
+           * Out of the page gutters and back in as padding, so the bar spans the full content column and
+           * meets the header with no seam: the 24px top gutter comes from pages/dashboards, the 40px sides
+           * from the page layout (components/common/layout/index.jsx).
+           */
+          mt: ds.space.mul(5, -1),
+          mx: ds.space.mul(1, -10),
+          px: ds.space.mul(1, 10),
+          py: ds.space[2],
+          mb: ds.space[4],
+          display: 'flex',
+          alignItems: 'center',
+          gap: ds.space[2],
+          backgroundColor: ds.background[100],
+          borderBottom: `1px solid ${ds.gray[200]}`,
+        }}
+      >
+        {onBack && <BackButton id='dashboard-back-btn' onClick={onBack} />}
+        {editing ? (
+          /* The name and description are plain fields here rather than a
+             separate rename control: edit mode is already a buffered session
+             with its own Save, so a second commit step inside it would be a
+             save button in front of a save button. */
+          <Stack direction='row' alignItems='center' gap={1} sx={{ minWidth: 0 }}>
+            <Box sx={{ width: 240 }}>
+              <Input
+                value={titleDraft}
+                onChange={setTitleDraft}
                 disabled={saving}
-                id='dashboard-rename-save-btn'
-                data-testid='dashboard-rename-save-btn'
+                placeholder='Dashboard name'
+                required
+                id='dashboard-title-input'
+                data-testid='dashboard-title-input'
               />
-            </Tooltip>
-            <Tooltip title='Cancel'>
-              <Button
-                tone='ghost'
-                composition='icon-only'
-                aria-label='Cancel rename'
-                icon={<CloseIcon sx={{ fontSize: 18, color: ds.gray[500] }} />}
-                onClick={() => setRenaming(false)}
+            </Box>
+            <Box sx={{ width: 320 }}>
+              <Input
+                value={descriptionDraft}
+                onChange={setDescriptionDraft}
                 disabled={saving}
-                id='dashboard-rename-cancel-btn'
-                data-testid='dashboard-rename-cancel-btn'
+                placeholder='Description (optional)'
+                id='dashboard-description-input'
+                data-testid='dashboard-description-input'
               />
-            </Tooltip>
+            </Box>
           </Stack>
         ) : (
           <Stack direction='row' alignItems='center' gap={0.5} sx={{ minWidth: 0 }}>
@@ -311,24 +550,19 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
               <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 18, fontWeight: 650, color: ds.gray[700] }}>
                 {dashboard.title}
               </Typography>
-              {dashboard.description && (
-                <Typography variant='caption' sx={{ color: ds.gray[500] }}>
-                  {dashboard.description}
-                </Typography>
-              )}
             </Box>
-            {canEdit && (
-              <Tooltip title='Rename dashboard'>
-                <Button
-                  tone='ghost'
-                  composition='icon-only'
-                  aria-label='Rename dashboard'
-                  icon={<SafeIcon src={writeIconLight} alt='edit' width={16} height={16} />}
-                  onClick={startRename}
-                  disabled={saving}
-                  id='dashboard-rename-btn'
-                  data-testid='dashboard-rename-btn'
-                />
+            {/* The description is a tooltip, not a subtitle: it is read once
+                when you arrive and then costs a line of the sticky bar on every
+                screen after that. Same treatment a panel's description gets. */}
+            {dashboard.description && (
+              <Tooltip title={dashboard.description}>
+                <Box
+                  component='span'
+                  sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}
+                  data-testid='dashboard-description'
+                >
+                  <InfoOutlinedIcon sx={{ fontSize: 15 }} />
+                </Box>
               </Tooltip>
             )}
           </Stack>
@@ -338,76 +572,119 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
             Built-in
           </Chip>
         )}
-      </ListingLayout.Toolbar>
+        <Box sx={{ flex: 1, minWidth: 0 }} />
+        {actions}
+      </Box>
 
-      {/* Body defaults to `0 space[5]` — no vertical padding — so the panel grid
-          would sit flush against the card border. */}
-      <ListingLayout.Body padding={`0 ${ds.space[5]} ${ds.space[5]}`}>
-        <Box data-testid='dashboard-view'>
-          {panels.length === 0 ? (
-            <EmptyState
-              surface
-              size='section'
-              illustration='first-time'
-              title='No panels yet'
-              description='Each panel runs one query against the accounts you scope it to.'
-              action={canEdit ? { label: 'Add panel', onClick: openNewPanel } : undefined}
-            />
-          ) : (
-            <Box ref={gridRef} sx={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: '10px', background: ds.background[100] }}>
-              {panels.map((panel) => (
+      {/* No card around the panels: each panel is already a bordered surface,
+          and a second one behind them only added a white plate between the
+          panels and the page. They sit straight on the page background now. */}
+      <Box data-testid='dashboard-view' sx={{ pb: ds.space[5] }}>
+        {panels.length === 0 ? (
+          <EmptyState
+            surface
+            size='section'
+            illustration='first-time'
+            title='No panels yet'
+            description='Each panel runs one query against the accounts you scope it to.'
+            action={canEdit ? { label: 'Add panel', onClick: openNewPanel } : undefined}
+          />
+        ) : editing ? (
+          <DndContext
+            sensors={sensors}
+            // Panels differ in width, so the pointer is regularly inside more than one droppable.
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            onDragCancel={() => setActiveId(null)}
+          >
+            <SortableContext items={panels.map((p) => p.id)} strategy={rectSortingStrategy}>
+              {grid}
+            </SortableContext>
+            {/* What follows the cursor. Deliberately NOT the real panel:
+                mounting a second DashboardPanel would run its query again for
+                the length of the drag. */}
+            <DragOverlay>
+              {activePanel && (
                 <Box
-                  key={panel.id}
                   sx={{
-                    // gridPos.w is in 12ths, mirroring the Grafana panel model. The
-                    // legacy renderer ignored it and stacked every panel full-width.
-                    gridColumn: `span ${Math.min(Math.max(panel.grid_pos?.w || 12, 1), 12)}`,
-                    minHeight: (panel.grid_pos?.h || 8) * 30,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: ds.space[2],
+                    px: ds.space[3],
+                    py: ds.space[2],
+                    borderRadius: '8px',
+                    border: `1px solid ${ds.blue[500]}`,
+                    background: ds.background[100],
+                    boxShadow: 'var(--ds-overlay-shadow)',
+                    cursor: 'grabbing',
                   }}
                 >
-                  <DashboardPanel
-                    panel={panel}
-                    accounts={accounts}
-                    variables={variables}
-                    startTime={range.startDate}
-                    endTime={range.endDate}
-                    refreshToken={refreshToken}
-                    forceLoad={capturing}
-                    onEdit={
-                      canEdit
-                        ? () => {
-                            setEditingPanel(panel);
-                            setPanelModalOpen(true);
-                          }
-                        : undefined
-                    }
-                  />
+                  <DragIndicatorIcon sx={{ fontSize: 16, color: ds.gray[400] }} />
+                  <Typography sx={{ fontSize: 13, fontWeight: 620, color: ds.gray[700] }}>{activePanel.title || 'Untitled panel'}</Typography>
+                  <Chip size='2xs' tone='subtle'>{`${panelSpan(activePanel)}/12`}</Chip>
                 </Box>
-              ))}
-            </Box>
-          )}
-        </Box>
+              )}
+            </DragOverlay>
+          </DndContext>
+        ) : (
+          grid
+        )}
+      </Box>
 
-        <PanelLibraryModal
-          open={libraryOpen}
-          existingPanels={panels}
-          accountOptions={accounts}
-          onClose={() => setLibraryOpen(false)}
-          onPick={openLibraryPanel}
-        />
+      <PanelLibraryModal
+        open={libraryOpen}
+        existingPanels={panels}
+        accountOptions={accounts}
+        // Same window and variables the dashboard is showing, so a widget
+        // previews as the panel it is about to become.
+        variables={variables}
+        startTime={range.startDate}
+        endTime={range.endDate}
+        onClose={() => setLibraryOpen(false)}
+        onAdd={addLibraryPanel}
+      />
 
-        <PanelEditorModal
-          open={panelModalOpen}
-          panel={editingPanel}
-          accountOptions={accounts}
-          onClose={() => {
-            setPanelModalOpen(false);
-            setEditingPanel(null);
-          }}
-          onSave={savePanel}
-        />
-      </ListingLayout.Body>
-    </ListingLayout>
+      <PanelEditorModal
+        open={panelModalOpen}
+        panel={editingPanel}
+        accountOptions={accounts}
+        // The preview runs against the same window and variables the panels beside it do, so it is not
+        // answering a different question from the dashboard the author is looking at.
+        variables={variables}
+        startTime={range.startDate}
+        endTime={range.endDate}
+        onClose={() => {
+          setPanelModalOpen(false);
+          setEditingPanel(null);
+        }}
+        onSave={savePanel}
+      />
+
+      {/* Only reached with unsaved changes — leaving a clean edit session just
+          leaves. Nothing here is recoverable afterwards, so it asks. */}
+      <Modal
+        open={confirmDiscard}
+        handleClose={() => setConfirmDiscard(false)}
+        title='Discard changes?'
+        confirmText='Discard'
+        onConfirm={discardEdits}
+      >
+        <Typography variant='body2'>Your layout changes to {dashboard.title} will be lost. This cannot be undone.</Typography>
+      </Modal>
+
+      <Modal
+        open={Boolean(pendingDelete)}
+        handleClose={() => setPendingDelete(null)}
+        title='Delete panel?'
+        confirmText='Delete'
+        onConfirm={confirmDeletePanel}
+      >
+        <Typography variant='body2'>
+          {pendingDelete?.title || 'This panel'} will be removed from the dashboard. It is not gone until you save.
+        </Typography>
+      </Modal>
+    </Box>
   );
 };
 

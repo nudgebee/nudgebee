@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Typography } from '@mui/material';
+import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import Chart from '@ui/Chart';
 import { Chip } from '@ui/Chip';
@@ -14,33 +15,20 @@ import { downloadJsonFile, filenameSlug } from '@utils/fileDownload';
 import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import type { AccountOption, Panel } from '@api1/dashboards';
-import { usePanelData } from './usePanelData';
+import PanelState, { type PanelStateTone } from './PanelState';
+import { usePanelData, type PanelData, type PanelErrorKind } from './usePanelData';
 import { describePanelScope, resolvePanelAccounts } from './panelAccounts';
 import { lastValue, statCaption } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
 import type { VariableValues } from './templating';
 
-/**
- * Plot height, excluding the legend the chart renders beneath it. Panels sit
- * several-to-a-row, so the chart's own 230px default (which then grows with the
- * series count) made a 12-panel dashboard an endless scroll.
- */
+/** Plot height, excluding the legend the chart renders beneath it. */
 const CHART_HEIGHT = 160;
 
-/**
- * How far outside the viewport a panel starts loading. Roughly one panel-height
- * of lead time, so scrolling lands on a chart rather than on a skeleton that
- * only then begins fetching.
- */
+/** How far outside the viewport a panel starts loading. */
 const PRELOAD_MARGIN = '300px';
 
-/**
- * True once the element has been within `PRELOAD_MARGIN` of the viewport.
- *
- * Latching rather than tracking visibility: a panel that scrolls back off screen
- * keeps its data, so scrolling up and down a dashboard doesn't re-run — and
- * re-bill — the same provider queries.
- */
+/** True once the element has been within `PRELOAD_MARGIN` of the viewport. */
 function useSeenOnScreen<T extends HTMLElement>() {
   const ref = React.useRef<T | null>(null);
   const [seen, setSeen] = React.useState(false);
@@ -78,17 +66,31 @@ interface Props {
   endTime: number;
   /** Bumped by the dashboard's Refresh; refetches every panel at once. */
   refreshToken?: number;
-  /**
-   * Overrides the scroll gate. Set while the dashboard is being exported as an
-   * image: a panel below the fold has deliberately not fetched, and would be
-   * rasterised as a skeleton.
-   */
+  /** Overrides the scroll gate. */
   forceLoad?: boolean;
+  /** Edit mode. */
+  editing?: boolean;
+  /**
+   * Draws this instead of querying anything, for the editor's preview. Setting it
+   * turns the fetch off rather than racing it.
+   */
+  sampleData?: PanelData;
   /** Opens this panel in the editor. Omitted when the viewer cannot edit. */
   onEdit?: () => void;
-  /** Rendered in the panel header — edit / remove affordances in editor mode. */
+  /** Rendered in the panel header — the drag and delete affordances. */
   actions?: React.ReactNode;
 }
+
+/**
+ * How each failure reads. `config` is amber, not red: an unfinished panel is not
+ * a fault, and red is kept for the case where something actually went wrong.
+ */
+const ERROR_TONE: Record<PanelErrorKind, PanelStateTone> = {
+  config: 'attention',
+  blocked: 'blocked',
+  filter: 'empty',
+  failed: 'error',
+};
 
 /** Formats a scalar for the stat panel without lying about precision. */
 function formatValue(value: number | null | undefined, unit?: string): string {
@@ -106,14 +108,14 @@ const DashboardPanel: React.FC<Props> = ({
   endTime,
   refreshToken = 0,
   forceLoad = false,
+  editing = false,
+  sampleData,
   onEdit,
   actions,
 }) => {
   /**
-   * Narrowing is per PANEL and single-select: the options are exactly the
-   * accounts THIS panel is scoped to — every account of the provider when it is
-   * type-scoped, or just the ones it names. One account at a time keeps the
-   * chart readable and costs one provider request instead of ~100.
+   * Narrowing is per PANEL and single-select: the options are exactly the accounts THIS panel is scoped to —
+   * every account of the provider when it is type-scoped, or just the ones it names.
    */
   const [accountId, setAccountId] = React.useState('');
   const panelAccounts = React.useMemo(() => resolvePanelAccounts(panel, accounts), [panel, accounts]);
@@ -121,9 +123,8 @@ const DashboardPanel: React.FC<Props> = ({
     () => panelAccounts.map((a) => ({ label: a.label, value: a.value, group: a.cloud_provider || 'Other' })),
     [panelAccounts]
   );
-  // Nothing picked yet means the first account, not "no account": a panel that
-  // waits for a choice shows an empty box, and one account costs the same
-  // single request whether it was chosen or defaulted to.
+  // Nothing picked yet means the first account, not "no account": a panel that waits for a choice shows an
+  // empty box, and one account costs the same single request whether it was chosen or defaulted to.
   const effectiveAccountId = accountId || panelAccounts[0]?.value || '';
   const selectedOption = filterOptions.find((o) => o.value === effectiveAccountId) || null;
   // The hook takes a list so a panel scoped to one account still works without a
@@ -135,10 +136,8 @@ const DashboardPanel: React.FC<Props> = ({
   const [panelRefresh, setPanelRefresh] = React.useState(0);
   const refreshKey = `${refreshToken}:${panelRefresh}`;
 
-  // A text panel has nothing to fetch, so Refresh would be a no-op on it — but
-  // it is still editable, so the menu itself is not conditional on the type.
-  // Export is offered on every panel, including to viewers who cannot edit:
-  // copying a panel's query into another dashboard is a read.
+  // A text panel has nothing to fetch, so Refresh would be a no-op on it — but it is still editable, so the
+  // menu itself is not conditional on the type.
   const menuItems = React.useMemo(() => {
     const items: { id: string; label: string; icon: unknown }[] = [];
     if (panel.type !== 'text') items.push({ id: 'refresh', label: 'Refresh', icon: RefreshIcon });
@@ -152,11 +151,7 @@ const DashboardPanel: React.FC<Props> = ({
   // concurrent provider requests before the viewer has seen the second row.
   const [panelRef, seen] = useSeenOnScreen<HTMLDivElement>();
 
-  /**
-   * Rasterises this panel. Whatever is on screen is what lands in the file — a
-   * panel showing an error exports that error, which is the honest picture of
-   * what the viewer was looking at.
-   */
+  /** Rasterises this panel. */
   const exportPng = async () => {
     if (!panelRef.current) return;
     try {
@@ -167,7 +162,12 @@ const DashboardPanel: React.FC<Props> = ({
     }
   };
 
-  const { data, loading, error, warning } = usePanelData({
+  const {
+    data: fetched,
+    loading,
+    error: fetchError,
+    warning: fetchWarning,
+  } = usePanelData({
     panel,
     accounts,
     accountFilter,
@@ -175,18 +175,30 @@ const DashboardPanel: React.FC<Props> = ({
     startTime,
     endTime,
     refreshKey,
-    enabled: seen || forceLoad,
+    enabled: (seen || forceLoad) && !sampleData,
   });
 
-  /**
-   * Nothing to draw yet — no data and no error. A whole-dashboard export waits
-   * on this rather than on `loading`, which is still false in the beat between
-   * the panel being told to load and its effect firing.
-   */
+  // A sample outranks what the last fetch left behind: `body()` reads `error`
+  // before it reads the data, so a stale error would win.
+  const data = sampleData ?? fetched;
+  const error = sampleData ? null : fetchError;
+  const warning = sampleData ? null : fetchWarning;
+
+  /** Nothing to draw yet — no data and no error. */
   const pending = panel.type !== 'text' && !data && !error;
   // Describes the panel's own scope, not the filtered view — the chip should
   // keep saying what the panel IS while the filter changes what it shows.
   const scopeLabel = describePanelScope(panel, accounts);
+
+  /** The one thing worth doing about each failure. */
+  const errorAction = (kind: PanelErrorKind) => {
+    if (editing) return undefined;
+    if (kind === 'config') return onEdit ? { label: 'Edit panel', onClick: onEdit } : undefined;
+    if (kind === 'filter') return { label: 'Show all accounts', onClick: () => setAccountId('') };
+    // The same refetch the overflow menu's Refresh fires, one click instead of two.
+    if (kind === 'failed') return { label: 'Retry', onClick: () => setPanelRefresh((n) => n + 1) };
+    return undefined;
+  };
 
   const body = () => {
     if (panel.type === 'text') {
@@ -198,10 +210,13 @@ const DashboardPanel: React.FC<Props> = ({
     }
     if (error) {
       return (
-        <Box sx={{ p: 2, textAlign: 'center' }}>
-          <Typography variant='body2' sx={{ color: ds.red[500] }} data-testid={`panel-error-${panel.id}`}>
-            {error}
-          </Typography>
+        <Box sx={{ height: '100%' }} data-testid={`panel-error-${panel.id}`}>
+          <PanelState
+            tone={ERROR_TONE[error.kind]}
+            title={error.message}
+            icon={error.kind === 'filter' ? <FilterAltOutlinedIcon sx={{ fontSize: 18 }} /> : undefined}
+            action={errorAction(error.kind)}
+          />
         </Box>
       );
     }
@@ -212,18 +227,15 @@ const DashboardPanel: React.FC<Props> = ({
     if (data.table) {
       if (data.table.rows.length === 0) {
         return (
-          <Box sx={{ p: 2, textAlign: 'center' }}>
-            <Typography variant='body2' sx={{ color: ds.gray[500] }}>
-              The command returned nothing
-            </Typography>
+          <Box sx={{ height: '100%' }}>
+            <PanelState tone='empty' title='Nothing came back' description='The query ran and returned no rows.' />
           </Box>
         );
       }
       const headers = data.table.columns.map((name) => ({ name }));
       const kinds = data.table.column_kinds || [];
-      // Timestamps go through the same Datetime component the traces and events
-      // listings use — relative text with the absolute time on hover — rather
-      // than showing the store's raw value.
+      // Timestamps go through the same Datetime component the traces and events listings use — relative text
+      // with the absolute time on hover — rather than showing the store's raw value.
       const rows = data.table.rows.map((row) =>
         row.map((cell, i) => (kinds[i] === 'time' && cell ? { component: <Datetime value={cell} />, value: cell } : { text: cell, value: cell }))
       );
@@ -240,10 +252,8 @@ const DashboardPanel: React.FC<Props> = ({
     }
     if (data.series.length === 0) {
       return (
-        <Box sx={{ p: 2, textAlign: 'center' }}>
-          <Typography variant='body2' sx={{ color: ds.gray[500] }}>
-            No data for the selected range
-          </Typography>
+        <Box sx={{ height: '100%' }}>
+          <PanelState tone='empty' title='No data in this range' description='The query ran but matched nothing. Try a wider time range.' />
         </Box>
       );
     }
@@ -290,17 +300,16 @@ const DashboardPanel: React.FC<Props> = ({
         return <Chart.Bar data={data.series.map((s) => s.values)} labels={data.labels} chartLabel={data.series.map((s) => s.label)} />;
       case 'timeseries':
       default:
-        // Chart.Line = @shared/charts/LineCharts (chart.js). `dynamicHeight` is
-        // off so the plot keeps a fixed height instead of growing 20px per
-        // series — the html legend below it already scrolls.
+        // Chart.Line = @shared/charts/LineCharts (chart.js).
         return (
           <Chart.Line
             data={data.series.map((s) => s.values)}
             labels={data.labels}
+            timestamps={data.timestamps}
             chartLabel={data.series.map((s) => s.label)}
             minHeight={CHART_HEIGHT}
             dynamicHeight={false}
-            legendOptions={{ renderer: 'html' }}
+            legendOptions={{ renderer: 'html', unit: panel.unit }}
           />
         );
     }
@@ -358,7 +367,7 @@ const DashboardPanel: React.FC<Props> = ({
         <Box sx={{ flex: 1 }} />
         {/* A toolbar filter, not a form field: empty means "no filter applied"
             (DS §1.6). Hidden when there is only one account to narrow to. */}
-        {filterOptions.length > 1 && (
+        {!editing && filterOptions.length > 1 && (
           <FilterDropdown
             id={`panel-account-filter-${panel.id}`}
             label='Account'
@@ -376,21 +385,23 @@ const DashboardPanel: React.FC<Props> = ({
         {/* ThreeDotsMenu only fires onMenuClick when `data` is set, and renders
             nothing at all for an empty item list. Excluded from an exported
             image — an affordance nobody can press reads as an artefact. */}
-        <Box component='span' {...{ [EXPORT_HIDE_ATTR]: 'true' }} sx={{ display: 'inline-flex' }}>
-          <ThreeDotsMenu
-            id={`panel-menu-${panel.id}`}
-            menuItems={menuItems}
-            data={panel}
-            onMenuClick={(item: any) => {
-              if (item?.id === 'refresh') setPanelRefresh((n) => n + 1);
-              if (item?.id === 'edit') onEdit?.();
-              // The panel exactly as stored — it drops straight into another
-              // dashboard's `panels` array, account scope and all.
-              if (item?.id === 'export') downloadJsonFile(panel, `${filenameSlug(panel.title, 'panel')}-panel`);
-              if (item?.id === 'export-png') exportPng();
-            }}
-          />
-        </Box>
+        {!editing && (
+          <Box component='span' {...{ [EXPORT_HIDE_ATTR]: 'true' }} sx={{ display: 'inline-flex' }}>
+            <ThreeDotsMenu
+              id={`panel-menu-${panel.id}`}
+              menuItems={menuItems}
+              data={panel}
+              onMenuClick={(item: any) => {
+                if (item?.id === 'refresh') setPanelRefresh((n) => n + 1);
+                if (item?.id === 'edit') onEdit?.();
+                // The panel exactly as stored — it drops straight into another
+                // dashboard's `panels` array, account scope and all.
+                if (item?.id === 'export') downloadJsonFile(panel, `${filenameSlug(panel.title, 'panel')}-panel`);
+                if (item?.id === 'export-png') exportPng();
+              }}
+            />
+          </Box>
+        )}
         {actions}
       </Box>
       <Box sx={{ p: 1.25, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
@@ -401,7 +412,12 @@ const DashboardPanel: React.FC<Props> = ({
             {warning}
           </Typography>
         )}
-        <Box sx={{ flex: 1, minHeight: 0 }}>{body()}</Box>
+        {/* `data-panel-body` is the hook edit mode uses to make the chart inert
+            while the panel is being dragged or resized — a Chart.js canvas
+            otherwise swallows the mousemove the gesture needs. */}
+        <Box data-panel-body sx={{ flex: 1, minHeight: 0 }}>
+          {body()}
+        </Box>
       </Box>
     </Box>
   );

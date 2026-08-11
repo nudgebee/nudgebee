@@ -14,12 +14,7 @@ export interface PanelSeries {
   values: (number | null)[];
 }
 
-/**
- * Whether an account's metrics come from CloudWatch.
- *
- * `cloud_provider` is stored as the label the accounts list reports ("AWS"), so
- * the comparison is case-folded rather than pinned to one casing.
- */
+/** Whether an account's metrics come from CloudWatch. */
 function isAwsAccount(account: AccountOption): boolean {
   return (account.cloud_provider || '').toLowerCase() === 'aws';
 }
@@ -32,8 +27,23 @@ export interface PanelTable extends PanelQueryResult {
   column_kinds?: ColumnKind[];
 }
 
+/** Why a panel has nothing to show. */
+export type PanelErrorKind = 'config' | 'blocked' | 'filter' | 'failed';
+
+export interface PanelError {
+  kind: PanelErrorKind;
+  message: string;
+}
+
+/** The common case: something downstream broke. */
+function failure(message: string): PanelError {
+  return { kind: 'failed', message };
+}
+
 export interface PanelData {
   labels: string[];
+  /** The same axis as `labels`, in epoch milliseconds. */
+  timestamps?: number[];
   series: PanelSeries[];
   /**
    * Command, entity and log datasources return a snapshot table instead of
@@ -51,46 +61,17 @@ interface Options {
   variables: VariableValues;
   startTime: number;
   endTime: number;
-  /**
-   * Changes to force a refetch with everything else identical. Carries both the
-   * dashboard-wide refresh and this panel's own, so either one re-runs the
-   * query without the other having to know about it.
-   */
+  /** Changes to force a refetch with everything else identical. */
   refreshKey?: string | number;
-  /**
-   * `false` holds the query back entirely — the panel renders its skeleton and
-   * fetches nothing. The renderer flips it on once the panel scrolls into view,
-   * so a long dashboard doesn't fire every panel's provider request at open.
-   * Defaults to true so a caller that doesn't defer keeps loading eagerly.
-   */
+  /** `false` holds the query back entirely — the panel renders its skeleton and fetches nothing. */
   enabled?: boolean;
 }
 
-/**
- * Fetches one panel's data, across every account the panel is scoped to.
- *
- * Accounts come off the PANEL, not the dashboard — `metrics_list` resolves the
- * provider integration from an account and rejects an empty one, and two panels
- * on the same dashboard may legitimately query different accounts.
- *
- * All of a panel's targets go out as a SINGLE `metrics_list` call PER ACCOUNT —
- * the action takes a `queries` map but only one account_id, so N targets across
- * M accounts cost M requests rather than N×M. Batching across panels is the next
- * step; without it a 30-panel dashboard is 30 concurrent provider requests per
- * viewer, and Datadog bills per call.
- *
- * Accounts are fetched with allSettled, not all: one account with a broken
- * integration must not blank out the panel for the accounts that do work. The
- * failures come back as `warning` while the rest still render.
- *
- * The in-flight requests are abandoned on unmount / dependency change via the
- * `cancelled` flag, so a slow response can never overwrite fresher state or set
- * state on an unmounted panel.
- */
+/** Fetches one panel's data, across every account the panel is scoped to. */
 export function usePanelData({ panel, accounts, accountFilter, variables, startTime, endTime, refreshKey, enabled = true }: Options) {
   const [data, setData] = useState<PanelData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<PanelError | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
   const scoped = resolvePanelAccounts(panel, accounts);
@@ -109,9 +90,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
 
   useEffect(() => {
     if (panel.type === 'text') return;
-    // Off-screen: no request, and no error either — an untried panel must not
-    // claim it has no accounts. `data` stays null, which the renderer already
-    // shows as a skeleton.
+    // Off-screen: no request, and no error either — an untried panel must not claim it has no accounts.
     if (!enabled) return;
     const targets = (panel.targets || []).filter((t) => !t.hide);
     setWarning(null);
@@ -119,11 +98,12 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
     // chart that reads as "these accounts have no data".
     if (resolved.length === 0) {
       if (filteredOut) {
-        setError('No accounts match the current filter.');
+        setError({ kind: 'filter', message: 'No accounts match the current filter.' });
+      } else if (panel.account_type) {
+        setError({ kind: 'blocked', message: `No ${panel.account_type} accounts are available to you.` });
       } else {
-        setError(
-          panel.account_type ? `No ${panel.account_type} accounts are available to you.` : 'This panel has no account selected. Edit it and pick one.'
-        );
+        // The "Edit it and pick one" tail is now the button underneath.
+        setError({ kind: 'config', message: 'This panel has no account selected' });
       }
       return;
     }
@@ -131,14 +111,11 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
       setData({ labels: [], series: [] });
       return;
     }
-    // Traces are read through the TRACES SERVICE, not the query engine. The
-    // engine can reach traces_v2, but only the traces service knows how to
-    // resolve a given account's span store — its Elasticsearch index, its
-    // ClickHouse source — so going around it worked by luck, per account.
+    // Traces are read through the TRACES SERVICE, not the query engine.
     if (panel.datasource === 'traces') {
       const stored = targets[0]?.query;
       if (!stored) {
-        setError('This panel has no query. Edit it and build one.');
+        setError({ kind: 'config', message: 'This panel has no query' });
         return;
       }
       let cancelledTraces = false;
@@ -157,7 +134,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
         })
         .catch((err) => {
           if (cancelledTraces) return;
-          setError(err?.message || 'Could not load traces for this panel.');
+          setError(failure(err?.message || 'Could not load traces for this panel.'));
           setData(null);
         })
         .finally(() => {
@@ -169,13 +146,11 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
       };
     }
 
-    // `nudgebee` panels read the internal query engine. Unlike every other
-    // datasource this is ONE call for all accounts — the engine takes an
-    // account_id list, so fanning out would be N queries against the same table.
+    // `nudgebee` panels read the internal query engine.
     if (panel.datasource === 'nudgebee') {
       const query = targets[0]?.query;
       if (!query) {
-        setError('This panel has no query. Edit it and build one.');
+        setError({ kind: 'config', message: 'This panel has no query' });
         return;
       }
       let cancelledEntity = false;
@@ -194,7 +169,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
         .then((res) => {
           if (cancelledEntity) return;
           if (res.errors || !res.data) {
-            setError(gatewayMessage(res.errors) || 'Could not run this panel’s query.');
+            setError(failure(gatewayMessage(res.errors) || 'Could not run this panel’s query.'));
             setData(null);
             return;
           }
@@ -211,9 +186,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
       };
     }
 
-    // Logs come back as lines, not series. `logs_list` resolves the provider
-    // (Loki / Elasticsearch / …) from the account and takes one account at a
-    // time, so this fans out the same way the command datasources do.
+    // Logs come back as lines, not series.
     if (panel.datasource === 'logs') {
       let cancelledLogs = false;
       setLoading(true);
@@ -252,7 +225,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
           });
 
           if (failures.length === resolved.length) {
-            setError(`Could not load logs for ${failures.join(', ')}.`);
+            setError(failure(`Could not load logs for ${failures.join(', ')}.`));
             setData(null);
             return;
           }
@@ -272,9 +245,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
       };
     }
 
-    // redis / rabbitmq run a command through the relay instead of querying a
-    // provider. One call per account, same allSettled contract, and the time
-    // range is ignored — the command returns the state as of now.
+    // redis / rabbitmq run a command through the relay instead of querying a provider.
     if (isCommandDatasource(panel.datasource)) {
       let cancelledCommand = false;
       setLoading(true);
@@ -303,7 +274,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
             // The server's message is the useful one here — a rejected command,
             // a missing integration, an unreachable cluster all read differently.
             const first = settled.find((o) => o.status === 'fulfilled') as PromiseFulfilledResult<any> | undefined;
-            setError(gatewayMessage(first?.value?.errors) || `Could not run the command on ${failures.join(', ')}.`);
+            setError(failure(gatewayMessage(first?.value?.errors) || `Could not run the command on ${failures.join(', ')}.`));
             setData(null);
             return;
           }
@@ -354,12 +325,9 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
           end_time: endTime,
           // CloudWatch has no instant form — it always answers with a range.
           instant: cloudwatch ? false : panel.type === 'stat',
-          // Named explicitly for AWS, because CloudWatch is never an account's
-          // DEFAULT metrics provider: it is not an integration that can carry
-          // that flag, so without this the query goes to whatever the account
-          // does default to (Datadog, typically) and comes back unparseable.
-          // BOTH fields are required — the provider alone resolves the source to
-          // "agent", and only aws_cloudwatch+user is a registered metrics source.
+          // Named explicitly for AWS, because CloudWatch is never an account's DEFAULT metrics provider: it
+          // is not an integration that can carry that flag, so without this the query goes to whatever the
+          // account does default to (Datadog, typically) and comes back unparseable.
           ...(cloudwatch ? { metric_provider: 'aws_cloudwatch', metric_provider_source: 'user' } : {}),
         });
       })
@@ -371,9 +339,8 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
 
         settled.forEach((outcome, i) => {
           const account = resolved[i];
-          // A rejected promise is a transport failure; a resolved one can still
-          // carry GraphQL errors in the body, which are just as fatal for this
-          // account. Both count as failed.
+          // A rejected promise is a transport failure; a resolved one can still carry GraphQL errors in the
+          // body, which are just as fatal for this account.
           const gqlErrors = outcome.status === 'fulfilled' ? (outcome.value as any)?.data?.errors : null;
           if (outcome.status === 'rejected' || gqlErrors?.length) {
             failed.push(account.label);
@@ -386,7 +353,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
         });
 
         if (failed.length === resolved.length) {
-          setError(`Could not load data for ${failed.join(', ')}.`);
+          setError(failure(`Could not load data for ${failed.join(', ')}.`));
           setData(null);
           return;
         }
@@ -409,12 +376,7 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
   return { data, loading, error, warning };
 }
 
-/**
- * Relabels an entity result with the builder's column labels, and marks which
- * columns are timestamps. The server answers with raw column NAMES — it has no
- * copy of the label metadata, and duplicating it there would be two lists to
- * keep in step.
- */
+/** Relabels an entity result with the builder's column labels, and marks which columns are timestamps. */
 function labelEntityColumns(result: PanelQueryResult, draft: EntityQueryDraft): PanelTable {
   const table = findTable(draft.table);
   return {
@@ -446,15 +408,7 @@ function gatewayMessage(errors: unknown): string {
   return first?.message || '';
 }
 
-/**
- * Stacks each account's table into one.
- *
- * The columns come from the first account that answered; a second account
- * returning a different shape (different Redis version, different rabbitmqadmin
- * flags) is padded rather than dropped, so its rows are still visible. An
- * Account column is added only when more than one account answered — on a
- * single-account panel it is the same value on every row.
- */
+/** Stacks each account's table into one. */
 function mergeQueryResults(answers: { account: string; result: PanelQueryResult }[]): PanelQueryResult {
   const first = answers[0].result;
   if (answers.length === 1) return first;

@@ -83,7 +83,10 @@ export function alignSeries(raw: RawSeries[]): PanelData {
     s.timestamps.forEach((t, i) => byTimestamp.set(t, s.values[i] ?? null));
     return { label: s.label, values: axis.map((t) => byTimestamp.get(t) ?? null) };
   });
-  return { labels, series };
+  // The same axis twice: `labels` is the printable form the non-timeseries
+  // visualisations read, `timestamps` the raw instants the chart's x-axis and
+  // tooltip format for themselves.
+  return { labels, timestamps: axis.map((t) => t * 1000), series };
 }
 
 /** The newest value a series actually reported — the tail may be a gap. */
