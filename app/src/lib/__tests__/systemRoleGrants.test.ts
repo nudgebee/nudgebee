@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { deriveSystemRoleGrants, DERIVED_SYSTEM_ROLE_KEYS, type ActionDef } from '@lib/systemRoleGrants';
 
 // Guards the seed_system_roles migration's seeded grants against drift. The grant

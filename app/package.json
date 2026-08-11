@@ -147,6 +147,7 @@
     "type-check:watch": "tsc --watch"
   },
   "overrides": {
+    "@swc/helpers": "^0.5.21",
     "follow-redirects": "^1.16.0",
     "protobufjs": "^7.6.5",
     "aws-sdk": {

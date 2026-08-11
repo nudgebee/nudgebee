@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { classifyAction, buildCatalog, normalizeModule, type PermissionClass } from '@lib/permissionCatalog';
 
 // Pull every action name from actions.yaml (+ the EE overlay) directly, so this

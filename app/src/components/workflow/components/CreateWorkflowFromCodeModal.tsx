@@ -3,7 +3,7 @@ import { Box, Alert, Typography } from '@mui/material';
 import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
 import { yaml } from '@codemirror/lang-yaml';
-import jsYaml from 'js-yaml';
+import * as jsYaml from 'js-yaml';
 import { useRouter } from 'next/router';
 import { Modal } from '@shared/modal';
 import { Button } from '@ui/Button';

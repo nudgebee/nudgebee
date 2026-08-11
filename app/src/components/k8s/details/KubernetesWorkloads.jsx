@@ -57,7 +57,7 @@ import AutoOptimizeContinuousVerticalRightSizingSingleConfiguration from '@compo
 import CodeMirror from '@uiw/react-codemirror';
 import { yaml as yamlLang } from '@codemirror/lang-yaml';
 import { EditorView } from '@codemirror/view';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import Dashboard from '@components/dashboards/AppDashboard';
 import KubernetesPodYaml from '@components/k8s/details/KubernetesPodYaml';
 import KubernetesRightSizing from '@components/recommendations/KubernetesRightSizing';

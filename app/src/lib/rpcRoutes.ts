@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { parse, type InputObjectTypeDefinitionNode, type ObjectTypeDefinitionNode, type TypeNode } from 'graphql';
 import { classifyAction, permissionKey } from '@lib/permissionCatalog';
 
