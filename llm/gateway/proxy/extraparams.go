@@ -115,3 +115,34 @@ func applyChatExtraParams(req *openai.OpenAIChatRequest, body []byte) {
 		req.SetExtraParams(extra)
 	}
 }
+
+// sanitizeChatMetadata coerces the OpenAI `metadata` map to string values. The OpenAI spec
+// defines metadata as string→string, but the field is typed map[string]any and clients send
+// non-string values (llm-server sends {"ThinkingBudget": 4000}). Lenient providers accept it,
+// but strict ones — notably Vertex AI's OpenAI-compatible endpoint — reject the whole request
+// with "Expected a string key-value pair for 'metadata'". Coercing keeps the data and passes
+// strict validation on every provider. The map is mutated in place (it's what the outbound
+// request serializes).
+func sanitizeChatMetadata(req *openai.OpenAIChatRequest) {
+	if req.Metadata == nil {
+		return
+	}
+	for k, v := range *req.Metadata {
+		if _, ok := v.(string); ok {
+			continue // already a string — leave untouched
+		}
+		(*req.Metadata)[k] = metaValueToString(v)
+	}
+}
+
+// metaValueToString renders a metadata value as a string: a number/bool as its literal
+// (4000 → "4000", true → "true"), an object/array as compact JSON, nil as "".
+func metaValueToString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if b, err := json.Marshal(v); err == nil {
+		return string(b)
+	}
+	return ""
+}

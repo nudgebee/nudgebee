@@ -100,3 +100,32 @@ func TestApplyChatExtraParams_NoExtras(t *testing.T) {
 	applyChatExtraParams(&req, body)
 	assert.Nil(t, req.ExtraParams, "no unknown keys → no ExtraParams (reasoning_effort is a known shorthand)")
 }
+
+// TestSanitizeChatMetadata: OpenAI `metadata` must be string→string. Non-string values (a
+// number like llm-server's {"ThinkingBudget":4000}, a bool, a nested object) are coerced so
+// strict providers (Vertex's OpenAI-compatible endpoint) don't 400 with
+// "Expected a string key-value pair for 'metadata'".
+func TestSanitizeChatMetadata(t *testing.T) {
+	m := map[string]any{
+		"ThinkingBudget": float64(4000),          // number → "4000" (json numbers decode as float64)
+		"keep":           "already-a-string",     // unchanged
+		"flag":           true,                   // → "true"
+		"nested":         map[string]any{"a": 1}, // → compact JSON
+	}
+	req := &openai.OpenAIChatRequest{}
+	req.Metadata = &m
+
+	sanitizeChatMetadata(req)
+
+	assert.Equal(t, "4000", m["ThinkingBudget"])
+	assert.Equal(t, "already-a-string", m["keep"])
+	assert.Equal(t, "true", m["flag"])
+	assert.Equal(t, `{"a":1}`, m["nested"])
+	for k, v := range m {
+		_, ok := v.(string)
+		assert.Truef(t, ok, "metadata[%q] must be a string after sanitize, got %T", k, v)
+	}
+
+	// nil metadata is a safe no-op.
+	assert.NotPanics(t, func() { sanitizeChatMetadata(&openai.OpenAIChatRequest{}) })
+}
