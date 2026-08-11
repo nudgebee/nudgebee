@@ -3943,7 +3943,13 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			ctx.GetLogger().Info("agentexecutor: applying agent timeout", "agent", agent.GetName(), "timeout", d.String())
 		}
 	}
-	response, err := chains.Run(runCtx, executor, request.Query)
+	// Bound the per-iteration query handed to the planner: oversized queries
+	// (automation CI/cluster dumps, user-pasted logs) are offloaded to the
+	// workspace and grep-retrievable rather than re-sent uncached every
+	// iteration. No-op unless the query is oversized AND the agent is a
+	// shell-capable orchestrator. request.Query itself is left untouched.
+	plannerQuery := capOrchestratorQuery(ctx, agent, request)
+	response, err := chains.Run(runCtx, executor, plannerQuery)
 	if err != nil {
 		// On timeout with accumulated steps, summarize partial results instead of losing them
 		if errors.Is(err, context.DeadlineExceeded) && len(executor.steps) > 0 {
