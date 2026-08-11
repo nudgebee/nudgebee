@@ -252,7 +252,18 @@ const MODULE_OVERRIDES: Record<string, string> = {
 //               summary (deriveSystemRoleGrants runs through classifyAction
 //               too); tenant_admin/tenant_admin_readonly are unaffected — they
 //               still invoke billing_* via actions.yaml `permissions:`.
-const NON_GRANTABLE_MODULES = new Set<string>(['auth', 'billing', 'nudgebee', 'product', 'relay', 'roles', 'signup', 'userauths', 'userroles', 'webhook']);
+const NON_GRANTABLE_MODULES = new Set<string>([
+  'auth',
+  'billing',
+  'nudgebee',
+  'product',
+  'relay',
+  'roles',
+  'signup',
+  'userauths',
+  'userroles',
+  'webhook',
+]);
 
 // Individual actions that are never grantable, even though their module is.
 // Same fail-closed mechanism as NON_GRANTABLE_MODULES, keyed by raw action name
