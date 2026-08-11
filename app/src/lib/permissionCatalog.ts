@@ -235,16 +235,14 @@ const MODULE_OVERRIDES: Record<string, string> = {
 //               HasScopedPermission). Keeping `relay` here means a NEW relay action
 //               is non-grantable until it too is explicitly re-homed. Built-in roles
 //               are unaffected — they pass via actions.yaml `permissions:`.
-//   webhook   — the module's only action, webhook_subject_mappings_sync, reads every
-//               resolved incident of the tenant out of the connected Datadog /
-//               PagerDuty / Zenduty account and rewrites the tenant-wide
-//               webhook_subject_mappings table from them. That table decides which
-//               subject every future alert is attributed to, so a bad sync silently
-//               misroutes the tenant's incidents. It is tenant-admin (and super-admin)
-//               operations work, not a delegable grant, so the module is non-grantable
-//               and stops appearing as a tenant-level permission in the role editor.
-//               SyncWebhookSubjectMappings re-checks the same two roles server-side.
-const NON_GRANTABLE_MODULES = new Set<string>(['auth', 'nudgebee', 'product', 'relay', 'roles', 'signup', 'userauths', 'userroles', 'webhook']);
+//   billing    — the Billing tab was removed from the admin panel (PR #32989,
+//               billingFilter.tsx is no longer imported from ee/init.ts), so
+//               there is no UI surface left for a billing:Read grant to unlock.
+//               Excluding the module here also drops it from the built-in-role
+//               summary (deriveSystemRoleGrants runs through classifyAction
+//               too); tenant_admin/tenant_admin_readonly are unaffected — they
+//               still invoke billing_* via actions.yaml `permissions:`.
+const NON_GRANTABLE_MODULES = new Set<string>(['auth', 'billing', 'nudgebee', 'product', 'relay', 'roles', 'signup', 'userauths', 'userroles']);
 
 // Individual actions that are never grantable, even though their module is.
 // Same fail-closed mechanism as NON_GRANTABLE_MODULES, keyed by raw action name
@@ -327,14 +325,14 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   messagingplatforms: 'tenant',
   config: 'tenant',
   audits: 'tenant',
-  // Non-grantable (see NON_GRANTABLE_MODULES) — kept here, like `roles` and
-  // `userroles` above, so the scope of the module is still recorded even though
-  // the role editor never renders it.
   webhook: 'tenant',
   // ownership: handlers gate on requireTenantAdmin()/requireTenant(), no
   // HasAccountAccess — tenant-wide governance, not per-account data.
   ownership: 'tenant',
-  // billing_* route to /rpc/tenant — tenant subscription/usage costs, no account.
+  // billing: module excluded via NON_GRANTABLE_MODULES below (Billing tab was
+  // removed from the admin panel, PR #32989). Kept active here (rather than
+  // commented out) so moduleScope('billing') still resolves correctly to
+  // 'tenant' for any caller that queries it directly.
   billing: 'tenant',
   // egressfilter_* (llm-server /v1/egressfilter/config) resolve the tenant from
   // the security context and never take an account — tenant-wide DLP policy.

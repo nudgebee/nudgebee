@@ -140,13 +140,11 @@ export const navSearchPages: NavSearchPage[] = [
   // is absent for a tenant without the CUSTOM_ROLES feature, so a search row
   // leading to it would dead-end.
   { group: 'Admin', label: 'Roles', path: '/user-management#roles' },
-  // SaaS-tier only — registered dynamically via registerUserManagementFilter
-  // in src/ee/components/billingFilter.tsx (shouldShow: tier === 'saas'),
-  // not a static baseFilters entry in user-management/index.jsx. Gated in
-  // search by GlobalPageSearch.jsx's own canAccessBilling check (mirroring
-  // the Task Runner role gate) so a non-SaaS tenant doesn't see a row that
-  // leads to a tab that was never registered for their session.
-  { group: 'Admin', label: 'Billing', path: '/user-management#billing' },
+  // Billing tab removed from admin panel (PR #32989) — billingFilter.tsx is no
+  // longer imported from src/ee/init.ts, so the tab never registers. Commented
+  // out (not deleted) rather than added to navSearchIgnoredFragments below,
+  // since this was a real row, not an intentionally-excluded one.
+  // { group: 'Admin', label: 'Billing', path: '/user-management#billing' },
 ];
 
 // Tabs of pages whose route needs an accountId the caller must resolve at
