@@ -1,5 +1,6 @@
-import { Page, Locator, expect } from "@playwright/test";
+import { Page, Locator } from "@playwright/test";
 import { CommonLocators } from "../GlobalLocators";
+import { readGlobalClusterValue } from "../utils/helpers";
 
 export class ClusterDetailsLocators extends CommonLocators {
   // all anchor tabs 
@@ -41,6 +42,7 @@ export class ClusterDetailsLocators extends CommonLocators {
     this.namespacedropdown = page.locator("#auto-complete-namespace");
   }
 
+  // `/kubernetes` no longer lists clusters — it redirects to the dropdown cluster's detail page (list is behind `#overview`).
   async openClusterFromConfig() {
     const clusterName = process.env.CLUSTER_NAME || process.env.CLUSTER;
     if (!clusterName) throw new Error("CLUSTER_NAME or CLUSTER env variable is not set");
@@ -49,13 +51,13 @@ export class ClusterDetailsLocators extends CommonLocators {
     await this.openClustersFromSidenav();
     console.log("Navigated to K8s clusters via Infra sidenav");
 
-    const clusterLocator = this.page.getByText(clusterName, { exact: true });
-    await expect(clusterLocator).toBeVisible();
-    await clusterLocator.click();
-    // Move mouse away so the cursor doesn't land on an AnchorComponent tab
-    // when the cluster details page renders, which would trigger onMouseOver
-    // and open a popover whose backdrop intercepts subsequent clicks.
-    await this.page.mouse.move(0, 0);
+    await this.page.waitForURL(/\/kubernetes\/details\/[^/?#]+/, { timeout: 30000 });
+
+    // Redirect follows the dropdown, so a wrong selection would run the spec against another cluster silently.
+    const active = await readGlobalClusterValue(this.page, 30000, clusterName);
+    if (active !== clusterName) {
+      throw new Error(`Opened the wrong cluster: dropdown shows "${active || "(empty)"}", expected "${clusterName}"`);
+    }
     console.log(`Opened cluster: ${clusterName}`);
   }
 }

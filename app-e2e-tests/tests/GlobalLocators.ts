@@ -47,7 +47,8 @@ export class CommonLocators {
     }).toPass({ timeout: 30000, intervals: [500, 1000, 2000] });
 
     await this.page.mouse.move(0, 0);
-    await this.page.waitForLoadState("networkidle");
+    // Best-effort: /kubernetes redirects into the cluster dashboard, which polls, so networkidle often never arrives.
+    await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
   }
 
   async openClustersFromSidenav() {
