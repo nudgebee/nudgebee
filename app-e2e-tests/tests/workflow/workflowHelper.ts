@@ -77,8 +77,9 @@ export async function selectAutomationAccount(
 
   // The menu renders inside the aria-hidden dialog, so getByRole finds nothing here — CSS role selectors still work.
   const options = listbox.locator('[role="option"]');
-  await options.first().waitFor({ state: "visible", timeout: 10000 });
 
+  // The select is grouped: accounts live under collapsed provider headers (K8S/AWS/…), so no option
+  // exists in the DOM until a search auto-expands the matching group. Search first, wait after.
   // Search only narrows the list; the exact match below does the picking so k8s-dev can't select k8s-dev-oss.
   const search = listbox.getByPlaceholder(/Search/i);
   const searchable = await search.isVisible().catch(() => false);
@@ -95,10 +96,15 @@ export async function selectAutomationAccount(
   let option = exactMatch();
   let found = await appears(option);
 
-  // Fall back to the unfiltered list if search hid the match, then to a loose match before giving up.
+  // Fall back to expanding every group by hand, then to a loose match before giving up.
   if (!found) {
     if (searchable) {
       await search.fill("");
+    }
+    const groupHeaders = listbox.locator('[role="button"]');
+    const headerCount = await groupHeaders.count();
+    for (let i = 0; i < headerCount; i++) {
+      await groupHeaders.nth(i).click().catch(() => {});
     }
     option = exactMatch();
     found = await appears(option);
