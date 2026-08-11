@@ -102,6 +102,24 @@ func NewRequestContext(ctx context.Context, securityContext *SecurityContext, lo
 	return &RequestContext{context: ctx, securityContext: securityContext, logger: logger, tracer: tracer, meter: meter}
 }
 
+// WithContext returns a shallow copy of this request context bound to a
+// different Go context, preserving the security context, logger, tracer, meter
+// and the aiTriggered flag.
+//
+// Intended for cleanup that must outlive the request's own cancellation. A
+// rollback triggered by a timed-out call would otherwise issue every one of its
+// calls on the context that just expired, so it would fail immediately in
+// exactly the situation it exists to handle. Callers are expected to pass a
+// detached context (context.WithoutCancel) carrying its own timeout.
+func (rc *RequestContext) WithContext(ctx context.Context) *RequestContext {
+	if rc == nil {
+		return nil
+	}
+	clone := *rc
+	clone.context = ctx
+	return &clone
+}
+
 func NewRequestContextForSuperAdmin() *RequestContext {
 	return &RequestContext{context: context.Background(), securityContext: NewSecurityContextForSuperAdmin(), logger: slog.Default(), tracer: nil, meter: nil}
 }

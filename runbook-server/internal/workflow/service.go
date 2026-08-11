@@ -591,7 +591,11 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 	// Only handle schedule triggers here, webhooks are handled by a generic endpoint
 	_, token, err := s.handleWorkflowTrigger(ctx, storedId, ctx.GetSecurityContext().GetTenantId(), accountId, &wf)
 	if err != nil {
-		return storedId, "", err
+		// Stage 1 above is durable, this stage is not. Leaving the row behind on a
+		// trigger-registration failure reports "not saved" for an automation that is
+		// sitting in the user's list, and blocks the retry on the duplicate-name
+		// guard (#35385).
+		return s.rollbackFailedCreate(ctx, accountId, storedId, &wf, err)
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
@@ -2274,21 +2278,23 @@ func (s *Service) ListWorkflowCallers(ctx *security.RequestContext, accountId, i
 	return model.ListWorkflowCallersResponse{Callers: filtered}, nil
 }
 
-func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeDelete) &&
-		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
-		return common.ErrorUnauthorized("account not accessible")
-	}
-	// Retrieve the workflow to check for schedule triggers
-	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("workflow with ID %s not found: %w", id, sql.ErrNoRows)
-		}
-		return fmt.Errorf("failed to retrieve workflow: %w", err)
-	}
-
-	normalizeWebhookTriggers(id, wf)
+// teardownWorkflowExternals removes the resources a workflow owns outside its own
+// row: the auto-managed webhook integrations it created, and every Temporal
+// schedule registered under its id. It deliberately does NOT touch the database
+// row, the audit trail, or running executions — DeleteWorkflow owns those, and a
+// create-rollback must do none of them (#35385).
+//
+// Returns false if any step failed or could not be verified. DeleteWorkflow
+// ignores the result: a user-intent delete is best-effort and unchanged. The
+// create-rollback path uses it to decide whether removing the row is safe —
+// deleting the row while a schedule survives turns a visible orphan the user can
+// delete into an invisible one that still fires on its cron.
+//
+// The caller must have normalized the workflow's webhook triggers first;
+// Internal.Name is what distinguishes an auto-managed shadow integration from a
+// user-managed one the workflow merely binds to.
+func (s *Service) teardownWorkflowExternals(ctx *security.RequestContext, accountId, id string, wf *model.Workflow) bool {
+	clean := true
 
 	autoManagedPrefix := fmt.Sprintf("wf-%s-", id)
 	for _, trigger := range wf.Definition.Triggers {
@@ -2309,6 +2315,7 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 			}
 			err := integrations.DeleteWorkflowWebhookTrigger(ctx, accountId, integrationID)
 			if err != nil {
+				clean = false
 				slog.Warn("failed to delete webhook trigger during deletion", "workflowID", id, "integrationID", integrationID, "error", err)
 			}
 		}
@@ -2320,7 +2327,10 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 	// Try to delete legacy
 	legacyScheduleID := "workflow-schedule-" + id
 	if _, err := scheduleClient.GetHandle(ctx.GetContext(), legacyScheduleID).Describe(ctx.GetContext()); err == nil {
-		_ = scheduleClient.GetHandle(ctx.GetContext(), legacyScheduleID).Delete(ctx.GetContext())
+		if err := scheduleClient.GetHandle(ctx.GetContext(), legacyScheduleID).Delete(ctx.GetContext()); err != nil {
+			clean = false
+			slog.Warn("failed to delete legacy schedule", "workflowID", id, "scheduleID", legacyScheduleID, "error", err)
+		}
 	}
 
 	// List ALL schedules for this workflow using Search Attribute and delete them.
@@ -2329,6 +2339,11 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, id),
 	})
 	if err != nil {
+		// The schedules cannot be enumerated, so the sequential probe below is a
+		// guess at how many exist — it stops at the first id that does not answer.
+		// That is good enough for a best-effort delete but never proof the workflow
+		// owns no schedules, so this is not a clean teardown either way.
+		clean = false
 		slog.Error("failed to list schedules for deletion cleanup", "workflowID", id, "error", err)
 		// Fallback to sequential cleanup if list fails
 		for i := 0; ; i++ {
@@ -2343,15 +2358,99 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 		for listView.HasNext() {
 			sEntry, err := listView.Next()
 			if err != nil {
+				clean = false
 				slog.Error("failed to iterate schedule list during deletion", "error", err)
 				break
 			}
 			// Double check if this schedule belongs to us (redundant if query works, but safe)
 			if strings.HasPrefix(sEntry.ID, "workflow-schedule-"+id) {
-				_ = scheduleClient.GetHandle(ctx.GetContext(), sEntry.ID).Delete(ctx.GetContext())
+				if err := scheduleClient.GetHandle(ctx.GetContext(), sEntry.ID).Delete(ctx.GetContext()); err != nil {
+					clean = false
+					slog.Warn("failed to delete schedule", "workflowID", id, "scheduleID", sEntry.ID, "error", err)
+				}
 			}
 		}
 	}
+
+	return clean
+}
+
+// rollbackTimeout bounds the detached cleanup in rollbackFailedCreate. Generous
+// enough for a schedule listing plus a delete against a degraded Temporal, short
+// enough that a hung cleanup cannot pin the request goroutine indefinitely.
+const rollbackTimeout = 30 * time.Second
+
+// rollbackFailedCreate undoes a create whose trigger-registration stage failed
+// after the workflow row was already committed (#35385). Without it the caller is
+// told the automation was not saved while it sits in their list half-configured,
+// and the retry is refused by the duplicate-name guard in CreateWorkflow.
+//
+// The row is removed only when the external teardown came back clean. When it did
+// not — which is the common case, because the thing that fails trigger
+// registration is usually the same Temporal/integrations outage that fails the
+// teardown — the row is deliberately left behind: it is visible in the automation
+// list and the user can delete it, whereas a surviving schedule with no row is
+// invisible and keeps firing.
+//
+// Always returns the original error. A rollback problem is logged, never
+// substituted for the failure the caller actually needs to see.
+func (s *Service) rollbackFailedCreate(ctx *security.RequestContext, accountId, storedId string, wf *model.Workflow, cause error) (string, string, error) {
+	// Detach from the request's context first. One way trigger registration fails
+	// is the request timing out or being cancelled — and on that same context every
+	// call below (schedule teardown, the audit write, the row delete) would fail
+	// instantly, making the rollback a guaranteed no-op precisely in the case it
+	// exists for. The replacement carries its own deadline so a hung cleanup cannot
+	// outlive the process.
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), rollbackTimeout)
+	defer cancel()
+	ctx = ctx.WithContext(rollbackCtx)
+
+	// Record the failure before removing the evidence of it. Nothing else on this
+	// path writes an audit event, so without this the rollback would erase the only
+	// durable trace that the create was attempted at all.
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutomationCreate, audit.EventActionCreate, audit.EventStatusFailure,
+		storedId, nil, workflowAuditSnapshot(wf),
+		map[string]any{"error": cause.Error()},
+	)
+
+	if !s.teardownWorkflowExternals(ctx, accountId, storedId, wf) {
+		slog.Error("create rollback: external teardown incomplete, keeping workflow row so it stays visible and deletable",
+			"workflowID", storedId, "accountID", accountId, "error", cause)
+		return storedId, "", cause
+	}
+
+	if err := s.store.Delete(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, storedId); err != nil {
+		slog.Error("create rollback: failed to delete workflow row after a failed create",
+			"workflowID", storedId, "accountID", accountId, "error", err, "cause", cause)
+		return storedId, "", cause
+	}
+
+	slog.Info("create rollback: removed workflow left behind by a failed trigger registration",
+		"workflowID", storedId, "accountID", accountId, "cause", cause)
+	return "", "", cause
+}
+
+func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeDelete) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
+		return common.ErrorUnauthorized("account not accessible")
+	}
+	// Retrieve the workflow to check for schedule triggers
+	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("workflow with ID %s not found: %w", id, sql.ErrNoRows)
+		}
+		return fmt.Errorf("failed to retrieve workflow: %w", err)
+	}
+
+	normalizeWebhookTriggers(id, wf)
+
+	// A user-intent delete stays best-effort: the row goes regardless of what the
+	// external teardown managed to remove, because the user asked for it gone.
+	_ = s.teardownWorkflowExternals(ctx, accountId, id, wf)
 
 	// Delete workflow from database
 	err = s.store.Delete(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
