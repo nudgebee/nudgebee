@@ -23,6 +23,17 @@ import (
 // fail a whole service on such a value.
 var gcpRegionShape = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+$`)
 
+// resolveGCPCrawlRegions unions the per-service, cross-service footprint, and
+// billing-derived region sets, then keeps only real regional values. The
+// per-service and billing inputs are unfiltered and can carry "global", a
+// multi-region code ("us"), or a zone ("us-central1-c"); GCP's per-region crawl
+// is not graceful, so those are dropped before they reach the provider.
+func resolveGCPCrawlRegions(perService, footprint, billing []string) []string {
+	return lo.Filter(lo.Union(perService, footprint, billing), func(r string, _ int) bool {
+		return gcpRegionShape.MatchString(r)
+	})
+}
+
 func getResourcesInternal(ctx *security.RequestContext, accountId string, request providers.ListResourceRequest) (providers.ListResourcesResponse, providers.Account, error) {
 	if request.ServiceName == "" || accountId == "" {
 		return providers.ListResourcesResponse{}, providers.Account{}, fmt.Errorf("invalid request")
@@ -277,14 +288,13 @@ func StoreResources(ctx *security.RequestContext, accountId string, serviceName 
 		// fan-out (#34455).
 		if strings.EqualFold(accountInfo.CloudProvider, "gcp") && !isGlobalAwsService(serviceName) {
 			var footprint []string
-			// Only real regional values (geo-direction-number, e.g. us-central1).
-			// cloud_resourses also holds "global" and multi-region codes (US, us,
-			// asia) from global/storage resources; GCP's per-region crawl errors
-			// on those, and its loop fails the whole service on the first bad
-			// region (providers/gcloud/main.go — no graceful per-region skip).
+			// cloud_resourses also holds "global"/multi-region ("us")/zone codes
+			// from global/storage/billing rows; those are dropped by the Go-side
+			// shape filter in resolveGCPCrawlRegions, so no regex here — keeping it
+			// out of SQL lets the query use the account index.
 			footprintQuery := `select distinct region from cloud_resourses
 							   where account = $1 and is_active = true
-							   and region ~ '^[a-z]+-[a-z]+[0-9]+$'
+							   and region is not null and region != ''
 							   order by region limit 50`
 			if ferr := dbms.QueryAndScan(&footprint, footprintQuery, accountId); ferr != nil {
 				// Non-fatal: widening is best-effort. The per-service regions
@@ -292,13 +302,28 @@ func StoreResources(ctx *security.RequestContext, accountId string, serviceName 
 				// empty footprint rather than skipping the whole service crawl.
 				ctx.GetLogger().Warn("unable to fetch cross-service regions, proceeding with per-service regions", "error", ferr, "service", serviceName)
 			}
-			// Union per-service + footprint, then keep only real regional values.
-			// The per-service query above is unfiltered and can carry "global" or
-			// a multi-region code ("us"); drop them here too so nothing invalid
-			// reaches the (non-graceful) GCP per-region crawl.
-			widened := lo.Filter(lo.Union(regions, footprint), func(r string, _ int) bool {
-				return gcpRegionShape.MatchString(r)
-			})
+
+			// Also seed from the billing export: Google reports spend per region
+			// regardless of whether we have crawled it, so a resource in a region
+			// no service has been crawled in yet is still reachable the day billing
+			// shows spend there. Best-effort. Scoped to the last 30 days —
+			// cloud_account_usage_report grows daily and this runs once per
+			// service, so a full-history DISTINCT scan is wasteful; and the
+			// shape filter lives in resolveGCPCrawlRegions (Go), not in SQL, so
+			// the query stays index-friendly.
+			var billingRegions []string
+			billingQuery := `select distinct resource_region_code from cloud_account_usage_report
+							 where account_id = $1
+							 and start_date >= now() - interval '30 days'
+							 and resource_region_code is not null and resource_region_code != ''
+							 limit 50`
+			if berr := dbms.QueryAndScan(&billingRegions, billingQuery, accountId); berr != nil {
+				ctx.GetLogger().Warn("unable to fetch billing regions, proceeding without them", "error", berr, "service", serviceName)
+			}
+
+			// Union per-service + footprint + billing, keeping only real regional
+			// values (see resolveGCPCrawlRegions).
+			widened := resolveGCPCrawlRegions(regions, footprint, billingRegions)
 			if len(widened) != len(regions) {
 				ctx.GetLogger().Info("resolved GCP crawl regions from account footprint",
 					"service", serviceName, "account", accountId,
