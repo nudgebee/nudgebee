@@ -146,6 +146,150 @@ class TestRenderTable:
             ],
         }
 
+    def test_table_with_bold_cell_becomes_rich_text_style(self):
+        text = "| Name | Status |\n|---|---|\n| foo | **critical** |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][1] == {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [{"type": "text", "text": "critical", "style": {"bold": True}}],
+                }
+            ],
+        }
+
+    def test_table_cell_with_mixed_inline_formatting(self):
+        # Underscore, not asterisk, is italic - a lone "*x*" is Slack-native
+        # bold (see _INLINE_TOKEN_RE), since llm-server's own markdown-to-Slack
+        # pass already rewrites GFM "**bold**" into that form before this code
+        # ever sees it.
+        text = "| Name | Note |\n|---|---|\n| foo | see _this_ and `that` |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][1] == {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [
+                        {"type": "text", "text": "see "},
+                        {"type": "text", "text": "this", "style": {"italic": True}},
+                        {"type": "text", "text": " and "},
+                        {"type": "text", "text": "that", "style": {"code": True}},
+                    ],
+                }
+            ],
+        }
+
+    def test_table_cell_with_strikethrough_and_bold_italic(self):
+        text = "| Name | Note |\n|---|---|\n| foo | ~~old~~ ***new*** |\n"
+        blocks = render_table(text)
+        elements = blocks[0].rows[1][1]["elements"][0]["elements"]
+        assert elements[0] == {"type": "text", "text": "old", "style": {"strike": True}}
+        assert elements[2] == {"type": "text", "text": "new", "style": {"bold": True, "italic": True}}
+
+    def test_table_cell_with_slack_native_single_marker_styles(self):
+        # llm-server's own Slack conversion pass (convertMarkdownToSlackMarkdown)
+        # rewrites GFM "**bold**"/"~~strike~~" into single-marker Slack-native
+        # "*bold*"/"~strike~" before this text ever reaches notifications-server
+        # - verified directly against that Go function on 2026-08-12 - so both
+        # single- and double-marker spellings must parse to the same style.
+        text = "| Name | Note |\n|---|---|\n| foo | *bold* and ~struck~ |\n"
+        blocks = render_table(text)
+        elements = blocks[0].rows[1][1]["elements"][0]["elements"]
+        assert elements[0] == {"type": "text", "text": "bold", "style": {"bold": True}}
+        assert elements[2] == {"type": "text", "text": "struck", "style": {"strike": True}}
+
+    def test_table_cell_with_slack_native_bold_italic_combo(self):
+        text = "| Name | Note |\n|---|---|\n| foo | _*urgent*_ |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][1]["elements"][0]["elements"] == [
+            {"type": "text", "text": "urgent", "style": {"bold": True, "italic": True}}
+        ]
+
+    def test_table_cell_with_slack_native_link(self):
+        # Slack's own link syntax <url|label> / bare <url> - what GFM
+        # "[label](url)" becomes after llm-server's conversion pass.
+        text = "| Name | Link |\n|---|---|\n| foo | <https://example.com\\|view> |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][1] == {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [{"type": "link", "url": "https://example.com", "text": "view"}],
+                }
+            ],
+        }
+
+    def test_table_cell_with_slack_native_link_unescaped_pipe_in_multi_column_row(self):
+        # Real-world regression: llm-server's convertMarkdownToSlackMarkdown
+        # rewrites GFM "[label](url)" to "<url|label>" WITHOUT escaping the
+        # "|" it just inserted. In a multi-column row, a naive pipe-split
+        # treats that "|" as a column separator, splitting the link across
+        # two "columns" - the label and closing ">" then get silently
+        # truncated off when the row is normalized back to the header width.
+        url = "http://127.0.0.1:3000/optimise?account=abc123&category=RightSizing&search=loki-chunks-cache"
+        text = (
+            "| Namespace | Resource | Savings | Action |\n"
+            "| :--- | :--- | :--- | :--- |\n"
+            f"| loki | loki-chunks-cache | $32.70 | <{url}|Right-size CPU/Mem> |\n"
+        )
+        blocks = render_table(text)
+        row = blocks[0].rows[1]
+        assert len(row) == 4
+        assert row[3] == {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [{"type": "link", "url": url, "text": "Right-size CPU/Mem"}],
+                }
+            ],
+        }
+
+    def test_table_cell_with_slack_native_bare_link(self):
+        text = "| Name | Link |\n|---|---|\n| foo | <https://example.com> |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][1]["elements"][0]["elements"] == [
+            {"type": "link", "url": "https://example.com", "text": "https://example.com"}
+        ]
+
+    def test_angle_bracket_placeholder_is_not_mistaken_for_a_link(self):
+        # kubectl output routinely uses "<none>"/"<pending>" as a placeholder
+        # for an unset field - these must never be parsed as a Slack link
+        # (they have no URL scheme), or Slack would reject the whole message
+        # with invalid_blocks for a non-URL href.
+        text = "| Name | External-IP |\n|---|---|\n| foo | <none> |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][1] == _text_cell("<none>")
+
+    def test_snake_case_cell_value_gets_partially_italicized(self):
+        # Known, accepted tradeoff (see _INLINE_TOKEN_RE docstring): once a
+        # lone "*x*" means bold (to match real Slack-native input), genuine
+        # italic requires underscores, which collides with snake_case
+        # identifiers like "my_bucket_name". This locks in that documented
+        # behavior rather than silently regressing it.
+        text = "| Resource |\n|---|\n| my_bucket_name |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][0]["elements"][0]["elements"] == [
+            {"type": "text", "text": "my"},
+            {"type": "text", "text": "bucket", "style": {"italic": True}},
+            {"type": "text", "text": "name"},
+        ]
+
+    def test_truncates_across_multiple_styled_elements(self):
+        # The single-element truncation tests above don't exercise
+        # _truncate_elements' cross-run budget math - this cell has a plain
+        # run followed by a bold run whose *combined* length exceeds the
+        # 200-char cap, even though neither run alone does.
+        text = "| A |\n|---|\n| " + "y" * 150 + " **" + "z" * 100 + "**" + " |\n"
+        blocks = render_table(text)
+        elements = blocks[0].rows[1][0]["elements"][0]["elements"]
+        assert elements[0] == {"type": "text", "text": "y" * 150 + " "}
+        assert elements[1] == {"type": "text", "text": "z" * 48 + "…", "style": {"bold": True}}
+        assert sum(len(e["text"]) for e in elements) == 200
+
     def test_caps_rows_and_columns_to_slack_limits(self):
         many_cols = " | ".join(f"c{i}" for i in range(25))
         sep = "---|" * 25

@@ -70,3 +70,22 @@ func TestRenderFollowupQuestion(t *testing.T) {
 		assert.Equal(t, markdown, got)
 	})
 }
+
+// TestRenderFinalResponse: same gate as TestRenderFollowupQuestion, applied to
+// the "final" response text - guards the fix where this case unconditionally
+// called convertMarkdownToSlackMarkdown regardless of destination platform,
+// corrupting Teams/Google-Chat messages with Slack-only mrkdwn syntax
+// (**bold**->*bold*, [x](y)-><y|x>) that those platforms don't render.
+func TestRenderFinalResponse(t *testing.T) {
+	const markdown = "# Plan\nApprove **this**?"
+
+	t.Run("slack session converts markdown", func(t *testing.T) {
+		got := renderFinalResponse(markdown, "C08MHJWAA1Z-1779282615.385979")
+		assert.Equal(t, "*Plan*\nApprove *this*?", got)
+	})
+
+	t.Run("non-slack session keeps original markdown", func(t *testing.T) {
+		got := renderFinalResponse(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076")
+		assert.Equal(t, markdown, got)
+	})
+}
