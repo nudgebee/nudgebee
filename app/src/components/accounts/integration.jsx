@@ -92,14 +92,14 @@ const SECTIONS_CONFIG = [
     id: 'messaging',
     label: 'Messaging & Alerting',
     icon: MessageBlueIcon,
-    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'],
+    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD', 'PAGERDUTY', 'ZENDUTY'],
     tab: 2,
   },
   {
     id: 'ticket',
     label: 'Ticketing',
     icon: TicketBlueIcon,
-    providers: ['JIRA', 'SERVICENOW', 'PAGERDUTY', 'ZENDUTY', 'FRESHDESK'],
+    providers: ['JIRA', 'SERVICENOW', 'PAGERDUTY', 'ZENDUTY', 'FRESHDESK', 'GITHUB', 'GITLAB'],
     tab: 3,
   },
   {
