@@ -43,6 +43,7 @@ import {
   LLMConsumptionIcon,
   IntegrationsIcon,
   CloudAccountIcon,
+  VmIcon,
   TicketBlueIcon,
   UserIconOutline,
   User1,
@@ -95,7 +96,12 @@ const getDynamicPath = (path, router) => {
   // 2b. Automations is tenant-level too — it has its own Account filter, so
   // seeding accountId from whatever page you clicked from would silently
   // pre-narrow the listing to one account.
-  if (path === '/automation') {
+  //
+  // /vm is stripped for a stronger reason: it only ever renders a self-hosted
+  // (cloud_provider = SelfHosted) account, so seeding the K8s or AWS account you
+  // happened to be looking at would put an id in the URL the page then has to
+  // throw away. It resolves its own account from the header dropdown instead.
+  if (path === '/automation' || path === '/vm') {
     return path;
   }
 
@@ -454,13 +460,17 @@ const PageLayout = ({ children }) => {
       },
       {
         path: '/kubernetes',
-        activePaths: ['/cloud-account'],
+        activePaths: ['/cloud-account', '/vm'],
         icon: KubernetesClusterIcon,
         text: 'Infra',
         id: 'infra-sidenavbutton',
         subItems: [
           { text: 'K8s', path: '/kubernetes', id: 'sidenav-infra-k8s', module: 'k8s', icon: KubernetesClusterIcon },
           { text: 'Cloud', path: '/cloud-account', id: 'sidenav-infra-cloud', module: 'cloud', icon: CloudAccountIcon },
+          // Self-hosted VM fleets (cloud_provider = SelfHosted / account_type = vm).
+          // Gated on the `cloud` module: everything the page reads lives in
+          // cloud_accounts / cloud_resourses / vm_package, all cloud-module tables.
+          { text: 'VM', path: '/vm', id: 'sidenav-infra-vm', module: 'cloud', icon: VmIcon },
         ],
       },
       {

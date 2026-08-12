@@ -124,6 +124,17 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#cost-analyser' },
   { group: 'Optimize', label: 'AI Gateway', path: '/optimise#ai-gateway' },
 
+  // Infra → VM. The account in scope comes from the header cluster dropdown, and
+  // the page adopts the first self-hosted account when the current selection is
+  // not one — so these need no runtime account and stay plain rows rather than
+  // accountScopedSearchFragments.
+  { group: 'VM', label: 'VM Summary', path: '/vm#summary' },
+  { group: 'VM', label: 'Virtual Machines', path: '/vm#instances' },
+  { group: 'VM', label: 'VM Vulnerabilities', path: '/vm#vulnerabilities' },
+  { group: 'VM', label: 'VM Packages', path: '/vm#packages' },
+  // No VM Agents row: that tab moved to Agent Health → Proxy Agent, which is
+  // already indexed as an account-scoped fragment below.
+
   { group: 'Tickets', label: 'All Tickets', path: '/tickets#tickets' },
   { group: 'Tickets', label: 'All Tickets - Assigned to me', path: '/tickets#assigned-me' },
 

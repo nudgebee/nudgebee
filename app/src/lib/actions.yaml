@@ -6301,6 +6301,38 @@ actions:
       - role: tenant_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: cloud_vm_packages_v2
+    comment: List installed packages collected from a self-hosted VM
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: cloud_vm_package_groupings_v2
+    comment: Aggregate VM package inventory by resource, OS and package type
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
   - name: ai_list_conversations
     comment: List AI investigation conversations with status and title
     definition:
@@ -7840,6 +7872,10 @@ custom_types:
     - name: LlmAgentsInstallationRowResponse
     - name: CloudResourcesListResponse
     - name: CloudResourcesListRowResponse
+    - name: CloudVmPackagesResponse
+    - name: CloudVmPackagesRowResponse
+    - name: CloudVmPackageGroupingsResponse
+    - name: CloudVmPackageGroupingsRowResponse
     - name: ResourceSpendTrendResponse
     - name: ResourceSpendTrendRowResponse
     - name: RelayForwardOutput

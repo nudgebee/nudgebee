@@ -178,6 +178,11 @@ export const troubleshootIconBlack = require('@assets/sidebar-icon/troubleshootB
 export const GroupOfUsersIcon = require('@assets/group-users.svg');
 
 export const CloudAccountIcon = require('@assets/sidebar-icon/cloud-account.svg');
+// Two variants because the two placements sit on opposite backgrounds: the
+// sidebar draws icons white on the brand-navy rail, the tab bar draws them dark
+// on white. SafeIcon renders an <img>, so the colour is baked into the file.
+export const VmIcon = require('@assets/sidebar-icon/vm.svg');
+export const VmServerIcon = require('@assets/new/vm-server.svg');
 export const CloudIconBlackOutline = require('@assets/sidebar-icon/cloud-black-outline.svg');
 export const ToolIcon = require('@assets/Tool.svg');
 export const ToolIconBlue = ToolIconBlueComp;

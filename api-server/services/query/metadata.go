@@ -2850,6 +2850,7 @@ var table_metadata = map[string]TableDefinition{
 				"resource_type":             true,
 				"sum_estimated_savings":     true, // uses is_primary_recommendation — needs window fn
 				"is_primary_recommendation": true, // fast path hardcodes TRUE; slow path uses window fn
+				"resource_names":            true, // aggregates resource_name, which only the join supplies
 			}
 			needsJoin := false
 			for _, col := range request.Columns {
@@ -3060,6 +3061,38 @@ var table_metadata = map[string]TableDefinition{
 				Type:         ColumnDefinitionTypeFloat,
 				Def:          "sum(CASE WHEN is_primary_recommendation THEN estimated_savings ELSE 0 END)",
 				IsAggregated: true,
+			},
+			// VM package-scan findings (rule_name = 'vm_package_vulnerability') keep
+			// the CVE id and the affected package inside the payload. Exposed as
+			// group-by columns so /vm can roll findings up by CVE or by package —
+			// same jsonb-path convention as deleted_version below.
+			"vuln_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "r1.recommendation ->> 'vuln_id'",
+			},
+			"package_name": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "r1.recommendation -> 'package' ->> 'name'",
+			},
+			// The resources behind a group, as one comma-separated string — a VM
+			// grouping's rows name the machines the CVE or package was found on.
+			// In joinRequiringCols above: resource_name comes from the join.
+			"resource_names": {
+				Type:         ColumnDefinitionTypeString,
+				IsAggregated: true,
+				Def:          "string_agg(DISTINCT resource_name, ', ')",
+			},
+			// Worst severity in the group — same weights as severity_weight on
+			// recommendations_v2 and the security/misconfig tables.
+			"max_severity_weight": {
+				Type:         ColumnDefinitionTypeFloat,
+				IsAggregated: true,
+				Def: `max(case when severity = 'Critical' then 10
+						when severity = 'High' then 8
+						when severity = 'Medium' then 5
+						when severity = 'Low' then 2
+						when severity = 'Info' then 1
+						else 0 end)`,
 			},
 			"deleted_version": {
 				Type: ColumnDefinitionTypeFloat,
@@ -4854,6 +4887,20 @@ var table_metadata = map[string]TableDefinition{
 			"severity": {
 				Type: ColumnDefinitionTypeString,
 			},
+			// Ordering rank for severity — ORDER BY severity puts 'Medium' above
+			// 'High' alphabetically. Same weights as the security/misconfig
+			// tables so a severity sort ranks identically everywhere. Callers
+			// that order by it must also select it: generateOrderByClause emits
+			// the column name, which Postgres resolves against the SELECT alias.
+			"severity_weight": {
+				Type: ColumnDefinitionTypeInt,
+				Def: `(case when severity = 'Critical' then 10
+						when severity = 'High' then 8
+						when severity = 'Medium' then 5
+						when severity = 'Low' then 2
+						when severity = 'Info' then 1
+						else 0 end)`,
+			},
 			"estimated_savings": {
 				Type: ColumnDefinitionTypeFloat,
 			},
@@ -4926,6 +4973,16 @@ var table_metadata = map[string]TableDefinition{
 			"safety_band": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "r1.finops_score_breakdown ->> 'safety_band'",
+			},
+			// CVE id and affected package of a VM package-scan finding — the /vm
+			// grouped views drill down by filtering the list on these.
+			"vuln_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "r1.recommendation ->> 'vuln_id'",
+			},
+			"package_name": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "r1.recommendation -> 'package' ->> 'name'",
 			},
 			"deleted_version": {
 				Type: ColumnDefinitionTypeFloat,
@@ -6686,20 +6743,28 @@ var table_metadata = map[string]TableDefinition{
 				GROUP BY cloud_account_id
 			) caa_agg ON caa_agg.cloud_account_id = ca.id
 			LEFT JOIN (
-				SELECT cloud_account_id,
+				SELECT a.cloud_account_id,
 					json_agg(json_build_object(
-						'last_connected_at', last_connected_at,
-						'status', status,
-						'version', version,
-						'connection_status', connection_status,
-						'k8s_provider', k8s_provider,
-						'k8s_version', k8s_version,
-						'status_message', status_message,
-						'last_synced_at', last_synced_at
+						'last_connected_at', a.last_connected_at,
+						'status', a.status,
+						'version', a.version,
+						'connection_status', a.connection_status,
+						'k8s_provider', a.k8s_provider,
+						'k8s_version', a.k8s_version,
+						'status_message', a.status_message,
+						'last_synced_at', a.last_synced_at
 					)) as agents
-				FROM agent
-				WHERE type NOT IN ('proxy', 'eventbridge', 'gcp_monitoring_webhook')
-				GROUP BY cloud_account_id
+				FROM agent a
+				JOIN cloud_accounts aca ON aca.id = a.cloud_account_id
+				WHERE a.type NOT IN ('eventbridge', 'gcp_monitoring_webhook')
+					-- On a K8s or cloud account a proxy agent is a secondary
+					-- integration and must not mask the real agent's health. A
+					-- self-hosted fleet has no other agent, so excluding it there
+					-- left the header with no status to show at all (grey dot on a
+					-- perfectly healthy forager). Columns are alias-qualified
+					-- because cloud_accounts shares names with agent (status, id).
+					AND (a.type <> 'proxy' OR aca.cloud_provider = 'SelfHosted')
+				GROUP BY a.cloud_account_id
 			) ag ON ag.cloud_account_id = ca.id
 		) as cloud_accounts_v2`,
 		Columns: map[string]ColumnDefinition{
@@ -8069,6 +8134,88 @@ var table_metadata = map[string]TableDefinition{
 			"latest_metric_timestamp": {Type: ColumnDefinitionTypeDatetime},
 			"total_count":             {Type: ColumnDefinitionTypeInt},
 			"metric":                  {Type: ColumnDefinitionTypeString},
+		},
+	},
+	// Installed-package inventory pulled off a self-hosted VM by
+	// services/vmpackage. Read-only here: the only writer is that package's
+	// archive-then-upsert. `cloud` module because every row is anchored to a
+	// cloud_accounts / cloud_resourses pair, same as the sibling
+	// cloud_resources_list_v2.
+	"cloud_vm_packages_v2": {
+		Type:               Normal,
+		Source:             database.Metastore,
+		Def:                "vm_package",
+		Name:               "cloud_vm_packages_v2",
+		TenantIdColumnName: "tenant_id",
+		// The Columns key, not the physical column: the security layer looks this
+		// name up in Columns and emits that entry's Def (cloud_account_id).
+		// Naming the physical column here makes the lookup miss.
+		AccountIdColumnName: "account_id",
+		PermissionModule:    "cloud",
+		Columns: map[string]ColumnDefinition{
+			"id":                {Type: ColumnDefinitionTypeString},
+			"tenant_id":         {Type: ColumnDefinitionTypeString},
+			"account_id":        {Type: ColumnDefinitionTypeString, Def: "cloud_account_id"},
+			"cloud_resource_id": {Type: ColumnDefinitionTypeString},
+			"os_family":         {Type: ColumnDefinitionTypeString},
+			"os_version":        {Type: ColumnDefinitionTypeString},
+			"pkg_type":          {Type: ColumnDefinitionTypeString},
+			"name":              {Type: ColumnDefinitionTypeString},
+			"version":           {Type: ColumnDefinitionTypeString},
+			"arch":              {Type: ColumnDefinitionTypeString},
+			"epoch":             {Type: ColumnDefinitionTypeInt},
+			"source_name":       {Type: ColumnDefinitionTypeString},
+			"source_version":    {Type: ColumnDefinitionTypeString},
+			"is_active":         {Type: ColumnDefinitionTypeBoolean},
+			"first_seen_at":     {Type: ColumnDefinitionTypeDatetime},
+			"last_seen_at":      {Type: ColumnDefinitionTypeDatetime},
+			"updated_at":        {Type: ColumnDefinitionTypeDatetime},
+		},
+	},
+	// Counts for the package listing's pagination, and the per-VM package
+	// totals shown on the VM inventory table.
+	"cloud_vm_package_groupings_v2": {
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		Def:                 "vm_package",
+		Name:                "cloud_vm_package_groupings_v2",
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		PermissionModule:    "cloud",
+		Columns: map[string]ColumnDefinition{
+			"tenant_id":         {Type: ColumnDefinitionTypeString},
+			"account_id":        {Type: ColumnDefinitionTypeString, Def: "cloud_account_id"},
+			"cloud_resource_id": {Type: ColumnDefinitionTypeString},
+			"os_family":         {Type: ColumnDefinitionTypeString},
+			"os_version":        {Type: ColumnDefinitionTypeString},
+			"pkg_type":          {Type: ColumnDefinitionTypeString},
+			"name":              {Type: ColumnDefinitionTypeString},
+			"is_active":         {Type: ColumnDefinitionTypeBoolean},
+			"last_seen_at":      {Type: ColumnDefinitionTypeDatetime},
+			// The rest of a package's identity, so /vm can roll the inventory up
+			// per package instead of per (package, VM).
+			"version":        {Type: ColumnDefinitionTypeString},
+			"arch":           {Type: ColumnDefinitionTypeString},
+			"epoch":          {Type: ColumnDefinitionTypeInt},
+			"source_name":    {Type: ColumnDefinitionTypeString},
+			"source_version": {Type: ColumnDefinitionTypeString},
+			"count": {
+				Type:         ColumnDefinitionTypeInt,
+				Def:          "count(*)",
+				IsAggregated: true,
+			},
+			// The VMs a grouped row covers, as ids — the caller already holds an
+			// id → name map, so aggregating ids here keeps this table join-free.
+			"resource_ids": {
+				Type:         ColumnDefinitionTypeString,
+				IsAggregated: true,
+				Def:          "string_agg(DISTINCT cloud_resource_id::text, ',')",
+			},
+			"max_last_seen_at": {
+				Type:         ColumnDefinitionTypeDatetime,
+				Def:          "max(last_seen_at)",
+				IsAggregated: true,
+			},
 		},
 	},
 	"resource_spend_trend_v2": {

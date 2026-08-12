@@ -6815,6 +6815,9 @@ type RecommendationGroupingRowResponse {
   severity: String
   safety_band: String
   account_object_id: String
+  vuln_id: String
+  package_name: String
+  max_severity_weight: Float
 }
 
 type auto_runbook_manual_run_response {
@@ -7301,6 +7304,9 @@ type RecommendationRowResponse {
   finops_band: String
   finops_score_breakdown: Json
   safety_band: String
+  severity_weight: Int
+  vuln_id: String
+  package_name: String
 }
 
 type generate_cluster_recommendations_output {
@@ -11410,6 +11416,99 @@ type CloudResourcesListRowResponse {
   latest_metric_value: Float
   latest_metric_timestamp: Datetime
   total_count: Int
+}
+
+type Query {
+  cloud_vm_packages_v2(
+    where: CloudVmPackagesWhereRequest
+    limit: Int
+    offset: Int
+    order_by: [QuerySortByRequest!]
+    columns: [String!]
+  ): CloudVmPackagesResponse
+}
+
+input CloudVmPackagesWhereRequest {
+  _and: [CloudVmPackagesWhereRequest]
+  _or: [CloudVmPackagesWhereRequest]
+  _not: CloudVmPackagesWhereRequest
+  id: QueryWhereStringRequest
+  tenant_id: QueryWhereStringRequest
+  account_id: QueryWhereStringRequest
+  cloud_resource_id: QueryWhereStringRequest
+  os_family: QueryWhereStringRequest
+  os_version: QueryWhereStringRequest
+  pkg_type: QueryWhereStringRequest
+  name: QueryWhereStringRequest
+  version: QueryWhereStringRequest
+  arch: QueryWhereStringRequest
+  source_name: QueryWhereStringRequest
+  is_active: QueryWhereBooleanRequest
+  last_seen_at: QueryWhereDatetimeRequest
+}
+
+type CloudVmPackagesResponse {
+  rows: [CloudVmPackagesRowResponse]
+}
+
+type CloudVmPackagesRowResponse {
+  id: String
+  tenant_id: String
+  account_id: String
+  cloud_resource_id: String
+  os_family: String
+  os_version: String
+  pkg_type: String
+  name: String
+  version: String
+  arch: String
+  epoch: Int
+  source_name: String
+  source_version: String
+  is_active: Boolean
+  first_seen_at: Datetime
+  last_seen_at: Datetime
+  updated_at: Datetime
+}
+
+type Query {
+  cloud_vm_package_groupings_v2(
+    where: CloudVmPackageGroupingsWhereRequest
+    limit: Int
+    offset: Int
+    order_by: [QuerySortByRequest!]
+    columns: [String!]
+    group_by: [String!]
+  ): CloudVmPackageGroupingsResponse
+}
+
+input CloudVmPackageGroupingsWhereRequest {
+  _and: [CloudVmPackageGroupingsWhereRequest]
+  _or: [CloudVmPackageGroupingsWhereRequest]
+  _not: CloudVmPackageGroupingsWhereRequest
+  tenant_id: QueryWhereStringRequest
+  account_id: QueryWhereStringRequest
+  cloud_resource_id: QueryWhereStringRequest
+  os_family: QueryWhereStringRequest
+  os_version: QueryWhereStringRequest
+  pkg_type: QueryWhereStringRequest
+  name: QueryWhereStringRequest
+  is_active: QueryWhereBooleanRequest
+  last_seen_at: QueryWhereDatetimeRequest
+}
+
+type CloudVmPackageGroupingsResponse {
+  rows: [CloudVmPackageGroupingsRowResponse]
+}
+
+type CloudVmPackageGroupingsRowResponse {
+  account_id: String
+  cloud_resource_id: String
+  os_family: String
+  os_version: String
+  pkg_type: String
+  count: Int
+  max_last_seen_at: Datetime
 }
 
 type Query {
