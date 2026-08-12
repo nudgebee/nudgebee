@@ -19,10 +19,10 @@ type knowledgeGraphServiceMapAction struct{}
 
 // KnowledgeGraphServiceMapResponse holds the KG neighborhood data for a service.
 type KnowledgeGraphServiceMapResponse struct {
-	Nodes          []KgNode `json:"nodes"`
-	Edges          []KgEdge `json:"edges"`
-	TargetService  string   `json:"target_service"`
-	Namespace      string   `json:"namespace"`
+	Nodes          []KgEvidenceNode `json:"nodes"`
+	Edges          []KgEdge         `json:"edges"`
+	TargetService  string           `json:"target_service"`
+	Namespace      string           `json:"namespace"`
 	additionalInfo map[string]any
 	insights       []playbooks.PlaybookActionResponseInsight
 }
@@ -169,13 +169,67 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	}
 
 	return &KnowledgeGraphServiceMapResponse{
-		Nodes:          graph.Nodes,
+		Nodes:          toEvidenceNodes(graph.Nodes),
 		Edges:          graph.Edges,
 		TargetService:  serviceName,
 		Namespace:      namespace,
 		additionalInfo: additionalInfo,
 		insights:       insights,
 	}, nil
+}
+
+// KgEvidenceNode is the projection of KgNode carried in the
+// knowledge_graph_service_map evidence block. A full KgNode is a copy of the
+// stored graph row — every property a source wrote, including the k8s
+// annotations map, which alone accounted for ~31% of one measured block
+// (22,539 of 72,671 bytes) via kubectl's last-applied-configuration. None of
+// the consumers of this evidence read those fields: the investigate UI renders
+// id / node_type / properties.name / properties.namespace (unique_key as the
+// name fallback), and triage's dependency parser needs the same set plus the
+// edges. Projecting here keeps the evidence to what is read instead of
+// filtering noisy keys one at a time.
+type KgEvidenceNode struct {
+	ID           string         `json:"id"`
+	NodeType     NodeType       `json:"node_type"`
+	SpecificType string         `json:"specific_type,omitempty"`
+	UniqueKey    string         `json:"unique_key"`
+	Properties   map[string]any `json:"properties"`
+}
+
+// evidenceNodeProperties is the property allowlist for KgEvidenceNode: what
+// the node is (name, namespace, cluster, kind, engine, role, region) and
+// whether it is healthy (phase, status, state, ready). Everything a service
+// map is asked — which neighbours surround the alerting resource, of what
+// kind, in what shape — is answerable from these; the rest (annotations,
+// container images, resource requests/limits, ARNs, timestamps) is reachable
+// from the KG APIs when an investigation actually needs it.
+var evidenceNodeProperties = []string{
+	"name", "namespace", "cluster",
+	"kind", "engine", "role", "region",
+	"phase", "status", "state", "ready",
+}
+
+// toEvidenceNodes projects each node onto KgEvidenceNode. Absent and nil
+// properties are skipped rather than emitted as nulls, so a node contributes
+// only the keys its source actually populated.
+func toEvidenceNodes(nodes []KgNode) []KgEvidenceNode {
+	evidenceNodes := make([]KgEvidenceNode, 0, len(nodes))
+	for i := range nodes {
+		properties := make(map[string]any, len(evidenceNodeProperties))
+		for _, key := range evidenceNodeProperties {
+			if value, present := nodes[i].Properties[key]; present && value != nil {
+				properties[key] = value
+			}
+		}
+		evidenceNodes = append(evidenceNodes, KgEvidenceNode{
+			ID:           nodes[i].ID,
+			NodeType:     nodes[i].NodeType,
+			SpecificType: nodes[i].SpecificType,
+			UniqueKey:    nodes[i].UniqueKey,
+			Properties:   properties,
+		})
+	}
+	return evidenceNodes
 }
 
 // seedNodeTypeNames is the SQL-facing form of ImpactSeedNodeTypes, built once
