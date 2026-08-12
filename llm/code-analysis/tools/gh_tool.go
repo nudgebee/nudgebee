@@ -164,9 +164,24 @@ func (t *GHTool) Execute(ctx context.Context, input map[string]any) core.NBToolR
 
 	err := cmd.Run()
 	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		// The observation (second argument) is what gets persisted on the
+		// tool-call row and shown in the UI. It used to be the bare string
+		// "GitHub CLI command execution failed", so 44 consecutive
+		// authentication failures were indistinguishable from any other gh
+		// error and the cause stayed invisible for months. Carry the real
+		// stderr — it is the difference between "gh is broken" and "gh is
+		// unauthenticated".
+		observation := "GitHub CLI command execution failed"
+		if detail != "" {
+			observation += ": " + detail
+		}
 		return core.CreateErrorResponse(
 			fmt.Sprintf("gh command failed: %v\nStderr: %s", err, stderr.String()),
-			"GitHub CLI command execution failed",
+			observation,
 		)
 	}
 

@@ -743,8 +743,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 
 	// Try to parse with custom handling for PR info
 	agentResponse, err := ah.parseAgentResponse(agentResponseStr)
-	parseFailed := err != nil
-	if parseFailed {
+	if err != nil {
 		responsePreview := agentResponseStr
 		if len(agentResponseStr) > 500 {
 			responsePreview = agentResponseStr[:500] + "..."
@@ -752,31 +751,28 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 		logger.Error(common.EventResultParsed, "Failed to parse agent response", err, map[string]any{
 			"response_preview": responsePreview,
 		})
-		// If parsing fails, create a fallback response
-		agentResponse = &AnalysisResult{
-			Title:              "Analysis Response Parse Error",
-			Description:        "The code analysis agent completed execution but the response could not be parsed properly. This may indicate a formatting issue in the agent's output. Manual review of the logs and repository may be required to determine the actual issue.",
-			FilePath:           "unknown",
-			LineNumber:         0,
-			ErrorMessage:       "Failed to parse agent response",
-			OriginalCode:       "Parse error occurred",
-			FixedCode:          "Manual investigation required",
-			GitDiff:            "--- a/unknown\n+++ b/unknown\n@@ -0,0 +0,0 @@\n Parse error",
-			Commits:            []CommitInfo{{Hash: "unknown", Author: "unknown", Date: "unknown"}},
-			AutoMatedFixPRInfo: nil,
-		}
+		// Fail the run instead of synthesising a result.
+		//
+		// This used to return a fabricated AnalysisResult — file_path "unknown",
+		// fixed_code "Manual investigation required", and a git_diff of
+		// "--- a/unknown +++ b/unknown @@ -0,0 +0,0 @@ Parse error" — stored as a
+		// SUCCESS. The invented diff was the worst part: a diff-shaped string in
+		// the field a consumer applies. The worst measured case discarded 28
+		// minutes and 133k output tokens this way and reported success, so the
+		// failure was invisible to anything reading status.
+		//
+		// The preview goes in the error because it is the only surviving evidence
+		// of what the model actually produced.
+		return nil, fmt.Errorf("agent response could not be parsed as a structured analysis: %w (response preview: %s)", err, responsePreview)
 	}
 
 	// Validate relevance using LLM: Check if the agent response addresses the user's actual request.
-	// Skip on parse-error fallback: that synthetic AnalysisResult is a formatting failure, not an
-	// off-topic analysis. Running the relevance check against it always returns "not relevant"
-	// (because "Manual investigation required" never matches a user's specific issue), which then
-	// trips the upstream irrelevance marker — causing llm-server to cache "not relevant" in the
-	// per-message retry guard and permanently lock out retries that could have recovered.
+	// A parse failure no longer reaches this point — it returns an error above rather than
+	// substituting a synthetic result, which is what used to make this check misfire: the
+	// placeholder never matched a user's specific issue, so it always came back "not relevant",
+	// tripped the upstream irrelevance marker, and locked out retries that could have recovered.
 	var relevanceCheck *RelevanceCheckResult
-	if !parseFailed {
-		relevanceCheck, err = ah.validateResponseRelevanceWithLLM(ctx, client, agentResponse, req, logger)
-	}
+	relevanceCheck, err = ah.validateResponseRelevanceWithLLM(ctx, client, agentResponse, req, logger)
 	if err != nil {
 		logger.Error(common.EventAnalysisFailure, "Failed to validate response relevance", err, nil)
 	} else if relevanceCheck != nil && !relevanceCheck.IsRelevant {

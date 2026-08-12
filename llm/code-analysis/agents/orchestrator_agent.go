@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -542,7 +543,16 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 		if shouldCreate {
 			a.reportProgress("Creating pull request...")
 			prInfo, err := a.createPullRequest(ctx, sessionCtx, mergedData)
-			if err != nil {
+			if errors.Is(err, errNoCommitsToPublish) {
+				// Nothing was actually committed, so there is no PR to open. That
+				// is the same terminal "already resolved" outcome as an empty
+				// diff, not a failure — report it as such so the caller does not
+				// re-dispatch.
+				a.reportProgress("Analysis complete — no code change to publish.")
+				mergedData["pr_creation_status"] = "skipped"
+				mergedData["pr_creation_reason"] = "No commits were produced on the fix branch — the change appears to be already present."
+				mergedData["execution_status"] = ExecutionStatusNoOp
+			} else if err != nil {
 				a.logger.Log(common.EventStepFailure, "Failed to create pull request", map[string]any{"error": err.Error()})
 				mergedData["pr_creation_status"] = "failed"
 				mergedData["pr_creation_reason"] = err.Error()
@@ -586,6 +596,11 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 
 	return string(mergedJSON), nil
 }
+
+// errNoCommitsToPublish signals that the fix branch carries no commits, so there
+// is nothing to open a PR for. A terminal no-op (the change is already present),
+// not a failure — the caller maps it to execution_status no_op.
+var errNoCommitsToPublish = errors.New("no commits on the fix branch")
 
 // fixOnlyResponseFields lists keys that only make sense when the orchestrator
 // has actually run the fixer / opened a PR. They are stripped from explore-mode
@@ -1846,6 +1861,14 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 	if err := git.ValidateBranchName(branchName); err != nil {
 		return nil, fmt.Errorf("refusing to create a branch with an invalid name: %w", err)
 	}
+	// Remember exactly what the branch is cut from. Comparing against this is
+	// what makes the emptiness check below decisive — it needs no fetched base
+	// ref, so it works on the single-branch clones these runs use.
+	branchPointSHA := ""
+	if out, err := a.runGit(ctx, actualRepoDir, "rev-parse", "HEAD"); err == nil {
+		branchPointSHA = strings.TrimSpace(out)
+	}
+
 	if out, err := a.runGit(ctx, actualRepoDir, "checkout", "-b", branchName); err != nil {
 		return nil, fmt.Errorf("failed to create branch: %s: %w", strings.TrimSpace(out), err)
 	}
@@ -1864,6 +1887,29 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		"branch_name": branchName,
 		"commits":     logResult.Result,
 	})
+
+	// Gate on that check instead of only logging it. A branch with nothing on it
+	// used to be pushed anyway, and the provider rejected the PR with
+	// "Head sha can't be blank, Base sha can't be blank, No commits" — an opaque
+	// API error for what is really a terminal no-op. Recurring since at least
+	// April. The reported git_diff is not sufficient evidence on its own: it
+	// comes from the fixer's own report, which can disagree with the tree that
+	// was actually committed.
+	//
+	// Fails open: if the count cannot be established, behave exactly as before
+	// and let the push proceed, so this can only turn a guaranteed failure into
+	// an honest no-op, never block a valid PR.
+	if branchPointSHA != "" {
+		if out, err := a.runGit(ctx, actualRepoDir, "rev-list", "--count", branchPointSHA+"..HEAD"); err == nil {
+			if strings.TrimSpace(out) == "0" {
+				a.logger.Log(common.EventStepComplete, "No commits on the fix branch — skipping PR creation", map[string]any{
+					"branch_name":  branchName,
+					"branch_point": branchPointSHA,
+				})
+				return nil, errNoCommitsToPublish
+			}
+		}
+	}
 
 	// Determine the push target. The CLI tool only injects a token for `gh` commands,
 	// never for plain `git push`, and the clone-time origin URL is not guaranteed to

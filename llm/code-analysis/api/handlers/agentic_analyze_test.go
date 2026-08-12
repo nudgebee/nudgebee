@@ -34,30 +34,30 @@ func TestNewAnalysisID_UniquePerCall(t *testing.T) {
 //
 // The marker phrase is duplicated from llm-server's irrelevantAnalysisMarker
 // constant by design — these two services must agree on the wire contract.
-func TestParseErrorFallback_NoIrrelevanceMarker(t *testing.T) {
-	const irrelevanceMarker = "may not be directly addressing your specific issue"
-
+// An unparseable agent response must fail the run.
+//
+// This replaces TestParseErrorFallback_NoIrrelevanceMarker, which guarded the
+// interaction between the old synthesised parse-error result and llm-server's
+// irrelevance marker. That fallback is gone: the handler no longer invents an
+// AnalysisResult (file_path "unknown", fixed_code "Manual investigation
+// required", and a fabricated git_diff) and return it as a success. With no
+// placeholder there is no marker interaction left to guard, and the fake diff
+// can no longer reach a consumer that would try to apply it.
+//
+// parseAgentResponse returning an error is the trigger the handler acts on, so
+// that is what is pinned here.
+func TestParseAgentResponse_UnparseableInputIsAnError(t *testing.T) {
 	h := &AgenticAnalyzeHandler{}
-	// Feed parseAgentResponse a string that cannot be coerced into AnalysisResult.
-	// parseAgentResponse must return an error for this to be a meaningful test.
-	_, err := h.parseAgentResponse("this is not json and not a valid agent response")
-	if err == nil {
-		t.Fatal("expected parseAgentResponse to fail on garbage input; test fixture is stale")
-	}
 
-	// The handler builds the fallback AnalysisResult inline when parsing fails.
-	// Reconstruct it the same way and assert the marker phrase is not present.
-	fallback := &AnalysisResult{
-		Title:        "Analysis Response Parse Error",
-		Description:  "The code analysis agent completed execution but the response could not be parsed properly. This may indicate a formatting issue in the agent's output. Manual review of the logs and repository may be required to determine the actual issue.",
-		ErrorMessage: "Failed to parse agent response",
-		OriginalCode: "Parse error occurred",
-		FixedCode:    "Manual investigation required",
-	}
-	if strings.Contains(fallback.Title, irrelevanceMarker) ||
-		strings.Contains(fallback.Description, irrelevanceMarker) ||
-		strings.Contains(fallback.ErrorMessage, irrelevanceMarker) {
-		t.Fatalf("parse-error fallback contains irrelevance marker — would trip llm-server's retry guard")
+	for _, in := range []string{
+		"this is not json and not a valid agent response",
+		"",
+		"{ truncated json",
+	} {
+		if _, err := h.parseAgentResponse(in); err == nil {
+			t.Fatalf("parseAgentResponse(%q) must error so the run fails instead of "+
+				"reporting a synthesised success", in)
+		}
 	}
 }
 

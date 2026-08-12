@@ -23,7 +23,8 @@ type CodeAgent struct {
 	logger        *common.Logger
 	tools         []core.NBTool
 	promptLoader  *common.PromptLoader
-	repoCloneTool *tools.RepoCloneTool // kept to seed its default branch from the request at Execute time
+	repoCloneTool *tools.RepoCloneTool    // kept to seed its default branch from the request at Execute time
+	providerTools specialistProviderTools // credential-bearing tools; the token only exists once a session does
 }
 
 func NewCodeAgent(cfg *config.Config, llmClient *llm.Client, gitClient *git.GitClient, logger *common.Logger, workspaceDir string) *CodeAgent {
@@ -85,6 +86,7 @@ func NewCodeAgentWithTracker(cfg *config.Config, llmClient *llm.Client, gitClien
 		tools:         trackedTools,
 		promptLoader:  common.NewPromptLoader(),
 		repoCloneTool: repoCloneTool,
+		providerTools: specialistProviderTools{gh: ghTool, glab: glabTool, cli: cliTool},
 	}
 }
 
@@ -120,6 +122,10 @@ func (a *CodeAgent) Execute(ctx context.Context, sessionCtx *session.SessionCont
 	// Seed repo_clone's default branch from the request's target/base branch so the
 	// clone (and any fix branch cut from it) starts on the branch the PR targets.
 	seedRepoCloneBranch(a.repoCloneTool, sessionCtx)
+
+	// Authenticate the provider tools from the session. Without this a specialist's
+	// `gh` runs unauthenticated and every call fails (see applySessionCredentials).
+	a.providerTools.applySessionCredentials(sessionCtx)
 
 	// Set credentials for repository operations
 	if sessionCtx.Credentials != nil {
