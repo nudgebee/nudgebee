@@ -508,10 +508,24 @@ func (m *optionCapturingLLMModel) Call(ctx context.Context, prompt string, optio
 	return resp.Choices[0].Content, nil
 }
 
-// TestThinkingBudget_SkippedWhenCallerSetExplicitLevel guards that the
-// auto-applied ThinkingBudget does not fire for callers that already set an
-// explicit ThinkingLevel — only auto-defaulted calls should get capped.
-func TestThinkingBudget_SkippedWhenCallerSetExplicitLevel(t *testing.T) {
+// TestThinkingBudget_AppliedForCallerSetExplicitLevel pins a DELIBERATE
+// REVERSAL of the previous contract.
+//
+// This test used to assert the opposite — that an explicit caller-set
+// ThinkingLevel suppressed the budget entirely, on the reasoning that "only
+// auto-defaulted calls should get capped". Production showed that leaves the
+// fast-task paths (scratchpad summarizer, memory extract/vote/rerank,
+// classification, acknowledgment, image utils) completely unbounded: measured
+// on gemini-3.5-flash, such calls ran to ~62.9k thinking tokens — the model's
+// own ceiling — for 250-300s, several emitting a single output token. The
+// scratchpad summarizer asking for ThinkingLevelFastTask ("think as little as
+// possible") was the call that thought the most.
+//
+// A level is only a hint the provider may exceed, so it is now paired with a
+// numeric ceiling derived from that level (resolveThinkingBudgetForLevel).
+// Sending both is safe: googleai forwards only the budget when both are
+// present, because Gemini rejects a request carrying both.
+func TestThinkingBudget_AppliedForCallerSetExplicitLevel(t *testing.T) {
 	origProvider := config.Config.LlmProvider
 	origModel := config.Config.LlmModel
 	origReasoning := config.Config.LlmThinkingBudgetReasoning
@@ -526,14 +540,18 @@ func TestThinkingBudget_SkippedWhenCallerSetExplicitLevel(t *testing.T) {
 
 	messages := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "summarize this")}
 
-	t.Run("explicit caller-set level: no budget applied, level preserved", func(t *testing.T) {
+	t.Run("explicit caller-set level: bounded by a level-derived budget, level preserved", func(t *testing.T) {
 		fake := &optionCapturingLLMModel{}
 		withFakeLLMModel(t, fake)
 		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "summary_agent", false, messages, true, WithThinkingLevel(ThinkingLevelFastTask))
 		assert.NoError(t, err)
-		_, hasBudget := fake.lastOptions.Metadata["ThinkingBudget"]
-		assert.False(t, hasBudget, "explicit caller-set ThinkingLevel must not get a ThinkingBudget applied on top")
-		assert.Equal(t, ThinkingLevelFastTask, fake.lastOptions.Metadata["ThinkingLevel"])
+		// ThinkingLevelFastTask ("low") → 2048, well under the 16000 Reasoning
+		// ceiling: a fast task asked to think as little as possible, so it must
+		// not receive the full tier allowance — and must not be unbounded.
+		assert.Equal(t, 2048, fake.lastOptions.Metadata["ThinkingBudget"],
+			"an explicit level must still carry a ceiling — a level alone is a hint the model can exceed")
+		assert.Equal(t, ThinkingLevelFastTask, fake.lastOptions.Metadata["ThinkingLevel"],
+			"the caller's level stays in metadata; googleai drops it in favour of the budget")
 	})
 
 	t.Run("no explicit level: budget auto-applied (this fix's actual target)", func(t *testing.T) {
@@ -542,5 +560,90 @@ func TestThinkingBudget_SkippedWhenCallerSetExplicitLevel(t *testing.T) {
 		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "logs", false, messages, true)
 		assert.NoError(t, err)
 		assert.Equal(t, 16000, fake.lastOptions.Metadata["ThinkingBudget"])
+	})
+}
+
+// TestResolveThinkingBudgetForLevel pins the level→budget mapping added after a
+// production incident: calls carrying an explicit ThinkingLevel bypassed the
+// budget entirely (llm_common.go took the else branch, which only clamped the
+// level), so a "fast task" scratchpad-compression call ran to ~62.9k thinking
+// tokens and 250-300s. A level is a hint the provider may exceed; these bounds
+// make it a ceiling while still honouring the caller's stated intent.
+func TestResolveThinkingBudgetForLevel(t *testing.T) {
+	origGlobal := config.Config.LlmProviderThinkingBudget
+	origRetrieval := config.Config.LlmThinkingBudgetRetrieval
+	origReasoning := config.Config.LlmThinkingBudgetReasoning
+	t.Cleanup(func() {
+		config.Config.LlmProviderThinkingBudget = origGlobal
+		config.Config.LlmThinkingBudgetRetrieval = origRetrieval
+		config.Config.LlmThinkingBudgetReasoning = origReasoning
+	})
+	config.Config.LlmProviderThinkingBudget = -1
+	config.Config.LlmThinkingBudgetRetrieval = 8000
+	config.Config.LlmThinkingBudgetReasoning = 16000
+
+	t.Run("a low/fast-task level gets far less than the tier ceiling", func(t *testing.T) {
+		got := resolveThinkingBudgetForLevel(ThinkingLevelFastTask, ModelTierRetrieval)
+		assert.Equal(t, 2048, got,
+			"fast task asked to think as little as possible — it must not get the full tier allowance")
+		assert.Less(t, got, resolveThinkingBudget(ModelTierRetrieval))
+	})
+
+	t.Run("levels scale monotonically", func(t *testing.T) {
+		minimal := resolveThinkingBudgetForLevel("minimal", ModelTierReasoning)
+		low := resolveThinkingBudgetForLevel("low", ModelTierReasoning)
+		medium := resolveThinkingBudgetForLevel("medium", ModelTierReasoning)
+		high := resolveThinkingBudgetForLevel("high", ModelTierReasoning)
+		assert.Less(t, minimal, low)
+		assert.Less(t, low, medium)
+		assert.Less(t, medium, high)
+	})
+
+	t.Run("the tier ceiling always wins over a higher level", func(t *testing.T) {
+		// "high" maps to 16384, but a Retrieval-tier agent may not exceed 8000.
+		assert.Equal(t, 8000, resolveThinkingBudgetForLevel("high", ModelTierRetrieval))
+	})
+
+	t.Run("case and whitespace do not defeat the mapping", func(t *testing.T) {
+		assert.Equal(t, 2048, resolveThinkingBudgetForLevel("  LOW  ", ModelTierRetrieval))
+	})
+
+	t.Run("unrecognized level still gets bounded by the tier", func(t *testing.T) {
+		assert.Equal(t, 8000, resolveThinkingBudgetForLevel("enthusiastic", ModelTierRetrieval))
+	})
+
+	t.Run("a deliberately uncapped tier is not re-capped via the level", func(t *testing.T) {
+		config.Config.LlmThinkingBudgetRetrieval = 0 // operator opt-out per config docs
+		assert.Equal(t, -1, resolveThinkingBudgetForLevel("low", ModelTierRetrieval),
+			"config 0 means the operator uncapped this tier; a level must not reintroduce a cap")
+		config.Config.LlmThinkingBudgetRetrieval = 8000
+	})
+
+	t.Run("none means no thinking config at all, never a positive budget", func(t *testing.T) {
+		// ClampThinkingLevelForModel returns "none" for flash-lite, which cannot
+		// think. Falling through to the tier budget would attach a positive
+		// ceiling to a non-thinking model — isThinkingModel matches the
+		// `gemini-3` prefix, so gemini-3.5-flash-lite would receive it. Live
+		// path: memory_extractor / acknowledgment_agent / vote_subject pass an
+		// explicit level and run predominantly on flash-lite. Caught in review
+		// by gemini-code-assist on PR #36172.
+		assert.Equal(t, -1, resolveThinkingBudgetForLevel(ThinkingLevelNone, ModelTierRetrieval))
+		assert.Equal(t, -1, resolveThinkingBudgetForLevel("  NONE  ", ModelTierReasoning),
+			"case and whitespace must not defeat the none guard")
+	})
+
+	t.Run("clamping a level to none on flash-lite yields no budget", func(t *testing.T) {
+		// End-to-end shape of the regression: the caller asks for fast-task, the
+		// clamp downgrades it to "none" for this model, and the result must be
+		// no budget rather than the tier ceiling.
+		clamped := ClampThinkingLevelForModel("gemini-3.5-flash-lite", ThinkingLevelFastTask)
+		assert.Equal(t, ThinkingLevelNone, clamped)
+		assert.Equal(t, -1, resolveThinkingBudgetForLevel(clamped, ModelTierRetrieval))
+	})
+
+	t.Run("global override caps the level mapping", func(t *testing.T) {
+		config.Config.LlmProviderThinkingBudget = 100
+		assert.Equal(t, 100, resolveThinkingBudgetForLevel("high", ModelTierReasoning))
+		config.Config.LlmProviderThinkingBudget = -1
 	})
 }

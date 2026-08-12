@@ -42,9 +42,26 @@ func init() {
 const agentScratchpad = "agent_scratchpad"
 const ToolLlm = "LLM"
 
+// Thinking levels the provider layer accepts, in ascending order of spend.
+// Named so the level set and thinkingLevelBudgets cannot drift apart. Note the
+// same values still appear as raw literals in ClampThinkingLevelForModel and
+// GetLlmDefaultThinkingLevel (llm_tokencount.go) and in the
+// llm_provider_thinking_level config docs — those are left untouched here to
+// keep this change scoped; worth folding onto these constants separately.
+const (
+	// ThinkingLevelNone is what ClampThinkingLevelForModel returns for models
+	// that cannot think at all (flash-lite). It means "attach no thinking
+	// config", NOT "think a little" — see resolveThinkingBudgetForLevel.
+	ThinkingLevelNone    = "none"
+	ThinkingLevelMinimal = "minimal"
+	ThinkingLevelLow     = "low"
+	ThinkingLevelMedium  = "medium"
+	ThinkingLevelHigh    = "high"
+)
+
 // ThinkingLevelFastTask is used for lightweight LLM calls (title generation,
 // summarization, formatting, classification) where deep reasoning is not needed.
-const ThinkingLevelFastTask = "low"
+const ThinkingLevelFastTask = ThinkingLevelLow
 
 var codeBlockPrefixRegex = regexp.MustCompile("^```[a-zA-Z]*\n")
 var (
@@ -496,11 +513,22 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 		for _, opt := range options {
 			opt(&combined)
 		}
+		effectiveLevel := ""
 		if lvl, ok := combined.Metadata["ThinkingLevel"].(string); ok {
+			effectiveLevel = lvl
 			clamped := ClampThinkingLevelForModel(model, lvl)
 			if clamped != lvl {
 				options = append(options, WithThinkingLevel(clamped))
+				effectiveLevel = clamped
 			}
+		}
+		// A level alone leaves spend unbounded — the provider treats it as a hint
+		// and may think to its own ceiling. Attach a numeric ceiling derived from
+		// the level so the caller's intent is preserved AND bounded. Safe to send
+		// alongside the level: googleai forwards only the budget when both are
+		// present (Gemini rejects both reaching the wire), so exactly one applies.
+		if budget := resolveThinkingBudgetForLevel(effectiveLevel, res.Tier); budget >= 0 {
+			options = append(options, WithThinkingBudget(budget))
 		}
 	}
 
@@ -1118,6 +1146,57 @@ func resolveThinkingBudget(tier ModelTier) int {
 		return -1
 	}
 	return tierBudget
+}
+
+// thinkingLevelBudgets maps a qualitative thinking level to an absolute token
+// ceiling. A level is only a HINT the provider may exceed — measured in
+// production, calls carrying an explicit level ran to ~62.9k thinking tokens
+// (the model's own ceiling) and took 250-300s, because the caller-supplied
+// level suppressed the budget entirely.
+//
+// These bounds reflect the caller's stated intent rather than falling back to
+// the tier ceiling: a "low"/fast-task call asked to think as little as
+// possible, so giving it the same allowance as an untagged call would defeat
+// the request. At the ~220 thinking-tokens/sec observed on gemini-3.5-flash,
+// "low" bounds a fast task to ~9s instead of ~285s.
+var thinkingLevelBudgets = map[string]int{
+	ThinkingLevelMinimal: 512,
+	ThinkingLevelLow:     2048,
+	ThinkingLevelMedium:  8192,
+	ThinkingLevelHigh:    16384,
+}
+
+// resolveThinkingBudgetForLevel returns the thinking-token ceiling for a call
+// that carries an explicit level, bounded by the tier's own ceiling so a level
+// can never buy more thinking than the agent's tier permits.
+//
+// Returns -1 (no budget) when the tier itself resolves to -1: that means the
+// operator deliberately uncapped the tier (config 0) or disabled budgets
+// globally, and a level must not reintroduce a cap they turned off. An
+// unrecognized level falls back to the tier ceiling — still bounded.
+func resolveThinkingBudgetForLevel(level string, tier ModelTier) int {
+	// "none" means the model cannot think at all — ClampThinkingLevelForModel
+	// returns it for flash-lite. Attaching ANY budget here (including 0, which
+	// Gemini reads as the real value "disable thinking") would put a
+	// ThinkingConfig on a request that must not carry one: isThinkingModel
+	// matches on the `gemini-3` prefix, so gemini-3.5-flash-lite would receive
+	// it. Without this guard "none" misses thinkingLevelBudgets and falls
+	// through to the tier budget — i.e. a positive ceiling on a non-thinking
+	// model, which is exactly backwards. Live path: memory_extractor,
+	// acknowledgment_agent and vote_subject all pass an explicit level and run
+	// predominantly on flash-lite.
+	if strings.EqualFold(strings.TrimSpace(level), ThinkingLevelNone) {
+		return -1
+	}
+	tierBudget := resolveThinkingBudget(tier)
+	if tierBudget < 0 {
+		return -1
+	}
+	levelBudget, ok := thinkingLevelBudgets[strings.ToLower(strings.TrimSpace(level))]
+	if !ok {
+		return tierBudget
+	}
+	return min(levelBudget, tierBudget)
 }
 
 // isMaxTokensStop returns true when the stop reason indicates the response was
