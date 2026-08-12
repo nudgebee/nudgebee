@@ -407,7 +407,7 @@ func TestModelUsageStatsCalculation_PrefersStoredCost(t *testing.T) {
 		},
 	}
 
-	stats := calculateModelUsageStats(records)
+	stats := calculateModelUsageStats(records, "")
 	assert.Equal(t, 1, len(stats))
 	// 0.0098 stored + 1M input × $5/M recomputed. Pricing the first call live
 	// would have charged it $0.53 instead of the $0.0098 it was billed.
