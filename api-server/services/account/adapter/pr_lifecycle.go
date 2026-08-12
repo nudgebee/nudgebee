@@ -545,7 +545,7 @@ func markPRResolutionsTerminalByURL(ctx *security.RequestContext, dbms *database
 		// projection) is requested per row — a duplicate webhook/poll delivery
 		// lands as a recorded no-op instead of an overwrite. event_resolution
 		// stays on the legacy path; the coordinator governs recommendations only.
-		if tableName == "recommendation_resolution" && coordinator.Enabled() {
+		if tableName == "recommendation_resolution" {
 			outcome := models.RecommendationResolutionStatusFailed
 			if merged {
 				outcome = models.RecommendationResolutionStatusSuccess

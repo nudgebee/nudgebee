@@ -42,9 +42,6 @@ type ticketResolutionRow struct {
 // Rows whose ticket is missing, still open, or in an unrecognized status are
 // left alone.
 func SyncTicketResolutions(ctx *security.RequestContext) error {
-	if !coordinator.Enabled() {
-		return nil
-	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return err

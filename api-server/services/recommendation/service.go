@@ -1095,16 +1095,8 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		// if recommendation is closed, then close the resolution
 		if recommendation.Status == models.RecommendationStatusClosed {
 			ctx.GetLogger().Info("Closing resolution as recommendation is already closed", "resolution", resolution.Id)
-			if coordinator.Enabled() {
-				if _, err := coordinator.SettleResolution(ctx, resolution.Id, models.RecommendationResolutionStatusSuccess, "recommendation already closed", coordinator.SourcePoll); err != nil {
-					ctx.GetLogger().Error("error settling resolution for closed recommendation", "error", err)
-					return err
-				}
-				continue
-			}
-			_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET status = $2, updated_at = $3 WHERE id = $1", resolution.Id, models.RecommendationResolutionStatusSuccess, time.Now().UTC().Format(time.RFC3339))
-			if err != nil {
-				ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
+			if _, err := coordinator.SettleResolution(ctx, resolution.Id, models.RecommendationResolutionStatusSuccess, "recommendation already closed", coordinator.SourcePoll); err != nil {
+				ctx.GetLogger().Error("error settling resolution for closed recommendation", "error", err)
 				return err
 			}
 			// Settled — polling the adapter now could only overwrite this Success
@@ -1146,44 +1138,13 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			continue
 		}
 
-		if coordinator.Enabled() {
-			if status == models.RecommendationResolutionStatusFailed {
-				ctx.GetLogger().Error("resolution failed", "resolution", resolution.Id, "status", statusMsg)
-			}
-			if _, err := coordinator.SettleResolution(ctx, resolution.Id, status, statusMsg, coordinator.SourcePoll); err != nil {
-				ctx.GetLogger().Error("error settling recommendation resolution", "error", err)
-				return err
-			}
-			continue
-		}
-
 		if status == models.RecommendationResolutionStatusFailed {
-			// resetting recommendation to open status if resolution failed
 			ctx.GetLogger().Error("resolution failed", "resolution", resolution.Id, "status", statusMsg)
-			_, err = dbms.Db.Exec("UPDATE recommendation SET status = $1 where id = $2 and cloud_account_id = $3 and tenant_id = $4", models.RecommendationStatusOpen, recommendation.Id, recommendation.CloudAccountId, recommendation.TenantId)
-			if err != nil {
-				ctx.GetLogger().Error("error updating recommendation", "error", err)
-				return err
-			}
 		}
-
-		_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET status = $2, updated_at = $3, status_message = $4 WHERE id = $1", resolution.Id, status, time.Now().UTC().Format(time.RFC3339), statusMsg)
-		if err != nil {
-			ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
+		if _, err := coordinator.SettleResolution(ctx, resolution.Id, status, statusMsg, coordinator.SourcePoll); err != nil {
+			ctx.GetLogger().Error("error settling recommendation resolution", "error", err)
 			return err
 		}
-
-		// Close the recommendation only once the resolution actually succeeded. A
-		// failed one was reset to Open above so it can be retried; closing it here
-		// undid that reset and dropped the work permanently.
-		if status == models.RecommendationResolutionStatusSuccess && recommendation.Status != models.RecommendationStatusClosed {
-			_, err = dbms.Db.Exec("UPDATE recommendation SET status = $2, updated_at = $3 WHERE id = $1", recommendation.Id, models.RecommendationStatusClosed, time.Now().UTC().Format(time.RFC3339))
-			if err != nil {
-				ctx.GetLogger().Error("error updating recommendation", "error", err)
-				return err
-			}
-		}
-
 	}
 	return nil
 }

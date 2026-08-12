@@ -28,9 +28,7 @@ type RecommendationDismissalResponse struct {
 }
 
 // UpdateRecommendationDismissal dismisses, snoozes, or reactivates a
-// recommendation via the coordinator. Deliberately not gated on
-// coordinator.Enabled(): the flag protects demoted legacy write paths, and
-// dismissal has no legacy path — the coordinator is its only writer.
+// recommendation via the coordinator, its only writer.
 func UpdateRecommendationDismissal(ctx *security.RequestContext, request RecommendationDismissalRequest) (RecommendationDismissalResponse, error) {
 	if err := common.ValidateStruct(request); err != nil {
 		return RecommendationDismissalResponse{}, fmt.Errorf("invalid dismissal request: %w", err)

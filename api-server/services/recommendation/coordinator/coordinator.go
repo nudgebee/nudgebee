@@ -13,8 +13,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
-	"sync"
 	"time"
 
 	"nudgebee/services/internal/database"
@@ -33,22 +31,6 @@ const (
 	SourceTicketSync  Source = "ticket_sync"
 	SourceUser        Source = "user"
 )
-
-var (
-	enabledOnce sync.Once
-	enabled     bool
-)
-
-// Enabled gates whether call sites route transitions through the coordinator.
-// Off by default so the legacy write paths stay byte-identical until the flag
-// is flipped per environment.
-func Enabled() bool {
-	enabledOnce.Do(func() {
-		v := os.Getenv("RESOLUTION_COORDINATOR_ENABLED")
-		enabled = v == "true" || v == "1"
-	})
-	return enabled
-}
 
 // SettleResult reports what a transition request actually did. Applied=false
 // with a Reason is a recorded no-op — the normal outcome when two requesters
@@ -268,9 +250,7 @@ func SetDismissal(ctx *security.RequestContext, recommendationId, accountId stri
 }
 
 // ExpireSnoozes returns snoozed recommendations whose snooze has lapsed to
-// Open. Set-based and unconditional (not flag-gated): a snooze created while
-// the coordinator was enabled must still expire if the flag is later turned
-// off.
+// Open. Set-based on purpose: it runs every cron tick over the whole backlog.
 func ExpireSnoozes(ctx *security.RequestContext) (int64, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
