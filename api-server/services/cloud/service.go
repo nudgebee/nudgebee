@@ -394,7 +394,10 @@ func QueryLogs(ctx *security.RequestContext, logsRequest QueryLogsRequest) (Quer
 
 	if logsRequest.Query.LogGroupName == "" && logsRequest.Query.ServiceName == "" &&
 		logsRequest.Query.ResourceId == "" && logsRequest.Query.ResourceType == "" {
-		return queryResponse, errors.New("log_group_name, (service_name and resource_id), or resource_type is required")
+		provider, perr := GetCloudAccountProvider(logsRequest.AccountId, ctx.GetSecurityContext().GetTenantId())
+		if perr != nil || !strings.EqualFold(provider, "GCP") {
+			return queryResponse, errors.New("log_group_name, (service_name and resource_id), or resource_type is required")
+		}
 	}
 
 	headersMap := map[string]string{

@@ -236,9 +236,9 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
         requestPayload.request.resource_id = params.resourceId;
         requestPayload.request.service_name = 'azure_sql';
       }
-      if (provider === 'GCP') {
-        requestPayload.request.service_name = 'cloud sql';
-      }
+      // GCP intentionally sends no service_name: Cloud Logs is account-wide, so the
+      // backend must not force a resource.type scope. Any narrowing (severity, a
+      // resource.type filter) comes from the user's Cloud Logging filter instead.
     }
 
     setLoading(true);
@@ -422,7 +422,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
         {executedQuery && (
           <Box sx={{ display: 'flex', alignItems: 'baseline', gap: ds.space[1], mb: ds.space[2] }}>
             <Typography sx={{ fontSize: ds.text.small, fontWeight: 600, color: ds.gray[600], whiteSpace: 'nowrap' }}>
-              {selectedProvider ? `${snakeToTitleCase(selectedProvider)} query:` : 'Query:'}
+              {`${selectedOption?.label || snakeToTitleCase(selectedProvider) || 'Query'} query:`}
             </Typography>
             <Typography sx={{ fontFamily: 'monospace', fontSize: ds.text.small, color: ds.gray[700], wordBreak: 'break-all' }}>
               {executedQuery}
