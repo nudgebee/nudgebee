@@ -1188,7 +1188,6 @@ const WorkflowListing: React.FC = () => {
       followupData,
       conversationId: conversation.id,
       messageId: lastFollowupMsg?.id,
-      messageUpdatedAt: lastFollowupMsg?.updated_at,
       agentId,
     };
   };
