@@ -798,10 +798,10 @@ func CreateIntegrationConfig(
 					// upsert true
 					_, err = dbms.Exec(fmt.Sprintf(`
 						INSERT INTO integrations_cloud_accounts (
-							integration_id, cloud_account_id, tenant_id, %s
+							integration_id, cloud_account_id, tenant_id, link_role, %s
 						)
-						VALUES ($1,$2,$3,true)
-						ON CONFLICT (integration_id, cloud_account_id, tenant_id)
+						VALUES ($1,$2,$3,'own',true)
+						ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role)
 						DO UPDATE SET %s=EXCLUDED.%s`,
 						column, column, column),
 						configId,
@@ -846,9 +846,9 @@ func CreateIntegrationConfig(
 		for _, accId := range accountIds {
 			_, err = dbms.Exec(`
 				INSERT INTO integrations_cloud_accounts (
-					integration_id, cloud_account_id, tenant_id
-				) VALUES ($1, $2, $3)
-				ON CONFLICT (integration_id, cloud_account_id, tenant_id) DO NOTHING
+					integration_id, cloud_account_id, tenant_id, link_role
+				) VALUES ($1, $2, $3, 'own')
+				ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role) DO NOTHING
 			`,
 				configId,
 				accId,

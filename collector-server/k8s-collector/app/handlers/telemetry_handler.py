@@ -173,9 +173,9 @@ def _upsert_integration(
         return
     integration_id = result[0][0] if result else None
     upsert_mapping = sql.SQL("""
-        INSERT INTO integrations_cloud_accounts (integration_id, cloud_account_id, tenant_id)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (integration_id, cloud_account_id, tenant_id) DO NOTHING
+        INSERT INTO integrations_cloud_accounts (integration_id, cloud_account_id, tenant_id, link_role)
+        VALUES (%s, %s, %s, 'own')
+        ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role) DO NOTHING
         """)
 
     database.run_query(
