@@ -311,7 +311,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	}
 	s.logger.Info("fetched K8s ServiceAccounts from relay", "count", len(k8sServiceAccounts))
 
-	saNodes, saEdges, saByKey := s.convertK8sServiceAccountsToGraph(k8sServiceAccounts, workloads, k8sNAmespaceMap, req)
+	saNodes, saEdges, saByKey := s.convertK8sServiceAccountsToGraph(k8sServiceAccounts, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, saNodes...)
 	edges = append(edges, saEdges...)
 
@@ -332,7 +332,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 		s.logger.Warn("failed to fetch K8s ConfigMaps from relay, continuing without them", "error", err)
 		k8sConfigMaps = []K8sConfigMapFromRelay{}
 	}
-	cmNodes, cmEdges, configMapByKey := s.convertK8sConfigMapsToGraph(k8sConfigMaps, workloads, k8sNAmespaceMap, req)
+	cmNodes, cmEdges, configMapByKey := s.convertK8sConfigMapsToGraph(k8sConfigMaps, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, cmNodes...)
 	edges = append(edges, cmEdges...)
 
@@ -341,7 +341,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 		s.logger.Warn("failed to fetch K8s Secrets from relay, continuing without them", "error", err)
 		k8sSecrets = []K8sSecretFromRelay{}
 	}
-	secNodes, secEdges, secretByKey := s.convertK8sSecretsToGraph(k8sSecrets, workloads, k8sNAmespaceMap, req)
+	secNodes, secEdges, secretByKey := s.convertK8sSecretsToGraph(k8sSecrets, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, secNodes...)
 	edges = append(edges, secEdges...)
 

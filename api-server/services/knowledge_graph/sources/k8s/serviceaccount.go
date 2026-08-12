@@ -164,28 +164,35 @@ func (s *K8sSource) createK8sServiceAccountNode(sa *K8sServiceAccountFromRelay, 
 // default_relationships.json (rule: k8s_serviceaccount_to_aws_iam_role_irsa),
 // because per-source lookup.ByARN cannot see the AWS source's ServiceIdentity
 // nodes at this stage.
-func (s *K8sSource) convertK8sServiceAccountsToGraph(sas []K8sServiceAccountFromRelay, workloads []K8sWorkloadRow, namespaceNodes map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode) {
+func (s *K8sSource) convertK8sServiceAccountsToGraph(sas []K8sServiceAccountFromRelay, workloads []K8sWorkloadRow, clusterNodes, namespaceNodes map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode) {
 	nodes := make([]*core.DbNode, 0, len(sas))
 	edges := make([]*core.DbEdge, 0)
 	saByKey := make(map[string]*core.DbNode, len(sas)) // "namespace/name" -> SA node
 
+	// Pre-compute namespace → cluster lookup; see convertK8sConfigMapsToGraph
+	// for the rationale. Matters more here than elsewhere: every namespace
+	// carries a `default` SA, so this loop runs once per namespace at minimum.
+	perNamespace, fallback := buildNamespaceClusterMap(workloads)
+
 	for i := range sas {
 		sa := &sas[i]
-		clusterName := s.getClusterNameForResource(sa.Metadata.Namespace, workloads)
+		clusterName := resolveCluster(perNamespace, fallback, sa.Metadata.Namespace)
 		saNode := s.createK8sServiceAccountNode(sa, clusterName, req)
 		nodes = append(nodes, saNode)
 		saByKey[fmt.Sprintf("%s/%s", sa.Metadata.Namespace, sa.Metadata.Name)] = saNode
 
-		// Link SA to its namespace if we have one.
-		namespaceKey := fmt.Sprintf("%s/%s", clusterName, sa.Metadata.Namespace)
-		if nsNode, ok := namespaceNodes[namespaceKey]; ok {
-			edges = append(edges, core.NewEdge(
-				saNode.ID, nsNode.ID,
-				core.RelationshipBelongsTo,
-				map[string]interface{}{"connection_type": "namespace_membership"},
-				req.TenantID, req.CloudAccountID, "k8s",
-			))
-		}
+		// Link SA to its namespace, minting the namespace when no earlier
+		// converter produced it. Every namespace carries a `default` SA, so
+		// this is what gives the graph its complete namespace coverage.
+		nsNode, nsNodes, nsEdges := s.ensureNamespaceNode(sa.Metadata.Namespace, clusterName, namespaceNodes, clusterNodes, req)
+		nodes = append(nodes, nsNodes...)
+		edges = append(edges, nsEdges...)
+		edges = append(edges, core.NewEdge(
+			saNode.ID, nsNode.ID,
+			core.RelationshipBelongsTo,
+			map[string]interface{}{"connection_type": "namespace_membership"},
+			req.TenantID, req.CloudAccountID, "k8s",
+		))
 	}
 
 	return nodes, edges, saByKey
