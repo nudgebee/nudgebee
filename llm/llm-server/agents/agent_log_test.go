@@ -5,6 +5,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
 	"strings"
@@ -22,12 +23,19 @@ import (
 func TestLogAgent_BuildToolList(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 
-	mustHave := []string{ResourceSearchAgentName, FetchLogsAgentName}
+	mustHave := []string{tools.ToolResourceSearch, FetchLogsAgentName}
 	mustNotHave := []string{
 		"query_generator",
 		"datadog_log_query",
 		"kubectl_intent_generator",
 		"kubectl_execute",
+		// The resource_search AGENT is deliberately not exposed: it costs an
+		// extra LLM call to translate natural language into the tool call the
+		// logs agent can already make itself, and fans out to cloud/Datadog
+		// resource search that a pod lookup never needs. Locked in both
+		// directions so a future edit can't silently swap the tool back for
+		// the agent. See logAgentToolNames.
+		ResourceSearchAgentName,
 	}
 
 	cases := []struct {
@@ -46,8 +54,8 @@ func TestLogAgent_BuildToolList(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			agent := newLogAgent("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
 				services_server.ObservabilityProvider{Provider: tc.provider})
-			tools := agent.GetSupportedTools(ctx)
-			names := toolNamesForTest(tools)
+			tl := agent.GetSupportedTools(ctx)
+			names := toolNamesForTest(tl)
 
 			for _, expected := range mustHave {
 				assert.Contains(t, names, expected,
@@ -161,7 +169,7 @@ func TestSystemPrompt_NarrowsToOneMode(t *testing.T) {
 			mustHave: []string{
 				"MODE = INVESTIGATION",
 				"last 24h, limit 5000",
-				"Mandatory shell_execute pass",
+				"Mandatory diagnostic sweep",
 				"Time-window framing",
 				"Label anchor",
 				"all logs for app <name>",
@@ -185,7 +193,7 @@ func TestSystemPrompt_NarrowsToOneMode(t *testing.T) {
 				"Label anchor",
 			},
 			mustMiss: []string{
-				"Mandatory shell_execute pass",
+				"Mandatory diagnostic sweep",
 				"last 24h, limit 5000",
 				"Per-signature aggregation pipeline",
 				"Time-window framing",
@@ -206,7 +214,7 @@ func TestSystemPrompt_NarrowsToOneMode(t *testing.T) {
 			},
 			mustMiss: []string{
 				"Workflow (Routine):",
-				"Mandatory shell_execute pass",
+				"Mandatory diagnostic sweep",
 				"last 24h, limit 5000",
 				"Time-window framing",
 				// jq pipeline was removed (broke after JSONL flatten).

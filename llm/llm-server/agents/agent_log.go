@@ -112,7 +112,7 @@ func getLogAgent(ctx *security.RequestContext, accountId string) (core.NBAgent, 
 }
 
 // LogAgent is the ReAct log investigator. Tools exposed to its LLM are
-// uniform across providers (resource_search, fetch_logs, optional
+// uniform across providers (resource_search_execute, fetch_logs, optional
 // shell_execute). Per-backend dispatch happens inside fetch_logs.
 type LogAgent struct {
 	accountId string
@@ -134,7 +134,7 @@ func (l *LogAgent) GetDescription() string {
 	return `Retrieves and analyzes logs from various sources (Kubernetes, Loki, Elasticsearch, Datadog, Signoz) by translating natural language questions into log queries. Handles its own resource discovery (e.g., finding the correct pod name or namespace) and runs investigation loops over saved log files when the user is asking about root causes. Use this for: fetching application or container logs, searching log entries by keyword or time range, troubleshooting pod/container errors via log output, correlating logs across services. Do NOT use for: querying performance metrics (use ` + "`metrics`" + ` agent), running kubectl commands (use ` + "`kubectl`" + ` or ` + "`kubectl_execute`" + `), or querying Kubernetes events (use ` + "`events`" + ` agent).
 
 When invoking this agent, preserve the user's intent wording in the per-step query:
-  - Investigation — phrasings that contain causal words (why / root cause / diagnose / troubleshoot / what caused / broken / failing / crash) or that ask whether issues, outages, or failures occurred. Keep that wording; the agent's classifier uses it to pick the multi-grep investigation workflow with mandatory Call A + E1/E2 recovery.
+  - Investigation — phrasings that contain causal words (why / root cause / diagnose / troubleshoot / what caused / broken / failing / crash) or that ask whether issues, outages, or failures occurred. Keep that wording; the agent's classifier uses it to pick the multi-grep investigation workflow with mandatory Sweep A + E1/E2 recovery.
   - Enumeration — phrasings like "list errors", "show errors", "distinct errors", "summarize errors". Preserve; routes to the per-signature aggregation flow.
   - Routine — phrasings like "recent logs", "tail logs", "last N minutes". Preserve; routes to a single small fetch.
 Paraphrasing an investigation as a flat "get logs for <workload>" downgrades it to routine and skips the deeper analysis.`
@@ -156,9 +156,33 @@ func (l *LogAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NB
 	return l.tools
 }
 
+// logAgentToolNames is the logs agent's tool set as a plain name list, so a
+// test can lock the resource-search split without standing up a populated
+// tool registry. Mirrors cloudLeanCoreToolNames.
+func logAgentToolNames() []string {
+	return []string{
+		// resource_search_execute is the DIRECT tool, not the resource_search
+		// AGENT. The agent spends an extra LLM call turning natural language
+		// into a tool call, and its prompt is written to fan that call out to
+		// cloud (AWS/GCP/Azure) and Datadog resource search alongside the K8s
+		// one — both wasted work when all we need is the pod behind a
+		// workload. The logs agent already carries the resource name and
+		// namespace from the user's question, so it can fill the tool's input
+		// itself. Same swap #36109 made for the AWS orchestrators.
+		//
+		// Note the cost profile differs from that AWS change:
+		// cloud_resource_search_execute is pure-DB, whereas this tool is
+		// DB-first with a live-kubectl fallback (plus a strategy loop and an
+		// owner-reference enrichment pass) when the inventory misses. A hit is
+		// one Postgres query; a miss is still several relay round-trips.
+		tools.ToolResourceSearch,
+		FetchLogsAgentName,
+		toolcore.ToolExecuteShellCommand,
+	}
+}
+
 func (l *LogAgent) buildToolList(ctx *security.RequestContext) []toolcore.NBTool {
-	names := []string{ResourceSearchAgentName, FetchLogsAgentName}
-	names = append(names, toolcore.ToolExecuteShellCommand)
+	names := logAgentToolNames()
 	// standard_diagnostic_grep is no longer exposed to the LLM — the bundle
 	// now fires deterministically inside fetch_logs when the query wording
 	// asks for error content, and the result rides back in the fetch
@@ -224,14 +248,15 @@ func sharedHeaderAndWorkflow() []string {
 		"**Role:** You are an SRE expert that retrieves and investigates logs from configured backends. Your goal is to answer the user's question accurately, citing concrete log evidence.",
 
 		"**Workflow:**",
-		"  1. **Resolve the resource** the user is asking about. Use `resource_search` when ANY of these apply:",
+		"  1. **Resolve the resource** the user is asking about. Use `resource_search_execute` when ANY of these apply:",
 		"     a. The name is ambiguous (no namespace, partial match, common service name).",
 		"     b. The name looks like a **workload** (Deployment / StatefulSet / DaemonSet / Job) but you need pod logs. Workload-managed pods have hash suffixes (the Deployment→ReplicaSet→Pod pattern: `<workload-name>-<6-10 hex>-<5 alphanumeric>`). A bare workload name without that suffix is NOT a valid pod name; calling `fetch_logs` with `pod=<workload-name>` resolves to zero entries because Kubernetes pod names always carry the suffix.",
 		"     c. The user gave a service / app / deployment name and didn't specify a pod.",
-		"     Skip resource_search ONLY when the user gave an obvious pod name — already has the hash suffix described above, OR follows a StatefulSet ordinal pattern (`<sts-name>-<integer>`, e.g. `kafka-0`, `mysql-0`).",
+		"     Skip resource_search_execute ONLY when the user gave an obvious pod name — already has the hash suffix described above, OR follows a StatefulSet ordinal pattern (`<sts-name>-<integer>`, e.g. `kafka-0`, `mysql-0`).",
+		"     Call it with the workload name and namespace directly: `{\"resource_name\": \"<name>\", \"namespace\": \"<ns>\", \"search_type\": \"suggestions\"}`. `suggestions` is the right mode for this workflow — it resolves a workload to its live pods (and their owner references) in one lookup — and it is also what the tool falls back to when `search_type` is absent, so a call that omits it still behaves correctly. Pass it explicitly anyway. Omit `namespace` only when the user genuinely didn't give one.",
 		"  2. **Fetch the logs** by calling `fetch_logs` with a natural-language question that includes the resolved resource and time window. `fetch_logs` translates the question into the right backend query (Loki, Datadog, Elasticsearch, or kubectl) and runs it. The response is a JSON envelope with the rendered query and the raw logs.",
 		"  2a. **Recovery from name resolution failure.** If `fetch_logs` returns an error containing \"pod not found\", \"(NotFound)\", \"no resources found\", or similar — the resource name didn't resolve. You MUST:",
-		"     - Call `resource_search` with the original name and namespace.",
+		"     - Call `resource_search_execute` with the original name and namespace: `{\"resource_name\": \"<name>\", \"namespace\": \"<ns>\", \"search_type\": \"suggestions\"}`.",
 		"     - Take the resolved pod name (with hash suffix) from the search result.",
 		"     - Re-call `fetch_logs` with the resolved pod name.",
 		"     Do NOT give up after one failed fetch. Do NOT fall back to a narrower query. Do NOT report \"no issues\" based on a fetch that errored — the fetch failure means we have no log evidence yet, so any conclusion about health is unsupported.",
@@ -257,7 +282,7 @@ func routineInstructions() []string {
 }
 
 // investigationInstructions returns the body for MODE = INVESTIGATION: broad
-// 24h/5000 fetch, mandatory shell_execute Call A, optional Call B/second-pass
+// 24h/5000 fetch, mandatory shell_execute Sweep A, optional Sweep B/second-pass
 // antecedent fetch, mandatory E1/E2 recovery on empty grep, time-window
 // framing for clustered errors. Routine and enumeration blocks are not
 // included.
@@ -275,38 +300,37 @@ func investigationInstructions() []string {
 	// the query wording asks for error content. That obsoletes the old
 	// "please call standard_diagnostic_grep first" step and saves an
 	// LLM turn. If the bundle signal is clear the LLM can answer from
-	// it directly; if it's thin or ambiguous, the manual Call A + B
+	// it directly; if it's thin or ambiguous, the manual Sweep A + B
 	// pass below still runs.
 	if config.Config.LogsStandardGrepEnabled {
 		out = append(out,
-			"  4a. **Read `bundle_signal` first (fastest path).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side sweep across error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx categories against the saved file. When it's non-empty and shows a clear signal (matches concentrated in one category with a visible transition timestamp), skip step 4 below and go straight to the WHEN report. When it's empty (bundle didn't fire — query wording wasn't error-adjacent) or thin (matches scattered across categories, no clear timestamp cluster), fall through to step 4 for the manual Call A+B pass and any domain-aware patterns. Use the provided bundle output directly — the server has already run the sweep.",
+			"  4a. **Read `bundle_signal` first (fastest path).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side sweep across error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx categories against the saved file. When it's non-empty and shows a clear signal (matches concentrated in one category with a visible transition timestamp), skip step 4 below and go straight to the WHEN report. When it's empty (bundle didn't fire — query wording wasn't error-adjacent) or thin (matches scattered across categories, no clear timestamp cluster), fall through to step 4 for the manual Sweep A+B pass and any domain-aware patterns. Use the provided bundle output directly — the server has already run the sweep.",
 		)
 	}
 	out = append(out,
-		"  4. **Mandatory shell_execute pass (NOT optional for this mode).** When `fetch_logs` returns a non-empty `file_ref`, you MUST run AT LEAST TWO `shell_execute` calls before producing a final answer. Call A and Call B read the SAME file with different patterns and are INDEPENDENT — **emit BOTH in ONE iteration as a single parallel batch** (do NOT wait for A's result before issuing B); correlate their outputs afterward once both return:",
-		"     **Never batch a `fetch_logs` call together with a `shell_execute` grep on the file_ref it is expected to return — not here, not anywhere else in this workflow.** `file_ref` only exists once `fetch_logs` actually finishes; a grep queued in the same iteration cannot know the real value and will target a file that hasn't been written yet, producing `No such file or directory` even though your command is otherwise correct. Call A and Call B are safe to batch because they both read a file_ref `fetch_logs` has ALREADY returned in a prior, completed step — always let a `fetch_logs` call finish and observe its `file_ref` before grepping it, in the NEXT iteration.",
-		"     Call A — scan for the error transition:",
-		"       `grep -nE \"ERROR|FATAL|PANIC|exception|traceback\" <file_ref> | head -20`",
-		"       Once it returns, note the timestamp on the first matching line — that is the transition point.",
-		"     Call B — scan for the trigger:",
-		"       `grep -nE \"reload|reconfigur|deploy|rollout|secret.rotat|config.changed|started|loaded|env|config\" <file_ref> | head -20`",
-		"       The trigger usually lives in WARN/INFO/CONFIG lines that Call A skipped; after both return, pick the trigger line that immediately precedes Call A's transition point.",
-		"  5. **Second-pass targeted antecedent fetch (only if Call A finds an error timestamp).** Call fetch_logs again with `\"all logs for <pod> in <namespace> from <T-5min> to <T>, limit 500, in chronological forward order\"`. This pulls the trigger context (config reload, deploy, secret rotation) immediately preceding the error — bounded by explicit `start_time`/`end_time`, so forward+limit is safe. Wait for this call to complete and observe its `file_ref`, THEN re-run Call B's grep on it as a separate, later iteration — never in the same batch as this fetch_logs call. Skip if Call B already found a clear trigger.",
+		"  4. **Mandatory diagnostic sweep (NOT optional for this mode).** When `fetch_logs` returns a non-empty `file_ref`, you MUST sweep the file before producing a final answer — as **exactly ONE `shell_execute` call whose command chains every pattern you want**. Do NOT emit one `shell_execute` per pattern: each extra action costs a full planning turn (~5s) to run work the shell finishes in milliseconds, and patterns split across actions reliably end up in separate turns rather than one. One command, one round trip, every result in a single observation:",
+		"     **Never batch a `fetch_logs` call together with a `shell_execute` grep on the file_ref it is expected to return — not here, not anywhere else in this workflow.** `file_ref` only exists once `fetch_logs` actually finishes; a grep queued in the same iteration cannot know the real value and will target a file that hasn't been written yet, producing `No such file or directory` even though your command is otherwise correct. Always let a `fetch_logs` call finish and observe its `file_ref` before grepping it, in the NEXT iteration.",
+		"     The sweep has two halves. Chain them in ONE command with a separator so you can tell the outputs apart:",
+		"       `grep -nE \"ERROR|FATAL|PANIC|exception|traceback\" <file_ref> | head -20; echo '--- TRIGGER ---'; grep -nE \"reload|reconfigur|deploy|rollout|secret.rotat|config.changed|started|loaded|env|config\" <file_ref> | head -20`",
+		"     Sweep A (before the separator) — the error transition: note the timestamp on the first matching line, that is the transition point.",
+		"     Sweep B (after the separator) — the trigger: it usually lives in WARN/INFO/CONFIG lines that Sweep A skipped. Pick the trigger line that immediately precedes Sweep A's transition point.",
+		"     **Tailor both pattern sets to the question actually asked** — the defaults above target generic crash-shaped failures and are a STARTING POINT, not a fixed list. A latency question wants `timeout|deadline|slow|context.deadline|elapsed`; an auth question wants `401|403|token|expired|unauthorized`; a question naming a specific id, host, or endpoint should grep for that literal. Add, replace, or drop patterns as the question warrants — but keep it to the SAME single command.",
+		"  5. **Second-pass targeted antecedent fetch (only if Sweep A finds an error timestamp).** Call fetch_logs again with `\"all logs for <pod> in <namespace> from <T-5min> to <T>, limit 500, in chronological forward order\"`. This pulls the trigger context (config reload, deploy, secret rotation) immediately preceding the error — bounded by explicit `start_time`/`end_time`, so forward+limit is safe. Wait for this call to complete and observe its `file_ref`, THEN re-run Sweep B's grep on it as a separate, later iteration — never in the same batch as this fetch_logs call. Skip if Sweep B already found a clear trigger.",
 		"  6. **Empty-result recovery (MANDATORY two-step — DO NOT skip):**",
 		"     Step E1 — re-grep with case-insensitive + broader keywords on the SAME file:",
 		"       `grep -inE \"error|fail|fatal|panic|exception|traceback|connection.refused|connectionerror|cannot.connect|timed.out|timeout|denied|unreachable\" <file_ref> | head -20`",
-		"       The default Call A pattern is case-sensitive and misses mixed-case wording (e.g. `ConnectionError`, `Connection refused`) and protocol idioms (`timed out`, `unreachable`).",
+		"       The default Sweep A pattern is case-sensitive and misses mixed-case wording (e.g. `ConnectionError`, `Connection refused`) and protocol idioms (`timed out`, `unreachable`).",
 		"     Step E2 — only if Step E1 is also empty, widen the fetch:",
 		"       Re-call fetch_logs with `\"all logs for <pod> in <namespace> last 7d, limit 5000\"` (widen the *window*, not the limit — 5000 is the recommended max across providers). Wait for it to complete, THEN re-run the Step E1 grep on the new file_ref in a later iteration — never in the same batch as this fetch_logs call.",
 		"       If the user's question or any earlier observation mentions a specific timestamp, ALSO issue a narrower targeted fetch around that timestamp.",
 		"     **Strict prohibitions:**",
 		"       - Do NOT substitute kubectl events, deployment status, or rollout history for a wider log fetch. Events ≠ logs. The critic rejects \"no issues\" answers based on event checks alone.",
 		"       - Do NOT call `think` to conclude \"no issues\" without completing Step E1 AND (if E1 empty) Step E2.",
-		"       - Only after Call A + Step E1 + Step E2 all return empty may you state \"no errors found in last 7d\".",
-		"  Do NOT produce a final answer without Call A AND (Call B succeeding OR a documented second-pass attempt OR a documented widened-window attempt). The critic will reject answers that skip this step.",
-		"  **Report WHEN (MANDATORY).** Your final answer MUST state the incident time window — the `timestamp` field of the FIRST and LAST matching error line from Call A. Naming the failure and its cause without \"between <T1> and <T2>\" is incomplete. Do NOT conflate live pod status with incident timing: a pod that is `Running` now can have had a bounded PAST incident — phrase it as \"errors occurred between <T1> and <T2>\", never \"currently failing\" when the error timestamps are in the past.",
+		"       - Only after Sweep A + Step E1 + Step E2 all return empty may you state \"no errors found in last 7d\".",
+		"  Do NOT produce a final answer without Sweep A AND (Sweep B succeeding OR a documented second-pass attempt OR a documented widened-window attempt). The critic will reject answers that skip this step.",
+		"  **Report WHEN (MANDATORY).** Your final answer MUST state the incident time window — the `timestamp` field of the FIRST and LAST matching error line from Sweep A. Naming the failure and its cause without \"between <T1> and <T2>\" is incomplete. Do NOT conflate live pod status with incident timing: a pod that is `Running` now can have had a bounded PAST incident — phrase it as \"errors occurred between <T1> and <T2>\", never \"currently failing\" when the error timestamps are in the past.",
 
-		"**Domain-aware grep patterns (for additional shell_execute passes when default Call B is empty — if you run several, emit them together in ONE parallel batch; they are independent reads of the same file):**",
+		"**Domain-aware grep patterns (use when the default Sweep B is empty, or when the question points at one of these areas — add them to the SAME single command as extra chained greps, never as extra shell_execute actions):**",
 		"  - Crashes / restarts:  `OOM|Killed|exit.code|CrashLoop|restart|signal|SIGTERM|SIGKILL`",
 		"  - Latency / slowness:  `timeout|deadline|slow|connection.pool|retry|context.deadline|elapsed`",
 		"  - Auth / access:       `401|403|JWT|token|expired|unauthorized|forbidden|permission`",
@@ -370,11 +394,10 @@ func outputFormatInstructions(mode logMode) []string {
 		out = append(out,
 			"  Include a short Causality Chain explaining symptom → why → root cause.",
 			"  **Time-window framing (mandatory when error timestamps cluster):** if the error lines you cite span a contiguous window (typically a few minutes — i.e. an `HH:MM–HH:MM` span of 1-15 minutes), state the window explicitly in your answer (\"errors occurred between HH:MM and HH:MM\").",
-			"  How to determine the window bounds (the saved file is sorted newest-first because Loki's default direction is backward — `head` gives newest, `tail` gives oldest):",
-			"    - Window END (most recent error): `grep -nE \"<error pattern>\" <file_ref> | head -1`",
-			"    - Window START (earliest error in the matched set): `grep -nE \"<error pattern>\" <file_ref> | tail -1`",
-			"    - Total error count (to confirm \"cluster\" vs \"isolated\"): `grep -cE \"<error pattern>\" <file_ref>`",
-			"  You MUST run BOTH the head and tail commands when reporting a window. A single `head -20` only shows the newest end of the cluster — citing only that lets the user think the issue is recent when it actually started minutes/hours earlier. Cite the START and END timestamps verbatim from the grep output — do not round or approximate. If the errors are scattered (no contiguous cluster — i.e. the head/tail span is hours instead of minutes), say so and list the distinct timestamps.",
+			"  How to determine the window bounds — all three in ONE `shell_execute` call, chained (the saved file is sorted newest-first because Loki's default direction is backward, so `head` gives newest and `tail` gives oldest):",
+			"    `grep -nE \"<error pattern>\" <file_ref> | head -1; grep -nE \"<error pattern>\" <file_ref> | tail -1; grep -cE \"<error pattern>\" <file_ref>`",
+			"    That yields, in order: window END (most recent error), window START (earliest error in the matched set), and the total count that tells you \"cluster\" vs \"isolated\".",
+			"  You MUST have BOTH bounds before reporting a window — do not issue them as three separate actions, and do not report from `head` alone. A single `head -20` only shows the newest end of the cluster, which lets the user think the issue is recent when it actually started minutes or hours earlier. Cite the START and END timestamps verbatim from the grep output — do not round or approximate. If the errors are scattered (no contiguous cluster — i.e. the head/tail span is hours instead of minutes), say so and list the distinct timestamps.",
 		)
 	}
 	return out
@@ -396,7 +419,7 @@ func outputFormatInstructions(mode logMode) []string {
 // whose name ends in a number, like a benchmark suffix). Defaulting to
 // `app=` covers both cases without false-positive `pod=` lookups.
 func labelAnchorRules() string {
-	return "     - **Label anchor (CRITICAL — picks the right target):** If you ALREADY have the exact pod name (Deployment-style hash suffix `<workload>-<6-10 hex>-<5 alphanumeric>`, e.g. from `kubectl get pods` or `resource_search`), anchor on `\"all logs for pod <name> in <namespace>\"` — the exact pod resolves on EVERY backend, including kubectl. If you do NOT have the exact pod, DEFAULT to the workload label by phrasing as `\"all logs for app <name> in <namespace>\"` (emits `app=<name>`, matches all pods) — BUT this app-anchor only resolves on label-indexed backends (Loki / Datadog / Elasticsearch). On the **kubectl backend** (no Loki configured — you had to use `kubectl get` / `shell_execute` to find the resource), a bare `app <name>` is NOT a valid target and errors; there, phrase as `\"all logs for deployment <name> in <namespace>\"` (or statefulset/daemonset), which runs `kubectl logs deployment/<name>`. Never anchor on `pod <bare-workload-name>` without the hash suffix — it yields zero results because entries carry the full pod-with-hash, not the workload name."
+	return "     - **Label anchor (CRITICAL — picks the right target):** If you ALREADY have the exact pod name (Deployment-style hash suffix `<workload>-<6-10 hex>-<5 alphanumeric>`, e.g. from `kubectl get pods` or `resource_search_execute`), anchor on `\"all logs for pod <name> in <namespace>\"` — the exact pod resolves on EVERY backend, including kubectl. If you do NOT have the exact pod, DEFAULT to the workload label by phrasing as `\"all logs for app <name> in <namespace>\"` (emits `app=<name>`, matches all pods) — BUT this app-anchor only resolves on label-indexed backends (Loki / Datadog / Elasticsearch). On the **kubectl backend** (no Loki configured — you had to use `kubectl get` / `shell_execute` to find the resource), a bare `app <name>` is NOT a valid target and errors; there, phrase as `\"all logs for deployment <name> in <namespace>\"` (or statefulset/daemonset), which runs `kubectl logs deployment/<name>`. Never anchor on `pod <bare-workload-name>` without the hash suffix — it yields zero results because entries carry the full pod-with-hash, not the workload name."
 }
 
 // sharedConstraints — the cite-evidence / preserve-identifiers rules apply to
@@ -482,7 +505,7 @@ func buildLogToolResponse(nbRequestContext toolcore.NbToolContext, agent core.NB
 	// persistence layer reads (planner_callback_handler.go, factory_agent.go)
 	// to populate child_agent_id on the saved tool_call row — without them the
 	// UI conversation tree (conversation_tree.go) can't nest this call's
-	// sub-tool calls (fetch_logs, shell_execute, resource_search) under the
+	// sub-tool calls (fetch_logs, shell_execute, resource_search_execute) under the
 	// `logs` node. This wrapper bypasses factory_agent's generic Call(), which
 	// sets these on every return path; agent_delegate.go hit and fixed the
 	// same bug class for delegate_agent.
