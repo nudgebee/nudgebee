@@ -1412,7 +1412,6 @@ const KubernetesLLMResponseGenerator = ({
                     alignItems: 'center',
                     border: `1px solid var(--ds-gray-300)`,
                     borderRadius: ds.radius.sm,
-                    height: `${ds.space[6]} !important`,
                     position: 'relative',
                     '&:hover': {
                       borderColor: 'var(--ds-blue-500)',

@@ -2168,6 +2168,7 @@ KubernetesRequestResponseTrend.propTypes = {
 export const KubernetesUtilizationCharts3 = ({ accountId, query }) => {
   return (
     <>
+      <Heading value={'Utilization'} borderWidth='md' />
       <Box mb={ds.space[2]} />
       <KubernetesUtilizationCharts2
         accountId={accountId}
