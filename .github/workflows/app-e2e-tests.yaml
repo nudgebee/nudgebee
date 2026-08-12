@@ -5,13 +5,27 @@ on:
     branches:
       - test
     paths:
-      - "app-e2e-tests/tests/**"   # only spec/locator changes inside tests/ trigger CI
+      - "app-e2e-tests/tests/**"
+      - "app-e2e-tests/pages/**"            # LoginPage/devLogin — imported by every spec
+      - "app-e2e-tests/notifications/**"    # SlackReporter — wired into the reporter chain
+      - "app-e2e-tests/global-setup.ts"
+      - "app-e2e-tests/playwright.config.ts"
+      - "app-e2e-tests/tsconfig.json"
+      - "app-e2e-tests/package.json"
+      - "app-e2e-tests/package-lock.json"
 
   pull_request:
     branches:
       - test
     paths:
-      - "app-e2e-tests/tests/**"   # package.json / config / other infra changes are ignored
+      - "app-e2e-tests/tests/**"
+      - "app-e2e-tests/pages/**"
+      - "app-e2e-tests/notifications/**"
+      - "app-e2e-tests/global-setup.ts"
+      - "app-e2e-tests/playwright.config.ts"
+      - "app-e2e-tests/tsconfig.json"
+      - "app-e2e-tests/package.json"
+      - "app-e2e-tests/package-lock.json"
 
   schedule:
     - cron: "30 3 * * 1-5"   # 9:00 AM IST (UTC+5:30), Monday–Friday
@@ -184,39 +198,60 @@ jobs:
           node node_modules/.bin/playwright test --list 2>&1 | head -20 \
             || echo "WARNING: playwright test --list failed (config or reporter issue — see above)"
 
-      - name: Detect Changed Test Files
+      - name: Detect Affected Tests
         id: detect-tests
         shell: bash
         run: |
+          echo "Resolving the diff base..."
 
-          echo "Detecting changed test files..."
-
-          # push to test or schedule/dispatch: SHAs are from test branch history — safe to diff.
-          if [ "${{ github.event_name }}" == "push" ]; then
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.event_name }}" == "push" ]; then
             BASE="${{ github.event.before }}"
-            HEAD="${{ github.sha }}"
-            # Guard against initial push or force-push (null SHA)
-            if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-              echo "Initial or force push — running full test suite."
-              echo "TEST_FILES=" >> $GITHUB_ENV
-              exit 0
-            fi
           else
-            BASE=$(git rev-parse HEAD~1 || true)
-            HEAD=$(git rev-parse HEAD || true)
+            BASE=""
+          fi
+
+          # Null SHA on branch creation; after a force push the base may be unreachable.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            BASE=$(git rev-parse HEAD~1)
+            echo "Event base unusable (new branch or force push) — falling back to $BASE"
           fi
 
           echo "BASE: $BASE"
-          echo "HEAD: $HEAD"
+          echo "E2E_BASE=$BASE" >> $GITHUB_ENV
 
-          # Exclude deleted files (--diff-filter=d) so Playwright doesn't try to run non-existent specs
-          CHANGED_FILES=$(git diff --name-only --diff-filter=d "$BASE" "$HEAD" | grep '^app-e2e-tests/.*\.spec\.ts$' || true)
+          # No spec imports these, so --only-changed finds nothing — keep in sync with paths:.
+          SUITE_WIDE="app-e2e-tests/playwright.config.ts app-e2e-tests/global-setup.ts
+                      app-e2e-tests/tsconfig.json app-e2e-tests/package.json
+                      app-e2e-tests/package-lock.json app-e2e-tests/notifications"
 
-          if [ -z "$CHANGED_FILES" ]; then
-            echo "TEST_FILES=" >> $GITHUB_ENV
+          SCAFFOLD_CHANGED=$(git diff --name-only "$BASE...HEAD" -- $SUITE_WIDE)
+          if [ -n "$SCAFFOLD_CHANGED" ]; then
+            echo "Suite-wide scaffolding changed — running the full suite:"
+            echo "$SCAFFOLD_CHANGED" | sed 's/^/  /'
+            echo "RUN_MODE=full" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # --only-changed walks the import graph: a changed locator selects its importers.
+          LIST_OUT=$(node node_modules/.bin/playwright test --only-changed="$BASE" --list 2>&1) || {
+            echo "::error::Could not list affected tests — see the output below."
+            echo "$LIST_OUT" | tail -30
+            exit 1
+          }
+          echo "$LIST_OUT" | tail -40
+
+          AFFECTED=$(echo "$LIST_OUT" | grep -oE 'Total: [0-9]+ test' | grep -oE '[0-9]+' | head -1)
+          AFFECTED=${AFFECTED:-0}
+          echo "Affected tests: $AFFECTED"
+
+          # A zero-test run writes no results.json, which the run step reads as a crash.
+          if [ "$AFFECTED" -eq 0 ]; then
+            echo "RUN_MODE=skip" >> $GITHUB_ENV
           else
-            TEST_FILES=$(echo "$CHANGED_FILES" | sed 's|app-e2e-tests/||' | tr '\n' ' ')
-            echo "TEST_FILES=$TEST_FILES" >> $GITHUB_ENV
+            echo "RUN_MODE=affected" >> $GITHUB_ENV
           fi
 
       - name: Run Playwright Tests
@@ -262,13 +297,16 @@ jobs:
             echo "Scheduled run — executing full test suite"
             node node_modules/.bin/playwright test
 
-          elif [ -n "$TEST_FILES" ]; then
-            echo "Running only changed spec files: $TEST_FILES"
-            node node_modules/.bin/playwright test $TEST_FILES
+          elif [ "$RUN_MODE" == "full" ]; then
+            echo "Playwright config or global setup changed — executing full test suite"
+            node node_modules/.bin/playwright test
+
+          elif [ "$RUN_MODE" == "affected" ]; then
+            echo "Running tests affected by changes since $E2E_BASE"
+            node node_modules/.bin/playwright test --only-changed="$E2E_BASE"
 
           else
-            # push/PR where only non-spec files changed inside tests/ (e.g. locator helpers)
-            echo "No .spec.ts files changed — skipping test execution."
+            echo "No affected tests — skipping test execution."
             echo "To run tests manually, trigger this workflow via workflow_dispatch."
             SKIP_RUN=true
           fi
