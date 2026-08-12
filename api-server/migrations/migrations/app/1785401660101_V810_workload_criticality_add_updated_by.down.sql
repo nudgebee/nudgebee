@@ -1,6 +1,6 @@
 -- No-op by design.
 --
--- V789's up is conditional (ADD COLUMN IF NOT EXISTS), so on a healthy environment where the
+-- V810's up is conditional (ADD COLUMN IF NOT EXISTS), so on a healthy environment where the
 -- finalized V776 already created updated_by, the up does nothing — the correct inverse is also
 -- nothing. Dropping updated_by here would delete a column that V776 owns and the application
 -- requires, reintroducing on rollback the very drift this migration heals. Full teardown of the

@@ -1,4 +1,4 @@
--- One-shot purge of the pre-V805 AUTOPILOT_UPDATE audit backlog: delete rows whose prev/current
+-- One-shot purge of the pre-V815 AUTOPILOT_UPDATE audit backlog: delete rows whose prev/current
 -- state differ ONLY in the 4 scheduler bookkeeping fields (pure churn); genuine user edits are kept.
 DELETE FROM audit
 WHERE event_type = 'AUTOPILOT_UPDATE'
