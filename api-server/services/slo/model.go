@@ -93,6 +93,15 @@ type SLOConfigRequest struct {
 	Enabled   bool    `json:"enabled,omitempty"`
 }
 
+// SLODeleteRequest removes a workload's SLO configs. Name optionally narrows
+// the delete to a single SLI ("availability" | "latency"); empty removes both.
+type SLODeleteRequest struct {
+	AccountId    string `json:"cloud_account_id" validate:"required"`
+	WorkloadName string `json:"workload_name" validate:"required"`
+	Namespace    string `json:"namespace" validate:"required"`
+	Name         string `json:"name,omitempty"`
+}
+
 type SLOListRequest struct {
 	AccountId    string   `json:"cloud_account_id" validate:"required"`
 	WorkloadId   []string `json:"workload_id" validate:"required"`

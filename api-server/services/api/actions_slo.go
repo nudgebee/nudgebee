@@ -127,5 +127,51 @@ func handleSloAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace
 		}
 		c.JSON(200, map[string]any{"data": resp})
 		return
+	case "slo_config_delete":
+		var sloDeleteRequest slo.SLODeleteRequest
+		if sloRequest["request"] != nil {
+			sloRequest = sloRequest["request"].(map[string]interface{})
+		}
+		err := common.UnmarshalMapToStruct(sloRequest, &sloDeleteRequest)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		auditEvent := audit.Audit{
+			UserId:         ctx.GetSecurityContext().GetUserId(),
+			TenantId:       ctx.GetSecurityContext().GetTenantId(),
+			AccountId:      sloDeleteRequest.AccountId,
+			EventTime:      time.Now().UTC(),
+			EventCategory:  audit.EventCategoryRecommendation,
+			EventTarget:    fmt.Sprintf("%s/%s", sloDeleteRequest.WorkloadName, sloDeleteRequest.Namespace),
+			EventType:      audit.EventTypeSLODelete,
+			EventState:     nil,
+			EventPrevState: sloDeleteRequest,
+			EventActor:     audit.EventActorUiService,
+			EventAction:    audit.EventActionDelete,
+			EventStatus:    audit.EventStatusSuccess,
+			EventAttr:      map[string]any{},
+		}
+		defer func() {
+			err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}})
+			if err != nil {
+				ctx.GetLogger().Error("failed to create audit event", "error", err)
+			}
+		}()
+
+		resp, err := slo.DeleteSLOConfig(ctx, sloDeleteRequest)
+		if err != nil {
+			auditEvent.EventStatus = audit.EventStatusFailure
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, map[string]any{"data": resp})
+		return
 	}
 }

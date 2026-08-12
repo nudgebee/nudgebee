@@ -220,14 +220,81 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 		}
 		query := `INSERT INTO slo_config ("name", schedule, description, created_by, updated_by, filter_good_query, filter_bad_query, threshold, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, enabled, goal) 
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) 
-			ON CONFLICT (tenant_id, cloud_account_id, workload_name, workload_namespace, name) 
-			DO UPDATE SET threshold = EXCLUDED.threshold, goal = EXCLUDED.goal`
+			ON CONFLICT (tenant_id, cloud_account_id, workload_name, workload_namespace, name)
+			DO UPDATE SET threshold = EXCLUDED.threshold,
+				goal = EXCLUDED.goal,
+				enabled = EXCLUDED.enabled,
+				updated_by = EXCLUDED.updated_by,
+				updated_at = now()`
 		_, err = dbms.Db.Exec(query, config.Name, "", "", context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetUserId(), filterGoodQuery, filterBadQuery, config.Threshold, method, histogramQuery, sloConfigRequest.AccountId, context.GetSecurityContext().GetTenantId(), window, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, config.Enabled, config.Goal)
 		if err != nil {
 			return data, err
 		}
 		data["success"] = true
 	}
+	return data, nil
+}
+
+// DeleteSLOConfig removes a workload's SLO configs and the reports they own.
+//
+// There was no delete path at all: the only write action was an upsert, so a
+// config created by mistake stayed and kept evaluating forever.
+func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest) (map[string]bool, error) {
+	data := make(map[string]bool)
+	sc := context.GetSecurityContext()
+	if sc.GetUserId() == "" || sc.GetTenantId() == "" {
+		return data, fmt.Errorf("unauthorized")
+	}
+	if !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+		return data, fmt.Errorf("unauthorized")
+	}
+	if request.WorkloadName == "" || request.Namespace == "" {
+		return data, fmt.Errorf("workload_name and namespace are required")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return data, err
+	}
+
+	tx, err := dbms.BeginTx()
+	if err != nil {
+		return data, err
+	}
+	defer database.LogRollback(tx)
+
+	args := []any{sc.GetTenantId(), request.AccountId, request.WorkloadName, request.Namespace}
+	nameFilter := ""
+	if request.Name != "" {
+		nameFilter = ` AND lower("name") = lower($5)`
+		args = append(args, request.Name)
+	}
+
+	// slo_report.config_id is ON DELETE restrict, so the reports have to go
+	// first or the config delete is rejected.
+	selectIds := fmt.Sprintf(`SELECT id FROM slo_config
+		WHERE tenant_id=$1 AND cloud_account_id=$2 AND workload_name=$3 AND workload_namespace=$4%s`, nameFilter)
+	if _, err = tx.Exec(fmt.Sprintf(`DELETE FROM slo_report WHERE config_id IN (%s)`, selectIds), args...); err != nil {
+		return data, err
+	}
+	res, err := tx.Exec(fmt.Sprintf(`DELETE FROM slo_config
+		WHERE tenant_id=$1 AND cloud_account_id=$2 AND workload_name=$3 AND workload_namespace=$4%s`, nameFilter), args...)
+	if err != nil {
+		return data, err
+	}
+	if err = tx.Commit(); err != nil {
+		return data, err
+	}
+
+	deleted, err := res.RowsAffected()
+	if err != nil {
+		// The delete already committed; report success rather than failing on a
+		// driver that cannot count rows.
+		context.GetLogger().Warn("slo: could not read rows affected for delete", "error", err)
+		data["success"] = true
+		return data, nil
+	}
+	data["success"] = deleted > 0
 	return data, nil
 }
 

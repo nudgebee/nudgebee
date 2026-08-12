@@ -835,6 +835,15 @@ const UPPERCASE_ACRONYMS = new Set([
   'mcp',
 ]);
 
+/**
+ * Render an SLO goal (stored as a fraction) as a percentage string.
+ *
+ * `(goal * 100).toFixed()` rounded to a whole number, so 99.9 displayed as
+ * "100" — which made every sub-percent objective look like 100%. Rounding to
+ * 4 decimals also absorbs float noise (0.9995 * 100 = 99.95000000000001).
+ */
+export const formatObjectivePercent = (goal: number) => String(Number((goal * 100).toFixed(4)));
+
 export const snakeToTitleCase = (str: string) => {
   if (str === null || str === undefined) return '';
   return str

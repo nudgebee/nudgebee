@@ -8,16 +8,19 @@ import Chart from '@ui/Chart';
 import CustomTable from '@shared/tables/CustomTable';
 import { getYesterday, getLast30Days } from '@lib/datetime';
 import React, { useEffect, useMemo, useState } from 'react';
-import { convertDateStringForSLOReportChart, formatSeconds, snakeToTitleCase } from 'src/utils/common';
+import { convertDateStringForSLOReportChart, formatObjectivePercent, formatSeconds, snakeToTitleCase } from 'src/utils/common';
 import KubernetesTracesListing from './details/KubernetesTracesListing';
 import ThreeDotLoader from '@shared/ThreeDotLoader';
 import { Label } from '@ui/Label';
 import Text from '@shared/format/Text';
 import { Typography } from '@mui/material';
+import { Modal } from '@ui/Modal';
+import { DeleteIconRed as DeleteIcon } from '@assets';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import SLOConfigDialog from '@components/k8s/common/SLOConfigDialog';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
+import SafeIcon from '@shared/icons/SafeIcon';
 
 interface KubernetesSLOConfigsProps {
   accountId: string;
@@ -33,6 +36,8 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   const [selectedWorkload, setSelectedWorkload] = useState<string>('');
   const [openSLODialog, setOpenSLODialog] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [deleteTarget, setDeleteTarget] = useState<{ workloadName: string; workloadNamespace: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Cross-filter: namespace options narrow when a workload is selected
   const namespaceFilter = useMemo(() => {
@@ -46,6 +51,38 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
     return Array.from(new Set(base.map((d: any) => d.workload_name as string).filter(Boolean)));
   }, [allSLOData, selectedNamespace]);
 
+  const handleDelete = (workloadName: string, workloadNamespace: string) => {
+    if (!hasWriteAccess(accountId)) {
+      snackbar.error('You do not have write access to delete SLO configs');
+      return;
+    }
+    setDeleteTarget({ workloadName, workloadNamespace });
+  };
+
+  const confirmDelete = () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    apiKubernetes1
+      .deleteSLOConfig({
+        cloud_account_id: accountId,
+        workload_name: deleteTarget.workloadName,
+        namespace: deleteTarget.workloadNamespace,
+      })
+      .then((res: any) => {
+        if (res?.data?.data?.slo_config_delete?.data?.success) {
+          snackbar.success('SLO Config deleted');
+          setRefreshKey((prev) => prev + 1);
+        } else {
+          snackbar.error('Failed to delete SLO Config');
+        }
+      })
+      .catch(() => snackbar.error('Failed to delete SLO Config'))
+      .finally(() => {
+        setDeleting(false);
+        setDeleteTarget(null);
+      });
+  };
+
   const header = [
     { name: 'Workload Name', width: '20%' },
     { name: 'Window', width: '12%' },
@@ -54,6 +91,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
     { name: 'Latency', width: '12%' },
     { name: 'Availability', width: '12%' },
     { name: 'Observation (30D)', width: '30%' },
+    { name: '', width: '5%' },
   ];
 
   // Fetch all SLO configs unfiltered — drives the cross-filtered dropdown options
@@ -119,11 +157,11 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
             if (m.config && m.config.length > 0) {
               availabilityConfig = m.config.filter((n: any) => n.name == 'availability');
               if (availabilityConfig && availabilityConfig.length == 1) {
-                availability = (availabilityConfig[0].goal * 100).toFixed();
+                availability = formatObjectivePercent(availabilityConfig[0].goal);
               }
               latencyConfig = m.config.filter((n: any) => n.name == 'latency');
               if (latencyConfig && latencyConfig.length == 1) {
-                objective = (latencyConfig[0].goal * 100).toFixed();
+                objective = formatObjectivePercent(latencyConfig[0].goal);
                 latency = latencyConfig[0].threshold;
               }
             }
@@ -160,6 +198,19 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
               },
               {
                 component: <ThreeDotLoader />,
+              },
+              {
+                component: hasWriteAccess(accountId) ? (
+                  <Button
+                    tone='secondary'
+                    composition='icon-only'
+                    aria-label={`Delete SLO config for ${m.workload_name}`}
+                    disabled={deleting}
+                    id={`slo-delete-${m.workload_namespace}-${m.workload_name}`}
+                    onClick={() => handleDelete(m.workload_name, m.workload_namespace)}
+                    icon={<SafeIcon src={DeleteIcon} alt='delete' width={20} height={20} />}
+                  />
+                ) : null,
               },
             ];
           });
@@ -364,6 +415,20 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
         accountId={accountId}
         onSuccess={() => setRefreshKey((prev) => prev + 1)}
       />
+      <Modal
+        open={deleteTarget !== null}
+        handleClose={() => setDeleteTarget(null)}
+        title='Delete SLO Config'
+        width='sm'
+        loader={deleting}
+        confirmText='Delete'
+        onConfirm={confirmDelete}
+        confirmDisabled={deleting}
+      >
+        <Typography>
+          {`Delete the availability and latency SLOs for ${deleteTarget?.workloadName} in ${deleteTarget?.workloadNamespace}? Their historical reports will be removed too.`}
+        </Typography>
+      </Modal>
     </>
   );
 };

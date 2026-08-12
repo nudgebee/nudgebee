@@ -4441,6 +4441,19 @@ actions:
       - role: tenant_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: slo_config_delete
+    comment: Delete a workload's SLO configuration and its reports
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
   - name: slo_config_update
     comment: Update an SLO configuration
     definition:
@@ -6979,6 +6992,7 @@ custom_types:
     - name: SLOConfigCreateRequest
     - name: SLOUpdateRequest
     - name: SLOConfigUpdateRequest
+    - name: SLODeleteRequest
     - name: AWSCloudFormationInput
     - name: CloudMetricGroupingsWhereRequest
     - name: autopilot_google_chat_notification_config
@@ -7429,6 +7443,8 @@ custom_types:
     - name: SLOResponse
     - name: SLOConfigListResponse
     - name: SLOUpdateConfigResponse
+    - name: SLODeleteResponse
+    - name: SLODeleteConfigResponse
     - name: AWSCloudFormationOutput
     - name: CloudMetricGroupingsResponse
     - name: CloudMetricGroupingsRowResponse

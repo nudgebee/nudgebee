@@ -200,6 +200,16 @@ mutation SLOUpdate($data: SLOUpdateRequest!) {
 }
 `;
 
+export const SLO_DELETE = `
+mutation SLODelete($data: SLODeleteRequest!) {
+  slo_config_delete(request: $data) {
+    data {
+      success
+    }
+  }
+}
+`;
+
 export const SLO_REPORT = `
 query SLOReport {
   slo_report_v2(where: __WHERE__, order_by: [{column: "updated_at", order: desc}]) {
@@ -479,6 +489,12 @@ const apiKubernetes1 = {
     } catch (error) {
       return error;
     }
+  },
+  async deleteSLOConfig(data: any) {
+    const response = await queryGraphQL(SLO_DELETE, 'SLODelete', {
+      data: data,
+    });
+    return response;
   },
   async getEventRules(query: any, limit: number, offset: number) {
     if (query.accountId === 'demo') {

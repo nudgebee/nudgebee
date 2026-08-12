@@ -1826,6 +1826,12 @@ type Mutation {
   ): SLOUpdateConfigResponse
 }
 
+type Mutation {
+  slo_config_delete(
+    request: SLODeleteRequest!
+  ): SLODeleteConfigResponse
+}
+
 type Query {
   slo_config_v2(
     where: SloConfigWhereRequest
@@ -3622,6 +3628,14 @@ input SLOConfigUpdateRequest {
   threshold: Float
   goal: Float
   enabled: Boolean!
+}
+
+input SLODeleteRequest {
+  cloud_account_id: String!
+  workload_name: String!
+  namespace: String!
+  # Optional: narrows the delete to one SLI ("availability" | "latency").
+  name: String
 }
 
 input AWSCloudFormationInput {
@@ -7027,6 +7041,14 @@ type SLOConfigListResponse {
 
 type SLOUpdateConfigResponse {
   data: SLOUpdateResponse!
+}
+
+type SLODeleteResponse {
+  success: Boolean!
+}
+
+type SLODeleteConfigResponse {
+  data: SLODeleteResponse!
 }
 
 type AWSCloudFormationOutput {

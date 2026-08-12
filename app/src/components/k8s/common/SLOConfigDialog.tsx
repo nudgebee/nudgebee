@@ -9,6 +9,7 @@ import apiKubernetes1 from '@api1/kubernetes1';
 import k8sApi from '@api1/kubernetes';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
+import { formatObjectivePercent } from 'src/utils/common';
 
 interface SLOConfigDialogProps {
   open: boolean;
@@ -55,6 +56,8 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
   const [sloConfig, setSloConfig] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
+  // Raw text per SLI while the objective field is being edited.
+  const [goalInputs, setGoalInputs] = useState<Record<string, string>>({});
 
   // Workload selection state (only used when no workload prop is provided)
   const [availableNamespaces, setAvailableNamespaces] = useState<string[]>([]);
@@ -71,6 +74,7 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
     if (!open) {
       setSloConfig([]);
       setIsEditMode(false);
+      setGoalInputs({});
       setSelectedNamespace('');
       setSelectedWorkload(null);
       setAvailableWorkloads([]);
@@ -138,13 +142,20 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
   }, [selectedWorkload]);
 
   const handleInput = (event: any, inspection: string, type: string) => {
-    let inputValue = event.target.value;
-    if (!isNaN(inputValue) && inputValue >= 0 && type === 'goal') {
-      inputValue = parseInt(inputValue, 10);
-      inputValue = Math.min(Math.max(1, inputValue), 100);
-    } else {
-      inputValue = parseInt(inputValue, 10);
+    const raw = String(event.target.value ?? '');
+
+    if (type === 'goal') {
+      // Keep the raw text so a decimal objective can actually be typed. The
+      // old handler ran parseInt on every keystroke, so "99." collapsed back
+      // to "99" and 99.9 / 99.95 / 99.99 were impossible to enter -- the
+      // objectives most SLOs actually use.
+      setGoalInputs((prev) => ({ ...prev, [inspection]: raw }));
     }
+
+    const parsed = type === 'goal' ? parseFloat(raw) : parseInt(raw, 10);
+    // Objectives are a percentage in (0, 100]; goal is stored as a fraction.
+    const value = type === 'goal' ? (Number.isFinite(parsed) && parsed > 0 && parsed <= 100 ? parsed / 100 : null) : parsed;
+
     const existingConfigIndex = sloConfig.findIndex((config: any) => config.name === inspection);
     if (existingConfigIndex === -1) {
       setSloConfig((prev) => [
@@ -152,17 +163,17 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
         {
           enabled: true,
           name: inspection,
-          goal: type === 'goal' ? parseFloat(inputValue) / 100 : null,
-          threshold: type === 'threshold' ? parseFloat(inputValue) : null,
+          goal: type === 'goal' ? value : null,
+          threshold: type === 'threshold' ? value : null,
         },
       ]);
     } else {
       const updated = [...sloConfig];
       const updatedConfig = { ...updated[existingConfigIndex] };
       if (type === 'goal') {
-        updatedConfig.goal = parseFloat(inputValue) / 100;
+        updatedConfig.goal = value;
       } else if (type === 'threshold') {
-        updatedConfig.threshold = parseFloat(inputValue);
+        updatedConfig.threshold = value;
       }
       updated[existingConfigIndex] = updatedConfig;
       setSloConfig(updated);
@@ -170,12 +181,17 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
   };
 
   const showConfiguredValue = (inspection: string, type: string) => {
+    // While the field is being edited, show exactly what was typed — rendering
+    // the parsed value back would fight the user mid-keystroke on "99.".
+    if (type === 'goal' && goalInputs[inspection] !== undefined) {
+      return goalInputs[inspection];
+    }
     if (sloConfig && sloConfig.length > 0) {
       const filterInspection = sloConfig.filter((n: any) => n.name === inspection);
       if (filterInspection && filterInspection.length === 1) {
         if (type === 'goal') {
           if (!isNaN(filterInspection[0].goal)) {
-            return (filterInspection[0].goal * 100).toFixed();
+            return formatObjectivePercent(filterInspection[0].goal);
           }
         } else if (type === 'threshold') {
           return filterInspection[0].threshold != null ? String(filterInspection[0].threshold) : undefined;
@@ -311,7 +327,8 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
                     <Input
                       size='sm'
                       id='slo-availability-objective'
-                      type='number'
+                      type='text'
+                      inputMode='decimal'
                       suffix='%'
                       // handleInput expects event-shape; synthesize one.
                       onChange={(value) => handleInput({ target: { value } }, 'availability', 'goal')}
@@ -343,7 +360,8 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
                     <Input
                       size='sm'
                       id='slo-latency-objective'
-                      type='number'
+                      type='text'
+                      inputMode='decimal'
                       suffix='%'
                       onChange={(value) => handleInput({ target: { value } }, 'latency', 'goal')}
                       value={String(showConfiguredValue('latency', 'goal') ?? '')}
