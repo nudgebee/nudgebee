@@ -49,6 +49,70 @@ interface TimeRange {
 
 const k8sLogs = 'k8sLogs';
 
+// Builder chips carry either a UI operator token ('=', 'CONTAINS', 'is_one_of') or an
+// already-normalized backend token ('_eq'), depending on whether the chip came from
+// LogQueryBuilderAutocomplete (which normalizes via operatorCatalog) or from a raw
+// selection. Unmapped tokens fall through unchanged so normalized ones aren't collapsed.
+const BUILDER_OPERATOR_MAP: Record<string, string> = {
+  '=': '_eq',
+  '!=': '_neq',
+  '<': '_lt',
+  '<=': '_lte',
+  '>': '_gt',
+  '>=': '_gte',
+  CONTAINS: '_contains',
+  'NOT CONTAINS': '_nlike',
+  LIKE: '_like',
+  'NOT LIKE': '_nlike',
+  IN: '_in',
+  'NOT IN': '_not_in',
+  REGEXP: '_regex',
+  'NOT REGEXP': '_nregex',
+  EXISTS: '_is_null',
+  is_one_of: '_in',
+  is_not_one_of: '_not_in',
+};
+
+/**
+ * Converts Builder-mode chips into the `query_request.where._and` clause array the
+ * backend log sources expect.
+ *
+ * The chips in `logQueryItems` are the source of truth for Builder mode — `logQuery`
+ * holds the provider-native query string (LogQL, SQL, …) and is only meaningful in Code
+ * mode, so validating Builder submissions against it reports "no labels selected" for a
+ * fully-populated builder.
+ */
+const buildStructuredQueryFromItems = (items: any[]): any[] =>
+  (items || []).map((item) => {
+    let backendOp = BUILDER_OPERATOR_MAP[item.operator] || item.operator;
+    let value: any = item.value;
+
+    // exists/!exists carry their state in the value, not the operator.
+    if (item.operator === 'exists') {
+      backendOp = '_is_null';
+      value = false;
+    } else if (item.operator === '!exists') {
+      backendOp = '_is_null';
+      value = true;
+    }
+
+    // Set membership arrives as a comma-separated string from the chip input.
+    if (item.operator === 'is_one_of' || item.operator === 'is_not_one_of') {
+      value = String(item.value)
+        .split(',')
+        .map((v: string) => v.trim())
+        .filter((v: string) => v !== '');
+    }
+
+    return {
+      _binary: {
+        [item.label]: {
+          [backendOp]: value,
+        },
+      },
+    };
+  });
+
 interface KubernetesLogProps {
   accountId: string;
   showTrend: boolean;
@@ -482,87 +546,28 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
             }
           }
 
-          const mapPinotOperatorToBackend = (uiOperator: string): string => {
-            const operatorMap: Record<string, string> = {
-              '=': '_eq',
-              '!=': '_neq',
-              '<': '_lt',
-              '<=': '_lte',
-              '>': '_gt',
-              '>=': '_gte',
-              CONTAINS: '_contains',
-              'NOT CONTAINS': '_nlike',
-              LIKE: '_like',
-              'NOT LIKE': '_nlike',
-              IN: '_in',
-              'NOT IN': '_not_in',
-              REGEXP: '_regex',
-              'NOT REGEXP': '_nregex',
-              EXISTS: '_is_null',
-              is_one_of: '_in',
-              is_not_one_of: '_not_in',
-            };
-            return operatorMap[uiOperator] || uiOperator;
-          };
-
-          const structuredQuery: any[] = [];
-          logQueryItems.forEach((item) => {
-            let backendOp = mapPinotOperatorToBackend(item.operator);
-            let value: any = item.value;
-
-            if (item.operator === 'exists') {
-              backendOp = '_is_null';
-              value = false;
-            } else if (item.operator === '!exists') {
-              backendOp = '_is_null';
-              value = true;
-            }
-
-            if (item.operator === 'is_one_of' || item.operator === 'is_not_one_of') {
-              value = String(item.value)
-                .split(',')
-                .map((v: string) => v.trim())
-                .filter((v: string) => v !== '');
-            }
-
-            structuredQuery.push({
-              _binary: {
-                [item.label]: {
-                  [backendOp]: value,
-                },
-              },
-            });
-          });
-
           delete requestBody.query;
           requestBody.query_request = {
-            where: { _and: structuredQuery },
+            where: { _and: buildStructuredQueryFromItems(logQueryItems) },
           };
           requestBody.query = '';
         } else if (logProvider !== 'ES' && qLEditor === 'build') {
-          const trimmedQuery = typeof effectiveQuery === 'string' ? effectiveQuery.trim() : '';
-          if (!trimmedQuery?.startsWith('[')) {
-            // Empty or not a valid JSON array (e.g. stale query from a previous provider switch)
+          // Builder mode for every remaining provider (loki, signoz, openobserve, …).
+          // The selected chips live in logQueryItems — logQuery holds the provider-native
+          // query string and is only meaningful in Code mode.
+          if (!logQueryItems || logQueryItems.length === 0) {
             setLoading(false);
             if (fromOnSubmit) {
               snackbar.warning('Please select at least one label filter');
             }
             return;
           }
-          const parsedWhere = safeJSONParse(trimmedQuery);
-          if (parsedWhere && Array.isArray(parsedWhere) && parsedWhere.length > 0) {
-            delete requestBody.query;
-            requestBody.query_request = {
-              where: { _and: parsedWhere },
-            };
-            requestBody.query = '';
-          } else {
-            setLoading(false);
-            if (fromOnSubmit) {
-              snackbar.warning('Please select at least one label filter');
-            }
-            return;
-          }
+
+          delete requestBody.query;
+          requestBody.query_request = {
+            where: { _and: buildStructuredQueryFromItems(logQueryItems) },
+          };
+          requestBody.query = '';
         } else if (logProvider == 'ES' && qLEditor == 'code') {
           requestBody['request'] = { query_type: 'dsl', ...(esIndex ? { index: esIndex } : {}) };
         } else if (logProvider == 'ES' && qLEditor == 'build') {
