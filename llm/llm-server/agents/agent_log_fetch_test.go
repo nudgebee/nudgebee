@@ -628,45 +628,76 @@ func TestLooksLikeFetchError(t *testing.T) {
 }
 
 // TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent guards the fix that
-// stopped inlining the full logs alongside the file_ref. When logs are saved to
-// a workspace file, only a head preview is inlined (the model greps the file for
-// the rest); when there is no file_ref, the full logs must stay inline.
+// stopped inlining the full logs alongside the file_ref, plus the two follow-ups
+// added after three sessions showed the agent spending a turn on `head -n 20
+// <file_ref>` before it could filter:
+//
+//   - the preview is now of the SAME representation written to the file
+//     (flattenLogsToJSONL), so a filter can be written straight from it;
+//   - `complete` states outright whether file_ref holds anything extra, rather
+//     than leaving the model to infer it from an absent truncation marker.
 func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	bigLogs := strings.Repeat("x", logInlinePreviewBytes*3)
 
-	decode := func(resp core.NBAgentResponse) map[string]string {
+	decode := func(resp core.NBAgentResponse) map[string]any {
 		assert.Len(t, resp.Response, 1)
-		var env map[string]string
+		var env map[string]any
 		assert.NoError(t, json.Unmarshal([]byte(resp.Response[0]), &env))
 		return env
 	}
+	str := func(env map[string]any, k string) string {
+		v, _ := env[k].(string)
+		return v
+	}
 
 	t.Run("file_ref present: logs previewed, not inlined in full", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "logs_loki_1.txt", "", nil))
-		assert.Equal(t, "logs_loki_1.txt", env["file_ref"])
-		assert.Less(t, len(env["logs"]), len(bigLogs),
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, flattenLogsToJSONL(bigLogs), "logs_loki_1.txt", "", nil))
+		assert.Equal(t, "logs_loki_1.txt", str(env, "file_ref"))
+		assert.Less(t, len(str(env, "logs")), len(bigLogs),
 			"full logs must not be inlined when a file_ref exists")
-		assert.Contains(t, env["logs"], "file_ref")
-		assert.Contains(t, env["logs"], "shell_execute")
+		assert.Contains(t, str(env, "logs"), "file_ref")
+		assert.Contains(t, str(env, "logs"), "shell_execute")
+		assert.Equal(t, false, env["logs_complete"],
+			"a truncated payload must report logs_complete=false so the agent knows file_ref has more")
 	})
 
 	t.Run("no file_ref: full logs inlined", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", nil))
-		assert.Equal(t, "", env["file_ref"])
-		assert.Equal(t, bigLogs, env["logs"],
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", "", nil))
+		assert.Equal(t, "", str(env, "file_ref"))
+		assert.Equal(t, bigLogs, str(env, "logs"),
 			"with no file_ref the full logs must remain available inline")
+		assert.Equal(t, true, env["logs_complete"])
 	})
 
-	t.Run("file_ref present but logs already small: inlined unchanged", func(t *testing.T) {
+	t.Run("file_ref present but logs already small: inlined unchanged and complete", func(t *testing.T) {
 		const small = "tiny log line"
-		env := decode(makeFetchResponse("fetch_logs", "q", small, "logs_loki_2.txt", "", nil))
-		assert.Equal(t, small, env["logs"])
+		env := decode(makeFetchResponse("fetch_logs", "q", small, flattenLogsToJSONL(small), "logs_loki_2.txt", "", nil))
+		assert.True(t, strings.HasPrefix(str(env, "logs"), small),
+			"the log content itself must be inlined unchanged")
+		assert.Contains(t, str(env, "logs"), "complete —",
+			"a complete payload is marked in-band, mirroring the truncation marker")
+		assert.Equal(t, true, env["logs_complete"],
+			"everything is inline, so shelling out to read file_ref would be pure cost")
+	})
+
+	t.Run("preview format matches the file format, not the raw backend payload", func(t *testing.T) {
+		// The saved file is flattenLogsToJSONL(logs): "<timestamp>\t<message>"
+		// per entry. Previewing the raw Loki envelope instead made it impossible
+		// to write a working grep from the preview, which is what forced the
+		// extra `head` turn. Both must now be byte-identical for a payload that
+		// fits inline.
+		raw := `{"logs":[{"timestamp":"2026-08-12T10:00:00Z","message":"{\"level\":\"ERROR\",\"msg\":\"boom\"}"}]}`
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToJSONL(raw), "logs_loki_4.txt", "", nil))
+		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToJSONL(raw)),
+			"the inline preview must be the same representation that was written to file_ref")
+		assert.NotContains(t, str(env, "logs"), `{"logs":[`,
+			"the raw backend envelope must not leak into the preview")
 	})
 
 	t.Run("bundle_signal present: threaded through envelope verbatim", func(t *testing.T) {
 		const sig = "=== CRASH BUNDLE ===\n[error] 3 hits\n[oom] 1 hit"
-		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", "logs_loki_3.txt", sig, nil))
-		assert.Equal(t, sig, env["bundle_signal"],
+		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", flattenLogsToJSONL("tiny"), "logs_loki_3.txt", sig, nil))
+		assert.Equal(t, sig, str(env, "bundle_signal"),
 			"bundle_signal must appear verbatim in the envelope so the LLM can read it without a follow-up tool call")
 	})
 }

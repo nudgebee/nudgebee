@@ -129,12 +129,12 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 		}
 		return errorResponse(a.GetName(), fmt.Errorf("kubectl fetch failed: %s", reason)), nil
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "kubectl", logs)
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "kubectl", logs)
 	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}
-	return makeFetchResponse(a.GetName(), cmd, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+	return makeFetchResponse(a.GetName(), cmd, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
 // isNotFoundReason excludes forbidden/unauthorized/connection errors, which a
@@ -233,12 +233,12 @@ func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext
 	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
 	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}
-	return makeFetchResponse(a.GetName(), jsonQuery, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+	return makeFetchResponse(a.GetName(), jsonQuery, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
 func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
@@ -254,12 +254,12 @@ func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.Request
 	if matched, reason := looksLikeFetchError("datadog", logs); matched {
 		return errorResponse(a.GetName(), fmt.Errorf("datadog fetch failed: %s", reason)), nil
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "datadog", logs)
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "datadog", logs)
 	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}
-	return makeFetchResponse(a.GetName(), ddQuery, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+	return makeFetchResponse(a.GetName(), ddQuery, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
 // logLabelsCacheNS caches discovered backend labels (and, for ES, the account's
@@ -666,7 +666,7 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 	return resp.Data, nil
 }
 
-// makeFetchResponse returns {query, logs, file_ref, bundle_signal} so the
+// makeFetchResponse returns {query, logs, file_ref, provider, complete, bundle_signal} so the
 // parent's scratchpad shows which query produced the data, where the raw
 // logs were saved, and — when the query wording indicates an error-content
 // investigation and the bundle flag is on — a pre-computed category-level
@@ -674,20 +674,58 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 // auto-bundle didn't fire (non-error query, flag off, empty file, or bundle
 // tool error) and the caller should ignore the field. See
 // runAutoDiagnosticBundle for the gating logic.
-func makeFetchResponse(agentName, query, logs, fileRef, bundleSignal string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
-	inlineLogs := logs
-	if fileRef != "" && len(logs) > logInlinePreviewBytes {
-		// ToValidUTF8 drops a partial trailing rune left by the byte slice.
-		inlineLogs = strings.ToValidUTF8(logs[:logInlinePreviewBytes], "") + fmt.Sprintf(
-			"\n\n[... %d more bytes truncated — full logs saved to file_ref %q; use shell_execute to grep it ...]",
-			len(logs)-logInlinePreviewBytes, fileRef)
+func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
+	// Preview the SAME representation that was written to file_ref, not the raw
+	// backend payload. saveLogsToWorkspace writes flattenLogsToJSONL(logs) —
+	// "<timestamp>\t<message>" per line — while this used to inline the raw
+	// Loki/ES envelope. Showing one format and handing over a file in another
+	// makes it impossible to write a working grep from the preview alone, so the
+	// model had to spend a turn on `head -n 20 <file_ref>` first to discover the
+	// real layout before it could filter. Observed in three separate sessions;
+	// no prompt wording fixes it, because the instruction ("grep <file_ref>")
+	// referred to an artifact the preview didn't describe.
+	// Reuse the body saveLogsToWorkspace already flattened rather than redoing
+	// it — this used to parse a multi-MB payload a second time per fetch.
+	// Empty when nothing was saved (no logs, or save failed), in which case
+	// there is no file to mirror and the raw payload is the only thing to show.
+	previewSource := flattened
+	if previewSource == "" {
+		previewSource = logs
 	}
-	envelope := map[string]string{
+	inlineLogs := previewSource
+	logsComplete := true
+	if fileRef != "" && len(previewSource) > logInlinePreviewBytes {
+		logsComplete = false
+		// ToValidUTF8 drops a partial trailing rune left by the byte slice.
+		inlineLogs = strings.ToValidUTF8(previewSource[:logInlinePreviewBytes], "") + fmt.Sprintf(
+			"\n\n[... %d more bytes truncated — full logs saved to file_ref %q, in EXACTLY this same line format; use shell_execute to filter it ...]",
+			len(previewSource)-logInlinePreviewBytes, fileRef)
+	} else if fileRef != "" && strings.TrimSpace(inlineLogs) != "" {
+		// Only when a file actually exists — with no file_ref there is nothing to
+		// be tempted to read, and "file_ref holds nothing further" would name an
+		// artifact that was never produced.
+		// Mirror of the truncation marker above, on the same in-band channel.
+		// A bare JSON field is easy to skim past; the truncated case proves the
+		// model reads and acts on a bracketed marker at the end of `logs`, so
+		// the complete case states its conclusion the same way rather than
+		// leaving it to be inferred from a flag.
+		inlineLogs += "\n\n[... complete — all matching lines are shown above; file_ref holds nothing further, so no shell_execute is needed ...]"
+	}
+	envelope := map[string]any{
 		"query":         query,
 		"logs":          inlineLogs,
 		"file_ref":      fileRef,
 		"provider":      providerFromLogs(logs),
 		"bundle_signal": bundleSignal,
+		// logs_complete=true means every matching line is already inline and
+		// file_ref holds nothing extra — shelling out to read it is pure cost.
+		// Signalled explicitly because the previous "absence of a truncation
+		// marker" was too weak a cue: measured over 14 days, 57.7% of fetches
+		// returned the logs complete inline, yet the agent still spent turns
+		// grepping them. Named with its subject rather than a bare `complete`,
+		// which in an envelope of nouns reads as "the fetch completed" (status)
+		// rather than "the log content is entire".
+		"logs_complete": logsComplete,
 	}
 	body, err := common.MarshalJson(envelope)
 	if err != nil {
@@ -725,9 +763,9 @@ func makeFetchResponse(agentName, query, logs, fileRef, bundleSignal string, ref
 // Anything that doesn't parse as the expected JSON envelope (Datadog
 // alternate shapes, "No logs found" placeholders, kubectl text) is also
 // passed through unchanged.
-func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId, providerLabel, logs string) (string, []toolcore.NBToolResponseReference) {
+func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId, providerLabel, logs string) (string, string, []toolcore.NBToolResponseReference) {
 	if strings.TrimSpace(logs) == "" {
-		return "", nil
+		return "", "", nil
 	}
 	label := strings.ToLower(strings.TrimSpace(providerLabel))
 	if label == "" {
@@ -738,10 +776,10 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 	wm := workspace.NewWorkspaceManager()
 	if err := wm.SaveFile(ctx, accountId, conversationId, filename, body); err != nil {
 		ctx.GetLogger().Warn("fetch_logs: failed to save logs to workspace", "error", err, "file", filename)
-		return "", nil
+		return "", body, nil
 	}
 	ctx.GetLogger().Info("fetch_logs: logs saved", "file", filename, "bytes", len(body), "raw_bytes", len(logs), "format", logsLayout(logs, body))
-	return filename, []toolcore.NBToolResponseReference{
+	return filename, body, []toolcore.NBToolResponseReference{
 		{
 			Text:        filename,
 			Url:         filename,
@@ -762,7 +800,17 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 //     found" placeholder, Datadog alternate shapes)
 //   - the envelope has zero entries
 func flattenLogsToJSONL(raw string) string {
-	if strings.TrimSpace(raw) == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return raw
+	}
+	// Fast path: the expected envelope is `{"logs":[...]}`, so anything not
+	// starting with `{` cannot be it — skip unmarshalling a potentially
+	// multi-MB string only to fail. Note this does NOT cover the kubectl
+	// backend: kubectl_execute wraps its output as `{"stdout":"..."}`, which
+	// does start with `{` and still parses (into zero entries) before falling
+	// through below. Suggested in review by gemini-code-assist on PR #36182.
+	if !strings.HasPrefix(trimmed, "{") {
 		return raw
 	}
 	var doc struct {

@@ -426,12 +426,12 @@ func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.Req
 	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
 	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, jsonQuery, err
 	}
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
 }
 
 // executedLogQuery pulls the provider query the backend actually ran out of the

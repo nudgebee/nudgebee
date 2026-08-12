@@ -255,6 +255,7 @@ func sharedHeaderAndWorkflow() []string {
 		"     Skip resource_search_execute ONLY when the user gave an obvious pod name — already has the hash suffix described above, OR follows a StatefulSet ordinal pattern (`<sts-name>-<integer>`, e.g. `kafka-0`, `mysql-0`).",
 		"     Call it with the workload name and namespace directly: `{\"resource_name\": \"<name>\", \"namespace\": \"<ns>\", \"search_type\": \"suggestions\"}`. `suggestions` is the right mode for this workflow — it resolves a workload to its live pods (and their owner references) in one lookup — and it is also what the tool falls back to when `search_type` is absent, so a call that omits it still behaves correctly. Pass it explicitly anyway. Omit `namespace` only when the user genuinely didn't give one.",
 		"  2. **Fetch the logs** by calling `fetch_logs` with a natural-language question that includes the resolved resource and time window. `fetch_logs` translates the question into the right backend query (Loki, Datadog, Elasticsearch, or kubectl) and runs it. The response is a JSON envelope with the rendered query and the raw logs.",
+		"  2b. **Read the marker at the end of `logs` before you shell out.** The inline logs end in one of two bracketed markers, and the `logs_complete` field says the same thing machine-readably. `[... complete — all matching lines are shown above ...]` (`logs_complete: true`) means `file_ref` holds nothing you have not been given: answer from the inline logs, and do NOT call shell_execute. `[... N more bytes truncated ...]` (`logs_complete: false`) means `file_ref` has more — and the inline portion is the FIRST lines of that same file in EXACTLY the same line format, so write your filter directly from it. You never need a separate `head` call to discover the layout.",
 		"  2a. **Recovery from name resolution failure.** If `fetch_logs` returns an error containing \"pod not found\", \"(NotFound)\", \"no resources found\", or similar — the resource name didn't resolve. You MUST:",
 		"     - Call `resource_search_execute` with the original name and namespace: `{\"resource_name\": \"<name>\", \"namespace\": \"<ns>\", \"search_type\": \"suggestions\"}`.",
 		"     - Take the resolved pod name (with hash suffix) from the search result.",
@@ -338,12 +339,16 @@ func investigationInstructions() []string {
 		"  - Network:             `connection.refused|ECONNREFUSED|DNS|resolve|unreachable|reset`",
 		"  - Database:            `deadlock|lock.timeout|too.many.connections|query.timeout|replication`",
 
-		"**Useful shell_execute shapes (FILE = file_ref returned by fetch_logs):**",
-		"  - Shape & frequency:  `wc -l FILE; grep -c \"ERROR\\|WARN\\|FATAL\" FILE`",
-		"  - Context ±5 lines:   `grep -n -B5 -A5 \"SPECIFIC\" FILE`",
-		"  - Frequency table:    `grep -oE \"PATTERN\" FILE | sort | uniq -c | sort -rn | head -20`",
-		"  - Time bookends:      `head -5 FILE; tail -5 FILE`",
-		"  - Window slice:       `awk '/HH:MM:SS/,/HH:MM:SS/' FILE` to slice a time range",
+		"**Composing shell_execute commands (FILE = file_ref returned by fetch_logs).** You have a full shell — `grep`, `awk`, `sed`, `sort`, `uniq`, `wc`, `head`, `tail`, pipes and `;` are all available. Every distinct question you have about the file can be answered in ONE call: add another clause, not another action. Each separate action costs a planning turn (~5s) to run work the shell does in milliseconds, so a command that answers four questions is four times cheaper than four commands.",
+		"  - Several probes at once, labelled so you can tell the output apart:",
+		"      `echo '== COUNTS =='; wc -l FILE; grep -cE \"ERROR|FATAL\" FILE; echo '== FIRST/LAST =='; head -3 FILE; tail -3 FILE; echo '== ERRORS =='; grep -nE \"ERROR|FATAL|PANIC\" FILE | head -20`",
+		"  - One pass, several categories, using awk instead of repeated greps:",
+		"      `awk '/ERROR|FATAL/{e++; if(!f)f=$0; l=$0} /reload|deploy|config.changed/{t[++n]=$0} END{print \"errors=\"e; print \"first=\"f; print \"last=\"l; for(i=1;i<=n&&i<=10;i++) print \"trigger: \"t[i]}' FILE`",
+		"  - Frequency of distinct signatures, timestamps and ids normalised away:",
+		"      `grep -iE \"error|fail|exception\" FILE | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]+Z?//g; s/[0-9a-f-]{8,}//g; s/\\b[0-9]+\\b/N/g' | sort | uniq -c | sort -rn | head -20`",
+		"  - Context around a specific line, plus the window it sits in:",
+		"      `grep -n -B5 -A5 \"SPECIFIC\" FILE; echo '== WINDOW =='; awk '/HH:MM:SS/,/HH:MM:SS/' FILE | head -40`",
+		"  These are shapes to adapt, not commands to copy — combine whichever clauses answer the question you actually have.",
 	)
 	return out
 }
