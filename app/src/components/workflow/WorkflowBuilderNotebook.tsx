@@ -1130,8 +1130,11 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       newEmptyWorkflowInitializedRef.current = true;
     } else if (workflowId && accountId) {
       // Skip redundant reload for existing workflows that are already initialized
-      // (taskDefinitions.length change triggers this effect but existing workflows don't need reloading)
-      if (isInitialized && workflowData?.id) {
+      // (taskDefinitions.length change triggers this effect but existing workflows don't need reloading).
+      // Compare against the id in the URL: routing from one automation to another keeps this
+      // component mounted, so an id-blind guard leaves the previously loaded workflow on screen
+      // under the new id (hit via the "View caller" link on a called run).
+      if (isInitialized && workflowData?.id === workflowId) {
         return;
       }
 

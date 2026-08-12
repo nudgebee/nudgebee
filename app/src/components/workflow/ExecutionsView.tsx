@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { Alert, Box, Typography } from '@mui/material';
 import { Select } from '@ui/Select';
@@ -1340,9 +1341,26 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                     <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', fontWeight: 'var(--ds-font-weight-medium)' }}>
                       Trigger
                     </Typography>
-                    <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[700] }}>
-                      {selectedExecution.trigger_type || 'Manual'}
-                    </Typography>
+                    {/* A run started by another automation's Call Workflow step shows the
+                        link back instead of the raw "called" value: the link already says
+                        the run was called, and stacking both wraps this narrow field onto
+                        two lines. Without it the run is orphaned — nothing on this page
+                        says which automation asked for it. */}
+                    {selectedExecution.trigger_type === 'called' && selectedExecution.parent_workflow_id ? (
+                      <Link
+                        href={`/automation/${selectedExecution.parent_workflow_id}?accountId=${accountId}#executions`}
+                        target='_blank'
+                        rel='noopener noreferrer'
+                        data-testid='view-caller-link'
+                        style={{ fontSize: 'var(--ds-text-body)', color: ds.blue[600], whiteSpace: 'nowrap' }}
+                      >
+                        View caller
+                      </Link>
+                    ) : (
+                      <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[700] }}>
+                        {selectedExecution.trigger_type || 'Manual'}
+                      </Typography>
+                    )}
                   </Box>
                   {executionData?.version_number != null && (
                     <Box>

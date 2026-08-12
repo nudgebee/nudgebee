@@ -274,6 +274,10 @@ const (
 	WorkflowTriggerWebhook      WorkflowTrigger = "webhook"
 	WorkflowTriggerEvent        WorkflowTrigger = "event"
 	WorkflowTriggerOptimization WorkflowTrigger = "optimization"
+	// WorkflowTriggerCalled tags a run started by another workflow's
+	// core.call-workflow step. It is a RUN tag only — deliberately absent from
+	// ValidateWorkflowTrigger, since no one can declare it on a definition.
+	WorkflowTriggerCalled WorkflowTrigger = "called"
 )
 
 // LifecyclePhase is the event-lifecycle phase an event trigger subscribes to,

@@ -218,3 +218,52 @@ func TestCallWorkflowUsesLiveVersion(t *testing.T) {
 	assert.Len(t, wfDef.Tasks, 1)
 	assert.Equal(t, "live-task", wfDef.Tasks[0].ID, "child must run the callee's LIVE version, not its draft")
 }
+
+// The executor needs to know WHICH stored workflow (and version) a call resolved
+// to, so the child run can be tagged as a run of the callee and show up in the
+// callee's own executions list rather than only inside the caller's run.
+func TestCallWorkflowResolvesCalleeIdentity(t *testing.T) {
+	store := &liveVersionStore{
+		MockWorkflowStore: &testutils.MockWorkflowStore{},
+		draftDef:          model.WorkflowDefinition{Tasks: []model.Task{{ID: "draft-task", Type: "scripting.run_script"}}},
+		liveDef:           model.WorkflowDefinition{Tasks: []model.Task{{ID: "live-task", Type: "scripting.run_script"}}},
+	}
+
+	ctx := newTestContext().(*testutils.MockTaskContext)
+	ctx.WfStore = store
+
+	task := &CallWorkflowTask{}
+	resolved, err := task.ResolveChildWorkflow(ctx, map[string]any{"workflow_name": "child"})
+	assert.NoError(t, err)
+	assert.Equal(t, "child-id", resolved.WorkflowID, "callee's stored workflow id must be reported")
+	assert.Equal(t, "child", resolved.WorkflowName)
+	if assert.NotNil(t, resolved.Version) {
+		assert.Equal(t, 2, resolved.Version.VersionNumber, "the version the child will actually run")
+	}
+	assert.Equal(t, "live-task", resolved.Definition.Tasks[0].ID)
+}
+
+// The pinned path must report the pinned version, not the Live one.
+func TestCallWorkflowResolvesPinnedCalleeVersion(t *testing.T) {
+	store := &pinnedVersionStore{
+		MockWorkflowStore: &testutils.MockWorkflowStore{},
+		versionDefs: map[int]model.WorkflowDefinition{
+			1: {Tasks: []model.Task{{ID: "v1-task", Type: "scripting.run_script"}}},
+		},
+		liveDef: model.WorkflowDefinition{Tasks: []model.Task{{ID: "live-task", Type: "scripting.run_script"}}},
+	}
+
+	ctx := newTestContext().(*testutils.MockTaskContext)
+	ctx.WfStore = store
+
+	task := &CallWorkflowTask{}
+	resolved, err := task.ResolveChildWorkflow(ctx, map[string]any{
+		"workflow_name":    "child",
+		"workflow_version": float64(1),
+	})
+	assert.NoError(t, err)
+	if assert.NotNil(t, resolved.Version) {
+		assert.Equal(t, 1, resolved.Version.VersionNumber)
+	}
+	assert.Equal(t, "v1-task", resolved.Definition.Tasks[0].ID)
+}

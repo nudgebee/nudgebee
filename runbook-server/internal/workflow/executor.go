@@ -68,6 +68,25 @@ func buildRoutingDef(raw any) *model.WorkflowDefinition {
 	return def
 }
 
+// applyCalleeRunTags marks a child workflow run as a run OF THE CALLEE, which is
+// what makes it appear in the callee's own Executions list — ListWorkflowExecutions
+// filters on SearchAttrWorkflowID, so an untagged child is reachable only by
+// drilling into the caller's run. The trigger tag distinguishes it from a run a
+// user started, and the version Memo lets the list render the version that ran.
+//
+// No-op for inline tasks that synthesize a definition rather than calling a stored
+// workflow (core.group, core.foreach): there is no callee to attribute the run to.
+func applyCalleeRunTags(searchAttrs, memo map[string]any, calleeWorkflowID string, version *model.WorkflowVersion) {
+	if calleeWorkflowID == "" {
+		return
+	}
+	searchAttrs[model.SearchAttrWorkflowID] = calleeWorkflowID
+	searchAttrs[model.SearchAttrWorkflowTrigger] = string(model.WorkflowTriggerCalled)
+	for k, v := range model.WorkflowVersionMemo(version) {
+		memo[k] = v
+	}
+}
+
 // getUserDisplayName returns the display name to attribute the workflow run to.
 // Prefers the actual triggerer (manual / retrigger), falls back to the last
 // updater for scheduled/webhook/event-rule triggers.
@@ -500,10 +519,19 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	var systemSearchAttrs []temporal.SearchAttributeUpdate
 	systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrTenantID).ValueSet(wf.TenantID))
 	systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrAccountID).ValueSet(wf.AccountID))
-	systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID).ValueSet(wf.ID))
+
+	searchAttributes := workflow.GetTypedSearchAttributes(ctx)
+	// A run started by core.call-workflow carries the CALLEE's workflow id from
+	// its start options, while `wf.ID` here is the synthetic "inline-…" id of the
+	// definition snapshot handed to the child. Overwriting would erase the only
+	// link between the run and the workflow it is a run of, so an id set at start
+	// time wins. Top-level runs set the same value they would get from wf.ID.
+	startWorkflowID, hasStartWorkflowID := searchAttributes.GetKeyword(temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID))
+	if !hasStartWorkflowID || startWorkflowID == "" {
+		systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID).ValueSet(wf.ID))
+	}
 
 	// Add workflow trigger type if available from info.SearchAttributes
-	searchAttributes := workflow.GetTypedSearchAttributes(ctx)
 	if searchAttributes.Size() > 0 {
 		if triggerType, ok := searchAttributes.GetKeyword(temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowTrigger)); ok {
 			systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowTrigger).ValueSet(triggerType))
@@ -1288,10 +1316,29 @@ func processTaskLoop(
 							// Create a TaskContext for the inline task
 							taskContext := types.NewTemporalTaskContext(context.TODO(), wf.TenantID, wf.AccountID, wf.ID, eventID, wf.UpdatedBy, wf.Name, getUserDisplayName(wf), temporalClient, dataConverter, workflowStore, temporalId, uuid.Nil.String(), logger, wf.DryRun)
 
-							childWfDef, err := inlineTask.GetChildWorkflowDefinition(taskContext, paramMap)
-							if err != nil {
-								logger.Error("Failed to get child workflow definition", "taskID", task.ID, "error", err)
-								return completedTasks, nil, err
+							// Tasks that call a STORED workflow (core.call-workflow) also
+							// report which workflow and version the child came from, so the
+							// run can be tagged as a run of the callee. Tasks that
+							// synthesize a definition on the fly only return the definition.
+							var childWfDef *model.WorkflowDefinition
+							var calleeWfID string
+							var calleeVersion *model.WorkflowVersion
+							if resolver, ok := taskImpl.(types.TaskChildWorkflowResolver); ok {
+								resolved, err := resolver.ResolveChildWorkflow(taskContext, paramMap)
+								if err != nil {
+									logger.Error("Failed to resolve child workflow", "taskID", task.ID, "error", err)
+									return completedTasks, nil, err
+								}
+								childWfDef = resolved.Definition
+								calleeWfID = resolved.WorkflowID
+								calleeVersion = resolved.Version
+							} else {
+								def, err := inlineTask.GetChildWorkflowDefinition(taskContext, paramMap)
+								if err != nil {
+									logger.Error("Failed to get child workflow definition", "taskID", task.ID, "error", err)
+									return completedTasks, nil, err
+								}
+								childWfDef = def
 							}
 
 							// Construct a synthetic Workflow object
@@ -1309,26 +1356,23 @@ func processTaskLoop(
 								LastExecutionStatus: model.WorkflowExecutionStatusRunning,
 							}
 
+							childMemo := map[string]interface{}{
+								"parent_task_id":               task.ID,
+								"child_definition_id":          childWfID,
+								types.MemoKeyCallWorkflowDepth: callWfDepth + 1,
+							}
+							childSearchAttrs := map[string]interface{}{
+								model.SearchAttrTenantID:         wf.TenantID,
+								model.SearchAttrAccountID:        wf.AccountID,
+								model.SearchAttrParentWorkflowID: wf.ID, // Or SearchAttrParentWorkflowID constant if available
+							}
+							applyCalleeRunTags(childSearchAttrs, childMemo, calleeWfID, calleeVersion)
+
 							cwo := workflow.ChildWorkflowOptions{
-								WorkflowID: fmt.Sprintf("%s-%s-%s", wf.ID, task.ID, uuid.New().String()), // Unique Run ID
-								TaskQueue:  config.Config.RunbookServerTemporalQueue,
-								// No workflow-version Memo here on purpose: GetChildWorkflowDefinition
-								// already pins the child to the callee's LIVE version, and the
-								// execution-detail drill-down resolves the child via child_definition_id
-								// + Temporal history (not the version Memo). Children are retried
-								// through their parent, never independently, so the version linkage
-								// keys (which ExecuteWorkflow stamps on top-level runs) have no
-								// consumer here.
-								Memo: map[string]interface{}{
-									"parent_task_id":               task.ID,
-									"child_definition_id":          childWfID,
-									types.MemoKeyCallWorkflowDepth: callWfDepth + 1,
-								},
-								SearchAttributes: map[string]interface{}{
-									model.SearchAttrTenantID:         wf.TenantID,
-									model.SearchAttrAccountID:        wf.AccountID,
-									model.SearchAttrParentWorkflowID: wf.ID, // Or SearchAttrParentWorkflowID constant if available
-								},
+								WorkflowID:       fmt.Sprintf("%s-%s-%s", wf.ID, task.ID, uuid.New().String()), // Unique Run ID
+								TaskQueue:        config.Config.RunbookServerTemporalQueue,
+								Memo:             childMemo,
+								SearchAttributes: childSearchAttrs,
 							}
 
 							ctxWithCWO := workflow.WithChildOptions(ctx, cwo)
