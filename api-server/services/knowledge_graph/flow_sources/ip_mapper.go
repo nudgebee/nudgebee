@@ -243,9 +243,10 @@ func MapIPsToPods(
 			properties["labels"] = labels
 		}
 
+		uniqueKey := fmt.Sprintf("%s:%s:%s", ownerKind, ownerName, namespace)
 		targetNode := &core.DbNode{
-			ID:             uuid.New().String(),
-			UniqueKey:      fmt.Sprintf("%s:%s:%s", ownerKind, ownerName, namespace),
+			ID:             core.NodeIDFor(uniqueKey, tenantID, k8sAccountID),
+			UniqueKey:      uniqueKey,
 			NodeType:       core.NodeTypePod,
 			CloudAccountID: k8sAccountID,
 			TenantID:       tenantID,
