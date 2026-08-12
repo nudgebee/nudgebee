@@ -17,7 +17,7 @@ import Datetime from '@shared/format/Datetime';
 import type { AccountOption, Panel } from '@api1/dashboards';
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type PanelData, type PanelErrorKind } from './usePanelData';
-import { describePanelScope, resolvePanelAccounts } from './panelAccounts';
+import { describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
 import { lastValue, statCaption } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
 import type { VariableValues } from './templating';
@@ -124,8 +124,9 @@ const DashboardPanel: React.FC<Props> = ({
     [panelAccounts]
   );
   // Nothing picked yet means the first account, not "no account": a panel that waits for a choice shows an
-  // empty box, and one account costs the same single request whether it was chosen or defaulted to.
-  const effectiveAccountId = accountId || panelAccounts[0]?.value || '';
+  // empty box, and one account costs the same single request whether it was chosen or defaulted to. A pick
+  // the panel has since been re-scoped away from falls back to that same default — see the rule for why.
+  const effectiveAccountId = effectiveFilterAccount(accountId, panelAccounts);
   const selectedOption = filterOptions.find((o) => o.value === effectiveAccountId) || null;
   // The hook takes a list so a panel scoped to one account still works without a
   // selection; the picker just never supplies more than one.

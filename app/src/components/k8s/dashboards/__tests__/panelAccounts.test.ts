@@ -5,6 +5,7 @@ import {
   deriveAccountType,
   deriveAccountTypes,
   describePanelScope,
+  effectiveFilterAccount,
   panelScopeFromTypes,
   panelQueryAccounts,
   panelScope,
@@ -130,6 +131,38 @@ describe('applyAccountFilter', () => {
   it('preserves the panel-order the author picked', () => {
     const scoped = resolvePanelAccounts({ account_ids: ['a3', 'a1'] }, ACCOUNTS);
     expect(applyAccountFilter(scoped, ['a1', 'a3']).map((a) => a.value)).toEqual(['a3', 'a1']);
+  });
+});
+
+describe('effectiveFilterAccount', () => {
+  it('defaults to the first account until something is picked', () => {
+    const scoped = resolvePanelAccounts({ account_type: 'K8S' }, ACCOUNTS);
+    expect(effectiveFilterAccount('', scoped)).toBe('a1');
+  });
+
+  it('keeps a pick that is still in scope', () => {
+    const scoped = resolvePanelAccounts({ account_type: 'K8S' }, ACCOUNTS);
+    expect(effectiveFilterAccount('a2', scoped)).toBe('a2');
+  });
+
+  it('drops a pick the panel has since been re-scoped away from', () => {
+    // The viewer narrowed a K8S panel to a2, then the author edited the panel to
+    // query AWS. The panel is not remounted, so a2 is still held — and filtering
+    // to it resolves to nothing, blanking the panel behind a filter message
+    // nobody set. It falls back to the new scope's default instead.
+    const rescoped = resolvePanelAccounts({ account_type: 'AWS' }, ACCOUNTS);
+    expect(effectiveFilterAccount('a2', rescoped)).toBe('a3');
+  });
+
+  it('drops a pick whose account is gone', () => {
+    // Same shape as a re-scope: access revoked, or the account disconnected.
+    const scoped = resolvePanelAccounts({ account_type: 'K8S' }, ACCOUNTS);
+    expect(effectiveFilterAccount('deleted-account', scoped)).toBe('a1');
+  });
+
+  it('has nothing to resolve when the panel is scoped to nothing', () => {
+    expect(effectiveFilterAccount('a1', [])).toBe('');
+    expect(effectiveFilterAccount('', [])).toBe('');
   });
 });
 

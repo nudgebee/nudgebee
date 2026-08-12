@@ -136,6 +136,25 @@ export function applyAccountFilter(resolved: AccountOption[], filterIds?: string
   return resolved.filter((a) => wanted.has(a.value));
 }
 
+/**
+ * The account a panel's own filter resolves to, given what the viewer picked.
+ *
+ * The scope moves under the selection: the author edits the panel's accounts, or
+ * one is disconnected. The panel is not remounted for either — its key is the
+ * panel id, which does not change — so a pick made before the change is still
+ * held. Left alone it narrows the panel to an account outside its scope, which
+ * resolves to nothing and blanks the panel behind a filter message the viewer
+ * never set, and on a panel that now names ONE account the picker is not even
+ * rendered to clear it with.
+ *
+ * So a selection that no longer resolves is dropped rather than kept, and the
+ * panel falls back to the same default it had before anyone picked anything.
+ */
+export function effectiveFilterAccount(selected: string, scoped: AccountOption[]): string {
+  if (selected && scoped.some((a) => a.value === selected)) return selected;
+  return scoped[0]?.value || '';
+}
+
 /** What a panel should actually query, given its scope and the viewer's filter. */
 export interface PanelQueryAccounts {
   accounts: AccountOption[];
