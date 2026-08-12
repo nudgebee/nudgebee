@@ -10,6 +10,9 @@ import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
 import Tabs from '@shared/navigation/Tabs';
 import DownloadButton from '@shared/buttons/DownloadButton';
+import { Button as DsButton } from '@ui/Button';
+import SafeIcon from '@shared/icons/SafeIcon';
+import { getNubiIconCircleUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { toast as snackbar } from '@ui/Toast';
 import { usePagination } from '@hooks/usePagination';
@@ -172,6 +175,7 @@ const VmVulnerabilities = ({
   const [packageOptions, setPackageOptions] = useState<Array<{ label: string; value: string }>>([]);
   const { page, rowsPerPage, changePage, setPage } = usePagination(embedded ? 5 : 10);
   const beginRequest = useLatestRequest();
+  const { assistantName } = useTenantBranding();
 
   const canCreateTicket = hasWriteAccess(accountId) || hasPermission('tickets', 'Write');
 
@@ -286,13 +290,27 @@ const VmVulnerabilities = ({
       { component: <Datetime value={finding.updated_at} /> },
       {
         component: (
-          <ThreeDotsMenu
-            id={`vm-vulnerability-actions-${finding.id}`}
-            menuItems={menuItems(canCreateTicket)}
-            data={finding}
-            onMenuClick={onMenuClick}
-            menuWidth={260}
-          />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+            {/* Asking the assistant about a CVE finding isn't wired up yet — the
+                icon holds its place, disabled, and says so on hover. */}
+            <DsButton
+              tone='ghost'
+              size='xs'
+              composition='icon-only'
+              disabled
+              tooltip={`Ask ${assistantName} · Coming Soon`}
+              aria-label={`Ask ${assistantName} · Coming Soon`}
+              id={`vm-vulnerability-ask-nubi-${finding.id}`}
+              icon={<SafeIcon src={getNubiIconCircleUrl()} alt='' width={18} height={18} />}
+            />
+            <ThreeDotsMenu
+              id={`vm-vulnerability-actions-${finding.id}`}
+              menuItems={menuItems(canCreateTicket)}
+              data={finding}
+              onMenuClick={onMenuClick}
+              menuWidth={260}
+            />
+          </Box>
         ),
       },
     ];
