@@ -276,6 +276,14 @@
     num_retries: 0
     timeout_seconds: 600
   comment: Sync ticket configurations every 2 hours
+- name: Ticket Status Sync
+  webhook: http://ticket-server:8080/tickets/sync-tickets
+  schedule: '0 * * * *'
+  payload: {}
+  retry_conf:
+    num_retries: 0
+    timeout_seconds: 600
+  comment: Hourly pull of ticket status/severity/assignee from the upstream tool so ticket-backed resolutions can settle
 - name: Anomaly Execute
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
   schedule: '1 * * * *'
