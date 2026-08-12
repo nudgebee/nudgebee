@@ -403,6 +403,12 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		resolveZendutySubjectFromService(sc, &parsedPayload, incident.Service.Name, accountId)
 	}
 
+	// Deterministic last resort before the LLM: scan the title for a bare pod
+	// name (same as the PagerDuty path).
+	if parsedPayload.EventSubjectName == "" {
+		core.ResolveSubjectFromTitlePodName(sc, &parsedPayload, accountId)
+	}
+
 	// Defensive guard: security context can be nil if the webhook arrives without
 	// a resolvable tenant (test harness, malformed auth, etc). Skip LLM + learn
 	// rather than panic so the parsed payload still flows downstream.
