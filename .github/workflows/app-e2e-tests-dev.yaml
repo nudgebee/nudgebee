@@ -1,0 +1,396 @@
+name: QA Automation E2E Tests – Dev Environment
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app-e2e-tests/tests/**"
+      - "app-e2e-tests/pages/**"            # LoginPage/devLogin — imported by every spec
+      - "app-e2e-tests/notifications/**"    # SlackReporter — wired into the reporter chain
+      - "app-e2e-tests/global-setup.ts"
+      - "app-e2e-tests/playwright.config.ts"
+      - "app-e2e-tests/tsconfig.json"
+      - "app-e2e-tests/package.json"
+      - "app-e2e-tests/package-lock.json"
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "app-e2e-tests/tests/**"
+      - "app-e2e-tests/pages/**"
+      - "app-e2e-tests/notifications/**"
+      - "app-e2e-tests/global-setup.ts"
+      - "app-e2e-tests/playwright.config.ts"
+      - "app-e2e-tests/tsconfig.json"
+      - "app-e2e-tests/package.json"
+      - "app-e2e-tests/package-lock.json"
+
+  schedule:
+    - cron: "30 22 * * *"   # 4:00 AM IST (UTC+5:30) daily
+
+  workflow_dispatch:
+    inputs:
+      test_file:
+        description: "Specific test file(s) to run — comma-separated (e.g. tests/ClusterDetails/Monitoring/MonitoringAlertManager.spec.ts)"
+        required: false
+        default: ""
+        type: string
+      test_name:
+        description: "Test case name to grep (e.g. 'API testing Cluster Details')"
+        required: false
+        default: ""
+        type: string
+      run_all:
+        description: "Run complete test suite (overrides test_file and test_name)"
+        required: false
+        default: false
+        type: boolean
+      cluster_name:
+        description: "Override cluster name (default: k8s-dev)"
+        required: false
+        default: ""
+        type: string
+      switch_tenant:
+        description: "Override tenant (default: Nudgebee)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  test:
+    name: E2E Tests (Dev)
+    runs-on: [self-hosted, X64]
+    timeout-minutes: 240
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      DD_TRACE_ENABLED: "false"
+      DD_INSTRUMENTATION_TELEMETRY_ENABLED: "false"
+      DD_INJECTION_ENABLED: "false"
+      NODE_OPTIONS: ""
+      E2E_ENVIRONMENT: "dev"
+
+    defaults:
+      run:
+        working-directory: ./app-e2e-tests
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        working-directory: .
+        run: |
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app-e2e-tests/package-lock.json
+
+      - name: Create .env.dev from Secret
+        shell: bash
+        run: |
+          printf '%s\n' "${{ secrets.E2E_DEV_ENV }}" > .env.dev
+
+          if [ ! -s .env.dev ]; then
+            echo "::error::E2E_DEV_ENV secret is empty — set it in repo Settings → Secrets"
+            exit 1
+          fi
+
+          echo "✓ .env.dev created ($(grep -c '.' .env.dev) lines)"
+
+          # Override cluster / tenant from workflow_dispatch inputs if provided
+          DISPATCH_CLUSTER="${{ inputs.cluster_name }}"
+          DISPATCH_TENANT="${{ inputs.switch_tenant }}"
+
+          if [ -n "$DISPATCH_CLUSTER" ]; then
+            sed -i "s/^CLUSTER_NAME=.*/CLUSTER_NAME=${DISPATCH_CLUSTER}/" .env.dev || true
+            echo "CLUSTER_NAME=${DISPATCH_CLUSTER}" >> .env.dev
+          fi
+          if [ -n "$DISPATCH_TENANT" ]; then
+            sed -i "s/^SWITCH_TENANT=.*/SWITCH_TENANT=${DISPATCH_TENANT}/" .env.dev || true
+            echo "SWITCH_TENANT=${DISPATCH_TENANT}" >> .env.dev
+          fi
+
+          # Export all .env.dev vars to GitHub Actions environment
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+            key="${line%%=*}"
+            value="${line#*=}"
+            [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+            echo "::add-mask::$value"
+            echo "${key}=${value}" >> $GITHUB_ENV
+          done < .env.dev
+
+          echo "✓ All env vars exported to GitHub Actions environment"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Validate Environment Variables
+        shell: bash
+        run: |
+          echo "=== Checking required env vars ==="
+          REQUIRED_VARS="BASE_URL LDAP_USERNAME LDAP_PASSWORD"
+          MISSING=""
+          for var in $REQUIRED_VARS; do
+            if grep -q "^${var}=" .env.dev 2>/dev/null || grep -q "^${var}=" .env 2>/dev/null; then
+              echo "  ✓ $var is set"
+            else
+              echo "  ✗ $var is MISSING"
+              MISSING="$MISSING $var"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required vars:$MISSING"
+            exit 1
+          fi
+          echo "BASE_URL: $(grep '^BASE_URL=' .env.dev 2>/dev/null | head -1 | cut -d= -f2- || echo '(from .env)')"
+          echo "All required env vars present."
+
+      - name: Verify Playwright Setup
+        shell: bash
+        run: |
+          echo "=== Runtime versions ==="
+          node --version
+          npm --version
+          echo ""
+          echo "=== Playwright CLI version ==="
+          node node_modules/.bin/playwright --version \
+            || { echo "::error::playwright --version failed"; exit 1; }
+
+      - name: Detect Affected Tests
+        id: detect-tests
+        shell: bash
+        run: |
+          echo "Resolving the diff base..."
+
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            BASE="${{ github.event.before }}"
+          else
+            BASE=""
+          fi
+
+          # Null SHA on branch creation; after a force push the base may be unreachable.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            BASE=$(git rev-parse HEAD~1)
+            echo "Event base unusable (new branch or force push) — falling back to $BASE"
+          fi
+
+          echo "BASE: $BASE"
+          echo "E2E_BASE=$BASE" >> $GITHUB_ENV
+
+          # Deleted specs are reported to QA below; Playwright no longer sees them.
+          DELETED_FILES=$(git diff --name-only --diff-filter=D "$BASE...HEAD" | grep '^app-e2e-tests/.*\.spec\.ts$' || true)
+          if [ -z "$DELETED_FILES" ]; then
+            echo "DELETED_TEST_FILES=" >> $GITHUB_ENV
+          else
+            DELETED_NAMES=$(echo "$DELETED_FILES" | sed 's|app-e2e-tests/||' | tr '\n' ' ')
+            echo "DELETED_TEST_FILES=$DELETED_NAMES" >> $GITHUB_ENV
+          fi
+
+          # No spec imports these, so --only-changed finds nothing — keep in sync with paths:.
+          SUITE_WIDE="app-e2e-tests/playwright.config.ts app-e2e-tests/global-setup.ts
+                      app-e2e-tests/tsconfig.json app-e2e-tests/package.json
+                      app-e2e-tests/package-lock.json app-e2e-tests/notifications"
+
+          SCAFFOLD_CHANGED=$(git diff --name-only "$BASE...HEAD" -- $SUITE_WIDE)
+          if [ -n "$SCAFFOLD_CHANGED" ]; then
+            echo "Suite-wide scaffolding changed — running the full suite:"
+            echo "$SCAFFOLD_CHANGED" | sed 's/^/  /'
+            echo "RUN_MODE=full" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # --only-changed walks the import graph: a changed locator selects its importers.
+          LIST_OUT=$(node node_modules/.bin/playwright test --only-changed="$BASE" --list 2>&1) || {
+            echo "::error::Could not list affected tests — see the output below."
+            echo "$LIST_OUT" | tail -30
+            exit 1
+          }
+          echo "$LIST_OUT" | tail -40
+
+          AFFECTED=$(echo "$LIST_OUT" | grep -oE 'Total: [0-9]+ test' | grep -oE '[0-9]+' | head -1)
+          AFFECTED=${AFFECTED:-0}
+          echo "Affected tests: $AFFECTED"
+
+          # A zero-test run writes no results.json, which the run step reads as a crash.
+          if [ "$AFFECTED" -eq 0 ]; then
+            echo "RUN_MODE=skip" >> $GITHUB_ENV
+          else
+            echo "RUN_MODE=affected" >> $GITHUB_ENV
+          fi
+
+      - name: Notify QA of Deleted Test Cases
+        if: github.event_name == 'pull_request' && env.DELETED_TEST_FILES != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: .
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
+          DELETED_TEST_FILES: ${{ env.DELETED_TEST_FILES }}
+          AUTHOR: ${{ github.actor }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          DELETED_LIST=""
+          for f in $DELETED_TEST_FILES; do
+            DELETED_LIST="${DELETED_LIST}\n• \`${f}\`"
+          done
+
+          PAYLOAD=$(jq -n \
+            --arg author   "$AUTHOR" \
+            --arg branch   "$BRANCH" \
+            --arg deleted  "$DELETED_LIST" \
+            --arg pr_url   "$PR_URL" \
+            '{
+              text: ":warning: *Test Case Deletion Detected — QA Review Required*",
+              blocks: [
+                {
+                  type: "section",
+                  text: { type: "mrkdwn", text: ":warning: *Test Case Deletion Detected*\n@qa — please review before this is merged." }
+                },
+                {
+                  type: "section",
+                  fields: [
+                    { type: "mrkdwn", text: ("*Author:*\n`" + $author + "`") },
+                    { type: "mrkdwn", text: ("*Branch:*\n`" + $branch + "`") }
+                  ]
+                },
+                {
+                  type: "section",
+                  text: { type: "mrkdwn", text: ("*Deleted Test Files:*\n" + $deleted) }
+                },
+                {
+                  type: "actions",
+                  elements: [
+                    {
+                      type: "button",
+                      text: { type: "plain_text", text: "Review PR" },
+                      url: $pr_url
+                    }
+                  ]
+                }
+              ]
+            }')
+
+          curl -fsS -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL"
+
+      - name: Run Playwright Tests (Dev)
+        id: tests
+        shell: bash
+        env:
+          INPUT_TEST_FILE: ${{ inputs.test_file }}
+          INPUT_TEST_NAME: ${{ inputs.test_name }}
+          INPUT_RUN_ALL: ${{ inputs.run_all }}
+        run: |
+          rm -rf playwright-report
+          mkdir -p playwright-report
+
+          echo "Starting Playwright execution against dev environment..."
+          set +e
+
+          PW_CMD="node node_modules/.bin/playwright test --project=chromium"
+          SKIP_RUN=false
+
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+
+            if [ "$INPUT_RUN_ALL" == "true" ]; then
+              echo "Running complete test suite (run_all=true)"
+              $PW_CMD
+
+            elif [ -n "$INPUT_TEST_FILE" ]; then
+              echo "Running specific test file(s): $INPUT_TEST_FILE"
+              FILES=$(echo "$INPUT_TEST_FILE" | tr ',' ' ')
+              $PW_CMD $FILES
+
+            elif [ -n "$INPUT_TEST_NAME" ]; then
+              echo "Running tests matching name: $INPUT_TEST_NAME"
+              $PW_CMD --grep "$INPUT_TEST_NAME"
+
+            else
+              echo "No specific target — running full test suite"
+              $PW_CMD
+            fi
+
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "Scheduled run — executing full test suite"
+            $PW_CMD
+
+          elif [ "$RUN_MODE" == "full" ]; then
+            echo "Playwright config or global setup changed — executing full test suite"
+            $PW_CMD
+
+          elif [ "$RUN_MODE" == "affected" ]; then
+            echo "Running tests affected by changes since $E2E_BASE"
+            $PW_CMD --only-changed="$E2E_BASE"
+
+          else
+            echo "No affected tests — skipping test execution."
+            echo "To run tests manually, trigger this workflow via workflow_dispatch."
+            SKIP_RUN=true
+          fi
+
+          PW_EXIT=$?
+          set -e
+
+          if [ "$SKIP_RUN" == "true" ]; then
+            echo '{"suites":[],"stats":{"expected":0,"skipped":0,"unexpected":0,"flaky":0}}' > playwright-report/results.json
+            exit 0
+          fi
+
+          if [ ! -f "playwright-report/results.json" ]; then
+            echo "::error::Playwright exited (code: $PW_EXIT) without generating a test report."
+            exit 1
+          fi
+
+          exit $PW_EXIT
+
+      - name: Upload Playwright Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-dev
+          path: app-e2e-tests/playwright-report/
+          retention-days: 5
+
+      - name: Cleanup Secrets
+        if: always()
+        run: |
+          rm -f .env.dev
+
+      - name: Notify Infrastructure Failure
+        uses: ravsamhq/notify-slack-action@v2
+        if: failure() && steps.tests.outcome != 'failure'
+        continue-on-error: true
+        with:
+          status: ${{ job.status }}
+          notification_title: "🚨 Dev E2E Setup/Infrastructure Failed"
+          message_format: "Tests did not run due to setup failure. <{workflow_url}|Check Logs>"
+          footer: "Linked Repo <{repo_url}|{repo}>"
+          notify_when: "failure"
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
