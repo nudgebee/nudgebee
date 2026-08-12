@@ -29,14 +29,10 @@ func TestLogAgent_BuildToolList(t *testing.T) {
 		"datadog_log_query",
 		"kubectl_intent_generator",
 		"kubectl_execute",
-		// The resource_search AGENT is deliberately not exposed: it costs an
-		// extra LLM call to translate natural language into the tool call the
-		// logs agent can already make itself, and fans out to cloud/Datadog
-		// resource search that a pod lookup never needs. Locked in both
-		// directions so a future edit can't silently swap the tool back for
-		// the agent. See logAgentToolNames.
-		ResourceSearchAgentName,
 	}
+	// NB: the logs agent holds the direct resource_search_execute tool (mustHave
+	// above), never the removed resource_search agent — it resolves pod names via
+	// the tool without the extra LLM translate hop.
 
 	cases := []struct {
 		name     string

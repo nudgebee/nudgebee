@@ -12,10 +12,11 @@ import (
 )
 
 // TestFinOpsAgent_RoutesThroughSpecialistAgents pins FinOps's tool routing.
-// Metrics and cloud resource discovery still go through their specialist agents
-// (MetricsAgentName, ResourceSearchAgentName) — each carries guardrails
-// (metrics provider routing, multi-platform fan-out + relevance filtering)
-// that live only in that agent's own system prompt.
+// Metrics still routes through its specialist agent (MetricsAgentName) for
+// provider routing. Resource discovery now uses the direct
+// cloud_resource_search_execute tool — the resource_search agent was removed in
+// #32503 Phase 2; its multi-platform + relevance guardrails moved into the tool
+// (unified cloud_resourses query + the #36078 relevance filter).
 //
 // Kubectl was moved off KubectlAgentName and onto tools.ToolExecuteKubectlCommand
 // in #32503 Phase 1 to unblock the kubectl-sub-agent removal in Phase 2. The
@@ -50,15 +51,13 @@ func TestFinOpsAgent_RoutesThroughSpecialistAgents(t *testing.T) {
 		"FinOps must route metrics questions through the provider-agnostic metrics agent, not call prometheus_execute as a raw tool")
 	assert.Contains(t, toolNames, tools.ToolExecuteKubectlCommand,
 		"FinOps calls kubectl_execute directly (#32503 Phase 1); safety-rule migration to ToolPrompt is pending")
-	assert.Contains(t, toolNames, ResourceSearchAgentName,
-		"FinOps must route resource discovery through the resource_search agent, not call it as a raw tool")
+	assert.Contains(t, toolNames, tools.ToolCloudResourceSearch,
+		"FinOps resolves resources via the direct cloud_resource_search_execute tool (resource_search agent removed, #32503 Phase 2)")
 
 	assert.NotContains(t, toolNames, tools.ToolQueryPrometheus,
 		"the raw prometheus_execute tool must not be directly exposed to FinOps anymore")
 	assert.NotContains(t, toolNames, KubectlAgentName,
 		"FinOps no longer routes kubectl through the sub-agent (#32503 Phase 1)")
-	assert.NotContains(t, toolNames, tools.ToolCloudResourceSearch,
-		"the raw cloud_resource_search_execute tool must not be directly exposed to FinOps anymore")
 
 	// anomaly_execute has no specialist wrapping agent, so it stays a direct tool.
 	assert.Contains(t, toolNames, tools.ToolAnomalyExecuteSql,

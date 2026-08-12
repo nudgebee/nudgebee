@@ -105,7 +105,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"You hold no credentials and change nothing except through the platform's typed write tools (recommendation_apply, recommendation_execute_cli, recommendation_record_ticket_resolution, ticket_master_v2), each of which pauses for the user's explicit per-action approval. When the user explicitly asks you to resolve, apply, or fix a recommendation, use the write tools — a review link alone is not an answer to a direct ask.",
 		"Every cost answer MUST include a dollar figure. If data is unavailable, state that explicitly.",
 		"Always cite which tool provided the data (spend_summary, recommendations, metrics, etc.).",
-		"The metrics, kubectl, and resource_search tools are full investigators, not raw query executors: give each a specific, self-contained question (e.g. \"p95 CPU and memory usage for pod X in namespace Y over the last 7 days, with absolute values\", \"find the deployment matching service X\") and they return a synthesized answer with concrete values already extracted -- read the data directly from their response for your tables/charts, do not expect raw JSON or kubectl output back.",
+		"The metrics and kubectl tools are full investigators, not raw query executors: give each a specific, self-contained question (e.g. \"p95 CPU and memory usage for pod X in namespace Y over the last 7 days, with absolute values\", \"find the deployment matching service X\") and they return a synthesized answer with concrete values already extracted -- read the data directly from their response for your tables/charts, do not expect raw JSON or kubectl output back.",
 		"Do not expose internal SQL queries, table names, or database structure to the user.",
 		"When comparing periods, always state the exact date ranges being compared.",
 		"If recommendations reference a cloud resource, verify the resource exists before advising action.",
@@ -336,14 +336,20 @@ func (a *FinOpsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore
 		// wrapping agent carries guardrails (PromQL construction, kubectl safety
 		// rules, multi-platform resource fan-out) that live only in that agent's
 		// system prompt and are invisible to FinOps when calling the raw tool
-		// directly. See agent_metrics.go, agent_kubectl.go, agent_resource_search.go.
+		// directly. See agent_metrics.go, agent_kubectl.go.
 		// MetricsAgentName routes to the account's configured metrics provider
 		// (Prometheus/Datadog/Elasticsearch) instead of hardcoding Prometheus.
 		MetricsAgentName,
 		// TODO(#32503 Phase 3): kubectl safety rules were previously in
 		// agent_kubectl.go's system prompt; migrate to KubectlExecuteTool.ToolPrompt().
 		tools.ToolExecuteKubectlCommand,
-		ResourceSearchAgentName,
+		// Resource discovery via the direct DB tool (resource_search agent removed,
+		// #32503 Phase 2). cloud_resource_search_execute resolves across the unified
+		// cloud_resourses inventory (all providers) with cost-relevant fields
+		// (service/region/account); the multi-platform + relevance guardrails that
+		// used to live in the agent's prompt now live in the tool (#36078 relevance
+		// filter + unified-table query).
+		tools.ToolCloudResourceSearch,
 
 		// Existing direct tools (reused unchanged)
 		tools.ToolAnomalyExecuteSql,

@@ -39,12 +39,12 @@ func (l TracesClickhouseAgent) GetSystemPrompt(ctx *security.RequestContext, que
 		"**Numeric Representation:** Use human-readable numbers when appropriate.",
 		"**Summarization:** Summarize each row of the query response to provide context.",
 		"**Verify Tool Usage:** Before providing the final answer, ensure that you have used the 'traces_execute' tool correctly. **CRITICAL:** Ensure your final user-facing response does NOT contain the thought process or the raw SQL query.",
-		"**Resource Discovery - Use resource_search tool for:**",
+		"**Resource Discovery - Use resource_search_execute tool for:**",
 		"   - Resource type typos: {\"resource_type\": \"podss\", \"search_type\": \"fuzzy\"}",
 		"   - Namespace typos: {\"namespace\": \"nudgebe\", \"search_type\": \"namespace\"}",
 		"   - App/workload searches: {\"resource_name\": \"llm-server\", \"namespace\": \"default\", \"search_type\": \"suggestions\"}",
 		"   - When kubectl returns 'not found': Use search tool before manual grep attempts",
-		"**Always try resource_search when:**",
+		"**Always try resource_search_execute when:**",
 		"   - User mentions app/service names without exact k8s resource details",
 		"   - User says 'deployment' (could be Deployment, StatefulSet, or DaemonSet)",
 		"   - User says 'app' or 'workload' (search returns all workload types + pods)",
@@ -58,9 +58,9 @@ func (l TracesClickhouseAgent) GetSystemPrompt(ctx *security.RequestContext, que
 		"You MUST NOT answer questions without first using the 'traces_execute' tool to query the database.",
 		"You must generate the SQL query using ClickHouse syntax.",
 		"You MUST use ilike for string matching of workload_name, destination_workload_name and endpoint fields for better coverage.",
-		"**IMPORTANT: Use resource_search tool proactively** - Don't wait for kubectl to fail first",
-		"**When in doubt about resource names:** Always use resource_search tool to find exact matches",
-		"**Never guess resource names:** Use resource_search tool to get accurate suggestions",
+		"**IMPORTANT: Use resource_search_execute tool proactively** - Don't wait for kubectl to fail first",
+		"**When in doubt about resource names:** Always use resource_search_execute tool to find exact matches",
+		"**Never guess resource names:** Use resource_search_execute tool to get accurate suggestions",
 		"**NO SQL LEAKAGE:** You are strictly forbidden from including any SQL queries, database names, or view names (like 'traces_view') in your final user-facing response.",
 		"**Aggregations are fully supported:** GROUP BY queries and aggregate functions (count(*), avg(duration_ns), quantile(0.95)(duration_ns), max/min, etc.) return their computed columns with real values. Use them directly for latency ranking, percentiles, request counts, and error-rate summaries — you do not need to fetch raw spans and aggregate them yourself.",
 	}
@@ -72,12 +72,7 @@ func (l TracesClickhouseAgent) GetSystemPrompt(ctx *security.RequestContext, que
 			"Input: valid sql query",
 			"Output: the data returned by the sql query.",
 		},
-		ResourceSearchAgentName: {
-			"Use this tool for fuzzy resource matching and generating search strategies when resources are not found.",
-			"Input: JSON with search_type ('fuzzy', 'suggestions', 'namespace'), resource_name, resource_type, namespace",
-			"Output: JSON with suggestions and search strategies",
-			"Examples: {\"resource_type\": \"podss\", \"search_type\": \"fuzzy\"} or {\"resource_name\": \"llm-server\", \"namespace\": \"default\", \"search_type\": \"suggestions\"}",
-		},
+		tools.ToolResourceSearch: resourceSearchToolUsage,
 	}
 	outputFormat := "The output should be a clear and concise summary of the query results."
 	rag := core.NBAgentPromptRag{
@@ -108,8 +103,8 @@ func (l TracesClickhouseAgent) GetSystemPrompt(ctx *security.RequestContext, que
 		},
 		{
 			Question:    "get traces of llm server",
-			Answer:      "First use resource_search tool with {\"resource_name\": \"llm server\", \"search_type\": \"suggestions\"} to find the exact pod name and namespace",
-			Explanation: "Resource name 'llm server' is ambiguous - need to use resource_search tool to find the actual pod name and namespace before running traces query",
+			Answer:      "First use resource_search_execute tool with {\"resource_name\": \"llm server\", \"search_type\": \"suggestions\"} to find the exact pod name and namespace",
+			Explanation: "Resource name 'llm server' is ambiguous - need to use resource_search_execute tool to find the actual pod name and namespace before running traces query",
 		},
 		{
 			Question:    "get traces of llm server after 2025-01-01",
@@ -167,7 +162,7 @@ func (l TracesClickhouseAgent) GetSystemPrompt(ctx *security.RequestContext, que
 
 func (p TracesClickhouseAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	toolList := []toolcore.NBTool{tools.TracesExecuteClickhouseTool{}}
-	if resourceSearchTool, ok := toolcore.GetNBTool(p.accountId, ResourceSearchAgentName); ok {
+	if resourceSearchTool, ok := toolcore.GetNBTool(p.accountId, tools.ToolResourceSearch); ok {
 		toolList = append(toolList, resourceSearchTool)
 	}
 	return toolList

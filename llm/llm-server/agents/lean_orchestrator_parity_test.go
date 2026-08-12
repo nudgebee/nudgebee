@@ -138,32 +138,29 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		})
 	}
 
-	// Resource search splits by cloud. AWS has no cross-region list, so an unknown
-	// region forces a blind per-region CLI fan-out; the direct DB tool
-	// cloud_resource_search_execute resolves it in one lookup and aws_lean.yaml steers
-	// there — so AWS carries the direct tool and NOT the 12-30s resource_search agent
-	// (loading both tempts the model onto the slow path). gcp/azure aggregate across
-	// zones/locations (no fan-out problem) and have no direct tool, so they keep the
-	// agent and must NOT carry the direct tool.
-	t.Run("aws_lean_has_direct_resolver_not_agent", func(t *testing.T) {
-		aws := cloudLeanCoreToolNames(tools.ToolExecuteAwsCliCommand)
-		assert.True(t, containsTool(aws, tools.ToolCloudResourceSearch),
-			"aws_lean must preload cloud_resource_search_execute (direct region resolver)")
-		assert.False(t, containsTool(aws, ResourceSearchAgentName),
-			"aws_lean must NOT also preload the resource_search agent — the direct tool + prompt cover it; both invites the slow path")
-	})
+	// Resource discovery is via the direct DB tools on every lean orchestrator — the
+	// 12-30s resource_search agent was removed (#32503 Phase 2). All cloud leans carry
+	// cloud_resource_search_execute (resolves the unified cloud_resourses inventory
+	// across providers); the k8s lean additionally carries resource_search_execute
+	// (the k8s resolver, which returns namespace).
 	for _, cli := range []struct{ name, cliTool string }{
+		{"aws_lean", tools.ToolExecuteAwsCliCommand},
 		{"gcp_lean", tools.ToolExecuteGcpCliCommand},
 		{"azure_lean", tools.ToolExecuteAzureCliCommand},
 	} {
-		t.Run(cli.name+"_has_agent_not_direct", func(t *testing.T) {
+		t.Run(cli.name+"_has_direct_cloud_resolver", func(t *testing.T) {
 			names := cloudLeanCoreToolNames(cli.cliTool)
-			assert.True(t, containsTool(names, ResourceSearchAgentName),
-				"%s must keep the resource_search agent — no direct tool, no region fan-out problem", cli.name)
-			assert.False(t, containsTool(names, tools.ToolCloudResourceSearch),
-				"%s must NOT preload the direct cloud_resource_search_execute — keep lean minimal", cli.name)
+			assert.True(t, containsTool(names, tools.ToolCloudResourceSearch),
+				"%s must resolve resources via the direct cloud_resource_search_execute tool", cli.name)
 		})
 	}
+	t.Run("k8s_lean_has_both_direct_resolvers_not_agent", func(t *testing.T) {
+		names := trimmedK8sCoreToolNames()
+		assert.True(t, containsTool(names, tools.ToolResourceSearch),
+			"k8s_lean must carry resource_search_execute (k8s resolver with namespace)")
+		assert.True(t, containsTool(names, tools.ToolCloudResourceSearch),
+			"k8s_lean must carry cloud_resource_search_execute (cross-platform cloud resolver)")
+	})
 }
 
 // TestReducedCoreHelpers_DefensiveCopy guards Gemini's HIGH-priority finding

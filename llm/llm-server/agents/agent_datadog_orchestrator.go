@@ -67,6 +67,11 @@ func (a *DatadogOrchestratorAgent) GetCacheScope() core.CacheScope {
 
 func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	toolUsage := map[string][]string{
+		tools.ToolDatadogResourceSearchExecute: {
+			"Discovery fast-path: resolve a Datadog resource by name (a service, container, or APM entity) before investigating it.",
+			`Input: JSON {"resource_type":"services|containers|apm_entities","query":"<name or search text>"} — both fields required.`,
+			"Output: matching Datadog resources. Use for a quick lookup; delegate to the specialist datadog sub-agents for deep investigation.",
+		},
 		DatadogLogAgentName: {
 			"Use this tool to search Datadog logs based on a natural language query.",
 			"Input: A natural language question about logs you want to retrieve from Datadog.",
@@ -198,6 +203,11 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 	// DatadogAgentName ("datadog") is for logs, DatadogMetricsAgentName ("datadog_metrics") is for metrics.
 	// These are the names of other agents that this planner can use as tools.
 	supportedToolNames := []string{
+		// Discovery fast-path: resolve a Datadog resource by name across
+		// services/containers/apm_entities in one direct call (no sub-agent hop).
+		// Re-homed here when the resource_search agent was removed (#32503 Phase 2) —
+		// Datadog data is live (not in the DB inventory), so it stays platform-owned.
+		tools.ToolDatadogResourceSearchExecute,
 		DatadogLogAgentName,             // For logs
 		DatadogMetricsAgentName,         // For metrics
 		DatadogEventsAgentName,          // For Events

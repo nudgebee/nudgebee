@@ -75,7 +75,7 @@ func TestK8sNativeAgent_GetSupportedTools_Allowlist(t *testing.T) {
 	// events, resource_search, aws, datadog, …) would silently defeat the
 	// purpose of the mode. Fail loudly.
 	forbidden := []string{
-		LogsAgentName, FetchLogsAgentName, ResourceSearchAgentName,
+		LogsAgentName, FetchLogsAgentName, tools.ToolResourceSearch,
 		EventsAgentName, "aws", "datadog_orchestrator", "gcp_orchestrator", "azure_orchestrator",
 		ServiceDependencyGraph, "server", GithubAgentName,
 		"workflow", RecommendationsAgentName,

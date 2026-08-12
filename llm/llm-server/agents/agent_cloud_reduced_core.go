@@ -44,18 +44,12 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 		// Same invariant PR #34819 established across every orchestrator.
 		tools.SearchSkillsToolName,
 	}
-	// Resource/region discovery differs by cloud. AWS has no cross-region list, so an
-	// unknown region forces a blind per-region CLI fan-out; the direct DB tool
-	// cloud_resource_search_execute resolves the real region from inventory in one lookup,
-	// and aws_lean.yaml steers there. So AWS swaps the 12-30s resource_search AGENT for the
-	// direct tool — loading both only tempts the model onto the slow path. gcloud/az aggregate
-	// across zones/locations (no fan-out problem) and have no direct tool, so they KEEP the
-	// cross-cloud resource_search agent as their resource-search path.
-	if cliToolName == tools.ToolExecuteAwsCliCommand {
-		names = append(names, tools.ToolCloudResourceSearch)
-	} else {
-		names = append(names, ResourceSearchAgentName)
-	}
+	// Resource discovery goes through the direct DB tool, NOT the resource_search agent:
+	// cloud_resource_search_execute resolves from the unified cloud_resourses inventory in one
+	// query (no 12-30s LLM agent, no parallel fan-out). Part of the resource_search agent
+	// removal (#32503 Phase 2). AWS additionally relies on it for region resolution (no
+	// cross-region list); gcp/azure use it for the same name→inventory resolution.
+	names = append(names, tools.ToolCloudResourceSearch)
 	if config.Config.RemediationAgentEnabled {
 		names = append(names, RemediationAgentName)
 	}

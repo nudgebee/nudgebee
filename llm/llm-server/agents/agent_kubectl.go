@@ -13,7 +13,7 @@ const KubectlAgentName = "kubectl"
 
 func init() {
 	// This describes the 'kubectl' agent when it is used as a tool by another agent.
-	toolDescription := `Self-directed Kubernetes investigation agent. Describe the problem you want solved (e.g. "find why pod X in namespace prod is crash-looping", "list all deployments with unhealthy replicas across namespaces", "scale deployment Y to 3 replicas") and the agent will plan and run the necessary kubectl commands itself, including resource discovery, namespace inference, multi-step lookups, and error recovery. DO NOT use this for log retrieval if the "logs" agent is available. DO NOT use this for initial resource discovery if "resource_search" is available.`
+	toolDescription := `Self-directed Kubernetes investigation agent. Describe the problem you want solved (e.g. "find why pod X in namespace prod is crash-looping", "list all deployments with unhealthy replicas across namespaces", "scale deployment Y to 3 replicas") and the agent will plan and run the necessary kubectl commands itself, including resource discovery, namespace inference, multi-step lookups, and error recovery. DO NOT use this for log retrieval if the "logs" agent is available. DO NOT use this for initial resource discovery if "resource_search_execute" is available.`
 	toolInput := "A natural-language description of the Kubernetes problem to investigate or the action to perform. You may also pass an exact kubectl command if you already know it, but prefer describing the goal so the agent can adapt and recover from errors."
 	toolOutput := "The agent's findings or the result of the executed action(s), including relevant kubectl output."
 
@@ -41,14 +41,14 @@ func (l KubectlAgent) GetNameAliases() []string {
 }
 
 func (l KubectlAgent) GetDescription() string {
-	return `Self-directed Kubernetes investigation agent. Describe the problem you want solved (e.g. "find why pod X in namespace prod is crash-looping", "list all deployments with unhealthy replicas across namespaces", "scale deployment Y to 3 replicas") and the agent will plan and run the necessary kubectl commands itself, including resource discovery, namespace inference, multi-step lookups, and error recovery. DO NOT use this for log retrieval if the "logs" agent is available. DO NOT use this for initial resource discovery if "resource_search" is available.`
+	return `Self-directed Kubernetes investigation agent. Describe the problem you want solved (e.g. "find why pod X in namespace prod is crash-looping", "list all deployments with unhealthy replicas across namespaces", "scale deployment Y to 3 replicas") and the agent will plan and run the necessary kubectl commands itself, including resource discovery, namespace inference, multi-step lookups, and error recovery. DO NOT use this for log retrieval if the "logs" agent is available. DO NOT use this for initial resource discovery if "resource_search_execute" is available.`
 }
 
 func (l KubectlAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	toolsList := []toolcore.NBTool{tools.KubectlExecuteTool{}}
 
 	// Add resource search tool
-	if resourceSearchTool, ok := toolcore.GetNBTool(l.accountId, ResourceSearchAgentName); ok {
+	if resourceSearchTool, ok := toolcore.GetNBTool(l.accountId, tools.ToolResourceSearch); ok {
 		toolsList = append(toolsList, resourceSearchTool)
 	}
 
@@ -59,14 +59,14 @@ func (l KubectlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 
 	instructions := []string{
 		"**Kubernetes Interaction:** Always use `kubectl` to interact with the cluster. Avoid other shell commands unless essential for formatting or context and explicitly requested by the user.",
-		"**Namespace Awareness:** Never assume a namespace. Prefer explicit `-n <namespace>`. Use the `<namespace>` placeholder only when RETURNING a template command; if the user wants to EXECUTE and the namespace is missing, resolve it (resource_search or one concise clarification) before running.",
+		"**Namespace Awareness:** Never assume a namespace. Prefer explicit `-n <namespace>`. Use the `<namespace>` placeholder only when RETURNING a template command; if the user wants to EXECUTE and the namespace is missing, resolve it (resource_search_execute or one concise clarification) before running.",
 		"**When namespace is missing:**",
 		"  - For RETURN-COMMAND requests (what/which/how-to command): use TEMPLATE MODE and emit a single command with `-n <namespace>` placeholder.",
-		"  - For EXECUTE requests (user asks to perform/scale/apply/cordon/uncordon/delete, etc.): do **not** execute with placeholders. First resolve the namespace via `resource_search` or ask **one** concise clarification; then execute.",
+		"  - For EXECUTE requests (user asks to perform/scale/apply/cordon/uncordon/delete, etc.): do **not** execute with placeholders. First resolve the namespace via `resource_search_execute` or ask **one** concise clarification; then execute.",
 		"**Avoid Fetching Entire Cluster Details:** Never fetch entire cluster details at once (e.g., don't use `kubectl get all --all-namespaces -o json|yaml` without filters). Break requests into specific resource types, namespaces, and filters.",
 		"**Use Resource-Specific Queries:** Prefer specific resource types (pods, services, deployments, etc.) over `all`.",
 		"**Provide Final Answer Directly:** After successfully gathering data with other tools, provide your final answer directly to the user in Markdown format. For list/get queries, include the full data. For investigation queries, be concise and focus on key findings.",
-		"**Always try resource_search when:**",
+		"**Always try resource_search_execute when:**",
 		"   - User mentions app/service names without exact k8s resource details",
 		"   - User says 'deployment' (could be Deployment, StatefulSet, or DaemonSet)",
 		"   - User says 'app' or 'workload' (search returns all workload types + pods)",
@@ -83,7 +83,7 @@ func (l KubectlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 
 		"**EXECUTION MODE (DEFAULT):** If the user asks to perform an action or get information (e.g., 'get pods', 'describe service', 'check logs'), YOU MUST EXECUTE the command using the `kubectl_execute` tool. Then provide the final answer based on the output.",
 		"**COMMAND-ONLY MODE:** ONLY if the user explicitly asks for 'the command', 'query', 'syntax', or 'how do I...', then your ONLY output should be the `kubectl` command string. Do not execute it.",
-		"**TEMPLATE MODE (Default for Missing Info):** If required details (like name or namespace) are missing for an execution request, try to resolve them with `resource_search` or one clarification question. If the user only asked for the command (Command-Only Mode), then return the command with placeholders.",
+		"**TEMPLATE MODE (Default for Missing Info):** If required details (like name or namespace) are missing for an execution request, try to resolve them with `resource_search_execute` or one clarification question. If the user only asked for the command (Command-Only Mode), then return the command with placeholders.",
 
 		"**DISAMBIGUATION:**",
 		"- If the query mentions 'health', 'healthcheck', or 'component health', output `kubectl get componentstatuses`.",
@@ -94,11 +94,11 @@ func (l KubectlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 	}
 
 	constraints := []string{
-		"**CRITICAL WORKFLOW:** Your first step MUST be to call the `kubectl_execute` tool. Only if that fails or if resource names are ambiguous should you use `resource_search`.",
+		"**CRITICAL WORKFLOW:** Your first step MUST be to call the `kubectl_execute` tool. Only if that fails or if resource names are ambiguous should you use `resource_search_execute`.",
 		"Always specify namespace (or `<namespace>` placeholder in TEMPLATE MODE).",
 		"Always use --no-headers with kubectl get commands when counting items (e.g., with '| wc -l') or when the output is intended for programmatic parsing, to avoid including header lines",
 		"NEVER fetch entire cluster details at once without filters - this leads to timeouts and truncated responses",
-		"For mutating actions (delete, drain, cordon, uncordon, scale, rollout restart, apply): if authorization allows, EXECUTE the command; do not execute commands with placeholders—resolve identifiers first (resource_search or one concise clarification).",
+		"For mutating actions (delete, drain, cordon, uncordon, scale, rollout restart, apply): if authorization allows, EXECUTE the command; do not execute commands with placeholders—resolve identifiers first (resource_search_execute or one concise clarification).",
 		"For counting or listing names, prefer `-o name` or `--no-headers` to reduce noise.",
 		"For logs: if logs appear empty, consider `--previous` or specifying `-c <container>` if the pod has multiple containers.",
 		"Always break complex queries into multiple targeted steps with specific resource types and filters",
@@ -106,9 +106,9 @@ func (l KubectlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"NEVER use writing kubectl output to a file as we do not have access to the file system",
 		"NEVER user '-o json' or '-o yaml' options with kubectl commands without filters, as it can lead to timeouts or truncated responses",
 		"Use specific resource types (pods, services, deployments) instead of 'all' when possible",
-		"**IMPORTANT: Use resource_search tool proactively** - Don't wait for kubectl to fail first",
-		"**When in doubt about resource names:** Always use resource_search tool to find exact matches",
-		"**Never guess resource names:** Use resource_search tool to get accurate suggestions",
+		"**IMPORTANT: Use resource_search_execute tool proactively** - Don't wait for kubectl to fail first",
+		"**When in doubt about resource names:** Always use resource_search_execute tool to find exact matches",
+		"**Never guess resource names:** Use resource_search_execute tool to get accurate suggestions",
 		"Do not just return 'command' or generic informations, unless or until user explicitly asks for it",
 		"In templates, use canonical resource kinds (pods, services, deployments, statefulsets, daemonsets, ingresses); avoid shorthands like po/svc/deploy.",
 	}
@@ -127,13 +127,7 @@ func (l KubectlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 			"Input: valid kubectl command",
 			"Output: the data returned by the kubectl command.",
 		},
-		ResourceSearchAgentName: {
-			"Use this tool for fuzzy resource matching and generating search strategies when resources are not found.",
-			"Input: search query in natural language",
-			"Output: resource suggestions and search strategies",
-			"Examples: Can you search pods maching `pod1`",
-			"Examples: Get me pods for app `nginx` in namespace `ingress`",
-		},
+		tools.ToolResourceSearch: resourceSearchToolUsage,
 	}
 
 	toolUsage[tools.ToolExecuteKubectlCommand] = []string{

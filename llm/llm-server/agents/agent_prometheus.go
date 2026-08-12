@@ -75,7 +75,7 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		"    - Workload RPS: `sum(rate(container_http_requests_total{destination_workload_name=\"WORKLOAD_NAME\", destination_workload_namespace=\"NS\"}[5m]))`",
 		"    - Top 5 Slowest Apps (P99): `topk(5, histogram_quantile(0.99, sum(rate(container_http_requests_duration_seconds_total_bucket[5m])) by (le, destination_workload_name, destination_workload_namespace)))`",
 		"    **CRITICAL:** If this direct query returns NO DATA, check label schema first: `container_http_*` → use `destination_workload_name`/`destination_workload_namespace`; `container_cpu_*`/`container_memory_*` → use `pod`/`namespace`; CPU % → verify `kube_pod_container_resource_limits` has `resource=\"cpu\"`; Disk I/O → verify `container_fs_reads_total` exists (use `metrics_list` with 'container_fs' if unsure). If still no data after label fix, proceed to Step 2.",
-		"2.  **Bypassing Resource Search:** If the user provides a specific resource name (e.g., 'example-server') and namespace, do NOT use `resource_search`. Construct your PromQL regex using that name directly and go to execution. Only search if the name is missing, ambiguous, or if direct execution fails.",
+		"2.  **Bypassing Resource Search:** If the user provides a specific resource name (e.g., 'example-server') and namespace, do NOT use `resource_search_execute`. Construct your PromQL regex using that name directly and go to execution. Only search if the name is missing, ambiguous, or if direct execution fails.",
 		"2.5 **Custom Metric Discovery:** If the user asks about metrics NOT in the standard templates (e.g., Redis, Kafka, Postgres, JVM, custom app metrics), use `metrics_list` ONCE with a single technology keyword (e.g., 'redis', 'kafka', 'pg', 'jvm'). From the returned metric names, identify the best match using your domain knowledge and construct the PromQL directly. Do NOT use `search_metrics` — it is slow. Only use `promql_query` if `metrics_list` returns no results.",
 		"3.  **Complex Query Generation:** ONLY use `promql_query` tool if the request involves custom metrics, complex aggregations, or if you are unsure of the metric name.",
 		"4.  **Execute Query:** Use the `prometheus_execute` tool to execute prometheus query and get the results.",
@@ -145,13 +145,7 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 			"Input: workload (required), namespace (recommended).",
 			"Output: groups of {namespace_label, workload_label, match_type, families[]}. Build the query from a family + that group's labels; match_type 'prefix' => =~\"<workload>.*\". Don't mix labels across groups.",
 		},
-		ResourceSearchAgentName: {
-			"Use this tool for fuzzy resource matching and generating search strategies when resources are not found.",
-			"Input: search query in natural language",
-			"Output: resource suggestions and search strategies",
-			"Examples: Can you search pods maching `pod1`",
-			"Examples: Get me pods for app `nginx` in namespace `ingress`",
-		},
+		tools.ToolResourceSearch: resourceSearchToolUsage,
 		VisualizationAgentName: {
 			"Use this tool to generate visualizations (charts, graphs) for metrics, Without using this tool you can't generate correct charts or graphs.",
 			"Input: A natural language request that INCLUDES the FULL metric data. For trend charts (time-series), you MUST pass the arrays of values and timestamps (e.g., 'Series A: [1,2,3], Time: [t1,t2,t3]'). For bar charts, pass the categorical values. Do NOT summarize time-series data into a single number unless explicitly asked.",
@@ -163,7 +157,7 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		"You MUST use `prometheus_execute` tool to execute query and get results.",
 		"Prefer actual consumption metrics (e.g. `container_memory_usage_bytes`) over resource requests/limits unless explicitly asked for configurations.",
 		"You MAY execute PromQL queries directly using `prometheus_execute` if you are confident in the query syntax and metric names (e.g. standard K8s metrics). Otherwise, use `promql_query` first.",
-		"Do NOT use `resource_search` if the resource name and namespace are already provided in the user request.",
+		"Do NOT use `resource_search_execute` if the resource name and namespace are already provided in the user request.",
 		"If `prometheus_execute` returns no data after trying correct label schemas, use `promql_query` ONCE. If still empty, inform the user no data exists.",
 		"You MUST use `visualizer` tool to generate visualizations (charts) for metrics, and prefer line/bar charts, without using this tool you can't generate correct charts or graphs.",
 		"For specific time queries (e.g. 'around 10am'), ALWAYS use `start_time` and `end_time` calculated from the request. NEVER use `range` for absolute time targets.",
@@ -300,7 +294,7 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 }
 
 func (p PrometheusAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	tools := []toolcore.NBTool{
+	toolList := []toolcore.NBTool{
 		tools.PrometheusExecuteTool{},
 		tools.SearchMetricsTool{},
 		tools.MetricsListTool{Provider: "prometheus"},
@@ -314,16 +308,16 @@ func (p PrometheusAgent) GetSupportedTools(ctx *security.RequestContext) []toolc
 		tools.MetricsSeriesMatchTool{Provider: "prometheus"},
 	}
 	if prom, ok := toolcore.GetNBTool(p.accountId, PromqlAgentName); ok {
-		tools = append(tools, prom)
+		toolList = append(toolList, prom)
 	}
-	if searchTool, ok := toolcore.GetNBTool(p.accountId, ResourceSearchAgentName); ok {
-		tools = append(tools, searchTool)
+	if searchTool, ok := toolcore.GetNBTool(p.accountId, tools.ToolResourceSearch); ok {
+		toolList = append(toolList, searchTool)
 	}
 	if visualizationTool, ok := toolcore.GetNBTool(p.accountId, VisualizationAgentName); ok {
-		tools = append(tools, visualizationTool)
+		toolList = append(toolList, visualizationTool)
 	}
 
-	return tools
+	return toolList
 }
 
 func (l PrometheusAgent) GetPlannerType() core.AgentPlannerType {
@@ -334,7 +328,7 @@ func (l PrometheusAgent) GetPlannerType() core.AgentPlannerType {
 // The default global limit is 10, but the prometheus agent was observed hallucinating
 // tool names (generate_promql, prometheus_query_generator) at the iteration limit when
 // repeated prometheus_execute calls returned no data. Capping at 8 limits wasted retries
-// while still allowing: resource_search → promql_query → execute → retry → execute → answer.
+// while still allowing: resource_search_execute → promql_query → execute → retry → execute → answer.
 func (l PrometheusAgent) GetMaxIterations() int {
 	return 8
 }

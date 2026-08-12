@@ -30,7 +30,14 @@ func trimmedK8sCoreToolNames() []string {
 		EventsAgentName,
 		MetricsAgentName,
 		TracesAgentName,
-		ResourceSearchAgentName,
+		// Resource discovery via the direct DB tools, NOT the resource_search agent
+		// (removed, #32503 Phase 2): resource_search_execute resolves k8s resources
+		// (with namespace) and cloud_resource_search_execute resolves cloud resources —
+		// both over the unified cloud_resourses inventory in one query, no 12-30s LLM
+		// agent / parallel fan-out. Both preloaded so the primary/hybrid k8s entrypoint
+		// resolves cross-platform without the agent.
+		tools.ToolResourceSearch,
+		tools.ToolCloudResourceSearch,
 		ServiceDependencyGraph,
 		RecommendationsAgentName,
 		// websearch is preloaded so the model can ground error-message /
