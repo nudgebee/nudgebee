@@ -374,3 +374,76 @@ func TestFilterAndInjectDefaultTools_PlainAgentStillGetsInjection(t *testing.T) 
 	assert.True(t, HasShellTool(result),
 		"plain agent without opt-out interface must still receive shell_execute injection")
 }
+
+// =============================================================================
+// DefaultSkillsInjectOverride interface — narrow re-opt-in for load_skills
+// =============================================================================
+
+// mockOptOutSkillsInjectAgent implements DefaultToolsOptOut AND
+// DefaultSkillsInjectOverride: it opts out of shell/watch injection but keeps
+// load_skills reachable when a `<skill-lists>` menu is present. This is the
+// exact shape the dynamic delegate uses.
+type mockOptOutSkillsInjectAgent struct{ mockOptOutAgent }
+
+func (a mockOptOutSkillsInjectAgent) InjectDefaultSkills() bool { return true }
+
+// registerMockLoadSkillsTool registers a mock load_skills tool so
+// FilterAndInjectDefaultTools can resolve it during step-4 injection.
+func registerMockLoadSkillsTool() {
+	toolcore.RegisterNBToolFactory("load_skills", func(accountId string) (toolcore.NBTool, error) {
+		return mockTool{name: "load_skills"}, nil
+	})
+}
+
+func init() {
+	registerMockLoadSkillsTool()
+}
+
+func hasLoadSkills(tools []toolcore.NBTool) bool {
+	for _, t := range tools {
+		if t.Name() == "load_skills" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestFilterAndInjectDefaultTools_SkillsInjectOverrideKeepsLoadSkills(t *testing.T) {
+	// Delegate-shaped agent: OptOutDefaultTools=true (no shell/watch), but
+	// InjectDefaultSkills=true — load_skills MUST land when the prompt marker
+	// is present, otherwise the delegate sees a menu of runbooks it cannot open.
+	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
+	agent := mockOptOutSkillsInjectAgent{mockOptOutAgent: mockOptOutAgent{name: "delegate_agent"}}
+
+	result := FilterAndInjectDefaultTools("test-account", agent, "<skill-lists>foo</skill-lists>", tools, toolcore.AgentCapabilities{})
+
+	assert.True(t, hasLoadSkills(result),
+		"DefaultSkillsInjectOverride must re-enable load_skills injection when a <skill-lists> menu is present")
+	assert.False(t, HasShellTool(result),
+		"DefaultSkillsInjectOverride must NOT re-enable shell_execute — only skills carve out")
+}
+
+func TestFilterAndInjectDefaultTools_SkillsInjectOverrideStillNeedsMarker(t *testing.T) {
+	// The override is gated on the same marker rule as before: no `<skill-lists>`
+	// in the prompt → no load_skills, regardless of the override.
+	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
+	agent := mockOptOutSkillsInjectAgent{mockOptOutAgent: mockOptOutAgent{name: "delegate_agent"}}
+
+	result := FilterAndInjectDefaultTools("test-account", agent, "", tools, toolcore.AgentCapabilities{})
+
+	assert.False(t, hasLoadSkills(result),
+		"override without a <skill-lists> marker must NOT inject load_skills")
+}
+
+func TestFilterAndInjectDefaultTools_MassOptOutStillBlocksLoadSkills(t *testing.T) {
+	// Back-compat: an agent that opts out via DefaultToolsOptOut but does NOT
+	// implement DefaultSkillsInjectOverride keeps today's behavior — load_skills
+	// stays blocked. This guards the 3+ non-delegate opt-out agents (custom,
+	// service_dependency_graph) from a silent behavior flip.
+	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
+
+	result := FilterAndInjectDefaultTools("test-account", mockOptOutAgent{name: "custom_agent"}, "<skill-lists>foo</skill-lists>", tools, toolcore.AgentCapabilities{})
+
+	assert.False(t, hasLoadSkills(result),
+		"opt-out agent without SkillsInjectOverride must NOT get load_skills — preserves pre-Phase-2 behavior")
+}

@@ -83,13 +83,27 @@ func asyncCompletionRules(agent NBAgent) string {
 }
 
 // DefaultToolsOptOut lets an agent decline the planner's automatic default-tool injection
-// (shell_execute, load_skills). Implement and return true for agents whose tool list is
-// already curated by their parent — most importantly the dynamic delegate sub-agent, where
-// the parent explicitly chose the toolset and any extras would defeat that scoping.
+// (shell_execute, watch tools, load_skills). Implement and return true for agents whose
+// tool list is already curated by their parent — most importantly the dynamic delegate
+// sub-agent, where the parent explicitly chose the toolset and any extras would defeat
+// that scoping.
 //
 // Capability filtering (allowed_tools / disabled_tools) still applies regardless.
 type DefaultToolsOptOut interface {
 	OptOutDefaultTools() bool
+}
+
+// DefaultSkillsInjectOverride is a narrow carve-out on top of DefaultToolsOptOut: an
+// agent that opts out of shell/watch injection can still request load_skills when its
+// planner prompt (or the SkillListsMenu the executor attaches) advertises `<skill-lists>`.
+// Intended for the dynamic delegate: the parent curated the tool list, but KB skills
+// are content the delegate can't get any other way — without load_skills the menu is
+// visible but unreachable.
+//
+// Only consulted when DefaultToolsOptOut returned true. Ignored otherwise (skills
+// already inject under the normal marker rule).
+type DefaultSkillsInjectOverride interface {
+	InjectDefaultSkills() bool
 }
 
 // FilterAndInjectDefaultTools filters tools and injects default ones like shell_execute and load_skills if enabled.
@@ -114,6 +128,15 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 	if agent != nil {
 		if optOut, ok := agent.(DefaultToolsOptOut); ok && optOut.OptOutDefaultTools() {
 			skipInjection = true
+		}
+	}
+
+	// Skills carve-out: an opt-out agent may still want load_skills so the parent-attached
+	// SkillListsMenu is actually reachable. Only consulted when the mass opt-out is on.
+	skipSkillsInjection := skipInjection
+	if skipInjection && agent != nil {
+		if override, ok := agent.(DefaultSkillsInjectOverride); ok && override.InjectDefaultSkills() {
+			skipSkillsInjection = false
 		}
 	}
 
@@ -151,8 +174,9 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 		})
 	}
 
-	// 4. Inject load_skills tool if the agent has KB mappings (indicated by skill-lists in the prompt)
-	if !skipInjection && strings.Contains(agentPrompt, "<skill-lists>") {
+	// 4. Inject load_skills tool if the agent has KB mappings (indicated by skill-lists in the prompt).
+	// Uses skipSkillsInjection so a DefaultSkillsInjectOverride can re-enable skills alone.
+	if !skipSkillsInjection && strings.Contains(agentPrompt, "<skill-lists>") {
 		found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
 			return t.Name() == "load_skills"
 		})

@@ -1,11 +1,12 @@
 package core
 
 import (
-	"os"
+	"nudgebee/llm/config"
 	"strings"
 	"testing"
+	"time"
 
-	"nudgebee/llm/common"
+	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -97,40 +98,16 @@ func TestBuildKBSearchQueryCappedLength(t *testing.T) {
 }
 
 func TestBuildSkillListsMenu(t *testing.T) {
-	t.Run("active KBs render with names and descriptions when hasRetrievedKnowledge is true", func(t *testing.T) {
+	t.Run("active KBs render with names and descriptions", func(t *testing.T) {
 		kbs := []toolcore.Knowledgebase{
 			{Name: "Pod Restart Runbook", Description: "Steps to safely restart a crashlooping pod", Status: "active"},
 			{Name: "Database Troubleshooting", Description: "Common database connection issues", Status: "active"},
 		}
-		got := BuildSkillListsMenu(kbs, true)
+		got := BuildSkillListsMenu(kbs)
 		assert.Contains(t, got, "<skill-lists>")
 		assert.Contains(t, got, "</skill-lists>")
-		assert.Contains(t, got, "Additional knowledge bases available for this account. Relevant knowledge has already been retrieved for you above; use the load_skills tool to load one of these by name ONLY if you need expert guidance the retrieved knowledge does not cover.")
 		assert.Contains(t, got, "name: Pod Restart Runbook - description: Steps to safely restart a crashlooping pod")
 		assert.Contains(t, got, "name: Database Troubleshooting - description: Common database connection issues")
-	})
-
-	t.Run("sub-agent / no retrieved knowledge renders proactive lazy load instructions", func(t *testing.T) {
-		kbs := []toolcore.Knowledgebase{
-			{Name: "es_metrics_discovery", Description: "Elasticsearch metrics discovery runbook", Status: "active"},
-		}
-		got := BuildSkillListsMenu(kbs, false)
-		assert.Contains(t, got, "<skill-lists>")
-		assert.Contains(t, got, "</skill-lists>")
-		assert.Contains(t, got, "The following skills are available. If any skill is relevant to the current task, load it using the load_skills tool BEFORE running other tools — skills contain expert guidance that improves your analysis.")
-		assert.NotContains(t, got, "already been retrieved for you above")
-		assert.Contains(t, got, "name: es_metrics_discovery - description: Elasticsearch metrics discovery runbook")
-	})
-
-	t.Run("empty description does not emit dangling description suffix", func(t *testing.T) {
-		kbs := []toolcore.Knowledgebase{
-			{Name: "unannotated_skill", Description: "", Status: "active"},
-			{Name: "whitespace_desc_skill", Description: "   ", Status: "active"},
-		}
-		got := BuildSkillListsMenu(kbs, false)
-		assert.Contains(t, got, "name: unannotated_skill\n")
-		assert.Contains(t, got, "name: whitespace_desc_skill\n")
-		assert.NotContains(t, got, "description:")
 	})
 
 	t.Run("inactive KBs are excluded", func(t *testing.T) {
@@ -138,20 +115,18 @@ func TestBuildSkillListsMenu(t *testing.T) {
 			{Name: "Active KB", Description: "d", Status: "active"},
 			{Name: "Processing KB", Description: "d", Status: "processing"},
 		}
-		got := BuildSkillListsMenu(kbs, false)
+		got := BuildSkillListsMenu(kbs)
 		assert.Contains(t, got, "Active KB")
 		assert.NotContains(t, got, "Processing KB")
 	})
 
 	t.Run("no active KBs returns empty string", func(t *testing.T) {
 		kbs := []toolcore.Knowledgebase{{Name: "x", Status: "processing"}}
-		assert.Equal(t, "", BuildSkillListsMenu(kbs, true))
-		assert.Equal(t, "", BuildSkillListsMenu(kbs, false))
+		assert.Equal(t, "", BuildSkillListsMenu(kbs))
 	})
 
 	t.Run("empty slice returns empty string", func(t *testing.T) {
-		assert.Equal(t, "", BuildSkillListsMenu(nil, true))
-		assert.Equal(t, "", BuildSkillListsMenu(nil, false))
+		assert.Equal(t, "", BuildSkillListsMenu(nil))
 	})
 }
 
@@ -187,94 +162,178 @@ func TestFormatRetrievedKBBlock(t *testing.T) {
 	})
 }
 
-// TestKBPrestepVerify is a manual verification harness — NOT a CI unit test.
-// It inspects a real, already-completed conversation in the database to confirm
-// the canary KB article was retrieved, injected into the planner prompt,
-// followed in the final answer, and recorded as a reference. It self-skips
-// unless KB_PRESTEP_VERIFY_CONVERSATION_ID is set, so `make test` runs it as a
-// no-op. It reuses the service's own DB layer (common.GetDatabaseManager) — no
-// external psql, no hand-passed connection string.
-//
-// Run the canary scenario first (see scripts/kb_prestep_canary.txt), then:
-//
-//	set -a && source .env && set +a
-//	KB_PRESTEP_VERIFY_CONVERSATION_ID=<conversation_id> \
-//	  go test -v -run TestKBPrestepVerify ./agents/core/...
-//
-// Optional: KB_PRESTEP_CANARY_TOKEN (default ZEBRA-9931).
-func TestKBPrestepVerify(t *testing.T) {
-	convID := os.Getenv("KB_PRESTEP_VERIFY_CONVERSATION_ID")
-	if convID == "" {
-		t.Skip("set KB_PRESTEP_VERIFY_CONVERSATION_ID to run the KB pre-step verification")
-	}
-	canary := os.Getenv("KB_PRESTEP_CANARY_TOKEN")
-	if canary == "" {
-		canary = "ZEBRA-9931"
-	}
+// strPtr is a tiny helper for optional string fields on toolcore.Knowledgebase.
+func strPtr(s string) *string { return &s }
 
-	dbms, err := common.GetDatabaseManager(common.Metastore)
-	if err != nil {
-		t.Fatalf("could not get database manager (is LLM_SERVER_DB_URL set?): %v", err)
-	}
+func TestMergeAccountIntegrationKBs(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
 
-	count := func(query string, args ...any) int {
-		var n int
-		if err := dbms.Db.Get(&n, query, args...); err != nil {
-			t.Fatalf("query failed: %v\nquery: %s", err, query)
+	restore := listAccountKBsFn
+	defer func() { listAccountKBsFn = restore }()
+
+	t.Run("active integration KBs are added to mapped candidates", func(t *testing.T) {
+		listAccountKBsFn = func(_ *security.RequestContext, _ string) ([]toolcore.Knowledgebase, error) {
+			return []toolcore.Knowledgebase{
+				{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+				{Id: "kb-arch", Name: "old-confluence", Status: "archived", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+				{Id: "kb-man", Name: "manual-notes", Status: "active", KBType: toolcore.KBTypeManual},
+			}, nil
 		}
-		return n
+		mapped := []toolcore.Knowledgebase{{Id: "kb-mapped", Name: "mapped", Status: "active", KBType: toolcore.KBTypeManual}}
+		got := mergeAccountIntegrationKBs(ctx, "acct", mapped)
+		ids := make([]string, 0, len(got))
+		for _, kb := range got {
+			ids = append(ids, kb.Id)
+		}
+		// Mapped KB retained, active integration KB added; archived and
+		// account-wide manual KBs excluded.
+		assert.Equal(t, []string{"kb-mapped", "kb-conf"}, ids)
+	})
+
+	t.Run("duplicate ids are not added twice", func(t *testing.T) {
+		listAccountKBsFn = func(_ *security.RequestContext, _ string) ([]toolcore.Knowledgebase, error) {
+			return []toolcore.Knowledgebase{
+				{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+			}, nil
+		}
+		mapped := []toolcore.Knowledgebase{{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")}}
+		got := mergeAccountIntegrationKBs(ctx, "acct", mapped)
+		assert.Len(t, got, 1)
+	})
+
+	t.Run("listing failure falls back to mapped KBs only", func(t *testing.T) {
+		listAccountKBsFn = func(_ *security.RequestContext, _ string) ([]toolcore.Knowledgebase, error) {
+			return nil, assert.AnError
+		}
+		mapped := []toolcore.Knowledgebase{{Id: "kb-mapped", Status: "active", KBType: toolcore.KBTypeManual}}
+		got := mergeAccountIntegrationKBs(ctx, "acct", mapped)
+		assert.Len(t, got, 1)
+		assert.Equal(t, "kb-mapped", got[0].Id)
+	})
+}
+
+func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+
+	t.Run("one reference per retrieved page, labelled by the page not the KB", func(t *testing.T) {
+		docs := toolcore.RAGSearchResults{
+			{
+				Document:        "Step 1 — Rule out the histogram artifact.",
+				Metadata:        map[string]any{"source": "confluence", "url": "https://example.atlassian.net/wiki/pages/113836034", "title": "NBLLM Agent Latency P95 High — Runbook"},
+				SimilarityScore: 0.92,
+			},
+			{
+				Document:        "Runbook — Event Processing Latency High. Fires when services-server is slow.",
+				Metadata:        map[string]any{"source": "confluence", "url": "https://example.atlassian.net/wiki/pages/110002177"},
+				SimilarityScore: 0.90,
+			},
+		}
+		kbs := []toolcore.Knowledgebase{
+			{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+		}
+		refs := attributeKBReferences(ctx, "acct", docs, kbs)
+		assert.Len(t, refs, 2)
+		// Each row is the page that was used: its own url, subject, snippet.
+		assert.Equal(t, "https://example.atlassian.net/wiki/pages/113836034", refs[0].Metadata["url"])
+		assert.Equal(t, "NBLLM Agent Latency P95 High — Runbook", refs[0].Metadata["subject"])
+		assert.Equal(t, "Step 1 — Rule out the histogram artifact.", refs[0].Metadata["content"])
+		assert.Equal(t, "https://example.atlassian.net/wiki/pages/110002177", refs[1].Metadata["url"])
+		// No title metadata → subject falls back to the page's first line.
+		assert.Equal(t, "Runbook — Event Processing Latency High. Fires when services-server is slow.", refs[1].Metadata["subject"])
+		// Both credit the same KB, with distinct reference ids so the insert
+		// dedup does not collapse them back into one row.
+		for _, r := range refs {
+			assert.Equal(t, AgentReferenceTypeKB, r.Type)
+			assert.Equal(t, "dev-confluence", r.Metadata["name"])
+			assert.Equal(t, "kb-conf", r.Metadata["kb_id"])
+			assert.Equal(t, "kb_prestep", r.Metadata["via"])
+			assert.True(t, strings.HasPrefix(r.ReferenceID, "kb-conf:"))
+		}
+		assert.NotEqual(t, refs[0].ReferenceID, refs[1].ReferenceID)
+	})
+
+	t.Run("duplicate copies of the same page collapse to the best-scored one", func(t *testing.T) {
+		docs := toolcore.RAGSearchResults{
+			{Document: "SOP content.", Metadata: map[string]any{"source": "confluence", "url": "https://example.atlassian.net/wiki/pages/999"}, SimilarityScore: 0.86},
+			{Document: "SOP content.", Metadata: map[string]any{"source": "confluence", "url": "https://example.atlassian.net/wiki/pages/999"}, SimilarityScore: 0.86},
+			{Document: "SOP content.", Metadata: map[string]any{"source": "confluence", "url": "https://example.atlassian.net/wiki/pages/999"}, SimilarityScore: 0.86},
+		}
+		kbs := []toolcore.Knowledgebase{
+			{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+		}
+		refs := attributeKBReferences(ctx, "acct", docs, kbs)
+		assert.Len(t, refs, 1)
+	})
+
+	t.Run("doc without url dedups by content and still credits the KB", func(t *testing.T) {
+		docs := toolcore.RAGSearchResults{
+			{Document: "kb article body", Metadata: map[string]any{"source": "servicenow"}, SimilarityScore: 0.9},
+			{Document: "kb article body", Metadata: map[string]any{"source": "servicenow"}, SimilarityScore: 0.88},
+		}
+		kbs := []toolcore.Knowledgebase{
+			{Id: "kb-snow", Name: "snow", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("servicenow")},
+		}
+		refs := attributeKBReferences(ctx, "acct", docs, kbs)
+		assert.Len(t, refs, 1)
+		_, hasURL := refs[0].Metadata["url"]
+		assert.False(t, hasURL)
+		assert.Equal(t, "kb article body", refs[0].Metadata["subject"])
+	})
+
+	t.Run("source mismatch credits nothing", func(t *testing.T) {
+		docs := toolcore.RAGSearchResults{
+			{Document: "content", Metadata: map[string]any{"source": "confluence"}, SimilarityScore: 0.9},
+		}
+		kbs := []toolcore.Knowledgebase{
+			{Id: "kb-snow", Name: "snow", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("servicenow")},
+		}
+		refs := attributeKBReferences(ctx, "acct", docs, kbs)
+		assert.Empty(t, refs)
+	})
+}
+
+func TestDedupRAGDocs(t *testing.T) {
+	docs := toolcore.RAGSearchResults{
+		{Document: "runbook A", Metadata: map[string]any{"url": "https://x/a"}, SimilarityScore: 0.9},
+		{Document: "runbook A copy", Metadata: map[string]any{"url": "https://x/a"}, SimilarityScore: 0.89},
+		{Document: "sop B", Metadata: map[string]any{"url": "https://x/b"}, SimilarityScore: 0.85},
+		{Document: "no-url doc", Metadata: map[string]any{}, SimilarityScore: 0.84},
+		{Document: "no-url doc", Metadata: map[string]any{}, SimilarityScore: 0.83},
 	}
+	out := dedupRAGDocs(docs)
+	assert.Len(t, out, 3)
+	// Rank order preserved; best-scored copy of each page kept.
+	assert.Equal(t, "runbook A", out[0].Document)
+	assert.Equal(t, "sop B", out[1].Document)
+	assert.Equal(t, "no-url doc", out[2].Document)
+}
 
-	t.Logf("KB pre-step verification — conversation %s (canary %s)", convID, canary)
-
-	// Stages 1-2 read prompt_messages, populated only when LLM tracing is on.
-	traced := count(`SELECT count(*) FROM llm_conversation_token_usage
-		WHERE conversation_id = $1 AND prompt_messages IS NOT NULL`, convID)
-	if traced == 0 {
-		t.Log("note: no prompt traces stored — stages 1-2 are inconclusive without LLM tracing enabled")
+func TestFormatRetrievedKBBlockSequentialBudget(t *testing.T) {
+	// A short doc must hand its unused budget to the long doc after it, so the
+	// runbook's steps survive instead of being cut at its even share.
+	long := strings.Repeat("step ", 2000) // ~10000 chars
+	docs := toolcore.RAGSearchResults{
+		{Document: "short doc"},
+		{Document: long},
 	}
+	got := formatRetrievedKBBlock(docs)
+	// Even split would cap the long doc at ~2500; sequential allocation gives
+	// it the short doc's leftover (~5000 - len("short doc")).
+	assert.Greater(t, len(got), 4500)
+	assert.Contains(t, got, "FOLLOW its steps in order")
+}
 
-	// Stage 1 — the pre-step retrieved content and it reached the planner prompt.
-	// prompt_messages is JSON-serialized, so angle brackets are escaped; match
-	// the bracket-free tag name so the check is escaping-agnostic.
-	stage1 := count(`SELECT count(*) FROM llm_conversation_token_usage
-		WHERE conversation_id = $1 AND prompt_messages ILIKE '%retrieved_knowledge%'`, convID)
-	if stage1 > 0 {
-		t.Logf("[STAGE 1] PASS  pre-step retrieved KB content (retrieved_knowledge block in %d prompt(s))", stage1)
-	} else {
-		t.Errorf("[STAGE 1] FAIL  no retrieved_knowledge block in the prompt — pre-step did not run or returned nothing")
-	}
+func TestKBPrestepTimeoutConfigurable(t *testing.T) {
+	prev := config.Config.LlmServerKBPrestepTimeoutSeconds
+	defer func() { config.Config.LlmServerKBPrestepTimeoutSeconds = prev }()
 
-	// Stage 2 — the canary article specifically reached the planner prompt.
-	stage2 := count(`SELECT count(*) FROM llm_conversation_token_usage
-		WHERE conversation_id = $1 AND prompt_messages ILIKE '%' || $2 || '%'`, convID, canary)
-	if stage2 > 0 {
-		t.Logf("[STAGE 2] PASS  canary present in the planner prompt (%d message(s))", stage2)
-	} else {
-		t.Errorf("[STAGE 2] FAIL  canary not found in the prompt — retrieved the wrong content, or dropped before the LLM call")
-	}
+	config.Config.LlmServerKBPrestepTimeoutSeconds = 5
+	assert.Equal(t, 5*time.Second, kbPrestepTimeout())
 
-	// Stage 3 — the canary surfaced in the final answer (adherence).
-	stage3 := count(`SELECT count(*) FROM llm_conversation_messages
-		WHERE conversation_id = $1 AND response ILIKE '%' || $2 || '%'`, convID, canary)
-	if stage3 > 0 {
-		t.Logf("[STAGE 3] PASS  canary surfaced in the final answer — KB was FOLLOWED")
-	} else {
-		t.Errorf("[STAGE 3] FAIL  canary not in the final answer")
-	}
-
-	// Stage 4 — the KB usage was recorded so the UI can show it.
-	stage4 := count(`SELECT count(*) FROM llm_conversation_references
-		WHERE conversation_id = $1 AND reference_type = 'knowledge_base'`, convID)
-	if stage4 > 0 {
-		t.Logf("[STAGE 4] PASS  %d knowledge_base reference(s) saved — KB usage is visible in the UI", stage4)
-	} else {
-		t.Errorf("[STAGE 4] FAIL  no knowledge_base references saved — KB usage would be invisible in the UI")
-	}
-
-	t.Log("Interpretation:")
-	t.Log("  stage 1 FAIL          -> discovery: pre-step did not retrieve the article")
-	t.Log("  stage 1 PASS, 2 FAIL  -> retrieval ran but matched the wrong content")
-	t.Log("  stage 2 PASS, 3 FAIL  -> ADHERENCE: agent saw the KB and ignored it (separate fix)")
-	t.Log("  all PASS              -> KB found, injected, and followed")
+	// Unset / invalid values fall back to the default instead of a zero
+	// timeout (which would make every retrieval fail open instantly).
+	config.Config.LlmServerKBPrestepTimeoutSeconds = 0
+	assert.Equal(t, 12*time.Second, kbPrestepTimeout())
+	config.Config.LlmServerKBPrestepTimeoutSeconds = -3
+	assert.Equal(t, 12*time.Second, kbPrestepTimeout())
 }

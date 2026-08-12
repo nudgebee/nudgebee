@@ -614,8 +614,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// and needs no agent mapping — an agent with no mapped KBs must
 			// still surface account knowledge (e.g. a synced Confluence runbook
 			// for the alert under investigation, #34779). Only the menu is
-			// mapping-dependent; buildSkillListsMenu returns "" for empty kbs.
-			menu := buildSkillListsMenu(kbs)
+			// mapping-dependent; BuildSkillListsMenu returns "" for empty kbs.
+			menu := BuildSkillListsMenu(kbs)
 			block := ""
 			var kbRefs []AgentReference
 			if isTopLevelInvocation {

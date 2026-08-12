@@ -320,6 +320,18 @@ type appConfig struct {
 	// and its planner chooses whether to load_skills (no eager injection). Off keeps
 	// today's behavior (only custom-planner agents thread skills explicitly).
 	LlmServerSkillDelegationPropagationEnabled bool `mapstructure:"llm_server_skill_delegation_propagation_enabled"`
+	// LlmServerDelegateAccountKBsEnabled, when on, lets the dynamic delegate sub-agent
+	// discover skills from the ENTIRE account-mapped KB pool instead of nothing. Parent
+	// orchestrators today opt out of default injection (shell/watch/skills) because the
+	// parent curated the toolset — but that silently kills load_skills too, so a delegate
+	// investigating a helm task never sees the helm runbooks the operator mapped. When
+	// enabled, the delegate's synthesized system prompt gains a `<skill-lists>` menu
+	// rendered from all active account KBs, and the load_skills tool is re-injected via
+	// the DefaultSkillsInjectOverride carve-out. Shell/watch remain suppressed.
+	//
+	// Off by default — flip per-tenant to canary before wider rollout. Cost: one KB list
+	// DB call per delegate invocation, plus ~50 chars of prompt per active KB.
+	LlmServerDelegateAccountKBsEnabled bool `mapstructure:"llm_server_delegate_account_kbs_enabled"`
 	// LlmServerToolSchemaValidationTools is a comma-separated allowlist of tool
 	// names for which the framework treats the InputSchema as authoritative.
 	// A tool on this list has BOTH of the following applied by the framework:
@@ -1043,6 +1055,7 @@ func init() {
 	viper.SetDefault("llm_server_kb_prestep_enabled", false)
 	viper.SetDefault("llm_server_kb_prestep_timeout_seconds", 12)
 	viper.SetDefault("llm_server_skill_delegation_propagation_enabled", false)
+	viper.SetDefault("llm_server_delegate_account_kbs_enabled", false)
 	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
 	// validator). Other tools stay text-description-only until their schema
 	// is reconciled with their Call() acceptance shape. See

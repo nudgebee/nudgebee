@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -610,7 +611,7 @@ func (a *dynamicReActAgent) GetSupportedTools(_ *security.RequestContext) []tool
 	return a.tools
 }
 
-func (a *dynamicReActAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAgentRequest) core.NBAgentPrompt {
+func (a *dynamicReActAgent) GetSystemPrompt(ctx *security.RequestContext, _ core.NBAgentRequest) core.NBAgentPrompt {
 	// Build a list of concrete tool names (excluding the reasoning LLM tool) so the
 	// sub-agent knows exactly what it can call. Exposing this in the system prompt
 	// lets the sub-agent plan its investigation up front instead of discovering its
@@ -640,11 +641,14 @@ func (a *dynamicReActAgent) GetSystemPrompt(_ *security.RequestContext, _ core.N
 		)
 	}
 
+	instructions := []string{a.prompt}
+	if menu := a.accountSkillListsMenu(ctx); menu != "" {
+		instructions = append(instructions, menu)
+	}
+
 	return core.NBAgentPrompt{
-		Role: "a specialist investigator dynamically composed by a parent agent",
-		Instructions: []string{
-			a.prompt,
-		},
+		Role:         "a specialist investigator dynamically composed by a parent agent",
+		Instructions: instructions,
 		Constraints: []string{
 			"Focus exclusively on the task described in your instructions. Do not expand scope.",
 			"Use only the tools provided to you. Do not attempt to call tools not in your tool list.",
@@ -652,6 +656,31 @@ func (a *dynamicReActAgent) GetSystemPrompt(_ *security.RequestContext, _ core.N
 			"Report your findings with specific evidence: timestamps, metric values, log lines, or query results. Never make claims without supporting data.",
 		},
 	}
+}
+
+// accountSkillListsMenu renders a `<skill-lists>` discovery block from all active
+// KBs mapped in the delegate's account. Returns "" when the feature flag is off,
+// the account has no accessible KBs, or the KB list call fails (fail-open — the
+// menu is discovery-only and the delegate stays functional without it).
+//
+// This is the delegate's only path to skills: the parent agent opts the whole
+// sub-agent out of default-tool injection to keep the curated toolset honest,
+// so unlike other agents the delegate can't rely on the executor's kb_prestep
+// path to attach a menu. Load_skills itself re-injects via
+// DefaultSkillsInjectOverride once this menu marker is present.
+func (a *dynamicReActAgent) accountSkillListsMenu(ctx *security.RequestContext) string {
+	if !config.Config.LlmServerDelegateAccountKBsEnabled {
+		return ""
+	}
+	if a.accountId == "" {
+		return ""
+	}
+	kbs, err := toolcore.ListKnowledgebases(ctx, a.accountId)
+	if err != nil {
+		ctx.GetLogger().Warn("delegate: unable to list account KBs for skill menu", "error", err, "account_id", a.accountId)
+		return ""
+	}
+	return core.BuildSkillListsMenu(kbs)
 }
 
 func (a *dynamicReActAgent) GetPlannerType() core.AgentPlannerType {
@@ -683,7 +712,17 @@ func (a *dynamicReActAgent) GetSummaryToolName() string {
 
 // OptOutDefaultTools implements core.DefaultToolsOptOut. The parent agent has already
 // curated this sub-agent's tool list (via the `tools` field on the delegate_agent call);
-// the planner must not silently inject shell_execute / load_skills on top of that scope.
+// the planner must not silently inject shell_execute or watch tools on top of that scope.
+// Skills are handled separately via InjectDefaultSkills below.
 func (a *dynamicReActAgent) OptOutDefaultTools() bool {
+	return true
+}
+
+// InjectDefaultSkills implements core.DefaultSkillsInjectOverride: even though
+// the delegate opts out of default-tool injection wholesale, load_skills must
+// still land when the delegate's synthesized system prompt advertises a
+// `<skill-lists>` menu (see accountSkillListsMenu). Without this override the
+// menu is visible but unreachable — the LLM sees named runbooks it cannot open.
+func (a *dynamicReActAgent) InjectDefaultSkills() bool {
 	return true
 }
