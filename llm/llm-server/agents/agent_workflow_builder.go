@@ -200,6 +200,51 @@ func safeChoiceContent(completion *llms.ContentResponse) (string, error) {
 	return strings.TrimSpace(completion.Choices[0].Content), nil
 }
 
+// maxPlanChars caps the plan offered for approval. One reported plan reached 99,799 characters —
+// a single kubectl fragment repeated 636 times until generation hit its ceiling and stopped
+// mid-token — and the approval card rendered all of it with an "Approve and Build" button
+// (#35392). Legitimate plans observed on dev run to a few thousand characters, so this leaves
+// roughly six times the headroom of anything real while still catching a runaway by an order of
+// magnitude.
+const maxPlanChars = 24000
+
+// errPlanIncomplete marks a plan that must not be shown to the user. Sentinel so the caller can
+// tell "the model produced something unusable" (retryable) from a transport failure.
+var errPlanIncomplete = errors.New("plan is incomplete")
+
+// safePlanContent returns the plan text only when generation finished cleanly and produced
+// something of sane size.
+//
+// A plan is the one artifact the user is asked to read and approve, and approving a truncated one
+// is not a no-op: the build proceeds from a plan whose own prose describes tasks that were never
+// written, producing (in the reported case) a one-task automation presented as a four-task one.
+// Both failure modes are detectable before the approval card is ever rendered:
+//
+//   - the provider reports why it stopped, so hitting the output ceiling is a fact rather than an
+//     inference from length, and
+//   - length alone still catches a runaway that happened to fit inside the ceiling.
+func safePlanContent(completion *llms.ContentResponse) (string, error) {
+	plan, err := safeChoiceContent(completion)
+	if err != nil {
+		return "", err
+	}
+
+	stopReason := strings.ToLower(strings.TrimSpace(completion.Choices[0].StopReason))
+	// Providers spell this differently: OpenAI "length", Anthropic "max_tokens", Gemini
+	// "MAX_TOKENS". Match on the substring so a new provider spelling does not silently pass.
+	if strings.Contains(stopReason, "max_tokens") || strings.Contains(stopReason, "length") {
+		return "", fmt.Errorf("%w: generation stopped at the output limit (stop_reason=%q) after %d characters",
+			errPlanIncomplete, stopReason, len(plan))
+	}
+
+	if len(plan) > maxPlanChars {
+		return "", fmt.Errorf("%w: %d characters exceeds the %d-character limit for a reviewable plan",
+			errPlanIncomplete, len(plan), maxPlanChars)
+	}
+
+	return plan, nil
+}
+
 // ClarifyingQuestion represents a single question to ask the user before planning.
 type ClarifyingQuestion struct {
 	Question string   `json:"question"`
@@ -802,7 +847,18 @@ func (a *WorkflowBuilderAgent) handleIntentAndPlan(ctx *security.RequestContext,
 // generatePlanAndAskApproval generates a plan and returns a WAITING response for user approval.
 func (a *WorkflowBuilderAgent) generatePlanAndAskApproval(ctx *security.RequestContext, request core.NBAgentRequest, intent string, clarificationContext string) (core.NBAgentResponse, error) {
 	plan, err := a.generatePlan(ctx, request, intent, clarificationContext)
+	if errors.Is(err, errPlanIncomplete) {
+		// Truncation is usually a one-off: the model wandered into a repetition loop and ran out
+		// of room. Regenerating costs one call and recovers it. What must not happen is the
+		// unusable plan reaching the approval card, so a second failure is surfaced rather than
+		// rendered with an "Approve and Build" button next to it (#35392).
+		ctx.GetLogger().Warn("workflow_builder: discarding an unusable plan, regenerating", "error", err)
+		plan, err = a.generatePlan(ctx, request, intent, clarificationContext)
+	}
 	if err != nil {
+		if errors.Is(err, errPlanIncomplete) {
+			ctx.GetLogger().Error("workflow_builder: plan still unusable after regenerating", "error", err)
+		}
 		return core.NBAgentResponse{}, fmt.Errorf("plan generation failed: %w", err)
 	}
 
@@ -2812,7 +2868,7 @@ NOTE: In all user-facing text, refer to these as "automations" (not "workflows")
 		return "", err
 	}
 
-	return safeChoiceContent(completion)
+	return safePlanContent(completion)
 }
 
 // regeneratePlan creates an updated plan incorporating user feedback.
@@ -2878,7 +2934,7 @@ RULES:
 		return "", err
 	}
 
-	return safeChoiceContent(completion)
+	return safePlanContent(completion)
 }
 
 // coerceWorkflowTypes walks the workflow JSON map and converts float64 values
@@ -3541,7 +3597,7 @@ func (a *WorkflowBuilderAgent) toolGetTaskSchema(args map[string]interface{}, ca
 		if result := findInList(wrapped.Tasks); result != "" {
 			return result
 		}
-		return fmt.Sprintf("Task type '%s' not found in available types. Check the type name and try again.", taskType)
+		return fmt.Sprintf("Error: task type '%s' is not registered on this account. Use one of the types listed under REGISTERED TASK TYPES in your instructions — do not invent type names.", taskType)
 	}
 
 	// Try bare array
@@ -3552,7 +3608,7 @@ func (a *WorkflowBuilderAgent) toolGetTaskSchema(args map[string]interface{}, ca
 		}
 	}
 
-	return fmt.Sprintf("Task type '%s' not found in available types. Check the type name and try again.", taskType)
+	return fmt.Sprintf("Error: task type '%s' is not registered on this account. Use one of the types listed under REGISTERED TASK TYPES in your instructions — do not invent type names.", taskType)
 }
 
 // getEventTriggerSchemaReference returns the authoritative, hand-maintained reference for what an
