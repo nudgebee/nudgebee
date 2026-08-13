@@ -15,6 +15,7 @@ mutation EventClassify(
   $linked_event_id: String
   $apply_to_existing: Boolean
   $confirmed: Boolean
+  $preserve_status: Boolean
 ) {
   events_update_classification(
     event_id: $event_id
@@ -28,6 +29,7 @@ mutation EventClassify(
     linked_event_id: $linked_event_id
     apply_to_existing: $apply_to_existing
     confirmed: $confirmed
+    preserve_status: $preserve_status
   ) {
     success
     classification_id
@@ -651,6 +653,8 @@ export interface ClassifyEventInput {
   linked_event_id?: string;
   apply_to_existing: boolean;
   confirmed: boolean;
+  /** Keep the event's triage status (nb_status) untouched — used by pure priority corrections. */
+  preserve_status?: boolean;
 }
 
 export interface ClassifyPreviewInput {
@@ -983,6 +987,7 @@ const apiTriage = {
         linked_event_id: data.linked_event_id,
         apply_to_existing: data.apply_to_existing,
         confirmed: data.confirmed,
+        preserve_status: data.preserve_status,
       });
       return response?.data?.data?.events_update_classification;
     } catch (error) {

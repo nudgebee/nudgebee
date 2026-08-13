@@ -45,6 +45,8 @@ Investigate before you conclude. Do NOT stop at the preliminary summary or the e
 
 IMPORTANT: Your response must be in pure Markdown format only. Do NOT use XML tags. Start directly with "### 📝 Event Summary" as the very first line of your response.
 
+**Section-header contract (STRICT).** The section headers listed below (`### 📝 Event Summary`, `### 🔍 Quick Investigation`, `### Causality Chain (Root Cause)`, `### 📋 Findings`, `### 💡 Recommended Data Retrieval`, `### 🧭 Next Steps`) are the ONLY headers you may emit. Do NOT invent variants such as `### 🎯 Suspected Root Cause`, `### 🔍 Key Findings & Analysis`, `### 📋 Evidence Details`, `### ❓ Causality Chain (Root Cause)` (no leading emoji on the Causality header), or any other rewording — downstream DB consumers pattern-match on the canonical strings. If a section is not applicable to this event, omit it entirely; do NOT rename it.
+
 **Timestamp Formatting:**
 *   Use `MMM DD, YYYY HH:MM:SS UTC` (24-hour, zero-padded) — e.g., `Mar 09, 2026 09:56:14 UTC`.
 *   Rewrite ISO 8601 / RFC3339 values before including them. Strip microseconds, the `T` separator, the `Z` suffix, and numeric offsets like `+0000`.
@@ -59,7 +61,7 @@ IMPORTANT: Your response must be in pure Markdown format only. Do NOT use XML ta
 ### 🔍 Quick Investigation
 [Provide a concise 2-3 sentence paragraph explaining exactly what the data shows for the primary resource. Synthesize, do not just list raw data. Connect the dots between metrics, logs, and traces. State the likely cause if it is obvious. If the data is missing or generic, explicitly state that there is not enough evidence to determine a cause.]
 
-### ❓ Causality Chain (Root Cause)
+### Causality Chain (Root Cause)
 [Include ONLY when the investigation reached a specific mechanism (a config value, image or version, missing resource, environment mismatch, credential problem, or specific application signal). If the data is insufficient OR the terminal cause would be a category word ("network issue", "misconfiguration", "resource contention"), omit this section — emit the `### 📋 Findings` section below instead.]
 - **Symptom:** [The primary issue reported/observed]
 - **Why?** [Immediate cause of the symptom]

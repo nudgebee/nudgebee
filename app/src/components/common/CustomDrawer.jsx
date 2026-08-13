@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import PropTypes from 'prop-types';
-import { Drawer, Box, Typography, IconButton, Paper } from '@mui/material';
+import { Drawer, Box, Typography, Paper } from '@mui/material';
 import { useForkRef } from '@mui/material/utils';
+import { Button } from '@ui/Button';
 import { Transition } from 'react-transition-group';
 import CloseIcon from '@mui/icons-material/Close';
 import { ds } from 'src/utils/colors';
@@ -198,18 +199,32 @@ const DrawerHeader = ({ title, onClose }) => (
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
-      px: 'var(--ds-space-4)',
+      mx: 'var(--ds-space-4)',
+      px: 'var(--ds-space-2)',
       py: 'var(--ds-space-3)',
-      borderBottom: `1px solid ${ds.blue[300]}`,
+      borderBottom: `1px solid ${ds.gray[200]}`,
       flexShrink: 0,
     }}
   >
-    <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', fontFamily: 'Roboto', color: ds.brand[500] }}>
+    <Typography
+      sx={{
+        fontSize: 'var(--ds-text-body-lg)',
+        fontWeight: 'var(--ds-font-weight-semibold)',
+        fontFamily: 'var(--ds-font-display)',
+        color: ds.brand[700],
+      }}
+    >
       {title}
     </Typography>
-    <IconButton onClick={onClose} size='small' data-testid='custom-drawer-close'>
-      <CloseIcon fontSize='small' />
-    </IconButton>
+    <Button
+      tone='ghost'
+      composition='icon-only'
+      size='sm'
+      icon={<CloseIcon />}
+      aria-label='Close'
+      onClick={onClose}
+      data-testid='custom-drawer-close'
+    />
   </Box>
 );
 
@@ -268,7 +283,7 @@ const CustomDrawer = ({
       }
       slotProps={{
         backdrop: {
-          sx: { backgroundColor: `color-mix(in srgb, ${ds.gray[700]} 15%, transparent)` },
+          sx: { backgroundColor: nonModal ? 'transparent' : `color-mix(in srgb, ${ds.gray[700]} 8%, transparent)` },
         },
       }}
       PaperProps={{
@@ -372,13 +387,10 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
         top: `${wrapperTop}px`,
         bottom: `${wrapperBottom}px`,
         right: `${wrapperRight}px`,
-        width: revealed ? `${effectiveWidth}px` : '0px',
+        width: `${effectiveWidth}px`,
         maxWidth: '100vw',
-        overflow: 'hidden',
-        zIndex: 1250,
-        transition: `width ${SECONDARY_TRANSITION_MS}ms ${SECONDARY_EASE}`,
+        zIndex: 1401,
         pointerEvents: revealed ? 'auto' : 'none',
-        ...(isModern && { borderRadius: `${MODERN_RADIUS}px` }),
       }}
     >
       <Paper
@@ -393,7 +405,12 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
+          overscrollBehavior: 'contain',
+          border: `1px solid ${ds.gray.alpha[300]}`,
           backgroundColor: ds.background[100],
+          opacity: revealed ? 1 : 0,
+          transform: revealed ? 'translateX(0)' : 'translateX(24px)',
+          transition: `opacity ${SECONDARY_TRANSITION_MS}ms ${SECONDARY_EASE}, transform ${SECONDARY_TRANSITION_MS}ms ${SECONDARY_EASE}`,
           ...(isModern
             ? {
                 borderRadius: `${MODERN_RADIUS}px`,
@@ -401,7 +418,6 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
               }
             : {
                 boxShadow: `${ds.space.mul(1, -1)} 0 ${ds.space[3]} ${ds.gray.alpha[200]}`,
-                borderRight: `1px solid ${ds.blue[500]}`,
               }),
         }}
       >

@@ -40,7 +40,7 @@ func TestAllAgents_IncludeMCPIntegrationTools(t *testing.T) {
 		{
 			name: "k8s_debug",
 			getTools: func() []toolcore.NBTool {
-				return getSupportedTools(sc, testAccountId, "k8s_debug")
+				return getSupportedTools(sc, testAccountId, "k8s_debug", KubectlAgentName)
 			},
 		},
 		{

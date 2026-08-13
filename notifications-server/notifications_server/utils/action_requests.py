@@ -56,6 +56,17 @@ def sign_action_request(body: BaseModel, signing_key: str) -> str:
     return f"v0={request_hash}"
 
 
+def verify_action_request(body: BaseModel, signature: str, signing_key: str) -> bool:
+    """Constant-time check that ``signature`` matches a fresh signing of ``body``.
+    Guards handlers that trust action_params carried in a round-tripped payload
+    (e.g. Slack echoes a button/menu value back verbatim)."""
+    try:
+        expected = sign_action_request(body, signing_key)
+    except ValueError:
+        return False
+    return hmac.compare_digest(expected, signature or "")
+
+
 class OutgoingActionRequest:
     @staticmethod
     def send(body: ActionRequestBody, signing_key: str) -> None:

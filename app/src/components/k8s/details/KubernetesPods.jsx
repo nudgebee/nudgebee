@@ -167,13 +167,13 @@ const KubernetesPodsTable = ({ accountId, defaultQuery = {}, enableFilters = tru
         k8sApi.getPodDetails(data.id).then((res) => {
           setPodData(res.data.cloud_resourses[0]);
         });
-      } else if (menuItem.id === 1) {
+      } else if (menuItem.id === 'delete-pod') {
         setSelectedPodName(data);
         setDeletePod(true);
-      } else if (menuItem.id === 2) {
+      } else if (menuItem.id === 'logs') {
         setObjectForContext(data);
         handleLogClick(data);
-      } else if (menuItem.id === 3) {
+      } else if (menuItem.id === 'debug-pod') {
         setSelectedPodName(data);
         handleClickDebugPod();
       }
@@ -271,7 +271,7 @@ const KubernetesPodsTable = ({ accountId, defaultQuery = {}, enableFilters = tru
             {
               icon: LogFileIcon,
               label: 'Logs',
-              id: 2,
+              id: 'logs',
             },
           ];
 
@@ -280,17 +280,17 @@ const KubernetesPodsTable = ({ accountId, defaultQuery = {}, enableFilters = tru
               {
                 icon: LogFileIcon,
                 label: 'Logs',
-                id: 2,
+                id: 'logs',
               },
               {
                 icon: DeleteIcon,
                 label: 'Delete Pod',
-                id: 1,
+                id: 'delete-pod',
               },
               {
                 icon: TerminalIcon,
                 label: 'Debug Pod',
-                id: 3,
+                id: 'debug-pod',
               },
             ];
           }

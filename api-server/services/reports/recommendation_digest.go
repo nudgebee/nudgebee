@@ -1,10 +1,12 @@
 package reports
 
 import (
+	"encoding/json"
 	"nudgebee/services/account"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/recommendation"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"time"
@@ -14,16 +16,20 @@ import (
 )
 
 type digestRecommendation struct {
-	ID               string  `db:"id"`
-	RuleName         string  `db:"rule_name"`
-	ResourceName     string  `db:"resource_name"`
-	FinOpsScore      int     `db:"finops_score"`
-	FinOpsBand       string  `db:"finops_band"`
-	EstimatedSavings float64 `db:"estimated_savings"`
-	Severity         string  `db:"severity"`
-	Category         string  `db:"category"`
-	CloudAccountID   string  `db:"cloud_account_id"`
-	AccountName      string  `db:"account_name"`
+	ID               string    `db:"id"`
+	RuleName         string    `db:"rule_name"`
+	ResourceName     string    `db:"resource_name"`
+	FinOpsScore      int       `db:"finops_score"`
+	FinOpsBand       string    `db:"finops_band"`
+	EstimatedSavings float64   `db:"estimated_savings"`
+	Severity         string    `db:"severity"`
+	Category         string    `db:"category"`
+	CloudAccountID   string    `db:"cloud_account_id"`
+	AccountName      string    `db:"account_name"`
+	CreatedAt        time.Time `db:"created_at"`
+	// Raw `recommendation` JSONB — the template renders a per-rule change
+	// summary (CPU/mem/replica current → recommended) from it.
+	RecommendationRaw []byte `db:"recommendation"`
 }
 
 // SendRecommendationNudgeDigest queries top recommendations by finops_score
@@ -67,7 +73,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 		var recs []digestRecommendation
 		err = dbms.Db.Select(&recs, `
 			SELECT id, rule_name, resource_name, finops_score, finops_band,
-				estimated_savings, severity, category, cloud_account_id, account_name
+				estimated_savings, severity, category, cloud_account_id, account_name, created_at, recommendation
 			FROM (
 				SELECT r.id, r.rule_name,
 					COALESCE(r.account_object_id, r.id::varchar) AS resource_name,
@@ -78,6 +84,8 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 					r.category,
 					r.cloud_account_id::varchar AS cloud_account_id,
 					COALESCE(ca.account_name, r.cloud_account_id::varchar) AS account_name,
+					r.created_at,
+					r.recommendation,
 					ROW_NUMBER() OVER (
 						PARTITION BY regexp_replace(r.rule_name, '^.+_misconfigurations$', 'misconfigurations')
 						ORDER BY r.finops_score DESC NULLS LAST, r.estimated_savings DESC NULLS LAST, r.created_at DESC, r.id
@@ -86,6 +94,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
 					AND r.status = 'Open'
+					AND r.category <> 'Security'
 					AND r.finops_band IN ('Act Now', 'Critical', 'High')
 					AND (
 						r.last_nudged_at IS NULL
@@ -125,6 +134,30 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 
 		digestDate := time.Now().UTC().Format("2006-01-02")
 
+		// Tenant-wide open savings by category for the header chips — the
+		// top-20 body alone would misstate the mix.
+		type categorySaving struct {
+			Category string  `db:"category"`
+			Savings  float64 `db:"savings"`
+		}
+		var categoryRows []categorySaving
+		err = dbms.Db.Select(&categoryRows, `
+			SELECT category, COALESCE(SUM(estimated_savings), 0) AS savings
+			FROM recommendation
+			WHERE tenant_id = $1
+			  AND status = 'Open'
+			  AND category <> 'Security'
+			  AND estimated_savings > 0
+			GROUP BY category`, t.Id)
+		if err != nil {
+			ctx.GetLogger().Error("recommendation digest: error querying category savings", "error", err, "tenant", t.Id)
+			categoryRows = nil
+		}
+		categorySavings := make(map[string]float64, len(categoryRows))
+		for _, row := range categoryRows {
+			categorySavings[row.Category] = row.Savings
+		}
+
 		// Aggregate counts and savings
 		var totalSavings float64
 		var actNowCount, criticalCount, highCount int
@@ -145,21 +178,28 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 			// channel(s) this payload will be rendered for. Footer-button URLs
 			// are appended per platform in the notifications-server formatters
 			// where the platform IS known (utm=slack-digest, teams-digest, etc.).
-			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "&utm=digest&d=" + digestDate + "#summary"
+			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "&utm=digest&d=" + digestDate + "#recommendations"
 			recMap := map[string]any{
-				"id":                rec.ID,
-				"rule_name":         rec.RuleName,
-				"resource_name":     rec.ResourceName,
-				"finops_score":      rec.FinOpsScore,
-				"finops_band":       rec.FinOpsBand,
-				"estimated_savings": rec.EstimatedSavings,
-				"severity":          rec.Severity,
-				"category":          rec.Category,
-				"cta_url":           ctaURL,
+				"id":                    rec.ID,
+				"rule_name":             rec.RuleName,
+				"resource_name":         rec.ResourceName,
+				"finops_score":          rec.FinOpsScore,
+				"finops_band":           rec.FinOpsBand,
+				"estimated_savings":     rec.EstimatedSavings,
+				"severity":              rec.Severity,
+				"category":              rec.Category,
+				"cta_url":               ctaURL,
+				"wasted_since_detected": recommendation.WastedSinceDetected(rec.EstimatedSavings, rec.CreatedAt, time.Now().UTC()),
+			}
+			if len(rec.RecommendationRaw) > 0 {
+				recMap["recommendation"] = json.RawMessage(rec.RecommendationRaw)
 			}
 
 			accID := rec.CloudAccountID
 			recsByAccount[accID] = append(recsByAccount[accID], recMap)
+			if rec.AccountName != "" && rec.AccountName != accID {
+				accountNameMap[accID] = rec.AccountName
+			}
 		}
 
 		// Build recommendations_by_account with account names
@@ -188,6 +228,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 				"act_now_count":              actNowCount,
 				"critical_count":             criticalCount,
 				"high_count":                 highCount,
+				"category_savings":           categorySavings,
 				"recommendations_by_account": recommendationsByAccount,
 				"base_url":                   config.Config.BaseUrl,
 				"new_counts":                 newCounts,
@@ -204,7 +245,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 			"total_recs", len(recs),
 			"total_savings", totalSavings)
 
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("recommendation digest: error publishing", "error", err, "tenant", t.Id)
 			continue
@@ -247,6 +288,7 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 		FROM recommendation
 		WHERE tenant_id = $1
 		  AND status = 'Open'
+		  AND category <> 'Security'
 		  AND created_at > $2
 		  AND finops_band IN ('Act Now', 'Critical', 'High')
 		GROUP BY finops_band`, tenantID, cutoff)
@@ -279,6 +321,7 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 		FROM recommendation
 		WHERE tenant_id = $1
 		  AND status IN ('Closed', 'Dismissed')
+		  AND category <> 'Security'
 		  AND updated_at > $2`, tenantID, cutoff)
 	if err != nil {
 		return nil, 0, 0, 0, err
@@ -290,6 +333,7 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 		FROM recommendation
 		WHERE tenant_id = $1
 		  AND status = 'Open'
+		  AND category <> 'Security'
 		  AND created_at <= $2`, tenantID, cutoff)
 	if err != nil {
 		return nil, 0, 0, 0, err

@@ -15,6 +15,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -486,6 +487,13 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, secretEnvVars...)
 	}
 
+	// Operator-configured extra env (comma-separated KEY=VALUE) — the rollout
+	// knob for code-analysis feature flags. Existing pods keep their env until
+	// replaced; delete workspace pods after changing this to apply it.
+	if config.Config.LlmServerCodeAgentExtraEnv != "" {
+		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, ParseExtraEnv(config.Config.LlmServerCodeAgentExtraEnv)...)
+	}
+
 	if config.Config.LlmServerCodeAgentImagePullSecret != "" {
 		pod.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
 			{Name: config.Config.LlmServerCodeAgentImagePullSecret},
@@ -503,6 +511,32 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	}
 	logger.Info("workspace pod created", "pod_name", podName)
 	return nil
+}
+
+// extraEnvKeyRe matches valid env var names. Anything else is skipped: an
+// invalid name would make the API server reject the entire pod (422), which is
+// exactly the failure mode skipping is meant to prevent.
+var extraEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ParseExtraEnv parses a comma-separated KEY=VALUE list into pod env vars.
+// Values may themselves contain '=' (split on the first one); keys and values
+// are whitespace-trimmed; entries with missing or invalid keys are skipped
+// rather than failing pod creation.
+func ParseExtraEnv(s string) []corev1.EnvVar {
+	var envs []corev1.EnvVar
+	for _, kv := range strings.Split(s, ",") {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(kv, "=")
+		k = strings.TrimSpace(k)
+		if !ok || !extraEnvKeyRe.MatchString(k) {
+			continue
+		}
+		envs = append(envs, corev1.EnvVar{Name: k, Value: strings.TrimSpace(v)})
+	}
+	return envs
 }
 
 func buildWorkspaceResources() corev1.ResourceRequirements {

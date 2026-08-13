@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+
+	"github.com/nudgebee/logparser"
+
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/query"
@@ -85,19 +88,29 @@ func (s *LokiSource) BuildLokiQuery(req LogsQueryBuilderRequest) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("failed to extract label selectors: %w", err)
 	}
-	if labelSelectors == "" {
-		sb.WriteString("{}")
-	} else {
-		sb.WriteString("{")
-		sb.WriteString(labelSelectors)
-		sb.WriteString("}")
-	}
 
 	// 2. Filters (from Binary like, contains, etc.)
 	filterExpr, err := buildWhere(req.Where)
 	if err != nil {
 		return "", fmt.Errorf("failed to build where clause: %w", err)
 	}
+
+	if labelSelectors == "" {
+		if filterExpr != "" {
+			// Loki rejects a bare "{}" stream selector, but a line-filter-only
+			// query (e.g. trace_id correlation, which must not be scoped to one
+			// namespace since traces cross namespaces) is legitimate. Use a
+			// non-empty-compatible catch-all matcher to satisfy the parser.
+			sb.WriteString(`{namespace=~".+"}`)
+		} else {
+			sb.WriteString("{}")
+		}
+	} else {
+		sb.WriteString("{")
+		sb.WriteString(labelSelectors)
+		sb.WriteString("}")
+	}
+
 	if filterExpr != "" {
 		sb.WriteString(" ")
 		sb.WriteString(filterExpr)
@@ -211,8 +224,11 @@ func processBinaryLabelSelectors(binary map[string]map[query.BinaryWhereClauseTy
 }
 
 func buildLabelSelector(field string, op query.BinaryWhereClauseType, val any) (labelSelector, error) {
-	// Skip "log" field - it should be handled by buildWhere as a line filter, not a label selector
-	if field == "log" {
+	// Skip "log" and "trace_id" fields - they are handled by buildWhere as line
+	// filters, not label selectors. trace_id is not an indexed stream label in
+	// Loki; the canonical trace→logs correlation (as Grafana's trace-to-logs
+	// feature does it) is a line filter on the trace id token.
+	if field == "log" || field == "trace_id" {
 		return labelSelector{}, nil
 	}
 
@@ -521,7 +537,10 @@ func buildWhere(where query.QueryWhereClause) (string, error) {
 		for op, val := range ops {
 			sval := fmt.Sprintf("%v", val)
 
-			if field == "log" { // interpret "log" as message content filter
+			// Interpret "log" as message content filter. trace_id is matched the
+			// same way: it lives in the log line (or structured metadata), not in
+			// the stream labels, so an equality on it becomes a `|=` line filter.
+			if field == "log" || field == "trace_id" {
 				switch op {
 				case query.Contains, query.Eq:
 					// Contains: substring match using |= (no regex needed)
@@ -898,8 +917,17 @@ func (s *LokiSource) ExtractDataSliceFromRelay(resp map[string]any) ([]any, erro
 	if !ok || nestedData == nil {
 		return nil, fmt.Errorf("nested 'data' field not found or is nil in response: %v", data["data"])
 	}
+	// Loki returns {"status":"success"} with a null/absent data array when the
+	// query is valid but no labels exist in the time range (e.g. the range is
+	// past retention). Treat that as an empty result, not an error.
+	if nestedData["data"] == nil {
+		if status, _ := nestedData["status"].(string); status == "success" {
+			return []any{}, nil
+		}
+		return nil, fmt.Errorf("relay response has no 'data' and status is not success: %v", nestedData)
+	}
 	values, ok := nestedData["data"].([]interface{})
-	if !ok || values == nil {
+	if !ok {
 		return nil, fmt.Errorf("expected 'data' to be a slice but it was not or was nil")
 	}
 	return values, nil
@@ -941,7 +969,7 @@ func (s *LokiSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest F
 		return nil, err
 	}
 
-	var output []OutputLogLabel
+	output := []OutputLogLabel{}
 	for _, v := range data3 {
 		if str, ok := v.(string); ok {
 			output = append(output, OutputLogLabel{
@@ -954,11 +982,23 @@ func (s *LokiSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest F
 }
 
 func (s *LokiSource) QueryLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
+	// Prefer an explicit query from Request; otherwise, when the caller supplied a time
+	// window, fall back to it (mirrors QueryLabels) so callers that set StartTime/EndTime —
+	// e.g. the empty-result value validator probing a widened window — actually scope the
+	// value lookup. Callers that pass neither keep the prior pass-through (nil) behaviour.
+	var query any
+	if fetchLogRequest.Request != nil {
+		query = fetchLogRequest.Request["query"]
+	}
+	if str, ok := query.(string); (!ok || str == "") && fetchLogRequest.StartTime > 0 && fetchLogRequest.EndTime > 0 {
+		query = fmt.Sprintf("start=%d&end=%d", fetchLogRequest.StartTime*1_000_000, fetchLogRequest.EndTime*1_000_000)
+	}
+
 	lokiRequest := relay.ActionExecuteBody{
 		AccountID:  fetchLogRequest.AccountId,
 		ActionName: "query_grafana_loki_label_values",
 		ActionParams: map[string]any{
-			"query": fetchLogRequest.Request["query"],
+			"query": query,
 			"label": fetchLogRequest.LabelName,
 		},
 		NoSinks: true,
@@ -1104,35 +1144,28 @@ func (s *LokiSource) convertLokiResponse(lokiData []byte) ([]OutputLog, error) {
 	return logEntries, nil
 }
 
-// extractSeverity attempts to extract severity level from the log message
+// extractSeverity determines the severity level of a log line.
+//
+// logparser.GuessLevel inspects the leading fields of the line — where a level
+// conventionally appears — and understands glog, `level=` prefixes and the usual
+// abbreviations. Matching on the whole line instead (the previous approach) reads
+// the level off any log that merely mentions one in its text, e.g.
+// `level=info msg="error count: 0"` classifies as error.
 func (s *LokiSource) extractSeverity(message string) string {
-	messageLower := strings.ToLower(message)
-	if strings.Contains(messageLower, "error") || strings.Contains(messageLower, "err") {
+	switch logparser.GuessLevel(message) {
+	case logparser.LevelCritical:
+		return "critical"
+	case logparser.LevelError:
 		return "error"
-	} else if strings.Contains(messageLower, "warn") {
+	case logparser.LevelWarning:
 		return "warning"
-	} else if strings.Contains(messageLower, "info") {
+	case logparser.LevelInfo:
 		return "info"
-	} else if strings.Contains(messageLower, "debug") {
+	case logparser.LevelDebug:
 		return "debug"
-	} else if strings.Contains(messageLower, "fatal") {
-		return "fatal"
-	} else if strings.Contains(messageLower, "trace") {
-		return "trace"
+	default:
+		return "unknown"
 	}
-
-	if strings.Contains(messageLower, "\"levelname\"") {
-		if strings.Contains(messageLower, "\"info\"") {
-			return "info"
-		} else if strings.Contains(messageLower, "\"error\"") {
-			return "error"
-		} else if strings.Contains(messageLower, "\"warning\"") {
-			return "warning"
-		} else if strings.Contains(messageLower, "\"debug\"") {
-			return "debug"
-		}
-	}
-	return "info"
 }
 
 // LokiResponse represents the structure of the Loki logs response
@@ -1176,7 +1209,15 @@ func (s *LokiSource) QueryLogGroup(ctx *security.RequestContext, req FetchLogGro
 	return s.groupLogsByPattern(logs, req.EndTime), nil
 }
 
-// buildLogGroupStreamQuery builds a LogQL stream query that fetches error/critical/fatal logs.
+// buildLogGroupStreamQuery builds a LogQL stream query that fetches candidate
+// error/critical logs.
+//
+// The line filter is deliberately over-inclusive: it only narrows what crosses
+// the wire, and groupLogsByPattern decides the actual level with
+// logparser.GuessLevel. Anything this filter misses can never be grouped, so it
+// errs towards recall — `err` also covers Err/ERROR/errors, `crit` covers
+// critical, and `^E[0-9]{4}` covers glog (`E0301 12:00:00.000000 ...`), which
+// spells errors without ever using the word.
 func (s *LokiSource) buildLogGroupStreamQuery(req FetchLogGroupRequest) string {
 	selector := `namespace=~".+"`
 
@@ -1190,18 +1231,20 @@ func (s *LokiSource) buildLogGroupStreamQuery(req FetchLogGroupRequest) string {
 		selector += fmt.Sprintf(`, pod=~"%s-.*"`, escapeLokiLabelValue(selectedWorkload))
 	}
 
-	return fmt.Sprintf(`{%s} |~ "(?i)(error|critical|fatal)"`, selector)
+	return fmt.Sprintf(`{%s} |~ "(?i)(err|crit|fatal|panic)|^E[0-9]{4}"`, selector)
 }
 
 // groupLogsByPattern groups raw log entries by message pattern hash and returns LogGroupOutput.
 func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGroupOutput {
 	type groupEntry struct {
+		hash      string
 		sample    string
 		namespace string
 		workload  string
 		container string
 		level     string
 		count     int64
+		lastSeen  int64 // unix seconds of the newest line in the group
 	}
 
 	grouped := make(map[string]*groupEntry) // keyed by hash|namespace|workload|level
@@ -1211,12 +1254,19 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			continue
 		}
 
+		// The LogQL line filter matches on text, so it also returns lines that
+		// merely mention an error (`level=info msg="error count: 0"`). Keep only
+		// lines whose own level says they are errors.
+		level := log.Severity
+		if level != "error" && level != "critical" {
+			continue
+		}
+
 		hash := generatePatternHash(log.Message)
 		namespace, _ := log.Labels["namespace"].(string)
 		pod, _ := log.Labels["pod"].(string)
 		container, _ := log.Labels["container"].(string)
 		workload := extractWorkloadFromPodName(pod)
-		level := log.Severity
 
 		compositeKey := hash + "|" + namespace + "|" + workload + "|" + level
 
@@ -1229,6 +1279,7 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			}
 
 			entry = &groupEntry{
+				hash:      hash,
 				sample:    sample,
 				namespace: namespace,
 				workload:  workload,
@@ -1238,17 +1289,14 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			grouped[compositeKey] = entry
 		}
 		entry.count++
+
+		if ts := logLastSeenUnix(log.Timestamp); ts > entry.lastSeen {
+			entry.lastSeen = ts
+		}
 	}
 
-	// Use the end of the query window as the single timestamp.
-	var endTimeSec int64
-	if endTime <= 0 {
-		endTimeSec = time.Now().Unix()
-	} else if endTime >= 1e12 {
-		endTimeSec = endTime / 1000
-	} else {
-		endTimeSec = endTime
-	}
+	// Only used when a group's own lines carry no parseable timestamp.
+	endTimeSec := logGroupWindowEndUnix(endTime)
 
 	groups := make([]LogGroup, 0, len(grouped))
 	for _, entry := range grouped {
@@ -1257,9 +1305,9 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			containerID = fmt.Sprintf("/k8s/%s/%s", entry.namespace, entry.workload)
 		}
 
-		level := entry.level
-		if level == "" {
-			level = "error"
+		lastSeen := entry.lastSeen
+		if lastSeen <= 0 {
+			lastSeen = endTimeSec
 		}
 
 		groups = append(groups, LogGroup{
@@ -1268,10 +1316,13 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			Workload:    entry.workload,
 			Container:   entry.container,
 			ContainerID: containerID,
-			PatternHash: generatePatternHash(entry.sample),
-			Level:       level,
+			// entry.hash, not a re-hash of entry.sample: the sample is truncated
+			// for display, so re-hashing it would emit a pattern_hash that isn't
+			// the key this group was built on.
+			PatternHash: entry.hash,
+			Level:       entry.level,
 			Count:       entry.count,
-			Timestamps:  []int64{endTimeSec},
+			Timestamps:  []int64{lastSeen},
 			Values:      []float64{float64(entry.count)},
 		})
 	}

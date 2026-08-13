@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
+	"nudgebee/llm/services_server"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
 	"testing"
@@ -722,4 +723,40 @@ func TestDefaultProviderLogFields(t *testing.T) {
 	assert.Equal(t, signozFields, defaultProviderLogFields("SigNoz"), "provider match must be case-insensitive")
 	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields("loki"))
 	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields(""))
+}
+
+// TestEffectiveProvider guards the per-request log_provider_override: it must
+// outrank whatever provider the agent resolved at construction, "k8s" must mean
+// "no services-server backend" (empty provider → kubectl path), and — critically
+// — it must NOT be written back onto the agent. fetch_logs instances are shared
+// across requests via the 30-minute tool-list caches, so a mutation would pin the
+// backend for every other request on the account.
+func TestEffectiveProvider(t *testing.T) {
+	cases := []struct {
+		name     string
+		resolved string
+		override string
+		want     string
+	}{
+		{"no override keeps resolved provider", "loki", "", "loki"},
+		{"k8s override routes to kubectl", "loki", "k8s", ""},
+		{"k8s override is case/space tolerant", "loki", " K8S ", ""},
+		{"override pins a backend", "", "loki", "loki"},
+		{"override case is preserved for api-server", "loki", "ES", "ES"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &FetchLogsAgent{
+				accountId: "acc-1",
+				provider:  services_server.ObservabilityProvider{Provider: tc.resolved},
+			}
+			got := a.effectiveProvider(core.NBAgentRequest{
+				QueryConfig: toolcore.NBQueryConfig{LogProviderOverride: tc.override},
+			})
+			assert.Equal(t, tc.want, got.Provider)
+			// The agent itself must be untouched — this is the cross-request leak guard.
+			assert.Equal(t, tc.resolved, a.provider.Provider, "effectiveProvider must not mutate the shared agent")
+		})
+	}
 }

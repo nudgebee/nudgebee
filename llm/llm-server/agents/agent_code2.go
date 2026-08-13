@@ -37,6 +37,20 @@ import (
 
 const AgentCode2 = "agent_code_2"
 
+// sanitizeWorkspacePathID maps an ID to the workspace's safe path charset
+// ([A-Za-z0-9_-]; everything else becomes '_') — the SAME mapping the workspace
+// analyze handler applies when naming its temp directories. Slack session IDs
+// contain a '.', so passing them raw both fails the workspace's conversation-id
+// validation and misses the sanitized directory names.
+func sanitizeWorkspacePathID(id string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, id)
+}
+
 // Mode constants mirror llm/code-analysis. Kept inline (not imported) because
 // llm-server doesn't take a Go-module dependency on llm/code-analysis.
 // agent_code_2 only translates the upstream RaisePr flag into the mode field
@@ -172,11 +186,15 @@ func evaluateCodeUsingCli(ctx *security.RequestContext, request CodeAgent2Reques
 			// For GitHub App, get installation token (only applicable for GitHub)
 			if provider == "github" {
 				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err == nil {
+				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
 					// Use the URL from credentials for GitHub Enterprise support
 					apiUrl := creds[0].Url
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err == nil {
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
 						gitToken = token
 					}
 				}
@@ -360,11 +378,15 @@ func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgen
 			// For GitHub App, get installation token (only applicable for GitHub)
 			if provider == "github" {
 				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err == nil {
+				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
 					// Use the URL from credentials for GitHub Enterprise support
 					apiUrl := creds[0].Url
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err == nil {
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
 						gitToken = token
 					}
 				}
@@ -518,10 +540,19 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		case "application":
 			if provider == "github" {
 				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err == nil {
+				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
+					// A GitHub App integration stores the installation ID in the
+					// password field; if it is not a plain integer we cannot mint a
+					// token. Swallowing this silently produced an invisible failure:
+					// the workspace clone then ran unauthenticated and the analysis
+					// abstained with "repository inaccessible".
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
 					apiUrl := creds[0].Url
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err == nil {
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
 						gitToken = token
 					}
 				}
@@ -798,11 +829,22 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 					ctx.GetTracer(),
 					ctx.GetMeter(),
 				)
-				cleanupCmd := fmt.Sprintf("rm -rf /tmp/code-analysis-%s-*", agentRequest.SessionId)
-				// SessionId is passed as the conversation_id arg: the workspace
-				// pod rejects empty conversation_id (validates non-empty + safe
-				// path charset) and would silently no-op the cleanup otherwise.
-				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, agentRequest.SessionId, cleanupCmd, nil); cleanupErr != nil {
+				// Sanitize with the SAME character mapping the workspace analyze
+				// handler uses for its temp dirs (anything outside [A-Za-z0-9_-]
+				// becomes '_'). Slack session IDs contain a '.', so the raw ID both
+				// failed the workspace's conversation-id validation AND wouldn't
+				// have matched the sanitized directory names — every Slack-origin
+				// analysis leaked its clone until the pod was replaced.
+				cleanID := sanitizeWorkspacePathID(agentRequest.SessionId)
+				if cleanID == "" {
+					logger.Warn("code: workspace cleanup skipped — empty session id")
+					return
+				}
+				cleanupCmd := fmt.Sprintf("rm -rf /tmp/code-analysis-%s-*", cleanID)
+				// The sanitized ID is passed as the conversation_id arg: the
+				// workspace pod rejects empty conversation_id (validates non-empty
+				// + safe path charset) and would silently no-op the cleanup otherwise.
+				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, cleanID, cleanupCmd, nil); cleanupErr != nil {
 					logger.Warn("code: workspace cleanup failed", "error", cleanupErr)
 				}
 			}()
@@ -1454,6 +1496,15 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		latency := time.Since(startTime).Seconds()
 		if err != nil {
 			ctx.GetLogger().Error("code: failed to execute via workspace", "error", err.Error())
+			// Write the message-scoped guard on failure too. A poll timeout here
+			// usually means the analysis is STILL RUNNING server-side (the workspace
+			// pod does not cancel it when polling stops) — without the guard, the
+			// planner's natural "tool errored, retry" reaction dispatches a second
+			// /analyze and two full analyses run for one message.
+			if guardKey, ok := codeAgentGuardKey(query.ConversationId, query.MessageId); ok {
+				_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey,
+					[]byte(fmt.Sprintf("previous attempt failed and may still be running server-side: %v", err)))
+			}
 			return core.NBAgentResponse{}, err
 		}
 		ctx.GetLogger().Info("Workspace /analyze Output", "output_length", len(wsResult.AgentResponse))
@@ -2585,9 +2636,13 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		case "application":
 			if provider == "github" {
 				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err == nil {
+				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), creds[0].Url, installationID)
-					if err == nil {
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
 						gitToken = token
 					}
 				}

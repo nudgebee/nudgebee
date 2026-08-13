@@ -106,6 +106,9 @@ type OrchestratorAgent struct {
 	performanceDebuggerAgent *PerformanceDebuggerAgent
 	codeFixerAgent           *CodeFixerAgent
 	codeReviewAgent          *CodeReviewAgent
+
+	// fixVerifier runs deterministic harness-owned build verification (agent.harness_verify)
+	fixVerifier *FixVerifier
 }
 
 func NewOrchestratorAgent(cfg *config.Config, llmClient *llm.Client, gitClient *git.GitClient, logger *common.Logger) *OrchestratorAgent {
@@ -447,6 +450,19 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 	} else {
 		a.reportProgress("Applying code fix...")
 	}
+
+	// Hand the specialist's distilled knowledge (findings + verbatim citations)
+	// to the fixer so it starts knowing what the RCA established instead of
+	// re-investigating the codebase from step 1. Whichever specialist ran, its
+	// ledger survives on its planner; SetSeedLedger merges are deduplicated.
+	if a.codeFixerAgent != nil && a.codeFixerAgent.Planner != nil {
+		for _, l := range []*planners.Ledger{
+			a.codeAgent.Ledger(), a.errorRCAAgent.Ledger(), a.performanceDebuggerAgent.Ledger(),
+		} {
+			a.codeFixerAgent.Planner.SetSeedLedger(l)
+		}
+	}
+
 	fixerResult, err := a.executeFixAndReviewLoop(ctx, sessionCtx, factsData)
 	if err != nil {
 		factsData["description"] = fmt.Sprintf("%s\n\nNote: Fix-review process failed: %v", factsData["description"], err)
@@ -648,6 +664,12 @@ func (a *OrchestratorAgent) buildFinalResponse(mergedData map[string]any) map[st
 		response["build_verification"] = buildVerification
 	}
 
+	// Include harness-run verification (tri-state: verified | unverified | failed,
+	// with verbatim command evidence) — the honest verdict consumers must surface.
+	if verification, ok := mergedData["verification"].(map[string]any); ok {
+		response["verification"] = verification
+	}
+
 	// Include verification_passed from CodeFixer's submit_analysis
 	if vp, ok := mergedData["verification_passed"]; ok {
 		response["verification_passed"] = vp
@@ -676,6 +698,15 @@ func (a *OrchestratorAgent) buildFailureSummary(response map[string]any) string 
 			reasons = append(reasons, fmt.Sprintf("PR not created: %s", prReason))
 		} else {
 			reasons = append(reasons, fmt.Sprintf("PR status: %s", prStatus))
+		}
+	}
+
+	// Check harness verification (tri-state) — failed carries verbatim evidence
+	if verification, ok := response["verification"].(map[string]any); ok {
+		if status, _ := verification["status"].(string); status == string(VerificationFailed) {
+			evidence, _ := verification["evidence"].(string)
+			evidence = truncateRuneSafe(evidence, 400)
+			reasons = append(reasons, fmt.Sprintf("Build verification failed: %s", evidence))
 		}
 	}
 
@@ -1139,6 +1170,17 @@ func (a *OrchestratorAgent) mergeAgentResults(agent1Facts map[string]any, agent2
 	if filesModified, ok := agent2Result["files_modified"]; ok {
 		merged["files_modified"] = filesModified
 	}
+	// Verification/review outcomes ride on the fixer result; without copying them
+	// here the response-assembly reads for these keys never see them.
+	if verification, ok := agent2Result["verification"]; ok {
+		merged["verification"] = verification
+	}
+	if review, ok := agent2Result["review"]; ok {
+		merged["review"] = review
+	}
+	if buildVerification, ok := agent2Result["build_verification"]; ok {
+		merged["build_verification"] = buildVerification
+	}
 
 	// Ensure all missing fields are preserved from specialist agent (agent1Facts)
 	// These fields should come from the specialist agent, not the fixer agent
@@ -1166,8 +1208,58 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 	maxAttempts := 3
 	var lastFixerResult map[string]any
 	var lastReviewResult ReviewResult
+	var lastVerification *VerificationResult
+	lastFailureEvidence := ""
 
+	// Repository facts (module roots + verify commands) discovered once and shared
+	// with every agent: the fixer historically guessed the build directory because
+	// this guidance only traveled inside the specialist's repo_clone observation.
+	if sessionCtx.RepoFacts == "" && a.currentWorkingDir != "" {
+		if idx, err := tools.IndexRepository(a.currentWorkingDir); err == nil && idx != nil {
+			sessionCtx.RepoFacts = idx.FormatFacts()
+		}
+	}
+
+	// In-loop verification gate: harness verification runs when the fixer submits,
+	// and a failure feeds the verbatim build evidence back into the SAME session —
+	// no fresh loop, no rediscovery. Bounded: after maxInloopRejects the submit is
+	// let through and the (still failed) verdict is handled honestly below.
+	var inloopVerification *VerificationResult
+	if a.config.Agent.HarnessVerify && a.config.Agent.InloopVerify && a.codeFixerAgent != nil && a.codeFixerAgent.Planner != nil {
+		const maxInloopRejects = 3
+		rejects := 0
+		lastGateEvidence := ""
+		a.codeFixerAgent.Planner.SetSubmitGate(func(_ map[string]any) (bool, string) {
+			res := a.getFixVerifier().Verify(ctx, a.currentWorkingDir, sessionCtx.BuildConfig)
+			inloopVerification = &res
+			if res.Status != VerificationFailed {
+				return false, ""
+			}
+			// Identical failure evidence means iterating cannot change the outcome
+			// (an environmental or policy gate, not a code problem) — release the
+			// submit for honest failure handling instead of burning retries.
+			// Measured: an unpassable gate cost 56 calls / 814K tokens without this.
+			evidence := res.Evidence()
+			if evidence == lastGateEvidence {
+				a.logger.Log(common.EventStepFailure, "Verification failed with identical evidence — releasing submit; retrying cannot help", nil)
+				return false, ""
+			}
+			lastGateEvidence = evidence
+			rejects++
+			if rejects >= maxInloopRejects {
+				a.logger.Log(common.EventStepFailure, "In-loop verification still failing — releasing submit for honest failure handling", map[string]any{
+					"rejects": rejects,
+				})
+				return false, ""
+			}
+			return true, "BUILD VERIFICATION FAILED (harness-run). Fix the errors below and submit again — iterate on your current changes, do NOT start over.\n\n" + res.Evidence()
+		})
+		defer a.codeFixerAgent.Planner.SetSubmitGate(nil)
+	}
+
+	attemptsRun := 0
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptsRun = attempt
 		if attempt > 1 {
 			a.reportProgress(fmt.Sprintf("Reworking fix (attempt %d/%d)...", attempt, maxAttempts))
 		}
@@ -1188,19 +1280,27 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 		useRevert, shouldRevert := factsData["_use_revert"].(bool)
 
 		if hasFeedback && reviewFeedback != "" {
-			// Use ExecuteWithRevert for any attempt with feedback (regardless of revert flag)
-			if shouldRevert && useRevert {
+			if a.config.Agent.HarnessVerify {
+				// Iterate forward on the current working tree with verbatim feedback.
+				// Blind revert-and-rework made every retry rediscover the previous
+				// attempt's edits from scratch — the dominant fix-mode token waste.
+				a.logger.Log(common.EventStepStart, "Executing CodeFixer with FEEDBACK workflow (iterate-forward)", map[string]any{
+					"attempt": attempt,
+				})
+				fixerResult, err = a.codeFixerAgent.ExecuteWithFeedback(ctx, sessionCtx, factsData, reviewFeedback)
+			} else if shouldRevert && useRevert {
 				a.logger.Log(common.EventStepStart, "Executing CodeFixer with REVERT workflow", map[string]any{
 					"attempt":  attempt,
 					"feedback": reviewFeedback,
 				})
+				fixerResult, err = a.codeFixerAgent.ExecuteWithRevert(ctx, sessionCtx, factsData, reviewFeedback)
 			} else {
 				a.logger.Log(common.EventStepStart, "Executing CodeFixer with FEEDBACK workflow", map[string]any{
 					"attempt":  attempt,
 					"feedback": reviewFeedback,
 				})
+				fixerResult, err = a.codeFixerAgent.ExecuteWithRevert(ctx, sessionCtx, factsData, reviewFeedback)
 			}
-			fixerResult, err = a.codeFixerAgent.ExecuteWithRevert(ctx, sessionCtx, factsData, reviewFeedback)
 			// Clear the revert flag for next iteration
 			delete(factsData, "_use_revert")
 		} else {
@@ -1228,11 +1328,31 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 		}
 		a.validateFixCompleteness(fixerResult, factsData, attempt)
 
-		// Extract build verification results from tool tracker
-		// The CodeFixerAgent is prompted to run build/lint commands via cli tool
+		// Verify the fix. With harness_verify on, the harness itself builds the
+		// modules the diff touched (deterministic command, verbatim output) — the
+		// LLM neither runs nor grades verification. Legacy path: reconstruct a
+		// verdict by pattern-matching the fixer's cli history.
 		a.reportProgress("Verifying build...")
-		buildVerification := a.extractBuildVerificationResults(baselineStep)
-		if buildVerification != nil {
+		var harnessVerification *VerificationResult
+		if a.config.Agent.HarnessVerify {
+			var res VerificationResult
+			if inloopVerification != nil {
+				// The submit gate already built this attempt's tree — reuse the verdict
+				// instead of paying for a second identical build.
+				res = *inloopVerification
+				inloopVerification = nil
+			} else {
+				res = a.getFixVerifier().Verify(ctx, a.currentWorkingDir, sessionCtx.BuildConfig)
+			}
+			harnessVerification = &res
+			fixerResult["verification"] = res.ToMap()
+			a.logger.Log(common.EventStepComplete, "Harness verification result", map[string]any{
+				"attempt": attempt,
+				"status":  string(res.Status),
+				"steps":   len(res.Steps),
+				"reason":  res.Reason,
+			})
+		} else if buildVerification := a.extractBuildVerificationResults(baselineStep); buildVerification != nil {
 			// Let the LLM's own verification judgment take precedence over tool-tracker pattern matching.
 			// The LLM ran the commands, saw retries succeed/fail, and reported its conclusion via submit_analysis.
 			// extractBuildVerificationResults uses simplistic "any failure = overall fail" logic which doesn't
@@ -1305,6 +1425,54 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 			break
 		}
 
+		// Harness-verify path: verification drives iteration; review is advisory.
+		if harnessVerification != nil {
+			lastVerification = harnessVerification
+			if harnessVerification.Status == VerificationFailed {
+				// Same evidence as the previous attempt: the failure is invariant to
+				// the fixer's changes — stop and report honestly instead of paying
+				// for another attempt that cannot alter the verdict.
+				evidence := harnessVerification.Evidence()
+				if evidence == lastFailureEvidence {
+					a.logger.Log(common.EventStepFailure, "Verification failed with identical evidence across attempts — stopping", map[string]any{
+						"attempt": attempt,
+					})
+					break
+				}
+				lastFailureEvidence = evidence
+				if attempt < maxAttempts {
+					feedback := "BUILD VERIFICATION FAILED (harness-run). Fix the errors below — do NOT start over; iterate on your current changes.\n\n" + harnessVerification.Evidence()
+					sessionCtx.AddToScratchpad("HarnessVerifier", feedback)
+					factsData["_review_feedback"] = feedback
+					a.logger.Log(common.EventStepFailure, "Harness verification failed — iterating with verbatim evidence", map[string]any{
+						"attempt": attempt,
+					})
+					continue
+				}
+				// Attempts exhausted: stop loudly. The result is returned marked
+				// failed with the real build evidence — never "accepted anyway".
+				a.logger.Log(common.EventStepFailure, "Harness verification failed on final attempt — returning result marked failed", map[string]any{
+					"attempt": attempt,
+				})
+				break
+			}
+			// Verified (or explicitly unverified): run LLM review once as ADVISORY.
+			// Findings are attached for the PR body; they never reject, revert, or
+			// trigger another attempt.
+			a.reportProgress("Running code review (advisory)...")
+			advisoryReview, revErr := a.codeReviewAgent.Execute(ctx, sessionCtx, fixerResult, gitDiff, attempt)
+			if revErr != nil {
+				a.logger.Log(common.EventStepFailure, "Advisory review errored — continuing with verified fix", map[string]any{
+					"attempt": attempt,
+					"error":   revErr.Error(),
+				})
+			} else {
+				advisoryReview.RequiresRevert = false // advisory: never destructive
+				lastReviewResult = advisoryReview
+			}
+			break
+		}
+
 		// Run ReviewAgent
 		a.reportProgress("Running code review...")
 		reviewResult, err := a.codeReviewAgent.Execute(ctx, sessionCtx, fixerResult, gitDiff, attempt)
@@ -1369,8 +1537,18 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 		}
 	}
 
-	// Ensure result reflects actual state when review was not approved
-	if lastReviewResult.Attempt > 0 && !lastReviewResult.Approved {
+	// Honest terminal state (harness-verify path): the tri-state verification
+	// verdict — not the advisory review — decides how the result is reported.
+	if a.config.Agent.HarnessVerify {
+		if lastVerification != nil && lastVerification.Status == VerificationFailed {
+			lastFixerResult["execution_status"] = "failed"
+			lastFixerResult["execution_summary"] = fmt.Sprintf(
+				"Fix applied but harness build verification FAILED after %d attempt(s). Evidence:\n%s",
+				attemptsRun, lastVerification.Evidence(),
+			)
+		}
+	} else if lastReviewResult.Attempt > 0 && !lastReviewResult.Approved {
+		// Legacy path: ensure result reflects actual state when review was not approved
 		lastFixerResult["execution_status"] = "failed"
 		lastFixerResult["execution_summary"] = fmt.Sprintf(
 			"Fix applied but rejected by code review after %d attempt(s). Last feedback: %s",
@@ -1413,6 +1591,23 @@ func (a *OrchestratorAgent) shouldCreatePR(mergedData map[string]any) (bool, boo
 		reason := "No code changes were produced — the requested change appears to already be present in the repository, so there is nothing to apply."
 		a.logger.Log(common.EventStepComplete, "No changes to create PR for", nil)
 		return false, true, reason
+	}
+
+	// Harness-verified path: the tri-state verification verdict governs. A failed
+	// verification blocks the PR with its real build evidence; "unverified" allows
+	// the PR (the verification section in the body states it honestly); advisory
+	// review findings never block.
+	if verification, ok := mergedData["verification"].(map[string]any); ok {
+		if status, _ := verification["status"].(string); status == string(VerificationFailed) {
+			evidence, _ := verification["evidence"].(string)
+			reason := "Build verification failed"
+			if evidence != "" {
+				reason = fmt.Sprintf("%s: %s", reason, evidence)
+			}
+			a.logger.Log(common.EventStepFailure, "PR creation blocked - harness verification failed", nil)
+			return false, false, reason
+		}
+		return true, false, ""
 	}
 
 	// Check review results if available
@@ -1510,6 +1705,12 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 
 	// Generate NudgeBee-branded PR description
 	brandedDescription := a.generateNudgeBeePRDescription(ctx, description, sessionCtx, actualRepoDir, formattedTitle, gitDiff, filePath, formattedTitle)
+
+	// State the verification verdict honestly in the PR body — reviewers must know
+	// whether the change was build-verified, and see the evidence if it wasn't.
+	if section := verificationPRSection(mergedData["verification"]); section != "" {
+		brandedDescription += section
+	}
 
 	// Generate intelligent branch name based on formatted title
 	branchName := a.generateBranchName(ctx, formattedTitle, sessionCtx.SkillsContext)
@@ -2823,6 +3024,14 @@ func (a *OrchestratorAgent) updateWorkingDirectoryFromToolInvocations() {
 }
 
 // SetWorkingDirectory updates the central working directory for all operations
+// getFixVerifier lazily constructs the harness-run fix verifier.
+func (a *OrchestratorAgent) getFixVerifier() *FixVerifier {
+	if a.fixVerifier == nil {
+		a.fixVerifier = NewFixVerifier(a.logger, a.config.Agent.BuildVerifyTimeout)
+	}
+	return a.fixVerifier
+}
+
 func (a *OrchestratorAgent) SetWorkingDirectory(dir string) {
 	if dir != "" {
 		// Sanitize: remove embedded quotes and clean the path

@@ -190,7 +190,13 @@ func buildContextFromGinWithTimeout(c *gin.Context, logger *slog.Logger, tracer 
 		return nil, nil, err
 	}
 
+	span := trace.SpanFromContext(c.Request.Context())
 	logger2 := logger.With("tenantId", tenantId, "userId", userId, "accountId", account)
+	// Only attach trace_id when a real span is active; otherwise SpanContext()
+	// is all-zeros and would log a noisy "000…0" trace_id into Loki.
+	if sc := span.SpanContext(); sc.IsValid() {
+		logger2 = logger2.With("trace_id", sc.TraceID().String())
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	return security.NewRequestContext(ctx, securityCtx, logger2, tracer, meter), cancel, nil
 }
@@ -656,7 +662,7 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 			AccountId: request.AccountId,
 			TenantId:  tenantId,
 		}
-		err = common.MqPublish(config.Config.RabbitMqCloudAccountEventsExchange, config.Config.RabbitMqCloudAccountEventsQueue, job)
+		err = common.MqPublish(config.Config.RabbitMqCloudAccountEventsExchange, config.Config.RabbitMqCloudAccountEventsQueue, job, common.MqPublishWithContext(c.Request.Context()))
 		if err != nil {
 			logger.Error("store_events: failed to publish job", "error", err, "accountId", request.AccountId, "job_id", job.JobId)
 			c.JSON(500, buildApiResponse(nil, fmt.Errorf("failed to enqueue events job: %w", err)))

@@ -164,6 +164,20 @@ const SUCCESS_ICONS: Record<ModalSuccessType, string> = {
   PASSWORD_CHANGE: resolveAssetSrc(modalPasswordChange),
 };
 
+// `scrollHeight` is rounded to a whole pixel, so it can report up to half a
+// pixel less than the body's true height. Pinning that value would leave the
+// wrapper a fraction of a pixel short of its own content — enough for
+// `overflow-y: auto` to raise a scrollbar. Where scrollbars take up space
+// (Windows, or macOS set to always show them) that narrows the body, re-wraps
+// the text a line taller, and the next measurement pins a height that no longer
+// needs the scrollbar — which widens it back, forever (#34242). The extra pixel
+// keeps the wrapper at least as tall as its content so the scrollbar only ever
+// appears when the body genuinely has to scroll. Measured via `scrollHeight`
+// rather than `getBoundingClientRect()` because the latter reports transformed
+// dimensions, and the `ds-modal-pop-up` keyframe scales an ancestor for 480ms
+// on open.
+const measureContentHeight = (node: Element): number => node.scrollHeight + 1;
+
 export function Modal({
   open,
   handleClose,
@@ -211,7 +225,7 @@ export function Modal({
   // unmounted/remounted while `open`/`maxHeight` stay the same.
   const setMeasureRef = React.useCallback((node: HTMLDivElement | null) => {
     setElement(node);
-    if (node) setContentHeight(node.scrollHeight);
+    if (node) setContentHeight(measureContentHeight(node));
   }, []);
 
   // Re-measure after every commit (guarded so it only sets state when the
@@ -223,7 +237,7 @@ export function Modal({
   // now-stale skeleton size with nothing left to correct it afterward.
   React.useLayoutEffect(() => {
     if (maxHeight || !open || !element) return;
-    const measured = element.scrollHeight;
+    const measured = measureContentHeight(element);
     setContentHeight((prev) => (prev === measured ? prev : measured));
   });
 
@@ -233,7 +247,7 @@ export function Modal({
     if (maxHeight || !open || !element) return undefined;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
-      if (entry) setContentHeight(entry.target.scrollHeight);
+      if (entry) setContentHeight(measureContentHeight(entry.target));
     });
     observer.observe(element);
     return () => observer.disconnect();

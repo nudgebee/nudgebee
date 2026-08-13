@@ -1,0 +1,721 @@
+/*
+ * Nubi mascot micro-animations — companion stylesheet for
+ * @shared/NubiAnimation (src/components/common/NubiAnimation.tsx).
+ * Global CSS imported in _app.tsx (same pattern as tour.css); every rule is
+ * scoped under .nb-nubi and every keyframe is prefixed nb-nubi- so nothing
+ * leaks. Motion is transform/opacity only.
+ *
+ * The SVG geometry is verbatim from public/branding/default/nubi-icon.svg;
+ * colors are the fixed mascot brand colors (#1b2d4a / #facf39 / #fff), not
+ * themeable tokens — the mascot never re-colors per tenant (white-label
+ * tenants never see it at all, see Loader.tsx precedence rules).
+ */
+
+.nb-nubi {
+  display: inline-block;
+  line-height: 0;
+}
+.nb-nubi svg {
+  display: block;
+  overflow: visible;
+  height: auto;
+}
+.nb-nubi svg * {
+  transform-box: fill-box;
+}
+
+/* Stable origins for rotate/scale parts, as a percentage of the 240x240
+   view-box (e.g. 120/240 = 50%). Percentages instead of px because Safari
+   miscomputes px transform-origins against the scaled viewport rather than the
+   intrinsic viewBox when the SVG is rendered at a non-240 size. */
+.nb-nubi .n-body {
+  transform-box: view-box;
+  transform-origin: 50% 89.17%;
+}
+.nb-nubi .n-antenna {
+  transform-box: view-box;
+  transform-origin: 65.83% 28.33%;
+}
+.nb-nubi .n-wing {
+  transform-box: view-box;
+  transform-origin: 77.92% 40.42%;
+}
+.nb-nubi .n-sparks,
+.nb-nubi .n-sparks-l {
+  transform-origin: 0% 100%;
+}
+
+/* Variant features & fx hidden by default */
+.nb-nubi .n-eye-closed,
+.nb-nubi .n-eye-happy,
+.nb-nubi .n-mouth-frown,
+.nb-nubi .n-mouth-flat,
+.nb-nubi .n-mouth-open,
+.nb-nubi .n-mouth-o,
+.nb-nubi .n-ping,
+.nb-nubi .n-sparks-l-wrap,
+.nb-nubi .n-shadow,
+.nb-nubi .n-whoosh,
+.nb-nubi .n-dots,
+.nb-nubi .n-zzz,
+.nb-nubi .n-loaddots,
+.nb-nubi .n-alert {
+  display: none;
+}
+
+.nb-nubi .n-zzz text {
+  font-family: ui-rounded, 'Segoe UI', system-ui, sans-serif;
+  font-weight: 800;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nb-nubi svg,
+  .nb-nubi svg * {
+    animation-play-state: paused !important;
+  }
+}
+
+/* =========================================================
+   THINKING — eyes wander up, antenna pulses, thought dots
+   ========================================================= */
+.nb-nubi.s-thinking .n-body {
+  transform: rotate(-2deg);
+}
+.nb-nubi.s-thinking .n-eyes {
+  animation: nb-nubi-eyes-wander 3.2s ease-in-out infinite;
+}
+.nb-nubi.s-thinking .n-ball {
+  animation: nb-nubi-ball-pulse 1.6s ease-in-out infinite;
+}
+.nb-nubi.s-thinking .n-dots {
+  display: block;
+}
+.nb-nubi.s-thinking .n-dots circle {
+  opacity: 0;
+  animation: nb-nubi-dot-think 2.4s ease-in-out infinite;
+}
+.nb-nubi.s-thinking .n-dots circle:nth-child(2) {
+  animation-delay: 0.25s;
+}
+.nb-nubi.s-thinking .n-dots circle:nth-child(3) {
+  animation-delay: 0.5s;
+}
+@keyframes nb-nubi-eyes-wander {
+  0%,
+  30% {
+    transform: translate(-3.5px, -4.5px);
+  }
+  45%,
+  80% {
+    transform: translate(3.5px, -4.5px);
+  }
+  95%,
+  100% {
+    transform: translate(-3.5px, -4.5px);
+  }
+}
+@keyframes nb-nubi-ball-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.28);
+  }
+}
+@keyframes nb-nubi-dot-think {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  20% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  65% {
+    opacity: 1;
+  }
+  90%,
+  100% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+/* =========================================================
+   WORKING — focused squint, nodding rhythm, effort sparks
+   ========================================================= */
+.nb-nubi.s-working .n-body {
+  animation: nb-nubi-nod 0.6s ease-in-out infinite;
+}
+.nb-nubi.s-working .n-eye {
+  transform: scaleY(0.6);
+}
+.nb-nubi.s-working .n-mouth-smile {
+  display: none;
+}
+.nb-nubi.s-working .n-mouth-flat {
+  display: block;
+}
+.nb-nubi.s-working .n-sparks line {
+  animation: nb-nubi-spark-seq 0.9s linear infinite;
+}
+.nb-nubi.s-working .n-sparks line:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.nb-nubi.s-working .n-sparks line:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes nb-nubi-nod {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(3px) rotate(2deg);
+  }
+}
+@keyframes nb-nubi-spark-seq {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0.15;
+  }
+}
+
+/* =========================================================
+   SEARCHING — scanning eyes, head sweep, antenna radar ping
+   ========================================================= */
+.nb-nubi.s-searching .n-eyes {
+  animation: nb-nubi-scan 2.8s ease-in-out infinite;
+}
+.nb-nubi.s-searching .n-body {
+  animation: nb-nubi-head-scan 2.8s ease-in-out infinite;
+}
+.nb-nubi.s-searching .n-mouth-smile {
+  display: none;
+}
+.nb-nubi.s-searching .n-mouth-flat {
+  display: block;
+}
+.nb-nubi.s-searching .n-ping {
+  display: block;
+  animation: nb-nubi-ping 1.4s ease-out infinite;
+}
+@keyframes nb-nubi-scan {
+  0%,
+  18% {
+    transform: translateX(-4.5px);
+  }
+  42%,
+  68% {
+    transform: translateX(4.5px);
+  }
+  90%,
+  100% {
+    transform: translateX(-4.5px);
+  }
+}
+@keyframes nb-nubi-head-scan {
+  0%,
+  18% {
+    transform: rotate(1.5deg);
+  }
+  42%,
+  68% {
+    transform: rotate(-1.5deg);
+  }
+  90%,
+  100% {
+    transform: rotate(1.5deg);
+  }
+}
+@keyframes nb-nubi-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  75%,
+  100% {
+    transform: scale(2.7);
+    opacity: 0;
+  }
+}
+
+/* =========================================================
+   LOADING — thought bubbles rise up-left of the head:
+   small pops first, then medium, then the big one
+   ========================================================= */
+.nb-nubi.s-loading .n-loaddots {
+  display: block;
+}
+.nb-nubi.s-loading .n-loaddots circle {
+  opacity: 0;
+  animation: nb-nubi-bubble-rise 2.4s ease-in-out infinite;
+}
+.nb-nubi.s-loading .n-loaddots circle:nth-child(2) {
+  animation-delay: 0.3s;
+}
+.nb-nubi.s-loading .n-loaddots circle:nth-child(3) {
+  animation-delay: 0.6s;
+}
+.nb-nubi.s-loading .n-body {
+  transform: rotate(-2.5deg);
+}
+.nb-nubi.s-loading .n-eyes {
+  transform: translate(-4px, -4.5px);
+}
+.nb-nubi.s-loading .n-ball {
+  animation: nb-nubi-ball-pulse 2.4s ease-in-out infinite;
+}
+@keyframes nb-nubi-bubble-rise {
+  0% {
+    opacity: 0;
+    transform: translate(0, 7px) scale(0);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1.18);
+  }
+  20% {
+    transform: scale(0.96);
+  }
+  28% {
+    transform: scale(1);
+  }
+  68% {
+    opacity: 1;
+    transform: translate(0, -3px) scale(1);
+  }
+  88%,
+  100% {
+    opacity: 0;
+    transform: translate(0, -10px) scale(1.06);
+  }
+}
+
+/* =========================================================
+   FLYING — a brisk upward dart on a snappy ease-out curve (0.78s)
+   so the loader reads as fast/energetic instead of a slow floaty
+   hover; quick air-whoosh streaks reinforce the forward-speed cue,
+   the altitude shadow tracks the bob. The side headphone stays
+   static (it is not a wing). Used as the default-tenant app
+   loader (Loader.tsx).
+   ========================================================= */
+.nb-nubi.s-flying .n-body {
+  animation: nb-nubi-fly-zip 0.78s cubic-bezier(0.15, 0.85, 0.3, 1) infinite;
+}
+.nb-nubi.s-flying .n-antenna {
+  animation: nb-nubi-antenna-lag 0.78s ease-in-out infinite;
+}
+.nb-nubi.s-flying .n-shadow {
+  display: block;
+  animation: nb-nubi-shadow 0.78s ease-in-out infinite;
+}
+.nb-nubi.s-flying .n-whoosh {
+  display: block;
+}
+.nb-nubi.s-flying .n-whoosh line {
+  opacity: 0;
+  animation: nb-nubi-whoosh 0.4s linear infinite;
+}
+.nb-nubi.s-flying .n-whoosh line:nth-child(2) {
+  animation-delay: 0.13s;
+}
+.nb-nubi.s-flying .n-whoosh line:nth-child(3) {
+  animation-delay: 0.27s;
+}
+.nb-nubi.s-flying .n-sparks line {
+  animation: nb-nubi-flick 1.2s ease-in-out infinite;
+}
+.nb-nubi.s-flying .n-sparks line:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.nb-nubi.s-flying .n-sparks line:nth-child(3) {
+  animation-delay: 0.4s;
+}
+.nb-nubi.s-flying .n-eye {
+  animation: nb-nubi-blink 3s ease-in-out infinite;
+}
+@keyframes nb-nubi-blink {
+  /* eyes stay open for most of the cycle, then one quick blink near the end */
+  0%,
+  91%,
+  100% {
+    transform: scaleY(1);
+  }
+  94% {
+    transform: scaleY(0.1);
+  }
+  97% {
+    transform: scaleY(1);
+  }
+}
+@keyframes nb-nubi-fly-zip {
+  /* A quick upward dart — fast rise to the peak, then a gentle settle (the
+     ease-out curve on the rule supplies the "snap"). scale = squash & stretch
+     off the feet (origin 120,214): compressed at the low point, stretched at
+     the top — weight without the old floaty side-to-side sway. */
+  0% {
+    transform: translateY(7px) scale(1.06, 0.94);
+  }
+  32% {
+    transform: translateY(-17px) scale(0.95, 1.07);
+  }
+  52% {
+    transform: translateY(-12px) scale(1, 1);
+  }
+  100% {
+    transform: translateY(7px) scale(1.06, 0.94);
+  }
+}
+@keyframes nb-nubi-antenna-lag {
+  0%,
+  50%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-7deg);
+  }
+  75% {
+    transform: rotate(7deg);
+  }
+}
+@keyframes nb-nubi-shadow {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.15;
+  }
+  25%,
+  75% {
+    transform: scale(0.68);
+    opacity: 0.06;
+  }
+  50% {
+    transform: scale(0.9);
+    opacity: 0.12;
+  }
+}
+@keyframes nb-nubi-whoosh {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scaleY(0.5);
+  }
+  25% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(16px) scaleY(1.15);
+  }
+}
+@keyframes nb-nubi-flick {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* =========================================================
+   EXCITED — squash & stretch jump, happy eyes, spark burst
+   ========================================================= */
+.nb-nubi.s-excited .n-body {
+  animation: nb-nubi-jump 1.15s cubic-bezier(0.4, 0.05, 0.2, 1) infinite;
+}
+.nb-nubi.s-excited .n-eye {
+  display: none;
+}
+.nb-nubi.s-excited .n-eye-happy {
+  display: block;
+}
+.nb-nubi.s-excited .n-mouth-smile {
+  display: none;
+}
+.nb-nubi.s-excited .n-mouth-open {
+  display: block;
+}
+.nb-nubi.s-excited .n-sparks-l-wrap {
+  display: block;
+}
+.nb-nubi.s-excited .n-sparks,
+.nb-nubi.s-excited .n-sparks-l {
+  animation: nb-nubi-burst 1.15s ease-out infinite;
+}
+@keyframes nb-nubi-jump {
+  0% {
+    transform: translateY(0) scale(1, 1);
+  }
+  12% {
+    transform: translateY(2px) scale(1.07, 0.9);
+  }
+  38% {
+    transform: translateY(-20px) scale(0.96, 1.07);
+  }
+  58% {
+    transform: translateY(0) scale(1.06, 0.93);
+  }
+  72% {
+    transform: translateY(-5px) scale(0.99, 1.02);
+  }
+  84%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+}
+@keyframes nb-nubi-burst {
+  0%,
+  20% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.3);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+
+/* =========================================================
+   WAVING — wing waves like a hand, friendly head tilt
+   ========================================================= */
+.nb-nubi.s-waving .n-wing {
+  animation: nb-nubi-wave 1.9s ease-in-out infinite;
+}
+.nb-nubi.s-waving .n-body {
+  animation: nb-nubi-tilt-wave 1.9s ease-in-out infinite;
+}
+.nb-nubi.s-waving .n-mouth-smile {
+  transform: scale(1.2);
+}
+@keyframes nb-nubi-wave {
+  0% {
+    transform: rotate(0deg);
+  }
+  10% {
+    transform: rotate(-45deg);
+  }
+  20% {
+    transform: rotate(-12deg);
+  }
+  30% {
+    transform: rotate(-45deg);
+  }
+  40% {
+    transform: rotate(-12deg);
+  }
+  50% {
+    transform: rotate(-45deg);
+  }
+  64%,
+  100% {
+    transform: rotate(0deg);
+  }
+}
+@keyframes nb-nubi-tilt-wave {
+  0%,
+  64%,
+  100% {
+    transform: rotate(0deg);
+  }
+  15%,
+  45% {
+    transform: rotate(3deg);
+  }
+}
+
+/* =========================================================
+   ALERT — shake, wide eyes, "!" badge, flashing sparks
+   ========================================================= */
+.nb-nubi.s-alert .n-body {
+  animation: nb-nubi-shake 1.7s ease-in-out infinite;
+}
+.nb-nubi.s-alert .n-eye {
+  transform: scale(1.08, 1.25);
+}
+.nb-nubi.s-alert .n-mouth-smile {
+  display: none;
+}
+.nb-nubi.s-alert .n-mouth-o {
+  display: block;
+}
+.nb-nubi.s-alert .n-alert {
+  display: block;
+  animation: nb-nubi-pop 1.7s ease-in-out infinite;
+}
+.nb-nubi.s-alert .n-sparks line {
+  animation: nb-nubi-flash 0.34s linear infinite alternate;
+}
+@keyframes nb-nubi-shake {
+  0%,
+  32%,
+  100% {
+    transform: translateX(0);
+  }
+  4%,
+  12%,
+  20%,
+  28% {
+    transform: translateX(-4px);
+  }
+  8%,
+  16%,
+  24% {
+    transform: translateX(4px);
+  }
+}
+@keyframes nb-nubi-pop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  6% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+  12% {
+    transform: scale(1);
+  }
+  75% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  88%,
+  100% {
+    transform: scale(0);
+    opacity: 0;
+  }
+}
+@keyframes nb-nubi-flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.25;
+  }
+}
+
+/* =========================================================
+   SAD — sagging body, drooped antenna, frown
+   ========================================================= */
+.nb-nubi.s-sad .n-body {
+  animation: nb-nubi-sag 3.4s ease-in-out infinite;
+}
+.nb-nubi.s-sad .n-antenna {
+  animation: nb-nubi-droop 3.4s ease-in-out infinite;
+}
+.nb-nubi.s-sad .n-eyes {
+  transform: translateY(3px);
+}
+.nb-nubi.s-sad .n-eye {
+  transform: scaleY(0.78);
+}
+.nb-nubi.s-sad .n-mouth-smile {
+  display: none;
+}
+.nb-nubi.s-sad .n-mouth-frown {
+  display: block;
+}
+.nb-nubi.s-sad .n-sparks {
+  display: none;
+}
+@keyframes nb-nubi-sag {
+  0%,
+  100% {
+    transform: translateY(3px) scale(1.01, 0.98);
+  }
+  50% {
+    transform: translateY(6px) scale(1.025, 0.962);
+  }
+}
+@keyframes nb-nubi-droop {
+  0%,
+  100% {
+    transform: rotate(24deg);
+  }
+  50% {
+    transform: rotate(30deg);
+  }
+}
+
+/* =========================================================
+   SLEEPING — closed eyes, slow breathing, floating z's
+   ========================================================= */
+.nb-nubi.s-sleeping .n-body {
+  animation: nb-nubi-breathe 3.4s ease-in-out infinite;
+}
+.nb-nubi.s-sleeping .n-eye {
+  display: none;
+}
+.nb-nubi.s-sleeping .n-eye-closed {
+  display: block;
+}
+.nb-nubi.s-sleeping .n-mouth-smile {
+  transform: scale(0.72);
+}
+.nb-nubi.s-sleeping .n-antenna {
+  animation: nb-nubi-doze 3.4s ease-in-out infinite;
+}
+.nb-nubi.s-sleeping .n-sparks {
+  display: none;
+}
+.nb-nubi.s-sleeping .n-zzz {
+  display: block;
+}
+.nb-nubi.s-sleeping .n-zzz text {
+  opacity: 0;
+  animation: nb-nubi-zrise 3.4s linear infinite;
+}
+.nb-nubi.s-sleeping .n-zzz text:nth-child(2) {
+  animation-delay: 1.1s;
+}
+.nb-nubi.s-sleeping .n-zzz text:nth-child(3) {
+  animation-delay: 2.2s;
+}
+@keyframes nb-nubi-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.028, 1.035);
+  }
+}
+@keyframes nb-nubi-doze {
+  0%,
+  100% {
+    transform: rotate(16deg);
+  }
+  50% {
+    transform: rotate(20deg);
+  }
+}
+@keyframes nb-nubi-zrise {
+  0% {
+    opacity: 0;
+    transform: translate(0, 12px);
+  }
+  18% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(9px, -14px);
+  }
+}

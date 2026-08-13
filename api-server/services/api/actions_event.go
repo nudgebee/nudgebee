@@ -129,23 +129,26 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 		}
 
 	case "trigger_investigation":
-		slog.Info("trigger_investigation: received request", "has_events", actionPayload.Input["events"] != nil, "has_event", actionPayload.Input["event"] != nil)
+		// Stamp trace_id/span_id from the request span so these lines (several
+		// of which run before the request context is built) correlate in Loki.
+		tiLogger := common.LoggerWithTrace(c.Request.Context(), logger)
+		tiLogger.Info("trigger_investigation: received request", "has_events", actionPayload.Input["events"] != nil, "has_event", actionPayload.Input["event"] != nil)
 		eventInput := []map[string]any{}
 		if el, ok := actionPayload.Input["events"].([]map[string]any); ok {
 			eventInput = el
-			slog.Info("trigger_investigation: parsed events as []map[string]any", "count", len(eventInput))
+			tiLogger.Info("trigger_investigation: parsed events as []map[string]any", "count", len(eventInput))
 		} else if el, ok := actionPayload.Input["events"].([]any); ok {
 			for _, el := range el {
 				if e, ok := el.(map[string]any); ok {
 					eventInput = append(eventInput, e)
 				}
 			}
-			slog.Info("trigger_investigation: parsed events as []any", "count", len(eventInput))
+			tiLogger.Info("trigger_investigation: parsed events as []any", "count", len(eventInput))
 		} else if el, ok := actionPayload.Input["event"].(map[string]any); ok {
 			eventInput = append(eventInput, el)
-			slog.Info("trigger_investigation: parsed single event", "count", 1)
+			tiLogger.Info("trigger_investigation: parsed single event", "count", 1)
 		} else {
-			slog.Error("integrations: failed to decode request", "input", slog.AnyValue(actionPayload.Input))
+			tiLogger.Error("integrations: failed to decode request", "input", slog.AnyValue(actionPayload.Input))
 			c.JSON(400, common.ErrorActionBadRequest("event: invalid request, events/event is required"))
 			return
 		}
@@ -178,13 +181,13 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 			eventDto := event.Event{}
 			err := common.UnmarshalMapToStruct(eventInput, &eventDto)
 			if err != nil {
-				slog.Error("integrations: failed to decode request", "error", err, "input", slog.AnyValue(eventInput))
+				tiLogger.Error("integrations: failed to decode request", "error", err, "input", slog.AnyValue(eventInput))
 				c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 				return
 			}
 
 			// Debug log all fields before validation
-			slog.Info("trigger_investigation: event fields",
+			tiLogger.Info("trigger_investigation: event fields",
 				"index", idx,
 				"finding_id", eventDto.FindingId,
 				"aggregation_key", eventDto.AggregationKey,
@@ -198,7 +201,7 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 				"source", eventDto.Source)
 
 			if eventDto.FindingId == "" || eventDto.AggregationKey == "" || eventDto.Title == "" || eventDto.Tenant == "" || eventDto.AccountId == "" || eventDto.FindingType == "" || eventDto.Priority == "" || eventDto.SubjectName == "" || eventDto.Cluster == "" {
-				slog.Error("trigger_investigation: validation failed",
+				tiLogger.Error("trigger_investigation: validation failed",
 					"finding_id_empty", eventDto.FindingId == "",
 					"aggregation_key_empty", eventDto.AggregationKey == "",
 					"title_empty", eventDto.Title == "",
@@ -224,7 +227,7 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 			ids[i] = common.GenerateUUID()
 		}
 
-		slog.Info("event: STARTING event processing", "count", len(eventDtos), "tenant", ctx.GetSecurityContext().GetTenantId(), "first_event_source", func() string {
+		tiLogger.Info("event: STARTING event processing", "count", len(eventDtos), "tenant", ctx.GetSecurityContext().GetTenantId(), "first_event_source", func() string {
 			if len(eventDtos) > 0 {
 				return eventDtos[0].Source
 			}
@@ -232,7 +235,7 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 		}())
 
 		for i, eventDto := range eventDtos {
-			slog.Info("event: processing single event",
+			tiLogger.Info("event: processing single event",
 				"index", i,
 				"total", len(eventDtos),
 				"finding_id", eventDto.FindingId,
@@ -243,14 +246,14 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 
 			eventId, err := event.InvestigateEvent(ctx, eventDto, ids[i])
 			if err != nil {
-				slog.Error("event: unable to investigate event", "error", err, "fingerprint", eventDto.Fingerprint, "aggregation_key", eventDto.AggregationKey, "finding_id", eventDto.FindingId, "finding_type", eventDto.FindingType, "title", eventDto.Title, "tenant", eventDto.Tenant, "account", eventDto.AccountId, "source", eventDto.Source)
+				tiLogger.Error("event: unable to investigate event", "error", err, "fingerprint", eventDto.Fingerprint, "aggregation_key", eventDto.AggregationKey, "finding_id", eventDto.FindingId, "finding_type", eventDto.FindingType, "title", eventDto.Title, "tenant", eventDto.Tenant, "account", eventDto.AccountId, "source", eventDto.Source)
 				c.JSON(500, common.ErrorActionInternal(fmt.Sprintf("event: failed to process event %s: %v", eventDto.FindingId, err)))
 				return
 			}
 			ids[i] = eventId
-			slog.Info("event: successfully investigated event", "event_id", eventId, "finding_id", eventDto.FindingId, "source", eventDto.Source)
+			tiLogger.Info("event: successfully investigated event", "event_id", eventId, "finding_id", eventDto.FindingId, "source", eventDto.Source)
 		}
-		slog.Info("event: COMPLETED event processing", "count", len(eventDtos))
+		tiLogger.Info("event: COMPLETED event processing", "count", len(eventDtos))
 
 		c.JSON(200, map[string]any{
 			"success": true,

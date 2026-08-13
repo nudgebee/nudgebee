@@ -1,6 +1,7 @@
 package webhook_queue
 
 import (
+	"context"
 	"time"
 
 	"nudgebee/services/common"
@@ -8,7 +9,9 @@ import (
 )
 
 // PublishWebhookProcess publishes a webhook row ID for async processing.
-func PublishWebhookProcess(webhookRowID string) error {
+// ctx carries the ingest request's trace context so the consumer continues
+// the same distributed trace.
+func PublishWebhookProcess(ctx context.Context, webhookRowID string) error {
 	message := WebhookProcessMessage{
 		WebhookRowID: webhookRowID,
 	}
@@ -18,5 +21,6 @@ func PublishWebhookProcess(webhookRowID string) error {
 		config.Config.RabbitMqWebhookProcessQueue,
 		message,
 		common.MqPublishWithExpiration(1*time.Hour),
+		common.MqPublishWithContext(ctx),
 	)
 }

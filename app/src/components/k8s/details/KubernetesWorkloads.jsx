@@ -162,22 +162,22 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
     {
       icon: LogFileIcon,
       label: 'Logs',
-      id: '4',
+      id: 'logs',
     },
     {
       icon: EditFileIcon,
       label: 'Edit',
-      id: '5',
+      id: 'edit',
     },
     {
       icon: SecurityScanSvg,
       label: 'Scan Image',
-      id: '6',
+      id: 'scan-image',
     },
     {
       icon: SLOInspectionIcon,
       label: 'SLO',
-      id: '8',
+      id: 'slo',
     },
   ];
 
@@ -216,22 +216,22 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
 
   const onMenuClick = (menuItem, data) => {
     if (hasWriteAccess(data?.cloud_account_id)) {
-      if (menuItem.id === '00') {
+      if (menuItem.id === 'auto-optimize-horizontal') {
         setAutoPilotReplicaModalData(data);
         setIsAutoPilotReplicaModalOpen(true);
-      } else if (menuItem.id === '01') {
+      } else if (menuItem.id === 'auto-optimize-vertical') {
         setAutoPilotVerticalModalData(data);
         setIsAutoPilotVerticalModalOpen(true);
-      } else if (menuItem.id === '1') {
+      } else if (menuItem.id === 'restart') {
         setRestartWorkload(true);
         setSelectedWorkload(data);
-      } else if (menuItem.id === '2') {
+      } else if (menuItem.id === 'scale') {
         setScaleWorkload(true);
         setSelectedWorkload(data);
-      } else if (menuItem.id === '3') {
+      } else if (menuItem.id === 'delete') {
         setDeleteWorkload(true);
         setSelectedWorkload(data);
-      } else if (menuItem.id === '4') {
+      } else if (menuItem.id === 'logs') {
         if (!router.pathname.includes('/kubernetes/details')) {
           router.push(
             `kubernetes/details/${accountId}?filter={"namespaceName":"${data.namespace}","workloadName":"${data.name}"}&time=1:h#monitoring/logs`
@@ -239,10 +239,10 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         } else {
           router.push(`${accountId}?filter={"namespaceName":"${data.namespace}","workloadName":"${data.name}"}&time=1:h#monitoring/logs`);
         }
-      } else if (menuItem.id === '5') {
+      } else if (menuItem.id === 'edit') {
         setEditWorkload(true);
         setSelectedWorkload(data);
-      } else if (menuItem.id === '6') {
+      } else if (menuItem.id === 'scan-image') {
         k8sApi.scanImage({ accountId: accountId, namespace: data.namespace, workloadName: data.name }).then((res) => {
           const errMsg = parseHttpResponseBodyMessage(res?.data);
           if (errMsg) {
@@ -253,11 +253,11 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
             snackbar.error('Failed to trigger image scan');
           }
         });
-      } else if (menuItem.id === '7') {
+      } else if (menuItem.id === 'git') {
         setGitModalWorkload(data);
         fetchGitDetails(data);
         setIsGitModalOpen(true);
-      } else if (menuItem.id === '8') {
+      } else if (menuItem.id === 'slo') {
         setSelectedWorkload(data);
         const requestKey = `${data.namespace}/${data.name}`;
         sloRequestKeyRef.current = requestKey;
@@ -302,16 +302,16 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         {
           icon: AutoPilotSettingIcon,
           label: 'Auto Optimize',
-          id: '0',
+          id: 'auto-optimize',
           subMenu: [
             {
               label: 'Horizontal Rightsizing',
-              id: '00',
+              id: 'auto-optimize-horizontal',
               disabled: rightSizeCounts.horizontal_rightsize > 0 || rightSizeCounts.continuous_rightsize > 0,
             },
             {
               label: 'Vertical Rightsizing',
-              id: '01',
+              id: 'auto-optimize-vertical',
               disabled: rightSizeCounts.vertical_rightsize > 0,
             },
           ],
@@ -319,17 +319,17 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         {
           icon: ReloadIcon,
           label: 'Restart',
-          id: '1',
+          id: 'restart',
         },
         {
           icon: ScaleIcon,
           label: 'Scale',
-          id: '2',
+          id: 'scale',
         },
         {
           icon: DeleteIcon,
           label: 'Delete',
-          id: '3',
+          id: 'delete',
         }
       );
     }
@@ -337,7 +337,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
     menus.push({
       icon: GitSvg,
       label: 'Git',
-      id: '7',
+      id: 'git',
     });
     return menus.sort((a, b) => a.label.localeCompare(b.label));
   }

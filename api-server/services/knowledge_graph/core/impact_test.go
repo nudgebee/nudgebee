@@ -57,6 +57,19 @@ func TestSummarizeImpact_CountsAppDependentsAndProd(t *testing.T) {
 			t.Errorf("dependents not sorted by (hops, name): position %d = %q, want %q (full: %+v)", i, got.Dependents[i].NodeID, id, got.Dependents)
 		}
 	}
+	// svc-1 has a connecting edge in the fixture: it must carry the relationship
+	// and the sorted union of the edge's sources. wl-1 has none — attribution
+	// stays empty rather than inventing provenance.
+	svc1 := got.Dependents[1]
+	if svc1.Relationship != RelationshipCalls {
+		t.Errorf("svc-1 Relationship = %q, want CALLS", svc1.Relationship)
+	}
+	if len(svc1.Sources) != 2 || svc1.Sources[0] != "datadog" || svc1.Sources[1] != "traces" {
+		t.Errorf("svc-1 Sources = %v, want [datadog traces]", svc1.Sources)
+	}
+	if got.Dependents[0].Relationship != "" || len(got.Dependents[0].Sources) != 0 {
+		t.Errorf("wl-1 has no connecting edge, want empty attribution, got %+v", got.Dependents[0])
+	}
 }
 
 func TestSummarizeImpact_SingleSourceIsLowCoverage(t *testing.T) {
@@ -92,6 +105,135 @@ func TestSummarizeImpact_NoDependentsLowNotNone(t *testing.T) {
 	}
 	if got.CoverageConfidence != CoverageLow {
 		t.Errorf("CoverageConfidence = %q, want low", got.CoverageConfidence)
+	}
+}
+
+func TestAttributeConnectingEdges(t *testing.T) {
+	// seed(0) ← a(1) ← c(2); b(1) is a sibling of a. Edges: a→seed twice (CALLS
+	// single-source, MOUNTS dual-source), a→b sibling noise, b→seed legacy edge
+	// with only the winning Source, c→a one layer deeper.
+	depth := map[string]int{"seed": 0, "a": 1, "b": 1, "c": 2}
+	edges := []*DbEdge{
+		{SourceNodeID: "a", DestinationNodeID: "seed", RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "ebpf"}}},
+		{SourceNodeID: "a", DestinationNodeID: "seed", RelationshipType: RelationshipMounts,
+			ContributingSources: []EdgeContributingSource{{Source: "k8s"}, {Source: "traces"}}},
+		{SourceNodeID: "a", DestinationNodeID: "b", RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "noise"}}},
+		{SourceNodeID: "b", DestinationNodeID: "seed", RelationshipType: RelationshipCalls, Source: "k8s"},
+		{SourceNodeID: "c", DestinationNodeID: "a", RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "traces"}}},
+		nil,
+	}
+
+	got := attributeConnectingEdges(edges, depth, TraverseDirectionUpstream)
+
+	a := got["a"]
+	if a.relationship != RelationshipMounts {
+		t.Errorf("a relationship = %q, want MOUNTS (better corroborated)", a.relationship)
+	}
+	if len(a.sources) != 3 || a.sources[0] != "ebpf" || a.sources[1] != "k8s" || a.sources[2] != "traces" {
+		t.Errorf("a sources = %v, want union [ebpf k8s traces] (sibling edge excluded)", a.sources)
+	}
+	b := got["b"]
+	if b.relationship != RelationshipCalls || len(b.sources) != 1 || b.sources[0] != "k8s" {
+		t.Errorf("b = %+v, want CALLS with legacy Source fallback [k8s]", b)
+	}
+	c := got["c"]
+	if c.relationship != RelationshipCalls || len(c.sources) != 1 || c.sources[0] != "traces" {
+		t.Errorf("c = %+v, want CALLS/[traces] via its own layer-2 edge", c)
+	}
+
+	// Downstream mirrors the direction: seed→x edges attribute x.
+	downDepth := map[string]int{"seed": 0, "x": 1}
+	downEdges := []*DbEdge{
+		{SourceNodeID: "seed", DestinationNodeID: "x", RelationshipType: RelationshipPublishesTo,
+			ContributingSources: []EdgeContributingSource{{Source: "ebpf"}}},
+	}
+	down := attributeConnectingEdges(downEdges, downDepth, TraverseDirectionDownstream)
+	if x := down["x"]; x.relationship != RelationshipPublishesTo || len(x.sources) != 1 || x.sources[0] != "ebpf" {
+		t.Errorf("downstream x = %+v, want PUBLISHES_TO/[ebpf]", x)
+	}
+}
+
+func TestSummarizeDownstream(t *testing.T) {
+	seedID := "wl-1"
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeWorkload, "checkout", "prod", "shop"),
+		newImpactTestNode("db-1", NodeTypeDatabase, "orders-db", "prod", ""),
+		newImpactTestNode("svc-1", NodeTypeService, "payments", "prod", "shop"),
+		newImpactTestNode("ns-1", NodeTypeNamespace, "shop", "", ""), // not a dependency type
+	}
+	depth := map[string]int{seedID: 0, "db-1": 1, "svc-1": 1, "ns-1": 1}
+	edges := []*DbEdge{
+		{SourceNodeID: seedID, DestinationNodeID: "db-1", RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "ebpf"}}},
+		{SourceNodeID: seedID, DestinationNodeID: "svc-1", RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "traces"}}},
+	}
+
+	got := summarizeDownstream(seedID, nodes, edges, depth)
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 downstream dependencies (namespace + seed excluded), got %d: %+v", len(got), got)
+	}
+	// Sorted by (hops, name): orders-db before payments.
+	if got[0].Name != "orders-db" || got[0].NodeType != NodeTypeDatabase || got[0].Relationship != RelationshipCalls {
+		t.Errorf("first = %+v, want orders-db Database CALLS", got[0])
+	}
+	if got[1].Name != "payments" || len(got[1].Sources) != 1 || got[1].Sources[0] != "traces" {
+		t.Errorf("second = %+v, want payments with sources [traces]", got[1])
+	}
+}
+
+func TestHasSeedFlowEvidence(t *testing.T) {
+	seed := "seed"
+	flowEdge := &DbEdge{SourceNodeID: "a", DestinationNodeID: seed,
+		ContributingSources: []EdgeContributingSource{{Source: "ebpf"}}}
+	structuralEdge := &DbEdge{SourceNodeID: "b", DestinationNodeID: seed,
+		ContributingSources: []EdgeContributingSource{{Source: "k8s"}}}
+	nonIncident := &DbEdge{SourceNodeID: "a", DestinationNodeID: "b",
+		ContributingSources: []EdgeContributingSource{{Source: "traces"}}}
+	legacy := &DbEdge{SourceNodeID: seed, DestinationNodeID: "c", Source: "traces"}
+
+	if hasSeedFlowEvidence(seed, []*DbEdge{structuralEdge, nonIncident, nil}, nil) {
+		t.Error("structural-only / non-incident edges must not count as flow evidence")
+	}
+	if !hasSeedFlowEvidence(seed, []*DbEdge{structuralEdge, flowEdge}, nil) {
+		t.Error("flow-asserted edge incident to the seed must count")
+	}
+	if !hasSeedFlowEvidence(seed, []*DbEdge{legacy}, nil) {
+		t.Error("legacy Source fallback must count when contributing_sources is empty")
+	}
+	if !hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "db", Sources: []string{"k8s", "datadog-apm"}}}) {
+		t.Error("flow-attributed downstream dependency must count")
+	}
+	if hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "db", Sources: []string{"k8s"}}}) {
+		t.Error("structural-only downstream attribution must not count")
+	}
+}
+
+func TestSeedAccountIsClusterScoped(t *testing.T) {
+	if !seedAccountIsClusterScoped(&DbNode{Source: "k8s"}) {
+		t.Error("k8s-sourced seed lives in a per-cluster account and must allow the account fallback")
+	}
+	for _, src := range []string{"aws", "gcp", "azure", ""} {
+		if seedAccountIsClusterScoped(&DbNode{Source: src}) {
+			t.Errorf("%q-sourced seed must not get account-level vouching (provider accounts can span clusters and uninstrumented callers)", src)
+		}
+	}
+	if seedAccountIsClusterScoped(nil) {
+		t.Error("nil seed must not allow the fallback")
+	}
+}
+
+func TestDownstreamRelationshipStrings(t *testing.T) {
+	wl := downstreamRelationshipStrings(NodeTypeWorkload)
+	if len(wl) != 3 || wl[0] != string(RelationshipCalls) {
+		t.Errorf("Workload downstream = %v, want [CALLS PUBLISHES_TO SUBSCRIBES_TO]", wl)
+	}
+	if got := downstreamRelationshipStrings(NodeTypeDatabase); len(got) != 0 {
+		t.Errorf("Database gets no downstream pass, got %v", got)
 	}
 }
 

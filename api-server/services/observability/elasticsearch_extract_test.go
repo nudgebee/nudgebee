@@ -127,6 +127,26 @@ func TestParseSourceMap_FluentBitShape(t *testing.T) {
 	assert.Equal(t, "nudgebee", got.Labels["kubernetes.namespace_name"])
 }
 
+// TestParseSourceMap_ECSShape is the regression guard for client clusters shipping
+// with Beats / Elastic Agent / Logstash: the line is at "message", and "log" holds
+// an object ({level, file, offset}) so the `src["log"].(string)` assertion fails.
+// Before the fix every such hit was dropped, surfacing as an empty result with no
+// error while the same query returned millions of hits over curl.
+func TestParseSourceMap_ECSShape(t *testing.T) {
+	got, ok := ParseSourceMap(map[string]any{
+		"@timestamp": "2026-08-04T06:22:29.781Z",
+		"message":    "GET /healthz 200",
+		"log":        map[string]any{"level": "info", "offset": float64(1234)},
+		"data_stream": map[string]any{
+			"namespace": "gd-ehq-non-prod",
+			"dataset":   "kubernetes.container_logs",
+		},
+	})
+	require.True(t, ok, "ECS doc must not be dropped")
+	assert.Equal(t, "GET /healthz 200", got.Message)
+	assert.Equal(t, "2026-08-04T06:22:29.781Z", got.Timestamp)
+}
+
 func TestNormalizeESTimestamp(t *testing.T) {
 	cases := map[string]string{
 		"1781559826466.265767":   "2026-06-15T21:43:46.466265767Z", // epoch millis + sub-ms -> RFC3339 nanos
@@ -140,11 +160,35 @@ func TestNormalizeESTimestamp(t *testing.T) {
 	}
 }
 
-// TestParseSourceMap_NoMessageDropped ensures a doc with neither "log" nor a body
-// is still dropped (ok=false) rather than emitting an empty-message log.
+// TestParseSourceMap_NoMessageDropped ensures a doc carrying nothing but a
+// timestamp is dropped (ok=false) rather than emitting an empty-message log.
+// A doc with no message but other fields is no longer dropped — it renders as
+// raw _source, see TestParseSourceMap_NoMessageRendersSource.
 func TestParseSourceMap_NoMessageDropped(t *testing.T) {
-	_, ok := ParseSourceMap(map[string]any{"@timestamp": "1781559826466", "resource": map[string]any{}})
-	assert.False(t, ok)
+	_, ok := ParseSourceMap(map[string]any{"@timestamp": "1781559826466"})
+	assert.False(t, ok, "timestamp-only doc must be dropped, not rendered as {}")
+
+	_, ok = ParseSourceMap(map[string]any{})
+	assert.False(t, ok, "empty _source must be dropped")
+}
+
+// TestParseSourceMap_NoMessageRendersSource covers documents that match a logs-*
+// index pattern but carry no message field at all — Packetbeat network_traffic.*
+// is the case this was built for. Dropping them made the API return an empty
+// array while the same query reported millions of hits; instead the whole _source
+// becomes the line, minus @timestamp (already carried in its own field).
+func TestParseSourceMap_NoMessageRendersSource(t *testing.T) {
+	got, ok := ParseSourceMap(map[string]any{
+		"@timestamp": "2026-08-04T06:22:29.781Z",
+		"data_stream": map[string]any{
+			"namespace": "gd-ehq-non-prod",
+			"dataset":   "network_traffic.tls",
+		},
+	})
+	require.True(t, ok, "doc with structured fields but no message must not be dropped")
+	assert.Equal(t, `{"data_stream":{"dataset":"network_traffic.tls","namespace":"gd-ehq-non-prod"}}`, got.Message)
+	assert.NotContains(t, got.Message, "@timestamp", "@timestamp must be excluded from the rendered line")
+	assert.Equal(t, "2026-08-04T06:22:29.781Z", got.Timestamp)
 }
 
 // TestParseSourceMap_AttributesOnly covers an OTel doc that carries `attributes`

@@ -10,7 +10,7 @@ import { queryGraphQL } from '@lib/HttpService';
 import { useRouter } from 'next/router';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { hasWriteAccess } from '@lib/auth';
-import { useData } from '@context/DataContext';
+import { useData, getClusterData } from '@context/DataContext';
 import { BetaIcon } from '@assets';
 import { colors } from 'src/utils/colors';
 import { formatNumber } from '@lib/formatter';
@@ -245,7 +245,7 @@ const CostOrDash = ({ value, size = 'md', ...props }) => {
   );
 };
 
-const KubernetesOptimizeSummary = () => {
+const KubernetesOptimizeSummary = ({ kubernetes }) => {
   const [savingsData, setSavingsData] = useState(initialStateSavingsData);
   const [data, setData] = useState(initialStateData);
   const [averageTotalCost, setAverageTotalCost] = useState();
@@ -259,7 +259,13 @@ const KubernetesOptimizeSummary = () => {
   const [isGoogleChannelsLoading, setIsGoogleChannelsLoading] = useState(false);
   const [nodeRecommendation, setNodeRecommendation] = useState(nodeRecommendationInitialStateData);
 
-  const { selectedCluster } = useData();
+  const { selectedCluster: contextCluster } = useData();
+  // Prefer the cluster the URL points at. Every sibling Optimize sub-tab derives
+  // from `kubernetes.id`; this one read the context cluster only, which can
+  // legitimately diverge from the route — ClusterDropDown deliberately skips the
+  // sync on a cross-tenant deep link — and then rendered another cluster's
+  // savings with no error. Falls back to context while the account list loads.
+  const selectedCluster = (kubernetes?.id && getClusterData(kubernetes.id)) || contextCluster;
   const { data: session } = useSession();
   const includeGraviton = selectedCluster?.k8s_provider === 'EKS';
   const router = useRouter();

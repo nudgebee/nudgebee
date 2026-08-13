@@ -27,6 +27,7 @@ const (
 	PinotNamespaceCol  = "pinot_namespace_col"
 	PinotPodCol        = "pinot_pod_col"
 	PinotContainerCol  = "pinot_container_col"
+	PinotAppCol        = "pinot_app_col"
 	PinotTLSSkipVerify = "pinot_tls_skip_verify"
 )
 
@@ -44,6 +45,7 @@ type PinotConfig struct {
 	NamespaceCol  string // log-group grouping column (default: namespace)
 	PodCol        string // log-group grouping column (default: pod)
 	ContainerCol  string // log-group grouping column (default: container)
+	AppCol        string // canonical "app" mapping (optional, no default — see SeverityCol)
 	TLSSkipVerify bool   // user-configured opt-in for self-signed certs
 }
 
@@ -107,6 +109,8 @@ func GetPinotConfig(ctx *security.RequestContext, accountId string) (*PinotConfi
 			cfg.PodCol = value
 		case PinotContainerCol:
 			cfg.ContainerCol = value
+		case PinotAppCol:
+			cfg.AppCol = value
 		case PinotTLSSkipVerify:
 			cfg.TLSSkipVerify = strings.EqualFold(strings.TrimSpace(value), "true")
 		}
@@ -237,6 +241,9 @@ func (p *PinotSaasSource) GetDynamicLabelMapping(ctx *security.RequestContext, a
 	if cfg.ContainerCol != "" {
 		m["container"] = cfg.ContainerCol
 	}
+	if cfg.AppCol != "" {
+		m["app"] = cfg.AppCol
+	}
 	if cfg.SeverityCol != "" {
 		m["level"] = cfg.SeverityCol
 	}
@@ -267,6 +274,9 @@ func (p *PinotSaasSource) applyMergedLabelOverrides(ctx *security.RequestContext
 	if v := merged["container"]; v != "" {
 		cfg.ContainerCol = v
 	}
+	if v := merged["app"]; v != "" {
+		cfg.AppCol = v
+	}
 	if v := merged["level"]; v != "" {
 		cfg.SeverityCol = v
 	}
@@ -292,7 +302,12 @@ func (p *PinotSaasSource) GetQuery(ctx *security.RequestContext, req FetchLogReq
 		return "", fmt.Errorf("pinot.GetQuery: %w", err)
 	}
 	p.applyMergedLabelOverrides(ctx, req.AccountId, cfg)
-	where, err := buildPinotWhereClause(req.QueryRequest.Where)
+	// Schema is cached (5 min TTL) — needed to decide whether trace_id is a real
+	// column or must be rewritten to a message-contains filter. FetchLogs routes
+	// through GetQuery, so this is the effective query-build path.
+	schema, _ := fetchPinotSchemaDirect(req.AccountId, cfg)
+	rewritten := rewritePinotTraceIDFilter(req.QueryRequest.Where, schema, cfg.MessageCol)
+	where, err := buildPinotWhereClause(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("pinot.GetQuery: %w", err)
 	}
@@ -331,7 +346,8 @@ func (p *PinotSaasSource) QueryLogs(ctx *security.RequestContext, req FetchLogRe
 	if req.Query != "" {
 		sqlQuery = req.Query
 	} else {
-		where, whereErr := buildPinotWhereClause(req.QueryRequest.Where)
+		rewritten := rewritePinotTraceIDFilter(req.QueryRequest.Where, schema, cfg.MessageCol)
+		where, whereErr := buildPinotWhereClause(rewritten)
 		if whereErr != nil {
 			return nil, fmt.Errorf("pinot.QueryLogs: %w", whereErr)
 		}

@@ -3,6 +3,7 @@
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:CDN::my-cdn-distribution",
       "node_type": "CDN",
+      "specific_type": "CloudFrontDistribution",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -38,14 +39,22 @@
         "Name": "my-cdn-distribution"
       },
       "query_attributes": {
+        "dns_name": "d111111abcdef8.cloudfront.net",
         "domain_name": "d111111abcdef8.cloudfront.net",
         "name": "my-cdn-distribution",
         "status": "Deployed"
+      },
+      "ontology_attributes": {
+        "domain_name": "d111111abcdef8.cloudfront.net",
+        "location": "us-east-1",
+        "name": "my-cdn-distribution",
+        "state": "Deployed"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Cache::redis-cluster-001",
       "node_type": "Cache",
+      "specific_type": "ElastiCacheCluster",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -86,13 +95,22 @@
       "query_attributes": {
         "engine": "redis",
         "engine_version": "7.0.7",
+        "instance_type": "cache.t3.medium",
         "name": "redis-cluster-001",
         "num_cache_nodes": 1
+      },
+      "ontology_attributes": {
+        "endpoint": "redis-cluster.abc123.cache.amazonaws.com",
+        "location": "us-east-1",
+        "name": "redis-cluster-001",
+        "type": "redis",
+        "version": "7.0.7"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:CloudResource::encrypted-data-bucket",
       "node_type": "CloudResource",
+      "specific_type": "CloudResource",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -130,11 +148,13 @@
       "query_attributes": {
         "name": "encrypted-data-bucket",
         "region": "us-east-1"
-      }
+      },
+      "ontology_attributes": {}
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ContainerRegistry::my-app-repo",
       "node_type": "ContainerRegistry",
+      "specific_type": "ECRRepository",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -171,12 +191,19 @@
       },
       "query_attributes": {
         "name": "my-app-repo",
-        "region": "us-east-1"
+        "region": "us-east-1",
+        "repository_uri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app-repo"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "my-app-repo",
+        "uri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app-repo"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:DNSZone::example.com",
       "node_type": "DNSZone",
+      "specific_type": "Route53HostedZone",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -214,11 +241,16 @@
       },
       "query_attributes": {
         "name": "example.com"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "example.com"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Database::users-table",
       "node_type": "Database",
+      "specific_type": "DynamoDBTable",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -252,11 +284,16 @@
       "query_attributes": {
         "name": "users-table",
         "subtype": "table"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "users-table"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Database:main-vpc:mydb-instance",
       "node_type": "Database",
+      "specific_type": "RDSInstance",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -267,6 +304,7 @@
         "arn": "arn:aws:rds:us-east-1:123456789012:db:mydb-instance",
         "aws_account_number": "123456789012",
         "cloud_provider": "AWS",
+        "db_instance_identifier": "mydb-instance",
         "dns_name": "mydb.abc123.us-east-1.rds.amazonaws.com",
         "endpoint_address": "mydb.abc123.us-east-1.rds.amazonaws.com",
         "endpoint_port": 5432,
@@ -300,18 +338,31 @@
         "Name": "mydb-instance"
       },
       "query_attributes": {
+        "allocated_storage_gb": 100,
         "dns_name": "mydb.abc123.us-east-1.rds.amazonaws.com",
+        "endpoint_address": "mydb.abc123.us-east-1.rds.amazonaws.com",
+        "endpoint_port": 5432,
         "engine": "postgres",
         "engine_version": "14.7",
+        "instance_type": "db.t3.medium",
         "multi_az": true,
         "name": "mydb-instance",
         "subtype": "db",
         "vpc_id": "vpc-12345"
+      },
+      "ontology_attributes": {
+        "endpoint": "mydb.abc123.us-east-1.rds.amazonaws.com",
+        "location": "us-east-1",
+        "name": "mydb-instance",
+        "port": 5432,
+        "type": "postgres",
+        "version": "14.7"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:EncryptionKey::cloudwatch-logs-key",
       "node_type": "EncryptionKey",
+      "specific_type": "KMSKey",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -346,11 +397,17 @@
       },
       "query_attributes": {
         "name": "cloudwatch-logs-key"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "cloudwatch-logs-key",
+        "state": "Enabled"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:EncryptionKey::ebs-encryption-key",
       "node_type": "EncryptionKey",
+      "specific_type": "KMSKey",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -385,11 +442,17 @@
       },
       "query_attributes": {
         "name": "ebs-encryption-key"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "ebs-encryption-key",
+        "state": "Enabled"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:EncryptionKey::performance-insights-key",
       "node_type": "EncryptionKey",
+      "specific_type": "KMSKey",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -424,11 +487,17 @@
       },
       "query_attributes": {
         "name": "performance-insights-key"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "performance-insights-key",
+        "state": "Enabled"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:EncryptionKey::rds-encryption-key",
       "node_type": "EncryptionKey",
+      "specific_type": "KMSKey",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -463,11 +532,17 @@
       },
       "query_attributes": {
         "name": "rds-encryption-key"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "rds-encryption-key",
+        "state": "Enabled"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:main-vpc:my-alb",
       "node_type": "LoadBalancer",
+      "specific_type": "ALBLoadBalancer",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -506,15 +581,24 @@
       },
       "query_attributes": {
         "dns_name": "my-alb-1234567890.us-east-1.elb.amazonaws.com",
+        "load_balancer_type": "application",
         "name": "my-alb",
         "scheme": "internet-facing",
         "type": "application_loadbalancer",
         "vpc_id": "vpc-12345"
+      },
+      "ontology_attributes": {
+        "dns_name": "my-alb-1234567890.us-east-1.elb.amazonaws.com",
+        "location": "us-east-1",
+        "name": "my-alb",
+        "scheme": "internet-facing",
+        "type": "application"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:LogAggregator::/aws/lambda/api-handler-function",
       "node_type": "LogAggregator",
+      "specific_type": "CloudWatchLogGroup",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -548,11 +632,16 @@
       },
       "query_attributes": {
         "name": "/aws/lambda/api-handler-function"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "/aws/lambda/api-handler-function"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:MessageQueue::order-queue-dlq",
       "node_type": "MessageQueue",
+      "specific_type": "SQSQueue",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -591,11 +680,17 @@
         "message_retention_period": "1209600",
         "name": "order-queue-dlq",
         "queue_type": "sqs"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "order-queue-dlq",
+        "type": "SQS"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:MessageQueue::order-queue",
       "node_type": "MessageQueue",
+      "specific_type": "SQSQueue",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -636,11 +731,17 @@
         "name": "order-queue",
         "queue_type": "sqs",
         "visibility_timeout": "30"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "order-queue",
+        "type": "SQS"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:MessageQueue::trigger-queue",
       "node_type": "MessageQueue",
+      "specific_type": "SQSQueue",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -675,11 +776,17 @@
       "query_attributes": {
         "name": "trigger-queue",
         "queue_type": "sqs"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "trigger-queue",
+        "type": "SQS"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ServerlessFunction::api-handler-function",
       "node_type": "ServerlessFunction",
+      "specific_type": "LambdaFunction",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -721,6 +828,14 @@
       },
       "query_attributes": {
         "handler": "index.handler",
+        "memory_mb": 512,
+        "name": "api-handler-function",
+        "runtime": "python3.11",
+        "timeout_seconds": 30
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "memory": 512,
         "name": "api-handler-function",
         "runtime": "python3.11"
       }
@@ -728,6 +843,7 @@
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Storage::app-server-volume",
       "node_type": "Storage",
+      "specific_type": "EBSVolume",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -774,12 +890,23 @@
         "encrypted": true,
         "iops": 3000,
         "name": "app-server-volume",
-        "subtype": "storage"
+        "size_gb": 100,
+        "subtype": "storage",
+        "volume_state": "in-use",
+        "volume_type": "gp3"
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "location": "us-east-1",
+        "name": "app-server-volume",
+        "size": 100,
+        "type": "gp3"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Storage::my-app-bucket",
       "node_type": "Storage",
+      "specific_type": "S3Bucket",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -824,13 +951,22 @@
         "Name": "my-app-bucket"
       },
       "query_attributes": {
+        "encryption_enabled": true,
         "name": "my-app-bucket",
-        "subtype": "storage"
+        "subtype": "storage",
+        "versioning_enabled": true
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "location": "us-east-1",
+        "name": "my-app-bucket",
+        "versioning": true
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Storage::shared-app-storage",
       "node_type": "Storage",
+      "specific_type": "EFSFileSystem",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -872,12 +1008,20 @@
       "query_attributes": {
         "encrypted": true,
         "name": "shared-app-storage",
+        "size_in_bytes": 6144,
         "subtype": "filesystem"
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "location": "us-east-1",
+        "name": "shared-app-storage",
+        "size": 6144
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Topic::order-notifications",
       "node_type": "Topic",
+      "specific_type": "SNSTopic",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -910,11 +1054,17 @@
       },
       "query_attributes": {
         "name": "order-notifications"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "order-notifications",
+        "type": "SNS"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
       "node_type": "VPC",
+      "specific_type": "EC2Vpc",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -948,11 +1098,16 @@
       },
       "query_attributes": {
         "name": "main-vpc"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "main-vpc"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Cluster::my-eks-cluster",
       "node_type": "Cluster",
+      "specific_type": "KubernetesCluster",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -965,11 +1120,15 @@
       "labels": {},
       "query_attributes": {
         "name": "my-eks-cluster"
+      },
+      "ontology_attributes": {
+        "name": "my-eks-cluster"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::K8sService:production:api-service",
       "node_type": "K8sService",
+      "specific_type": "KubernetesService",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1007,11 +1166,18 @@
         "name": "api-service",
         "namespace": "production",
         "service_type": "ClusterIP"
+      },
+      "ontology_attributes": {
+        "cluster_ip": "10.100.10.10",
+        "name": "api-service",
+        "namespace": "production",
+        "type": "ClusterIP"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Namespace::kube-system",
       "node_type": "Namespace",
+      "specific_type": "KubernetesNamespace",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1026,11 +1192,15 @@
       "query_attributes": {
         "cluster": "",
         "name": "kube-system"
+      },
+      "ontology_attributes": {
+        "name": "kube-system"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Namespace::production",
       "node_type": "Namespace",
+      "specific_type": "KubernetesNamespace",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1045,11 +1215,15 @@
       "query_attributes": {
         "cluster": "",
         "name": "production"
+      },
+      "ontology_attributes": {
+        "name": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
       "node_type": "Node",
+      "specific_type": "KubernetesNode",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1100,12 +1274,27 @@
       },
       "query_attributes": {
         "cluster": "my-eks-cluster",
-        "name": "k8s-node-1"
+        "cpu_capacity": 4,
+        "memory_capacity": "16.00Ki",
+        "name": "k8s-node-1",
+        "node_flavor": "t3.xlarge",
+        "node_region": "us-east-1",
+        "node_type": "worker",
+        "node_zone": "us-east-1a"
+      },
+      "ontology_attributes": {
+        "capacity_cpu": 4,
+        "capacity_memory": "16.00Ki",
+        "cluster": "my-eks-cluster",
+        "name": "k8s-node-1",
+        "region": "us-east-1",
+        "type": "t3.xlarge"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Node::k8s-node-2",
       "node_type": "Node",
+      "specific_type": "KubernetesNode",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1155,18 +1344,34 @@
       },
       "query_attributes": {
         "cluster": "my-eks-cluster",
-        "name": "k8s-node-2"
+        "cpu_capacity": 4,
+        "memory_capacity": "16.00Ki",
+        "name": "k8s-node-2",
+        "node_flavor": "t3.xlarge",
+        "node_region": "us-east-1",
+        "node_type": "worker",
+        "node_zone": "us-east-1b"
+      },
+      "ontology_attributes": {
+        "capacity_cpu": 4,
+        "capacity_memory": "16.00Ki",
+        "cluster": "my-eks-cluster",
+        "name": "k8s-node-2",
+        "region": "us-east-1",
+        "type": "t3.xlarge"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Pod:production:api-pod-1",
       "node_type": "Pod",
+      "specific_type": "KubernetesPod",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
       "source": "k8s",
       "properties": {
         "cluster": "",
+        "host_ip": "10.0.1.100",
         "is_active": false,
         "k8s_workload_id": "wl-pod-1",
         "kind": "Pod",
@@ -1180,6 +1385,7 @@
         "nb_resource_id": "wl-pod-1",
         "node_name": "k8s-node-1",
         "phase": "Running",
+        "pod_ip": "10.244.1.10",
         "ready": true,
         "restart_policy": "Always",
         "source": "k8s",
@@ -1192,15 +1398,23 @@
       },
       "query_attributes": {
         "cluster": "",
+        "host_ip": "10.0.1.100",
+        "kind": "Pod",
         "name": "api-pod-1",
         "namespace": "production",
         "node_name": "k8s-node-1",
-        "phase": "Running"
+        "phase": "Running",
+        "pod_ip": "10.244.1.10"
+      },
+      "ontology_attributes": {
+        "name": "api-pod-1",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Pod:production:api-pod-2",
       "node_type": "Pod",
+      "specific_type": "KubernetesPod",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1220,6 +1434,7 @@
         "nb_resource_id": "wl-pod-2",
         "node_name": "k8s-node-2",
         "phase": "Running",
+        "pod_ip": "10.244.2.10",
         "source": "k8s",
         "subtype": "Pod"
       },
@@ -1230,15 +1445,22 @@
       },
       "query_attributes": {
         "cluster": "",
+        "kind": "Pod",
         "name": "api-pod-2",
         "namespace": "production",
         "node_name": "k8s-node-2",
-        "phase": "Running"
+        "phase": "Running",
+        "pod_ip": "10.244.2.10"
+      },
+      "ontology_attributes": {
+        "name": "api-pod-2",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Pod:production:postgres-0",
       "node_type": "Pod",
+      "specific_type": "KubernetesPod",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1258,6 +1480,7 @@
         "nb_resource_id": "wl-pod-3",
         "node_name": "k8s-node-1",
         "phase": "Running",
+        "pod_ip": "10.244.1.20",
         "source": "k8s",
         "subtype": "Pod"
       },
@@ -1268,15 +1491,22 @@
       },
       "query_attributes": {
         "cluster": "",
+        "kind": "Pod",
         "name": "postgres-0",
         "namespace": "production",
         "node_name": "k8s-node-1",
-        "phase": "Running"
+        "phase": "Running",
+        "pod_ip": "10.244.1.20"
+      },
+      "ontology_attributes": {
+        "name": "postgres-0",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:kube-system:monitoring-agent",
       "node_type": "Workload",
+      "specific_type": "KubernetesDaemonSet",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1305,11 +1535,17 @@
         "kind": "DaemonSet",
         "name": "monitoring-agent",
         "namespace": "kube-system"
+      },
+      "ontology_attributes": {
+        "name": "monitoring-agent",
+        "namespace": "kube-system",
+        "type": "DaemonSet"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:api-deployment",
       "node_type": "Workload",
+      "specific_type": "KubernetesDeployment",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1345,12 +1581,20 @@
         "cluster": "",
         "kind": "Deployment",
         "name": "api-deployment",
-        "namespace": "production"
+        "namespace": "production",
+        "replicas": 3
+      },
+      "ontology_attributes": {
+        "name": "api-deployment",
+        "namespace": "production",
+        "replicas": 3,
+        "type": "Deployment"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:api-ingress",
       "node_type": "Workload",
+      "specific_type": "KubernetesIngress",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1384,11 +1628,16 @@
         "kind": "Ingress",
         "name": "api-ingress",
         "namespace": "production"
+      },
+      "ontology_attributes": {
+        "name": "api-ingress",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:app-config",
       "node_type": "Workload",
+      "specific_type": "KubernetesConfigMap",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1415,11 +1664,16 @@
         "kind": "ConfigMap",
         "name": "app-config",
         "namespace": "production"
+      },
+      "ontology_attributes": {
+        "name": "app-config",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:app-secrets",
       "node_type": "Workload",
+      "specific_type": "KubernetesSecret",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1446,11 +1700,16 @@
         "kind": "Secret",
         "name": "app-secrets",
         "namespace": "production"
+      },
+      "ontology_attributes": {
+        "name": "app-secrets",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:frontend-deployment",
       "node_type": "Workload",
+      "specific_type": "KubernetesDeployment",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1481,12 +1740,20 @@
         "cluster": "",
         "kind": "Deployment",
         "name": "frontend-deployment",
-        "namespace": "production"
+        "namespace": "production",
+        "replicas": 2
+      },
+      "ontology_attributes": {
+        "name": "frontend-deployment",
+        "namespace": "production",
+        "replicas": 2,
+        "type": "Deployment"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:postgres-data",
       "node_type": "Workload",
+      "specific_type": "KubernetesPersistentVolumeClaim",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1515,12 +1782,21 @@
         "cluster": "",
         "kind": "PersistentVolumeClaim",
         "name": "postgres-data",
-        "namespace": "production"
+        "namespace": "production",
+        "phase": "Bound",
+        "storage_class": "gp3"
+      },
+      "ontology_attributes": {
+        "name": "postgres-data",
+        "namespace": "production",
+        "state": "Bound",
+        "storage_class": "gp3"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:postgres-statefulset",
       "node_type": "Workload",
+      "specific_type": "KubernetesStatefulSet",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -1550,7 +1826,14 @@
         "cluster": "",
         "kind": "StatefulSet",
         "name": "postgres-statefulset",
-        "namespace": "production"
+        "namespace": "production",
+        "replicas": 1
+      },
+      "ontology_attributes": {
+        "name": "postgres-statefulset",
+        "namespace": "production",
+        "replicas": 1,
+        "type": "StatefulSet"
       }
     }
   ],

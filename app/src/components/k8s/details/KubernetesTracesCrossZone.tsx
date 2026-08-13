@@ -70,6 +70,9 @@ const KubernetesTracesCrossZoneListing: React.FC<KubernetesTracesCrossZoneListin
   const tracesCaps = tracesProvider?.capabilities;
   const tracesProviderName = tracesProvider?.provider;
   const supportsFeature = tracesCaps?.supports_cross_zone_communication ?? null;
+  // ES-only: the account's resolved default trace index (from the shared provider
+  // capabilities). Empty until it resolves; trace APIs are gated on it below.
+  const esIndex = tracesProviderName === 'ES' ? tracesCaps?.default_index || '' : '';
   const LISTING_HEADER = [
     { name: 'Source', width: '30%' },
     { name: 'Source Zone', width: '10%' },
@@ -142,6 +145,8 @@ const KubernetesTracesCrossZoneListing: React.FC<KubernetesTracesCrossZoneListin
 
   useEffect(() => {
     if (supportsFeature === false) return;
+    // ES: don't hit any trace API until an index is selected (or resolved as default).
+    if (tracesProviderName === 'ES' && !esIndex) return;
     if (showNamespaceFilter && showWorkloadFilter) {
       apiTrace
         .traceDistinctWorloadAndNamespace(selectedK8sAccount as string, {
@@ -151,6 +156,7 @@ const KubernetesTracesCrossZoneListing: React.FC<KubernetesTracesCrossZoneListin
           destinationWorkload,
           showNamespaceFilter,
           showWorkloadFilter,
+          esIndex: tracesProviderName === 'ES' ? esIndex : undefined,
         })
         .then((res) => {
           if (res && Object.keys(res).length > 0) {
@@ -161,12 +167,14 @@ const KubernetesTracesCrossZoneListing: React.FC<KubernetesTracesCrossZoneListin
           }
         });
     }
-  }, [time, router.query?.KubernetesDetails]);
+  }, [time, router.query?.KubernetesDetails, esIndex]);
 
   useEffect(() => {
     if (supportsFeature === false) return;
+    // ES: don't hit any trace API until an index is selected (or resolved as default).
+    if (tracesProviderName === 'ES' && !esIndex) return;
     listTraces();
-  }, [currentPage, recordsPerPage, selectedNamespace, selectedWorkload, time, router.query?.KubernetesDetails]);
+  }, [currentPage, recordsPerPage, selectedNamespace, selectedWorkload, time, router.query?.KubernetesDetails, esIndex]);
 
   const filterWorkloadOnSelectedNamespace = (value: string) => {
     if (value) {

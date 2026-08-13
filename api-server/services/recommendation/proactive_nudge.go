@@ -1,6 +1,7 @@
 package recommendation
 
 import (
+	"encoding/json"
 	"nudgebee/services/account"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -14,16 +15,20 @@ import (
 
 // proactiveRec holds the fields returned by the proactive nudge query.
 type proactiveRec struct {
-	ID               string  `db:"id"`
-	RuleName         string  `db:"rule_name"`
-	ResourceName     string  `db:"resource_name"`
-	FinOpsScore      int     `db:"finops_score"`
-	FinOpsBand       string  `db:"finops_band"`
-	EstimatedSavings float64 `db:"estimated_savings"`
-	Severity         string  `db:"severity"`
-	Category         string  `db:"category"`
-	CloudAccountID   string  `db:"cloud_account_id"`
-	AccountName      string  `db:"account_name"`
+	ID               string    `db:"id"`
+	RuleName         string    `db:"rule_name"`
+	ResourceName     string    `db:"resource_name"`
+	FinOpsScore      int       `db:"finops_score"`
+	FinOpsBand       string    `db:"finops_band"`
+	EstimatedSavings float64   `db:"estimated_savings"`
+	Severity         string    `db:"severity"`
+	Category         string    `db:"category"`
+	CloudAccountID   string    `db:"cloud_account_id"`
+	AccountName      string    `db:"account_name"`
+	CreatedAt        time.Time `db:"created_at"`
+	// Raw `recommendation` JSONB — the template renders a per-rule change
+	// summary (CPU/mem/replica current → recommended) from it.
+	RecommendationRaw []byte `db:"recommendation"`
 }
 
 // ProcessProactiveNudges scans for "Act Now" recommendations that haven't been
@@ -68,7 +73,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 		var recs []proactiveRec
 		err = dbms.Db.Select(&recs, `
 			SELECT id, rule_name, resource_name, finops_score, finops_band,
-				estimated_savings, severity, category, cloud_account_id, account_name
+				estimated_savings, severity, category, cloud_account_id, account_name, created_at, recommendation
 			FROM (
 				SELECT r.id, r.rule_name,
 					COALESCE(r.account_object_id, r.id::varchar) AS resource_name,
@@ -79,6 +84,8 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 					r.category,
 					r.cloud_account_id::varchar AS cloud_account_id,
 					COALESCE(ca.account_name, r.cloud_account_id::varchar) AS account_name,
+					r.created_at,
+					r.recommendation,
 					ROW_NUMBER() OVER (
 						PARTITION BY regexp_replace(r.rule_name, '^.+_misconfigurations$', 'misconfigurations')
 						ORDER BY r.finops_score DESC NULLS LAST, r.estimated_savings DESC NULLS LAST, r.created_at DESC, r.id
@@ -87,6 +94,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
 					AND r.status = 'Open'
+					AND r.category <> 'Security'
 					AND r.finops_band = 'Act Now'
 					AND (r.last_nudged_at IS NULL OR r.last_nudged_at < now() - interval '24 hours')
 			) ranked
@@ -109,21 +117,28 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 		for _, rec := range recs {
 			totalSavings += rec.EstimatedSavings
 
-			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "#summary"
+			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "#recommendations"
 			recMap := map[string]any{
-				"id":                rec.ID,
-				"rule_name":         rec.RuleName,
-				"resource_name":     rec.ResourceName,
-				"finops_score":      rec.FinOpsScore,
-				"finops_band":       rec.FinOpsBand,
-				"estimated_savings": rec.EstimatedSavings,
-				"severity":          rec.Severity,
-				"category":          rec.Category,
-				"cta_url":           ctaURL,
+				"id":                    rec.ID,
+				"rule_name":             rec.RuleName,
+				"resource_name":         rec.ResourceName,
+				"finops_score":          rec.FinOpsScore,
+				"finops_band":           rec.FinOpsBand,
+				"estimated_savings":     rec.EstimatedSavings,
+				"severity":              rec.Severity,
+				"category":              rec.Category,
+				"cta_url":               ctaURL,
+				"wasted_since_detected": WastedSinceDetected(rec.EstimatedSavings, rec.CreatedAt, time.Now().UTC()),
+			}
+			if len(rec.RecommendationRaw) > 0 {
+				recMap["recommendation"] = json.RawMessage(rec.RecommendationRaw)
 			}
 
 			accID := rec.CloudAccountID
 			recsByAccount[accID] = append(recsByAccount[accID], recMap)
+			if rec.AccountName != "" && rec.AccountName != accID {
+				accountNameMap[accID] = rec.AccountName
+			}
 		}
 
 		// Build recommendations_by_account with account names
@@ -154,7 +169,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 			},
 		}
 
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("proactive nudge: error publishing", "error", err, "tenant", t.Id)
 			continue

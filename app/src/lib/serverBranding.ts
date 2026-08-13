@@ -42,14 +42,30 @@ export interface ServerBrandingData {
 
 type ServerBrandingProvider = () => ServerBrandingData | null;
 
-let _provider: ServerBrandingProvider | null = null;
+// The provider lives on globalThis so it survives Next.js's dual module graph
+// between the Node-runtime (`instrumentation.ts` → `@ee/init-server` →
+// `branding/serverInit.ts`) and page/API-route contexts. With a module-scoped
+// `let`, the two graphs each got their own copy: the route-side copy was never
+// written, so Turbopack constant-folded `resolveServerBranding` down to
+// `() => null` and dropped the `registerServerBranding(...)` call from the EE
+// chunk as dead code — custom branding silently reverted to Nudgebee defaults
+// in every built image. Same pattern (and same root cause) as
+// `globalThis.__nbAuthHooks` in `authHooks.ts` and
+// `globalThis.__nbBypassGraphQLAsServer` in `instrumentation.ts`.
+type ServerBrandingRegistry = { provider: ServerBrandingProvider | null };
+
+const _g = globalThis as unknown as { __nbServerBranding?: ServerBrandingRegistry };
+if (!_g.__nbServerBranding) {
+  _g.__nbServerBranding = { provider: null };
+}
+const _registry = _g.__nbServerBranding!;
 
 /**
  * Register the branding provider. Called once at server boot from the EE
  * init-server entry point. The last registration wins.
  */
 export function registerServerBranding(provider: ServerBrandingProvider): void {
-  _provider = provider;
+  _registry.provider = provider;
 }
 
 /**
@@ -57,9 +73,10 @@ export function registerServerBranding(provider: ServerBrandingProvider): void {
  * is registered (the OSS case — always neutral).
  */
 export function resolveServerBranding(): ServerBrandingData | null {
-  if (!_provider) return null;
+  const provider = _registry.provider;
+  if (!provider) return null;
   try {
-    return _provider();
+    return provider();
   } catch {
     // A misbehaving provider must never break SSR / the config endpoint.
     return null;

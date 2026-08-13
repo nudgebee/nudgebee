@@ -231,9 +231,9 @@ const ConversationList = ({
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'share') {
       handleShare();
-    } else if (menuItem.id === 1) {
+    } else if (menuItem.id === 'delete') {
       apiAskNudgebee
         .deleteConversation({
           conversation_id: data.id,
@@ -254,7 +254,7 @@ const ConversationList = ({
           console.error('Error deleting conversation:', error);
           snackbar.error('An error occurred while deleting the conversation');
         });
-    } else if (menuItem.id === 2) {
+    } else if (menuItem.id === 'toggle-save') {
       handleLike(data.id, likedConversations.includes(data.id));
     }
   };
@@ -264,13 +264,13 @@ const ConversationList = ({
       {
         icon: ShareIconBlue,
         label: 'Share',
-        id: 0,
+        id: 'share',
         activeFilter: 'false',
       },
       {
         icon: savingStates?.[conversationId] ? null : likedConversations.includes(conversationId) ? SaveIconOutlineselect : SaveIconOutlinelight,
         label: likedConversations.includes(conversationId) ? 'Unsave' : 'Save',
-        id: 2,
+        id: 'toggle-save',
         disabled: savingStates?.[conversationId],
         showLoader: savingStates?.[conversationId],
       },
@@ -279,7 +279,7 @@ const ConversationList = ({
       MENU_ITEMS.push({
         icon: DeleteIconRed,
         label: 'Delete',
-        id: 1,
+        id: 'delete',
       });
     }
     return MENU_ITEMS;

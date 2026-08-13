@@ -44,7 +44,7 @@ type Integration interface {
 // ValidateConfig passes and invoke TestConnection if present. Implementations
 // MUST NOT mutate the configuration and SHOULD be fast (a few seconds at most).
 type TestableIntegration interface {
-	TestConnection(ctx *security.SecurityContext, values []IntegrationConfigValue, accountId string) error
+	TestConnection(ctx *security.RequestContext, values []IntegrationConfigValue, accountId string) error
 }
 
 type IntegrationSchemaType string

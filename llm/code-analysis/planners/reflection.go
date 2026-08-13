@@ -2,14 +2,58 @@ package planners
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
+	"google.golang.org/genai"
 
 	"nudgebee/code-analysis-agent/common"
+	"nudgebee/code-analysis-agent/llm"
 )
+
+// ledgerGenAISchema is the genai structured-output schema for the reflection
+// ledger — the machine-enforced twin of ledgerJSONSchema (ledger.go). Keeping
+// both in sync matters: this one guarantees parseability, the text one remains
+// the fallback contract for providers without native structured output.
+var ledgerGenAISchema = &genai.Schema{
+	Type: genai.TypeObject,
+	Properties: map[string]*genai.Schema{
+		"findings": {
+			Type: genai.TypeArray,
+			Items: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"claim":              {Type: genai.TypeString},
+					"evidence_step_ids":  {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeInteger}},
+					"sub_question_index": {Type: genai.TypeInteger},
+				},
+				Required: []string{"claim"},
+			},
+		},
+		"citations": {
+			Type: genai.TypeArray,
+			Items: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"file_path":  {Type: genai.TypeString},
+					"line_start": {Type: genai.TypeInteger},
+					"line_end":   {Type: genai.TypeInteger},
+					"snippet":    {Type: genai.TypeString},
+					"note":       {Type: genai.TypeString},
+				},
+				Required: []string{"file_path", "line_start", "snippet"},
+			},
+		},
+		"open_sub_questions": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+		"answer":             {Type: genai.TypeString},
+		"confidence":         {Type: genai.TypeString, Enum: []string{"High", "Medium", "Low"}},
+		"ready_to_submit":    {Type: genai.TypeBoolean},
+	},
+	Required: []string{"ready_to_submit"},
+}
 
 // defaultReflectionEvery is the cadence at which the planner runs a reflection
 // pass. K=5 means: after every 5 completed tool calls, ask the cheap model to
@@ -58,7 +102,7 @@ func (p *ReActPlanner) reflect(ctx context.Context, goal *Goal, prior *Ledger, r
 	messages := []llms.MessageContent{
 		{
 			Role:  llms.ChatMessageTypeSystem,
-			Parts: []llms.ContentPart{llms.TextPart("You are the reflection step of a code-investigation agent. Your job is to consolidate raw tool observations into a structured ledger and decide whether the agent has enough evidence to submit a final answer. Be ruthless about declaring ready_to_submit=true once the termination criterion is met — wandering further wastes iterations.")},
+			Parts: []llms.ContentPart{llms.TextPart("You are the reflection step of a code-investigation agent. Your job is to consolidate raw tool observations into a structured ledger and decide whether the agent has enough evidence to submit a final answer. Be ruthless about declaring ready_to_submit=true once the termination criterion is met — wandering further wastes iterations. Your ENTIRE response must be a single JSON object matching the given schema — no prose, no markdown fences, nothing before or after the JSON.")},
 		},
 		{
 			Role:  llms.ChatMessageTypeHuman,
@@ -66,21 +110,33 @@ func (p *ReActPlanner) reflect(ctx context.Context, goal *Goal, prior *Ledger, r
 		},
 	}
 
-	response, err := p.llmClient.GenerateContentNoRetry(rctx, messages)
-	if err != nil {
-		return prior, fmt.Errorf("reflect: LLM call failed: %w", err)
-	}
-	if len(response.Choices) == 0 {
-		return prior, fmt.Errorf("reflect: LLM returned no choices")
-	}
-
-	raw := response.Choices[0].Content
-	jsonStr := p.extractJSONFromContent(p.logger, raw)
-	if jsonStr == "" {
-		jsonStr = p.repairTruncatedJSON(raw)
-	}
-	if jsonStr == "" {
-		return prior, fmt.Errorf("reflect: no parseable JSON in LLM output (len=%d)", len(raw))
+	// Structured output first (GoogleAI): schema-enforced JSON eliminates the
+	// prose-around-JSON / truncation parse failures that measurably stalled the
+	// distillation watermark 1-2x per run. Falls back to the free-text path for
+	// providers without native structured output.
+	var jsonStr string
+	structured, serr := p.llmClient.GenerateStructuredJSON(rctx, messages, ledgerGenAISchema)
+	switch {
+	case serr == nil:
+		jsonStr = structured
+	case errors.Is(serr, llm.ErrStructuredOutputUnsupported):
+		response, err := p.llmClient.GenerateContentNoRetry(rctx, messages)
+		if err != nil {
+			return prior, fmt.Errorf("reflect: LLM call failed: %w", err)
+		}
+		if len(response.Choices) == 0 {
+			return prior, fmt.Errorf("reflect: LLM returned no choices")
+		}
+		raw := response.Choices[0].Content
+		jsonStr = p.extractJSONFromContent(p.logger, raw)
+		if jsonStr == "" {
+			jsonStr = p.repairTruncatedJSON(raw)
+		}
+		if jsonStr == "" {
+			return prior, fmt.Errorf("reflect: no parseable JSON in LLM output (len=%d)", len(raw))
+		}
+	default:
+		return prior, fmt.Errorf("reflect: LLM call failed: %w", serr)
 	}
 
 	next, err := ParseLedgerJSON(jsonStr)
@@ -140,7 +196,14 @@ func buildReflectionPrompt(goal *Goal, prior *Ledger, recentSteps []Step) string
 				fmt.Fprintf(&b, "  thought: %s\n", truncateLine(s.Thought, 240))
 			}
 			if s.Observation != "" {
-				fmt.Fprintf(&b, "  observation: %s\n", truncateLine(s.Observation, 1200))
+				// 4000 runes, not 1200: reflection is the ONLY consumer that
+				// turns raw observations into durable ledger facts before the
+				// raw text is aged out of the prompt. At 1200, a 15K-char
+				// file_view is distilled from its import block — the resulting
+				// paraphrased ledger measurably yields confabulated identifiers
+				// on precision questions. Reflection runs once per ~5 steps, so
+				// the extra input is cheap relative to the main loop.
+				fmt.Fprintf(&b, "  observation: %s\n", truncateLine(s.Observation, 4000))
 			}
 			if s.Status == "failed" && s.Error != "" {
 				fmt.Fprintf(&b, "  ERROR: %s\n", truncateLine(s.Error, 240))
@@ -158,6 +221,10 @@ Update the ledger by integrating the recent steps into the prior ledger. Specifi
 3. Update "open_sub_questions": remove any that are now answered (a citation exists for them); add any new sub-questions you realize are still needed.
 4. If — and only if — the termination criterion is now met, write a 1–3 sentence plain-prose "answer" and set "ready_to_submit": true. Otherwise set "ready_to_submit": false.
 5. Set "confidence" based on how directly the citations support the answer.
+
+CRITICAL: Findings and snippets must preserve EXACT identifiers copied verbatim from the observations — function names, constants, config keys, file paths, numeric limits. Never paraphrase a code symbol ("the truncation function") when the observation shows its real name. After raw observations are aged out of the prompt, this ledger is the ONLY place those exact names survive — a paraphrased ledger forces the agent to guess identifiers later.
+
+CRITICAL: If the original query contains explicit procedural instructions (e.g. an enumerated list of files to read or steps to perform), the termination criterion is NOT met until every one of them has been completed or proven impossible. List each unfinished instruction as an open_sub_question and set "ready_to_submit": false.
 
 CRITICAL: Do not invent citations. If a fact is in observations but you cannot point at a specific file/line/snippet, leave it as a finding without a citation entry and keep the related sub-question open.
 

@@ -110,3 +110,23 @@ func TestBuildESLogSort_TranslatesSortFieldsAndDefaults(t *testing.T) {
 		t.Fatalf("expected default @timestamp desc, got %s", def)
 	}
 }
+
+// esHitsTotal reads hits.total for diagnostic logging only, so it must tolerate
+// every shape a cluster might send and never panic or mislead: ES 7+/OpenSearch
+// send an object, ES 6 sent a bare number, and a malformed or absent value must
+// report "unknown" (-1) rather than a fabricated zero.
+func TestESHitsTotal(t *testing.T) {
+	cases := map[string]int64{
+		`{"hits":{"total":{"value":16744768,"relation":"eq"}}}`: 16744768, // ES 7+ / OpenSearch
+		`{"hits":{"total":42}}`:                                 42,       // ES 6
+		`{"hits":{"total":{"value":0,"relation":"eq"}}}`:        0,
+		`{"hits":{"hits":[]}}`:                                  -1, // absent
+		`{"hits":{"total":"nope"}}`:                             -1, // unknown shape
+		`not json`:                                              -1,
+	}
+	for raw, want := range cases {
+		if got := esHitsTotal(raw); got != want {
+			t.Errorf("esHitsTotal(%s) = %d, want %d", raw, got, want)
+		}
+	}
+}

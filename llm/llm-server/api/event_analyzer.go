@@ -1364,7 +1364,10 @@ func collectEvidenceInsights(ev events.InvestigateData) []string {
 	return out
 }
 
-func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository) (string, string, bool, string, error) {
+func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository) (string, string, bool, string, *tools.RunbookRef, error) {
+	// runbookRef holds the runbook resolved from the event's runbook_url label
+	// (if any), so the caller can cite it in the synthesized analysis.
+	var runbookRef *tools.RunbookRef
 	eventDefinition, annotations, err := anaylsisRepo.GetEventRuleDefinition(ctx, request.AccountId, event.AggregationKey)
 	if err != nil {
 		ctx.GetLogger().Error("analyzer: unable to get rule definition", "error", err, "rule", event.AggregationKey)
@@ -1419,7 +1422,23 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	if debugAnalysisEnabled {
 		// check prompt instructions
 		userPrompt := ""
-		if annotations != nil && annotations["runbook"] != nil {
+		// Prometheus/Alertmanager and NewRelic alerts carry a `runbook_url`
+		// label. Resolve it to real runbook *content* — Confluence and
+		// ServiceNow are fetched with the account's integration credentials,
+		// any other host is fetched as a public page — and inject the body so
+		// automatic RCA actually reads the runbook instead of the operator's
+		// curated steps never reaching the LLM. Fetch is bounded and fails
+		// open: on any error we fall through to the runbook annotation / DB
+		// knowledge_base below.
+		if rbURL, ok := parsedLabels["runbook_url"].(string); ok && strings.TrimSpace(rbURL) != "" {
+			if ref, rbErr := tools.ResolveRunbook(request.AccountId, rbURL); rbErr != nil {
+				ctx.GetLogger().Debug("analyzer: unable to resolve runbook_url", "error", rbErr, "runbook_url", rbURL)
+			} else {
+				runbookRef = &ref
+				userPrompt = "Refer to the following runbook while analyzing the event:\n" + ref.Text
+			}
+		}
+		if userPrompt == "" && annotations != nil && annotations["runbook"] != nil {
 			if r, ok := annotations["runbook"].(string); ok {
 				userPrompt = r
 			}
@@ -1438,7 +1457,26 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			eventAnalsysisPrompt = "## Troubleshooting Steps For Investigation (CRITICAL) -\n" + userPrompt + "\n\n" + eventAnalsysisPrompt
 		}
 	}
-	return eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugAnalysisSkipReason, err
+	return eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugAnalysisSkipReason, runbookRef, err
+}
+
+// appendRunbookReference adds a deterministic, clickable citation for the
+// resolved runbook to the synthesized analysis, so the source stays visible in
+// the UI even when the model doesn't echo it in its own output. No-op when no
+// runbook was resolved from the event's runbook_url label.
+func appendRunbookReference(detailed string, ref *tools.RunbookRef) string {
+	if ref == nil || strings.TrimSpace(ref.URL) == "" {
+		return detailed
+	}
+	label := strings.TrimSpace(ref.Title)
+	if label == "" {
+		label = ref.URL
+	}
+	src := ""
+	if ref.Source != "" {
+		src = " (" + ref.Source + ")"
+	}
+	return strings.TrimRight(detailed, "\n") + "\n\n---\n\n**📖 Runbook reference" + src + ":** [" + label + "](" + ref.URL + ")\n"
 }
 
 func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request EventAnalysisRequest) (EventAnalysisResponse, error) {
@@ -1634,7 +1672,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	initialSummary := response.Summary
 
 	// Register or retrieve our custom event analyzer agent
-	eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugSkipReason, err := generateEventAnalysisPrompt(ctx, eventData, request, response, parsedLabels, eventAnalysisRepo)
+	eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugSkipReason, runbookRef, err := generateEventAnalysisPrompt(ctx, eventData, request, response, parsedLabels, eventAnalysisRepo)
 	if err != nil {
 		return EventAnalysisResponse{}, err
 	}
@@ -1833,6 +1871,8 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		ctx.GetLogger().Warn("analyzer: failed to synthesize detailed response, falling back to initial summary", "error", synthErr, "event_id", request.EventId)
 		detailedResponse = initialSummary
 	}
+	// Cite the resolved runbook so its source stays visible in the UI.
+	detailedResponse = appendRunbookReference(detailedResponse, runbookRef)
 	if err := eventAnalysisRepo.UpsertEventAnalysis(ctx, response.EventId, "", detailedResponse, string(events.AnalysisStatusCompleted), eventFingerprint, request.AccountId, eventAggregationKey, events.AnalysisTypeDetailedResponse); err != nil {
 		ctx.GetLogger().Warn("analyzer: failed to save detailed response", "error", err, "event_id", request.EventId)
 	}

@@ -1,9 +1,14 @@
 {
   "version": 1,
   "disable_existing_loggers": false,
+  "filters": {
+    "trace_id": {
+      "()": "app.TraceIdFilter"
+    }
+  },
   "formatters": {
     "json_formatter": {
-      "format": "{\"time\": \"%(asctime)s\", \"level\": \"%(levelname)s\",\"filename\": \"%(filename)s\", \"lineno\":\"%(lineno)d\" ,\"message\": %(message)s}",
+      "format": "{\"time\": \"%(asctime)s\", \"level\": \"%(levelname)s\",\"filename\": \"%(filename)s\", \"lineno\":\"%(lineno)d\", \"trace_id\": \"%(trace_id)s\" ,\"message\": %(message)s}",
       "class": "pythonjsonlogger.json.JsonFormatter"
     }
   },
@@ -12,6 +17,9 @@
       "class": "logging.StreamHandler",
       "level": "INFO",
       "formatter": "json_formatter",
+      "filters": [
+        "trace_id"
+      ],
       "stream": "ext://sys.stdout"
     }
   },

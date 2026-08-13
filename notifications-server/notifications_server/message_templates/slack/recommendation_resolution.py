@@ -4,17 +4,13 @@ from pydantic import BaseModel
 
 from notifications_server.configs.settings import public_ip, settings
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_SAVINGS,
     format_rule_name,
     format_savings,
+    header_block,
+    legacy_attachment,
+    link_button,
 )
-
-BAND_DISPLAY_NAMES = {
-    "Act Now": "Priority",
-    "Critical": "Critical",
-    "High": "High",
-    "Medium": "Medium",
-    "Low": "Low",
-}
 
 
 class ResolutionDetails(BaseModel):
@@ -51,90 +47,69 @@ def get_recommendation_resolution_message_params(
     return RecommendationResolutionParams(**params)
 
 
+def _resolution_line(params: RecommendationResolutionParams) -> str:
+    """One human sentence for how the item got resolved — replaces the old
+    Status/Resolver/Type key-value rows."""
+    res = params.resolution
+    if not res:
+        return f"Marked {params.status}" if params.status else ""
+    if res.status_message:
+        line = res.status_message
+    else:
+        verb = "Applied" if res.type == "applied" else "Resolved"
+        if res.resolver == "auto":
+            line = f"{verb} automatically"
+        elif res.resolver:
+            line = f"{verb} by {res.resolver}"
+        else:
+            line = verb
+    if res.status and res.status.lower() not in ("success", "succeeded", "ok", "closed"):
+        line += f" · {res.status}"
+    return line
+
+
 def get_recommendation_resolution_message_template(
     params: RecommendationResolutionParams,
 ) -> Dict[str, Any]:
     base_url = params.base_url or public_ip()
     branding = settings.urls.branding_name
-    blocks = []
-
-    band_display = BAND_DISPLAY_NAMES.get(params.finops_band, params.finops_band)
-
-    # Header
-    blocks.append(
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*{branding} Recommendation Resolved*",
-            },
-        }
-    )
-    blocks.append({"type": "divider"})
-
-    # Resource info
     rule_display = format_rule_name(params.rule_name)
-    blocks.append(
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*{params.resource_name}*\n"
-                    f"{rule_display} · {params.account_name}\n"
-                    f"{band_display} · Score: {params.finops_score}/100 · "
-                    f"Savings: {format_savings(params.estimated_savings)}/mo"
-                ),
-            },
-        }
-    )
 
-    # Resolution details
-    if params.resolution:
-        res = params.resolution
-        resolution_text = f"*Status:* {params.status}"
-        if res.resolver:
-            resolution_text += f"\n*Resolver:* {res.resolver}"
-        if res.type:
-            resolution_text += f"\n*Type:* {res.type}"
-        if res.status:
-            resolution_text += f"\n*Resolution Status:* {res.status}"
-        if res.status_message:
-            resolution_text += f"\n*Message:* {res.status_message}"
+    # Outcome-first headline: lead with the money when the change banked it;
+    # dismissals never claim savings.
+    if (params.status or "").lower() == "dismissed":
+        headline = f"Dismissed — {rule_display}"
+    elif params.estimated_savings > 0:
+        headline = f"{format_savings(params.estimated_savings)}/mo recovered — {rule_display}"
+    else:
+        headline = f"Resolved — {rule_display}"
 
-        blocks.append({"type": "divider"})
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": resolution_text},
-            }
-        )
+    blocks = [
+        header_block(headline),
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"{branding} · recommendation resolved"}]},
+    ]
 
-    # Action buttons
-    blocks.append({"type": "divider"})
+    lines = [f"*{params.resource_name}*"]
+    resolution_line = _resolution_line(params)
+    if resolution_line:
+        lines.append(resolution_line)
+    if params.account_name:
+        lines.append(f"Acct: {params.account_name}")
+
     cta_url = f"{base_url}/optimise?id={params.recommendation_id}#resolutions"
-    blocks.append(
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "View Details"},
-                    "url": cta_url,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "View All Recommendations"},
-                    "url": f"{base_url}/optimise?utm=slack#recommendations",
-                },
-            ],
-        }
+    attachment = legacy_attachment(
+        STRIPE_SAVINGS,
+        headline,
+        text="\n".join(lines),
+        actions=[
+            link_button("View Details", cta_url, style="primary"),
+            link_button("View All Recommendations", f"{base_url}/optimise?utm=slack#recommendations"),
+        ],
     )
-
-    fallback = f"Resolved: {params.resource_name} — {format_rule_name(params.rule_name)}"
 
     return {
-        "text": fallback,
+        "text": headline,
         "blocks": blocks[:50],
+        "attachments": [attachment],
         "unfurl_links": False,
     }

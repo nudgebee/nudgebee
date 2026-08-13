@@ -85,6 +85,23 @@ export class LoginPage {
     return isAuthError;
   }
 
+  // True when a reused storageState session has already landed us inside the
+  // app shell, so the LDAP form can be skipped. Races the authenticated signal
+  // (account button visible) against the unauthenticated one (redirect to
+  // /signin or /api/auth/error) so both outcomes resolve fast — otherwise an
+  // unauthenticated start would always eat the full 8s button timeout.
+  private async isAuthenticated(): Promise<boolean> {
+    await Promise.race([
+      this.accountSettingsButton.waitFor({ state: "visible", timeout: 8000 }),
+      this.page.waitForURL(
+        (url) => url.href.includes("/signin") || url.href.includes("/api/auth/error"),
+        { timeout: 8000 },
+      ),
+    ]).catch(() => {});
+    if (this.isSigninPage() || this.isAuthErrorPage()) return false;
+    return this.accountSettingsButton.isVisible().catch(() => false);
+  }
+
   private resolveHighestIteration(items: string[]): string | null {
     const pattern = /^iteration-(\d+)$/i;
     return items.reduce<{ item: string; num: number } | null>((best, raw) => {
@@ -233,7 +250,12 @@ export class LoginPage {
     console.log(`Selected cluster: ${clusterName}`);
   }
 
-  async doFullLogin() {
+  // selectCluster defaults to true. global-setup passes false: it only needs an
+  // authenticated session cookie, and the (flaky) cluster dropdown is in-memory
+  // state re-selected per test anyway — running it in global-setup would make it
+  // a single point of failure that aborts the whole suite.
+  async doFullLogin(options: { selectCluster?: boolean } = {}) {
+    const { selectCluster = true } = options;
     await registerWelcomeTourAutoDismiss(this.page);
 
     if (process.env.E2E_ENVIRONMENT === "oss") {
@@ -248,7 +270,7 @@ export class LoginPage {
     }
 
     if (process.env.E2E_ENVIRONMENT === "dev") {
-      await doDevLogin(this.page);
+      await doDevLogin(this.page, { selectCluster });
       return;
     }
 
@@ -260,26 +282,36 @@ export class LoginPage {
     }
 
     await this.navigate();
-    await this.login(username, password);
     await this.waitForLoaderToDisappear();
 
-    if (this.isAuthErrorPage()) {
-      await this.page.goto(process.env.BASE_URL || "");
+    // Fast path: with a reused storageState session the app already loaded
+    // authenticated, so skip the LDAP form. Only type credentials when the
+    // session is missing/expired (fresh global-setup run or stale state file).
+    if (!(await this.isAuthenticated())) {
       await this.login(username, password);
-    } else if (this.isSigninPage()) {
-      await this.login(username, password);
+      await this.waitForLoaderToDisappear();
+
+      if (this.isAuthErrorPage()) {
+        await this.page.goto(process.env.BASE_URL || "");
+        await this.login(username, password);
+      } else if (this.isSigninPage()) {
+        await this.login(username, password);
+      }
+
+      await this.page.waitForURL(`${process.env.BASE_URL}/**`, { timeout: 30000 });
     }
 
-    await this.page.waitForURL(`${process.env.BASE_URL}/**`, { timeout: 30000 });
     await this.switchTenant();
     await this.waitForLoaderToDisappear();
-    const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
-    if (explicitCluster) {
-      await this.selectCluster(explicitCluster);
-    } else {
-      await this.selectHighestIterationCluster();
+    if (selectCluster) {
+      const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
+      if (explicitCluster) {
+        await this.selectCluster(explicitCluster);
+      } else {
+        await this.selectHighestIterationCluster();
+      }
+      await this.waitForLoaderToDisappear();
     }
-    await this.waitForLoaderToDisappear();
   }
 
   async waitForLoaderToDisappear() {

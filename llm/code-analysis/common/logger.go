@@ -4,8 +4,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// globalTraceID holds the W3C trace-id for the current analysis, set once at
+// startup from the caller's trace (TRACEPARENT env in CLI mode). It is emitted
+// on every structured log line as trace_id so code-analysis logs correlate with
+// the rest of the platform in Loki. Empty when no trace was propagated.
+var globalTraceID atomic.Value
+
+// SetGlobalTraceID records the trace-id to stamp on subsequent log lines.
+func SetGlobalTraceID(id string) {
+	globalTraceID.Store(id)
+}
+
+func getGlobalTraceID() string {
+	id, _ := globalTraceID.Load().(string)
+	return id
+}
 
 // LogType represents the type of log entry
 type LogType string
@@ -59,6 +76,7 @@ type StructuredLog struct {
 	LogType    LogType        `json:"log_type"`
 	Event      LogEvent       `json:"event"`
 	AnalysisID string         `json:"analysis_id,omitempty"`
+	TraceID    string         `json:"trace_id,omitempty"`
 	Message    string         `json:"message"`
 	Data       map[string]any `json:"data,omitempty"`
 	Duration   string         `json:"duration,omitempty"`
@@ -100,6 +118,7 @@ func (l *Logger) LogEvent(event LogEvent, logType LogType, message string, data 
 		LogType:    logType,
 		Event:      event,
 		AnalysisID: l.context.AnalysisID,
+		TraceID:    getGlobalTraceID(),
 		Message:    message,
 		Data:       data,
 		Success:    success,

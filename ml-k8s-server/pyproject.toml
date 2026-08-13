@@ -35,6 +35,8 @@ opentelemetry-exporter-otlp = "^1.27.0"
 # pkg_resources in 0.50b0; 0.65b0 is the release aligned with core 1.44
 # (contrib 0.NNb0 tracks core 1.MM where NN = MM + 21).
 opentelemetry-instrumentation-system-metrics = "^0.65b0"
+opentelemetry-instrumentation-flask = "^0.65b0"
+opentelemetry-instrumentation-requests = "^0.65b0"
 pydantic = "^2.10.3"
 kombu = "^5.4.2"
 kubernetes = "^26.1.0"

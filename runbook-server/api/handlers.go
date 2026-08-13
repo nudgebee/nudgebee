@@ -136,7 +136,8 @@ func (s *Server) createWorkflow(c *gin.Context) {
 
 	wokflowId, token, err := s.workflowService.CreateWorkflow(sc, accountID, wf)
 	if err != nil {
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -298,7 +299,8 @@ func (s *Server) updateWorkflow(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
 			return
 		}
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -378,7 +380,8 @@ func (s *Server) getWorkflowExecution(c *gin.Context) {
 
 	details, err := s.workflowService.GetDetailedWorkflowExecution(sc, accountID, workflowID, runID)
 	if err != nil {
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -413,7 +416,8 @@ func (s *Server) triggerWorkflow(c *gin.Context) {
 
 	we, err := s.workflowService.ExecuteWorkflow(sc, accountID, id, "manual", inputs)
 	if err != nil {
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		} else {
@@ -454,7 +458,8 @@ func (s *Server) retriggerWorkflowExecution(c *gin.Context) {
 
 	we, err := s.workflowService.RetriggerWorkflowExecution(sc, accountID, id, executionID, inputs)
 	if err != nil {
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		} else {
@@ -739,7 +744,8 @@ func (s *Server) handleApproval(c *gin.Context) {
 	sc := security.NewRequestContextForSuperAdmin()
 	err := s.workflowService.CompleteApprovalTask(sc, token, req.Status, req.Result)
 	if err != nil {
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -905,7 +911,8 @@ func (s *Server) dryRunWorkflow(c *gin.Context) {
 
 	resp, err := s.workflowService.DryRunWorkflow(sc, accountID, req)
 	if err != nil {
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}

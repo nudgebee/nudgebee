@@ -55,6 +55,14 @@ type NBReActPlanner3 struct {
 	// scope the system prompt uses, without recomputing the gate inline.
 	hypothesisModeEnabled bool
 
+	// leanMode is true when this turn built the lean orchestrator prompt (the
+	// investigation overlays were dropped for a top-level plain-retrieval turn).
+	// It keeps the RUNTIME in step with the prompt: notebook/answer-contract
+	// nudges and hypothesis handling must not fire for a turn whose prompt never
+	// introduced those concepts. Set once from ContextKeyPromptVariant, the same
+	// source the prompt build and cache key read.
+	leanMode bool
+
 	// planCallCount counts Plan() invocations on this in-memory instance. A
 	// fresh instance is built (and prior state unmarshalled) per user message,
 	// so 0 identifies the direction-setting first reasoning call of the turn —
@@ -160,6 +168,13 @@ func (o *NBReActPlanner3) saveCritique(critiqueType, input, critiquedContent, fe
 // literals) the default is true — matching pre-opt-out behavior so
 // existing tests aren't disturbed.
 func (o *NBReActPlanner3) notebookSectionEnabled() bool {
+	// A lean turn dropped the notebook discipline from its prompt, so the runtime
+	// notebook nudges (staleness, answer-contract) must stay silent — otherwise
+	// the model gets nudged about `## Answer Contract` / `<update_notebook>` it was
+	// never taught this turn.
+	if o.leanMode {
+		return false
+	}
 	if o.nbAgent == nil {
 		return true
 	}
@@ -1292,11 +1307,12 @@ func (o *NBReActPlanner3) processToolActions(output string) []NBAgentPlannerTool
 
 		o.stepCount++
 		actions = append(actions, NBAgentPlannerToolAction{
-			Tool:      toolName,
-			ToolInput: toolInput,
-			Log:       thought, // All parallel actions share the same thought
-			ToolID:    generateToolId(toolName, toolInput+fmt.Sprintf("_%d", len(actions))),
-			DisplayID: fmt.Sprintf("E%d", o.stepCount),
+			Tool:       toolName,
+			ToolInput:  toolInput,
+			Log:        thought, // All parallel actions share the same thought
+			ToolID:     generateToolId(toolName, toolInput+fmt.Sprintf("_%d", len(actions))),
+			DisplayID:  fmt.Sprintf("E%d", o.stepCount),
+			MemoryRefs: parseMemoryUsedFromActionContent(actionContent),
 		})
 	}
 
@@ -1371,14 +1387,20 @@ func (o *NBReActPlanner3) processToolAction(output string) []NBAgentPlannerToolA
 		thought = output
 	}
 
+	// Extract the <action> content once so we can pull <memory_used> out of
+	// it — the singular path has already flattened the block; re-extract
+	// here to avoid threading another return through the tool-name lookup
+	// above. Empty when the LLM wrote no <action> wrapper (older shapes).
+	actionContent := common.XmlExtractTagContent(output, "action")
 	o.stepCount++
 	return []NBAgentPlannerToolAction{
 		{
-			Tool:      toolName,
-			ToolInput: toolInput,
-			Log:       thought,
-			ToolID:    generateToolId(toolName, toolInput),
-			DisplayID: fmt.Sprintf("E%d", o.stepCount),
+			Tool:       toolName,
+			ToolInput:  toolInput,
+			Log:        thought,
+			ToolID:     generateToolId(toolName, toolInput),
+			DisplayID:  fmt.Sprintf("E%d", o.stepCount),
+			MemoryRefs: parseMemoryUsedFromActionContent(actionContent),
 		},
 	}
 }
@@ -1714,6 +1736,7 @@ func (o *NBReActPlanner3) Plan(
 
 			if o.refinementAttempts >= o.maxRefinementAttempts {
 				logger.Warn("reactagent3: max refinement attempts reached, accepting current answer", "attempts", o.refinementAttempts)
+				MetricsCritiqueDecision(o.nbAgent.GetName(), "force_accept", o.refinementAttempts)
 				return nil, finish, nil
 			}
 		}
@@ -1737,6 +1760,7 @@ func (o *NBReActPlanner3) Plan(
 			decision, feedback := o.runCritique(input, scratchpad, finish.Data, intermediateSteps, logger)
 			if decision == "" || strings.EqualFold(decision, "accept") {
 				logger.Info("reactagent3: critique accepted answer", "decision", decision)
+				MetricsCritiqueDecision(o.nbAgent.GetName(), "accept", o.refinementAttempts)
 				return nil, finish, nil
 			}
 
@@ -1746,6 +1770,7 @@ func (o *NBReActPlanner3) Plan(
 			// window pressure is now the only compression trigger.
 			o.refinementAttempts++
 			logger.Info("reactagent3: answer rejected by critique, refining", "feedback", feedback, "attempt", o.refinementAttempts)
+			MetricsCritiqueDecision(o.nbAgent.GetName(), "refine", o.refinementAttempts)
 			o.refinementData = append(o.refinementData, struct {
 				feedback string
 				answer   string
@@ -1920,7 +1945,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 }) (string, string) {
 	critiquePrompt := prompts.NewPromptTemplate(
 		prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer),
-		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled", "notebook", "today"},
+		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled", "sdg_grounding_enabled", "notebook", "today"},
 	)
 	critiquePromptStr, promptErr := critiquePrompt.Format(map[string]any{
 		"input":                   input,
@@ -1934,6 +1959,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 		"shell_tool_enabled":      config.Config.LlmServerShellToolEnabled && HasShellTool(o.tools),
 		"tools_invoked":           extractToolsInvoked(intermediateSteps),
 		"hypothesis_mode_enabled": o.hypothesisModeEnabled,
+		"sdg_grounding_enabled":   config.Config.LlmServerSDGGroundingContractEnabled && HasServiceDependencyGraphTool(o.tools),
 	})
 	if promptErr != nil {
 		logger.Error("reactagent3: failed to format critique prompt, accepting answer", "error", promptErr)
@@ -2049,6 +2075,7 @@ func (o *NBReActPlanner3) saveCritiqueAsToolCall(feedback string) error {
 		nil,
 		nil,
 		nil,
+		nil, // memoryRefs — synthetic critique-feedback tool call
 	)
 }
 
@@ -2099,6 +2126,19 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	notebookEnabled := ResolveAgentNotebookEnabled(agent)
 	hypothesisModeEnabled := resolveHypothesisModeEnabled(request, agent)
 	orchestratorMode, executorMode := resolveReact3RoleModes(request)
+
+	// Lean prompt variant: on a top-level plain-retrieval turn (stamped by
+	// applyPromptVariant when the feature is enabled), drop the heavy investigation
+	// overlays — answer contract, notebook discipline, and hypothesis tree — via
+	// the existing {{if}} gates in planner_react_3_base.txt. Reading the same
+	// ContextKeyPromptVariant the cache key uses keeps the prompt shape and its
+	// cache slot in lockstep. executorMode is untouched (only top-level turns get
+	// the lean variant, and a top-level turn is never an executor sub-agent).
+	if promptVariantFromCtx(ctx) == promptVariantLean {
+		notebookEnabled = false
+		hypothesisModeEnabled = false
+		orchestratorMode = false
+	}
 
 	// Only declare template variables actually referenced in planner_react_3_base.txt.
 	// Dynamic vars (history, conversation_context, input, scratchpad) are in the human
@@ -2250,7 +2290,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"code_analysis_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"security_rules":               prompts_repo.GetPrompt(prompts_repo.PromptSharedSecurityRules),
 		"memory_consumption_rules":     "",
-		"async_completion_rules":       WatchAsyncCompletionRulesPrompt(),
+		"async_completion_rules":       asyncCompletionRules(agent),
 		// Human message template vars (dynamic — change per conversation/iteration)
 		"today":                    time.Now().Format("January 02, 2006"),
 		"history":                  previousMessageStr,
@@ -2287,6 +2327,11 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 
 	prompt, tools := reActCreatePrompt3(ctx, systemMessage, nbAgent.GetSupportedTools(ctx), request.ConversationContext, extraMessages, request, nbAgent)
 
+	// Lean turn: read the same ContextKeyPromptVariant the prompt build and cache
+	// key use, so the runtime notebook/hypothesis gating stays consistent with the
+	// prompt actually sent this turn.
+	leanMode := promptVariantFromCtx(ctx) == promptVariantLean
+
 	return &NBReActPlanner3{
 		ctx:                   ctx,
 		llm:                   model,
@@ -2300,7 +2345,8 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		tools:                 tools,
 		enableCritique:        request.EnableCritique,
 		Notebook:              initialNotebook,
-		hypothesisModeEnabled: resolveHypothesisModeEnabled(request, nbAgent),
+		leanMode:              leanMode,
+		hypothesisModeEnabled: resolveHypothesisModeEnabled(request, nbAgent) && !leanMode,
 		// -1 sentinels mean "no notebook update yet observed".
 		notebookLastUpdateTurn:  -1,
 		notebookFirstUpdateTurn: -1,

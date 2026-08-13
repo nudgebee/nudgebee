@@ -12,6 +12,7 @@ import (
 	"nudgebee/llm/relay"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"nudgebee/llm/utils"
 	"strings"
 	"time"
 )
@@ -216,7 +217,7 @@ func GetServiceDependencyGraph(ctx security.RequestContext, accountId, namespace
 		},
 	}
 
-	response, err := relay.Execute(relay.ActionExecuteBody{
+	response, err := relay.Execute(ctx.GetContext(), relay.ActionExecuteBody{
 		AccountID:    accountId,
 		ActionName:   "service_map",
 		ActionParams: actionParams,
@@ -393,20 +394,24 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 		return observabilityResp, fmt.Errorf("services: logs, unexpected response (status %d): %s", resp.StatusCode, string(jsonBody))
 	}
 
-	// Success: the services server returns {logs, query, provider}. Carry the
-	// query/provider it actually executed into the metadata so the agent and UI
-	// can report which query produced these logs (the request query is empty on
-	// the canonical where-clause path).
+	// Success: the services server returns {logs, query, provider, suggestion}. Carry the
+	// query/provider it actually executed into the metadata so the agent and UI can report
+	// which query produced these logs (the request query is empty on the canonical
+	// where-clause path). suggestion is set instead of a 400 when the ValidateRequest
+	// empty-result diagnosis found an actionable fix (unknown label name/value) — see
+	// ObservabilityLogResponse.Suggestion.
 	var body struct {
-		Logs     []core.ObservabilityLog `json:"logs"`
-		Query    string                  `json:"query"`
-		Provider string                  `json:"provider"`
+		Logs       []core.ObservabilityLog `json:"logs"`
+		Query      string                  `json:"query"`
+		Provider   string                  `json:"provider"`
+		Suggestion string                  `json:"suggestion"`
 	}
 	if err = common.UnmarshalJson(jsonBody, &body); err != nil {
 		return observabilityResp, err
 	}
 
 	observabilityResp.Logs = body.Logs
+	observabilityResp.Suggestion = body.Suggestion
 	if body.Query != "" {
 		observabilityResp.Metadata.Query = body.Query
 	}
@@ -554,8 +559,12 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 	}
 
 	if strings.EqualFold(provider.Provider, "ES") || strings.EqualFold(provider.Provider, "elasticsearch") {
+		esIndex := provider.DefaultIndex
+		if esIndex == "" {
+			esIndex = utils.GetESAccountIndexConfig(accountId, "logs").DefaultIndex
+		}
 		queryPayload["input"].(map[string]any)["request"].(map[string]any)["request"] = map[string]any{
-			"index": "fluentk8-*",
+			"index": esIndex,
 		}
 		queryPayload["input"].(map[string]any)["request"].(map[string]any)["fetch_index"] = true
 	}
@@ -612,7 +621,91 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 		return core.ObservabilityLogLabelResponse{}, err
 	}
 
+	slog.Info("services_server: QueryLogLabels complete", "account_id", accountId, "provider", provider.Provider, "status_code", resp.StatusCode, "label_count", len(response))
 	return core.ObservabilityLogLabelResponse{Labels: response}, nil
+}
+
+// QueryTraceLabels calls the traces_list_labels action and returns the label names
+// available for the account's trace provider — the authoritative set of canonical
+// fields ∪ merged label mapping ∪ backend-discovered span/resource attribute keys.
+// Mirrors QueryLogLabels; the v2 traces agent uses it for live, per-account field
+// discovery (the trace counterpart of the log agent's get_labels call).
+func QueryTraceLabels(ctx security.RequestContext, accountId string, provider ObservabilityProvider) ([]string, error) {
+	if provider.IntegrationSource == "" {
+		provider.IntegrationSource = "agent"
+	}
+	queryPayload := map[string]any{
+		"action": map[string]any{
+			"name": "traces_list_labels",
+		},
+		"input": map[string]any{
+			"request": map[string]any{
+				"account_id":      accountId,
+				"provider_type":   provider.Provider,
+				"provider_source": provider.IntegrationSource,
+				"start_time":      time.Now().Add(-1 * time.Hour).UnixMilli(),
+				"end_time":        time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	tenant := ctx.GetSecurityContext().GetTenantId()
+	if tenant == "" {
+		tenant1, err := security.GetTenantIdFromAccountId(accountId)
+		if err != nil {
+			return nil, err
+		}
+		tenant = tenant1
+	}
+	if tenant == "" {
+		return nil, errors.New("tenant id is empty")
+	}
+
+	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/traces", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
+		"Content-Type":   contentTypeJson,
+		"Accept":         contentTypeJson,
+		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
+		"x-tenant-id":    tenant,
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
+	}), common.HttpWithJsonBody(queryPayload))
+	if err != nil {
+		return nil, fmt.Errorf("services: tracelabels, unable to process request: %v", err)
+	}
+	defer func() {
+		if resp.Body != nil {
+			if err := resp.Body.Close(); err != nil {
+				slog.Info("services_server: failed to close response body", "error", err)
+			}
+		}
+	}()
+
+	jsonBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == 401 {
+		return nil, fmt.Errorf("unauthorized: %v", string(jsonBody))
+	}
+	if resp.StatusCode == 500 {
+		return nil, fmt.Errorf("internal Server Error from Services Server, %v", string(jsonBody))
+	}
+
+	// traces_list_labels returns { "labels": [ { "label": "...", "attributes": {...} } ] }.
+	var parsed struct {
+		Labels []struct {
+			Label string `json:"label"`
+		} `json:"labels"`
+	}
+	if err := common.UnmarshalJson(jsonBody, &parsed); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(parsed.Labels))
+	for _, l := range parsed.Labels {
+		if l.Label != "" {
+			names = append(names, l.Label)
+		}
+	}
+	return names, nil
 }
 
 // ProviderCapabilities is the subset of get_default_provider's `capabilities`

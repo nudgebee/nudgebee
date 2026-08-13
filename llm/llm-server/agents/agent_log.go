@@ -253,13 +253,13 @@ func investigationInstructions(shellEnabled bool) []string {
 
 	if shellEnabled {
 		out = append(out,
-			"  4. **Mandatory shell_execute pass (NOT optional for this mode).** When `fetch_logs` returns a non-empty `file_ref`, you MUST run AT LEAST TWO `shell_execute` calls before producing a final answer:",
-			"     Call A — locate the first error timestamp:",
+			"  4. **Mandatory shell_execute pass (NOT optional for this mode).** When `fetch_logs` returns a non-empty `file_ref`, you MUST run AT LEAST TWO `shell_execute` calls before producing a final answer. Call A and Call B read the SAME file with different patterns and are INDEPENDENT — **emit BOTH in ONE iteration as a single parallel batch** (do NOT wait for A's result before issuing B); correlate their outputs afterward once both return:",
+			"     Call A — scan for the error transition:",
 			"       `grep -nE \"ERROR|FATAL|PANIC|exception|traceback\" <file_ref> | head -20`",
-			"       Note the timestamp on the first matching line — that is the transition point.",
-			"     Call B — find the trigger BEFORE the transition point:",
+			"       Once it returns, note the timestamp on the first matching line — that is the transition point.",
+			"     Call B — scan for the trigger:",
 			"       `grep -nE \"reload|reconfigur|deploy|rollout|secret.rotat|config.changed|started|loaded|env|config\" <file_ref> | head -20`",
-			"       The trigger usually lives in WARN/INFO/CONFIG lines that Call A skipped.",
+			"       The trigger usually lives in WARN/INFO/CONFIG lines that Call A skipped; after both return, pick the trigger line that immediately precedes Call A's transition point.",
 			"  5. **Second-pass targeted antecedent fetch (only if Call A finds an error timestamp).** Call fetch_logs again with `\"all logs for <pod> in <namespace> from <T-5min> to <T>, limit 500, in chronological forward order\"`. This pulls the trigger context (config reload, deploy, secret rotation) immediately preceding the error — bounded by explicit `start_time`/`end_time`, so forward+limit is safe. Then re-run Call B's grep on the new file_ref. Skip if Call B already found a clear trigger.",
 			"  6. **Empty-result recovery (MANDATORY two-step — DO NOT skip):**",
 			"     Step E1 — re-grep with case-insensitive + broader keywords on the SAME file:",
@@ -273,8 +273,9 @@ func investigationInstructions(shellEnabled bool) []string {
 			"       - Do NOT call `think` to conclude \"no issues\" without completing Step E1 AND (if E1 empty) Step E2.",
 			"       - Only after Call A + Step E1 + Step E2 all return empty may you state \"no errors found in last 7d\".",
 			"  Do NOT produce a final answer without Call A AND (Call B succeeding OR a documented second-pass attempt OR a documented widened-window attempt). The critic will reject answers that skip this step.",
+			"  **Report WHEN (MANDATORY).** Your final answer MUST state the incident time window — the `timestamp` field of the FIRST and LAST matching error line from Call A. Naming the failure and its cause without \"between <T1> and <T2>\" is incomplete. Do NOT conflate live pod status with incident timing: a pod that is `Running` now can have had a bounded PAST incident — phrase it as \"errors occurred between <T1> and <T2>\", never \"currently failing\" when the error timestamps are in the past.",
 
-			"**Domain-aware grep patterns (for additional shell_execute passes when default Call B is empty):**",
+			"**Domain-aware grep patterns (for additional shell_execute passes when default Call B is empty — if you run several, emit them together in ONE parallel batch; they are independent reads of the same file):**",
 			"  - Crashes / restarts:  `OOM|Killed|exit.code|CrashLoop|restart|signal|SIGTERM|SIGKILL`",
 			"  - Latency / slowness:  `timeout|deadline|slow|connection.pool|retry|context.deadline|elapsed`",
 			"  - Auth / access:       `401|403|JWT|token|expired|unauthorized|forbidden|permission`",
@@ -370,7 +371,7 @@ func outputFormatInstructions(mode logMode) []string {
 // whose name ends in a number, like a benchmark suffix). Defaulting to
 // `app=` covers both cases without false-positive `pod=` lookups.
 func labelAnchorRules() string {
-	return "     - **Label anchor (CRITICAL — picks the right Loki label):** DEFAULT to anchoring on the workload label by phrasing as `\"all logs for app <name> in <namespace>\"`. This emits `app=<name>` and matches all pods of the Deployment/StatefulSet/DaemonSet (Loki entries always carry both `app` and `pod` labels). ONLY phrase as `\"all logs for pod <name> in <namespace>\"` (which emits `pod=<name>`) when the name has the Deployment-style hash suffix `<workload>-<6-10 hex>-<5 alphanumeric>` — e.g. you got the exact pod name from `kubectl get pods` or `resource_search`'s suggestions output. Anchoring on `pod` for a bare workload name produces zero-result fetches because Loki entries carry the full pod-with-hash, not the deployment name."
+	return "     - **Label anchor (CRITICAL — picks the right target):** If you ALREADY have the exact pod name (Deployment-style hash suffix `<workload>-<6-10 hex>-<5 alphanumeric>`, e.g. from `kubectl get pods` or `resource_search`), anchor on `\"all logs for pod <name> in <namespace>\"` — the exact pod resolves on EVERY backend, including kubectl. If you do NOT have the exact pod, DEFAULT to the workload label by phrasing as `\"all logs for app <name> in <namespace>\"` (emits `app=<name>`, matches all pods) — BUT this app-anchor only resolves on label-indexed backends (Loki / Datadog / Elasticsearch). On the **kubectl backend** (no Loki configured — you had to use `kubectl get` / `shell_execute` to find the resource), a bare `app <name>` is NOT a valid target and errors; there, phrase as `\"all logs for deployment <name> in <namespace>\"` (or statefulset/daemonset), which runs `kubectl logs deployment/<name>`. Never anchor on `pod <bare-workload-name>` without the hash suffix — it yields zero results because entries carry the full pod-with-hash, not the workload name."
 }
 
 // sharedConstraints — the cite-evidence / preserve-identifiers rules apply to

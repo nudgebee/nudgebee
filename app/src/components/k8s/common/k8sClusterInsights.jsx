@@ -58,9 +58,10 @@ const K8sClusterInsights = ({ accountId }) => {
 
   const highlightWords = ['OOMKilled', 'Hi-Restarts', 'right', 'sized'];
 
-  const getInsights = async (accountId) => {
+  const getInsights = async (accountId, isStale) => {
     try {
       const response = await apiKubernetes1.listInsights(accountId);
+      if (isStale()) return;
       const transformedData = Object.keys(response).reduce((acc, key) => {
         acc[key] = response[key].map((item) => {
           const id = uuidv4();
@@ -78,14 +79,20 @@ const K8sClusterInsights = ({ accountId }) => {
       }, {});
       setInsightData(transformedData);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   };
 
   useEffect(() => {
     if (accountId) {
+      // The transform rebuilds the whole cluster-keyed map, so a slow response
+      // for a previous cluster would clobber the current one wholesale.
+      let cancelled = false;
       setLoading(true);
-      getInsights(accountId);
+      getInsights(accountId, () => cancelled);
+      return () => {
+        cancelled = true;
+      };
     }
   }, [accountId]);
 

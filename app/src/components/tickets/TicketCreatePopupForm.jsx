@@ -7,6 +7,76 @@ import apiTickets from '@api1/tickets';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
 
+// Severity is sourced from the meta field tagged group === 'severity' and
+// removed from additional_fields so a duplicate can't shadow the typed slot
+// upstream. Returns { missingRequired } when required dynamic fields are empty.
+export const buildCreateTicketPayload = (ticketState, { reference = {}, ticketData = {} } = {}) => {
+  const { selectedConfig, selectedProject, selectedIssueType, ticketDetails, formData, selectedIssueTypeTicketMetadata } = ticketState;
+  const fields = selectedIssueTypeTicketMetadata?.[0]?.fields ?? {};
+
+  const isEmpty = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
+  const missingRequired = Object.keys(fields).filter(
+    (key) => key !== 'summary' && key !== 'description' && fields[key]?.required && isEmpty(formData?.[key])
+  );
+  if (missingRequired.length > 0) {
+    return { missingRequired: missingRequired.map((key) => fields[key].name) };
+  }
+
+  const additionalFields = JSON.parse(JSON.stringify(formData ?? {}));
+  delete additionalFields.assignee;
+
+  const severityKey = Object.keys(fields).find((key) => fields[key]?.group === 'severity') ?? 'priority';
+  const severity = formData?.[severityKey];
+  delete additionalFields[severityKey];
+
+  for (const [key, field] of Object.entries(fields)) {
+    if (field?.type != 'datepicker' && field?.type != 'datetime') {
+      continue;
+    }
+    // Empty here means an optional field left blank (required dates are seeded
+    // on mount and enforced above) — omit it rather than defaulting to now.
+    if (isEmpty(additionalFields[key])) {
+      delete additionalFields[key];
+    } else if (field.type == 'datepicker') {
+      additionalFields[key] = new Date(additionalFields[key]).toISOString().split('T')[0];
+    } else {
+      additionalFields[key] = new Date(additionalFields[key]).toISOString();
+    }
+  }
+
+  return {
+    payload: {
+      reference_id: reference?.id,
+      ticket_type: selectedIssueType,
+      integration_id: selectedConfig?.id,
+      assignee: formData?.assignee,
+      project_key: selectedProject?.key,
+      title: ticketDetails?.subject,
+      description: ticketDetails?.description,
+      source: reference?.type,
+      severity,
+      account_id: ticketData?.accountId,
+      additional_fields: additionalFields,
+    },
+  };
+};
+
+// When ticket creation fails upstream, the gateway returns tickets_create: null
+// plus a GraphQL error whose message is a JSON-encoded copy of the handler
+// payload; the human-readable reason lives at data.insert_tickets_one.error
+// (e.g. "403 Repository was archived so is read-only" from GitHub).
+export const extractCreateErrorMessage = (res) => {
+  const gqlMessage = res?.data?.data?.errors?.[0]?.message;
+  if (!gqlMessage) {
+    return null;
+  }
+  try {
+    return JSON.parse(gqlMessage)?.data?.insert_tickets_one?.error || null;
+  } catch {
+    return gqlMessage;
+  }
+};
+
 const AddModalForm = ({
   ticketUrl = {},
   open,
@@ -31,43 +101,16 @@ const AddModalForm = ({
       return;
     }
 
-    const { selectedConfig, selectedProject, selectedIssueType, ticketDetails, formData, selectedIssueTypeTicketMetadata } = ticketState;
+    const { missingRequired, payload } = buildCreateTicketPayload(ticketState, { reference, ticketData });
+    if (missingRequired) {
+      snackbar.error(missingRequired.join(', ') + ' cannot be empty');
+      return;
+    }
 
     setError(false);
     setIsLoading(true);
-    let cloneObj = JSON.parse(JSON.stringify(formData));
-    delete cloneObj.assignee;
-    for (const [_key, value] of Object.entries(selectedIssueTypeTicketMetadata?.[0]?.fields ?? [])) {
-      if (value && value.type == 'datepicker') {
-        cloneObj[_key] = cloneObj[_key] ? new Date(cloneObj[_key]).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-      } else if (value && value.type == 'datetime') {
-        cloneObj[_key] = cloneObj[_key] ? new Date(cloneObj[_key]).toISOString() : new Date().toISOString();
-      }
-    }
-    const required = Object.keys(selectedIssueTypeTicketMetadata?.[0]?.fields ?? {}).filter(
-      (_key) =>
-        _key !== 'summary' && _key !== 'description' && selectedIssueTypeTicketMetadata[0].fields[_key]?.required && !Object.hasOwn(cloneObj, _key)
-    );
-    const labels = required.map((_key) => selectedIssueTypeTicketMetadata?.[0].fields[_key].name);
-    if (labels && labels.length > 0) {
-      snackbar.error(labels.join(', ') + ' cannot be empty');
-      return;
-    }
-    setIsLoading(true);
     apiTickets
-      .createTicket({
-        reference_id: reference?.id,
-        ticket_type: selectedIssueType,
-        integration_id: selectedConfig?.id,
-        assignee: formData?.assignee,
-        project_key: selectedProject?.key,
-        title: ticketDetails?.subject,
-        description: ticketDetails?.description,
-        source: reference?.type,
-        severity: formData?.priority,
-        account_id: ticketData?.accountId,
-        additional_fields: cloneObj,
-      })
+      .createTicket(payload)
       .then((res) => {
         const responseData = res?.data?.data?.data?.tickets_create?.data?.insert_tickets_one;
         if (responseData?.error) {
@@ -107,7 +150,7 @@ const AddModalForm = ({
             snackbar.warning(responseData?.message);
           }
         } else {
-          onFailure(responseData?.message || 'Failed to create ticket');
+          onFailure(responseData?.message || extractCreateErrorMessage(res) || 'Failed to create ticket');
         }
       })
       .catch(() => {

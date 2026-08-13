@@ -19,7 +19,7 @@ import CustomTable2 from '@shared/tables/CustomTable';
 import SectionHeader from './Section';
 import { seriesColor } from './palette';
 import { fmtCost } from '../format';
-import { bucketsToSeries, timeSeriesToChart } from '../adapt';
+import { bucketDateRanges, bucketsToSeries, timeSeriesToChart } from '../adapt';
 import type { UsageStackDimension, UsageTimeSeries } from '@api1/ai-cost';
 import type { Granularity, TimeBucket } from '../types';
 
@@ -28,6 +28,8 @@ interface CostOverTimeProps {
   granularity: Granularity;
   startDate: string;
   endDate: string;
+  /** Click a column to re-scope the report to that bucket's date span (day → that day). */
+  onSelectPeriod?: (startDate: string, endDate: string) => void;
 }
 
 const STACK_OPTIONS: { value: UsageStackDimension; label: string }[] = [
@@ -57,13 +59,26 @@ function NumberTable({ buckets, keys }: { buckets: TimeBucket[]; keys: string[] 
   return <CustomTable2 headers={headers} tableData={tableData} />;
 }
 
-export function CostOverTime({ timeSeries, granularity, startDate, endDate }: CostOverTimeProps) {
+export function CostOverTime({ timeSeries, granularity, startDate, endDate, onSelectPeriod }: CostOverTimeProps) {
   const [stackBy, setStackBy] = React.useState<UsageStackDimension>('model');
   const [view, setView] = React.useState<'chart' | 'table'>('chart');
   const [shape, setShape] = React.useState<'bar' | 'area'>('bar');
   const { buckets, keys } = React.useMemo(
     () => timeSeriesToChart(timeSeries, stackBy, 'cost', startDate, endDate, granularity),
     [timeSeries, stackBy, startDate, endDate, granularity]
+  );
+  // Per-column drill range, index-aligned with `buckets` (both flow from the same
+  // day-walk), so clicking column i re-scopes the report to that bucket's span.
+  const ranges = React.useMemo(() => bucketDateRanges(startDate, endDate, granularity), [startDate, endDate, granularity]);
+  const handleSelectPoint = React.useMemo(
+    () =>
+      onSelectPeriod
+        ? (_label: string, index: number) => {
+            const r = ranges[index];
+            if (r) onSelectPeriod(r.startDate, r.endDate);
+          }
+        : undefined,
+    [onSelectPeriod, ranges]
   );
 
   return (
@@ -109,13 +124,16 @@ export function CostOverTime({ timeSeries, granularity, startDate, endDate }: Co
         }
       />
       {view === 'chart' ? (
-        <Chart.TimeSeries
-          {...bucketsToSeries(buckets, keys)}
-          shape={shape === 'area' ? 'area' : 'bar'}
-          format={fmtCost}
-          colorFor={seriesColor}
-          id='cost-over-time'
-        />
+        <Box sx={handleSelectPoint ? { cursor: 'pointer' } : undefined}>
+          <Chart.TimeSeries
+            {...bucketsToSeries(buckets, keys)}
+            shape={shape === 'area' ? 'area' : 'bar'}
+            format={fmtCost}
+            colorFor={seriesColor}
+            onSelectPoint={handleSelectPoint}
+            id='cost-over-time'
+          />
+        </Box>
       ) : (
         <NumberTable buckets={buckets} keys={keys} />
       )}

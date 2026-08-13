@@ -123,10 +123,10 @@ const KubernetesSecurityDetails = (props) => {
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
-    } else if (menuItem.id === 1) {
+    } else if (menuItem.id === 'create-pull-request') {
       openPRModal(data);
     }
   };
@@ -277,13 +277,13 @@ const KubernetesSecurityDetails = (props) => {
       {
         icon: TicketsIcon,
         label: 'Create Ticket',
-        id: 0,
+        id: 'create-ticket',
         disabled: data?.ticket?.ticket_id,
       },
       {
         icon: PrOpenIcon,
         label: 'Create Pull Request',
-        id: 1,
+        id: 'create-pull-request',
         disabled: !hasFixAvailable || !hasWriteAccess() || data?.resolution,
       },
     ];

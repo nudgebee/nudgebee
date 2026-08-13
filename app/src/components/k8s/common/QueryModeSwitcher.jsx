@@ -204,6 +204,11 @@ const QueryModeSwitcher = ({
         start_time: params?.startDate,
         end_time: params?.endDate,
         instant: false,
+        // Format the preview for the same metrics provider the fetch runs against
+        // (QueryMetrics sends metric_provider on every fetch). Without this the
+        // backend falls back to the account default, which diverges when the
+        // provider was resolved from the agent URL rather than a default integration.
+        ...(logProvider ? { metric_provider: logProvider } : {}),
       });
       if (response?.data?.errors) {
         snackbar.error(`Failed to format query - ${parseHttpResponseBodyMessage(response?.data)}`);
@@ -363,6 +368,11 @@ const QueryModeSwitcher = ({
         },
         start_time: params?.startDate,
         end_time: params?.endDate,
+        // Format the preview for the provider the user actually selected. Without
+        // this the backend falls back to the account default (e.g. Pinot SQL) even
+        // when the fetch runs against the override (e.g. Loki). Only sent when
+        // overridden, mirroring the fetch path in KubernetesLogs.handleSubmit.
+        ...(providerOverride ? { log_provider: providerOverride } : {}),
       });
 
       if (response?.data?.errors) {

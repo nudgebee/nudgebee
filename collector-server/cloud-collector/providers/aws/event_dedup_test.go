@@ -55,6 +55,26 @@ func TestRuleDeduper_FirstEventAllowedSubsequentSuppressed(t *testing.T) {
 	}
 }
 
+// Suppress-only mode (nil onFire, used for emitting rules): repeats within
+// the TTL are dropped with no trailing fire, and the entry dies at the
+// deadline so the next event starts a fresh window and is allowed again.
+func TestRuleDeduper_NilOnFireSuppressesThenExpires(t *testing.T) {
+	d, cancel := newBoundDeduper(t, 30*time.Millisecond, nil)
+	defer cancel()
+
+	if !d.Allow("fp1", EventBridgeEvent{ID: "a"}, providers.Account{}) {
+		t.Fatalf("first Allow should return true")
+	}
+	if d.Allow("fp1", EventBridgeEvent{ID: "b"}, providers.Account{}) {
+		t.Fatalf("duplicate Allow within TTL should return false")
+	}
+	// After the deadline the entry must be removed even though a suppressed
+	// event was pending — nil onFire means no trailing fire ever runs.
+	waitUntil(t, 2*time.Second, func() bool {
+		return d.Allow("fp1", EventBridgeEvent{ID: "c"}, providers.Account{})
+	})
+}
+
 func TestRuleDeduper_TrailingFireUsesLatestEvent(t *testing.T) {
 	var (
 		mu        sync.Mutex

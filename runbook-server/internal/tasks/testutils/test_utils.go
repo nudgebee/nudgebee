@@ -50,6 +50,7 @@ type MockTaskContext struct {
 	TempClient    client.Client
 	WfStore       model.WorkflowStore
 	WorkflowRunId string
+	EventID       string
 	DryRun        bool
 }
 
@@ -73,6 +74,9 @@ func (m *MockTaskContext) GetNewRequestContextForAccount(account string) *securi
 }
 func (m *MockTaskContext) GetWorkflowRunID() string {
 	return m.WorkflowRunId
+}
+func (m *MockTaskContext) GetEventID() string {
+	return m.EventID
 }
 func (m *MockTaskContext) IsDryRun() bool {
 	return m.DryRun

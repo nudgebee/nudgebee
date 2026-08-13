@@ -65,15 +65,38 @@ func HashString(input string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// StripLeadingAgentMention removes a leading "@<token>" mention from a user
-// query (e.g. "@aws_debug check pods" -> "check pods"). Used wherever the
-// raw user query is consumed (title generation, executor input) so the agent
-// selector doesn't leak into user-visible titles, LLM prompts, or downstream
-// agent reasoning. Also trims surrounding whitespace from the result.
-func StripLeadingAgentMention(query string) string {
-	trimmed := strings.TrimSpace(query)
-	if !strings.HasPrefix(trimmed, "@") {
-		return trimmed
+// agentMentionRegex matches the leading run of "@name" mentions; group 1 = FIRST name.
+// \w+ matches the validated name grammar (^[a-zA-Z]\w*$); "-"/"/" excluded so flags/paths survive.
+var agentMentionRegex = regexp.MustCompile(`^@(\w+)(?:[\s,;:.!?]*@\w+)*[\s,;:.!?]*`)
+
+// agentSingleMentionRegex matches only the FIRST "@name" + trailing separators (not the run).
+var agentSingleMentionRegex = regexp.MustCompile(`^@\w+[\s,;:.!?]*`)
+
+// ParseAgentMention splits a leading run of "@agent" mentions off a query -> (firstName, rest).
+// First mention wins, extras swallowed; ("", trimmed) when none. E.g. "@a @b x" -> ("a", "x").
+func ParseAgentMention(query string) (agent, rest string) {
+	query = strings.TrimSpace(query)
+	m := agentMentionRegex.FindStringSubmatch(query)
+	if m == nil {
+		return "", query
 	}
-	return strings.TrimSpace(strings.TrimPrefix(trimmed, strings.Fields(trimmed)[0]))
+	return m[1], strings.TrimSpace(query[len(m[0]):])
+}
+
+// StripLeadingAgentMention drops the leading "@<name>" mention(s) from a query
+// (e.g. "@aws_debug check pods" -> "check pods"). Used for titles + executor input.
+func StripLeadingAgentMention(query string) string {
+	_, rest := ParseAgentMention(query)
+	return rest
+}
+
+// StripFirstAgentMention drops only the FIRST leading "@<name>" mention, keeping any
+// further mentions: "@a @b q" -> "@b q", "@a@b q" -> "@b q". Used when the extra
+// mentions should reach the agent (DropExtraAgentMentions=false).
+func StripFirstAgentMention(query string) string {
+	query = strings.TrimSpace(query)
+	if loc := agentSingleMentionRegex.FindStringIndex(query); loc != nil {
+		return strings.TrimSpace(query[loc[1]:])
+	}
+	return query
 }

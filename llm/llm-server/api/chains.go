@@ -1815,6 +1815,203 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		c.JSON(http.StatusOK, buildApiResponse(data, nil))
 	})
 
+	// Internal cross-tenant Critique Analytics routes. No account scoping —
+	// gated by requireTenantReadAdmin. A tenant_admin sees every tenant's data.
+
+	// Like requireTenantAdmin but also accepts tenant_admin_readonly. Kept
+	// separate — requireTenantAdmin's other call sites gate writes.
+	requireTenantReadAdmin := func(c *gin.Context, ctx *security.RequestContext) bool {
+		sc := ctx.GetSecurityContext()
+		if sc == nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{errors.New("critiques: missing security context")}))
+			return false
+		}
+		if sc.IsSuperAdmin() || sc.IsSuperAdminReadonly() || sc.IsTenantAdmin() || sc.IsTenantReadAdmin() {
+			return true
+		}
+		c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New("critiques: tenant admin role required")}))
+		return false
+	}
+	groupV2.POST("/critiques-summary", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_critiques_summary")
+		requestMap := make(map[string]any)
+		if err := c.ShouldBindJSON(&requestMap); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.CritiqueSummaryRequest
+		var actionRequest ActionRequest
+		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+		if !requireTenantReadAdmin(c, agentContext) {
+			return
+		}
+
+		data, err := core.HandleCritiqueSummaryApi(request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	groupV2.POST("/critiques-trend", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_critiques_trend")
+		requestMap := make(map[string]any)
+		if err := c.ShouldBindJSON(&requestMap); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.CritiqueTrendRequest
+		var actionRequest ActionRequest
+		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+		if !requireTenantReadAdmin(c, agentContext) {
+			return
+		}
+
+		data, err := core.HandleCritiqueTrendApi(request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	groupV2.POST("/critiques-list", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_critiques_list")
+		requestMap := make(map[string]any)
+		if err := c.ShouldBindJSON(&requestMap); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.CritiqueListRequest
+		var actionRequest ActionRequest
+		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+		if !requireTenantReadAdmin(c, agentContext) {
+			return
+		}
+
+		data, err := core.HandleCritiqueListApi(request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
 	groupV2.POST("/chat_get", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("chains_chat_get")
 		requestMap := make(map[string]any)

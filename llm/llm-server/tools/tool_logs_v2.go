@@ -96,7 +96,10 @@ func (t *NBLogToolV2) InputSchema() core.ToolSchema {
 // an empty Query (executeFetchLogsCanonical). One path serves every provider;
 // services-server owns the canonical→provider resolution and native query build.
 func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	nbRequestContext.Ctx.GetLogger().Info("logs_v2: executing canonical getLogs tool call", "query", input.Command, "provider", t.logProvider.Provider)
+	// Local, never written back to the receiver — see NBLogTool.Call.
+	logProvider := EffectiveLogProvider(t.logProvider, nbRequestContext.QueryConfig.LogProviderOverride)
+
+	nbRequestContext.Ctx.GetLogger().Info("logs_v2: executing canonical getLogs tool call", "query", input.Command, "provider", logProvider.Provider)
 
 	queryBuilder, err := core.BuildLogQueryBuilder(nbRequestContext, input.Command)
 	if err != nil {
@@ -135,11 +138,13 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	}
 	if queryBuilder.Index != "" {
 		configs["index"] = queryBuilder.Index
+	} else if logProvider.DefaultIndex != "" {
+		configs["index"] = logProvider.DefaultIndex
 	}
 
-	response, err := executeFetchLogsCanonical(nbRequestContext, t.logProvider, queryBuilder.Where, configs)
+	response, err := executeFetchLogsCanonical(nbRequestContext, logProvider, queryBuilder.Where, configs)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("logs_v2: unable to execute canonical query", "provider", t.logProvider.Provider, "error", err.Error())
+		nbRequestContext.Ctx.GetLogger().Error("logs_v2: unable to execute canonical query", "provider", logProvider.Provider, "error", err.Error())
 		return core.NBToolResponse{
 			Data:   "",
 			Status: core.NBToolResponseStatusError,
@@ -147,13 +152,7 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	}
 
 	if len(response.Logs) == 0 {
-		whereJSON, _ := common.MarshalJson(queryBuilder.Where)
-		noLogsMsg := fmt.Sprintf(
-			NoLogsFoundPrefix+" for %s (canonical where: %s; time range: %s to %s, limit: %d). "+
-				"The query executed successfully but returned no results. "+
-				"Suggestions: check if label names/values are correct, try broader filters, or expand the time range.",
-			t.logProvider.Provider, string(whereJSON), start.Format(time.RFC3339), end.Format(time.RFC3339), queryBuilder.Limit,
-		)
+		noLogsMsg := noLogsFoundMessage(response.Suggestion, logProvider.Provider, queryBuilder.Where, start, end, queryBuilder.Limit)
 		return core.NBToolResponse{
 			Data:   noLogsMsg,
 			Status: core.NBToolResponseStatusSuccess,
@@ -174,4 +173,24 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 		Status:     core.NBToolResponseStatusSuccess,
 		References: []core.NBToolResponseReference{logsUIRef(nbRequestContext, queryBuilder)},
 	}, nil
+}
+
+// noLogsFoundMessage builds the tool response body for a canonical query that ran
+// successfully but matched zero rows. suggestion is services-server's ValidateRequest
+// diagnosis (unknown label name / unknown label value): it already names the specific
+// offending label/value and the closest valid match(es), so it's strictly more
+// actionable than the generic message and is preferred whenever present. Empty
+// suggestion means the diagnosis found nothing actionable — a genuinely empty result —
+// so fall back to the generic "broaden the query" guidance.
+func noLogsFoundMessage(suggestion, provider string, where core.QueryWhereClause, start, end time.Time, limit int) string {
+	if suggestion != "" {
+		return suggestion
+	}
+	whereJSON, _ := common.MarshalJson(where)
+	return fmt.Sprintf(
+		NoLogsFoundPrefix+" for %s (canonical where: %s; time range: %s to %s, limit: %d). "+
+			"The query executed successfully but returned no results. "+
+			"Suggestions: check if label names/values are correct, try broader filters, or expand the time range.",
+		provider, string(whereJSON), start.Format(time.RFC3339), end.Format(time.RFC3339), limit,
+	)
 }

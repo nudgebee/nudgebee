@@ -35,57 +35,42 @@ func (t *RipgrepTool) IsReadOnly() bool { return true }
 func (t *RipgrepTool) Description() string {
 	return `Fast text search using ripgrep (rg). RECOMMENDED for large codebases and monorepos. 10-100x faster than grep.
 
+SEARCH IS FOR LOCATING CODE, NOT FOR CITING IT. A grep hit is a lead, not evidence.
+Always follow the funnel: (1) locate the file → (2) open it with file_view → (3) cite only what you READ.
+Never cite a file:line you have not opened with file_view.
+
 KEY FEATURES:
 - Automatically respects .gitignore
-- Smart defaults for code search
-- Parallel search across files
-- Best for searching multiple files quickly
+- By default EXCLUDES test files, vendor/, node_modules/, generated & lock files (they are noise, not evidence).
+  Set "include_tests": true only if the answer genuinely lives in a test.
+- Reference-first: broad searches return a per-file match summary (not every line) and tell you to narrow.
 
 PARAMETERS:
   pattern (required):      Regex pattern to search
-  path (optional):         Directory to search (default: ".")
+  path (optional):         Directory to search (default: ".") — SCOPE TO ONE MODULE when you can.
                            Use "." for repo root, or relative paths like "api/services"
                            ❌ DON'T include repo name prefix in path
                            ✅ USE relative from root: "api" or "."
-  type (optional):         File type: py, js, go, md, etc.
+  type (optional):         File type: py, js, go, md, ts, tsx, etc.
   glob (optional):         Glob pattern: "*.py", "**/*.test.js"
   case_insensitive:        Case-insensitive (default: false)
   context:                 Lines of context around match (default: 0)
   max_results:             Limit matches (default: 100)
-  files_only:              Only show filenames (default: false)
+  files_only:              Only show filenames (default: false) — best FIRST step in a large repo.
+  include_tests:           Include test/vendor/generated/lock files (default: false)
 
-EXAMPLES:
-  Search Python files:           {"pattern": "class.*Handler", "type": "py"}
-  Search with glob:              {"pattern": "TODO", "glob": "**/*.go"}
-  Case-insensitive:              {"pattern": "database", "case_insensitive": true, "type": "js"}
-  With context:                  {"pattern": "error", "context": 3, "type": "py"}
-  Files only (monorepo):         {"pattern": "failed to cache", "files_only": true}
+FUNNEL WORKFLOW (do this, in order):
+1. Locate the files (reference-first):
+   {"pattern": "PaymentProcessor", "files_only": true, "type": "go"}
+   → billing/payment_processor.go
+2. Scope to the module and find the line:
+   {"pattern": "func.*Charge", "path": "billing"}
+3. READ it before citing:
+   file_view {"file_path": "billing/payment_processor.go", "start_line": 1, "end_line": 80}
 
-USE WHEN:
-- Searching large codebases (1000+ files)
-- Need to find files containing pattern in monorepos
-- Want fast results across many files
-- Searching by file type (Python, Go, JS, etc.)
-
-WORKFLOW WITH file_view:
-1. Use rg to FIND where code exists:
-   {"pattern": "func HandleError", "type": "go"}
-   → Result: "api/errors.go:145"
-
-2. Use file_view to READ the full implementation:
-   {"file_path": "api/errors.go", "start_line": 145, "end_line": 180}
-
-MONOREPO PATTERN (when multiple files match):
-1. Find which files contain the code:
-   {"pattern": "class UserService", "files_only": true}
-   → Result: "backend/services/user.py", "api/services/user.py"
-
-2. Search in specific file for context:
-   {"pattern": "class UserService", "path": "backend/services/user.py"}
-   → Result: "Line 42"
-
-3. Read full class:
-   {"file_path": "backend/services/user.py", "start_line": 42, "end_line": 120}`
+If a broad term floods (matching more than you intend), the result is truncated: add a path/type filter or a
+more specific pattern. If a search returns nothing, broaden the pattern or drop a filter — do NOT re-run the
+same search with only a case/glob tweak.`
 }
 
 func (t *RipgrepTool) InputSchema() core.ToolSchema {
@@ -129,9 +114,29 @@ func (t *RipgrepTool) InputSchema() core.ToolSchema {
 				"description": "Only show filenames that contain matches",
 				"default":     false,
 			},
+			"include_tests": map[string]any{
+				"type":        "boolean",
+				"description": "Include test/vendor/generated/lock files, which are excluded by default as low-signal noise",
+				"default":     false,
+			},
 		},
 		Required: []string{"pattern"},
 	}
+}
+
+// lowSignalExcludeGlobs are ripgrep negative globs applied by default so broad
+// searches don't surface (and get cited as) test scaffolding, vendored code,
+// generated stubs, or lockfiles — none of which are evidence for a root cause.
+var lowSignalExcludeGlobs = []string{
+	"!**/*_test.go",
+	"!**/*_test.py",
+	"!**/*.test.ts", "!**/*.test.tsx", "!**/*.test.js", "!**/*.test.jsx",
+	"!**/*.spec.ts", "!**/*.spec.tsx", "!**/*.spec.js", "!**/*.spec.jsx",
+	"!**/testdata/**", "!**/__tests__/**", "!**/__mocks__/**",
+	"!**/vendor/**", "!**/node_modules/**",
+	"!**/*.min.js", "!**/dist/**",
+	"!**/*.pb.go", "!**/*_pb2.py", "!**/*.generated.*", "!**/mock_*.go",
+	"!**/*.lock", "!**/package-lock.json", "!**/go.sum",
 }
 
 func (t *RipgrepTool) Execute(ctx context.Context, input map[string]any) core.NBToolResponse {
@@ -154,6 +159,7 @@ func (t *RipgrepTool) Execute(ctx context.Context, input map[string]any) core.NB
 	context, _ := input["context"].(float64)
 	maxResults, _ := input["max_results"].(float64)
 	filesOnly, _ := input["files_only"].(bool)
+	includeTests, _ := input["include_tests"].(bool)
 
 	if maxResults == 0 {
 		maxResults = 100
@@ -252,6 +258,14 @@ func (t *RipgrepTool) Execute(ctx context.Context, input map[string]any) core.NB
 		args = append(args, fmt.Sprintf("--glob=%s", glob))
 	}
 
+	// Exclude low-signal files (tests, vendor, generated, locks) by default so
+	// they can't be surfaced and cited as evidence. Opt back in with include_tests.
+	if !includeTests {
+		for _, g := range lowSignalExcludeGlobs {
+			args = append(args, fmt.Sprintf("--glob=%s", g))
+		}
+	}
+
 	// Limit output
 	args = append(args, fmt.Sprintf("--max-count=%d", int(maxResults)))
 
@@ -298,81 +312,24 @@ func (t *RipgrepTool) isRipgrepAvailable() bool {
 }
 
 func (t *RipgrepTool) formatResults(output string, filesOnly bool, maxResults int) core.NBToolResponse {
-	if strings.TrimSpace(output) == "" {
-		return core.NBToolResponse{
-			Status:      "success",
-			Observation: "No matches found",
-			Data:        map[string]any{"matches": []string{}},
-		}
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return noMatchResponse(nil)
 	}
 
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-
-	var matches []map[string]any
-	var observation string
+	lines := strings.Split(trimmed, "\n")
 
 	if filesOnly {
-		observation = fmt.Sprintf("Found %d files with matches:\n\n", len(lines))
-		for i, line := range lines {
-			if line == "" {
+		files := make([]string, 0, len(lines))
+		for _, l := range lines {
+			if l == "" {
 				continue
 			}
-
-			// Make file path relative to workspace
-			file := line
-			if strings.HasPrefix(file, t.workspaceDir) {
-				file = strings.TrimPrefix(file, t.workspaceDir+"/")
-			}
-
-			matches = append(matches, map[string]any{
-				"file": file,
-			})
-
-			observation += fmt.Sprintf("%d. %s\n", i+1, file)
+			files = append(files, relToWorkspace(l, t.workspaceDir))
 		}
-	} else {
-		observation = fmt.Sprintf("Found %d matches:\n\n", len(lines))
-
-		for i, line := range lines {
-			if line == "" {
-				continue
-			}
-
-			// Parse ripgrep output: file:line:content
-			parts := strings.SplitN(line, ":", 3)
-			if len(parts) >= 3 {
-				file := parts[0]
-				lineNum := parts[1]
-				content := strings.TrimSpace(parts[2])
-
-				// Make file path relative to workspace
-				if strings.HasPrefix(file, t.workspaceDir) {
-					file = strings.TrimPrefix(file, t.workspaceDir+"/")
-				}
-
-				matches = append(matches, map[string]any{
-					"file":    file,
-					"line":    lineNum,
-					"content": content,
-				})
-
-				observation += fmt.Sprintf("%d. **%s:%s**\n", i+1, file, lineNum)
-				observation += fmt.Sprintf("   `%s`\n\n", content)
-			}
-		}
+		return renderFilesList(files, maxResults, nil)
 	}
 
-	if len(lines) == maxResults {
-		observation += fmt.Sprintf("*(Limited to %d results)*\n", maxResults)
-	}
-
-	return core.NBToolResponse{
-		Status:      "success",
-		Observation: observation,
-		Data: map[string]any{
-			"matches":     matches,
-			"total_count": len(matches),
-			"truncated":   len(lines) == maxResults,
-		},
-	}
+	matches, order, byFile := parseMatchLines(lines, t.workspaceDir)
+	return renderContentMatches(matches, order, byFile, maxResults, nil)
 }

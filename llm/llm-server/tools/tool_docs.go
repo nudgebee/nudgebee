@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -115,15 +114,16 @@ func searchDocumentation(nbRequestContext core.NbToolContext, query string) (str
 		baseUrl = strings.TrimSuffix(baseUrl, "/")
 
 		for _, doc := range wikiPages.Results {
+			pageUrl := confluencePageURL(doc.Links.Base, doc.Links.WebUi, baseUrl)
 			matchingDocs = append(matchingDocs, schema.Document{
 				PageContent: doc.Body.View.Value,
 				Metadata: map[string]any{
 					"id":  doc.ID,
-					"url": baseUrl + "/wiki" + doc.Links.WebUi,
+					"url": pageUrl,
 				},
 				Score: 0.0,
 			})
-			refs = append(refs, baseUrl+"/wiki"+doc.Links.WebUi)
+			refs = append(refs, pageUrl)
 		}
 	}
 
@@ -150,6 +150,7 @@ type WikiPage struct {
 	} `json:"body"`
 	Links struct {
 		Self   string `json:"self"`
+		Base   string `json:"base"`
 		TinyUi string `json:"tinyui"`
 		EditUi string `json:"editui"`
 		WebUi  string `json:"webui"`
@@ -159,6 +160,9 @@ type WikiPage struct {
 
 type ConfluenceSearchResponse struct {
 	Results []WikiPage `json:"results"`
+	Links   struct {
+		Base string `json:"base"`
+	} `json:"_links"`
 }
 
 func searchConfluence(query string, accountId string) (ConfluenceSearchResponse, string, error) {
@@ -167,19 +171,18 @@ func searchConfluence(query string, accountId string) (ConfluenceSearchResponse,
 		return ConfluenceSearchResponse{}, "", err
 	}
 
-	confluenceBaseURL := strings.TrimSuffix(configs["host"], "/")
-	email := configs["username"]
-	apiToken := configs["token"]
-	auth := base64.StdEncoding.EncodeToString([]byte(email + ":" + apiToken))
+	host := strings.TrimSuffix(configs["host"], "/")
+	mode := confluenceAuthType(configs["auth_type"])
+	siteBase := confluenceSiteBase(host, mode)
 
 	escapedQuery := strings.ReplaceAll(url.QueryEscape(strings.ReplaceAll(query, `"`, `\"`)), "+", "%20")
-	searchUrl := fmt.Sprintf("%s/wiki/rest/api/content/search?cql=text~%%22%s%%22&expand=body.view", confluenceBaseURL, escapedQuery)
+	searchUrl := fmt.Sprintf("%s/content/search?cql=text~%%22%s%%22&expand=body.view", confluenceAPIBase(host, mode), escapedQuery)
 
 	req, err := http.NewRequest("GET", searchUrl, nil)
 	if err != nil {
 		return ConfluenceSearchResponse{}, "", fmt.Errorf("confluence: failed to build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Authorization", confluenceAuthHeader(mode, configs["username"], configs["token"]))
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
@@ -203,7 +206,12 @@ func searchConfluence(query string, accountId string) (ConfluenceSearchResponse,
 	if err := common.UnmarshalJson(body, &response); err != nil {
 		return ConfluenceSearchResponse{}, "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
-	return response, confluenceBaseURL, nil
+	// Prefer the instance's own idea of its base URL; it already accounts for
+	// Cloud's /wiki prefix and any Data Center context path.
+	if response.Links.Base != "" {
+		return response, response.Links.Base, nil
+	}
+	return response, siteBase, nil
 }
 
 func getConfluenceIntegrationConfig(accountId string) (map[string]string, error) {
@@ -255,16 +263,8 @@ func getConfluenceIntegrationConfig(accountId string) (map[string]string, error)
 		return nil, err
 	}
 
-	requiredKeys := []string{"host", "username", "token"}
 	for _, config := range allconfig {
-		allKeysFound := true
-		for _, key := range requiredKeys {
-			if _, ok := config[key]; !ok {
-				allKeysFound = false
-				break
-			}
-		}
-		if allKeysFound {
+		if confluenceConfigComplete(config) {
 			return config, nil
 		}
 	}

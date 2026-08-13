@@ -1,7 +1,9 @@
 package services
 
 import (
+	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -12,6 +14,49 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 )
+
+// A ticket-read-only Freshdesk key can read tickets but not list groups (403).
+// validateFreshdeskConfigurationAndReturnMetadata must treat that as non-fatal so
+// SyncConfigurations does not disable an otherwise-valid integration; it returns
+// metadata with empty projects and no error.
+func TestValidateFreshdeskMetadata_GroupListForbiddenIsNonFatal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v2/tickets", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v2/groups", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	stub := httptest.NewServer(mux)
+	defer stub.Close()
+
+	cfg := models.TicketConfigurations{URL: stub.URL, Password: "api-key-123", Tool: "freshdesk"}
+	meta, err := validateFreshdeskConfigurationAndReturnMetadata(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("expected nil error when groups are forbidden for a read-only key, got %v", err)
+	}
+	projects, ok := meta[0]["projects"].([]models.Project)
+	if !ok {
+		t.Fatalf("expected a projects entry, got %#v", meta[0])
+	}
+	if len(projects) != 0 {
+		t.Errorf("expected empty projects when group-list fails, got %d", len(projects))
+	}
+}
+
+// A genuinely bad credential (ticket read returns 401) must still be fatal so the
+// integration is correctly disabled.
+func TestValidateFreshdeskMetadata_BadCredentialsIsFatal(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer stub.Close()
+
+	cfg := models.TicketConfigurations{URL: stub.URL, Password: "bad", Tool: "freshdesk"}
+	if _, err := validateFreshdeskConfigurationAndReturnMetadata(context.Background(), cfg); err == nil {
+		t.Fatal("expected an error when the ticket connectivity check returns 401")
+	}
+}
 
 // fakeManager is a no-op TicketManager that counts GetCreateMeta calls so we can
 // assert fetchCreateMetaCached serves the second call from cache.

@@ -18,6 +18,11 @@ from notifications_server.message_templates.discord.slo import (
 from notifications_server.message_templates.discord.grouped_anomaly import (
     get_discord_grouped_anomaly_template,
 )
+from notifications_server.message_templates.discord.finding import (
+    get_discord_finding_message,
+    FINDING_COLOR_CRITICAL,
+    FINDING_COLOR_HIGH,
+)
 
 
 def _slo(**over):
@@ -108,3 +113,82 @@ def test_discord_grouped_anomaly_shape():
     assert "2 anomalies detected across 2 account(s)" in payload["content"]
     assert len(payload["embeds"]) == 2
     assert any("CPU spike" in e["description"] for e in payload["embeds"])
+
+
+def _finding(**over):
+    base = dict(
+        id="f-1",
+        title="High 5xx rate - GET /api/data",
+        service_key="k8s:demo",
+        cluster="k8s-dev",
+        subject_name="load-generator",
+        subject_namespace="demo",
+        cloud_account_id="acc-1",
+        priority="High",
+        source="prometheus",
+        created_at="2023-11-14T22:13:20Z",
+        evidences=[],
+    )
+    base.update(over)
+    return base
+
+
+def _balanced_backticks(embed):
+    for segment in [embed.get("description", "")] + [f["value"] for f in embed.get("fields", [])]:
+        assert segment.count("`") % 2 == 0, f"unbalanced backticks in {segment!r}"
+
+
+def test_discord_finding_shape():
+    payload = get_discord_finding_message(_finding())
+    assert payload["content"] == ""
+    embed = payload["embeds"][0]
+    assert embed["title"] == "High 5xx rate - GET /api/data"
+    assert embed["url"]  # clickable title
+    assert "View Details" in embed["description"]
+    vals = {f["name"]: f["value"] for f in embed["fields"]}
+    assert {"Cluster", "Resource", "Priority", "Source"} <= set(vals)
+    assert vals["Cluster"] == "k8s-dev"
+    assert vals["Resource"] == "demo/load-generator"  # namespace/name, mirrors Slack
+    assert vals["Source"] == "Prometheus"
+    assert "timestamp" in embed  # created_at parsed
+    _no_empty_field_values(payload["embeds"])
+
+
+def test_discord_finding_empty_cluster_does_not_break_markdown():
+    # Regression: an empty Account/cluster previously emitted a dangling backtick
+    # that desynced Discord's inline-code parser, rendering **Namespace:** /
+    # **Workload:** literally. The Cluster field must be dropped, never empty.
+    payload = get_discord_finding_message(_finding(cluster=""))
+    embed = payload["embeds"][0]
+    names = {f["name"] for f in embed["fields"]}
+    assert "Cluster" not in names
+    assert {"Resource", "Priority", "Source"} <= names
+    _no_empty_field_values(payload["embeds"])
+    _balanced_backticks(embed)
+    assert "**Namespace:**" not in embed["description"]
+
+
+def test_discord_finding_severity_color():
+    assert get_discord_finding_message(_finding(priority="High"))["embeds"][0]["color"] == FINDING_COLOR_CRITICAL
+    assert get_discord_finding_message(_finding(priority="Medium"))["embeds"][0]["color"] == FINDING_COLOR_HIGH
+    assert get_discord_finding_message(_finding(priority=""))["embeds"][0]["color"] == FINDING_COLOR_HIGH
+
+
+def test_discord_finding_cloud_reads_starts_at():
+    # Cloud findings (service_key starts with arn / contains aws) read starts_at.
+    payload = get_discord_finding_message(
+        _finding(service_key="arn:aws:sqs:us-east-1", created_at=None, starts_at="2023-11-14T22:13:20Z")
+    )
+    assert "timestamp" in payload["embeds"][0]
+    _no_empty_field_values(payload["embeds"])
+
+
+def test_discord_finding_malformed_table_evidence_is_skipped():
+    # A "table" evidence whose data is not a well-formed dict must be skipped,
+    # not crash notification delivery in json_to_markdown_table.
+    payload = get_discord_finding_message(
+        _finding(evidences=[{"type": "table", "data": ["not", "a", "dict"]}, {"type": "table", "data": {"foo": 1}}])
+    )
+    embed = payload["embeds"][0]
+    assert all(f["name"] != "Data Table" for f in embed["fields"])  # neither malformed table rendered
+    _no_empty_field_values(payload["embeds"])

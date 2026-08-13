@@ -12,6 +12,10 @@ import (
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/knowledge_graph/sources"
+	"nudgebee/services/knowledge_graph/sources/aws"
+	"nudgebee/services/knowledge_graph/sources/azure"
+	"nudgebee/services/knowledge_graph/sources/gcp"
+	"nudgebee/services/knowledge_graph/sources/k8s"
 	"nudgebee/services/security"
 )
 
@@ -121,14 +125,14 @@ func loadAWSResources(t *testing.T) []sources.CloudResourceRow {
 }
 
 // loadK8sWorkloads loads K8s workloads from JSON file
-func loadK8sWorkloads(t *testing.T) []sources.K8sWorkloadRow {
+func loadK8sWorkloads(t *testing.T) []k8s.K8sWorkloadRow {
 	filePath := filepath.Join("testdata", "k8s_workloads.json")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatalf("Failed to read K8s workloads JSON: %v", err)
 	}
 
-	var workloads []sources.K8sWorkloadRow
+	var workloads []k8s.K8sWorkloadRow
 	err = json.Unmarshal(data, &workloads)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal K8s workloads JSON: %v", err)
@@ -158,7 +162,7 @@ type K8sNodeJSON struct {
 }
 
 // loadK8sNodes loads K8s nodes from JSON file
-func loadK8sNodes(t *testing.T) []sources.K8sNodeRow {
+func loadK8sNodes(t *testing.T) []k8s.K8sNodeRow {
 	filePath := filepath.Join("testdata", "k8s_nodes.json")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -172,7 +176,7 @@ func loadK8sNodes(t *testing.T) []sources.K8sNodeRow {
 	}
 
 	// Convert to K8sNodeRow
-	nodes := make([]sources.K8sNodeRow, len(jsonNodes))
+	nodes := make([]k8s.K8sNodeRow, len(jsonNodes))
 	for i, jn := range jsonNodes {
 		// Marshal meta back to json.RawMessage
 		metaJSON, _ := json.Marshal(jn.Meta)
@@ -185,7 +189,7 @@ func loadK8sNodes(t *testing.T) []sources.K8sNodeRow {
 			}
 		}
 
-		nodes[i] = sources.K8sNodeRow{
+		nodes[i] = k8s.K8sNodeRow{
 			TenantID:          jn.TenantID,
 			CloudAccountID:    jn.CloudAccountID,
 			Name:              jn.Name,
@@ -482,13 +486,13 @@ func TestPhase1_AWSResourceSource(t *testing.T) {
 	}
 
 	// Create AWS source
-	awsSource, err := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
+	awsSource, err := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create AWS source: %v", err)
 	}
 
 	// Create test helper
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
 
 	// Convert resources to graph
 	req := &core.SourceBuildRequest{
@@ -713,13 +717,13 @@ func TestPhase1_AWS_RelationshipMatching(t *testing.T) {
 	t.Logf("Loaded %d AWS resources from JSON", len(resources))
 
 	// Create AWS source
-	awsSource, err := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
+	awsSource, err := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create AWS source: %v", err)
 	}
 
 	// Create test helper
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
 
 	// Convert resources to graph
 	req := &core.SourceBuildRequest{
@@ -968,7 +972,7 @@ func TestPhase1_K8sResourceSource(t *testing.T) {
 	t.Logf("Loaded %d workloads and %d K8s nodes from JSON", len(workloads), len(k8sNodes))
 
 	// Create K8s source
-	k8sSource, err := sources.NewK8sSource(sources.K8sSourceConfig{
+	k8sSource, err := k8s.NewK8sSource(k8s.K8sSourceConfig{
 		TenantID:       "test-tenant-1",
 		CloudAccountID: "test-account-k8s-1",
 	}, nil)
@@ -977,7 +981,7 @@ func TestPhase1_K8sResourceSource(t *testing.T) {
 	}
 
 	// Create test helper
-	k8sHelper := sources.NewK8sSourceTestHelper(k8sSource)
+	k8sHelper := k8s.NewK8sSourceTestHelper(k8sSource)
 
 	// Create request for testing
 	req := &core.SourceBuildRequest{
@@ -1197,15 +1201,15 @@ func TestEndToEnd_CombinedAWSAndK8s(t *testing.T) {
 		len(awsResources), len(k8sWorkloads), len(k8sNodes))
 
 	// Create sources
-	awsSource, _ := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
-	k8sSource, _ := sources.NewK8sSource(sources.K8sSourceConfig{
+	awsSource, _ := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
+	k8sSource, _ := k8s.NewK8sSource(k8s.K8sSourceConfig{
 		TenantID:       "test-tenant-1",
 		CloudAccountID: "test-account-k8s-1",
 	}, nil)
 
 	// Create test helpers
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
-	k8sHelper := sources.NewK8sSourceTestHelper(k8sSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
+	k8sHelper := k8s.NewK8sSourceTestHelper(k8sSource)
 
 	awsReq := &core.SourceBuildRequest{
 		TenantID:       "test-tenant-1",
@@ -1315,14 +1319,14 @@ func TestPhase2_EBPFFlowSource(t *testing.T) {
 	k8sWorkloads := loadK8sWorkloads(t)
 	k8sNodes := loadK8sNodes(t)
 
-	awsSource, _ := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
-	k8sSource, _ := sources.NewK8sSource(sources.K8sSourceConfig{
+	awsSource, _ := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
+	k8sSource, _ := k8s.NewK8sSource(k8s.K8sSourceConfig{
 		TenantID:       tenantID,
 		CloudAccountID: cloudAccountID,
 	}, nil)
 
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
-	k8sHelper := sources.NewK8sSourceTestHelper(k8sSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
+	k8sHelper := k8s.NewK8sSourceTestHelper(k8sSource)
 
 	req := &core.SourceBuildRequest{
 		TenantID:       tenantID,
@@ -1437,14 +1441,14 @@ func TestPhase2_TracesFlowSource(t *testing.T) {
 	k8sWorkloads := loadK8sWorkloads(t)
 	k8sNodes := loadK8sNodes(t)
 
-	awsSource, _ := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
-	k8sSource, _ := sources.NewK8sSource(sources.K8sSourceConfig{
+	awsSource, _ := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
+	k8sSource, _ := k8s.NewK8sSource(k8s.K8sSourceConfig{
 		TenantID:       tenantID,
 		CloudAccountID: cloudAccountID,
 	}, nil)
 
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
-	k8sHelper := sources.NewK8sSourceTestHelper(k8sSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
+	k8sHelper := k8s.NewK8sSourceTestHelper(k8sSource)
 
 	req := &core.SourceBuildRequest{
 		TenantID:       tenantID,
@@ -1542,14 +1546,14 @@ func TestPhase2_EndToEnd_CombinedFlowSources(t *testing.T) {
 	k8sWorkloads := loadK8sWorkloads(t)
 	k8sNodes := loadK8sNodes(t)
 
-	awsSource, _ := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
-	k8sSource, _ := sources.NewK8sSource(sources.K8sSourceConfig{
+	awsSource, _ := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
+	k8sSource, _ := k8s.NewK8sSource(k8s.K8sSourceConfig{
 		TenantID:       tenantID,
 		CloudAccountID: cloudAccountID,
 	}, nil)
 
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
-	k8sHelper := sources.NewK8sSourceTestHelper(k8sSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
+	k8sHelper := k8s.NewK8sSourceTestHelper(k8sSource)
 
 	req := &core.SourceBuildRequest{
 		TenantID:       tenantID,
@@ -1710,11 +1714,11 @@ func TestPhase3_AWS_ServerlessNodes(t *testing.T) {
 	awsResources := loadAWSResources(t)
 
 	// Create AWS source and helper
-	awsSource, err := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
+	awsSource, err := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create AWS source: %v", err)
 	}
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
 
 	req := &core.SourceBuildRequest{
 		TenantID:       tenantID,
@@ -1874,14 +1878,14 @@ func TestPhase3_K8s_ConfigAndStorageNodes(t *testing.T) {
 	k8sNodes := loadK8sNodes(t)
 
 	// Create K8s source and helper
-	k8sSource, err := sources.NewK8sSource(sources.K8sSourceConfig{
+	k8sSource, err := k8s.NewK8sSource(k8s.K8sSourceConfig{
 		TenantID:       tenantID,
 		CloudAccountID: cloudAccountID,
 	}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create K8s source: %v", err)
 	}
-	k8sHelper := sources.NewK8sSourceTestHelper(k8sSource)
+	k8sHelper := k8s.NewK8sSourceTestHelper(k8sSource)
 
 	req := &core.SourceBuildRequest{
 		TenantID:       tenantID,
@@ -2129,14 +2133,14 @@ func TestPhase3_EndToEnd_ServerlessMessaging(t *testing.T) {
 	k8sWorkloads := loadK8sWorkloads(t)
 	k8sNodes := loadK8sNodes(t)
 
-	awsSource, _ := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
-	k8sSource, _ := sources.NewK8sSource(sources.K8sSourceConfig{
+	awsSource, _ := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
+	k8sSource, _ := k8s.NewK8sSource(k8s.K8sSourceConfig{
 		TenantID:       tenantID,
 		CloudAccountID: cloudAccountID,
 	}, nil)
 
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
-	k8sHelper := sources.NewK8sSourceTestHelper(k8sSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
+	k8sHelper := k8s.NewK8sSourceTestHelper(k8sSource)
 
 	req := &core.SourceBuildRequest{
 		TenantID:       tenantID,
@@ -2384,13 +2388,13 @@ func TestKMSEncryptionRelationships(t *testing.T) {
 	t.Logf("Loaded %d AWS resources from JSON", len(resources))
 
 	// Create AWS source
-	awsSource, err := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
+	awsSource, err := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create AWS source: %v", err)
 	}
 
 	// Create test helper
-	awsHelper := sources.NewAWSSourceTestHelper(awsSource)
+	awsHelper := aws.NewAWSSourceTestHelper(awsSource)
 
 	// Convert resources to graph
 	req := &core.SourceBuildRequest{
@@ -2791,15 +2795,15 @@ func TestPhase1_GCPResourceSource(t *testing.T) {
 	}
 
 	// Create GCP source
-	gcpSource, err := sources.NewGCPSource(sources.GCPSourceConfig{
-		ServiceTypeFilter: sources.GCPDefaultServiceTypeFilter,
+	gcpSource, err := gcp.NewGCPSource(gcp.GCPSourceConfig{
+		ServiceTypeFilter: gcp.GCPDefaultServiceTypeFilter,
 	}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create GCP source: %v", err)
 	}
 
 	// Create test helper
-	gcpHelper := sources.NewGCPSourceTestHelper(gcpSource)
+	gcpHelper := gcp.NewGCPSourceTestHelper(gcpSource)
 
 	req := &core.SourceBuildRequest{
 		TenantID:       "test-tenant-gcp",
@@ -3103,8 +3107,8 @@ func TestPhase1_GCPResourceSource_Live(t *testing.T) {
 	fmt.Printf("Tenant: %s, Account: %s\n", tenantID, cloudAccountID)
 
 	// Create GCP source with default filter
-	gcpSource, err := sources.NewGCPSource(sources.GCPSourceConfig{
-		ServiceTypeFilter: sources.GCPDefaultServiceTypeFilter,
+	gcpSource, err := gcp.NewGCPSource(gcp.GCPSourceConfig{
+		ServiceTypeFilter: gcp.GCPDefaultServiceTypeFilter,
 	}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create GCP source: %v", err)
@@ -3236,7 +3240,7 @@ func TestPhase1_AzureResourceSource_Live(t *testing.T) {
 	fmt.Printf("Tenant: %s, Account: %s\n", tenantID, cloudAccountID)
 
 	// Create Azure source with default config
-	azureSource, err := sources.NewAzureSource(sources.AzureSourceConfig{}, nil)
+	azureSource, err := azure.NewAzureSource(azure.AzureSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create Azure source: %v", err)
 	}

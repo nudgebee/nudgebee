@@ -123,34 +123,34 @@ const K8sIntegrationTile = () => {
       ? [
           {
             label: 'Settings',
-            id: 0,
+            id: 'settings',
           },
           {
             label: 'Re-new Token',
-            id: 1,
+            id: 'renew-token',
           },
           {
             label: item.status == 'disabled' ? 'Enable' : 'Disable',
-            id: 2,
+            id: 'toggle-enabled',
           },
         ]
       : [];
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'settings') {
       setAccountSettings(true);
       setSelectedAccountName(data.account_name);
       setAccountName(data.account_name);
       setSelectedAccountId(data.id);
-    } else if (menuItem.id === 1) {
+    } else if (menuItem.id === 'renew-token') {
       apiAccount.generateAgentToken(data.id).then((res) => {
         if (res?.data?.data?.agents_create_token?.access_secret) {
           const k8CurlCmd = `wget https://raw.githubusercontent.com/nudgebee/k8s-agent/main/installation.sh && bash installation.sh -a "${res?.data?.data?.agents_create_token?.access_key}:${res?.data?.data?.agents_create_token?.access_secret}"`;
           setK8sCurlCommand(k8CurlCmd);
         }
       });
-    } else if (menuItem.id === 2) {
+    } else if (menuItem.id === 'toggle-enabled') {
       setUpdateAccountStatus({ name: data.account_name, id: data.id, status: data.status == 'disabled' ? 'active' : 'disabled' });
     }
   };

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"nudgebee/llm/security"
 
@@ -54,6 +55,11 @@ type NBQueryConfig struct {
 	// Query filtering labels (e.g. nb_cloud_account_id for AWS timeseries)
 	Labels map[string]any `json:"labels,omitempty"`
 
+	// Log provider override: outranks LLM_SERVER_LOG_PROVIDER_OVERRIDE and account
+	// routing ("k8s" = kubectl path). Case-sensitive — api-server spells ES "ES".
+	// Sticky within a conversation via MergeFrom's fill-if-zero, like LlmProvider.
+	LogProviderOverride string `json:"log_provider_override,omitempty"`
+
 	// LLM provider overrides (per-request)
 	LlmProvider  string `json:"llm_provider,omitempty"`
 	LlmModelName string `json:"llm_model_name,omitempty"`
@@ -79,7 +85,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 	return q.EventId == "" && q.RecommendationId == "" && q.Namespace == "" &&
 		q.Workload == "" && q.GitRepo == "" && q.AccountId == "" &&
 		q.WorkflowId == "" && q.ExecutionId == "" && len(q.WorkflowDefinition) == 0 && len(q.Labels) == 0 &&
-		q.CurrentCluster == "" && q.CurrentClusterId == "" &&
+		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.LogProviderOverride == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && len(q.ToolConfigs) == 0 &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
 		len(q.ToolConfigMetadata) == 0
@@ -123,6 +129,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if src.Labels != nil {
 		q.Labels = lo.Assign(src.Labels, q.Labels)
+	}
+	if q.LogProviderOverride == "" {
+		q.LogProviderOverride = src.LogProviderOverride
 	}
 	if q.LlmProvider == "" {
 		q.LlmProvider = src.LlmProvider
@@ -180,6 +189,17 @@ type NbToolContext struct {
 	// selection across delegation. See NBAgentRequest field comments for semantics.
 	OriginalQuery    string
 	SelectedSkillIds []string
+}
+
+// GoContext returns the underlying context.Context for outbound trace
+// propagation, falling back to context.Background() when no RequestContext is
+// attached (e.g. discovery paths or tests). This keeps the otelhttp transport's
+// traceparent injection working without risking a nil-pointer panic.
+func (tc NbToolContext) GoContext() context.Context {
+	if tc.Ctx == nil || tc.Ctx.GetContext() == nil {
+		return context.Background()
+	}
+	return tc.Ctx.GetContext()
 }
 
 func NewNbToolContext(ctx *security.RequestContext, tool NBTool, accountId string, userId string, conversationId string, messageId string, agenId string, query string, history []llms.MessageContent, queryContext string, queryConfig NBQueryConfig, toolCallId string) NbToolContext {

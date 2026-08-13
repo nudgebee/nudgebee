@@ -11,7 +11,7 @@ interface PreviousTask {
   outputSchema?: any;
 }
 
-export type TemplateSuggestionCategory = 'task' | 'field' | 'input' | 'config' | 'secret' | 'builtin' | 'workflow';
+export type TemplateSuggestionCategory = 'task' | 'field' | 'input' | 'config' | 'secret' | 'builtin' | 'workflow' | 'loop';
 
 export interface TemplateSuggestion {
   text: string;
@@ -39,6 +39,7 @@ interface TemplateTextFieldProps {
 }
 
 const CATEGORY_LABELS: Record<TemplateSuggestionCategory, string> = {
+  loop: 'Loop Item',
   builtin: 'Date & Time',
   workflow: 'Workflow',
   task: 'Previous Steps',
@@ -48,7 +49,7 @@ const CATEGORY_LABELS: Record<TemplateSuggestionCategory, string> = {
   secret: 'Secrets',
 };
 
-const CATEGORY_ORDER: TemplateSuggestionCategory[] = ['builtin', 'workflow', 'task', 'field', 'input', 'config', 'secret'];
+const CATEGORY_ORDER: TemplateSuggestionCategory[] = ['loop', 'builtin', 'workflow', 'task', 'field', 'input', 'config', 'secret'];
 
 // Template syntax patterns - matches Tasks, Inputs, Configs, Secrets
 const PARTIAL_TEMPLATE_PATTERN =

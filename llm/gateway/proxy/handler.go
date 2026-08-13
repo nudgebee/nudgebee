@@ -24,9 +24,11 @@ import (
 
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/config"
+	"nudgebee/llm-gateway/edgeerr"
 	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
+	"nudgebee/llm-gateway/settings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -97,10 +99,14 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 	}
 	// Auth runs first (the pipeline keys off the resolved identity), then the handler
 	// runs the pipeline and forwards.
-	chain := []gin.HandlerFunc{auth.Middleware(validator), h.handle}
+	authmw := auth.Middleware(validator)
 	for prefix := range prefixProvider {
-		r.Any(prefix+"/*path", chain...)
+		r.Any(prefix+"/*path", authmw, h.handle)
 	}
+	// Generic provider-agnostic endpoint: OpenAI-compatible, with the provider chosen
+	// from the model name. Same auth + control pipeline as the native mounts.
+	r.POST("/v1/chat/completions", authmw, h.handleChat)
+	r.GET("/v1/models", authmw, h.handleModels)
 }
 
 type handler struct {
@@ -118,18 +124,22 @@ func (h *handler) handle(c *gin.Context) {
 	provider, ok := prefixProvider[prefix]
 	if !ok {
 		writeJSONError(c, http.StatusNotFound, "unknown_provider", "no provider mounted at "+prefix)
+		h.recordReject(auth.FromContext(c), "", "", c.Request.Method, c.Request.URL.Path, http.StatusNotFound, "unknown_provider", start)
 		return
 	}
 
 	body, err := readBody(c)
 	if err != nil {
+		id := auth.FromContext(c)
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeJSONError(c, http.StatusRequestEntityTooLarge, "request_too_large",
+			edgeerr.Write(c, string(provider), http.StatusRequestEntityTooLarge, "request_too_large",
 				"request body exceeds the gateway limit")
+			h.recordReject(id, provider, "", c.Request.Method, c.Request.URL.Path, http.StatusRequestEntityTooLarge, "too_large", start)
 			return
 		}
-		writeJSONError(c, http.StatusBadRequest, "invalid_request", "could not read request body")
+		edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request", "could not read request body")
+		h.recordReject(id, provider, "", c.Request.Method, c.Request.URL.Path, http.StatusBadRequest, "bad_request", start)
 		return
 	}
 
@@ -160,11 +170,22 @@ func (h *handler) handle(c *gin.Context) {
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()
 		slog.Error("proxy: request pipeline error", "error", err, "provider", provider, "path", path)
-		writeJSONError(c, http.StatusInternalServerError, "gateway_error", "request pipeline error")
+		edgeerr.Write(c, string(provider), http.StatusInternalServerError, "gateway_error", "request pipeline error")
+		h.recordReject(identity, provider, rc.Model, c.Request.Method, path, http.StatusInternalServerError, "gateway_error", start)
 		return
 	} else if stop {
-		cancel() // a stage already wrote the rejection (e.g. 429)
+		cancel() // a stage already wrote the rejection (429, no-creds 403, or a block 403)
+		// Every edge rejection is recorded (status + reject_reason) so the audit trail
+		// is complete — who hit a limit, lacks credentials, or a blocked model.
+		h.recordRejectPipeline(rc, c.Writer.Status(), start)
 		return
+	}
+
+	// Deprecation shield: the retired model was rewritten to its replacement (by the
+	// route stage) — signal the rewrite so clients/operators see it. Metering already
+	// carries reason=deprecated via the decision.
+	if rc.Decision.Reason == routing.ReasonDeprecated {
+		c.Writer.Header().Set("x-nb-llm-deprecated", rc.Decision.RequestedModel+"->"+rc.Decision.ResolvedModel)
 	}
 
 	req := &schemas.BifrostPassthroughRequest{
@@ -181,8 +202,13 @@ func (h *handler) handle(c *gin.Context) {
 	rm := &reqMeta{
 		reqID:         uuid.NewString(),
 		provider:      provider,
-		req:           req,
+		model:         rc.Model,
+		method:        c.Request.Method,
+		path:          rc.Path,
+		body:          rc.Body,
 		streaming:     streaming,
+		surface:       surfaceNative,
+		dlp:           rc.DLP,
 		start:         start,
 		sessionID:     sessionID,
 		sessionSource: sessionSource,
@@ -191,34 +217,71 @@ func (h *handler) handle(c *gin.Context) {
 		decision:      rc.Decision,
 	}
 
+	// Cross-provider substitution (P2): a rule resolved a different provider. Translate
+	// the client-native request to the target and the response back to the client shape,
+	// instead of passing bytes through unchanged. Owns cancel (like the stream path).
+	if rc.Decision.Reason == routing.ReasonSubstitute {
+		h.substitute(c, bctx, cancel, rc, rm)
+		return
+	}
+
 	if streaming {
-		h.stream(c, bctx, cancel, rm)
+		h.stream(c, bctx, cancel, req, rm)
 		return
 	}
 	defer cancel()
-	h.unary(c, bctx, rm)
+	h.unary(c, bctx, req, rm)
 }
 
 // reqMeta carries everything the metering step needs about a request, so it can
-// be recorded on any exit path without threading many params.
+// be recorded on any exit path without threading many params. It holds the
+// metering-relevant request fields directly (not a specific Bifrost request type),
+// so both the passthrough path and the generic /v1 path can populate it.
 type reqMeta struct {
-	reqID         string
-	provider      schemas.ModelProvider
-	req           *schemas.BifrostPassthroughRequest
-	streaming     bool
-	start         time.Time
-	sessionID     string
-	sessionSource string
-	reqAttrs      map[string]any
-	identity      auth.Identity
-	decision      routing.Decision
+	reqID          string
+	provider       schemas.ModelProvider
+	model          string
+	respondedModel string // the model id the provider echoed back (dated snapshot / alias drift)
+	method         string
+	path           string
+	body           []byte
+	streaming      bool
+	surface        string         // how the request arrived: "native" mount | "generic" /v1
+	degraded       []string       // features dropped by a cross-provider substitution (if any)
+	failover       map[string]any // set when a transient primary failure fell over to a fallback
+	dlp            map[string]any // set when the egress filter detected/redacted a secret
+	start          time.Time
+	sessionID      string
+	sessionSource  string
+	reqAttrs       map[string]any
+	identity       auth.Identity
+	decision       routing.Decision
 }
 
-func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, rm *reqMeta) {
-	resp, bErr := h.client.Passthrough(bctx, rm.provider, rm.req)
+// Surface values — the entrypoint a request arrived on, captured on every usage row
+// so traffic can be grouped by how it reached the gateway (independent of whether a
+// routing rule then translated it).
+const (
+	surfaceNative  = "native"  // provider-native mount (/anthropic, /openai, /genai)
+	surfaceGeneric = "generic" // provider-agnostic OpenAI-compatible endpoint (/v1)
+)
+
+func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, req *schemas.BifrostPassthroughRequest, rm *reqMeta) {
+	resp, bErr := h.client.Passthrough(bctx, rm.provider, req)
 	if bErr != nil {
-		status := writeBifrostError(c, bErr)
+		status := statusOf(bErr)
+		// A transient failure with fallbacks configured tries the fallback(s) before
+		// surfacing the error (the primary attempt stays byte-perfect passthrough).
+		if h.tryFailoverUnary(c, bctx, rm, status) {
+			return
+		}
+		writeBifrostError(c, bErr)
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, nil, nil, nil)
+		return
+	}
+	// A provider may return a transient status in the response itself (not a bErr) —
+	// fail over before forwarding it to the client.
+	if isRetryable(resp.StatusCode) && h.tryFailoverUnary(c, bctx, rm, resp.StatusCode) {
 		return
 	}
 	for k, v := range resp.Headers {
@@ -237,7 +300,7 @@ func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, rm *reqMet
 	h.meter(context.WithoutCancel(c.Request.Context()), rm, resp.StatusCode, resp.Headers, resp.PassthroughUsage, resp.Body)
 }
 
-func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel func(), rm *reqMeta) {
+func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel func(), req *schemas.BifrostPassthroughRequest, rm *reqMeta) {
 	defer cancel()
 
 	// Meter exactly once, on every exit path (including pre-header failures), so
@@ -248,14 +311,24 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 	var lastUsage *schemas.BifrostPassthroughUsage
 	// When body logging is on, accumulate the streamed response (capped) so it can
 	// be stored; nil otherwise (streaming response-side attributes come later).
-	captureBody := metering.BodyLoggingEnabled()
+	captureBody := bodyCaptureAllowed(rm.identity.TenantID)
 	var respBuf []byte
+	// handled=true means a fallback path took over and metered itself; skip our meter.
+	handled := false
 	defer func() {
+		if handled {
+			return
+		}
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, meterHeaders, lastUsage, respBuf)
 	}()
 
-	stream, bErr := h.client.PassthroughStream(bctx, rm.provider, rm.req)
+	stream, bErr := h.client.PassthroughStream(bctx, rm.provider, req)
 	if bErr != nil {
+		// Pre-header failure: nothing sent yet, so a fallback can take over the stream.
+		if h.tryFailoverStream(c, bctx, cancel, rm, statusOf(bErr)) {
+			handled = true
+			return
+		}
 		status = writeBifrostError(c, bErr)
 		return
 	}
@@ -266,6 +339,10 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 		return
 	}
 	if first.BifrostError != nil {
+		if h.tryFailoverStream(c, bctx, cancel, rm, statusOf(first.BifrostError)) {
+			handled = true
+			return
+		}
 		status = writeBifrostError(c, first.BifrostError)
 		return
 	}
@@ -279,6 +356,9 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 	status = head.StatusCode
 	meterHeaders = head.Headers
 	lastUsage = head.PassthroughUsage
+	// The provider's model id is in the first streamed chunk — capture it here so it's
+	// recorded even when body logging is off (respBuf would otherwise be empty).
+	rm.respondedModel = respondedModel(head.Body)
 
 	// Preserve upstream Content-Type (passthrough streams aren't always SSE); set
 	// streaming invariants explicitly and copy the rest.
@@ -351,29 +431,56 @@ func appendCappedBody(buf, b []byte) []byte {
 // meter builds and enqueues one usage event for a completed request. respBody is
 // the unary response body for response-side attribute extraction (nil for
 // streaming/error paths).
+// bodyCaptureAllowed reports whether full request/response bodies should be logged
+// for this request: the global gate (env ceiling gateway_capture_body + a registered
+// sink, via BodyLoggingEnabled) AND the tenant's opt-in (settings.CaptureAllowed — EE
+// per-tenant; OSS always true within the ceiling). Off-until-opt-in for PHI safety.
+func bodyCaptureAllowed(tenantID string) bool {
+	return metering.BodyLoggingEnabled() && settings.CaptureAllowed(tenantID)
+}
+
 func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers map[string]string, usage *schemas.BifrostPassthroughUsage, respBody []byte) {
 	var respAttrs map[string]any
 	if len(respBody) > 0 {
 		respAttrs = extractResponseAttributes(respBody)
+		// Fallback for the native passthrough path (respBody is the provider's raw
+		// response); the generic/substitute paths set respondedModel from the parsed
+		// response struct, and native streaming sets it from the first chunk.
+		if rm.respondedModel == "" {
+			rm.respondedModel = respondedModel(respBody)
+		}
 	}
-	attrs := buildAttributes(rm.provider, rm.req.Model, rm.sessionSource, rm.reqAttrs, respAttrs, usage)
-	// The routing decision is the canonical DERIVED signal (see attributes design).
+	attrs := buildAttributes(rm.provider, rm.model, rm.sessionSource, rm.reqAttrs, respAttrs, usage)
+	// Derived signals (see attributes design). "surface" records the entrypoint the
+	// request arrived on; "routing" is the decision record when a rule changed it.
+	if attrs == nil {
+		attrs = &metering.Attributes{}
+	}
+	if attrs.Derived == nil {
+		attrs.Derived = map[string]any{}
+	}
+	if rm.surface != "" {
+		attrs.Derived["surface"] = rm.surface
+	}
+	if len(rm.degraded) > 0 {
+		attrs.Derived["degraded"] = rm.degraded
+	}
+	if rm.failover != nil {
+		attrs.Derived["failover"] = rm.failover
+	}
+	if rm.dlp != nil {
+		attrs.Derived["dlp"] = rm.dlp
+	}
 	if rm.decision.Reason != routing.ReasonPassthrough {
-		if attrs == nil {
-			attrs = &metering.Attributes{Derived: map[string]any{}}
-		}
-		if attrs.Derived == nil {
-			attrs.Derived = map[string]any{}
-		}
 		attrs.Derived["routing"] = routingAttr(rm.decision)
 	}
 
 	ev := metering.NewEvent(metering.EventInput{
 		ID:         rm.reqID,
 		Provider:   rm.provider,
-		Model:      rm.req.Model,
-		Method:     rm.req.Method,
-		Path:       rm.req.Path,
+		Model:      rm.model,
+		Method:     rm.method,
+		Path:       rm.path,
 		Streaming:  rm.streaming,
 		StatusCode: status,
 		LatencyMS:  time.Since(rm.start).Milliseconds(),
@@ -388,19 +495,31 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 
 		RequestedProvider: rm.decision.RequestedProvider,
 		RequestedModel:    rm.decision.RequestedModel,
+		RespondedModel:    rm.respondedModel,
 		RoutingReason:     string(rm.decision.Reason),
 		RoutingRule:       rm.decision.RuleID,
 	})
-	h.sink.Record(ev)
+	// Snapshot cost at write from the resolved model + actual tokens, so the stored
+	// row carries the price as it was when the call ran (read paths sum this instead
+	// of re-pricing on every query). The same value reconciles the quota below.
+	if h.pricer != nil {
+		ev.CostUsd = h.pricer.CostUSD(ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
+	}
+	// Skip recording non-inference admin calls (cache/list/countTokens) unless enabled
+	// — they have no model and 0 tokens, so they'd only clutter the dashboard. The
+	// quota reconcile below still runs (those calls do consume provider quota).
+	record := config.Config.CaptureAdminCalls || !isAdminCall(rm.path)
+	if record {
+		h.sink.Record(ev)
+	}
 
 	// Reconcile token/cost usage against quotas (requests were counted pre-call).
 	if h.limiter.Enabled() && ev.TotalTokens > 0 {
-		cost := h.pricer.CostUSD(rm.req.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
-		h.limiter.Reconcile(ctx, ratelimit.Scope{TenantID: rm.identity.TenantID, UserID: rm.identity.UserID}, ev.TotalTokens, cost)
+		h.limiter.Reconcile(ctx, ratelimit.Scope{TenantID: rm.identity.TenantID, UserID: rm.identity.UserID}, ev.TotalTokens, ev.CostUsd)
 	}
 
 	// Full-body logging (off by default). Linked to the usage row via reqID.
-	if metering.BodyLoggingEnabled() {
+	if record && bodyCaptureAllowed(rm.identity.TenantID) {
 		now := time.Now().UTC()
 		h.bodyLog.Record(metering.BodyLog{
 			ID:           uuid.NewString(),
@@ -411,14 +530,47 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 			UserID:       rm.identity.UserID,
 			SessionID:    rm.sessionID,
 			Provider:     string(rm.provider),
-			Model:        rm.req.Model,
-			Method:       rm.req.Method,
-			Path:         rm.req.Path,
+			Model:        rm.model,
+			Method:       rm.method,
+			Path:         rm.path,
 			StatusCode:   status,
-			RequestBody:  metering.CapBody(rm.req.Body),
+			RequestBody:  metering.CapBody(rm.body),
 			ResponseBody: metering.CapBody(respBody),
 		})
 	}
+}
+
+// recordReject writes one usage row for a request rejected at the edge before the
+// pipeline runs (unknown mount, oversized/bad body). Cost is 0 (no provider tokens
+// spent); the row carries the status + reject reason so the audit trail is complete.
+func (h *handler) recordReject(id auth.Identity, provider schemas.ModelProvider, model, method, path string, status int, reason string, start time.Time) {
+	h.sink.Record(metering.NewEvent(metering.EventInput{
+		Provider: provider, Model: model, Method: method, Path: path,
+		StatusCode: status, LatencyMS: time.Since(start).Milliseconds(),
+		RequestedProvider: string(provider), RequestedModel: model,
+		Attributes: &metering.Attributes{Derived: map[string]any{"reject_reason": reason}},
+		TenantID:   id.TenantID, AccountID: id.AccountID, UserID: id.UserID, TokenID: id.TokenID,
+	}))
+}
+
+// recordRejectPipeline records a rejection from a control stage (rate limit, missing
+// credential, block), carrying the routing decision plus the stage's reject reason.
+func (h *handler) recordRejectPipeline(rc *RequestContext, status int, start time.Time) {
+	d := rc.Decision
+	derived := map[string]any{"reject_reason": rc.RejectReason}
+	if rc.DLP != nil {
+		derived["dlp"] = rc.DLP // an enforce-mode secret block carries the rule ids
+	}
+	h.sink.Record(metering.NewEvent(metering.EventInput{
+		Provider: rc.Provider, Model: rc.Model,
+		Method: rc.Gin.Request.Method, Path: rc.Path,
+		StatusCode: status, LatencyMS: time.Since(start).Milliseconds(),
+		RequestedProvider: string(rc.Provider), RequestedModel: d.RequestedModel,
+		RoutingReason: string(d.Reason), RoutingRule: d.RuleID,
+		Attributes: &metering.Attributes{Derived: derived},
+		TenantID:   rc.Identity.TenantID, AccountID: rc.Identity.AccountID,
+		UserID: rc.Identity.UserID, TokenID: rc.Identity.TokenID,
+	}))
 }
 
 // readBody reads and returns the raw request body, bounded by the configured
@@ -508,12 +660,17 @@ func safeHeaders(h http.Header) map[string]string {
 	return out
 }
 
+// statusOf extracts the HTTP status from a Bifrost error (default 502 Bad Gateway).
+func statusOf(bErr *schemas.BifrostError) int {
+	if bErr != nil && bErr.StatusCode != nil {
+		return *bErr.StatusCode
+	}
+	return http.StatusBadGateway
+}
+
 // writeBifrostError writes a JSON error and returns the HTTP status used (for metering).
 func writeBifrostError(c *gin.Context, bErr *schemas.BifrostError) int {
-	status := http.StatusBadGateway
-	if bErr.StatusCode != nil {
-		status = *bErr.StatusCode
-	}
+	status := statusOf(bErr)
 	msg := "provider engine error"
 	if bErr.Error != nil && bErr.Error.Message != "" {
 		msg = bErr.Error.Message

@@ -145,3 +145,90 @@ func hasPair(rows []corrRow, eventID, relatedID string, offset int) bool {
 	}
 	return false
 }
+
+// TestDetectAndRecordDuplicate_ReprocessReturnsStoredOccurrence_E2E reproduces the
+// incident where re-processing a chain's FIRST event after later duplicates were
+// recorded computed occurrence = latest+1 (instead of the stored 1), letting the
+// system occurrence>1 auto-duplicate rule mark the chain's ORIGINAL as a duplicate
+// of itself — with no linked event, leaving the whole chain DUPLICATE and nothing
+// open. Re-processing happens in production via rescoreFreshlyMintedClass and
+// redelivered post-process messages, so detectAndRecordDuplicate must be idempotent.
+//
+// Isolation: same pattern as the correlation e2e above — seeded for a real account
+// at a fixed year-2020 timestamp inside a transaction that is ALWAYS rolled back.
+func TestDetectAndRecordDuplicate_ReprocessReturnsStoredOccurrence_E2E(t *testing.T) {
+	if os.Getenv("TEST_LIVE_DEDUP") != "1" {
+		t.Skip("set TEST_LIVE_DEDUP=1 to run (requires local Metastore connection)")
+	}
+
+	env := testenv.RequireEnv(t, "TEST_ACCOUNT_ID")
+	account := env["TEST_ACCOUNT_ID"]
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	require.NoError(t, err, "failed to connect to Metastore — check .env")
+	ctx := context.Background()
+
+	var tenant string
+	require.NoError(t, dbms.Db.GetContext(ctx, &tenant,
+		`SELECT tenant::text FROM cloud_accounts WHERE id = $1`, account),
+		"TEST_ACCOUNT_ID not found in cloud_accounts")
+
+	tx, err := dbms.Db.BeginTxx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }() // nothing persists, pass or fail
+
+	const fp = "fp-e2e-dedup-chain"
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	seed := func(startsAt time.Time) *models.Event {
+		id := uuid.New().String()
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO events (
+				id, finding_id, title, aggregation_key, finding_type, priority,
+				subject_name, cluster, evidences,
+				tenant, cloud_account_id, fingerprint, starts_at, created_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$13)`,
+			id, "fid-"+id, "e2e dedup", "test-alert", "test", "HIGH",
+			"svc", "test-cluster", "[]",
+			tenant, account, fp, startsAt)
+		require.NoError(t, err, "seed event %s", id)
+		return &models.Event{
+			Id:             id,
+			Tenant:         &tenant,
+			CloudAccountId: &account,
+			Fingerprint:    strPtr(fp),
+			StartsAt:       &startsAt,
+			CreatedAt:      &startsAt,
+		}
+	}
+
+	first := seed(base)
+	second := seed(base.Add(3 * time.Second))
+
+	occ, err := detectAndRecordDuplicate(ctx, tx, first)
+	require.NoError(t, err)
+	assert.Equal(t, 1, occ, "first event opens the chain")
+
+	occ, err = detectAndRecordDuplicate(ctx, tx, second)
+	require.NoError(t, err)
+	assert.Equal(t, 2, occ, "second event continues the chain")
+
+	// Re-process the FIRST event (rescore-on-mint / message redelivery). Before the
+	// idempotency guard this returned latest+1 = 3, which is occurrence>1 — the
+	// exact value that let the auto-duplicate rule fire on the chain's original.
+	occ, err = detectAndRecordDuplicate(ctx, tx, first)
+	require.NoError(t, err)
+	assert.Equal(t, 1, occ, "re-processing the chain-first event must return its stored occurrence")
+
+	// Re-processing a later chain member must be stable too.
+	occ, err = detectAndRecordDuplicate(ctx, tx, second)
+	require.NoError(t, err)
+	assert.Equal(t, 2, occ, "re-processing a duplicate must return its stored occurrence")
+
+	// The stored chain is unchanged: exactly two rows, occurrences 1 and 2.
+	var occs []int
+	require.NoError(t, sqlx.SelectContext(ctx, tx, &occs,
+		`SELECT occurrence_number FROM event_duplicates
+		 WHERE fingerprint = $1 AND cloud_account_id = $2 ORDER BY occurrence_number`, fp, account))
+	assert.Equal(t, []int{1, 2}, occs, "re-runs must not add chain rows")
+}

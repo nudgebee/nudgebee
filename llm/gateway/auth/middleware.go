@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"nudgebee/llm-gateway/edgeerr"
 )
 
 const identityCtxKey = "nb_identity"
@@ -16,12 +18,12 @@ func Middleware(v Validator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token == "" && v.RequiresToken() {
-			abort401(c, "missing NB token")
+			abort401(c, "Missing NB token. Set your NudgeBee token as the API key / bearer — see AI Gateway → Connect.")
 			return
 		}
 		id, ok := v.Validate(token)
 		if !ok {
-			abort401(c, "invalid NB token")
+			abort401(c, "Invalid or expired NB token. Generate a new one in NudgeBee → AI Gateway → Connect.")
 			return
 		}
 		c.Set(identityCtxKey, id)
@@ -63,7 +65,26 @@ func extractToken(c *gin.Context) string {
 }
 
 func abort401(c *gin.Context, msg string) {
-	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-		"error": gin.H{"type": "authentication_error", "message": msg},
-	})
+	// A 401 fires before the handler resolves the provider, so derive it from the
+	// mount prefix to render the error in the addressed provider's native shape.
+	edgeerr.Write(c, providerFromPath(c.Request.URL.Path), http.StatusUnauthorized, "authentication_error", msg)
+}
+
+// providerFromPath maps a request path's mount prefix to a provider name. It matches
+// the FIRST path segment exactly (via Cut) so a lookalike like /openai-compatible
+// doesn't false-match /openai.
+func providerFromPath(p string) string {
+	seg, _, _ := strings.Cut(strings.TrimPrefix(p, "/"), "/")
+	switch seg {
+	case "anthropic":
+		return edgeerr.Anthropic
+	case "openai":
+		return edgeerr.OpenAI
+	case "genai":
+		return edgeerr.Gemini
+	case "v1": // the generic /v1 endpoint is OpenAI-compatible
+		return edgeerr.OpenAI
+	default:
+		return ""
+	}
 }

@@ -69,24 +69,24 @@ const CloudAccountAlertManager: React.FC<CloudAccountAlertManagerProps> = ({ acc
     const menus = [
       {
         label: item?.enabled ? 'Disable' : 'Enable',
-        id: 0,
+        id: 'toggle-enabled',
       },
     ];
     if (item?.enabled) {
       menus.push({
         label: 'Edit',
-        id: 1,
+        id: 'edit',
       });
     }
     return menus;
   };
 
   const onMenuClick = (menuItem: any, data: any) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'toggle-enabled') {
       setDisableAlert(true);
       setAlertManagerObject(data);
     }
-    if (menuItem.id === 1) {
+    if (menuItem.id === 'edit') {
       setIsCreateAlert(false);
       setOpenCreateNewAlertModal(true);
       setAlertManagerObject(data);

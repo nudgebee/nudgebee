@@ -5,6 +5,10 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"regexp"
+
+	"github.com/nudgebee/logparser"
+
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/integrations"
@@ -716,7 +720,10 @@ func (s *NewRelicLogSource) QueryLogGroup(ctx *security.RequestContext, req Fetc
 	// Pod naming: {workload}-{replica-hash}-{pod-hash} or {workload}-{pod-hash}
 	// FACET order: message, namespace_name, workload_name, container_name
 	startTime, endTime := s.getTimeRangeSeconds(req.StartTime, req.EndTime)
-	nrqlQuery := fmt.Sprintf("SELECT count(*) as value FROM Log WHERE %s FACET message, namespace_name, capture(pod_name, r'^(?P<workload>.+?)(-[a-z0-9]{5,10})?-[a-z0-9]{5}$') as workload_name, container_name SINCE %d UNTIL %d LIMIT 100",
+	// last_seen rides along with the count so each group reports when it actually
+	// last occurred; without it every group reports the end of the query window and
+	// the UI shows one time for every row.
+	nrqlQuery := fmt.Sprintf("SELECT count(*) as value, max(timestamp) as last_seen FROM Log WHERE %s FACET message, namespace_name, capture(pod_name, r'^(?P<workload>.+?)(-[a-z0-9]{5,10})?-[a-z0-9]{5}$') as workload_name, container_name SINCE %d UNTIL %d LIMIT 100",
 		strings.Join(conditions, " AND "), startTime, endTime)
 
 	ctx.GetLogger().Info("NewRelic Log Group Query", "query", nrqlQuery)
@@ -772,27 +779,82 @@ func extractFirstNonEmpty(values []any) string {
 	return ""
 }
 
-// generatePatternHash creates a unique hash from log message for pattern grouping
-// Uses SHA1 hash truncated to 14 characters (similar to Prometheus pattern_hash format)
+// logfmtMessageRegex captures the msg= / message= value of a logfmt line, either
+// quoted (honouring backslash escapes) or bare.
+var logfmtMessageRegex = regexp.MustCompile(`(?i)(?:^|\s)(?:msg|message)=(?:"((?:[^"\\]|\\.)*)"|(\S+))`)
+
+// extractLogMessage reduces a log line to the message it carries, so the pattern
+// is derived from the message and not from the scaffolding around it.
+//
+// logparser's normalization treats quoted spans as variable data, but in logfmt
+// the message *is* a quoted span: `level=error msg="db timeout"` normalizes to
+// the single word `msg`, collapsing every logfmt error into one group. Pulling
+// msg= out first avoids that. JSON and plain lines are returned unchanged —
+// NewPattern already handles those.
+func extractLogMessage(line string) string {
+	if m := logfmtMessageRegex.FindStringSubmatch(line); m != nil {
+		// Exactly one alternative can match, and the bare one always captures at
+		// least one character — so an empty m[2] means the message was quoted,
+		// and m[1] is it, empty string included.
+		if m[2] != "" {
+			return m[2]
+		}
+		return m[1]
+	}
+	return line
+}
+
+// generatePatternHash extracts the repeated pattern from a log message and hashes
+// that, so messages differing only in variable data (durations, IDs, IPs, UUIDs)
+// land in the same group. logparser.NewPattern does the normalization: it drops
+// bracketed spans, hex, UUIDs and digits, and keeps the alphabetic words.
+//
+// Hashing the raw message instead — what this used to do — gives every distinct
+// line its own group, which is not grouping at all: one error reported with three
+// different durations rendered as three rows of count 1.
+//
+// Callers that need a stable key for a value that is NOT a log message (e.g. a
+// workload name) must use generateRawHash instead — pattern extraction would
+// strip the digits that make such a value unique.
 func generatePatternHash(message string) string {
 	if message == "" {
 		return ""
 	}
+	return logparser.NewPattern(extractLogMessage(message)).Hash()
+}
 
-	// Create SHA1 hash of the message
+// generateRawHash hashes a value verbatim, with no pattern extraction. For
+// identifiers rather than log messages; see generatePatternHash.
+func generateRawHash(value string) string {
+	if value == "" {
+		return ""
+	}
+
 	h := sha1.New()
-	h.Write([]byte(message))
-	hashBytes := h.Sum(nil)
+	h.Write([]byte(value))
+	encoded := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 
-	// Encode to base64 URL encoding (alphanumeric, URL-safe) and truncate to 14 chars
-	// This matches the typical pattern_hash format: "Q2Q2H95LZ1JJY9"
-	encoded := base64.RawURLEncoding.EncodeToString(hashBytes)
-
-	// Take first 14 characters for consistency
 	if len(encoded) > 14 {
 		return encoded[:14]
 	}
 	return encoded
+}
+
+// newRelicLastSeenUnix reads the last_seen aggregate off a faceted NRQL result as
+// unix seconds, falling back to the supplied window end when it is absent or
+// unusable. New Relic reports timestamps as epoch milliseconds.
+func newRelicLastSeenUnix(result map[string]any, fallbackSec int64) int64 {
+	switch v := result["last_seen"].(type) {
+	case float64:
+		if v > 0 {
+			return int64(v) / 1000
+		}
+	case string:
+		if ms, err := strconv.ParseFloat(v, 64); err == nil && ms > 0 {
+			return int64(ms) / 1000
+		}
+	}
+	return fallbackSec
 }
 
 // convertToLogGroupOutput converts NRQL faceted results to LogGroupOutput format
@@ -807,7 +869,7 @@ func (s *NewRelicLogSource) convertToLogGroupOutput(results []map[string]any, ti
 		}
 
 		group := LogGroup{
-			Timestamps: []int64{timestamp},
+			Timestamps: []int64{newRelicLastSeenUnix(r, timestamp)},
 			Values:     []float64{count},
 			Count:      int64(math.Round(count)),
 		}

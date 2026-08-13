@@ -108,10 +108,10 @@ const CloudAccountServices = (props: {
   type MenuItemFromList = (typeof MENU_ITEMS)[number];
   const onMenuClick = (menuItem: MenuItemFromList, clickedData: IResourceGrouping) => {
     // menuItem.id is still valid as MENU_ITEMS have an id field
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'start-instance') {
       setTicketData(clickedData);
     }
-    if (menuItem.id === 1) {
+    if (menuItem.id === 'stop-instance') {
       setHelpBeeOpen(true);
     }
   };
@@ -538,7 +538,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
   }, [props.resourceData?.resource_id]);
 
   if (loading) {
-    return <Loader style={{ height: ds.space.mul(0, 100), width: '100%' }} />;
+    return <Loader style={{ position: 'static', height: ds.space.mul(0, 100), width: '100%' }} />;
   }
 
   if (!detailedResource) {

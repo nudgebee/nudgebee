@@ -3,6 +3,7 @@
     {
       "unique_key": "azure:test-account-azure-1:eastus:Cache::app-redis",
       "node_type": "Cache",
+      "specific_type": "AzureCacheForRedis",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -28,11 +29,16 @@
       "labels": {},
       "query_attributes": {
         "name": "app-redis"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "app-redis"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance:vnet-1:app-vm",
       "node_type": "ComputeInstance",
+      "specific_type": "AzureVirtualMachine",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -63,12 +69,22 @@
       "labels": {},
       "query_attributes": {
         "name": "app-vm",
-        "subtype": "virtualmachines"
+        "os_type": "Linux",
+        "subnet_id": "subnet-1",
+        "subtype": "virtualmachines",
+        "vm_size": "Standard_D2s_v3",
+        "vnet_id": "vnet-1"
+      },
+      "ontology_attributes": {
+        "name": "app-vm",
+        "region": "eastus",
+        "type": "Standard_D2s_v3"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:Database::app-sql",
       "node_type": "Database",
+      "specific_type": "AzureSQLDatabase",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -95,11 +111,17 @@
       "query_attributes": {
         "name": "app-sql",
         "subtype": "sqlserver"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "app-sql",
+        "type": "sqlserver"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:LoadBalancer::app-lb",
       "node_type": "LoadBalancer",
+      "specific_type": "AzureLoadBalancer",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -126,11 +148,17 @@
       "query_attributes": {
         "name": "app-lb",
         "type": "loadbalancers"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "app-lb",
+        "type": "loadbalancers"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:app-aks",
       "node_type": "ManagedCluster",
+      "specific_type": "AKSCluster",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -159,11 +187,16 @@
         "region": "eastus",
         "status": "",
         "subtype": "managedclusters"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "app-aks"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:SecretVault::app-kv",
       "node_type": "SecretVault",
+      "specific_type": "AzureKeyVault",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -189,11 +222,17 @@
       "labels": {},
       "query_attributes": {
         "name": "app-kv"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "app-kv",
+        "type": "vaults"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:SecurityGroup::app-nsg",
       "node_type": "SecurityGroup",
+      "specific_type": "AzureNetworkSecurityGroup",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -219,11 +258,16 @@
       "labels": {},
       "query_attributes": {
         "name": "app-nsg"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "app-nsg"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:Storage::appstorage",
       "node_type": "Storage",
+      "specific_type": "AzureStorageAccount",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -250,11 +294,17 @@
       "query_attributes": {
         "name": "appstorage",
         "subtype": "storageaccounts"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "appstorage",
+        "type": "storageaccounts"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:Subnet:vnet-1:app-subnet",
       "node_type": "Subnet",
+      "specific_type": "AzureSubnet",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -285,12 +335,20 @@
       "query_attributes": {
         "cidr_block": "10.0.1.0/24",
         "name": "app-subnet",
-        "subnet_id": "subnet-1"
+        "subnet_id": "subnet-1",
+        "vnet_id": "vnet-1"
+      },
+      "ontology_attributes": {
+        "cidr": "10.0.1.0/24",
+        "location": "eastus",
+        "name": "app-subnet",
+        "vpc": "vnet-1"
       }
     },
     {
       "unique_key": "azure:test-account-azure-1:eastus:VPC::app-vnet",
       "node_type": "VPC",
+      "specific_type": "AzureVirtualNetwork",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -319,6 +377,11 @@
       },
       "labels": {},
       "query_attributes": {
+        "name": "app-vnet",
+        "vnet_id": "vnet-1"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
         "name": "app-vnet"
       }
     }

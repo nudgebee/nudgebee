@@ -25,6 +25,9 @@ import (
 	"nudgebee/llm-gateway/proxy"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
+	"nudgebee/llm-gateway/rpc"
+	"nudgebee/llm-gateway/security/egressfilter"
+	"nudgebee/llm-gateway/settings"
 	"nudgebee/llm-gateway/usage"
 
 	"github.com/Cyprinus12138/otelgin"
@@ -185,6 +188,19 @@ func main() {
 		time.Duration(config.Config.RoutingRefreshSeconds)*time.Second)
 	defer func() { _ = router.Close() }()
 
+	// Per-tenant data-governance settings (body-capture opt-in / DLP mode override).
+	// EE registers the DB loader; OSS has none, so the store is env-only (no override).
+	settingsStore := settings.NewStore(settings.Loader(),
+		time.Duration(config.Config.GatewaySettingsRefreshSeconds)*time.Second)
+	settings.SetActive(settingsStore)
+	defer settingsStore.Close()
+
+	// enforce/redact are EE-only; an OSS build configured for one runs in detect-only.
+	// Warn loudly so a "blocking" expectation isn't silently observe-only.
+	if m := egressfilter.ParseMode(config.Config.EgressFilterMode); (m == egressfilter.ModeEnforce || m == egressfilter.ModeRedact) && !egressfilter.EnforcementEnabled() {
+		slog.Warn("egress filter: enforce/redact require the enterprise build — running in detect-only", "configured_mode", m)
+	}
+
 	// Rate-limit enforcement is active only when a limiter is registered. ratelimit.Build
 	// returns the registered limiter, or nil when none is registered — a nil *Limiter is
 	// allow-all (Enabled() is nil-safe). The pricing catalog + usage plane stay here.
@@ -207,13 +223,24 @@ func main() {
 	// auth resolving identity from the configured mode (user_auths by default). The
 	// request credential resolver falls back to the operator/account default when
 	// none is registered.
+	// Tell the proxy which providers have an operator credential so it can return a
+	// clear 403 (rather than a keyless upstream error) when no credential is available.
+	proxy.RegisterOperatorCreds(eng.HasProviderCred)
 	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer)
 
 	// Read-only usage query plane (POST /rpc/usage/aggregate) for the AI Gateway
 	// dashboard — app → gateway service-to-service, guarded by the action token.
-	// Requires the pricer (cost) + metering store; skipped when the DB isn't wired.
+	// Reads the metering store (cost is now snapshotted per row, so no pricer needed
+	// on the read path); skipped when the DB isn't wired. pricer != nil ⇒ DB configured.
 	if pricer != nil {
-		usage.RegisterRoutes(r, pricer, config.Config.GatewayActionToken)
+		usage.RegisterRoutes(r, config.Config.GatewayActionToken)
+	}
+
+	// Admin config-CRUD plane (POST /rpc/config/…) for the AI Gateway admin UI —
+	// app → gateway service-to-service, guarded by the action token. EE-only: the
+	// registrar is nil in the OSS build (ee/admin removed), so nothing mounts.
+	if reg := rpc.AdminRoutes(); reg != nil {
+		reg(r, config.Config.GatewayActionToken)
 	}
 
 	srv := &http.Server{

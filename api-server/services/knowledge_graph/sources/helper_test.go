@@ -271,9 +271,9 @@ func TestExtractEndpointAddress(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractEndpointAddress(tt.input)
+			got := ExtractEndpointAddress(tt.input)
 			if got != tt.expected {
-				t.Errorf("extractEndpointAddress(%v) = %q, expected %q", tt.input, got, tt.expected)
+				t.Errorf("ExtractEndpointAddress(%v) = %q, expected %q", tt.input, got, tt.expected)
 			}
 		})
 	}

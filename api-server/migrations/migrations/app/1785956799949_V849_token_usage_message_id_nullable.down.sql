@@ -1,0 +1,6 @@
+-- Intentionally empty. Restoring NOT NULL would fail as soon as one
+-- background-job row exists (they are precisely the rows with a NULL
+-- message_id), so an automated rollback would wedge the migration job.
+-- To revert deliberately: delete the NULL-message_id rows first, then
+-- ALTER TABLE public.llm_conversation_token_usage
+--     ALTER COLUMN message_id SET NOT NULL;

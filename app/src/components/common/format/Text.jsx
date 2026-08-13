@@ -58,13 +58,15 @@ const Text = ({
       checkOverflow();
     });
 
+    let overflowCheckTimer;
     if (textRef.current) {
       resizeObserver.observe(textRef.current);
-      setTimeout(checkOverflow, 0);
+      overflowCheckTimer = setTimeout(checkOverflow, 0);
     }
 
     return () => {
       resizeObserver.disconnect();
+      clearTimeout(overflowCheckTimer);
     };
   }, [updatedValue, showAutoEllipsis]);
 

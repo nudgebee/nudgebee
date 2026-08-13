@@ -14,6 +14,9 @@ const (
 	ReasonTier        Reason = "tier"         // NB tier hint → a model
 	ReasonFallback    Reason = "fallback"     // primary failed, a fallback was used
 	ReasonLoadBalance Reason = "load_balance" // selected from a weighted pool
+	ReasonBlocked     Reason = "blocked"      // a deny rule rejected the request (403)
+	ReasonSubstitute  Reason = "substitute"   // resolved to a DIFFERENT provider (P2 translation)
+	ReasonDeprecated  Reason = "deprecated"   // requested model is retired → rewritten to a replacement
 )
 
 // Affinity controls cache-safety when a target is a pool. "single" keeps one target
@@ -31,8 +34,9 @@ type Match struct {
 	UserID   string `json:"user_id,omitempty"`
 }
 
-// Endpoint is a concrete routing destination. In P1, Provider must be the same
-// family as the addressed provider (fidelity); cross-family is P2.
+// Endpoint is a concrete routing destination. Provider may differ from the
+// addressed provider (P2 cross-provider substitution): the proxy then translates the
+// request into the target's schema and the response back to the client's shape.
 type Endpoint struct {
 	Provider string `json:"provider,omitempty"` // resolved provider ("" = keep addressed)
 	Model    string `json:"model,omitempty"`    // resolved model ("" = keep requested)
@@ -45,6 +49,17 @@ type Target struct {
 	Endpoint             // primary destination
 	Fallbacks []Endpoint `json:"fallbacks,omitempty"` // ordered; tried on failure only
 	Affinity  string     `json:"affinity,omitempty"`  // AffinitySingle (default) | AffinityPrefixHash
+	// Deny turns the rule into a BLOCK: a matching request is rejected (403) instead
+	// of forwarded. Endpoint.Model, if set, is surfaced as a suggested alternative in
+	// the error. A deny wins over a redirect rule at the same priority (see the engine
+	// sort), so an admin can block a model regardless of other rules' ordering.
+	Deny bool `json:"deny,omitempty"`
+	// Deprecated turns the rule into a DEPRECATION SHIELD: a request for a retired model
+	// is rewritten to Endpoint.Model (the replacement) and forwarded, so clients keep
+	// working when a provider retires a model. It's a same-provider rewrite (like an
+	// alias) but marked distinctly for observability (reason=deprecated) and signalled
+	// to the client via an x-nb-llm-deprecated response header.
+	Deprecated bool `json:"deprecated,omitempty"`
 }
 
 // Rule is one routing rule. Rules are ordered by (tenant-specific first, then
@@ -70,4 +85,7 @@ type Decision struct {
 	Reason            Reason
 	Fallbacks         []Endpoint // chain actually attempted, if any
 	Strategy          string     // affinity / weighted / …
+	// Denied is set when a block rule matched: the request must be rejected (403), not
+	// forwarded. ResolvedModel then carries the suggested alternative (if the rule set one).
+	Denied bool
 }

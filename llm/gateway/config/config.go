@@ -69,6 +69,17 @@ type Configuration struct {
 	// gated by the RPC permission layer + network isolation).
 	GatewayActionToken string `mapstructure:"gateway_action_token"`
 
+	// Outbound call to services-server (api-server) for audit ingestion — mirrors
+	// llm-server's SERVICE_API_SERVER_URL + ACTION_API_SERVER_TOKEN. Used to record
+	// admin config changes (e.g. data-capture toggles) into the central audit table
+	// via POST {url}/v1/audit. When either is unset, audit emission is skipped (logged).
+	ServiceApiServerURL  string `mapstructure:"service_api_server_url"`
+	ActionApiServerToken string `mapstructure:"action_api_server_token"`
+
+	// GatewaySettingsRefreshSeconds is the poll interval for the per-tenant settings
+	// store (llm_gateway_tenant_settings), mirroring the routing/ratelimit refresh.
+	GatewaySettingsRefreshSeconds int `mapstructure:"gateway_settings_refresh_seconds"`
+
 	// Metering sink — pluggable: "postgres" (default) or "clickhouse".
 	MeteringSink  string `mapstructure:"gateway_metering_sink"`
 	ClickhouseURL string `mapstructure:"clickhouse_url"`
@@ -119,6 +130,27 @@ type Configuration struct {
 	SessionHeader     string `mapstructure:"gateway_session_header"`
 	CaptureAttributes bool   `mapstructure:"gateway_capture_attributes"`
 
+	// CaptureAdminCalls: when true, non-inference auxiliary calls (model caching,
+	// countTokens, model listing) are recorded as usage rows too. Off by default —
+	// these have no model and 0 tokens, so they only clutter the Requests tab and
+	// inflate counts. They always count toward rate limits regardless (they hit the
+	// provider); this flag only controls whether they appear in the usage dashboard.
+	CaptureAdminCalls bool `mapstructure:"gateway_capture_admin_calls"`
+
+	// EgressFilterMode enables outbound secret scanning of request bodies before they
+	// leave to the provider: "" (off) | "detect" (record only, safe rollout default) |
+	// "enforce" (block a request carrying a secret) | "redact" (replace the secret span
+	// and forward). Off by default. The comprehensive rule corpus is EE (folder-removed
+	// in OSS, which keeps only the baseline patterns).
+	EgressFilterMode string `mapstructure:"gateway_egress_filter_mode"`
+
+	// Default guardrail: a per-user cost cap (USD) applied as a backstop when a user
+	// has no explicit user-scoped cost limit configured, so a runaway client can't
+	// drain the org budget before an admin sets a limit. 0 = disabled (opt-in). Period
+	// is one of minute|hour|day|month (default day).
+	DefaultUserCostLimit  float64 `mapstructure:"gateway_default_user_cost_limit"`
+	DefaultUserCostPeriod string  `mapstructure:"gateway_default_user_cost_period"`
+
 	// Routing. Path to a JSON routing-rules config file (global/default rules);
 	// empty = passthrough only. Per-tenant rules come from the metastore table
 	// llm_gateway_routing_rules, refreshed every RoutingRefreshSeconds.
@@ -162,6 +194,9 @@ var keyDefaults = map[string]any{
 	"gateway_metering_sink":                 SinkPostgres,
 	"nudgebee_encryption_key":               "",
 	"gateway_action_token":                  "",
+	"service_api_server_url":                "",
+	"action_api_server_token":               "",
+	"gateway_settings_refresh_seconds":      30,
 	"clickhouse_url":                        "",
 	"cache_provider":                        "inmemory",
 	"cache_expiration_minutes":              10,
@@ -179,8 +214,12 @@ var keyDefaults = map[string]any{
 	"gateway_static_user_id":                "",
 	"gateway_session_header":                "x-nb-session-id",
 	"gateway_capture_attributes":            true,
+	"gateway_capture_admin_calls":           false,
 	"gateway_routing_config":                "",
 	"gateway_routing_refresh_seconds":       30,
+	"gateway_default_user_cost_limit":       0.0,   // per-user cost guardrail; 0 = disabled
+	"gateway_default_user_cost_period":      "day", // minute|hour|day|month
+	"gateway_egress_filter_mode":            "",    // off|detect|enforce|redact (outbound secret scan)
 	"gateway_capture_body":                  false,
 	"gateway_body_max_bytes":                1048576, // 1 MiB per body
 	"gateway_body_ttl_hours":                168,     // 7 days

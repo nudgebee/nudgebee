@@ -418,6 +418,35 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			expectedSubject:   "checkout",
 			expectedNamespace: "demo",
 		},
+		{
+			// Declared subject from a rendered markdown body.details string
+			// ("Subject Name/Namespace/Type"). The pod name + kind are carried
+			// through so the downstream pod->owner lookup can resolve them.
+			name:           "declared subject_name (pod) resolves with namespace and kind",
+			initialSubject: "",
+			labels: map[string]string{
+				"subject_name":      "flagd-5d6b76f8b8-87njz",
+				"subject_namespace": "demo",
+				"subject_type":      "pod",
+			},
+			title:             "Investigate Event - High P95 latency for flagd in demo namespace",
+			expectedSubject:   "flagd-5d6b76f8b8-87njz",
+			expectedNamespace: "demo",
+			expectedKind:      "pod",
+		},
+		{
+			// The explicitly declared subject wins over inferred label keys.
+			name:           "declared subject_name wins over job label",
+			initialSubject: "",
+			labels: map[string]string{
+				"subject_name": "checkout",
+				"subject_type": "deployment",
+				"job":          "kubelet",
+			},
+			title:           "Investigate Event - something",
+			expectedSubject: "checkout",
+			expectedKind:    "deployment",
+		},
 	}
 
 	for _, tt := range tests {
@@ -444,6 +473,153 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApplyStringDetailsSubjectLabels covers mining the declared subject from an
+// unstructured markdown body.details string (the AlertSourceUnknown shape PagerDuty
+// delivers for rendered alerts that carry no __pd_cef_payload map).
+func TestApplyStringDetailsSubjectLabels(t *testing.T) {
+	const rawAlertContent = "**Title**: High P95 latency for flagd in demo namespace\n" +
+		"**Priority**: MEDIUM\n" +
+		"**Aggregation Key**: OtelDemoHighLatency\n" +
+		"**Subject Type**: pod\n" +
+		"**Subject Name**: flagd-5d6b76f8b8-87njz\n" +
+		"**Subject Namespace**: demo\n"
+
+	t.Run("mines subject fields from markdown string", func(t *testing.T) {
+		labels := map[string]string{}
+		applyStringDetailsSubjectLabels(rawAlertContent, labels)
+		assert.Equal(t, "flagd-5d6b76f8b8-87njz", labels["subject_name"])
+		assert.Equal(t, "demo", labels["subject_namespace"])
+		assert.Equal(t, "pod", labels["subject_type"])
+	})
+
+	t.Run("does not overwrite existing labels", func(t *testing.T) {
+		labels := map[string]string{"subject_name": "already-set", "subject_namespace": "kept"}
+		applyStringDetailsSubjectLabels(rawAlertContent, labels)
+		assert.Equal(t, "already-set", labels["subject_name"])
+		assert.Equal(t, "kept", labels["subject_namespace"])
+		assert.Equal(t, "pod", labels["subject_type"]) // still filled since it was empty
+	})
+
+	t.Run("no-op without a Subject Name", func(t *testing.T) {
+		labels := map[string]string{}
+		applyStringDetailsSubjectLabels("**Priority**: HIGH\nsome free text", labels)
+		assert.Empty(t, labels["subject_name"])
+		assert.Empty(t, labels["subject_type"])
+	})
+
+	t.Run("no-op on empty inputs", func(t *testing.T) {
+		labels := map[string]string{}
+		applyStringDetailsSubjectLabels("", labels)
+		assert.Empty(t, labels)
+		applyStringDetailsSubjectLabels(rawAlertContent, nil) // must not panic
+	})
+}
+
+// cloudOptimizationDetails is the verbatim body.details string PagerDuty returned
+// for incident Q03KT7QRZ82X20, the orphaned-EBS-volume alert that fell through to
+// the LLM and came back not_found. Produced by getTicketDescription in
+// app/src/components/cloudaccount/common.tsx.
+const cloudOptimizationDetails = "Recommendation: aws_ec2_orphaned_volume\n" +
+	"Service: AmazonEC2\n" +
+	"Instance: vol-060625d190b54ab95\n" +
+	"Severity: Medium\n" +
+	"Estimated Savings: $0.80\n" +
+	"Details: Identify unused (unattached) Amazon Elastic Block Store (EBS) volumes available within your AWS cloud account and delete these volumes in order to lower the cost of your AWS bill and reduce the risk of confidential and sensitive data leaks.\n"
+
+// TestApplyCloudOptimizationSubjectLabels covers the deterministic subject mine for
+// NudgeBee Cloud Optimization incidents delivered as an unstructured body.details
+// string (no __pd_cef_payload map).
+func TestApplyCloudOptimizationSubjectLabels(t *testing.T) {
+	t.Run("resolves the orphaned-volume subject that previously reached the LLM", func(t *testing.T) {
+		labels := map[string]string{}
+		applyCloudOptimizationSubjectLabels(cloudOptimizationDetails, labels)
+		assert.Equal(t, "vol-060625d190b54ab95", labels["subject_name"])
+		assert.Equal(t, "cloud-resource", labels["subject_type"])
+		assert.Equal(t, "cloud_optimization_details", labels["nb_subject_match"])
+		assert.Equal(t, "cloud-optimization", labels["nb_subject_resolution"])
+	})
+
+	t.Run("subject survives resolveSubjectFromLabels without a fabricated pod label", func(t *testing.T) {
+		p := &core.EventIncomingWebhook{}
+		p.Investigation.Labels = map[string]string{}
+		applyCloudOptimizationSubjectLabels(cloudOptimizationDetails, p.Investigation.Labels)
+		resolveSubjectFromLabels(p)
+		assert.Equal(t, "vol-060625d190b54ab95", p.EventSubjectName)
+		assert.Equal(t, "cloud-resource", p.EventSubjectKind)
+		// A pod=<volume-id> label would point the pod metric/log enrichers at a pod
+		// that does not exist.
+		assert.Empty(t, p.Investigation.Labels["pod"])
+		// The LLM fallback is keyed off an empty subject; a resolved one skips it.
+		assert.NotEqual(t, "unresolved", p.Investigation.Labels["nb_subject_resolution"])
+	})
+
+	t.Run("free-text Details prose never supplies the subject", func(t *testing.T) {
+		// "Instance:" inside the Details sentence must not be read as the field:
+		// extractPlainField is line-anchored.
+		labels := map[string]string{}
+		applyCloudOptimizationSubjectLabels(
+			"Recommendation: aws_rds_idle\nDetails: Check the Instance: i-decoy for details\n", labels)
+		assert.Empty(t, labels["subject_name"])
+	})
+
+	t.Run("no-op when the recommendation carries no resolvable resource", func(t *testing.T) {
+		for _, instance := range []string{"N/A", "n/a", ""} {
+			labels := map[string]string{}
+			applyCloudOptimizationSubjectLabels(
+				"Recommendation: aws_ec2_orphaned_volume\nService: AmazonEC2\nInstance: "+instance+"\n", labels)
+			assert.Empty(t, labels["subject_name"], "instance=%q", instance)
+		}
+	})
+
+	t.Run("no-op without the Recommendation discriminator", func(t *testing.T) {
+		labels := map[string]string{}
+		applyCloudOptimizationSubjectLabels("Service: AmazonEC2\nInstance: vol-123\n", labels)
+		assert.Empty(t, labels["subject_name"])
+	})
+
+	t.Run("a declared markdown Subject Name wins", func(t *testing.T) {
+		labels := map[string]string{"subject_name": "flagd", "subject_type": "pod"}
+		applyCloudOptimizationSubjectLabels(cloudOptimizationDetails, labels)
+		assert.Equal(t, "flagd", labels["subject_name"])
+		assert.Equal(t, "pod", labels["subject_type"])
+		// Nothing else is written either — the body did not describe this subject.
+		assert.Empty(t, labels["nb_subject_match"])
+	})
+
+	t.Run("no-op on empty inputs", func(t *testing.T) {
+		labels := map[string]string{}
+		applyCloudOptimizationSubjectLabels("", labels)
+		assert.Empty(t, labels)
+		applyCloudOptimizationSubjectLabels(cloudOptimizationDetails, nil) // must not panic
+	})
+
+	// Every Cloud Optimization rule shape observed in event_incoming_webhooks: an
+	// AWS resource id, a slash-qualified name, an EC2 instance id, a synthetic
+	// Cost Explorer RI id, and an Azure rule that genuinely has no resource.
+	t.Run("observed rule shapes", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			rule        string
+			instance    string
+			wantSubject string
+		}{
+			{"orphaned EBS volume", "aws_ec2_orphaned_volume", "vol-060625d190b54ab95", "vol-060625d190b54ab95"},
+			{"alternate instances (slash-qualified name)", "aws_ec2_alternate_instances", "log-cache/bc91f6b1-f348-43e3-8d5d-57502ec19b65", "log-cache/bc91f6b1-f348-43e3-8d5d-57502ec19b65"},
+			{"underutilized EC2 instance", "aws_ec2_underutilized", "i-0a37a5e93a6f665fa", "i-0a37a5e93a6f665fa"},
+			{"cost-explorer RI recommendation", "aws_native_ce_ri_recommendation", "ce-ri-amazon-elastic-compute-cloud---compute-1", "ce-ri-amazon-elastic-compute-cloud---compute-1"},
+			{"azure unattached disk carries no resource", "azure_disk_unattached_volume", "N/A", ""},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				labels := map[string]string{}
+				applyCloudOptimizationSubjectLabels(
+					"Recommendation: "+tt.rule+"\nService: AmazonEC2\nInstance: "+tt.instance+"\nSeverity: Medium\n", labels)
+				assert.Equal(t, tt.wantSubject, labels["subject_name"])
+			})
+		}
+	})
 }
 
 // TestExtractGCPMonitoringSubject covers deterministic parsing of GCP Cloud

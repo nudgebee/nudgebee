@@ -17,7 +17,10 @@ import CustomTable from '@shared/tables/CustomTable';
 import FilterDropdown from '@ui/FilterDropdown';
 import { SeverityIcon, type SeverityLevel } from '@ui/SeverityIcon';
 import DownloadButton from '@shared/buttons/DownloadButton';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import CommandExecutionHistory from '@components/cloudaccount/CommandExecutionHistory';
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const SEVERITY_LEVELS = new Set(['critical', 'high', 'medium', 'low', 'info']);
 const toSeverityLevel = (s: unknown): SeverityLevel => {
@@ -177,9 +180,8 @@ const ResolutionsView = () => {
   const accountFilterOptions = useMemo(
     () =>
       Object.entries(accounts).map(([id, info]) => {
-        const provider = (info.cloud_provider || '').toUpperCase();
         const name = info.name || id;
-        return { label: provider ? `${provider} · ${name}` : name, value: id };
+        return { label: name, value: id, group: info.cloud_provider || 'Other' };
       }),
     [accounts]
   );
@@ -397,6 +399,8 @@ const ResolutionsView = () => {
           id='resolutions-filter-account'
           label='Account'
           multiple
+          grouped
+          groupIcon={renderAccountGroupIcon}
           options={accountFilterOptions}
           value={accountFilterOptions.filter((o) => selectedAccounts.includes(o.value))}
           onSelect={(_e: any, items: any) => {

@@ -1,12 +1,19 @@
-from collections import defaultdict
+import re
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
-from notifications_server.configs.settings import public_ip
 
-MAX_BLOCKS = 50
-MAX_TEXT_LENGTH = 2900
-MAX_ALERTS_PER_ACCOUNT = 8
+from notifications_server.configs.settings import settings, URLRoutes
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_HIGH,
+    accounts_scope,
+    header_block,
+    legacy_attachment,
+    link_button,
+    neutral_footer_attachment,
+)
+
+MAX_ANOMALY_ITEMS = 5
 
 
 class AnomalyAlertParams(BaseModel):
@@ -24,6 +31,81 @@ class AnomalyAlertParams(BaseModel):
     updated_at: Optional[str] = None
     subject_type: Optional[str] = None
     subject_owner: Optional[str] = None
+    # Spend anomalies carry a baseline-vs-observed sentence here (e.g. "Daily
+    # spend of $208 ... exceeds baseline average of $14"); metric anomalies set
+    # it equal to the title and are filtered out at render.
+    description: Optional[str] = None
+    # The numeric stats ride here: spend anomalies get a "Spend Anomaly Summary"
+    # table (z-score, change, expected); metric anomalies get the raw anomaly
+    # map (current_value, reference_value baseline) in slot 0. Declared so the
+    # producer's stats survive AnomalyAlertParams(**e) instead of being dropped.
+    evidences: Optional[List[Any]] = None
+
+
+# Dollar amounts, percentages, and Nx multipliers in the producer sentence get
+# mrkdwn bold so the observed-vs-baseline numbers pop (matches the mocks).
+_STAT_PATTERN = re.compile(r"\$[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?(?:%|x|×)")
+
+
+def _anomaly_value_line(alert: AnomalyAlertParams) -> str:
+    """The evidence line under the title. Only spend anomalies carry a
+    baseline-vs-observed description distinct from the title; the trailing
+    z-score is producer jargon, dropped for the channel."""
+    desc = (alert.description or "").strip()
+    if not desc or desc == (alert.title or "").strip():
+        return ""
+    value_line = desc.split(" (z-score:")[0].strip()
+    return _STAT_PATTERN.sub(lambda m: f"*{m.group(0)}*", value_line)
+
+
+def _fmt_num(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _anomaly_stats_line(alert: AnomalyAlertParams) -> str:
+    """Numeric stats from the event's evidences — dropped by the grouped card
+    until now. Spend anomalies get z-score/change/expected from the summary
+    table; metric anomalies (whose description == title, so the value line is
+    empty) get current-vs-baseline. Parses defensively — any unexpected shape
+    yields no line rather than an error."""
+    evidences = alert.evidences if isinstance(alert.evidences, list) else []
+
+    for ev in evidences:
+        if not isinstance(ev, dict):
+            continue
+        data = ev.get("data")
+        if not isinstance(data, dict):
+            continue
+        if data.get("table_name") != "Spend Anomaly Summary" and data.get("headers") != ["Metric", "Value"]:
+            continue
+        raw_rows = data.get("rows")
+        if not isinstance(raw_rows, (list, tuple)):
+            continue
+        rows = {str(row[0]): str(row[1]) for row in raw_rows if isinstance(row, (list, tuple)) and len(row) >= 2}
+        parts = []
+        if rows.get("Z-Score"):
+            parts.append(f"Z-score *{rows['Z-Score']}*")
+        if rows.get("Change"):
+            parts.append(f"*{rows['Change']}*")
+        if rows.get("Expected Daily Spend"):
+            parts.append(f"expected *{rows['Expected Daily Spend']}*")
+        if parts:
+            return " · ".join(parts)
+
+    for ev in evidences:
+        if not isinstance(ev, dict) or ev.get("current_value") is None:
+            continue
+        current = _fmt_num(ev["current_value"])
+        reference = ev.get("reference_value")
+        if isinstance(reference, dict):
+            for key in ("mean", "value", "baseline", "avg"):
+                if isinstance(reference.get(key), (int, float)):
+                    return f"Current *{current}* vs baseline *{_fmt_num(reference[key])}*"
+        return f"Current value *{current}*"
+
+    return ""
 
 
 class AnomalyAlertSummaryParams(BaseModel):
@@ -34,34 +116,15 @@ def get_anomaly_aggregated_message_params(events: List[Dict[str, Any]]) -> Anoma
     return AnomalyAlertSummaryParams(events=[AnomalyAlertParams(**e) for e in events])
 
 
-def truncate_text(text: str, max_len: int = MAX_TEXT_LENGTH) -> str:
-    return text if len(text) <= max_len else text[: max_len - 3] + "..."
-
-
-def create_account_attachment(cloud_account_id: str, acct_alerts: List[AnomalyAlertParams]) -> Dict[str, Any]:
-    """Create a collapsible attachment for account anomalies."""
-    cluster_name = acct_alerts[0].cluster or "Cluster"
-    account_url = f"{public_ip()}/kubernetes/details/{cloud_account_id}?tab=2&subtab=6#events/anomaly"
-
-    display_alerts = acct_alerts[:MAX_ALERTS_PER_ACCOUNT]
-    lines = []
-    add_alerts(display_alerts, lines)
-
-    if len(acct_alerts) > MAX_ALERTS_PER_ACCOUNT:
-        lines.append(f"…and {len(acct_alerts) - MAX_ALERTS_PER_ACCOUNT} more anomalies in this account.")
-
-    text_block = truncate_text("\n".join(lines).strip())
-
-    blocks = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Account:* <{account_url}|{cluster_name}>"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": text_block}},
-    ]
-
-    return {
-        "color": "#ff9800",
-        "fallback": f"{cluster_name}: {len(acct_alerts)} anomalies detected",
-        "blocks": blocks,
-    }
+def _started(starts_at: str) -> str:
+    """Inline localized start time via Slack's <!date> token; raw producer
+    string when it doesn't parse."""
+    try:
+        ts = int(datetime.fromisoformat(starts_at.replace("Z", "+00:00")).timestamp())
+        fallback = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d %b %Y %I:%M %p UTC")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return f"started {starts_at}" if starts_at else ""
+    return f"started <!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
 
 
 def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) -> Dict[str, Any]:
@@ -70,69 +133,51 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
     else:
         alerts = input_data
 
-    # Group anomalies by cloud account ID
-    grouped: Dict[str, List[AnomalyAlertParams]] = defaultdict(list)
-    for alert in alerts:
-        grouped[alert.cloud_account_id].append(alert)
-
     total_alerts = len(alerts)
-    total_accounts = len(grouped)
+    account_names = {alert.cloud_account_id: (alert.cluster or alert.cloud_account_id) for alert in alerts}
+    noun = "anomaly" if total_alerts == 1 else "anomalies"
+    headline = f"{total_alerts} {noun} detected {accounts_scope(list(account_names.values()))}"
 
-    # Header blocks
-    blocks: List[Dict[str, Any]] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*{total_alerts} Anomalies detected across {total_accounts} accounts*",
-            },
-        },
-        {"type": "divider"},
-    ]
+    blocks: List[Dict[str, Any]] = [header_block(headline), {"type": "divider"}]
 
-    # Create collapsible attachments for each account
     attachments = []
-    for cloud_account_id, acct_alerts in grouped.items():
-        attachments.append(create_account_attachment(cloud_account_id, acct_alerts))
+    for alert in alerts[:MAX_ANOMALY_ITEMS]:
+        title = alert.title or f"{alert.subject_name} anomaly"
+        lines = [f"*{title}*"]
+        value_line = _anomaly_value_line(alert)
+        if value_line:
+            lines.append(value_line)
+        stats_line = _anomaly_stats_line(alert)
+        if stats_line:
+            lines.append(stats_line)
 
-    # Footer
-    blocks.append(
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "Review detected anomalies and investigate impacted workloads in your clusters.",
-                }
-            ],
-        }
-    )
+        subject = f"{alert.subject_name} ({alert.subject_namespace})" if alert.subject_namespace else alert.subject_name
+        facts_bits = [
+            f"{alert.priority.title()} priority" if alert.priority else "",
+            subject,
+            f"Acct: {alert.cluster or alert.cloud_account_id}",
+            _started(alert.starts_at),
+        ]
+        lines.append(" · ".join(bit for bit in facts_bits if bit))
+
+        actions = None
+        if alert.id:
+            details_url = settings.urls.investigate_url(
+                alert.cloud_account_id, alert.id, utm_source=URLRoutes.UTMSource.SLACK
+            )
+            actions = [link_button("Details", details_url, style="primary")]
+
+        attachments.append(legacy_attachment(STRIPE_HIGH, title, text="\n".join(lines), actions=actions))
+
+    remaining = total_alerts - MAX_ANOMALY_ITEMS
+    if remaining > 0:
+        attachments.append(
+            neutral_footer_attachment(text=f"_+{remaining} more anomalies detected_", fallback="Anomaly summary")
+        )
 
     return {
-        "text": "Grouped Anomaly Alert Summary",
-        "blocks": blocks,
-        "attachments": attachments[:20],  # Slack limit
+        "text": headline,
+        "blocks": blocks[:50],
+        "attachments": attachments[:20],
         "unfurl_links": False,
     }
-
-
-def add_alerts(display_alerts, lines):
-    for alert in display_alerts:
-        try:
-            ts = int(datetime.fromisoformat(alert.starts_at.replace("Z", "")).timestamp())
-            fallback = datetime.fromtimestamp(ts).strftime("%d %b %Y %I:%M %p")
-            date_block = f"<!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
-        except ValueError:
-            date_block = alert.starts_at
-
-        title = alert.title or f"{alert.subject_name} anomaly"
-
-        lines.extend(
-            [
-                f"• *{title}*",
-                f"  - Namespace: `{alert.subject_namespace}` | Type: `{alert.subject_type or 'N/A'}`",
-                f"  - Priority: `{alert.priority}` | Status: `{alert.status}`",
-                f"  - Started at: {date_block}",
-                "",
-            ]
-        )

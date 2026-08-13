@@ -9,7 +9,7 @@ import (
 	"nudgebee/tickets-server/database"
 	"nudgebee/tickets-server/models"
 	ticketmgr "nudgebee/tickets-server/services/ticket"
-	_ "nudgebee/tickets-server/services/tools" // Import to trigger init() registrations
+	"nudgebee/tickets-server/services/tools"
 	"strings"
 	"time"
 
@@ -260,7 +260,7 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 		  ON cv.integration_id = i.id AND cv.name = 'projects'
 		WHERE i.tenant_id = $1
 		  AND i.status = 'enabled'
-		  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty')
+		  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk')
 		ORDER BY i.name ASC`,
 		tenantId)
 	if err != nil {
@@ -302,6 +302,27 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 	return options, nil
 }
 
+// encodeJiraTicketFields normalizes a Jira ticket's additional_fields into
+// wire shapes before create, using the cached create-meta that drove the form.
+// Best-effort: on meta failure the payload passes through unchanged.
+func encodeJiraTicketFields(ctx *gin.Context, configuration models.TicketConfigurations, ticket *models.Ticket) {
+	if configuration.Tool != "jira" {
+		return
+	}
+	additionalFields, ok := ticket.AdditionalFields.(map[string]interface{})
+	if !ok || len(additionalFields) == 0 {
+		return
+	}
+	var fieldMeta map[string]tools.FieldInfo
+	if meta, err := fetchCreateMetaCached(ctx, configuration, ticket.ProjectKey); err != nil {
+		slog.Warn("jira create: create-meta unavailable, sending additional fields unencoded",
+			"integration", configuration.ID, "project", ticket.ProjectKey, "error", slog.AnyValue(err))
+	} else {
+		fieldMeta = tools.FieldsForIssueType(meta, ticket.TicketType)
+	}
+	ticket.AdditionalFields = tools.EncodeJiraAdditionalFields(fieldMeta, additionalFields)
+}
+
 func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertResponse, error) {
 	slog.Info("New ticket create request received for:", "ticket", ticket)
 
@@ -316,8 +337,8 @@ func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertRes
 		return GetErrorResponse(fmt.Sprintf("ticket configuration %q (%s) is disabled", configuration.Name, configuration.Tool)), fmt.Errorf("ticket configuration %s (%s) is disabled, cannot create ticket", configuration.ID, configuration.Tool)
 	}
 
-	if !ticket.New {
-		tickets, err := checkIfTicketExistsAndAddComment(ctx, configuration, ticket.ReferenceID)
+	if !ticket.New && ticket.ReferenceID != "" {
+		tickets, err := checkIfTicketExistsAndAddComment(ctx, configuration, ticket)
 		if err != nil {
 			if !strings.Contains(err.Error(), "duplicate ticket") {
 				slog.Error("Error checking if ticket exists and adding comment:", "error", slog.AnyValue(err))
@@ -344,6 +365,7 @@ func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertRes
 	if !ok {
 		return GetErrorResponse("unsupported ticketing tool."), fmt.Errorf("unsupported tool: %s", configuration.Tool)
 	}
+	encodeJiraTicketFields(ctx, configuration, &ticket)
 	ticket, err = manager.Create(ctx, configuration, ticket)
 
 	if err != nil {
@@ -392,7 +414,12 @@ func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertRes
 	}, nil
 }
 
-func checkIfTicketExistsAndAddComment(ctx *gin.Context, configuration models.TicketConfigurations, referenceId string) ([]models.Ticket, error) {
+// checkIfTicketExistsAndAddComment looks for tickets already created for the
+// same reference, scoped to the requesting tenant, integration and project so
+// a ticket from another integration/repo (or another tenant) can never satisfy
+// the dedup. The project filter is skipped when the request has no project_key
+// (tools where it's optional).
+func checkIfTicketExistsAndAddComment(ctx *gin.Context, configuration models.TicketConfigurations, ticket models.Ticket) ([]models.Ticket, error) {
 	dbManager, err := database.GetDatabaseManager()
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable: %v", err)
@@ -403,8 +430,10 @@ func checkIfTicketExistsAndAddComment(ctx *gin.Context, configuration models.Tic
 		SELECT id, platform, title, ticket_id, integration_id, reference_id,
 		       severity, status, url, description, project_key
 		FROM tickets
-		WHERE reference_id = $1 AND platform = $2`,
-		referenceId, configuration.Tool)
+		WHERE reference_id = $1 AND platform = $2 AND tenant = $3
+		  AND integration_id = $4
+		  AND ($5 = '' OR project_key = $5)`,
+		ticket.ReferenceID, configuration.Tool, ticket.Tenant, ticket.IntegrationID, ticket.ProjectKey)
 	if err != nil {
 		slog.Error("Error querying existing tickets", "error", err)
 		return nil, err

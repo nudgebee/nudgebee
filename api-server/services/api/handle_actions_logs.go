@@ -70,7 +70,13 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		if request.LogProviderSource == "" {
+		// Only default the source to "agent" when no provider override was sent.
+		// When the caller specifies a provider (Query Logs provider switcher),
+		// leave the source empty so GetLogsQuery resolves the real integration
+		// source — matching the logs_list path. Forcing "agent" here would 400
+		// on SaaS providers whose only valid source is "user" (datadog, loggly,
+		// newrelic, dynatrace, solarwinds, observe, azure_app_insights, …).
+		if request.LogProvider == "" && request.LogProviderSource == "" {
 			request.LogProviderSource = "agent"
 		}
 		err = common.ValidateStruct(request)

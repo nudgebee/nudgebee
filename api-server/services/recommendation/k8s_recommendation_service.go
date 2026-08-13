@@ -66,6 +66,34 @@ func clearRecommendationData(ctx *security.RequestContext, dbms *database.Databa
 	return nil
 }
 
+// archiveRecommendationsForInactiveResources archives Open recommendations whose
+// target resource has been marked inactive (deleted from the cluster/cloud). The
+// per-producer clear-then-upsert cycle normally retires stale rows, but it only
+// runs for accounts whose agent connected within the last day — an account whose
+// agent goes away keeps its last batch of recommendations Open forever. This sweep
+// runs across all accounts, outside that gate, so recommendations for dead
+// resources are retired regardless of agent connectivity. InProgress rows are
+// deliberately left alone: they may have an in-flight resolution attached.
+func archiveRecommendationsForInactiveResources(ctx *security.RequestContext, dbms *database.DatabaseManager) error {
+	res, err := dbms.Db.Exec(`update recommendation r
+	set
+		status = $1
+	from cloud_resourses cr
+	where
+		cr.id = r.resource_id
+		and cr.is_active = false
+		and r.status = $2`, models.RecommendationStatusArchive, models.RecommendationStatusOpen)
+	if err != nil {
+		ctx.GetLogger().Error("error archiving recommendations for inactive resources", "error", err)
+		return err
+	}
+	if count, err := res.RowsAffected(); err == nil && count > 0 {
+		ctx.GetLogger().Info("archived recommendations for inactive resources", "count", count)
+	}
+
+	return nil
+}
+
 func upsertRecommendationData(ctx *security.RequestContext, dbms *database.DatabaseManager, accountId string, data []map[string]any) error {
 	if len(data) == 0 {
 		return nil
@@ -407,14 +435,19 @@ const imageScanMaxConcurrent = 2
 // stay bounded by imageScanMaxConcurrent (and the agent's own cap).
 const imageScanBatchLimit = 25
 
-// imageScanFreshDays / imageScanFailedRetryDays define the incremental re-scan
-// windows keyed off the image_scan_summary row's updated_at: a successfully
-// scanned image (clean or vulnerable) is re-scanned after imageScanFreshDays to
-// catch newly-disclosed CVEs; a failed scan retries sooner so a transient
-// failure isn't hidden for a full week, but not so soon it hot-loops.
+// imageScanFreshDays / imageScanFailedRetryDays / imageScanUnscannableRetryDays
+// define the incremental re-scan windows keyed off the image_scan_summary row's
+// updated_at: a successfully scanned image (clean or vulnerable) is re-scanned
+// after imageScanFreshDays to catch newly-disclosed CVEs; a failed scan retries
+// sooner so a transient failure isn't hidden for a full week, but not so soon it
+// hot-loops; an unscannable scan (the image couldn't be pulled — see
+// imageScanStatusUnscannable) backs off to the long window because a missing
+// node-local image or absent registry credential rarely resolves within a day,
+// so retrying daily just re-wedges the same doomed Job every cycle.
 const (
-	imageScanFreshDays       = 7
-	imageScanFailedRetryDays = 1
+	imageScanFreshDays            = 7
+	imageScanFailedRetryDays      = 1
+	imageScanUnscannableRetryDays = 7
 )
 
 // runImageScannerServerOrchestrated picks a prioritized batch of images that are
@@ -483,7 +516,7 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 		scan_state AS (
 			SELECT account_object_id AS image,
 				updated_at AS last_scanned,
-				(recommendation->>'status' = 'failed') AS last_failed
+				recommendation->>'status' AS last_status
 			FROM recommendation
 			WHERE cloud_account_id = $1
 				AND tenant_id = $2
@@ -495,12 +528,13 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 		FROM running_images ri
 		LEFT JOIN scan_state s ON s.image = ri.image
 		WHERE s.last_scanned IS NULL
-			OR s.last_scanned < now() - (CASE WHEN s.last_failed
-			                                  THEN make_interval(days => $3)
-			                                  ELSE make_interval(days => $4) END)
+			OR s.last_scanned < now() - (CASE
+			                                  WHEN s.last_status = 'unscannable' THEN make_interval(days => $3)
+			                                  WHEN s.last_status = 'failed'      THEN make_interval(days => $4)
+			                                  ELSE make_interval(days => $5) END)
 		ORDER BY (s.last_scanned IS NULL) DESC, s.last_scanned ASC
-		LIMIT $5
-	`, accountId, tenantId, imageScanFailedRetryDays, imageScanFreshDays, imageScanBatchLimit)
+		LIMIT $6
+	`, accountId, tenantId, imageScanUnscannableRetryDays, imageScanFailedRetryDays, imageScanFreshDays, imageScanBatchLimit)
 	if err != nil {
 		return fmt.Errorf("image_scanner: query pending images: %w", err)
 	}
@@ -762,6 +796,17 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return GenerateRecommendationResponse{}, err
+	}
+
+	// Runs before the per-account loop on purpose: the loop skips accounts with
+	// no recently-connected agent, and those are exactly the accounts whose
+	// stale recommendations nothing else will ever retire. Restricted to the
+	// global (cron) invocation so a tenant-scoped single-account refresh never
+	// writes outside its own scope.
+	if len(request.AccountId) == 0 {
+		if err := archiveRecommendationsForInactiveResources(ctx, dbms); err != nil {
+			ctx.GetLogger().Error("error archiving recommendations for inactive resources", "error", err)
+		}
 	}
 
 	type accountInfo struct {

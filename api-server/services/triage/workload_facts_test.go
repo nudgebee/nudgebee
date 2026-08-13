@@ -93,3 +93,25 @@ func TestBuildEventContextIncludesFacts(t *testing.T) {
 		t.Errorf("missing workload facts:\n%s", out)
 	}
 }
+
+// TestBuildEventContextOmitsCluster guards the cross-cluster reasoning-leak fix: the class key has
+// no cluster component, so a verdict minted from one cluster is served to every cluster in the
+// tenant. The concrete cluster name must NOT be fed to the classifier (it previously got echoed
+// into the cached reasoning and surfaced verbatim in a different cluster's RCA). The namespace,
+// which IS part of the class key, must still be present.
+func TestBuildEventContextOmitsCluster(t *testing.T) {
+	s := func(v string) *string { return &v }
+	ev := &models.Event{
+		Title:            "Job nudgebee-agent/popeye-scan-00947d98 failed",
+		AggregationKey:   s("job_failure"),
+		SubjectNamespace: s("nudgebee-agent"),
+		Cluster:          s("k8s-dev"),
+	}
+	out := buildEventContext(ev, workloadFacts{})
+	if strings.Contains(out, "k8s-dev") {
+		t.Errorf("cluster identity must not appear in classifier context (cross-cluster verdict cache):\n%s", out)
+	}
+	if !strings.Contains(out, "namespace nudgebee-agent") {
+		t.Errorf("namespace (part of the class key) must remain in context:\n%s", out)
+	}
+}

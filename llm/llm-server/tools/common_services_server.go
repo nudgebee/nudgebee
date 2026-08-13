@@ -200,30 +200,45 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		p.limit = newLimit
 	}
 
-	logRequest := services_server.LogQueryRequest{
-		Query:        "",
-		Limit:        p.limit,
-		StartTime:    p.startTime,
-		EndTime:      p.endTime,
-		AccountId:    ctx.AccountId,
-		Offset:       p.offset,
-		Request:      p.request,
-		Index:        p.index,
-		QueryRequest: &services_server.LogsQueryBuilderRequest{Where: where},
+	idx := p.index
+	if idx == "" {
+		idx = logProvider.DefaultIndex
 	}
 
-	// Dev-only escape hatch: when an operator pins a provider via
-	// LLM_SERVER_LOG_PROVIDER_OVERRIDE (local setups with no integration rows for
-	// services-server to resolve), forward it so the query targets that backend.
-	if strings.TrimSpace(config.Config.LLMServerLogProviderOverride) != "" {
+	logRequest := services_server.LogQueryRequest{
+		Query:             "",
+		Limit:             p.limit,
+		StartTime:         p.startTime,
+		EndTime:           p.endTime,
+		AccountId:         ctx.AccountId,
+		LogProvider:       logProvider.Provider,
+		LogProviderSource: logProvider.IntegrationSource,
+		Offset:            p.offset,
+		Request:           p.request,
+		Index:             idx,
+		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
+		// Opt into label-name validation: on an empty/failed result the agent gets
+		// an actionable error naming the mistyped label instead of a silent empty
+		// result, so it can self-correct. Only meaningful on this canonical path,
+		// which sends the structured where-clause services-server validates.
+		ValidateRequest: false,
+	}
+
+	// Escape hatch: a pinned provider (env var or per-request override) may have no
+	// integration row for services-server to resolve, so forward it explicitly.
+	if strings.TrimSpace(config.Config.LLMServerLogProviderOverride) != "" ||
+		strings.TrimSpace(ctx.QueryConfig.LogProviderOverride) != "" {
 		logRequest.LogProvider = logProvider.Provider
 		logRequest.LogProviderSource = logProvider.IntegrationSource
 	}
 
+	slog.Info("executeFetchLogsCanonical: sending LogQueryRequest", "account_id", ctx.AccountId, "provider", logProvider.Provider, "where", where, "index", idx)
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
 	if err != nil {
+		slog.Warn("executeFetchLogsCanonical: QueryLogs returned error", "error", err)
 		return core.ObservabilityLogResponse{}, err
 	}
+	slog.Info("executeFetchLogsCanonical: QueryLogs complete", "log_count", len(logs.Logs), "suggestion", logs.Suggestion)
 	return logs, nil
 }
 
@@ -243,6 +258,35 @@ func executeFetchLogLabels(accountId string, logProvider services_server.Observa
 		return core.ObservabilityLogLabelResponse{}, err
 	}
 	return labels, nil
+}
+
+// executeFetchTraceLabels returns the live label names for the account's trace
+// provider (canonical fields ∪ merged mapping ∪ backend-discovered attribute keys)
+// via the traces_list_labels action. Trace counterpart of executeFetchLogLabels.
+func executeFetchTraceLabels(accountId string, traceProvider services_server.ObservabilityProvider) ([]string, error) {
+	if traceProvider.Provider == "" {
+		return nil, errors.New("trace_provider is required")
+	}
+	tenantId, err := security.GetTenantIdFromAccountId(accountId)
+	if err != nil {
+		return nil, err
+	}
+	ctx := security.NewRequestContextForTenantAccountAdmin(tenantId, "", []string{accountId})
+	return services_server.QueryTraceLabels(*ctx, accountId, traceProvider)
+}
+
+// FetchTraceLabelKeys returns the live trace label names for prompt building,
+// degrading to an empty slice (with a warn) on error so a label-discovery failure
+// never blocks query generation. Exported for the v2 traces agent — mirrors
+// NBLogTool.QueryLabels for the log agent.
+func FetchTraceLabelKeys(accountId string, traceProvider services_server.ObservabilityProvider) []string {
+	labels, err := executeFetchTraceLabels(accountId, traceProvider)
+	if err != nil {
+		slog.Warn("traces: unable to fetch provider labels", "error", err,
+			"provider", traceProvider.Provider, "account_id", accountId)
+		return []string{}
+	}
+	return labels
 }
 
 func getProvider(accountId, providerType string) (services_server.ObservabilityProvider, error) {
@@ -346,6 +390,24 @@ func executeFetchTrace(ctx core.NbToolContext, traceProvider string, traceProvid
 	return traces, nil
 }
 
+// executeFetchTraceCanonical is the integration-agnostic (v2) trace executor: it sends
+// the canonical where-clause with an EMPTY provider so services-server resolves the
+// account's default trace provider and translates the query per its label mapping
+// (mirrors executeFetchLogsCanonical). Query is always empty and IncludeRawResult false
+// — the raw-SQL path stays on the dedicated ClickHouse agent. Reuses executeFetchTrace
+// for time/limit/offset parsing and the QueryTraces round-trip; returns errors verbatim
+// (never a soft-completion "no traces" string).
+func executeFetchTraceCanonical(ctx core.NbToolContext, queryBuilder core.TraceQueryBuilder, configs map[string]any) (core.ObservabilityTraceResponse, error) {
+	providerType := ""
+	providerSource := ""
+	// Dev-only escape hatch for local setups with no integration rows for services-server
+	// to resolve: pin the provider so the query targets that backend.
+	if override := strings.TrimSpace(config.Config.LLMServerTraceProviderOverride); override != "" {
+		providerType = override
+	}
+	return executeFetchTrace(ctx, providerType, providerSource, "", queryBuilder, configs)
+}
+
 func GetTraceProvider(accountId string) (services_server.ObservabilityProvider, error) {
 	providerFromServicesServer, err := getProvider(accountId, "traces")
 	if err == nil {
@@ -381,6 +443,27 @@ func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider
 		Provider:          metricsConnectionProvider,
 		IntegrationSource: "agent",
 	}, nil
+}
+
+// EffectiveLogProvider returns the provider for one call: request override, else
+// the account-resolved one. Callers MUST keep it a local — log tools/agents are
+// shared via 30-minute caches (custom_agent.go), so writing it back pins the
+// backend for the whole account and races parallel tool calls.
+//
+// Not lowercased, IntegrationSource left empty: api-server's getLogSource switch
+// is case-sensitive ("ES") and resolves the true source itself; forcing "agent"
+// 400s datadog and every other user-source backend.
+func EffectiveLogProvider(resolved services_server.ObservabilityProvider, requestOverride string) services_server.ObservabilityProvider {
+	override := strings.TrimSpace(requestOverride)
+	if override == "" {
+		return resolved
+	}
+	// Same backend restated: keep the resolved value — it carries Capabilities /
+	// DefaultIndex / IntegrationSource that query generation needs.
+	if strings.EqualFold(override, resolved.Provider) {
+		return resolved
+	}
+	return services_server.ObservabilityProvider{Provider: override}
 }
 
 func GetLogProvider(accountId string) (services_server.ObservabilityProvider, error) {

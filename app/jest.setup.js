@@ -70,3 +70,8 @@ global.fetch = jest.fn(() =>
     status: 200,
   })
 );
+
+// jsdom doesn't implement layout, so scrollIntoView is left unimplemented —
+// stub it so components that call it (e.g. scrolling a keyboard-highlighted
+// row into view) don't throw in tests.
+Element.prototype.scrollIntoView = jest.fn();

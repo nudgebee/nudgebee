@@ -64,7 +64,7 @@ func (t *TicketsCreateTask) Execute(taskCtx types.TaskContext, params map[string
 		return nil, err
 	}
 	if referenceId == "" {
-		referenceId = taskCtx.GetWorkflowID()
+		referenceId = resolveReferenceID(taskCtx)
 	}
 
 	ticketType, err := extractOptionalString(params, "ticket_type")
@@ -140,7 +140,29 @@ func (t *TicketsCreateTask) Execute(taskCtx types.TaskContext, params map[string
 		"status":       resp.Status,
 		"ticket_id":    resp.TicketId,
 		"url":          resp.URL,
+		"action":       resp.Action,
 	}, nil
+}
+
+// resolveReferenceID picks the dedup key for a created ticket when the
+// workflow doesn't set one explicitly: the triggering event's ID (so a
+// re-firing event comments on the existing ticket instead of opening a
+// duplicate), else a per-run key so each run creates a fresh ticket and only
+// activity retries within the run dedup. Isolated "Run Task" executions have
+// neither and return "" — the ticket server never dedups an empty reference.
+func resolveReferenceID(taskCtx types.TaskContext) string {
+	if eventID := taskCtx.GetEventID(); eventID != "" {
+		return eventID
+	}
+	wfID := taskCtx.GetWorkflowID()
+	runID := taskCtx.GetWorkflowRunID()
+	if wfID == "" {
+		return runID
+	}
+	if runID != "" {
+		return wfID + ":" + runID
+	}
+	return wfID
 }
 
 func (t *TicketsCreateTask) InputSchema() *types.Schema {
@@ -274,6 +296,11 @@ func (t *TicketsCreateTask) OutputSchema() *types.Schema {
 				Type:        types.PropertyTypeString,
 				Description: "Reference ID",
 				Required:    true,
+			},
+			"action": {
+				Type:        types.PropertyTypeString,
+				Description: "What happened: 'created' a new ticket, or 'commented' on an existing one with the same reference",
+				Required:    false,
 			},
 		},
 	}

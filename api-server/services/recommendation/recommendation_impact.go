@@ -96,14 +96,18 @@ const maxStoredDependents = 50
 // It carries what the safety UI and @finops agent need to name a dependent and
 // judge its risk — identity (namespace/name for k8s; name alone for cloud, where
 // namespace is empty and omitted), kind, environment (the production-risk
-// driver), and proximity (hops from the changed resource) — and deliberately
-// drops the graph-internal node_id, an opaque UUID of no use downstream.
+// driver), proximity (hops from the changed resource), and the connecting
+// edge's relationship + discovery sources (how the graph knows) — and
+// deliberately drops the graph-internal node_id, an opaque UUID of no use
+// downstream.
 type dependentRef struct {
-	Namespace   string `json:"namespace,omitempty"`
-	Name        string `json:"name"`
-	NodeType    string `json:"node_type"`
-	Environment string `json:"environment,omitempty"`
-	HopsAway    int    `json:"hops_away"`
+	Namespace    string   `json:"namespace,omitempty"`
+	Name         string   `json:"name"`
+	NodeType     string   `json:"node_type"`
+	Environment  string   `json:"environment,omitempty"`
+	HopsAway     int      `json:"hops_away"`
+	Relationship string   `json:"relationship,omitempty"`
+	Sources      []string `json:"sources,omitempty"`
 }
 
 // compactDependents projects a knowledge-graph blast radius into the bounded list
@@ -120,11 +124,13 @@ func compactDependents(deps []core.ImpactedService) []dependentRef {
 	out := make([]dependentRef, n)
 	for i, d := range deps[:n] {
 		out[i] = dependentRef{
-			Namespace:   d.Namespace,
-			Name:        d.Name,
-			NodeType:    string(d.NodeType),
-			Environment: d.Environment,
-			HopsAway:    d.HopsAway,
+			Namespace:    d.Namespace,
+			Name:         d.Name,
+			NodeType:     string(d.NodeType),
+			Environment:  d.Environment,
+			HopsAway:     d.HopsAway,
+			Relationship: string(d.Relationship),
+			Sources:      d.Sources,
 		}
 	}
 	return out
@@ -139,12 +145,14 @@ func buildRecommendationImpact(impact *core.ImpactSummary) recommendationImpact 
 		Band:   band,
 		Reason: reason,
 		Summary: map[string]any{
-			"dependent_count":       impact.DependentCount,
-			"production_dependents": impact.ProductionDependents,
-			"coverage_confidence":   string(impact.CoverageConfidence),
-			"truncated":             impact.Truncated,
-			"safety_reason":         reason,
-			"dependents":            compactDependents(impact.Dependents),
+			"dependent_count":         impact.DependentCount,
+			"production_dependents":   impact.ProductionDependents,
+			"coverage_confidence":     string(impact.CoverageConfidence),
+			"truncated":               impact.Truncated,
+			"safety_reason":           reason,
+			"dependents":              compactDependents(impact.Dependents),
+			"downstream_count":        impact.DownstreamCount,
+			"downstream_dependencies": compactDependents(impact.DownstreamDependencies),
 		},
 	}
 }

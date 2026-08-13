@@ -451,6 +451,7 @@ const apiAccount = {
         'servicenow',
         'pagerduty',
         'zenduty',
+        'freshdesk',
         'pagerduty_webhook',
         'zenduty_webhook',
         'prometheus_alertmanager_webhook',
@@ -636,6 +637,9 @@ const apiAccount = {
       if (update.account_name) {
         object.account_name = update.account_name;
       }
+      if (update.account_env) {
+        object.account_env = update.account_env;
+      }
       if (update.data) {
         object.data = update.data;
       }
@@ -718,6 +722,7 @@ const apiAccount = {
           provider
           provider_type
           capabilities {
+            default_index
             supports_log_groups
             supports_auto_query
             supports_raw_query
@@ -741,7 +746,7 @@ const apiAccount = {
       return error;
     }
   },
-  awsOrgOnboard: async function (bodyData: { account_name: string }) {
+  awsOrgOnboard: async function (bodyData: { account_name: string; account_env?: string }) {
     try {
       const response = await queryGraphQL(AWS_ORG_ONBOARD, 'AwsOrgOnboard', { object: bodyData });
       return response?.data;
@@ -792,6 +797,7 @@ const apiAccount = {
   },
   azureBulkOnboard: async function (data: {
     account_name: string;
+    account_env?: string;
     tenant_id: string;
     client_id: string;
     client_secret: string;

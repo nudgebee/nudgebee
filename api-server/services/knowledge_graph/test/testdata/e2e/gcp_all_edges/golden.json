@@ -3,6 +3,7 @@
     {
       "unique_key": "gcp:test-account-gcp-1:US:Storage:my-bucket:my-bucket",
       "node_type": "Storage",
+      "specific_type": "GCSBucket",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -31,11 +32,18 @@
       "query_attributes": {
         "name": "my-bucket",
         "subtype": "CloudStorage"
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "location": "US",
+        "name": "my-bucket",
+        "type": "CloudStorage"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:SecretVault:my-secret:my-secret",
       "node_type": "SecretVault",
+      "specific_type": "SecretManagerSecret",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -62,11 +70,17 @@
       "labels": {},
       "query_attributes": {
         "name": "my-secret"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "my-secret",
+        "type": "secret"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:SecurityGroup:my-fw:my-fw",
       "node_type": "SecurityGroup",
+      "specific_type": "GCPFirewall",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -97,11 +111,16 @@
       "labels": {},
       "query_attributes": {
         "name": "my-fw"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "my-fw"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
       "node_type": "ServiceIdentity",
+      "specific_type": "GCPServiceAccount",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -128,11 +147,17 @@
         "name": "sa@proj-1.iam.gserviceaccount.com",
         "service_name": "GCPIAM",
         "subtype": "GCPServiceAccount"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "sa@proj-1.iam.gserviceaccount.com",
+        "type": "GCPServiceAccount"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:Topic:my-topic:my-topic",
       "node_type": "Topic",
+      "specific_type": "PubSubTopic",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -159,11 +184,17 @@
       "labels": {},
       "query_attributes": {
         "name": "my-topic"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "my-topic",
+        "type": "PubSubTopic"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
       "node_type": "VPC",
+      "specific_type": "GCPVpc",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -190,11 +221,16 @@
       "labels": {},
       "query_attributes": {
         "name": "my-vpc"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "my-vpc"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Cache:my-cache:my-cache",
       "node_type": "Cache",
+      "specific_type": "MemorystoreInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -224,11 +260,17 @@
       "labels": {},
       "query_attributes": {
         "name": "my-cache"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "my-cache",
+        "type": "redis"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-vm:my-vm",
       "node_type": "ComputeInstance",
+      "specific_type": "GCEInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -269,11 +311,16 @@
         "name": "my-vm",
         "subtype": "ComputeEngine",
         "vpc_id": "my-vpc"
+      },
+      "ontology_attributes": {
+        "name": "my-vm",
+        "region": "us-central1"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:ContainerRegistry:my-repo:my-repo",
       "node_type": "ContainerRegistry",
+      "specific_type": "ArtifactRegistry",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -301,11 +348,16 @@
       "query_attributes": {
         "name": "my-repo",
         "region": "us-central1"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "my-repo"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:CronJob:my-cron:my-cron",
       "node_type": "CronJob",
+      "specific_type": "CronJob",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -336,11 +388,13 @@
       "labels": {},
       "query_attributes": {
         "name": "my-cron"
-      }
+      },
+      "ontology_attributes": {}
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Database:primary-db:primary-db",
       "node_type": "Database",
+      "specific_type": "CloudSQLInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -378,11 +432,17 @@
         "name": "primary-db",
         "subtype": "CloudSQL",
         "vpc_id": "my-vpc"
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "location": "us-central1",
+        "name": "primary-db"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Database:replica-db:replica-db",
       "node_type": "Database",
+      "specific_type": "CloudSQLInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -416,11 +476,17 @@
       "query_attributes": {
         "name": "replica-db",
         "subtype": "CloudSQL"
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "location": "us-central1",
+        "name": "replica-db"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:ServerlessFunction:my-service:my-service",
       "node_type": "ServerlessFunction",
+      "specific_type": "CloudRunService",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -458,11 +524,16 @@
       "labels": {},
       "query_attributes": {
         "name": "my-service"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "my-service"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Subnet:my-subnet:my-subnet",
       "node_type": "Subnet",
+      "specific_type": "GCPSubnet",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -495,6 +566,11 @@
       "query_attributes": {
         "name": "my-subnet",
         "vpc_id": "my-vpc"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "my-subnet",
+        "vpc": "my-vpc"
       }
     }
   ],

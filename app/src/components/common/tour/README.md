@@ -10,12 +10,20 @@ boundaries (e.g. a button that opens a modal that mounts later).
 
 ## Files
 
-| File                    | Role                                                                                         |
-| ----------------------- | -------------------------------------------------------------------------------------------- |
-| `tours.ts`              | **Registry.** Tours as plain data — an ordered list of steps. No logic.                      |
-| `TourProvider.tsx`      | **Engine.** One driver.js instance per run + the `useTour()` hook + the async-aware stepper. |
-| `index.ts`              | Barrel export (`TourProvider`, `useTour`, `TOURS`).                                          |
-| `../../styles/tour.css` | Brand styling, scoped to `.nb-tour-popover`. Global CSS, imported in `_app.tsx`.             |
+| File                    | Role                                                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `tours.ts`              | **Registry.** Tours as plain data — an ordered list of steps. No logic.                                        |
+| `TourProvider.tsx`      | **Engine.** One driver.js instance per run + the `useTour()` hook + the async-aware stepper.                   |
+| `tourAccess.ts`         | **Gate.** `canAccessTour(tour)` — resolves `requires` / `requiresFeature` / `requiresUiFeature`. See _Gating_. |
+| `useLaunchGuide.ts`     | `launch(tourId)` — navigates to the tour's `route` first, then starts it.                                      |
+| `TourLauncher.jsx`      | The contextual "How to …" ghost button. Self-gates via `canAccessTour`.                                        |
+| `index.ts`              | Barrel export (`TourProvider`, `useTour`, `TOURS`, `canAccessTour`, …).                                        |
+| `../../styles/tour.css` | Brand styling, scoped to `.nb-tour-popover`. Global CSS, imported in `_app.tsx`.                               |
+
+Four surfaces launch guides, and **all four gate through `canAccessTour`**: the
+central catalog (`onboarding/GuidesMenu.jsx`), the contextual `TourLauncher`,
+the first-visit offer (`onboarding/SectionFirstVisitTour.jsx`), and the
+product-updates drawer (`common/widgets/ProductUpdatesDrawerContent.tsx`).
 
 The provider is mounted once in [`_app.tsx`](../../../pages/_app.tsx) inside the
 authenticated tree, so any component can launch a tour.
@@ -82,7 +90,14 @@ function MyToolbar() {
    };
    ```
 
-3. **Add a launcher** wherever it makes sense (`useTour().start('invite-team')`).
+3. **Gate it to match the button it drives** — set `requires` (and
+   `requiresFeature`) by reading the target button's actual gate expression. See
+   [_Gating a guide_](#gating-a-guide-permissions); the defaults are easy to get
+   subtly wrong.
+
+4. **Add a launcher** wherever it makes sense — or nothing at all: giving the
+   tour a `module` is enough for it to appear in the central Guides catalog
+   automatically.
 
 > Tip: if advancing a step has a _destructive or irreversible_ side-effect (e.g.
 > a "Next" that actually creates a record, like the cluster-connect "Next"),
@@ -100,6 +115,84 @@ That's it — no engine changes.
 | `side` / `align`        |          | Popover placement relative to the element.                                                                                                                       |
 | `onBeforeNext`          |          | Side-effect to run when advancing _from_ this step (e.g. click a button to open a modal). Awaited. The engine then waits for the next step's `element` to mount. |
 | `optional`              |          | If the element isn't on screen, **skip** the step instead of ending the tour (e.g. a field that only renders under certain tenant config).                       |
+
+## Gating a guide (permissions)
+
+A guide walks a user through _doing_ something, so it should be offered to
+exactly the users who can do it — no more, no less. `canAccessTour` in
+`tourAccess.ts` enforces this, and every launch surface calls it.
+
+**The rule: mirror the gate on the button your guide drives.** Open the target
+component, read its gate expression, and pick the matching capability. Getting
+this wrong fails in one of two directions — both have shipped:
+
+| `requires`        | Resolves to         | Use when the button is gated on | Effectively                  |
+| ----------------- | ------------------- | ------------------------------- | ---------------------------- |
+| _omitted_         | always true         | nothing — a read-only tour      | everyone                     |
+| `'write'`         | `hasWriteAccess()`  | `hasWriteAccess()` (no args)    | **tenant_admin only**        |
+| `'account-write'` | write on ≥1 account | `hasWriteAccess(accountId)`     | tenant_admin + account_admin |
+
+> **`hasWriteAccess()` with no args is not "any write access" — it is
+> `isTenantAdmin()`.** With no `accountId`, the only branch that can return true
+> is the `tenant_admin` one (`accountIds.includes(undefined)` is always false).
+> This is the trap: an account-scoped button (`hasWriteAccess(accountId)`) paired
+> with `requires: 'write'` hides the guide from the `account_admins` who _can see
+> the button_ — a live button with no guide.
+
+`'account-write'` is an **any-account** check, because the Guides catalog is
+global and can't know which account the guide will land on. An account_admin of
+account X browsing account Y still sees the guide; the tour then ends cleanly
+when the gated button doesn't mount. That's the lesser evil.
+
+### `requiresFeature` — opt-in flags only
+
+`requiresFeature: '<feature_id>'` hides the guide unless the tenant flag is on.
+It resolves via `hasFeatureAccessCached`, which is **fail-closed**: it needs an
+explicit `status === 'enabled'` row.
+
+> **Never use it for an opt-OUT (default-on) flag.** Those tenants have _no row_,
+> which reads as "off" — hiding the guide from everyone who has the feature. If
+> the surface renders for everyone by default, gate the guide on nothing. (This
+> is why the Knowledge Graph guide is ungated despite
+> `TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH` existing.)
+
+Two more traps:
+
+- **Warm the cache.** `hasFeatureAccessCached` returns false until
+  `fetchFeatureFlagsForTenant()` resolves. `GuidesMenu`, `SectionFirstVisitTour`
+  and the product-updates drawer warm it and re-render; **a bare `TourLauncher`
+  does not** — so don't put `requiresFeature` on a guide launched only from one.
+- **Env vars are not feature flags.** `UI_ENABLE_LLM_ANALYSER` /
+  `UI_ENABLE_LLM_GATEWAY` are per-**deployment** `process.env` values, not tenant
+  `feature_id`s, so they never reach `featureflags_list` and `requiresFeature`
+  cannot gate on them. Use `requiresUiFeature` instead.
+
+### `requiresUiFeature` — deployment-level toggles
+
+`requiresUiFeature: 'llmAnalyser' | 'llmGateway'` hides the guide unless the
+deployment has that `UI_ENABLE_*` env var on. Use it when a surface is gated on a
+`UI_ENABLE_*` var — the LLM Analyser and AI Gateway tabs are the current cases.
+
+The values reach the client on the **session** (`uiFeatures` in `[...nextauth].ts`),
+read from `process.env` in the session callback — which runs server-side on every
+session fetch, so flipping the pod's env takes effect without a rebuild or a
+re-login. `isUiFeatureEnabled` reads them synchronously; unlike `requiresFeature`,
+**there is nothing to warm**.
+
+> **Don't promote these via `next.config.js` `env:`.** That inlines at _build_
+> time and would freeze the value into the image, breaking per-environment
+> toggling — these arrive at runtime from the pod's secret. (`NUDGEBEE_DEPLOYMENT_MODE`
+> is in that block precisely because it _is_ build-time.)
+
+Which gate do you need?
+
+| The surface is gated on…                | Use                 | Per        |
+| --------------------------------------- | ------------------- | ---------- |
+| a role (`hasWriteAccess…`)              | `requires`          | user       |
+| a tenant flag (`hasFeatureAccess('X')`) | `requiresFeature`   | tenant     |
+| a `UI_ENABLE_*` env var                 | `requiresUiFeature` | deployment |
+
+The rules above are pinned by `__tests__/components/common/tour/tourAccess.test.ts`.
 
 ## How the engine works (the two helpers)
 

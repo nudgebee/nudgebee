@@ -412,25 +412,49 @@ export function totalsToKpi(t: UsageTotals | undefined): KpiTotals {
 const MAX_SERIES = 8;
 
 /**
- * Ordered, de-duped bucket labels spanning [startDate, endDate] at granularity g.
- * Walks day-by-day and collapses each day to its granularity label (via the same
- * `bucketKey` the rows use), so day/week/month are handled uniformly and flat
- * periods still appear as zero buckets rather than being dropped.
+ * Ordered bucket spans across [startDate, endDate] at granularity g. Walks
+ * day-by-day and collapses each day to its granularity label (via the same
+ * `bucketKey` the rows use), tracking the first and last day that falls in each
+ * bucket *within the selected range* — so day/week/month are handled uniformly,
+ * flat periods still appear as zero buckets, and partial edge buckets (a week or
+ * month clipped by the range) span only their visible days. `bucketLabels` and
+ * `bucketDateRanges` both derive from this, keeping the chart's x-axis labels and
+ * each column's drill-down date range index-aligned.
  */
-function bucketLabels(startDate: string, endDate: string, g: Granularity): string[] {
-  const labels: string[] = [];
-  const seen = new Set<string>();
+function bucketSpans(startDate: string, endDate: string, g: Granularity): { label: string; startDate: string; endDate: string }[] {
+  const order: { label: string; startDate: string; endDate: string }[] = [];
+  const byLabel = new Map<string, { label: string; startDate: string; endDate: string }>();
   let ms = Date.parse(`${startDate}T00:00:00Z`);
   const end = Date.parse(`${endDate}T00:00:00Z`);
-  if (Number.isNaN(ms) || Number.isNaN(end)) return labels;
+  if (Number.isNaN(ms) || Number.isNaN(end)) return order;
   for (let guard = 0; ms <= end && guard < 1000; guard++, ms += DAY_MS) {
-    const label = bucketKey(new Date(ms).toISOString(), g);
-    if (!seen.has(label)) {
-      seen.add(label);
-      labels.push(label);
+    const iso = new Date(ms).toISOString();
+    const label = bucketKey(iso, g);
+    const day = iso.slice(0, 10);
+    const span = byLabel.get(label);
+    if (span) {
+      span.endDate = day;
+    } else {
+      const next = { label, startDate: day, endDate: day };
+      byLabel.set(label, next);
+      order.push(next);
     }
   }
-  return labels;
+  return order;
+}
+
+/** Ordered, de-duped bucket labels spanning [startDate, endDate] at granularity g. */
+function bucketLabels(startDate: string, endDate: string, g: Granularity): string[] {
+  return bucketSpans(startDate, endDate, g).map((s) => s.label);
+}
+
+/**
+ * Per-bucket `{ startDate, endDate }` drill range, index-aligned with the chart's
+ * columns (see `bucketsToSeries`), so a click on column i re-scopes the report to
+ * `bucketDateRanges(...)[i]`. Day buckets collapse to a single day.
+ */
+export function bucketDateRanges(startDate: string, endDate: string, g: Granularity): { startDate: string; endDate: string }[] {
+  return bucketSpans(startDate, endDate, g).map(({ startDate, endDate }) => ({ startDate, endDate }));
 }
 
 /**

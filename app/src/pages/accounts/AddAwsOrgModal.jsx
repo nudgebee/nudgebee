@@ -13,6 +13,7 @@ import { toast as snackbar } from '@ui/Toast';
 import { ds } from 'src/utils/colors';
 import { CopyIconBlue } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 
 const STATUS_COLORS = {
   active: ds.green[400],
@@ -24,6 +25,7 @@ const STATUS_COLORS = {
 const AddAwsOrgModal = ({ open, onClose }) => {
   const [step, setStep] = useState(1); // 1=name, 2=token+params+status
   const [accountName, setAccountName] = useState('');
+  const [accountEnv, setAccountEnv] = useState(DEFAULT_ACCOUNT_ENV);
   const [validationError, setValidationError] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -50,6 +52,7 @@ const AddAwsOrgModal = ({ open, onClose }) => {
   const resetForm = () => {
     setStep(1);
     setAccountName('');
+    setAccountEnv(DEFAULT_ACCOUNT_ENV);
     setValidationError({});
     setIsSubmitting(false);
     setVerificationToken('');
@@ -89,7 +92,7 @@ const AddAwsOrgModal = ({ open, onClose }) => {
   const handleGenerateToken = () => {
     setIsSubmitting(true);
     apiAccount
-      .awsOrgOnboard({ account_name: accountName })
+      .awsOrgOnboard({ account_name: accountName, account_env: accountEnv })
       .then((res) => {
         const data = res?.data?.accounts_create_aws_org;
         if (data) {
@@ -175,6 +178,9 @@ const AddAwsOrgModal = ({ open, onClose }) => {
               error={validationError.accountName || undefined}
               disabled={isSubmitting}
             />
+            <Box sx={{ mt: ds.space[4] }}>
+              <AccountEnvToggle id='org-account-env' label='Environment:' value={accountEnv} onChange={setAccountEnv} disabled={isSubmitting} />
+            </Box>
           </Box>
         </Grid>
       </Grid>

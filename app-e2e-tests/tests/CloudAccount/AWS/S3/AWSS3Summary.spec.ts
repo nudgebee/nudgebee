@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS S3 -> Summary", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabS3).toBeVisible();
-  await locators.AnchorTabS3.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.S3Summary.click();
+      await locators.navigateToSubTab(locators.AnchorTabS3, locators.S3Summary, locators.S3SummaryUrl);
       await page.waitForLoadState("networkidle");
     },
     {

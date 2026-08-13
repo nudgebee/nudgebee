@@ -19,6 +19,16 @@ import (
 // Engine holds the embedded Bifrost core client.
 type Engine struct {
 	Client *bifrost.Bifrost
+	// hasCred reports whether an operator/account credential is configured for a
+	// provider — the set of providers that produced a usable credential at init.
+	hasCred map[schemas.ModelProvider]bool
+}
+
+// HasProviderCred reports whether an operator/account credential is configured for the
+// provider. The proxy uses this to return a clear 403 when neither a per-request
+// (tenant) key nor an operator key exists, instead of calling the provider keyless.
+func (e *Engine) HasProviderCred(p schemas.ModelProvider) bool {
+	return e.hasCred[p]
 }
 
 // New initialises the embedded core with the NB account. It accepts one or more
@@ -57,7 +67,11 @@ func New(ctx context.Context, providerCreds []ProviderCredsConfig) (*Engine, err
 	if err != nil {
 		return nil, fmt.Errorf("engine: bifrost init: %w", err)
 	}
-	return &Engine{Client: client}, nil
+	hasCred := make(map[schemas.ModelProvider]bool, len(providers))
+	for _, p := range providers {
+		hasCred[p] = true
+	}
+	return &Engine{Client: client, hasCred: hasCred}, nil
 }
 
 // Shutdown releases core resources (drains queues, closes providers).

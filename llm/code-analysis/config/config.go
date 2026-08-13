@@ -85,6 +85,16 @@ type AgentConfig struct {
 	MaxSearchResults   int           `mapstructure:"max_search_results"`
 	BuildVerifyEnabled bool          `mapstructure:"build_verify_enabled"`
 	BuildVerifyTimeout time.Duration `mapstructure:"build_verify_timeout"`
+	// HarnessVerify switches fix-mode verification from LLM-run builds (graded by
+	// pattern-matching the fixer's command history) to a deterministic harness-run
+	// build of the modules the diff touched, with verbatim output as feedback.
+	// Review becomes advisory and rejected attempts iterate forward without revert.
+	HarnessVerify bool `mapstructure:"harness_verify"`
+	// InloopVerify (requires HarnessVerify) runs the harness verification as a
+	// gate on the fixer's submit_analysis: a failure feeds the verbatim build
+	// output back into the SAME ReAct session instead of starting a fresh fixer
+	// attempt — preserving state, cache prefix, and everything already learned.
+	InloopVerify bool `mapstructure:"inloop_verify"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -149,6 +159,8 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("agent.max_search_results", 20)
 	viper.SetDefault("agent.build_verify_enabled", true)
 	viper.SetDefault("agent.build_verify_timeout", "5m")
+	viper.SetDefault("agent.harness_verify", false)
+	viper.SetDefault("agent.inloop_verify", false)
 
 	// Load secrets file if it exists (e.g., secrets.yaml or secrets.json)
 	// This file should contain sensitive information and should not be committed to VCS.
@@ -185,6 +197,8 @@ func LoadConfig() (*Config, error) {
 	_ = viper.BindEnv("server.port", "SERVER_PORT")
 
 	// Explicitly bind environment variables for LLM config (consistent with llm-server)
+	_ = viper.BindEnv("agent.harness_verify", "AGENT_HARNESS_VERIFY")
+	_ = viper.BindEnv("agent.inloop_verify", "AGENT_INLOOP_VERIFY")
 	_ = viper.BindEnv("llm_provider", "LLM_PROVIDER")
 	_ = viper.BindEnv("llm_model_name", "LLM_MODEL_NAME")
 	// Also support LLM_MODEL for backward compatibility

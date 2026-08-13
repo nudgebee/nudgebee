@@ -171,12 +171,13 @@ func (s *dbSink) run() {
 var usageColumns = []string{
 	"id", "created_at", "tenant_id", "account_id", "user_id", "token_id",
 	"session_id", "attributes",
-	"provider", "model", "requested_provider", "requested_model",
+	"provider", "model", "requested_provider", "requested_model", "responded_model",
 	"routing_reason", "routing_rule",
 	"method", "path", "streaming",
 	"status_code", "latency_ms", "request_id",
 	"input_tokens", "output_tokens", "total_tokens",
 	"cache_read_tokens", "cache_write_tokens", "service_tier",
+	"cost_usd",
 }
 
 // insert writes a batch as a single multi-row INSERT. DatabaseManager.Exec
@@ -205,12 +206,13 @@ func (s *dbSink) insert(evs []UsageEvent) error {
 		args = append(args,
 			ev.ID, ev.CreatedAt, ev.TenantID, ev.AccountID, ev.UserID, ev.TokenID,
 			ev.SessionID, ev.Attributes,
-			ev.Provider, ev.Model, ev.RequestedProvider, ev.RequestedModel,
+			ev.Provider, ev.Model, ev.RequestedProvider, ev.RequestedModel, ev.RespondedModel,
 			ev.RoutingReason, ev.RoutingRule,
 			ev.Method, ev.Path, ev.Streaming,
 			ev.StatusCode, ev.LatencyMS, ev.RequestID,
 			ev.InputTokens, ev.OutputTokens, ev.TotalTokens,
 			ev.CacheReadTokens, ev.CacheWriteTokens, ev.ServiceTier,
+			ev.CostUsd,
 		)
 	}
 	// Rebind $N -> the driver's placeholder style (no-op for Postgres, ? for

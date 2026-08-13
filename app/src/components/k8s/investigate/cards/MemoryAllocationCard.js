@@ -336,7 +336,7 @@ class MemoryAllocationCard {
       if (cpuObject) {
         const reqBase = cpuObject.cpu_request > 0 ? cpuObject.cpu_request : cpuPeak;
         data['cpu'] = {
-          request: reqBase > 0 ? reqBase : undefined,
+          request: reqBase > 0 ? Number(reqBase).toFixed(4) : undefined,
           limit: undefined,
           oldRequest: cpuObject.cpu_request || 0,
           oldLimit: undefined,

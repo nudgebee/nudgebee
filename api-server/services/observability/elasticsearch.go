@@ -341,22 +341,44 @@ func (e *ElasticSource) ExtractRawResponseString(resp any) (string, error) {
 	}
 }
 
-func ParseSourceMap(src map[string]any) (OutputLog, bool) {
-	ts, ok := src["@timestamp"].(string)
-	if !ok || strings.TrimSpace(ts) == "" {
-		if tsVal, exists := src["@timestamp"]; exists {
-			ts = fmt.Sprintf("%v", tsVal)
-		} else {
-			return OutputLog{}, false
+func extractTimestamp(src map[string]any) string {
+	for _, key := range []string{"@timestamp", "time", "timestamp", "datetime"} {
+		if val, exists := src[key]; exists && val != nil {
+			str := strings.TrimSpace(fmt.Sprintf("%v", val))
+			if str != "" && str != "<nil>" {
+				return str
+			}
 		}
 	}
+	return ""
+}
 
-	// Message: Fluent-Bit/ECS docs carry it at top-level "log"; OTel-native docs
-	// (data stream logs-generic.otel-default) carry it at body.text — or a bare
-	// string "body". Fall back to the OTel shape so those hits are not dropped.
-	msg, ok := src["log"].(string)
+func ParseSourceMap(src map[string]any) (OutputLog, bool) {
+	ts := extractTimestamp(src)
+	if ts == "" {
+		return OutputLog{}, false
+	}
+
+	// Message: ECS/Filebeat/Elastic Agent carry it at top-level "message";
+	// Fluent-Bit carries it at top-level "log"; OTel-native docs carry it at
+	// body.text — or a bare string "body".
+	msg, ok := src["message"].(string)
+	if !ok || strings.TrimSpace(msg) == "" {
+		msg, ok = src["log"].(string)
+	}
 	if !ok || strings.TrimSpace(msg) == "" {
 		msg = otelBodyText(src)
+	}
+	if strings.TrimSpace(msg) == "" {
+		msg, _ = src["message"].(string)
+	}
+	// Still nothing recognisable as a line: the document is a real event that
+	// simply has no message field (Packetbeat network_traffic.*, and other Elastic
+	// integrations that match a logs-* pattern while carrying only structured
+	// fields). Render the whole _source as the line rather than dropping the hit,
+	// so those datasets are visible instead of silently returning nothing.
+	if strings.TrimSpace(msg) == "" {
+		msg = sourceAsMessage(src)
 	}
 	if strings.TrimSpace(msg) == "" {
 		return OutputLog{}, false
@@ -403,7 +425,7 @@ func ParseSourceMap(src map[string]any) (OutputLog, bool) {
 		}
 	default:
 		for k, v := range src {
-			if k == "@timestamp" || k == "stream" || k == "log" {
+			if k == "@timestamp" || k == "time" || k == "timestamp" || k == "datetime" || k == "stream" || k == "log" || k == "message" {
 				continue
 			}
 			if v != nil {
@@ -427,6 +449,31 @@ func otelBodyText(src map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// sourceAsMessage renders a document's _source as a compact JSON string, for use
+// as the log line when the document carries no message field of its own.
+// @timestamp is omitted — OutputLog already carries it in its own field, so
+// repeating it in the line is noise. Returns "" when nothing else remains, so a
+// document that is only a timestamp (or is empty) is still dropped rather than
+// rendered as "{}". Keys are emitted sorted: encoding/json orders map keys, so
+// the same document always renders identically.
+func sourceAsMessage(src map[string]any) string {
+	rest := make(map[string]any, len(src))
+	for k, v := range src {
+		if k == "@timestamp" {
+			continue
+		}
+		rest[k] = v
+	}
+	if len(rest) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(rest)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // otelIOStream returns attributes.log.iostream ("stdout"/"stderr") from an OTel doc.
@@ -858,6 +905,11 @@ func (e *ElasticSource) QueryLogGroup(ctx *security.RequestContext, req FetchLog
 				"levels": map[string]any{
 					"terms": map[string]any{"field": "level", "size": 10},
 				},
+				// When the pattern was last seen. Without it every group reports the
+				// end of the query window and the UI shows one time for every row.
+				"last_seen": map[string]any{
+					"max": map[string]any{"field": "@timestamp"},
+				},
 			},
 		},
 	}
@@ -890,6 +942,33 @@ func (e *ElasticSource) QueryLogGroup(ctx *security.RequestContext, req FetchLog
 	}
 
 	return parseESLogGroupResponse(rawJSON, req.EndTime)
+}
+
+// esBucketLastSeenUnix reads the last_seen sub-aggregation off a log group bucket
+// as unix seconds, falling back to the end of the query window when the bucket has
+// no usable reading.
+//
+// Note the unit change: a max over a date field comes back as epoch millis, and the
+// group's Timestamps are seconds (the UI multiplies them by 1000). endTime is
+// millis for the same reason the range filter declares epoch_millis.
+func esBucketLastSeenUnix(bucket map[string]any, endTime int64) int64 {
+	agg, ok := bucket["last_seen"].(map[string]any)
+	if !ok {
+		return logGroupWindowEndUnix(endTime)
+	}
+
+	if v, ok := agg["value"].(float64); ok && v > 0 {
+		return int64(v) / 1000
+	}
+
+	// A date field mapped as a string aggregates to value_as_string only.
+	if s, ok := agg["value_as_string"].(string); ok {
+		if ts := logLastSeenUnix(s); ts > 0 {
+			return ts
+		}
+	}
+
+	return logGroupWindowEndUnix(endTime)
 }
 
 // parseESLogGroupResponse parses ES aggregation response into LogGroupOutput.
@@ -926,7 +1005,7 @@ func parseESLogGroupResponse(rawJSON string, endTime int64) (LogGroupOutput, err
 
 		group := LogGroup{
 			Sample:     message,
-			Timestamps: []int64{endTime},
+			Timestamps: []int64{esBucketLastSeenUnix(bucket, endTime)},
 			Values:     []float64{count},
 			Count:      int64(math.Round(count)),
 		}

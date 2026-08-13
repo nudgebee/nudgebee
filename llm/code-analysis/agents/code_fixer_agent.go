@@ -110,6 +110,13 @@ func (a *CodeFixerAgent) ExecuteWithRevert(ctx context.Context, sessionCtx *sess
 	return a.executeWithOptions(ctx, sessionCtx, auditFindings, true, reviewFeedback)
 }
 
+// ExecuteWithFeedback reworks a fix with verification/review feedback while
+// KEEPING the working tree — the attempt iterates forward on its own edits
+// instead of reverting and rediscovering them (the dominant fix-mode token waste).
+func (a *CodeFixerAgent) ExecuteWithFeedback(ctx context.Context, sessionCtx *session.SessionContext, auditFindings map[string]any, reviewFeedback string) (map[string]any, error) {
+	return a.executeWithOptions(ctx, sessionCtx, auditFindings, false, reviewFeedback)
+}
+
 // executeWithOptions is the internal implementation with revert capabilities
 func (a *CodeFixerAgent) executeWithOptions(ctx context.Context, sessionCtx *session.SessionContext, auditFindings map[string]any, shouldRevert bool, reviewFeedback string) (map[string]any, error) {
 	actionType := "implementing fix"
@@ -159,6 +166,20 @@ func (a *CodeFixerAgent) executeWithOptions(ctx context.Context, sessionCtx *ses
 	systemPrompt, err := a.buildTemplatePrompt(auditFindings, sessionCtx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build template prompt: %w", err)
+	}
+
+	// Knowledge carry-over (see Ledger.SeedFrom): seed the next Plan with the
+	// previous attempt's ledger plus the reviewer feedback as an explicit open
+	// question, so a rework starts from what it already established instead of
+	// re-investigating from step 1. Composes with the specialist handoff the
+	// orchestrator stages via SetSeedLedger before the fix loop.
+	if prev := a.Planner.Ledger(); prev != nil && !prev.IsEmpty() {
+		a.Planner.SetSeedLedger(prev)
+	}
+	if reviewFeedback != "" {
+		fb := planners.NewLedger(nil)
+		fb.AddOpenQuestion("Reviewer feedback to address in this attempt: " + reviewFeedback)
+		a.Planner.SetSeedLedger(fb)
 	}
 
 	// Use ReAct planner with optimized prompts for efficiency
@@ -411,6 +432,8 @@ func (a *CodeFixerAgent) buildTemplatePrompt(auditFindings map[string]any, sessi
 		"InvestigationHistory": sessionCtx.GetScratchpad(),
 		"BuildConfig":          sessionCtx.BuildConfig,
 		"BuildVerifyEnabled":   a.config.Agent.BuildVerifyEnabled,
+		"HarnessVerify":        a.config.Agent.HarnessVerify,
+		"RepoFacts":            sessionCtx.RepoFacts,
 		"Skills":               sessionCtx.SkillsContext,
 	}
 

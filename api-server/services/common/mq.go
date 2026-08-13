@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/wagslane/go-rabbitmq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -172,7 +175,7 @@ func MqHealthCheck(ctx context.Context) MqHealthInfo {
 	return info
 }
 
-func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(data []byte) error) error {
+func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(ctx context.Context, data []byte) error) error {
 	conn := getConnection()
 	if conn == nil {
 		slog.Error("rbmq: initial connection to rabbitmq failed for consumer setup", "queue", queue, "exchange", exchangeName)
@@ -274,9 +277,19 @@ type mqPublishOptions struct {
 	Expiration      time.Duration
 	ExchangeType    string
 	BackgroundRetry bool
+	Ctx             context.Context
 }
 
 type MqPublishOption func(o *mqPublishOptions)
+
+// MqPublishWithContext threads a request context into the publish so the active
+// W3C trace context (traceparent) is injected into the message headers. The
+// consuming service can then extract it and continue the same distributed trace.
+func MqPublishWithContext(ctx context.Context) MqPublishOption {
+	return func(o *mqPublishOptions) {
+		o.Ctx = ctx
+	}
+}
 
 func MqPublishWithExpiration(expiration time.Duration) MqPublishOption {
 	return func(o *mqPublishOptions) {
@@ -304,9 +317,27 @@ func MqPublishWithBackgroundRetry() MqPublishOption {
 
 // processMessageAndDetermineAction handles the core message processing and decides the RabbitMQ action.
 // This function is called by the handler in consumer.Run.
-func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(data []byte) error, queueName string, exchangeName string) rabbitmq.Action {
+func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(ctx context.Context, data []byte) error, queueName string, exchangeName string) rabbitmq.Action {
 	slog.Debug("rbmq: processing message", "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
-	if err := processorFunc(d.Body); err != nil {
+	// Continue the distributed trace: extract the W3C context the publisher
+	// injected into the AMQP headers and run the processor inside a consumer
+	// span so its logs / outbound calls share the same trace_id.
+	carrier := propagation.MapCarrier{}
+	for k, v := range d.Headers {
+		// AMQP header values arrive as string or, depending on the publisher's
+		// client library / broker encoding, []byte. Handle both so trace
+		// context extraction doesn't silently fail.
+		switch val := v.(type) {
+		case string:
+			carrier[k] = val
+		case []byte:
+			carrier[k] = string(val)
+		}
+	}
+	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+	ctx, span := otel.Tracer("mq").Start(ctx, "rabbitmq.consume", trace.WithSpanKind(trace.SpanKindConsumer))
+	defer span.End()
+	if err := processorFunc(ctx, d.Body); err != nil {
 		slog.Error("mq: error processing message", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
 		// Nack and requeue the message for another attempt
 		return rabbitmq.NackRequeue
@@ -424,10 +455,21 @@ func MqPublish(exchangeName string, routingKey string, message any, opts ...MqPu
 			len(marshaledData), MaxMqPayloadSize, exchangeName, routingKey)
 	}
 
+	headers := map[string]any{"x-nb-source": config.Config.OtelServiceName}
+	// Inject the active W3C trace context into the message headers so the
+	// consuming service can continue the same distributed trace.
+	if options.Ctx != nil {
+		carrier := propagation.MapCarrier{}
+		otel.GetTextMapPropagator().Inject(options.Ctx, carrier)
+		for k, v := range carrier {
+			headers[k] = v
+		}
+	}
+
 	publishOptsList := []func(*rabbitmq.PublishOptions){
 		rabbitmq.WithPublishOptionsContentType("application/json"),
 		rabbitmq.WithPublishOptionsExchange(exchangeName),
-		rabbitmq.WithPublishOptionsHeaders(map[string]any{"x-nb-source": config.Config.OtelServiceName}),
+		rabbitmq.WithPublishOptionsHeaders(headers),
 	}
 	if options.Expiration > 0 {
 		publishOptsList = append(publishOptsList, rabbitmq.WithPublishOptionsExpiration(fmt.Sprintf("%d", options.Expiration.Milliseconds())))

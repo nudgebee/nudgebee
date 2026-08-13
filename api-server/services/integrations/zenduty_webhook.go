@@ -12,6 +12,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/event"
 	"nudgebee/services/integrations/core"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 )
@@ -392,6 +393,15 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		matchWorkloadAndEnrich(sc, &parsedPayload, accountId)
 	}
 
+	// Deterministic last resort: the Zenduty service itself. Only reached once the
+	// title regex, the firing-label walk and the API enrichment have all come up
+	// empty — the shape produced by every alert source that does not emit an
+	// Alertmanager labels block (in-house stacks that post plain
+	// "BreachedChecks:"/"Variables:" text carry no k8s labels at all).
+	if parsedPayload.EventSubjectName == "" {
+		resolveZendutySubjectFromService(sc, &parsedPayload, incident.Service.Name, accountId)
+	}
+
 	// Defensive guard: security context can be nil if the webhook arrives without
 	// a resolvable tenant (test harness, malformed auth, etc). Skip LLM + learn
 	// rather than panic so the parsed payload still flows downstream.
@@ -476,6 +486,85 @@ func GetZenDutyIncidentDetails(apiKey, incidentID string) (*ZenDutyIncident, err
 	}
 
 	return &incident, nil
+}
+
+// resolveZendutySubjectFromService uses incident.service.name as the subject of
+// last resort. That field is deliberately kept out of the label walk above (see the
+// alert.Labels comment) because a Zenduty "service" is frequently an org grouping —
+// "Payments Team" — rather than the object the alert is about, and a wrong subject
+// is worse than none: it also suppresses the LLM fallback.
+//
+// So it is accepted only in the two cases where it cannot produce a wrong answer:
+//
+//  1. It matches a workload in the account's inventory. Validated, so it names a
+//     real subject regardless of how that tenant uses Zenduty services.
+//  2. The account has no workload inventory at all AND the name is shaped like a
+//     service identifier rather than a human label. The LLM fallback classifies over
+//     exactly that inventory: webhook_subject_name_extractor's options are the
+//     account's running services plus "Not Found", so on an empty inventory the only
+//     answer it can return is "Not Found". These alerts therefore resolve to no
+//     subject whatsoever today, and the slug is the only service-identifying field
+//     the payload carries. The shape check is what keeps an org grouping ("Database
+//     Team", "Payments Team") out: those are title-cased prose, never slugs, so they
+//     stay unresolved exactly as they do today.
+//
+// When the inventory exists but does not contain the name, the subject is left
+// empty so the LLM fallback runs exactly as it did before this fallback existed.
+func resolveZendutySubjectFromService(sc *security.RequestContext, parsedPayload *core.EventIncomingWebhook, serviceName, accountId string) {
+	if serviceName == "" {
+		return
+	}
+	secCtx := sc.GetSecurityContext()
+	if secCtx == nil {
+		return
+	}
+	if parsedPayload.Investigation.Labels == nil {
+		parsedPayload.Investigation.Labels = map[string]string{}
+	}
+
+	parsedPayload.EventSubjectName = serviceName
+	matchWorkloadAndEnrich(sc, parsedPayload, accountId)
+
+	if parsedPayload.Investigation.Labels["nb_matched_workload"] == "true" {
+		parsedPayload.Investigation.Labels["nb_subject_resolution"] = "zenduty_service_validated"
+		return
+	}
+
+	// reServiceNamePattern (pagerduty_webhook.go) matches lowercase hyphenated
+	// identifiers — "prod-unicorn-app" passes, "Database Team" does not.
+	if !reServiceNamePattern.MatchString(serviceName) ||
+		accountHasWorkloadInventory(sc, secCtx.GetTenantId(), accountId) {
+		parsedPayload.EventSubjectName = ""
+		delete(parsedPayload.Investigation.Labels, "nb_matched_workload")
+		return
+	}
+
+	parsedPayload.Investigation.Labels["nb_subject_resolution"] = "zenduty_service_unvalidated"
+}
+
+// accountHasWorkloadInventory reports whether the account has any active workload
+// rows. This distinguishes "the subject is not this workload" from "there is no
+// inventory to check against" — the two need opposite fallback decisions. On any
+// error it reports true, which preserves the pre-existing LLM-fallback behaviour.
+func accountHasWorkloadInventory(sc *security.RequestContext, tenantId, accountId string) bool {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		sc.GetLogger().Error("zendutywebhook: failed to get database manager for inventory check", "error", err)
+		return true
+	}
+
+	var exists bool
+	err = dbms.Db.Get(&exists, `
+		SELECT EXISTS (
+			SELECT 1 FROM k8s_workloads
+			WHERE tenant_id = $1 AND cloud_account_id = $2
+			  AND is_active = true AND kind NOT IN ('Job', 'CronJob')
+		)`, tenantId, accountId)
+	if err != nil {
+		sc.GetLogger().Error("zendutywebhook: workload inventory check failed", "error", err)
+		return true
+	}
+	return exists
 }
 
 // resolveZendutySubjectUsingLLM asks the webhook_subject_name_extractor agent to

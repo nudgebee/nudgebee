@@ -197,7 +197,11 @@ type appConfig struct {
 	LLMServerAgentMaxLogLines                   int `mapstructure:"llm_server_agent_max_loglines"`
 	// Dev-only. Set to "k8s" / "loki" / etc. to bypass per-account routing.
 	// Empty (default) preserves the DB-configured provider.
-	LLMServerLogProviderOverride     string `mapstructure:"llm_server_log_provider_override"`
+	LLMServerLogProviderOverride string `mapstructure:"llm_server_log_provider_override"`
+	// Dev-only. Set to "jaeger" / "chronosphere" / etc. to bypass per-account trace
+	// provider routing on the canonical (v2) path. Empty (default) lets services-server
+	// resolve the account's default trace provider.
+	LLMServerTraceProviderOverride   string `mapstructure:"llm_server_trace_provider_override"`
 	LlmServerAgentMaxSqlRows         int    `mapstructure:"llm_server_agent_max_sqlrows"`
 	LlmServerAgentMaxTracesRows      int    `mapstructure:"llm_server_agent_max_tracesrows"`
 	LlmServerAgentMaxScratchpadChars int    `mapstructure:"llm_server_agent_max_scratchpad_chars"`
@@ -214,6 +218,14 @@ type appConfig struct {
 	// skill-lists menu) in the human message instead of the cacheable system
 	// prefix. Off keeps the legacy in-prompt <skill-lists> + lazy load_skills flow.
 	LlmServerKBPrestepEnabled bool `mapstructure:"llm_server_kb_prestep_enabled"`
+	// LlmServerSkillDelegationPropagationEnabled, when on, propagates a delegating
+	// agent's skill scope (its own name + the question-aware SelectedSkillIds) to the
+	// sub-agents it delegates to. Skills are agent-scoped, so a runbook mapped to an
+	// orchestrator otherwise never reaches the sub-agent that executes; with this on,
+	// the sub-agent's own <skill-lists> menu surfaces the parent's selected runbooks
+	// and its planner chooses whether to load_skills (no eager injection). Off keeps
+	// today's behavior (only custom-planner agents thread skills explicitly).
+	LlmServerSkillDelegationPropagationEnabled bool `mapstructure:"llm_server_skill_delegation_propagation_enabled"`
 	// LlmServerToolSchemaValidationTools is a comma-separated allowlist of tool
 	// names for which the framework treats the InputSchema as authoritative.
 	// A tool on this list has BOTH of the following applied by the framework:
@@ -311,15 +323,25 @@ type appConfig struct {
 	AsyncRefWorkerCount           int  `mapstructure:"llm_server_async_ref_worker_count"`
 	PlannerParallelExecEnabled    bool `mapstructure:"llm_server_planner_parallel_exec_enabled"`
 
+	// DropExtraAgentMentions controls what happens to a repeated leading mention
+	// run ("@a @b q") in the query handed to the agent. false (default) keeps the
+	// extras -> "@b q"; true drops them -> "q". Routing always uses the first mention.
+	DropExtraAgentMentions bool `mapstructure:"llm_server_drop_extra_agent_mentions"`
+
 	LlmServerCodeAgentImage           string `mapstructure:"llm_server_agent_codeagent_image"`
 	LlmServerCodeAgentNamespace       string `mapstructure:"llm_server_agent_codeagent_namespace"`
 	LlmServerCodeAgentSecret          string `mapstructure:"llm_server_agent_codeagent_secret"`
 	LlmServerCodeAgentMode            string `mapstructure:"llm_server_agent_codeagent_mode"`
 	LlmServerCodeAgentLocalExecPath   string `mapstructure:"llm_server_agent_codeagent_local_exec_path"`
 	LlmServerCodeAgentImagePullSecret string `mapstructure:"llm_server_agent_codeagent_image_pull_secret"`
-	LlmServerSearchAgentProvider      string `mapstructure:"llm_server_agent_search_provider"`
-	LlmServerSerperApiKey             string `mapstructure:"serper_api_key"`
-	LlmServerJinaApiKey               string `mapstructure:"jina_api_key"`
+	// LlmServerCodeAgentExtraEnv is a comma-separated KEY=VALUE list appended to
+	// workspace pod env — the operator-facing knob for code-analysis flags (e.g.
+	// "AGENT_HARNESS_VERIFY=true,AGENT_INLOOP_VERIFY=true") without an image or
+	// code change. Workspace pods only pick it up when (re)created.
+	LlmServerCodeAgentExtraEnv   string `mapstructure:"llm_server_agent_codeagent_extra_env"`
+	LlmServerSearchAgentProvider string `mapstructure:"llm_server_agent_search_provider"`
+	LlmServerSerperApiKey        string `mapstructure:"serper_api_key"`
+	LlmServerJinaApiKey          string `mapstructure:"jina_api_key"`
 
 	LlmServerWorkspaceEnabled bool `mapstructure:"llm_server_workspace_enabled"`
 	// LlmServerWorkspaceKubeconfigPath optionally overrides the kubeconfig file used
@@ -338,7 +360,20 @@ type appConfig struct {
 	LlmServerShellToolEnabled bool `mapstructure:"llm_server_shell_tool_enabled"`
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
 	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
-	LogAgentV2Enabled                      bool   `mapstructure:"llm_server_log_agent_v2_enabled"`
+	LogAgentV2Enabled bool `mapstructure:"llm_server_log_agent_v2_enabled"`
+	// K8sOrchestratorMode selects what the router-selected k8s_orchestrator runs.
+	// Boot-time, per-deploy (rollback = change + redeploy). One of:
+	//   "delegating" (default) — v1: route kubectl work through the `kubectl` sub-agent
+	//   "direct"               — v2: hold `kubectl_execute` and run kubectl directly
+	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + critique off
+	// Unknown/empty falls back to "delegating". Replaces the former
+	// llm_server_k8s_orchestrator_{v2,lean}_enabled booleans. The @k8s_orchestrator_2
+	// (always direct) and @k8s_orchestrator_lean (always lean) eval handles are
+	// unaffected by this — they exist for side-by-side A/B regardless of mode.
+	K8sOrchestratorMode string `mapstructure:"llm_server_k8s_orchestrator_mode"`
+	// TraceAgentV2Enabled gates the canonical, provider-independent traces agent
+	// (TracesDefaultAgentV2). Global per-deploy toggle; default false.
+	TraceAgentV2Enabled                    bool   `mapstructure:"llm_server_trace_agent_v2_enabled"`
 	LlmServerWorkspacePort                 int    `mapstructure:"llm_server_workspace_port"`
 	LlmServerWorkspaceLocalUrl             string `mapstructure:"llm_server_workspace_local_url"`
 	LlmServerWorkspaceFileMaxDownloadBytes int    `mapstructure:"llm_server_workspace_file_max_download_bytes"`
@@ -414,6 +449,14 @@ type appConfig struct {
 	// DistillationRedistillInterval defines how many conversation turns occur between redistillation of context.
 	DistillationRedistillInterval int  `mapstructure:"distillation_redistill_interval"`
 	LlmServerReActCritiqueEnabled bool `mapstructure:"llm_server_react_critique_enabled"`
+	// LlmServerSDGGroundingContractEnabled gates the critiquer's Rule 8
+	// dependency-claim grounding contract. When on, the critiquer rejects
+	// inter-service relationship claims ("X calls Y", "Y depends on Z") that
+	// cite no evidence of any kind (SDG, ConfigMap value, log line, or kubectl
+	// endpoint). Non-SDG evidence is accepted with a soft advisory — the rule
+	// enforces grounding, not tool choice. Default off; enable per env after
+	// monitoring `SDG_no_data_rate` on dev to confirm no over-firing.
+	LlmServerSDGGroundingContractEnabled bool `mapstructure:"llm_server_sdg_grounding_contract_enabled"`
 	// LlmServerThinkToolEnabled gates injection of the `think` tool into the
 	// six orchestrator agents (k8s / aws / azure / gcp / datadog / finops).
 	// Default flipped to false 2026-07-12 after 30d prod data showed the
@@ -437,6 +480,13 @@ type appConfig struct {
 	// sub-agents get the executor overlay (stay in brief, surface anomalies as
 	// notes). Off = both overlays absent, prompt identical to pre-split behavior.
 	LlmServerReact3OrchestratorModeEnabled bool `mapstructure:"llm_server_react3_orchestrator_mode_enabled"`
+	// LlmServerReact3QueryLeanPromptEnabled drops the heavy investigation overlays
+	// (answer contract, notebook discipline, hypothesis tree) from the TOP-LEVEL
+	// orchestrator prompt on a plain-retrieval turn ("list pods"), and keys that
+	// lean prompt into its own cache slot so it does not thrash the full-prompt
+	// slot. Sub-agents and investigation turns are unaffected. Off = no-op, prompt
+	// and cache keys byte-identical to today. Opt-in for safe rollout.
+	LlmServerReact3QueryLeanPromptEnabled bool `mapstructure:"llm_server_react3_query_lean_prompt_enabled"`
 	// LlmServerReact3OrchestratorThinkingLevel is the thinking level applied to
 	// the orchestrator's direction-setting LLM calls (first plan call of a turn
 	// and post-critique refinement passes). Elevate-only: thinking level is
@@ -614,9 +664,17 @@ type appConfig struct {
 	MemoryMaintenancePreferencesSchedule     string `mapstructure:"llm_memory_maintenance_preferences_schedule"`
 	MemoryMaintenancePatternsSchedule        string `mapstructure:"llm_memory_maintenance_patterns_schedule"`
 	MemoryMaintenanceEventsRotateSchedule    string `mapstructure:"llm_memory_maintenance_events_rotate_schedule"`
-	MemoryMaintenanceCollectiveSchedule      string `mapstructure:"llm_memory_maintenance_collective_schedule"`
-	MemoryMaintenanceSoulSchedule            string `mapstructure:"llm_memory_maintenance_soul_schedule"`
-	MemoryMaintenanceDecisionsSchedule       string `mapstructure:"llm_memory_maintenance_decisions_schedule"`
+	// MemoryMaintenancePartitionSchedule drives memory_partition_maint, which
+	// creates llm_memory_events partitions ahead of month rollover. Runs
+	// regardless of MemoryMaintenanceEnabled — see maintenance.Register.
+	MemoryMaintenancePartitionSchedule string `mapstructure:"llm_memory_maintenance_partition_schedule"`
+	// MemoryEventsPartitionMonthsAhead is how many months beyond the current
+	// one memory_partition_maint provisions. Doubles as the outage budget:
+	// the job can fail for this many months before a write is rejected.
+	MemoryEventsPartitionMonthsAhead    int    `mapstructure:"llm_memory_events_partition_months_ahead"`
+	MemoryMaintenanceCollectiveSchedule string `mapstructure:"llm_memory_maintenance_collective_schedule"`
+	MemoryMaintenanceSoulSchedule       string `mapstructure:"llm_memory_maintenance_soul_schedule"`
+	MemoryMaintenanceDecisionsSchedule  string `mapstructure:"llm_memory_maintenance_decisions_schedule"`
 	// MemoryMaintenancePatternsExtractSchedule drives the cross-conversation
 	// pattern-extract job. Daily cadence
 	// keeps the LLM bill bounded while still catching new recurrences within
@@ -742,12 +800,14 @@ func init() {
 
 	viper.SetDefault("llm_server_agent_max_loglines", 100)
 	viper.SetDefault("llm_server_log_provider_override", "")
+	viper.SetDefault("llm_server_trace_provider_override", "")
 	viper.SetDefault("llm_server_agent_max_sqlrows", 10)
 	viper.SetDefault("llm_server_agent_max_tracesrows", 10)
 	viper.SetDefault("llm_server_agent_max_scratchpad_chars", 200000)
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
 	viper.SetDefault("llm_server_integration_kb_enabled", true)
 	viper.SetDefault("llm_server_kb_prestep_enabled", false)
+	viper.SetDefault("llm_server_skill_delegation_propagation_enabled", false)
 	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
 	// validator). Other tools stay text-description-only until their schema
 	// is reconciled with their Call() acceptance shape. See
@@ -882,6 +942,7 @@ func init() {
 	viper.SetDefault("llm_server_agent_codeagent_secret", "nudgebee")
 	viper.SetDefault("llm_server_agent_codeagent_mode", "remote-cli") // remote-cli, remote-http, "local"
 	viper.SetDefault("llm_server_agent_codeagent_image", "ghcr.io/nudgebee/code-analysis-agent:latest")
+	viper.SetDefault("llm_server_agent_codeagent_extra_env", "")
 	viper.SetDefault("llm_server_agent_codeagent_local_exec_path", "")
 	viper.SetDefault("llm_server_agent_codeagent_image_pull_secret", "")
 	viper.SetDefault("llm_server_agent_search_provider", "")
@@ -894,7 +955,11 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_request_cpu", "250m")
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
-	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
+	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
+	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
+	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
+	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
+	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)
@@ -942,7 +1007,9 @@ func init() {
 	// react_critique defaults to true: the ReWoo→ReAct3 upgrade (now permanent)
 	// used to flip this on at boot; baking it in preserves that behavior.
 	viper.SetDefault("llm_server_react_critique_enabled", true)
-	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", false)
+	viper.SetDefault("llm_server_sdg_grounding_contract_enabled", false)
+	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", true)
+	viper.SetDefault("llm_server_react3_query_lean_prompt_enabled", true)
 	viper.SetDefault("llm_server_react3_orchestrator_thinking_level", "medium")
 	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
 	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true
@@ -1047,6 +1114,10 @@ func init() {
 	viper.SetDefault("llm_memory_maintenance_preferences_schedule", "0 3 * * *")
 	viper.SetDefault("llm_memory_maintenance_patterns_schedule", "0 4 * * *")
 	viper.SetDefault("llm_memory_maintenance_events_rotate_schedule", "0 2 * * *")
+	// 01:00 — ahead of the 02:00 rotate, so a partition is never created and
+	// dropped within the same cycle.
+	viper.SetDefault("llm_memory_maintenance_partition_schedule", "0 1 * * *")
+	viper.SetDefault("llm_memory_events_partition_months_ahead", 3)
 	viper.SetDefault("llm_memory_maintenance_collective_schedule", "0 5 * * *")
 	viper.SetDefault("llm_memory_maintenance_soul_schedule", "0 6 * * 0")
 	viper.SetDefault("llm_memory_maintenance_decisions_schedule", "0 7 * * 0")
@@ -1097,7 +1168,7 @@ func init() {
 
 	viper.SetDefault("llm_server_scratchpad_summarization_enabled", true)
 	viper.SetDefault("llm_server_scratchpad_max_observation_chars", 65536)
-	viper.SetDefault("llm_server_sub_agent_evidence_enabled", false)
+	viper.SetDefault("llm_server_sub_agent_evidence_enabled", true)
 	viper.SetDefault("llm_server_sub_agent_evidence_max_chars", 2048)
 	viper.SetDefault("llm_server_scratchpad_compression_activation_fraction", 0.75)
 

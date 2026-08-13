@@ -11,6 +11,10 @@ import (
 	kgmodels "nudgebee/services/knowledge_graph/models"
 	kgqueue "nudgebee/services/knowledge_graph/queue"
 	"nudgebee/services/knowledge_graph/sources"
+	_ "nudgebee/services/knowledge_graph/sources/aws"   // register AWS source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/azure" // register Azure source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/gcp"   // register GCP source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/k8s"   // register K8s source factory (init side-effect)
 	"nudgebee/services/security"
 	"time"
 
@@ -35,14 +39,17 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 	case "kg_get_complete_graph":
 		// Parse filter request
 		var filterRequest struct {
-			AccountIDs    []string          `json:"account_ids,omitempty"`
-			NodeTypes     []string          `json:"node_types,omitempty"`
-			Labels        map[string]string `json:"labels,omitempty"`
-			LabelKeys     []string          `json:"label_keys,omitempty"`
-			Attributes    map[string]string `json:"attributes,omitempty"`
-			AttributeKeys []string          `json:"attribute_keys,omitempty"`
-			NodeIDs       []string          `json:"node_ids,omitempty"`
-			Levels        int               `json:"levels,omitempty"` // 1, 2, or 3 - depth of neighbor traversal
+			AccountIDs            []string          `json:"account_ids,omitempty"`
+			NodeTypes             []string          `json:"node_types,omitempty"`
+			SpecificTypes         []string          `json:"specific_types,omitempty"`
+			Labels                map[string]string `json:"labels,omitempty"`
+			LabelKeys             []string          `json:"label_keys,omitempty"`
+			Attributes            map[string]string `json:"attributes,omitempty"`
+			AttributeKeys         []string          `json:"attribute_keys,omitempty"`
+			OntologyAttributes    map[string]string `json:"ontology_attributes,omitempty"`
+			OntologyAttributeKeys []string          `json:"ontology_attribute_keys,omitempty"`
+			NodeIDs               []string          `json:"node_ids,omitempty"`
+			Levels                int               `json:"levels,omitempty"` // 1, 2, or 3 - depth of neighbor traversal
 			// Subgraph controls neighbor-mode edge shape. false (default when omitted) → BFS
 			// spanning forest (only edges that connect consecutive depth layers, rooted at
 			// NodeIDs); true → induced subgraph (every edge whose both endpoints are in the
@@ -132,7 +139,7 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 			// No NodeIDs specified, get complete graph with optional filters
 			// Build filters object
 			var filters *core.GraphFilters
-			if len(filterRequest.AccountIDs) > 0 || len(filterRequest.NodeTypes) > 0 || len(filterRequest.Labels) > 0 || len(filterRequest.LabelKeys) > 0 || len(filterRequest.Attributes) > 0 || len(filterRequest.AttributeKeys) > 0 {
+			if len(filterRequest.AccountIDs) > 0 || len(filterRequest.NodeTypes) > 0 || len(filterRequest.SpecificTypes) > 0 || len(filterRequest.Labels) > 0 || len(filterRequest.LabelKeys) > 0 || len(filterRequest.Attributes) > 0 || len(filterRequest.AttributeKeys) > 0 || len(filterRequest.OntologyAttributes) > 0 || len(filterRequest.OntologyAttributeKeys) > 0 {
 				// Convert string node types to NodeType
 				nodeTypes := make([]core.NodeType, len(filterRequest.NodeTypes))
 				for i, nt := range filterRequest.NodeTypes {
@@ -140,12 +147,15 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 				}
 
 				filters = &core.GraphFilters{
-					AccountIDs:    filterRequest.AccountIDs,
-					NodeTypes:     nodeTypes,
-					Labels:        filterRequest.Labels,
-					LabelKeys:     filterRequest.LabelKeys,
-					Attributes:    filterRequest.Attributes,
-					AttributeKeys: filterRequest.AttributeKeys,
+					AccountIDs:            filterRequest.AccountIDs,
+					NodeTypes:             nodeTypes,
+					SpecificTypes:         filterRequest.SpecificTypes,
+					Labels:                filterRequest.Labels,
+					LabelKeys:             filterRequest.LabelKeys,
+					Attributes:            filterRequest.Attributes,
+					AttributeKeys:         filterRequest.AttributeKeys,
+					OntologyAttributes:    filterRequest.OntologyAttributes,
+					OntologyAttributeKeys: filterRequest.OntologyAttributeKeys,
 				}
 
 				ctx.GetLogger().Info("applying filters to knowledge graph query",
@@ -196,7 +206,7 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 
 		// If a specific tenant is requested, queue only that tenant
 		if specificTenantID != "" {
-			if err := kgqueue.PublishKGUpdate(specificTenantID, "cron"); err != nil {
+			if err := kgqueue.PublishKGUpdate(ctx.GetContext(), specificTenantID, "cron"); err != nil {
 				ctx.GetLogger().Error("failed to publish KG update message for specific tenant",
 					"tenant_id", specificTenantID,
 					"error", err)
@@ -259,7 +269,7 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 		queuedCount := 0
 		failedCount := 0
 		for tenantID := range tenantIDSet {
-			if err := kgqueue.PublishKGUpdate(tenantID, "cron"); err != nil {
+			if err := kgqueue.PublishKGUpdate(ctx.GetContext(), tenantID, "cron"); err != nil {
 				ctx.GetLogger().Error("failed to publish KG update message",
 					"tenant_id", tenantID,
 					"error", err)

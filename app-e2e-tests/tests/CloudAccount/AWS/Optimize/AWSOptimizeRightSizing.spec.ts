@@ -14,14 +14,10 @@ test("API testing Cloud Account -> AWS -> Optimize -> Right Sizing", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabOptimize).toBeVisible();
-  await locators.AnchorTabOptimize.hover();
-  await locators.OptimizeRightSizing.waitFor({ state: "visible" });
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.OptimizeRightSizing.click();
+      await locators.navigateToSubTab(locators.AnchorTabOptimize, locators.OptimizeRightSizing, locators.OptimizeRightSizingUrl);
       await page.waitForLoadState("domcontentloaded");
     },
     {

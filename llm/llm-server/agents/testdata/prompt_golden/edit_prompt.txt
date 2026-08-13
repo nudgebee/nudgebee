@@ -124,6 +124,7 @@ AUTOMATION SCHEMA REFERENCE:
 FIRST, DECIDE THE INTENT:
 - DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT or TARGET EXECUTION ID above.
 - CHANGE signals: "add", "also", "include", "remove", "rename", "change", "update", "instead", "as well", a new capability.
+- VERIFY signals: the user asks to run, test, try, or dry-run the automation without changing it. If the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run and report the overall result and any failing task's id + error in your <final_answer>. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — answer that a dry-run executes those effects for real and ask the user to confirm. Either way make NO modifications, and do NOT claim the automation "has no dry-run mode".
 - If the request is purely a question with no change asked, briefly answer in <final_answer> and make no modifications.
 
 IF DEBUGGING (gather evidence FIRST, then fix):

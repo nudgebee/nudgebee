@@ -102,3 +102,7 @@ func (l HelmAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAg
 func (l HelmAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
+
+// IsWatchCapable: runs install/upgrade/rollback whose outcome completes later,
+// so it may register a background watch.
+func (l HelmAgent) IsWatchCapable() bool { return true }

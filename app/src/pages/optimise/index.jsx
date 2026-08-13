@@ -30,11 +30,14 @@ export async function getServerSideProps() {
     props: {
       enableLlmAnalyser: process.env.UI_ENABLE_LLM_ANALYSER === 'true',
       enableLlmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
+      // Public base URL of the AI Gateway, surfaced to the Connect tab's setup
+      // snippets. Empty when unset — the Connect tab shows a "not configured" state.
+      llmGatewayUrl: process.env.LLM_GATEWAY_PUBLIC_URL || '',
     },
   };
 }
 
-const Optimise = ({ enableLlmAnalyser, enableLlmGateway }) => {
+const Optimise = ({ enableLlmAnalyser, enableLlmGateway, llmGatewayUrl }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
   const [activeTab, setActiveTab] = useState(null);
@@ -105,7 +108,19 @@ const Optimise = ({ enableLlmAnalyser, enableLlmGateway }) => {
   );
 
   useEffect(() => {
+    if (!router.isReady) return;
     const hash = router.asPath.split('#')[1];
+    // Per-recommendation notification links (?id=) historically targeted #summary,
+    // which ignores the id. Route them to the Recommendations tab, whose detail
+    // panel opens the linked recommendation.
+    const hasRecDeepLink = typeof router.query.id === 'string' && router.query.id;
+    if (hasRecDeepLink && (!hash || hash === 'summary')) {
+      const recommendationsTab = filterOptions.find((option) => option.fragment === 'recommendations');
+      if (recommendationsTab) {
+        setActiveTab(recommendationsTab.value);
+        return;
+      }
+    }
     if (!hash || !filterOptions.length) {
       setActiveTab(0);
       return;
@@ -124,7 +139,7 @@ const Optimise = ({ enableLlmAnalyser, enableLlmGateway }) => {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterOptions]);
+  }, [filterOptions, router.query.id, router.isReady]);
 
   const handleOpenCreateAutoOptimize = (type) => {
     setOpenCreateAutoOptimizeType(type);
@@ -190,7 +205,7 @@ const Optimise = ({ enableLlmAnalyser, enableLlmGateway }) => {
             />
           )}
           {activeTab === 4 && <CostAnalyser />}
-          {activeTab === 5 && <GatewayUsage />}
+          {activeTab === 5 && <GatewayUsage gatewayUrl={llmGatewayUrl} />}
         </ErrorBoundary>
       )}
     </>

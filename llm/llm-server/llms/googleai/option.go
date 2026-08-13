@@ -28,6 +28,11 @@ type Options struct {
 	// APIKey holds the API key for GoogleAI (Gemini API). Not used by Vertex.
 	APIKey string
 
+	// BaseURL overrides the Gemini API base URL. Empty means talk to Google
+	// directly (the SDK default). Set to route Gemini traffic through the NB AI
+	// Gateway's /genai mount, which swaps in the real Google key and forwards.
+	BaseURL string
+
 	ClientOptions []option.ClientOption
 }
 
@@ -63,6 +68,15 @@ func WithAPIKey(apiKey string) Option {
 	return func(opts *Options) {
 		opts.APIKey = apiKey
 		opts.ClientOptions = append(opts.ClientOptions, option.WithAPIKey(apiKey))
+	}
+}
+
+// WithBaseURL overrides the Gemini API base URL, e.g. to route traffic through
+// the NB AI Gateway's /genai mount instead of calling Google directly. Empty
+// leaves the SDK default (https://generativelanguage.googleapis.com/) in place.
+func WithBaseURL(baseURL string) Option {
+	return func(opts *Options) {
+		opts.BaseURL = baseURL
 	}
 }
 

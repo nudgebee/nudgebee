@@ -244,7 +244,7 @@ export const TriageRuleEventsTable = ({ query, onOpenTicketForm }) => {
   if (loading) {
     return (
       <Box p={ds.space[4]}>
-        <Loader style={{ height: ds.space.mul(0, 100), width: '100%' }} />
+        <Loader style={{ position: 'static', height: ds.space.mul(0, 100), width: '100%' }} />
       </Box>
     );
   }
@@ -2472,7 +2472,7 @@ const KubernetesTable = ({
   disableDateFilterForPodsTable = false,
 }) => {
   const router = useRouter();
-  const [accountId, setAccountId] = useState(router.query.KubernetesDetails || router.query.accountId);
+  const accountId = router.query.KubernetesDetails || router.query.accountId;
   const [requiredTabs, setRequiredTabs] = useState(expandable || {});
 
   // Ticket creation popup state - lifted here so it persists across expandable row re-renders
@@ -2507,10 +2507,6 @@ const KubernetesTable = ({
   const handleTicketFailure = (error) => {
     console.error('Failed to create ticket:', error);
   };
-
-  useEffect(() => {
-    setAccountId(router.query.KubernetesDetails || router.query.accountId);
-  }, [router.query.KubernetesDetails, router.query.accountId]);
 
   function expandedComponentFn(option, query, row) {
     const componentMap = {

@@ -59,8 +59,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         method: 'get',
       });
       if (proxyResponse.status === 500) {
-        const error = await proxyResponse.json();
-        if (error['code'] === 'ECONNRESET') {
+        // clone() so reading the body to detect ECONNRESET doesn't consume it
+        // before validateAndReturnResponse reads it again.
+        const error = await proxyResponse
+          .clone()
+          .json()
+          .catch(() => ({}));
+        if (error?.code === 'ECONNRESET') {
           console.error('Connection Reset - retrying');
           attempt = attempt - 1;
           continue;
@@ -75,7 +80,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       break;
     }
 
-    await validateAndReturnResponse(proxyResponse, req, res, traceParent);
+    await validateAndReturnResponse(proxyResponse, res, traceParent);
   } catch (error: any) {
     handleErrorResponse(error, res, traceParent);
   }
@@ -107,30 +112,15 @@ function handleErrorResponse(error: any, res: NextApiResponse, traceParent: stri
     });
 }
 
-async function validateAndReturnResponse(proxyResponse: Response | null, req: NextApiRequest, res: NextApiResponse, traceParent: string) {
+async function validateAndReturnResponse(proxyResponse: Response | null, res: NextApiResponse, traceParent: string) {
   if (proxyResponse != null) {
     const data = await proxyResponse.json();
     if (data?.url) {
-      const jwt = await resolveRequestJwt(req);
-      const userEmail = jwt?.email;
-      const redirectUrl = new URL(data.url);
-
-      const rawState = redirectUrl.searchParams.get('state') || '{}';
-      let stateObj: Record<string, any> = {};
-      try {
-        stateObj = { originalState: rawState };
-      } catch (e) {
-        console.error('Error parsing state', e);
-        stateObj = {};
-      }
-
-      if (userEmail) {
-        stateObj.email = userEmail;
-      }
-
-      redirectUrl.searchParams.set('state', JSON.stringify(stateObj));
-
-      return res.setHeader('traceparent', traceParent).redirect(redirectUrl.toString());
+      // Forward the notifications service's authorize URL unchanged. Its `state`
+      // is a single-use token already bound to this tenant server-side; the
+      // installer's identity is re-derived from the session in the callback, so
+      // nothing forgeable is stuffed into the state here.
+      return res.setHeader('traceparent', traceParent).redirect(data.url);
     }
   } else {
     res.status(500).setHeader('traceparent', traceParent).json({ error: 'InternalServerError' });

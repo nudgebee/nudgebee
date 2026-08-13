@@ -40,7 +40,7 @@ type investigationCompletedEnvelope struct {
 // configured exchange. Best-effort: failures are logged but never bubble
 // up — they would only delay the suspended workflow until its activity
 // timeout, which is the intended fallback for any signal-loss scenario.
-func publishInvestigationCompleted(env investigationCompletedEnvelope) {
+func publishInvestigationCompleted(ctx context.Context, env investigationCompletedEnvelope) {
 	if env.TaskToken == "" {
 		return
 	}
@@ -51,7 +51,7 @@ func publishInvestigationCompleted(env investigationCompletedEnvelope) {
 			"event_id", env.EventID, "account_id", env.AccountID)
 		return
 	}
-	if err := common.MqPublish(exch, rk, env); err != nil {
+	if err := common.MqPublishWithContext(ctx, exch, rk, env); err != nil {
 		slog.Error("eventasync: failed to publish investigation completion",
 			"error", err, "event_id", env.EventID, "account_id", env.AccountID)
 	}
@@ -64,7 +64,7 @@ func publishInvestigationCompleted(env investigationCompletedEnvelope) {
 // investigation finished. runbook-server's completion consumer drops
 // empty-token envelopes, so the extra publish is a no-op there; api-server's
 // own queue acts on it. Best-effort, same as publishInvestigationCompleted.
-func publishCompletionUnconditional(env investigationCompletedEnvelope) {
+func publishCompletionUnconditional(ctx context.Context, env investigationCompletedEnvelope) {
 	exch := config.Config.RabbitMqEventInvestigateCompletedExchange
 	rk := config.Config.RabbitMqEventInvestigateCompletedRoutingKey
 	if exch == "" || rk == "" {
@@ -72,7 +72,7 @@ func publishCompletionUnconditional(env investigationCompletedEnvelope) {
 			"event_id", env.EventID, "account_id", env.AccountID)
 		return
 	}
-	if err := common.MqPublish(exch, rk, env); err != nil {
+	if err := common.MqPublishWithContext(ctx, exch, rk, env); err != nil {
 		slog.Error("eventasync: failed to publish unconditional investigation completion",
 			"error", err, "event_id", env.EventID, "account_id", env.AccountID)
 	}
@@ -96,7 +96,7 @@ func init() {
 	slog.Info("eventasync: consumer registered successfully to rabbitmq")
 }
 
-func processTroubleshootingEventFromMq(data []byte) error {
+func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) error {
 	// Track metadata for panic recovery cleanup
 	var response EventAnalysisResponse
 	var accountId string
@@ -135,7 +135,7 @@ func processTroubleshootingEventFromMq(data []byte) error {
 		//    unparseable request).
 		if taskToken != "" && !skipPublish {
 			publishState.TaskToken = taskToken
-			publishInvestigationCompleted(publishState)
+			publishInvestigationCompleted(msgCtx, publishState)
 		}
 
 		// 2. Fan-out to any pending tokens registered by workers that
@@ -155,7 +155,7 @@ func processTroubleshootingEventFromMq(data []byte) error {
 			for _, t := range pending {
 				env := publishState
 				env.TaskToken = t
-				publishInvestigationCompleted(env)
+				publishInvestigationCompleted(msgCtx, env)
 			}
 		}
 
@@ -170,7 +170,7 @@ func processTroubleshootingEventFromMq(data []byte) error {
 		if !skipPublish && publishState.EventID != "" {
 			autoEnv := publishState
 			autoEnv.TaskToken = ""
-			publishCompletionUnconditional(autoEnv)
+			publishCompletionUnconditional(msgCtx, autoEnv)
 		}
 	}()
 
@@ -225,7 +225,7 @@ func processTroubleshootingEventFromMq(data []byte) error {
 	// Automated event analysis has no human user; stamp the system user so
 	// downstream writes (token usage, conversations) get a valid uuid instead
 	// of "" (which uuid columns reject — SQLSTATE 22P02).
-	ctx = security.NewRequestContextForTenantAdminWithUser(tenantId, security.GetSystemUserId())
+	ctx = security.NewRequestContextForTenantAdminWithUser(msgCtx, tenantId, security.GetSystemUserId())
 	// NewSecurityContextForTenantAccountAdmin returns nil if the account-id
 	// lookup fails; guard so downstream ctx.GetSecurityContext() calls don't
 	// nil-panic (otherwise only caught by the defer recover()).
@@ -328,7 +328,7 @@ func processTroubleshootingEventFromMq(data []byte) error {
 		// is set, so runbook-server drops it.
 		publishState.Status = string(events.AnalysisStatusFailed)
 		publishState.StatusReason = "auto-analysis disabled at llm-server"
-		publishCompletionUnconditional(publishState)
+		publishCompletionUnconditional(msgCtx, publishState)
 		return nil
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -465,6 +466,16 @@ func checkGCPCloudMonitoringAccess(ctx context.Context, creds GCPCredentials, st
 	return true
 }
 
+var bigqueryIdentifierRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.\-:]*$`)
+
+func validateBigQueryIdentifier(value, fieldName string) error {
+	value = strings.TrimSpace(value)
+	if len(value) == 0 || len(value) > 1024 || !bigqueryIdentifierRe.MatchString(value) {
+		return fmt.Errorf("invalid BigQuery %s: must contain only alphanumeric characters, underscores, hyphens, dots, or colons", fieldName)
+	}
+	return nil
+}
+
 // checkGCPBigQueryBillingAccess validates that the SA can actually *query* the
 // configured BigQuery billing export — not merely read its metadata. A metadata
 // read only needs bigquery.tables.get, whereas the daily spends sync issues a
@@ -485,6 +496,18 @@ func checkGCPBigQueryBillingAccess(ctx context.Context, creds GCPCredentials, st
 	projectID := creds.BillingProjectID
 	if strings.TrimSpace(projectID) == "" {
 		projectID = creds.ProjectID
+	}
+
+	// Validate identifiers to prevent BigQuery SQL injection via backtick breakout.
+	for _, check := range []struct{ val, name string }{
+		{projectID, "project ID"},
+		{creds.BillingDatasetID, "dataset ID"},
+		{creds.BillingTableID, "table ID"},
+	} {
+		if err := validateBigQueryIdentifier(check.val, check.name); err != nil {
+			status.ErrorDetail = err.Error()
+			return false, true
+		}
 	}
 
 	client, err := bigquery.NewClient(

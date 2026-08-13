@@ -116,8 +116,14 @@ func main() {
 	r := gin.New()
 	pprof.Register(r)
 	r.Use(gin.Recovery())
-	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health", "/livez")))
+	// otelgin must run before sloggin so the server span is on the request
+	// context when the access log line is emitted with trace_id/span_id.
 	r.Use(otelgin.Middleware(config.SERVICE_NAME))
+	slogginConfig := sloggin.DefaultConfig()
+	slogginConfig.WithTraceID = true
+	slogginConfig.WithSpanID = true
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health", "/livez")}
+	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
 

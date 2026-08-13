@@ -18,6 +18,10 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/knowledge_graph/sources"
+	"nudgebee/services/knowledge_graph/sources/aws"
+	"nudgebee/services/knowledge_graph/sources/azure"
+	"nudgebee/services/knowledge_graph/sources/gcp"
+	"nudgebee/services/knowledge_graph/sources/k8s"
 )
 
 // Identifiers shared by the Tier-A scenarios. Kept consistent with the existing
@@ -40,13 +44,13 @@ func e2eDiscardLogger() *slog.Logger {
 
 // buildK8sGraph runs the real k8s converters (nodes + workloads) and returns the
 // combined pre-merge nodes/edges — the same wiring BuildGraphs' k8s source uses.
-func buildK8sGraph(t *testing.T, workloads []sources.K8sWorkloadRow, k8sNodes []sources.K8sNodeRow, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge) {
+func buildK8sGraph(t *testing.T, workloads []k8s.K8sWorkloadRow, k8sNodes []k8s.K8sNodeRow, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge) {
 	t.Helper()
-	k8sSource, err := sources.NewK8sSource(sources.K8sSourceConfig{TenantID: req.TenantID, CloudAccountID: req.CloudAccountID}, nil)
+	k8sSource, err := k8s.NewK8sSource(k8s.K8sSourceConfig{TenantID: req.TenantID, CloudAccountID: req.CloudAccountID}, nil)
 	if err != nil {
 		t.Fatalf("NewK8sSource: %v", err)
 	}
-	h := sources.NewK8sSourceTestHelper(k8sSource)
+	h := k8s.NewK8sSourceTestHelper(k8sSource)
 
 	nodeNodes, nodeEdges := h.ConvertK8sNodesToGraph(k8sNodes, req)
 	nodeMap := make(map[string]*core.DbNode, len(nodeNodes))
@@ -73,11 +77,11 @@ func buildK8sGraph(t *testing.T, workloads []sources.K8sWorkloadRow, k8sNodes []
 func buildAWSGraph(t *testing.T, resources []sources.CloudResourceRow, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge) {
 	t.Helper()
 	defer disableCloudCLI()()
-	awsSource, err := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
+	awsSource, err := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("NewAWSSource: %v", err)
 	}
-	h := sources.NewAWSSourceTestHelper(awsSource)
+	h := aws.NewAWSSourceTestHelper(awsSource)
 	// Use the cache-populating variant so cache-backed edge builders (IAM roles,
 	// S3 notifications, route-table, elastic-ip, ENI) can fire — BuildGraph
 	// populates this cache in production; the bare converter does not.
@@ -88,11 +92,11 @@ func buildAWSGraph(t *testing.T, resources []sources.CloudResourceRow, req *core
 func buildAzureGraph(t *testing.T, resources []sources.CloudResourceRow, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge) {
 	t.Helper()
 	defer disableCloudCLI()()
-	azureSource, err := sources.NewAzureSource(sources.AzureSourceConfig{}, nil)
+	azureSource, err := azure.NewAzureSource(azure.AzureSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("NewAzureSource: %v", err)
 	}
-	h := sources.NewAzureSourceTestHelper(azureSource)
+	h := azure.NewAzureSourceTestHelper(azureSource)
 	return h.ConvertResourcesToGraph(createTestRequestContext(req.TenantID), resources, req)
 }
 
@@ -136,7 +140,7 @@ func loadCloudResourceRows(t *testing.T, path string) []sources.CloudResourceRow
 
 // loadK8sNodeRows loads a hand-authored K8s node fixture from an arbitrary path,
 // mirroring integration_test.go's loadK8sNodes conversion (K8sNodeJSON → row).
-func loadK8sNodeRows(t *testing.T, path string) []sources.K8sNodeRow {
+func loadK8sNodeRows(t *testing.T, path string) []k8s.K8sNodeRow {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -146,10 +150,10 @@ func loadK8sNodeRows(t *testing.T, path string) []sources.K8sNodeRow {
 	if err := json.Unmarshal(data, &jn); err != nil {
 		t.Fatalf("unmarshal k8s node fixture %s: %v", path, err)
 	}
-	rows := make([]sources.K8sNodeRow, len(jn))
+	rows := make([]k8s.K8sNodeRow, len(jn))
 	for i, n := range jn {
 		meta, _ := json.Marshal(n.Meta)
-		rows[i] = sources.K8sNodeRow{
+		rows[i] = k8s.K8sNodeRow{
 			TenantID:          n.TenantID,
 			CloudAccountID:    n.CloudAccountID,
 			Name:              n.Name,
@@ -205,11 +209,11 @@ func runAWSLBK8sEnricher(t *testing.T, nodes []*core.DbNode, edges []*core.DbEdg
 func buildGCPGraph(t *testing.T, resources []sources.CloudResourceRow, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge) {
 	t.Helper()
 	defer disableCloudCLI()()
-	gcpSource, err := sources.NewGCPSource(sources.GCPSourceConfig{}, nil)
+	gcpSource, err := gcp.NewGCPSource(gcp.GCPSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("NewGCPSource: %v", err)
 	}
-	h := sources.NewGCPSourceTestHelper(gcpSource)
+	h := gcp.NewGCPSourceTestHelper(gcpSource)
 	return h.ConvertResourcesToGraph(createTestRequestContext(req.TenantID), resources, req)
 }
 
@@ -319,9 +323,9 @@ func TestE2E_TierA_K8sWorkloadKindRouting(t *testing.T) {
 	}
 
 	req := &core.SourceBuildRequest{TenantID: e2eTenantID, CloudAccountID: e2eK8sAccount}
-	workloads := make([]sources.K8sWorkloadRow, 0, len(expected))
+	workloads := make([]k8s.K8sWorkloadRow, 0, len(expected))
 	for kind := range expected {
-		workloads = append(workloads, sources.K8sWorkloadRow{
+		workloads = append(workloads, k8s.K8sWorkloadRow{
 			ID:          kind,
 			Kind:        kind,
 			Namespace:   "default",
@@ -420,7 +424,7 @@ func TestE2E_TierA_AzureCrossAccountK8s(t *testing.T) {
 
 	// K8s Cluster named "my-aks" (derived from a k8s node's cluster_name).
 	k8sReq := &core.SourceBuildRequest{TenantID: e2eTenantID, CloudAccountID: e2eK8sAccount}
-	k8sNodes := []sources.K8sNodeRow{{TenantID: e2eTenantID, CloudAccountID: e2eK8sAccount, Name: "node1", IsActive: true, ClusterName: "my-aks", Meta: json.RawMessage("{}")}}
+	k8sNodes := []k8s.K8sNodeRow{{TenantID: e2eTenantID, CloudAccountID: e2eK8sAccount, Name: "node1", IsActive: true, ClusterName: "my-aks", Meta: json.RawMessage("{}")}}
 	kNodes, kEdges := buildK8sGraph(t, nil, k8sNodes, k8sReq)
 
 	nodes := append(append([]*core.DbNode{}, azNodes...), kNodes...)
@@ -589,7 +593,7 @@ func TestE2E_TierA_AWSLBToK8s(t *testing.T) {
 	awsNodes, awsEdges := buildAWSGraph(t, loadCloudResourceRows(t, filepath.Join("testdata", "e2e", "aws_lb_k8s", "input", "aws.json")), awsReq)
 
 	// K8s side: a Service named my-svc/default and a Cluster my-eks (from the node).
-	k8sWorkloads := []sources.K8sWorkloadRow{{
+	k8sWorkloads := []k8s.K8sWorkloadRow{{
 		ID: "my-svc", Kind: "Service", Namespace: "default", Name: "my-svc",
 		ClusterName: "my-eks", IsActive: true, Meta: json.RawMessage("{}"), Labels: json.RawMessage("{}"),
 	}}

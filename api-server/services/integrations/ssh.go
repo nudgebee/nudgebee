@@ -275,7 +275,7 @@ func (m SSH) validateVMAgentConfig(configMap map[string]string) []error {
 // vm_agent mode never reaches here — IsProxyIntegration routes it through the
 // relay proxy test path before TestConnection is consulted — but we guard for
 // it defensively.
-func (m SSH) TestConnection(sc *security.SecurityContext, config []core.IntegrationConfigValue, accountId string) error {
+func (m SSH) TestConnection(sc *security.RequestContext, config []core.IntegrationConfigValue, accountId string) error {
 	configMap := make(map[string]string)
 	for _, c := range config {
 		configMap[c.Name] = c.Value

@@ -33,6 +33,7 @@ query ListUsersAndAccount {
     rows {
       id
       account_name
+      cloud_provider
     }
   }
   users: users_list_by_tenant(order_by: [{column: "username", order: asc}]) {

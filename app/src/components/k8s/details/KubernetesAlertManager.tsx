@@ -36,6 +36,16 @@ interface KubernetesAlertManagerProps {
   accountId: string;
 }
 
+const TABLE_HEADERS = [
+  { name: 'Name', width: '25%' },
+  { name: 'Category', width: '15%' },
+  { name: 'Source', width: '10%' },
+  { name: 'Severity', width: '10%' },
+  { name: 'Status', width: '10%' },
+  { name: 'Configured Actions', width: '25%' },
+  { name: '', width: '5%' },
+];
+
 const KubernetesAlertManager: React.FC<KubernetesAlertManagerProps> = ({ accountId }) => {
   const router = useRouter();
   const k8sAlertManager = 'k8sMgr';
@@ -68,24 +78,24 @@ const KubernetesAlertManager: React.FC<KubernetesAlertManagerProps> = ({ account
     const menus = [
       {
         label: item?.enabled ? 'Disable' : 'Enable',
-        id: 0,
+        id: 'toggle-enabled',
       },
     ];
     if (item?.enabled) {
       menus.push({
         label: 'Edit',
-        id: 1,
+        id: 'edit',
       });
     }
     return menus;
   };
 
   const onMenuClick = (menuItem: any, data: any) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'toggle-enabled') {
       setDisableAlert(true);
       setAlertManagerObject(data);
     }
-    if (menuItem.id === 1) {
+    if (menuItem.id === 'edit') {
       setIsCreateAlert(false);
       setOpenCreateNewAlertModal(true);
       setAlertManagerObject(data);
@@ -416,7 +426,7 @@ const KubernetesAlertManager: React.FC<KubernetesAlertManagerProps> = ({ account
             id={k8sAlertManager}
             totalRows={totalCount}
             tableData={data}
-            headers={['Name', 'Category', 'Source', 'Severity', 'Status', 'Configured Actions', '']}
+            headers={TABLE_HEADERS}
             rowsPerPage={rowsPerPage}
             showExpandable={false}
             loading={loading}

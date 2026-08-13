@@ -2,7 +2,10 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -40,6 +43,20 @@ type ToolDefinition struct {
 // reuse across analyses.
 type GenAISession struct {
 	responses []*genai.Content
+	// callCount is the number of GenerateContent calls made in this analysis.
+	// Used only to label the per-call token-usage diagnostic so the ReAct
+	// context-growth curve can be read straight from the logs.
+	callCount int
+	// prevHashes is the per-message fingerprint of the history sent on the
+	// previous call. Comparing it to the current call reveals whether the
+	// prefix stayed byte-stable (append-only → cache-friendly) or a prior
+	// message mutated (→ busts Gemini's implicit prompt cache). Diagnostic only.
+	prevHashes []string
+	// prevSysHash / prevToolsHash fingerprint the system instruction and tool
+	// schema (the large, separately-passed part of the cacheable prefix) so we
+	// can confirm the WHOLE prefix — not just the turn history — is byte-stable.
+	prevSysHash   string
+	prevToolsHash string
 	// sigByCall maps a function call's identity (name + canonical args) to the
 	// thought_signature gemini returned for it. It is an identity-keyed backstop
 	// to the positional splice: it re-attaches signatures onto reconstructed
@@ -209,6 +226,85 @@ func convertToLlmsTools(tools []ToolDefinition) []llms.Tool {
 // back into subsequent requests.
 //
 // This approach matches how Gemini CLI handles multi-turn function calling.
+// ensureGenAIClient lazily constructs the direct genai client (once).
+func (c *Client) ensureGenAIClient() error {
+	if c.genaiClient != nil {
+		return nil
+	}
+	if c.config.LLM.ApiKey == "" {
+		return fmt.Errorf("LLM_PROVIDER_API_KEY environment variable is required for GoogleAI provider")
+	}
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  c.config.LLM.ApiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create genai client: %w", err)
+	}
+	c.genaiClient = client
+	return nil
+}
+
+// ErrStructuredOutputUnsupported is returned by GenerateStructuredJSON when the
+// configured provider has no native structured-output path; callers fall back
+// to plain generation plus their own text-extraction parsing.
+var ErrStructuredOutputUnsupported = errors.New("structured output not supported for this provider")
+
+// GenerateStructuredJSON forces the model to return JSON conforming to schema,
+// using genai's ResponseMIMEType + ResponseSchema (GoogleAI only). Built for
+// the reflection step: free-text ledger responses measurably failed to parse
+// 1-2x per run (prose around the JSON, truncation), silently stalling the
+// distillation watermark that observation aging and ledger carry-over depend
+// on. Single attempt, no retry loop — mirrors GenerateContentNoRetry semantics
+// (a failed reflection is non-fatal; the caller keeps its prior ledger).
+func (c *Client) GenerateStructuredJSON(ctx context.Context, messages []llms.MessageContent, schema *genai.Schema) (string, error) {
+	if Provider(c.config.LLM.Provider) != ProviderGoogleAI {
+		return "", ErrStructuredOutputUnsupported
+	}
+	if err := c.ensureGenAIClient(); err != nil {
+		return "", err
+	}
+	systemInstruction, history := convertMessagesToGenAI(messages)
+	if len(history) == 0 {
+		return "", fmt.Errorf("no messages to send")
+	}
+	temp := float32(0.1)
+	cfg := &genai.GenerateContentConfig{
+		MaxOutputTokens:  8192,
+		Temperature:      &temp,
+		ResponseMIMEType: "application/json",
+		ResponseSchema:   schema,
+	}
+	if systemInstruction != nil {
+		cfg.SystemInstruction = systemInstruction
+	}
+	resp, err := c.genaiClient.Models.GenerateContent(ctx, c.config.LLM.Model, history, cfg)
+	if err != nil {
+		return "", fmt.Errorf("structured generation failed (model=%s): %w", c.config.LLM.Model, err)
+	}
+	if resp == nil || len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		return "", fmt.Errorf("structured generation returned no candidates")
+	}
+	if resp.UsageMetadata != nil {
+		c.addTokenUsage(
+			int(resp.UsageMetadata.PromptTokenCount),
+			int(resp.UsageMetadata.CandidatesTokenCount),
+			int(resp.UsageMetadata.TotalTokenCount),
+			int(resp.UsageMetadata.CachedContentTokenCount),
+		)
+	}
+	var b strings.Builder
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part != nil && part.Text != "" {
+			b.WriteString(part.Text)
+		}
+	}
+	if strings.TrimSpace(b.String()) == "" {
+		return "", fmt.Errorf("structured generation returned empty text")
+	}
+	return b.String(), nil
+}
+
 func (c *Client) generateContentWithGenAI(
 	ctx context.Context,
 	messages []llms.MessageContent,
@@ -216,18 +312,8 @@ func (c *Client) generateContentWithGenAI(
 	session *GenAISession,
 ) (*llms.ContentResponse, error) {
 	// Create genai client (lazily, once)
-	if c.genaiClient == nil {
-		if c.config.LLM.ApiKey == "" {
-			return nil, fmt.Errorf("LLM_PROVIDER_API_KEY environment variable is required for GoogleAI provider")
-		}
-		client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
-			APIKey:  c.config.LLM.ApiKey,
-			Backend: genai.BackendGeminiAPI,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create genai client: %w", err)
-		}
-		c.genaiClient = client
+	if err := c.ensureGenAIClient(); err != nil {
+		return nil, err
 	}
 
 	// Convert langchaingo messages to genai format, extracting system instruction.
@@ -262,6 +348,32 @@ func (c *Client) generateContentWithGenAI(
 				"history_len":       len(history),
 			})
 		}
+	}
+
+	// Cache-stability diagnostic (W1a): the history sent here is final (post
+	// splice + reattach). If any message BELOW the new tail changed vs the last
+	// call, that mutation is what busts Gemini's implicit prompt cache. Log the
+	// first divergent index so the exact mutator (signature splice vs injected
+	// mid-history message) is named from logs alone.
+	if c.logger != nil && session != nil {
+		curHashes := hashHistoryContents(history)
+		firstChanged, changedInOverlap := firstDivergence(session.prevHashes, curHashes)
+		sysHash := hashOne(systemInstruction)
+		toolsHash := hashOne(tools)
+		c.logger.Log(common.EventPlanningProgress, "history cache-stability diff", map[string]any{
+			"history_len":         len(history),
+			"prev_history_len":    len(session.prevHashes),
+			"first_changed_index": firstChanged,     // -1 => pure append (prefix stable, cache-friendly)
+			"changed_in_overlap":  changedInOverlap, // # of pre-existing msgs that mutated (>0 => cache-busting)
+			"stable_prefix_len":   stablePrefixLen(firstChanged, len(session.prevHashes)),
+			"append_only":         firstChanged == -1,
+			"system_changed":      session.prevSysHash != "" && session.prevSysHash != sysHash,
+			"tools_changed":       session.prevToolsHash != "" && session.prevToolsHash != toolsHash,
+			"prefix_fully_stable": firstChanged == -1 && (session.prevSysHash == "" || session.prevSysHash == sysHash) && (session.prevToolsHash == "" || session.prevToolsHash == toolsHash),
+		})
+		session.prevHashes = curHashes
+		session.prevSysHash = sysHash
+		session.prevToolsHash = toolsHash
 	}
 
 	// Build config
@@ -362,9 +474,152 @@ func (c *Client) generateContentWithGenAI(
 			int(resp.UsageMetadata.TotalTokenCount),
 			int(resp.UsageMetadata.CachedContentTokenCount),
 		)
+
+		// Per-call token + context-accumulation breakdown. The genai path
+		// captures real per-call usage but historically only the run total was
+		// logged (analysis_complete), so the per-iteration context-growth curve
+		// — and which role (tool observations vs system vs history) drives the
+		// bloat — was invisible. Emit it here so a single run's logs show where
+		// the quadratic ReAct resend accumulates.
+		if c.logger != nil && session != nil {
+			session.callCount++
+			pt := int(resp.UsageMetadata.PromptTokenCount)
+			cached := int(resp.UsageMetadata.CachedContentTokenCount)
+			fields := summarizeMessageSizes(messages, tools)
+			fields["call_index"] = session.callCount
+			fields["prompt_tokens"] = pt
+			fields["cached_content_tokens"] = cached
+			fields["output_tokens"] = int(resp.UsageMetadata.CandidatesTokenCount)
+			fields["total_tokens"] = int(resp.UsageMetadata.TotalTokenCount)
+			fields["fresh_input_tokens"] = pt - cached
+			if pt > 0 {
+				fields["cache_hit_pct"] = 100 * cached / pt
+			}
+			fields["model"] = c.config.LLM.Model
+			c.logger.Log(common.EventStepComplete, "LLM per-call token usage", fields)
+		}
 	}
 
 	return contentResp, nil
+}
+
+// summarizeMessageSizes breaks the outbound prompt down by role so the per-call
+// token log reveals WHERE context accumulates. In a ReAct loop the full history
+// is resent every turn, so tool-observation bytes grow each iteration and are
+// re-billed O(N^2) — chars_tool_observations climbing call-over-call is the
+// bloat signature. Char counts are a provider-agnostic proxy; the authoritative
+// token numbers come from UsageMetadata alongside this.
+func summarizeMessageSizes(messages []llms.MessageContent, tools []ToolDefinition) map[string]any {
+	var sysC, humanC, aiC, toolC, maxC int
+	var maxRole string
+	for _, m := range messages {
+		c := 0
+		for _, p := range m.Parts {
+			switch v := p.(type) {
+			case llms.TextContent:
+				c += len(v.Text)
+			case llms.ToolCall:
+				if v.FunctionCall != nil {
+					c += len(v.FunctionCall.Name) + len(v.FunctionCall.Arguments)
+				}
+			case llms.ToolCallResponse:
+				c += len(v.Content)
+			}
+		}
+		switch m.Role {
+		case llms.ChatMessageTypeSystem:
+			sysC += c
+		case llms.ChatMessageTypeHuman:
+			humanC += c
+		case llms.ChatMessageTypeAI:
+			aiC += c
+		case llms.ChatMessageTypeTool:
+			toolC += c
+		default:
+			humanC += c
+		}
+		if c > maxC {
+			maxC = c
+			maxRole = string(m.Role)
+		}
+	}
+	toolSchemaC := 0
+	for _, t := range tools {
+		toolSchemaC += len(t.Name) + len(t.Description)
+		if b, err := json.Marshal(t.Parameters); err == nil {
+			toolSchemaC += len(b)
+		}
+	}
+	return map[string]any{
+		"msg_count":               len(messages),
+		"chars_system":            sysC,
+		"chars_human":             humanC,
+		"chars_ai":                aiC,
+		"chars_tool_observations": toolC,
+		"chars_tool_schema":       toolSchemaC,
+		"biggest_msg_chars":       maxC,
+		"biggest_msg_role":        maxRole,
+	}
+}
+
+// hashHistoryContents fingerprints each history message so consecutive calls can
+// be diffed. A json.Marshal of the *genai.Content captures every byte the request
+// depends on (text, function calls/responses, thought signatures), so any change
+// to a message changes its fingerprint. Diagnostic only (W1a).
+func hashHistoryContents(history []*genai.Content) []string {
+	out := make([]string, len(history))
+	for i, ct := range history {
+		b, err := json.Marshal(ct)
+		if err != nil {
+			out[i] = "err"
+			continue
+		}
+		sum := sha256.Sum256(b)
+		out[i] = hex.EncodeToString(sum[:8])
+	}
+	return out
+}
+
+// hashOne fingerprints any json-marshalable value (system instruction, tool
+// defs) so its byte-stability across calls can be checked. Diagnostic only (W1a).
+func hashOne(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "err"
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
+}
+
+// firstDivergence returns the first index at which cur differs from prev over
+// their common prefix, or -1 if every overlapping message is identical (a pure
+// append). changedInOverlap counts how many overlapping messages differ — any
+// value > 0 means the prefix was mutated and the implicit cache is busted.
+func firstDivergence(prev, cur []string) (firstChanged, changedInOverlap int) {
+	firstChanged = -1
+	n := len(prev)
+	if len(cur) < n {
+		n = len(cur)
+	}
+	for i := 0; i < n; i++ {
+		if prev[i] != cur[i] {
+			if firstChanged == -1 {
+				firstChanged = i
+			}
+			changedInOverlap++
+		}
+	}
+	return firstChanged, changedInOverlap
+}
+
+// stablePrefixLen is the number of leading messages byte-identical to the
+// previous call. On a pure append (firstChanged == -1) the whole previous
+// history is stable.
+func stablePrefixLen(firstChanged, prevLen int) int {
+	if firstChanged == -1 {
+		return prevLen
+	}
+	return firstChanged
 }
 
 // convertToolDefsToGenAI converts ToolDefinition slice to genai Tool format

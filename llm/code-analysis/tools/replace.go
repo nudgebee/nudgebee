@@ -201,7 +201,14 @@ func (t *ReplaceTool) Execute(ctx context.Context, input map[string]any) core.NB
 	case "verify":
 		return t.executeVerify(filePath, input)
 	case "replace":
-		return t.executeReplace(ctx, filePath, input)
+		resp := t.executeReplace(ctx, filePath, input)
+		// Post-edit syntax gate (advisory, parse-only, tri-state): catch an
+		// edit that mechanically broke the file immediately instead of paying
+		// LLM review or CI to find out. not_checked appends nothing.
+		if resp.Status == "success" {
+			resp.Observation = CheckEditedFileSyntax(filePath).AppendToObservation(resp.Observation)
+		}
+		return resp
 	default:
 		return core.NBToolResponse{Status: "error", Error: fmt.Sprintf("Unknown action: %s. Supported actions: replace, verify", action)}
 	}

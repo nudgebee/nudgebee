@@ -58,7 +58,7 @@ const KubernetesPVCTable = ({ accountId }) => {
   };
 
   const onMenuClick = (item) => {
-    if (item.id === '0') {
+    if (item.id === 'auto-optimize') {
       setAutoPilotModalData(data);
       setIsAutoPilotModalOpen(true);
     }
@@ -73,20 +73,20 @@ const KubernetesPVCTable = ({ accountId }) => {
       {
         icon: AutoPilotSettingIcon,
         label: 'Auto Optimize',
-        id: '0',
+        id: 'auto-optimize',
         disabled: rightSizeCounts > 0,
       },
       {
         icon: DeleteIcon,
         label: 'Delete',
         disabled: true,
-        id: '1',
+        id: 'delete',
       },
       {
         icon: EditFileIcon,
         label: 'Edit',
         disabled: true,
-        id: '2',
+        id: 'edit',
       },
     ];
     return menus;

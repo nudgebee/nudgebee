@@ -304,7 +304,7 @@ func SendDailyHighlightEmailReport(context *security.RequestContext, request Ten
 		insights.Data["recommendation_security_groupings_v2"] = map[string]interface{}{"rows": []interface{}{}}
 		message := prepareEmailMessage(emails, totalPotentialSavings, totalOpportunityLost, highlight1, highlight2, insights, tenant)
 		context.GetLogger().Debug("Payload", "Payload", message)
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(context.GetContext()))
 		if err != nil {
 			context.GetLogger().Error("error sending daily_highlight_report email", "error", err)
 			continue
@@ -411,7 +411,7 @@ func SendDailyAgentStatusEmail(context *security.RequestContext, query TenantRep
 
 		message := prepareAgentEmailMessage(emails, accountAgentStatus, tenant)
 		context.GetLogger().Debug("Message payload prepared", "payload", message)
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(context.GetContext()))
 		if err != nil {
 			context.GetLogger().Error("Error publishing message to RabbitMQ", "error", err)
 			continue
@@ -605,7 +605,7 @@ func SendDailyEventsSummaryReport(context *security.RequestContext, request Tena
 			continue
 		}
 		context.GetLogger().Debug("Message payload prepared", "payload", message)
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(context.GetContext()))
 		if err != nil {
 			context.GetLogger().Error("Error publishing message to RabbitMQ", "error", err)
 			continue
@@ -774,6 +774,7 @@ type BatchedFindingsPayload struct {
 	OrganizationName   string                    `json:"organization_name"`
 	Accounts           AccountsDataD             `json:"accounts"`
 	CriticalFindings   []BatchedFinding          `json:"critical_findings"`
+	CriticalCount      int                       `json:"critical_count"`      // distinct critical types, pre-cap (CriticalFindings is capped at 5)
 	AggregatedFindings map[string]map[string]int `json:"aggregated_findings"` // account_id -> {aggregation_key -> count}
 	TotalFindingsCount int                       `json:"total_findings_count"`
 	BatchStartTime     time.Time                 `json:"batch_start_time"`
@@ -956,6 +957,10 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 			continue
 		}
 
+		// Distinct critical types before the top-5 cap, so the alert headline can
+		// state the true count even though only the top few are rendered.
+		criticalCount := len(tenantCriticalMap[tenantID])
+
 		var topCriticalFindings []BatchedFinding
 		if criticalMap := tenantCriticalMap[tenantID]; criticalMap != nil {
 			allCritical := make([]*BatchedFinding, 0, len(criticalMap))
@@ -982,6 +987,7 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 			OrganizationName:   tenantInfo.Name,
 			Accounts:           AccountsDataD{Data: AccountsData{Accounts: accounts}},
 			CriticalFindings:   topCriticalFindings,
+			CriticalCount:      criticalCount,
 			AggregatedFindings: tenantAgg[tenantID],
 			TotalFindingsCount: tenantCount[tenantID],
 			BatchStartTime:     start,
@@ -997,7 +1003,7 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 		}
 
 		ctx.GetLogger().Debug("Message payload prepared", "tenant", tenantID, "total", tenantCount[tenantID])
-		if err := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message); err != nil {
+		if err := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext())); err != nil {
 			ctx.GetLogger().Error("error publishing batched findings message", "tenant", tenantID, "error", err)
 		}
 	}

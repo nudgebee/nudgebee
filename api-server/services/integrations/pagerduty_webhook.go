@@ -153,6 +153,119 @@ func getStringDetailsFromBody(incident *Incident) string {
 	return ""
 }
 
+// applyStringDetailsSubjectLabels mines the declared subject from an unstructured
+// markdown body.details string ("**Subject Name**: <pod>", "**Subject Namespace**:
+// <ns>", "**Subject Type**: <kind>") into structured labels, without overwriting
+// labels already populated by extractBodyDetails. PagerDuty delivers this shape for
+// rendered alerts that carry no __pd_cef_payload map (e.g. NudgeBee "Investigate
+// Event -" re-raises), which extractBodyDetails classifies AlertSourceUnknown and
+// leaves without subject labels. resolveSubjectFromLabels then keys off subject_name/
+// subject_namespace/subject_type. No-op unless a Subject Name is present.
+func applyStringDetailsSubjectLabels(stringDetails string, labels map[string]string) {
+	if stringDetails == "" || labels == nil {
+		return
+	}
+	name := extractMarkdownField(stringDetails, "Subject Name")
+	if name == "" {
+		return
+	}
+	if labels["subject_name"] == "" {
+		labels["subject_name"] = name
+	}
+	if ns := extractMarkdownField(stringDetails, "Subject Namespace"); ns != "" && labels["subject_namespace"] == "" {
+		labels["subject_namespace"] = ns
+	}
+	if st := extractMarkdownField(stringDetails, "Subject Type"); st != "" && labels["subject_type"] == "" {
+		labels["subject_type"] = strings.ToLower(st)
+	}
+}
+
+const (
+	// cloudOptimizationSubjectType marks a subject that is a cloud resource rather
+	// than a k8s object. Only needs to be non-pod (see
+	// applyCloudOptimizationSubjectLabels); linkCloudResourceId treats any non-pod
+	// type as a workload name, misses k8s_workloads, and no-ops — the same path
+	// cloudsql_database already takes.
+	cloudOptimizationSubjectType = "cloud-resource"
+	// cloudOptimizationSubjectMatch is the nb_subject_match value for subjects mined
+	// out of a Cloud Optimization body. Also gates auto-learn, whose title → subject
+	// mapping is invalid for this alert family.
+	cloudOptimizationSubjectMatch = "cloud_optimization_details"
+)
+
+// extractPlainField reads a `<key>: <value>` line out of an unstructured body.details
+// string. Anchored to the start of a line, unlike extractMarkdownField's substring
+// search: the Cloud Optimization block ends with a free-text `Details:` line whose
+// prose can contain any of these key names, and a substring match would read the
+// value out of the middle of that sentence.
+func extractPlainField(text, key string) string {
+	prefix := key + ":"
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		if val := strings.TrimSpace(strings.TrimPrefix(line, prefix)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+// applyCloudOptimizationSubjectLabels mines the subject from a NudgeBee Cloud
+// Optimization body.details string:
+//
+//	Recommendation: aws_ec2_orphaned_volume
+//	Service: AmazonEC2
+//	Instance: vol-060625d190b54ab95
+//	Severity: Medium
+//
+// The frontend raises these incidents itself (getTicketDescription in
+// app/src/components/cloudaccount/common.tsx) and PagerDuty hands the description
+// back as an unstructured string, so there is no __pd_cef_payload map: GetBodyDetails
+// returns nil, detectAlertSource says AlertSourceUnknown, extractGenericAlertFields
+// yields nothing, and applyStringDetailsSubjectLabels does not match because these
+// are bare `key: value` lines rather than **bold** markdown fields. The alert then
+// reached the LLM, which answered not_found for a resource it cannot know about
+// (observed: incident Q03KT7QRZ82X20). `Instance` is the recommendation's own
+// resource id, so this is fully deterministic — no LLM.
+//
+// subject_type is a deliberate constant: `Service` names the AWS service of the
+// recommendation *catalog entry* (AmazonEC2 covers both instances and volumes), so
+// it cannot be trusted as the resource kind, and the string carries no other kind
+// signal. Any non-pod value is enough to stop resolveSubjectFromLabels fabricating
+// a `pod=<volume-id>` label, which would point the pod metric/log enrichers at a
+// pod that does not exist.
+//
+// Runs before resolveSubjectFromLabels, which keys off subject_name/subject_type.
+// No-op unless the details carry both a Recommendation and a usable Instance.
+func applyCloudOptimizationSubjectLabels(stringDetails string, labels map[string]string) {
+	if stringDetails == "" || labels == nil {
+		return
+	}
+	// `Recommendation` is the format discriminator: it is the first line of every
+	// Cloud Optimization description and appears in no other PagerDuty body shape.
+	// Only its presence matters — the rule name itself is not retained.
+	if extractPlainField(stringDetails, "Recommendation") == "" {
+		return
+	}
+	// objectName falls back to the literal "N/A" when the recommendation carries no
+	// resolvable resource, which must never become a subject.
+	instance := extractPlainField(stringDetails, "Instance")
+	if instance == "" || strings.EqualFold(instance, "N/A") {
+		return
+	}
+	if labels["subject_name"] != "" {
+		return
+	}
+	labels["subject_name"] = instance
+	if labels["subject_type"] == "" {
+		labels["subject_type"] = cloudOptimizationSubjectType
+	}
+	labels["nb_subject_match"] = cloudOptimizationSubjectMatch
+	labels["nb_subject_resolution"] = "cloud-optimization"
+}
+
 // BodyDetails contains the nested details structure from PagerDuty
 type BodyDetails struct {
 	PdCefPayload   PdCefPayload   `json:"__pd_cef_payload"`
@@ -656,6 +769,25 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	accountMapping := core.ParseAccountMapping(settings, sc.GetLogger())
 	accountId = core.ApplyAccountMapping(accountId, parsedPayload.Investigation.Labels, accountMapping)
 
+	// A pod-typed subject (e.g. a rendered "Subject Type: pod" body) carries a
+	// ReplicaSet hash that never matches k8s_workloads by name; resolve it to its
+	// owning workload first so matchWorkloadAndEnrich validates the controller, not
+	// the hash-suffixed pod. Mirrors the Datadog webhook path (lookupPodOwner).
+	if parsedPayload.EventSubjectName != "" && parsedPayload.EventSubjectKind == "pod" {
+		if dbms, dbErr := database.GetDatabaseManager(database.Metastore); dbErr == nil {
+			tenantId := sc.GetSecurityContext().GetTenantId()
+			if owner, kind, ns, ok := lookupPodOwner(sc, dbms, tenantId, []string{accountId},
+				parsedPayload.EventSubjectNamespace, parsedPayload.EventSubjectName); ok {
+				parsedPayload.Investigation.Labels["pod"] = parsedPayload.EventSubjectName
+				parsedPayload.EventSubjectName = owner
+				parsedPayload.EventSubjectKind = kind
+				if parsedPayload.EventSubjectNamespace == "" {
+					parsedPayload.EventSubjectNamespace = ns
+				}
+			}
+		}
+	}
+
 	// Validate and enrich subject against k8s_workloads inventory
 	if parsedPayload.EventSubjectName != "" {
 		matchWorkloadAndEnrich(sc, &parsedPayload, accountId)
@@ -678,8 +810,14 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 		}
 	}
 
-	// Auto-learn: save confirmed title → service mapping for future LLM prompts
-	if parsedPayload.EventSubjectName != "" && parsedPayload.EventTitle != "" {
+	// Auto-learn: save confirmed title → service mapping for future LLM prompts.
+	// Skipped for Cloud Optimization subjects: their title is "Cloud Optimization -
+	// <rule_name>", identical for every resource the rule fires on, while the subject
+	// is per-resource. Learning it would make each incident overwrite the last one's
+	// mapping and teach the LLM that the rule name means whichever volume it saw most
+	// recently.
+	if parsedPayload.EventSubjectName != "" && parsedPayload.EventTitle != "" &&
+		parsedPayload.Investigation.Labels["nb_subject_match"] != cloudOptimizationSubjectMatch {
 		LearnSubjectMapping(sc, sc.GetSecurityContext().GetTenantId(), TenantAttrPagerDutyIncidentsKey, parsedPayload.EventTitle, parsedPayload.EventSubjectName)
 	}
 
@@ -769,6 +907,18 @@ func EnrichWithPagerDutyIncident(sc *security.RequestContext, parsedPayload *cor
 
 	// Extract data from body details using generic approach
 	extractBodyDetails(incident, parsedPayload)
+
+	// PagerDuty sometimes delivers body.details as an unstructured markdown string
+	// instead of the structured __pd_cef_payload map, in which case extractBodyDetails
+	// yields no subject labels. Mine the declared subject from the string before the
+	// downstream resolveSubjectFromLabels / LLM fallback consume the labels.
+	stringDetails := getStringDetailsFromBody(incident)
+	applyStringDetailsSubjectLabels(stringDetails, parsedPayload.Investigation.Labels)
+
+	// NudgeBee's own Cloud Optimization incidents come back as a plain `key: value`
+	// block that the markdown miner above does not match. Runs second so a declared
+	// **Subject Name** always wins.
+	applyCloudOptimizationSubjectLabels(stringDetails, parsedPayload.Investigation.Labels)
 
 	if incident.Body.Details == nil {
 		sc.GetLogger().Warn("pagerdutywebhook: body.details is null after all fetch attempts",
@@ -3443,6 +3593,23 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 	labels := parsedPayload.Investigation.Labels
 	if labels == nil {
 		return
+	}
+
+	// Explicit declared subject (webhook_subject_mappings markdown fields:
+	// "Subject Name/Namespace/Type"). When present this is the authoritative subject,
+	// so it wins over the inferred label keys below. A pod-typed subject carries a
+	// ReplicaSet hash; lookupPodOwner / matchWorkloadAndEnrich resolve it to the owning
+	// workload downstream.
+	if parsedPayload.EventSubjectName == "" {
+		if name := labels["subject_name"]; name != "" {
+			parsedPayload.EventSubjectName = name
+			if parsedPayload.EventSubjectNamespace == "" {
+				parsedPayload.EventSubjectNamespace = labels["subject_namespace"]
+			}
+			if kind := labels["subject_type"]; kind != "" {
+				parsedPayload.EventSubjectKind = kind
+			}
+		}
 	}
 
 	// Resolve subject name if not already set from title regex.

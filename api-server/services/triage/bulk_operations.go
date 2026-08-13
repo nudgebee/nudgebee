@@ -83,7 +83,7 @@ func queueBulkClassification(ctx context.Context, db *sqlx.DB, job BulkClassific
 	}
 
 	// 4. Publish to RabbitMQ queue
-	if err := common.MqPublish(BulkClassificationExchange, BulkClassificationRoutingKey, job); err != nil {
+	if err := common.MqPublish(BulkClassificationExchange, BulkClassificationRoutingKey, job, common.MqPublishWithContext(ctx)); err != nil {
 		slog.ErrorContext(ctx, "Failed to publish bulk classification job", "error", err, "job_id", jobID)
 		// Update status to failed
 		updateBulkOperationStatus(ctx, db, jobID, BulkStatusFailed, "Failed to queue job")
@@ -450,13 +450,14 @@ func init() {
 		BulkClassificationRoutingKey,
 		BulkClassificationQueue,
 		1, // concurrency=1 to process one job at a time
-		func(data []byte) error {
+		func(msgCtx context.Context, data []byte) error {
 			dbms, err := database.GetDatabaseManager(database.Metastore)
 			if err != nil {
 				slog.Error("Failed to get database for bulk classification", "error", err)
 				return err
 			}
-			return ProcessBulkClassification(context.Background(), dbms.Db, data)
+			// msgCtx carries the trace context extracted from the message headers.
+			return ProcessBulkClassification(msgCtx, dbms.Db, data)
 		},
 	)
 	if err != nil {

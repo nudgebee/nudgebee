@@ -1,6 +1,10 @@
 import { test, expect } from '@playwright/test';
 import { LoginPage } from '../../pages/LoginPage';
 
+// This suite exercises the LDAP login flow itself, so it must start
+// unauthenticated — override the shared storageState with an empty session.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 test.describe('Authentication', () => {
   test('should login with LDAP credentials and reach home page', async ({ page }) => {
     const loginPage = new LoginPage(page);

@@ -55,6 +55,11 @@ export interface CodeBlockProps {
   tone?: CodeBlockTone;
   /** Show a line-number gutter. Default false. */
   showLineNumbers?: boolean;
+  /**
+   * First gutter number (default 1). Use when the snippet is an excerpt of a larger
+   * file so the gutter shows real file line numbers.
+   */
+  lineNumberStart?: number;
   /** Show the copy button. Default true (always false for inline). */
   showCopy?: boolean;
   /**
@@ -83,6 +88,7 @@ export function CodeBlock({
   inline = false,
   tone = 'light',
   showLineNumbers = false,
+  lineNumberStart = 1,
   showCopy = true,
   wrap = false,
   prompt,
@@ -177,7 +183,7 @@ export function CodeBlock({
                     flexShrink: 0,
                     position: 'sticky',
                     left: 0,
-                    width: `${Math.max(2, String(lines.length).length)}ch`,
+                    width: `${Math.max(2, String(lineNumberStart + lines.length - 1).length)}ch`,
                     paddingRight: 'var(--ds-space-3)',
                     paddingLeft: 'var(--ds-space-3)',
                     textAlign: 'right',
@@ -186,7 +192,7 @@ export function CodeBlock({
                     userSelect: 'none',
                   }}
                 >
-                  {i + 1}
+                  {lineNumberStart + i}
                 </Box>
               )}
               {!showLineNumbers && <Box sx={{ width: 'var(--ds-space-3)', flexShrink: 0 }} />}

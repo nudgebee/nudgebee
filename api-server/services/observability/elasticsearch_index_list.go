@@ -29,50 +29,6 @@ func backingIndexStream(index string) string {
 	return backingIndexSuffix.ReplaceAllString(name, "")
 }
 
-// listESIndexTargets returns the stable, queryable index targets for a signal
-// type ("logs", "metrics") on an Elasticsearch backend.
-//
-// Modern deployments store telemetry in data streams ({type}-{dataset}-{namespace},
-// e.g. "metrics-kubeletstatsreceiver.otel-default") whose physical storage is a set
-// of rolled-over ".ds-*" backing indices. Listing the backing indices directly is
-// wrong: each is one rollover generation, so pinning a query to ".ds-...-000001"
-// silently drops everything that has since rolled into a newer generation, and the
-// picker shows N confusing rows for one logical stream. This returns the stable
-// data-stream name instead.
-//
-// Resolution order:
-//  1. GET /_data_stream/<type>-* — the canonical, type-scoped list (preferred).
-//  2. Fallback (no data streams matched, or the API is unavailable): enumerate
-//     concrete indices via _cat/indices, collapsing ".ds-*" backing indices to
-//     their parent stream name (type-filtered) and passing through legacy
-//     non-data-stream indices, while excluding system indices ("."-prefixed).
-//     This preserves behaviour for pre-data-stream (e.g. Fluent-Bit) deployments.
-func listESIndexTargets(typePrefix string, cfg *ElasticsearchConfig) ([]string, error) {
-	streams, dsErr := listESDataStreams(typePrefix, cfg)
-	if dsErr == nil && len(streams) > 0 {
-		return streams, nil
-	}
-	return listESConcreteIndexTargets(typePrefix, cfg, dsErr)
-}
-
-// listESDataStreams returns data-stream names matching "<typePrefix>-*".
-func listESDataStreams(typePrefix string, cfg *ElasticsearchConfig) ([]string, error) {
-	resp, err := esRequest("GET", fmt.Sprintf("%s/_data_stream/%s-*", cfg.Url, typePrefix), "", cfg) //nolint:bodyclose
-	if err != nil {
-		return nil, fmt.Errorf("failed to query elasticsearch data streams: %w", err)
-	}
-	bodyBytes, err := readResponse(resp, "elasticsearch data streams query")
-	if err != nil {
-		return nil, err
-	}
-
-	var parsed dataStreamsResponse
-	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal data streams response: %w", err)
-	}
-	return filterDataStreamNames(parsed), nil
-}
-
 // filterDataStreamNames drops system ("."-prefixed) and duplicate stream names.
 // The request URL already scopes results to the requested signal type.
 func filterDataStreamNames(parsed dataStreamsResponse) []string {
@@ -88,33 +44,69 @@ func filterDataStreamNames(parsed dataStreamsResponse) []string {
 	return targets
 }
 
-// listESConcreteIndexTargets enumerates _cat/indices and reduces it via
-// collapseConcreteIndexTargets. dsErr is the error (if any) from the preferred
-// data-stream path, surfaced only if this fallback also fails.
-func listESConcreteIndexTargets(typePrefix string, cfg *ElasticsearchConfig, dsErr error) ([]string, error) {
+// ListAllESIndexTargets returns every stable, queryable index target across all
+// signal types plus any legacy non-data-stream indices — ".ds-*" backing indices
+// collapsed to their parent data-stream name, system ("."-prefixed) indices dropped.
+// It applies no type-prefix filter (client clusters don't necessarily name streams
+// "logs-*"/"metrics-*"), backing both the per-account index picker in the
+// integration form and the logs/metrics query-editor index pickers. Data streams
+// and concrete indices are unioned so both modern (data-stream) and legacy
+// deployments are covered.
+func ListAllESIndexTargets(cfg *ElasticsearchConfig) ([]string, error) {
+	seen := make(map[string]bool)
+	targets := make([]string, 0)
+
+	// Preferred: enumerate all data streams.
+	if resp, err := esRequest("GET", fmt.Sprintf("%s/_data_stream", cfg.Url), "", cfg); err == nil { //nolint:bodyclose
+		if body, rErr := readResponse(resp, "elasticsearch data streams query"); rErr == nil {
+			var parsed dataStreamsResponse
+			if json.Unmarshal(body, &parsed) == nil {
+				for _, name := range filterDataStreamNames(parsed) {
+					if !seen[name] {
+						seen[name] = true
+						targets = append(targets, name)
+					}
+				}
+			}
+		}
+	}
+
+	// Concrete indices: collapse ".ds-*" to parent stream, pass through legacy
+	// non-data-stream indices, drop system indices.
 	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg) //nolint:bodyclose
 	if err != nil {
-		return nil, joinIndexListErr(dsErr, fmt.Errorf("failed to query elasticsearch indices: %w", err))
+		if len(targets) > 0 {
+			return targets, nil // data streams already succeeded
+		}
+		return nil, fmt.Errorf("failed to query elasticsearch indices: %w", err)
 	}
-	bodyBytes, err := readResponse(resp, "elasticsearch indices query")
+	body, err := readResponse(resp, "elasticsearch indices query")
 	if err != nil {
-		return nil, joinIndexListErr(dsErr, err)
+		if len(targets) > 0 {
+			return targets, nil
+		}
+		return nil, err
 	}
-
 	var indices []map[string]any
-	if err := json.Unmarshal(bodyBytes, &indices); err != nil {
-		return nil, joinIndexListErr(dsErr, fmt.Errorf("failed to unmarshal indices response: %w", err))
+	if err := json.Unmarshal(body, &indices); err != nil {
+		if len(targets) > 0 {
+			return targets, nil
+		}
+		return nil, fmt.Errorf("failed to unmarshal indices response: %w", err)
 	}
-	return collapseConcreteIndexTargets(typePrefix, indices), nil
+	for _, name := range collapseAllConcreteIndexTargets(indices) {
+		if !seen[name] {
+			seen[name] = true
+			targets = append(targets, name)
+		}
+	}
+	return targets, nil
 }
 
-// collapseConcreteIndexTargets reduces a _cat/indices listing to stable targets:
-// ".ds-*" backing indices collapse to their parent data-stream name (kept only
-// for the requested signal type, so metrics don't leak into the logs picker and
-// vice-versa); legacy non-data-stream indices pass through; system indices
-// ("."-prefixed) are dropped.
-func collapseConcreteIndexTargets(typePrefix string, indices []map[string]any) []string {
-	prefix := typePrefix + "-"
+// collapseAllConcreteIndexTargets is collapseConcreteIndexTargets without the
+// type-prefix filter: every ".ds-*" backing index collapses to its parent stream,
+// legacy non-data-stream indices pass through, system ("."-prefixed) indices drop.
+func collapseAllConcreteIndexTargets(indices []map[string]any) []string {
 	seen := make(map[string]bool, len(indices))
 	targets := make([]string, 0, len(indices))
 	for _, idx := range indices {
@@ -123,25 +115,17 @@ func collapseConcreteIndexTargets(typePrefix string, indices []map[string]any) [
 			continue
 		}
 		if stream := backingIndexStream(name); stream != "" {
-			if strings.HasPrefix(stream, prefix) && !seen[stream] {
+			if !strings.HasPrefix(stream, ".") && !seen[stream] {
 				seen[stream] = true
 				targets = append(targets, stream)
 			}
 			continue
 		}
 		if strings.HasPrefix(name, ".") || seen[name] {
-			continue // system index, or already added
+			continue
 		}
 		seen[name] = true
 		targets = append(targets, name)
 	}
 	return targets
-}
-
-// joinIndexListErr combines the optional preferred-path error with the fallback error.
-func joinIndexListErr(primary, fallback error) error {
-	if primary == nil {
-		return fallback
-	}
-	return fmt.Errorf("%w; data stream listing also failed: %v", fallback, primary)
 }

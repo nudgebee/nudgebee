@@ -13,7 +13,10 @@ export const DEFAULT_K8S_COLLECTOR_URL = '';
 export const DEFAULT_SIGNING_PUBLIC_KEY = '';
 export const DEFAULT_NUBI_ICON = '/branding/default/nubi-icon.svg';
 export const DEFAULT_NUBI_ICON_LIGHT = '/branding/default/nubi-icon-light.svg';
-// Empty by default — Loader.tsx falls back to the bundled `Loadergif` asset when unset.
+// Bolder circle-badge variant of the nubi icon — reads better at small sizes
+// (e.g. 16px row-action buttons in listing tables).
+export const DEFAULT_NUBI_ICON_CIRCLE = '/branding/default/nubi-icon-circle.svg';
+// Empty by default — Loader.tsx falls back to the animated flying-Nubi mascot (NubiAnimation) when unset.
 export const DEFAULT_LOADER_URL = '';
 
 // Module-level cache so the fetch happens at most once per page load.
@@ -144,6 +147,9 @@ export const useWatchFeatureEnabled = () => {
  */
 export const getNubiIconUrl = () => _configCache?.nubiIconUrl || DEFAULT_NUBI_ICON;
 export const getNubiIconLightUrl = () => _configCache?.nubiIconLightUrl || DEFAULT_NUBI_ICON_LIGHT;
+// White-label tenants without an explicit circle variant fall back to their
+// regular nubi icon rather than the Nudgebee default.
+export const getNubiIconCircleUrl = () => _configCache?.nubiIconCircleUrl || _configCache?.nubiIconUrl || DEFAULT_NUBI_ICON_CIRCLE;
 export const getLoaderUrl = () => _configCache?.loaderUrl || DEFAULT_LOADER_URL;
 export const getAssistantName = () => _configCache?.assistantName || DEFAULT_ASSISTANT_NAME;
 export const getBrandTitle = () => _configCache?.title || DEFAULT_TITLE;
@@ -159,11 +165,11 @@ export const getIsWhiteLabel = () => !!_configCache?.isWhiteLabel;
  */
 const BRANDING_ASSETS = {
   helpbeeIcon: { configKey: 'helpbeeIconUrl', defaultFile: 'helpbee-icon.svg' },
-  troubleshootBee: { configKey: 'troubleshootBeeUrl', defaultFile: 'troubleshoot_empty_state.png' },
-  optimizeBee: { configKey: 'optimizeBeeUrl', defaultFile: 'optimize_empty_state.png' },
+  troubleshootBee: { configKey: 'troubleshootBeeUrl', defaultFile: 'nubi-investigating.svg' },
+  optimizeBee: { configKey: 'optimizeBeeUrl', defaultFile: 'nubi-searching.svg' },
   k8sBee: { configKey: 'k8sBeeUrl', defaultFile: 'k8s-bee.svg' },
-  newUserBee: { configKey: 'newUserBeeUrl', defaultFile: 'troubleshoot_empty_state.png' },
-  securityBee: { configKey: 'securityBeeUrl', defaultFile: 'security_empty_state.png' },
+  newUserBee: { configKey: 'newUserBeeUrl', defaultFile: 'nubi-investigating.svg' },
+  securityBee: { configKey: 'securityBeeUrl', defaultFile: 'nubi-debugging.svg' },
   // Optional onboarding GIF for the "connect a cluster" help popup. No default
   // ships (the popup falls back to the live interactive walkthrough, which is
   // brand-correct everywhere) — a white-label tenant sets connectClusterGifUrl

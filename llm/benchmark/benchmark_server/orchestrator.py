@@ -491,6 +491,7 @@ def _run_test_core(
         session.tenant_id,
         session.user_id,
         config=llm_config,
+        log_provider_override=config.get("log_provider_override"),
         on_submit=_persist_submit_cid,
     )
     elapsed = round(time.time() - llm_start, 2)
@@ -577,6 +578,7 @@ def _run_test_core(
                     session.tenant_id,
                     session.user_id,
                     config=llm_config,
+                    log_provider_override=config.get("log_provider_override"),
                     on_submit=_persist_submit_cid,
                 )
                 docs = extractor(
@@ -833,6 +835,7 @@ class TestOrchestrator:
         tag_filter: Optional[str] = None,
         skip_indices: Optional[str] = None,
         tool_config: Optional[str] = None,
+        log_provider_override: Optional[str] = None,
     ) -> bool:
         """Run a complete benchmark session.
 
@@ -866,6 +869,8 @@ class TestOrchestrator:
             logger.error("Failed to load agent config: %s", e)
             add_error(run_id, f"Config load failed: {e}")
             return False
+        # Per-run log-backend pin (e.g. "k8s"), threaded to call_llm per test.
+        config["log_provider_override"] = log_provider_override
 
         # 2. Discover tests
         test_cases_raw = find_test_cases(

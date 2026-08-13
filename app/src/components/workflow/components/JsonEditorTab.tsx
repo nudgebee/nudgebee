@@ -3,6 +3,7 @@ import { Box, Typography, Alert, CircularProgress } from '@mui/material';
 import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
 import { Button } from '@ui/Button';
+import CopyButton from '@components/common/buttons/CopyButton';
 
 interface JsonEditorTabProps {
   jsonText: string;
@@ -64,13 +65,14 @@ const JsonEditorTab: React.FC<JsonEditorTabProps> = ({
         </Box>
       )}
       {/* Header with instructions */}
-      <Box sx={{ mb: 1 }}>
+      <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Typography
           variant='h6'
           sx={{ color: 'var(--ds-brand-500)', mb: 1, fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-medium)' }}
         >
           Automation JSON Editor
         </Typography>
+        <CopyButton text={jsonText} size='sm' />
       </Box>
 
       {/* Error Alert */}

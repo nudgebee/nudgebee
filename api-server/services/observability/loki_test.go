@@ -8,6 +8,7 @@ import (
 	"nudgebee/services/query"
 	"nudgebee/services/relay"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/agiledragon/gomonkey/v2"
@@ -1446,6 +1447,42 @@ func TestBuildLokiQuery(t *testing.T) {
 			expected: `{app="services-server", namespace="nudgebee"} |~ "(?i:.*error.*)|(?i:.*fatal.*)"`,
 			wantErr:  false,
 		},
+		{
+			// trace_id is not an indexed stream label — it must render as a line
+			// filter, with a catch-all selector since trace correlation is not
+			// scoped to a namespace (traces cross namespaces).
+			name: "Trace id alone becomes line filter with catch-all selector",
+			request: LogsQueryBuilderRequest{
+				Where: query.QueryWhereClause{
+					Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+						"trace_id": {query.Eq: "bf2edd20410b130854122b3cbe75e002"},
+					},
+				},
+			},
+			expected: `{namespace=~".+"} |= "bf2edd20410b130854122b3cbe75e002"`,
+			wantErr:  false,
+		},
+		{
+			name: "Trace id with label selector keeps the label and adds line filter",
+			request: LogsQueryBuilderRequest{
+				Where: query.QueryWhereClause{
+					And: []query.QueryWhereClause{
+						{
+							Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+								"namespace": {query.Eq: "demo"},
+							},
+						},
+						{
+							Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+								"trace_id": {query.Eq: "bf2edd20410b130854122b3cbe75e002"},
+							},
+						},
+					},
+				},
+			},
+			expected: `{namespace="demo"}  |= "bf2edd20410b130854122b3cbe75e002"`,
+			wantErr:  false,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -2278,6 +2315,28 @@ func TestLokiSource_QueryLabels_E2E(t *testing.T) {
 			expectedLabels: []string{"workload_namespace", "service_name"},
 		},
 		{
+			// Loki returns {"status":"success"} with no data array when the
+			// query is valid but the time range holds no logs (e.g. past
+			// retention). This must be an empty result, not an error.
+			name: "Success with no data (past retention)",
+			request: FetchLogLabelRequest{
+				AccountId:         testAccountID,
+				LogProvider:       "loki",
+				LogProviderSource: "grafana",
+				Request:           map[string]any{},
+				StartTime:         testStartTime,
+				EndTime:           testEndTime,
+			},
+			mockResponse: map[string]any{
+				"data": map[string]any{
+					"data": map[string]any{
+						"status": "success",
+					},
+				},
+			},
+			expectedLabels: []string{},
+		},
+		{
 			name: "Relay error",
 			request: FetchLogLabelRequest{
 				AccountId:         testAccountID,
@@ -2580,4 +2639,154 @@ func TestLokiSource_QueryLabelValues_E2E(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLokiExtractSeverity(t *testing.T) {
+	s := &LokiSource{}
+
+	tests := []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{"logfmt error", `level=error msg="connection refused"`, "error"},
+		{"logfmt info", `level=info msg="listening on :8080"`, "info"},
+		{"logfmt warn", `level=warn msg="retrying"`, "warning"},
+		{"logfmt debug", `level=debug msg="cache hit"`, "debug"},
+		{"bracketed error", `[ERROR] failed to start`, "error"},
+		{"glog error", `E0301 12:00:00.000000       1 reflector.go:1 watch failed`, "error"},
+		{"glog info", `I0301 12:00:00.000000       1 server.go:1 serving`, "info"},
+		{"json error", `{"level":"error","msg":"db down"}`, "error"},
+
+		// The reason the UI showed a wall of info-level rows: matching the word
+		// "error" anywhere in the line reads the level off the message text.
+		{"info log that mentions an error is not an error", `level=info msg="error count: 0"`, "info"},
+		{"info log about error handling is not an error", `level=info msg="error handler registered"`, "info"},
+
+		// "critical" was absent from the old chain, so critical lines fell
+		// through to the default and were reported as info.
+		{"critical is not info", `level=critical msg="disk full"`, "critical"},
+		{"fatal maps to critical", `level=fatal msg="cannot bind port"`, "critical"},
+
+		{"unparseable line", `>>>>`, "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, s.extractSeverity(tt.message))
+		})
+	}
+}
+
+func TestLokiGroupLogsByPattern(t *testing.T) {
+	s := &LokiSource{}
+	labels := map[string]any{"namespace": "prod", "pod": "api-7d9f4b6c5d-x2k9p", "container": "api"}
+
+	logLine := func(msg string) OutputLog {
+		return OutputLog{Message: msg, Labels: labels, Severity: s.extractSeverity(msg)}
+	}
+
+	t.Run("Lines differing only in variable data collapse into one group", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(`level=error msg="failed to connect to db: timeout after 30.1ms"`),
+			logLine(`level=error msg="failed to connect to db: timeout after 29.7ms"`),
+			logLine(`level=error msg="failed to connect to db: timeout after 31.2ms"`),
+		}, 1784210110)
+
+		require.Len(t, out.Groups, 1, "one error reported three times is one group")
+		assert.Equal(t, int64(3), out.Groups[0].Count)
+		assert.Equal(t, "error", out.Groups[0].Level)
+		assert.Equal(t, "prod", out.Groups[0].Namespace)
+		assert.Equal(t, "api", out.Groups[0].Workload)
+	})
+
+	t.Run("Non-error lines are dropped", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(`level=info msg="error count: 0"`),
+			logLine(`level=info msg="listening on :8080"`),
+			logLine(`level=debug msg="cache hit"`),
+		}, 1784210110)
+
+		assert.Empty(t, out.Groups, "the line filter matches text; only real errors survive")
+	})
+
+	t.Run("Distinct errors stay in distinct groups", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(`level=error msg="failed to connect to db"`),
+			logLine(`level=error msg="user authentication rejected"`),
+		}, 1784210110)
+
+		assert.Len(t, out.Groups, 2)
+	})
+
+	t.Run("Critical lines are kept and labelled critical", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(`level=critical msg="disk full"`),
+		}, 1784210110)
+
+		require.Len(t, out.Groups, 1)
+		assert.Equal(t, "critical", out.Groups[0].Level)
+	})
+
+	t.Run("pattern_hash is the key the group was built on", func(t *testing.T) {
+		long := `level=error msg="` + strings.Repeat("payload ", 200) + `failed"`
+		out := s.groupLogsByPattern([]OutputLog{logLine(long)}, 1784210110)
+
+		require.Len(t, out.Groups, 1)
+		// Sample is truncated for display; the hash must not be derived from it.
+		assert.Equal(t, generatePatternHash(long), out.Groups[0].PatternHash)
+	})
+}
+
+func TestLokiGroupLogsByPatternLastSeen(t *testing.T) {
+	s := &LokiSource{}
+	labels := map[string]any{"namespace": "prod", "pod": "api-7d9f4b6c5d-x2k9p", "container": "api"}
+
+	// Well inside any plausible query window, so a group reporting the window end
+	// instead of its own last line is unmistakable.
+	const (
+		windowEndMs = int64(1784210110000) // 2026-07-17T02:55:10Z
+		oldTs       = "2026-07-17T00:00:00Z"
+		newTs       = "2026-07-17T02:00:00Z"
+	)
+
+	logLine := func(ts, msg string) OutputLog {
+		return OutputLog{Timestamp: ts, Message: msg, Labels: labels, Severity: s.extractSeverity(msg)}
+	}
+
+	t.Run("A group reports its own newest line, not the query window end", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(oldTs, `level=error msg="db timeout"`),
+			logLine(newTs, `level=error msg="db timeout"`),
+		}, windowEndMs)
+
+		require.Len(t, out.Groups, 1)
+		wantSec, err := ParseDateToMillis(newTs)
+		require.NoError(t, err)
+		assert.Equal(t, []int64{wantSec / 1000}, out.Groups[0].Timestamps)
+	})
+
+	t.Run("Groups report different times from each other", func(t *testing.T) {
+		// The bug this replaces: every row rendered the same "Last Time", because
+		// the window end was stamped onto every group.
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(oldTs, `level=error msg="db timeout"`),
+			logLine(newTs, `level=error msg="auth rejected"`),
+		}, windowEndMs)
+
+		require.Len(t, out.Groups, 2)
+		assert.NotEqual(t, out.Groups[0].Timestamps[0], out.Groups[1].Timestamps[0])
+		for _, g := range out.Groups {
+			assert.NotEqual(t, windowEndMs/1000, g.Timestamps[0], "group fell back to the window end")
+		}
+	})
+
+	t.Run("Unparseable timestamps fall back to the window end", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine("not-a-timestamp", `level=error msg="db timeout"`),
+		}, windowEndMs)
+
+		require.Len(t, out.Groups, 1)
+		assert.Equal(t, []int64{windowEndMs / 1000}, out.Groups[0].Timestamps)
+	})
 }

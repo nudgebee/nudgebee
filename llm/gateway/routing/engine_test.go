@@ -64,24 +64,78 @@ func TestResolve_DisabledRuleSkipped(t *testing.T) {
 	assert.Equal(t, ReasonPassthrough, e.Resolve(Input{Model: "m"}).Reason)
 }
 
-func TestValidate_RejectsCrossProvider(t *testing.T) {
-	err := Validate([]Rule{{
+func TestValidate_AllowsCrossProvider(t *testing.T) {
+	// P2: cross-provider substitution is valid (the proxy translates).
+	assert.NoError(t, Validate([]Rule{{
 		ID:     "cross",
 		Match:  Match{Provider: "anthropic"},
 		Target: Target{Endpoint: Endpoint{Provider: "openai", Model: "gpt-4o"}},
-	}})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cross-provider")
+	}}))
 }
 
-func TestValidate_RejectsTargetProviderWithAnyMatch(t *testing.T) {
+func TestResolve_Deprecation(t *testing.T) {
+	e := NewEngine([]Rule{{
+		ID: "dep", Enabled: true,
+		Match:  Match{Provider: "anthropic", Model: "claude-2"},
+		Target: Target{Endpoint: Endpoint{Model: "claude-haiku-4-5"}, Deprecated: true},
+	}})
+	d := e.Resolve(Input{Provider: "anthropic", Model: "claude-2"})
+	assert.Equal(t, ReasonDeprecated, d.Reason)
+	assert.Equal(t, "claude-haiku-4-5", d.ResolvedModel)
+	assert.Equal(t, "anthropic", d.ResolvedProvider) // same-provider rewrite
+}
+
+func TestValidate_RejectsDeprecationWithoutModel(t *testing.T) {
 	err := Validate([]Rule{{
-		ID:     "anyfam",
-		Match:  Match{Provider: ""}, // any endpoint
-		Target: Target{Endpoint: Endpoint{Provider: "anthropic"}},
+		ID:     "dep",
+		Match:  Match{Provider: "anthropic", Model: "claude-2"},
+		Target: Target{Deprecated: true},
 	}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "match.provider")
+	assert.Contains(t, err.Error(), "deprecation needs target.model")
+
+	// A deny rule doesn't route, so it's exempt from the replacement-model requirement
+	// even if deprecated is also set.
+	assert.NoError(t, Validate([]Rule{{
+		ID:     "dep-deny",
+		Match:  Match{Provider: "anthropic", Model: "claude-2"},
+		Target: Target{Deny: true, Deprecated: true},
+	}}))
+}
+
+func TestValidate_RejectsCrossProviderWithoutModel(t *testing.T) {
+	// A cross-provider target with no model would forward the client's native model
+	// name to the wrong provider — require an explicit target model.
+	err := Validate([]Rule{{
+		ID:     "nomodel",
+		Match:  Match{Provider: "anthropic"},
+		Target: Target{Endpoint: Endpoint{Provider: "gemini"}},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires target.model")
+}
+
+func TestValidate_RejectsUnknownTargetProvider(t *testing.T) {
+	err := Validate([]Rule{{
+		ID:     "bogus",
+		Match:  Match{Provider: "anthropic"},
+		Target: Target{Endpoint: Endpoint{Provider: "not-a-provider", Model: "x"}},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown target.provider")
+}
+
+func TestResolve_CrossProviderSubstitution(t *testing.T) {
+	e := NewEngine([]Rule{{
+		ID: "sub", Enabled: true,
+		Match:  Match{Provider: "anthropic", Model: "claude-opus-4-8"},
+		Target: Target{Endpoint: Endpoint{Provider: "gemini", Model: "gemini-3.1-flash"}},
+	}})
+	d := e.Resolve(Input{Provider: "anthropic", Model: "claude-opus-4-8"})
+	assert.Equal(t, ReasonSubstitute, d.Reason)
+	assert.Equal(t, "gemini", d.ResolvedProvider)
+	assert.Equal(t, "gemini-3.1-flash", d.ResolvedModel)
+	assert.Equal(t, "anthropic", d.RequestedProvider)
 }
 
 func TestValidate_AllowsSameFamilyAndEmptyTarget(t *testing.T) {

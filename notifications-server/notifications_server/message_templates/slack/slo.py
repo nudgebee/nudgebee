@@ -1,8 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, field_validator
 
-from notifications_server.configs.settings import public_ip
+from notifications_server.configs.settings import URLRoutes, settings
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_CRITICAL,
+    legacy_attachment,
+    link_button,
+)
 import logging
 
 LOG = logging.getLogger(__name__)
@@ -41,73 +46,71 @@ def get_slo_alert_message_params(**params) -> SLOAlertParams:
     return params
 
 
+def _firing_since_field(firing_since: Union[str, float, int]) -> Optional[Dict[str, Any]]:
+    """Wide field with Slack's localized <!date> token; computed fallback text
+    (not a hardcoded date) for clients that can't render it."""
+    try:
+        ts = int(float(firing_since))
+        fallback = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d %b %Y %I:%M %p UTC")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+    return {
+        "title": "Firing since",
+        "value": f"<!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>",
+        "short": False,
+    }
+
+
+def _short_field(title: str, value: Any) -> Optional[Dict[str, Any]]:
+    if value in (None, "", "N/A"):
+        return None
+    return {"title": title, "value": str(value), "short": True}
+
+
 def get_slo_alert_message_template(params: SLOAlertParams):
-    blocks: List[Dict[str, Any]] = []
-
-    title_blocks = [
-        {
-            "type": "section",
-            "text": add_markdown_block(f"*SLO Alert: {params.slo_name}*"),
-        },
-        {
-            "type": "section",
-            "fields": [
-                add_markdown_block(
-                    f"*Account:* <{public_ip()}/kubernetes/details/{params.account_id}|{params.account_name}>"
-                ),
-                add_markdown_block(f"*Namespace:* {params.namespace}"),
-                add_markdown_block(f"*Workload:* {params.workload}"),
-            ],
-        },
-        {"type": "divider"},
-        {
-            "type": "section",
-            "fields": [
-                add_markdown_block(f"*Status:* {params.status}"),
-                add_markdown_block(f"*Target:* {params.slo_target}"),
-                add_markdown_block(f"*Current Value:* {params.current_value}"),
-                add_markdown_block(
-                    f"*Firing Since: *<!date^{int(float(params.firing_since))}^{{date_short_pretty}} {{time}}|April"
-                    " 14th, 2024 12:00 PM>"
-                ),
-                add_markdown_block(f"*Burn rate:* {params.burn_rate}"),
-                add_markdown_block(f"*Budget Remaining:* {params.error_budget_remaining}"),
-                add_markdown_block(f"*Threshold:* {params.threshold}"),
-                add_markdown_block(f"*Good Events:* {params.good_event_count}"),
-                add_markdown_block(f"*Bad Events:* {params.bad_event_count}"),
-            ],
-        },
-    ]
-
-    # Slack has a limit of 10 items per fields array, so split into chunks
-    fields = title_blocks[3]["fields"]
-    title_blocks[3]["fields"] = fields[:10]
-    for i in range(10, len(fields), 10):
-        chunk = fields[i : i + 10]
-        title_blocks.append({"type": "section", "fields": chunk})
-
-    title_blocks.extend(
-        [
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": add_markdown_block(
-                    "The current value of your SLO has dropped below the target of"
-                    f" {params.slo_target}. The error budget is being consumed at a rate of `{params.burn_rate}`,"
-                    f" leaving only `{params.error_budget_remaining}` of the budget remaining.\nImmediate action is"
-                    " required to address this issue and ensure the reliability of your service."
-                ),
-            },
-        ]
+    """Single severity-striped SLO card (matches the finding-card standard):
+    clickable title, all SLO stats as two-column fields, a concise burn
+    summary, and a View SLO button — all inside one red legacy attachment."""
+    slo_monitoring_url = settings.urls.cluster_details_url(
+        params.account_id,
+        utm_source=URLRoutes.UTMSource.SLACK,
+        anchor=URLRoutes.Anchors.MONITORING_SLO,
     )
 
-    blocks.extend([*title_blocks, {"type": "divider"}])
+    workload = f"{params.namespace}/{params.workload}" if params.namespace else params.workload
+    events = None
+    if params.bad_event_count is not None or params.good_event_count is not None:
+        events = f"{params.bad_event_count} bad / {params.good_event_count} good"
 
-    return {"text": "SLO Alert", "blocks": blocks, "unfurl_links": False}
+    fields = [
+        f
+        for f in [
+            _short_field("Account", params.account_name),
+            _short_field("Workload", workload),
+            _short_field("Target", params.slo_target),
+            _short_field("Current", params.current_value),
+            _short_field("Burn rate", params.burn_rate),
+            _short_field("Budget remaining", params.error_budget_remaining),
+            _short_field("Threshold", params.threshold),
+            _short_field("Events (bad/good)", events),
+            _firing_since_field(params.firing_since),
+        ]
+        if f is not None
+    ]
 
+    summary = (
+        f"Error budget is being consumed at `{params.burn_rate}×`, leaving `{params.error_budget_remaining}` remaining."
+        " Immediate action is required to protect the service."
+    )
 
-def add_markdown_block(text):
-    return {
-        "type": "mrkdwn",
-        "text": text,
-    }
+    attachment = legacy_attachment(
+        STRIPE_CRITICAL,
+        f"SLO breach: {params.slo_name}",
+        text=summary,
+        fields=fields,
+        actions=[link_button("View SLO", slo_monitoring_url, style="primary")],
+    )
+    attachment["title"] = f"SLO breach: {params.slo_name}"
+    attachment["title_link"] = slo_monitoring_url
+
+    return {"attachments": [attachment], "unfurl_links": False}

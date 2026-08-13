@@ -514,7 +514,7 @@ class Transformer:
 
     @staticmethod
     def __to_link_button(i, link):
-        return {
+        button = {
             "type": "button",
             "text": {
                 "type": "plain_text",
@@ -523,6 +523,9 @@ class Transformer:
             "action_id": f"{ACTION_LINK}_{i}",
             "url": link.url,
         }
+        if getattr(link, "style", None):
+            button["style"] = link.style
+        return button
 
     @staticmethod
     def __get_action_block_for_choices(choices: Dict[str, CallbackChoice] = None):
@@ -537,13 +540,12 @@ class Transformer:
 
     @staticmethod
     def __to_callback_button(callback_choice, i, text):
-        return {
+        button = {
             "type": "button",
             "text": {
                 "type": "plain_text",
                 "text": text,
             },
-            "style": "primary",
             "action_id": f"{ACTION_TRIGGER_PLAYBOOK}_{text}",
             "value": ExternalActionRequestBuilder.create_for_func(
                 callback_choice,
@@ -551,6 +553,12 @@ class Transformer:
                 SLACK_SIGNIN_SECRET,
             ).model_dump_json(),
         }
+        # Historical default is primary; "default" opts a button out (Slack
+        # renders the plain grey style when the key is omitted).
+        style = getattr(callback_choice, "style", None) or "primary"
+        if style != "default":
+            button["style"] = style
+        return button
 
     @staticmethod
     def __to_slack_action_list(block: ActionListBlock):

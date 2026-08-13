@@ -16,10 +16,12 @@ const CloudAccount = () => {
   const [showNoAccountsMessage, setShowNoAccountsMessage] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+    let redirectTimer;
     const navigateToCloudAccount = async () => {
       if (selectedCluster?.value && selectedCluster?.cloud_provider !== 'K8s') {
         setSelectedCluster({ ...selectedCluster });
-        setTimeout(() => {
+        redirectTimer = setTimeout(() => {
           router.push(`/cloud-account/details/${selectedCluster.value}#summary`);
         }, 100);
         return;
@@ -27,6 +29,7 @@ const CloudAccount = () => {
 
       try {
         const cloudAccounts = await apiHome.getCloudAccounts();
+        if (cancelled) return;
         const validCloudAccounts = cloudAccounts.filter((acc) => acc.cloud_provider !== 'K8s' && acc.status === 'active');
 
         if (validCloudAccounts.length > 0) {
@@ -45,6 +48,7 @@ const CloudAccount = () => {
           setShowNoAccountsMessage(true);
         }
       } catch (error) {
+        if (cancelled) return;
         console.error(error);
         setLoading(false);
         setShowNoAccountsMessage(true);
@@ -52,6 +56,10 @@ const CloudAccount = () => {
     };
 
     navigateToCloudAccount();
+    return () => {
+      cancelled = true;
+      if (redirectTimer) clearTimeout(redirectTimer);
+    };
   }, [router.query.accountId]);
 
   const handleIntegrateClick = () => {

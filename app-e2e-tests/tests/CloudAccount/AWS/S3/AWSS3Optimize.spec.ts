@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS S3 -> Optimize", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabS3).toBeVisible();
-  await locators.AnchorTabS3.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.S3Optimize.click();
+      await locators.navigateToSubTab(locators.AnchorTabS3, locators.S3Optimize, locators.S3OptimizeUrl);
       await page.waitForLoadState("networkidle");
     },
     {

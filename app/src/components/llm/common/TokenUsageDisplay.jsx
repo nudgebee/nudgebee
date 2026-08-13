@@ -664,15 +664,26 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
   const hasData = messageData && Object.keys(messageData).length > 0;
   const totalTokens = hasData ? (messageData.message_input_tokens || 0) + (messageData.message_output_tokens || 0) : 0;
 
+  // A message can finish with zero recorded token usage while still
+  // carrying other metrics (e.g. cost or agents data). Keep the tooltip
+  // data visible whenever any metric is present instead of falling back
+  // to the placeholder.
+  const hasMeaningfulMetrics =
+    hasData &&
+    (totalTokens > 0 ||
+      (messageData.message_cached_input_tokens || 0) > 0 ||
+      (messageData.message_cost_usd || 0) > 0 ||
+      (messageData.agents && messageData.agents.length > 0));
+
   // Handle hover event
   const handleMouseEnter = () => {
-    if (onHover && (!hasData || totalTokens === 0)) {
+    if (onHover && !hasMeaningfulMetrics) {
       onHover();
     }
   };
 
   // Show loading state
-  if (isLoading && (!hasData || totalTokens === 0)) {
+  if (isLoading && !hasMeaningfulMetrics) {
     const loadingContent = (
       <Box
         sx={{
@@ -764,7 +775,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
     );
   }
 
-  if (!hasData || totalTokens === 0) {
+  if (!hasMeaningfulMetrics) {
     const placeholderContent = (
       <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 75) }}>
         <Typography

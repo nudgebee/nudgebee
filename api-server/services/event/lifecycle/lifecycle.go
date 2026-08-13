@@ -192,6 +192,7 @@ func publishToWorkflows(ctx *security.RequestContext, phase Phase, event map[str
 		config.Config.RabbitMqRunbookEventRoutingKey,
 		lightweight,
 		common.MqPublishWithExpiration(2*time.Hour),
+		common.MqPublishWithContext(ctx.GetContext()),
 	); err != nil {
 		ctx.GetLogger().Error("lifecycle: failed to publish event to workflow exchange", "phase", string(phase), "error", err)
 	}

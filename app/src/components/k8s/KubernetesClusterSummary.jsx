@@ -198,10 +198,9 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
       try {
         const last24Hours = getLast24Hrs(new Date()).toISOString();
 
-        // Fetch configured SLOs created in last 24 hours
+        // Fetch all configured SLOs in the account (overall total)
         const configResponse = await apiKubernetes1.listSLOConfigs({
           cloud_account_id: accountId,
-          created_after: last24Hours,
         });
         const configuredSLOs = configResponse?.data?.data?.slo_config || [];
         const configuredWorkloads = new Set();
@@ -506,7 +505,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
                         <div key={workload}>{workload}</div>
                       ))}
                       {firingWorkloads.length > 10 && <div>...and {firingWorkloads.length - 10} more workloads</div>}
-                      <div style={{ fontWeight: 'bold', marginTop: 4 }}>{totalSlo} SLO Configured (Last 24 Hours)</div>
+                      <div style={{ fontWeight: 'bold', marginTop: 4 }}>{totalSlo} Total SLO Configured</div>
                     </div>
                   ) : (
                     ''

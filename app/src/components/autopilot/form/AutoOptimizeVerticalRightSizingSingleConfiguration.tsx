@@ -385,7 +385,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
           accountId: _data?.accountId ?? _data?.account_id ?? selectedCluster?.value,
           namespaceName: _data?.data?.cloud_resourse?.meta?.namespace,
           workloadName: _data?.data?.cloud_resourse?.meta?.controller,
-          workloadType: 'Deployment',
+          workloadType: _data?.data?.cloud_resourse?.meta?.controllerKind || 'Deployment',
         })
         .then(async (res) => {
           const workloads = res?.data?.k8s_workloads || [];

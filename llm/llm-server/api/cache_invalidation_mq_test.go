@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"nudgebee/llm/tools/core"
 	"testing"
 
@@ -13,7 +14,7 @@ func TestProcessCacheInvalidationMessage_ClearsCacheForListedAccount(t *testing.
 	defer core.ClearMCPIntegrationToolCache(accountId)
 
 	msg := []byte(`{"account_ids":["` + accountId + `"]}`)
-	err := processCacheInvalidationMessage(msg)
+	err := processCacheInvalidationMessage(context.Background(), msg)
 	assert.NoError(t, err)
 
 	// MCP cache for the listed account must be gone after processing.
@@ -27,7 +28,7 @@ func TestProcessCacheInvalidationMessage_AcceptsSingleAccountIdField(t *testing.
 	defer core.ClearMCPIntegrationToolCache(accountId)
 
 	msg := []byte(`{"account_id":"` + accountId + `"}`)
-	err := processCacheInvalidationMessage(msg)
+	err := processCacheInvalidationMessage(context.Background(), msg)
 	assert.NoError(t, err)
 
 	_, present := core.GetMCPIntegrationToolCache(accountId)
@@ -35,16 +36,16 @@ func TestProcessCacheInvalidationMessage_AcceptsSingleAccountIdField(t *testing.
 }
 
 func TestProcessCacheInvalidationMessage_DropsInvalidJson(t *testing.T) {
-	err := processCacheInvalidationMessage([]byte("not-json"))
+	err := processCacheInvalidationMessage(context.Background(), []byte("not-json"))
 	// Invalid payloads must Ack (return nil) — requeueing would loop forever.
 	assert.NoError(t, err, "malformed JSON must be dropped, not requeued")
 }
 
 func TestProcessCacheInvalidationMessage_DropsEmptyPayload(t *testing.T) {
-	err := processCacheInvalidationMessage([]byte(`{}`))
+	err := processCacheInvalidationMessage(context.Background(), []byte(`{}`))
 	assert.NoError(t, err, "empty payload must drop without error")
 
-	err = processCacheInvalidationMessage([]byte(`{"account_ids":[]}`))
+	err = processCacheInvalidationMessage(context.Background(), []byte(`{"account_ids":[]}`))
 	assert.NoError(t, err, "empty account list must drop without error")
 }
 
@@ -57,7 +58,7 @@ func TestProcessCacheInvalidationMessage_DedupsAccountIds(t *testing.T) {
 	defer core.ClearMCPIntegrationToolCache(b)
 
 	msg := []byte(`{"account_id":"` + a + `","account_ids":["` + a + `","` + b + `","",""]}`)
-	err := processCacheInvalidationMessage(msg)
+	err := processCacheInvalidationMessage(context.Background(), msg)
 	assert.NoError(t, err)
 
 	_, presentA := core.GetMCPIntegrationToolCache(a)

@@ -48,17 +48,18 @@ func (l MySQLDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 
 	instructions := []string{
 		"**1. Analyze the Request:** Identify the goal (e.g., table structure, query optimization, data retrieval).",
-		"**2. Formulate SQL:** Construct a valid MySQL `SELECT` query. **CRITICAL:** You are strictly forbidden from using `CREATE`, `UPDATE`, `DELETE`, or `INSERT` statements.",
-		"**3. Execute Query:** Use the `mysql_query_execute` tool with the following parameters:",
+		"**2. Introspect Unfamiliar Tables (MANDATORY):** For any table you have not already queried in this conversation, first run the schema-introspection query described in the constraints. Skipping this typically costs 3+ terminal `Unknown column` / `Table doesn't exist` errors before landing on the right shape.",
+		"**3. Formulate SQL:** Construct a valid MySQL `SELECT` query using the column names verified in step 2. **CRITICAL:** You are strictly forbidden from using `CREATE`, `UPDATE`, `DELETE`, or `INSERT` statements.",
+		"**4. Execute Query:** Use the `mysql_query_execute` tool with the following parameters:",
 		"   - `query` (Required): The SQL query string.",
 		"   - `database` (Optional): The specific database name if provided by the user.",
-		"**4. Interpret & Summarize:** Analyze the returned results. If no data is found, explain why.",
+		"**5. Interpret & Summarize:** Analyze the returned results. If no data is found, explain why.",
 	}
 
 	constraints := []string{
 		"You MUST use the `mysql_query_execute` tool for all database interactions. Do NOT provide answers without evidence from the database.",
 		"When broad data is requested (e.g., 'all users'), do NOT add restrictive filters unless requested.",
-		"If schema information is needed, query `information_schema.tables` and `information_schema.columns` first.",
+		"**Schema-first for unfamiliar tables (MANDATORY).** Before writing a `SELECT` against any table you have not already queried in this conversation, first introspect its columns via `SELECT column_name FROM information_schema.columns WHERE table_name = '<table>' AND table_schema = DATABASE()` (and, if you're unsure the table even exists, `SELECT table_name FROM information_schema.tables WHERE table_name LIKE '%<pattern>%' AND table_schema = DATABASE()` first). **Filter by `table_schema = DATABASE()`** — without it MySQL's `information_schema` returns rows across every database on the server, so when two databases have a table with the same name you'll get duplicate/misleading columns. Both table and column hallucination are common failure modes; one introspection query prevents 3+ terminal `Unknown column` / `Table doesn't exist` errors.",
 	}
 	toolUsage := map[string][]string{
 		tools.ToolExecuteMySQLQuery: {
@@ -75,6 +76,20 @@ func (l MySQLDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		}
 	}
 	examples := []core.NBAgentPromptExample{
+		{
+			Question: "Find recent orders for customer 'acme-corp'",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolExecuteMySQLQuery,
+					Input: `{"query": "SELECT column_name FROM information_schema.columns WHERE table_name = 'orders' AND table_schema = DATABASE();"}`,
+				},
+				{
+					Tool:  tools.ToolExecuteMySQLQuery,
+					Input: `{"query": "SELECT order_id, customer_id, total, created_at FROM orders WHERE customer_id = 'acme-corp' ORDER BY created_at DESC LIMIT 20;"}`,
+				},
+			},
+			Explanation: "Introspect the columns of `orders` first — the LLM might otherwise assume a `customer` or `name` column that doesn't exist. The introspection cost is one cheap query; the guess-and-fail alternative costs 2-3 terminal `Unknown column` errors before landing on the right shape.",
+		},
 		{
 			Question: "Show me long running transactions?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{

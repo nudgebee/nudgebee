@@ -184,7 +184,7 @@ export const useTicketDynamicFields = ({
   const fixedIssueTypeForTool = (tool: string): { label: string; value: string }[] => {
     if (tool === 'github') return [{ label: 'Issue', value: 'Issue' }];
     if (tool === 'gitlab') return [{ label: 'Issue', value: 'issue' }];
-    if (tool === 'servicenow' || tool === 'pagerduty' || tool === 'zenduty') {
+    if (tool === 'servicenow' || tool === 'pagerduty' || tool === 'zenduty' || tool === 'freshdesk') {
       return [{ label: 'Incident', value: 'incident' }];
     }
     return [];

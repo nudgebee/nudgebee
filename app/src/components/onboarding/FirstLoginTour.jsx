@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import apiUser, { PREFERENCE_APP_TOUR_SEEN } from '@api1/user';
-import { useTour, TOURS } from '@components/common/tour';
+import { useTour, TOURS, brandText } from '@components/common/tour';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import TourWelcomeDialog from './TourWelcomeDialog';
 
 const APP_TOUR_ID = 'app-overview';
@@ -22,6 +23,11 @@ const FirstLoginTour = () => {
   const { start } = useTour();
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const firedRef = useRef(false);
+  // Subscribed for the re-render, not the value: brandText() reads the brand
+  // name from a non-reactive module cache, and the branding fetch may resolve
+  // after this dialog has already mounted. Without this, a slow
+  // /api/public/app_config would leave the fallback name on screen.
+  useBrandingConfig();
 
   const tour = TOURS[APP_TOUR_ID];
 
@@ -65,8 +71,8 @@ const FirstLoginTour = () => {
   return (
     <TourWelcomeDialog
       open={welcomeOpen}
-      title={tour.welcome.title}
-      description={tour.welcome.description}
+      title={brandText(tour.welcome.title)}
+      description={brandText(tour.welcome.description)}
       totalSteps={tour.steps.length + 1}
       onStart={handleStart}
       onSnooze={handleSnooze}

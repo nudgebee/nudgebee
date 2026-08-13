@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS -> Monitoring -> Cloud Metrics", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabMonitoring).toBeVisible();
-  await locators.AnchorTabMonitoring.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.MonitoringCloudMetrics.click();
+      await locators.navigateToSubTab(locators.AnchorTabMonitoring, locators.MonitoringCloudMetrics, locators.MonitoringCloudMetricsUrl);
       await page.waitForLoadState("networkidle");
     },
     {

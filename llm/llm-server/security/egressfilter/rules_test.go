@@ -18,6 +18,10 @@ func TestRules_PositiveCorpusByID(t *testing.T) {
 		{"ASIA prefix (STS)", "id=ASIAIOSFODNN7EXAMPLE here", "aws-access-key-id"},
 		{"GitHub PAT classic", "ghp_Abcdefghijklmnopqrstuvwxyz0123456789", "github-pat"},
 		{"GitHub OAuth token", "gho_Abcdefghijklmnopqrstuvwxyz0123456789", "github-pat"},
+		// Longer-than-canonical classic body must still fire the named rule —
+		// the open-ended `{36,}` must not cap out (regression for the prior
+		// `{36,251}` + trailing `\b` miss on over-length tokens).
+		{"GitHub PAT long body", "ghp_Abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP0123", "github-pat"},
 		{"OpenAI sk-proj key", "key=sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "openai-api-key"},
 		{"OpenAI sk- key", "key=sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "openai-api-key"},
 		{"Anthropic sk-ant", "key=sk-ant-api01-AbCdEfGhIjKlMnOpQrStUvWxYz012345_-6789", "anthropic-api-key"},

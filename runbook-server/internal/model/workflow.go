@@ -123,6 +123,12 @@ type Workflow struct {
 	// Surfaced so the listing / editor can render the per-version state without a
 	// second query. Kept in lockstep with workflows.status by the DAO.
 	LiveVersionStatus WorkflowStatus `json:"live_version_status,omitempty" yaml:"live_version_status,omitempty"`
+	// DraftDiffersFromLive is true when the draft (workflows.definition) differs
+	// from the live version's snapshot (JSONB semantic comparison), or when no
+	// live version exists yet. Computed by Find; drives the editor's Publish
+	// button state and the PublishWorkflow no-change guard. Intentionally not
+	// json-omitempty — false ("in sync with live") is a meaningful value.
+	DraftDiffersFromLive bool `json:"draft_differs_from_live" yaml:"draft_differs_from_live,omitempty"`
 }
 
 // TriggerInfo holds dynamic, non-persisted information about a workflow's triggers.

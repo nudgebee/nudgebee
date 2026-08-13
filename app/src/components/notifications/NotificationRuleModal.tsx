@@ -318,7 +318,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         const query: any = {};
         query['namespace'] = selectedNamespace;
         query['cloud_account_id'] = selectedCluster;
-        query['workload_type'] = 'Deployment';
+        query['workload_type'] = ['Deployment', 'Rollout'];
         query.isActive = true;
         setLoadingDropdown((prev) => ({
           ...prev,
@@ -1369,7 +1369,13 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                           setSelectedSeverity([value]);
                         }}
                         value={selectedSeverity.length > 0 ? selectedSeverity[0] : null}
-                        options={[{ label: 'High', value: 'high' }]}
+                        options={[
+                          { label: 'High', value: 'high' },
+                          { label: 'Medium', value: 'medium' },
+                          { label: 'Low', value: 'low' },
+                          { label: 'Info', value: 'info' },
+                          { label: 'Debug', value: 'debug' },
+                        ]}
                         size='sm'
                       />
                     </Box>

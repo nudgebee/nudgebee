@@ -3,6 +3,7 @@
     {
       "unique_key": "aws:test-account-aws-1::VPC::vpc-1",
       "node_type": "VPC",
+      "specific_type": "VPC",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -21,11 +22,13 @@
       "labels": {},
       "query_attributes": {
         "name": "vpc-1"
-      }
+      },
+      "ontology_attributes": {}
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:vpc-1:app-alb",
       "node_type": "LoadBalancer",
+      "specific_type": "ALBLoadBalancer",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -62,15 +65,23 @@
         "kubernetes.io/service-name": "default/my-svc"
       },
       "query_attributes": {
+        "load_balancer_type": "application",
         "name": "app-alb",
         "scheme": "internet-facing",
         "type": "application_loadbalancer",
         "vpc_id": "vpc-1"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-alb",
+        "scheme": "internet-facing",
+        "type": "application"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
       "node_type": "ManagedCluster",
+      "specific_type": "EKSCluster",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -100,11 +111,16 @@
         "region": "us-east-1",
         "status": "",
         "subtype": "cluster"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "my-eks"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Cluster::my-eks",
       "node_type": "Cluster",
+      "specific_type": "KubernetesCluster",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -117,11 +133,15 @@
       "labels": {},
       "query_attributes": {
         "name": "my-eks"
+      },
+      "ontology_attributes": {
+        "name": "my-eks"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::K8sService:default:my-svc",
       "node_type": "K8sService",
+      "specific_type": "KubernetesService",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -142,11 +162,17 @@
         "cluster": "my-eks",
         "name": "my-svc",
         "namespace": "default"
+      },
+      "ontology_attributes": {
+        "cluster": "my-eks",
+        "name": "my-svc",
+        "namespace": "default"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Namespace::default",
       "node_type": "Namespace",
+      "specific_type": "KubernetesNamespace",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -161,11 +187,16 @@
       "query_attributes": {
         "cluster": "my-eks",
         "name": "default"
+      },
+      "ontology_attributes": {
+        "cluster": "my-eks",
+        "name": "default"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
       "node_type": "Node",
+      "specific_type": "KubernetesNode",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -189,6 +220,18 @@
       },
       "labels": {},
       "query_attributes": {
+        "cluster": "my-eks",
+        "cpu_capacity": 0,
+        "memory_capacity": "0",
+        "name": "k8s-node-1",
+        "node_flavor": "",
+        "node_region": "",
+        "node_type": "worker",
+        "node_zone": ""
+      },
+      "ontology_attributes": {
+        "capacity_cpu": 0,
+        "capacity_memory": "0",
         "cluster": "my-eks",
         "name": "k8s-node-1"
       }

@@ -72,6 +72,7 @@ func InvalidateLLMServerCacheForAccounts(sc *security.RequestContext, accountIds
 			"", // routing key irrelevant for fanout exchanges
 			payload,
 			common.MqPublishWithExchangeType("fanout"),
+			common.MqPublishWithContext(sc.GetContext()),
 		); err != nil {
 			// Error level (not Warn): a publish failure means every
 			// llm-server replica's caches stay stale for up to the per-cache

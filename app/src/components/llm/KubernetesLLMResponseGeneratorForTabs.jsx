@@ -48,6 +48,9 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
   const [generateQuestionText, setGenerateQuestionText] = useState('');
   const [isLoadingInvestigation, setIsLoadingInvestigation] = useState(false);
   const [messages, setMessages] = useState([]);
+  // Raw createConversationFetcher response body ({ data: { llm_conversations } }),
+  // kept so the download button in the final-response card can dump it without refetching.
+  const [rawConversation, setRawConversation] = useState(null);
   const [conversationStatus, setConversationStatus] = useState('');
   const [intervalCounter, setIntervalCounter] = useState(0);
   const [expandedCardIndex, setExpandedCardIndex] = useState(null);
@@ -228,6 +231,7 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
       }
       const conversationResponses = res?.data?.data?.llm_conversations ?? [];
       if (conversationResponses.length > 0) {
+        setRawConversation(res?.data ?? null);
         setConversationTitle(conversationResponses[0].title);
         setConversationIdAtDb(conversationResponses[0].id);
         let response = conversationResponses[conversationResponses?.length - 1];
@@ -530,6 +534,7 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
   useEffect(() => {
     if (previousAccountIdRef.current !== accountId) {
       setMessages([]);
+      setRawConversation(null);
       setConversationSuggestions([]);
       setGenerateQuestionText('');
       previousAccountIdRef.current = accountId;
@@ -1158,6 +1163,7 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
                       handleShare={handleShare}
                       sessionId={selectedSessionId}
                       conversationId={conversationIdAtDb}
+                      conversationJson={rawConversation}
                       generateQuestionText={generateQuestionText}
                       showFullTextHandler={showFullTextHandler}
                       showFullText={showFullText}

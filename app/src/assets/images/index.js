@@ -291,6 +291,7 @@ export const bellSVG = require('@assets/bell2.svg');
 export const jiraIcon = require('@assets/jira_icon.icon.svg');
 export const ConfluenceIcon = require('@assets/confluence-icon.svg');
 export const serviceNowIcon = require('@assets/servicenow.icon.svg');
+export const freshdeskIcon = require('@assets/freshdesk.icon.svg');
 export const slackIcon = require('@assets/slack_icon.icon.svg');
 export const GithubIcon = require('@assets/github-icon.icon.svg');
 export const GitMergeIcon = require('@assets/git-merge.svg');
@@ -312,7 +313,6 @@ export const scheduleBlackSVG = require('@assets/schedule_black.svg');
 export const uploadIcon = require('@assets/upload_dummy.svg');
 export const userIcon = require('@assets/ou-management/g_user.svg');
 export const error404Image = require('@assets/404_image.svg');
-export const Loadergif = require('@assets/Loader.gif');
 export const workflowLoadergif = require('@assets/workflowLoader.gif');
 
 export const copyRightImg = require('@assets/financials/copy1.svg');
@@ -396,6 +396,7 @@ export const ZenDutyIcon = require('@assets/zenduty.jpeg');
 export const SlackIcon = require('@assets/auto-pilot/slack.svg');
 export const MSTeamsIcon = require('@assets/ms_teams_s.svg');
 export const ServiceNowIcon = require('@assets/auto-pilot/service-now.svg');
+export const FreshdeskIcon = require('@assets/freshdesk.icon.svg');
 export const ScaleCpuNewIcon = require('@assets/new/scale-cpu-icon.svg');
 
 export const TroubleshootIcon = require('@assets/auto-pilot/k8-events.svg');

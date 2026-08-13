@@ -127,7 +127,7 @@ func TestGenerateKqlWhereClause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "where age == '30' and age in ('20','25') and age != '40' and name contains 'abc'"
+	want := "where age == toint('30') and age in (toint('20'),toint('25')) and age != toint('40') and name contains 'abc'"
 	if got != want {
 		t.Errorf("WhereClause: got %s, want %s", got, want)
 	}
@@ -203,7 +203,7 @@ func TestGenerateKqlQuery(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "MyTable | where id == '10' | summarize count() by name | order by id desc"
+	want := "MyTable | where id == toint('10') | summarize count() by name | order by id desc"
 
 	if got != want {
 		t.Errorf("FullQuery: got %s, want %s", got, want)

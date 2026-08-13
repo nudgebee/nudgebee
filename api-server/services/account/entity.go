@@ -39,6 +39,7 @@ type AccountCreateRequest struct {
 	AccountAccess       string         `json:"account_access,omitempty" mapstructure:"account_access" omitempty:"true"`
 	SsmAccess           bool           `json:"ssm_access,omitempty" mapstructure:"ssm_access" omitempty:"true"`
 	AccountEmail        string         `json:"account_email,omitempty" mapstructure:"account_email" omitempty:"true"`
+	AccountEnv          string         `json:"account_env,omitempty" mapstructure:"account_env" omitempty:"true" validate:"omitempty,oneof=prod non_prod"`
 	AccountName         string         `json:"account_name" mapstructure:"account_name" validate:"required"`
 	AccountPurpose      string         `json:"account_purpose,omitempty" mapstructure:"account_purpose" omitempty:"true"`
 	AccountType         string         `json:"account_type,omitempty" mapstructure:"account_type" omitempty:"true"`
@@ -252,6 +253,7 @@ type GcpListProjectsResponse struct {
 // GcpBulkOnboardRequest is the input for onboarding multiple GCP projects at once
 type GcpBulkOnboardRequest struct {
 	AccountName      string   `json:"account_name" mapstructure:"account_name" validate:"required"`
+	AccountEnv       string   `json:"account_env,omitempty" mapstructure:"account_env" validate:"omitempty,oneof=prod non_prod"`
 	CredentialsJSON  string   `json:"credentials_json" mapstructure:"credentials_json" validate:"required"`
 	ProjectIDs       []string `json:"project_ids" mapstructure:"project_ids" validate:"required"`
 	BillingProjectID string   `json:"billing_project_id,omitempty" mapstructure:"billing_project_id"`
@@ -290,11 +292,12 @@ type AccountAttrUpsertResponse struct {
 	AffectedRows int `json:"affected_rows"`
 }
 
-// AccountUpdateRequest is the input for updating a cloud account's status, name, or data
+// AccountUpdateRequest is the input for updating a cloud account's status, name, environment, or data
 type AccountUpdateRequest struct {
 	Id          string         `json:"id" mapstructure:"id" validate:"required"`
 	Status      string         `json:"status,omitempty" mapstructure:"status"`
 	AccountName string         `json:"account_name,omitempty" mapstructure:"account_name"`
+	AccountEnv  string         `json:"account_env,omitempty" mapstructure:"account_env" validate:"omitempty,oneof=prod non_prod"`
 	Data        map[string]any `json:"data,omitempty" mapstructure:"data"`
 }
 
@@ -331,6 +334,7 @@ type AzureBulkOnboardSubInput struct {
 // AzureBulkOnboardRequest is the input for onboarding multiple Azure subscriptions at once
 type AzureBulkOnboardRequest struct {
 	AccountName   string                     `json:"account_name" mapstructure:"account_name" validate:"required"`
+	AccountEnv    string                     `json:"account_env,omitempty" mapstructure:"account_env" validate:"omitempty,oneof=prod non_prod"`
 	TenantID      string                     `json:"tenant_id" mapstructure:"tenant_id" validate:"required"`
 	ClientID      string                     `json:"client_id" mapstructure:"client_id" validate:"required"`
 	ClientSecret  string                     `json:"client_secret" mapstructure:"client_secret" validate:"required"`

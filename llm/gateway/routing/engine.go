@@ -32,7 +32,19 @@ func NewEngine(rules []Rule) *Engine {
 			e.byTenant[r.TenantID] = append(e.byTenant[r.TenantID], r)
 		}
 	}
-	byPriority := func(rs []Rule) { sort.SliceStable(rs, func(i, j int) bool { return rs[i].Priority < rs[j].Priority }) }
+	// Order within a scope: priority asc; then a deny (block) wins a same-priority tie
+	// (an admin can block a model regardless of a competing redirect). For every other
+	// tie the STABLE sort preserves input order — the Store depends on this (DB rules
+	// are merged before config-file rules, so DB wins ties), and the DB loader's
+	// ORDER BY makes that input order itself deterministic (no coin-flip on a tie).
+	byPriority := func(rs []Rule) {
+		sort.SliceStable(rs, func(i, j int) bool {
+			if rs[i].Priority != rs[j].Priority {
+				return rs[i].Priority < rs[j].Priority
+			}
+			return rs[i].Target.Deny && !rs[j].Target.Deny // deny first; else keep input order
+		})
+	}
 	byPriority(e.global)
 	for _, rs := range e.byTenant {
 		byPriority(rs)
@@ -59,16 +71,33 @@ func (e *Engine) Resolve(in Input) Decision {
 			continue
 		}
 		d.RuleID = r.ID
+		if r.Target.Deny {
+			// Block: reject the request. ResolvedModel carries the suggested
+			// alternative (empty when the rule sets none). The proxy turns this into a 403.
+			d.Reason = ReasonBlocked
+			d.Denied = true
+			d.ResolvedModel = r.Target.Model
+			return d
+		}
 		if r.Target.Model != "" {
 			d.ResolvedModel = r.Target.Model
 		}
-		// P1: target.Provider is validated same-family, so resolved provider stays
-		// the addressed one; cross-provider is P2.
+		// P2: a rule may resolve a DIFFERENT provider (cross-provider substitution).
+		// The proxy then takes the translate path (parse client-native → unified →
+		// dispatch to the resolved provider → re-encode to the client's native shape).
+		if r.Target.Provider != "" {
+			d.ResolvedProvider = r.Target.Provider
+		}
 		d.Fallbacks = r.Target.Fallbacks
 		d.Strategy = r.Target.Affinity
-		if d.ResolvedModel != d.RequestedModel {
+		switch {
+		case d.ResolvedProvider != d.RequestedProvider:
+			d.Reason = ReasonSubstitute // cross-provider — needs translation
+		case r.Target.Deprecated && d.ResolvedModel != d.RequestedModel:
+			d.Reason = ReasonDeprecated // retired model rewritten to its replacement
+		case d.ResolvedModel != d.RequestedModel:
 			d.Reason = ReasonAlias // tier is a labelled alias; rule id disambiguates
-		} else {
+		default:
 			d.Reason = ReasonLoadBalance // same model, but a rule selected a key/pool/fallback set
 		}
 		return d

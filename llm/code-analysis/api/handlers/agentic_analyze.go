@@ -258,15 +258,22 @@ type AnalysisResult struct {
 	SemanticAnalysis   *SemanticInfo    `json:"semantic_analysis,omitempty"`
 
 	// PIPELINE STATUS FIELDS - Expose review/build/fix details for transparency
-	RequiresFix        bool           `json:"requires_fix,omitempty"`
-	ExecutionStatus    string         `json:"execution_status,omitempty"`    // success, failed, partial_success, no_op (already-resolved / nothing to apply — fix flow & followup)
-	ExecutionSummary   string         `json:"execution_summary,omitempty"`   // CodeFixer's summary of what it did
+	RequiresFix      bool   `json:"requires_fix,omitempty"`
+	ExecutionStatus  string `json:"execution_status,omitempty"`  // success, failed, partial_success, no_op (already-resolved / nothing to apply — fix flow & followup)
+	ExecutionSummary string `json:"execution_summary,omitempty"` // CodeFixer's summary of what it did
+	// FollowupUnresolved narrows a followup no_op: true means the agent had
+	// actionable input (review comments / CI failure) but couldn't apply a change
+	// (non-convergence), vs a genuine "nothing to do". Additive & backward-compatible:
+	// the services-server cron reads it only for the outcome metric; an older cron
+	// ignores it. Only set on the PR-followup path.
+	FollowupUnresolved bool           `json:"followup_unresolved,omitempty"`
 	FilesModified      any            `json:"files_modified,omitempty"`      // List of files the fixer changed
 	VerificationPassed any            `json:"verification_passed,omitempty"` // Whether lint/build passed
 	PRCreationStatus   string         `json:"pr_creation_status,omitempty"`  // success, skipped, failed
 	PRCreationReason   string         `json:"pr_creation_reason,omitempty"`  // Why PR was skipped/failed
 	Review             map[string]any `json:"review,omitempty"`              // Review agent feedback, issues, syntax errors
 	BuildVerification  map[string]any `json:"build_verification,omitempty"`  // Lint/build command results
+	Verification       map[string]any `json:"verification,omitempty"`        // Harness-run tri-state verdict (verified|unverified|failed) with verbatim evidence
 	FailureSummary     string         `json:"failure_summary,omitempty"`     // Human-readable summary when pipeline fails
 }
 
@@ -343,16 +350,10 @@ func (ah *AgenticAnalyzeHandler) HandleAnalyze(c *gin.Context) {
 		return
 	}
 
-	// Workload fields are required for normal analysis but not for PR followup
-	if !req.Followup {
-		if req.WorkloadName == "" || req.WorkloadNamespace == "" || req.WorkloadKind == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"error":   "workload_name, workload_namespace, and workload_kind are required for non-followup requests",
-			})
-			return
-		}
-	}
+	// Workload identity is optional context: it only labels the conversation and
+	// garnishes the relevance-check prompt. Requiring it was a holdover from the
+	// original "correlate this K8s workload's logs" use case — generic requests
+	// (chat fixes, repo maintenance) have no workload and are equally valid.
 
 	analysisID := newAnalysisID()
 
@@ -688,20 +689,12 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 			"llm_reasoning":     relevanceCheck.Reasoning,
 		})
 
-		// Create a more focused response using LLM insights
-		agentResponse = &AnalysisResult{
-			Title:              "Analysis Focus Issue - Manual Review Required",
-			Description:        fmt.Sprintf("The automated analysis may not be directly addressing your specific issue. %s\n\nOriginal Analysis Found: %s\n\nRecommendation: %s", relevanceCheck.Reasoning, agentResponse.Title, relevanceCheck.Recommendation),
-			FilePath:           agentResponse.FilePath,
-			LineNumber:         agentResponse.LineNumber,
-			ErrorMessage:       "Analysis may not match the specific issue described",
-			OriginalCode:       agentResponse.OriginalCode,
-			FixedCode:          agentResponse.FixedCode,
-			GitDiff:            agentResponse.GitDiff,
-			Commits:            agentResponse.Commits,
-			AutoMatedFixPRInfo: agentResponse.AutoMatedFixPRInfo,
-			PRList:             agentResponse.PRList,
-		}
+		// Non-destructive: keep the agent's full analysis and append an advisory
+		// note. The previous behavior replaced Title/Description with a "Manual
+		// Review Required" placeholder, which threw away verified-correct
+		// analyses on validator false negatives — the user got a placeholder
+		// while the whole run's work (and cost) was discarded.
+		applyRelevanceAdvisory(agentResponse, relevanceCheck)
 	}
 
 	// Get real tool invocations from tracker
@@ -1036,6 +1029,9 @@ func (ah *AgenticAnalyzeHandler) parseAgentResponse(responseStr string) (*Analys
 	if buildData, ok := flexibleResult["build_verification"].(map[string]any); ok {
 		result.BuildVerification = buildData
 	}
+	if verification, ok := flexibleResult["verification"].(map[string]any); ok {
+		result.Verification = verification
+	}
 
 	return &result, nil
 }
@@ -1145,6 +1141,9 @@ func (ah *AgenticAnalyzeHandler) extractAuthorString(data map[string]any) string
 }
 
 func (ah *AgenticAnalyzeHandler) createConversationContext(req AgenticAnalyzeRequest) string {
+	if req.WorkloadName == "" {
+		return fmt.Sprintf("Code analysis session in account %s", req.CloudAccountID)
+	}
 	return fmt.Sprintf("Code analysis session for %s/%s (%s) in account %s",
 		req.WorkloadNamespace, req.WorkloadName, req.WorkloadKind, req.CloudAccountID)
 }
@@ -1463,6 +1462,30 @@ type RelevanceCheckResult struct {
 }
 
 // validateResponseRelevanceWithLLM uses LLM to determine if the agent response addresses the user's actual request
+// applyRelevanceAdvisory annotates an analysis the relevance validator flagged
+// as off-target, WITHOUT discarding it. The validator has measured false
+// negatives (rejecting analyses whose own reasoning admits are correct), so its
+// verdict is advisory: the user sees the full analysis plus the flag, instead
+// of a placeholder that hides completed (and paid-for) work.
+func applyRelevanceAdvisory(agentResponse *AnalysisResult, check *RelevanceCheckResult) {
+	if agentResponse == nil || check == nil {
+		return
+	}
+	advisory := fmt.Sprintf(
+		"\n\n---\n⚠️ Automated relevance check (confidence: %s): this analysis may not fully address the reported issue.\nReviewer note: %s\nRecommendation: %s",
+		check.ConfidenceLevel, check.Reasoning, check.Recommendation)
+	agentResponse.Description += advisory
+}
+
+// workloadContextLine renders the optional workload identity for prompt context,
+// or "" when the request has no workload (generic/chat-driven analyses).
+func workloadContextLine(req AgenticAnalyzeRequest) string {
+	if req.WorkloadName == "" {
+		return ""
+	}
+	return fmt.Sprintf("Workload: %s/%s (%s)\n", req.WorkloadNamespace, req.WorkloadName, req.WorkloadKind)
+}
+
 func (ah *AgenticAnalyzeHandler) validateResponseRelevanceWithLLM(ctx context.Context, client *llm.Client, agentResponse *AnalysisResult, req AgenticAnalyzeRequest, logger *common.Logger) (*RelevanceCheckResult, error) {
 	// Create a focused prompt for the LLM to evaluate relevance
 	relevancePrompt := fmt.Sprintf(`You are a relevance validator for code analysis results. Your job is to determine if an automated analysis actually addresses the user's specific request.
@@ -1471,8 +1494,7 @@ USER'S ORIGINAL REQUEST:
 ======================
 Logs: %s
 Prompt: %s
-Workload: %s/%s (%s)
-
+%s
 AGENT'S ANALYSIS RESULT:
 ========================
 Title: %s
@@ -1488,13 +1510,20 @@ Analyze if the agent's findings directly address the user's specific issue descr
 3. Is the analysis solving the actual problem the user reported?
 4. Are the findings relevant to the user's context?
 
+IMPORTANT: mark is_relevant=false ONLY if the analysis addresses a completely
+different problem than the one the user described (wrong service, wrong error,
+unrelated topic). An analysis that identifies the right component and issue but
+is partial, hedged, or missing some requested detail (e.g. explains the failing
+mechanism without the words "root cause") IS relevant — do not reject correct
+work for being incomplete.
+
 Provide your assessment in JSON format:
 {
   "is_relevant": true/false,
   "reasoning": "Detailed explanation of why the analysis is or isn't relevant to the user's request",
   "recommendation": "What should be done next - either validate the current findings or suggest refocusing",
   "confidence_level": "high/medium/low"
-}`, req.Logs, req.Prompt, req.WorkloadNamespace, req.WorkloadName, req.WorkloadKind,
+}`, req.Logs, req.Prompt, workloadContextLine(req),
 		agentResponse.Title, agentResponse.Description, agentResponse.FilePath, agentResponse.ErrorMessage)
 
 	// Use the LLM client to get relevance assessment
@@ -1816,6 +1845,10 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 		agentResponse.ExecutionStatus = "failed"
 	} else if result.NoOp {
 		agentResponse.ExecutionStatus = "no_op"
+		// Tag a no_op that was really a non-convergence (had actionable input but
+		// couldn't apply a change) so the cron's outcome metric can separate it
+		// from a genuine "nothing to do". Purely observability — still a no_op.
+		agentResponse.FollowupUnresolved = result.Unresolved
 	}
 	if result.CommitHash != "" {
 		agentResponse.ExecutionSummary = fmt.Sprintf("Committed and pushed: %s", result.CommitHash)

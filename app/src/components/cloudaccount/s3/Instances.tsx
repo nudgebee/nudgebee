@@ -92,7 +92,7 @@ const InstancesView = (props: {
     setPage(0);
   };
 
-  const listS3Instances = () => {
+  const listS3Instances = (isStale: () => boolean = () => false) => {
     if (!props?.accountId) {
       return;
     }
@@ -113,6 +113,11 @@ const InstancesView = (props: {
         page * rowsPerPage
       )
       .then((res: any) => {
+        // Ignore a response whose request was superseded (deps changed / unmount)
+        // so a stale page/filter can't overwrite the current rows.
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
         const cloudResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
         const cloudResourceData = res.data?.data?.cloud_resourses?.map((item: any) => {
@@ -161,6 +166,9 @@ const InstancesView = (props: {
         setS3InstancesCount(cloudResourceCount);
       })
       .catch(() => {
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
       });
   };
@@ -181,7 +189,11 @@ const InstancesView = (props: {
   }, [props?.accountId, selectedTagKey]);
 
   useEffect(() => {
-    listS3Instances();
+    let stale = false;
+    listS3Instances(() => stale);
+    return () => {
+      stale = true;
+    };
   }, [props?.accountId, props?.serviceName, page, rowsPerPage, selectedTagKey, selectedTagValue, selectedState, selectedRegion, appliedInstanceName]);
 
   return (

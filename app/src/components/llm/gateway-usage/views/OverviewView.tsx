@@ -15,20 +15,26 @@ import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import PeopleOutlineIcon from '@mui/icons-material/PeopleOutline';
 import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
 import { Stat } from '@ui/Stat';
 import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
 import Chart from '@ui/Chart';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import CustomTable2 from '@shared/tables/CustomTable';
 import { fmtCost, fmtTokens, fmtDuration } from '@components/llm/cost-analyser/format';
 import type { GatewayFilters } from '../useGatewayData';
 import type { GatewayGranularity, GatewayGroupRow, GatewayTimeSeriesRow, GatewayUsageMetrics } from '@api1/gateway-usage';
+
+dayjs.extend(utc);
 
 interface OverviewViewProps {
   metrics: GatewayUsageMetrics | null;
   filters: GatewayFilters;
   loading: boolean;
   error: string | null;
+  /** Drill-in: clicking a column scopes the whole report to that column's day. */
+  onSelectDay?: (date: string) => void;
 }
 
 function fmtCount(n: number | null | undefined): string {
@@ -36,19 +42,57 @@ function fmtCount(n: number | null | undefined): string {
   return n.toLocaleString('en-US');
 }
 
+/** Compact request-count formatter for chart axis ticks + on-bar totals (e.g. 1.2K,
+ * 980), matching the uppercase-K style of fmtTokens/fmtCost. TimeSeriesChart's
+ * `compactFormat` defaults to compactCurrency ($…), which is wrong for a request
+ * count — pass this so the count chart never renders a dollar sign. */
+function fmtCountCompact(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—';
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}K`;
+  return `${Math.round(v)}`;
+}
+
 const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', fontVariantNumeric: 'tabular-nums' } as const;
 
-// ─── Requests-over-time (bar) ───────────────────────────────────────────────────
+// ─── Usage-over-time (bar) ──────────────────────────────────────────────────────
 
-/** Fold the `overall` series into the generic `Chart.TimeSeries` `{labels, series}` shape. */
+/** The metric plotted on the over-time chart. Cost is the default (governance view). */
+type Metric = 'cost' | 'requests' | 'tokens';
+
+const METRIC_OPTIONS: { value: Metric; label: string }[] = [
+  { value: 'cost', label: 'Cost' },
+  { value: 'requests', label: 'Requests' },
+  { value: 'tokens', label: 'Tokens' },
+];
+
+const METRIC_LABEL: Record<Metric, string> = { cost: 'Cost', requests: 'Requests', tokens: 'Tokens' };
+
+/** Fold the `overall` series into the generic `Chart.TimeSeries` `{labels, series}` shape
+ * for the chosen metric, plus the raw `buckets` behind each column.
+ *
+ * `buckets` is index-aligned with `labels` by construction (both map the same sorted
+ * rows), which is what lets a column click resolve back to its date. It has to come
+ * from the rows rather than a start→end day-walk: the series only contains buckets the
+ * API returned, so a range with no traffic on some days would slide a walk out of
+ * alignment with the columns actually drawn. */
 function overallToSeries(
   rows: GatewayTimeSeriesRow[],
-  granularity: GatewayGranularity
-): { labels: string[]; series: { key: string; data: number[] }[] } {
+  granularity: GatewayGranularity,
+  metric: Metric
+): { labels: string[]; buckets: string[]; series: { key: string; data: number[] }[] } {
   const sorted = [...rows].sort((a, b) => a.bucket.localeCompare(b.bucket));
   const fmt = granularity === 'hour' ? 'DD MMM HH:00' : 'DD MMM';
   const labels = sorted.map((r) => dayjs(r.bucket).format(fmt));
-  return { labels, series: [{ key: 'Requests', data: sorted.map((r) => r.requests) }] };
+  const buckets = sorted.map((r) => r.bucket);
+  const pick =
+    metric === 'cost'
+      ? (r: GatewayTimeSeriesRow) => r.cost_usd
+      : metric === 'tokens'
+      ? (r: GatewayTimeSeriesRow) => r.tokens
+      : (r: GatewayTimeSeriesRow) => r.requests;
+  return { labels, buckets, series: [{ key: METRIC_LABEL[metric], data: sorted.map(pick) }] };
 }
 
 // ─── Breakdown table ────────────────────────────────────────────────────────────
@@ -94,10 +138,33 @@ function SectionHeader({ title, icon }: { title: string; icon: React.ReactNode }
   );
 }
 
-export function OverviewView({ metrics, filters, loading, error }: OverviewViewProps) {
+export function OverviewView({ metrics, filters, loading, error, onSelectDay }: OverviewViewProps) {
   const totals = metrics?.totals;
   const overallRows = metrics?.time_series?.by_dimension?.overall ?? [];
-  const chart = React.useMemo(() => overallToSeries(overallRows, filters.granularity), [overallRows, filters.granularity]);
+  const [metric, setMetric] = React.useState<Metric>('cost');
+  const { buckets, ...chart } = React.useMemo(
+    () => overallToSeries(overallRows, filters.granularity, metric),
+    [overallRows, filters.granularity, metric]
+  );
+
+  // Column click → scope the report to that column's day. On an hourly chart this
+  // still resolves to the whole day, since the shell's filters are day-granular.
+  //
+  // Read the bucket in UTC, not local: buckets are UTC-aligned (Postgres date_trunc
+  // over created_at) and `useGatewayData` sends the window as UTC day bounds
+  // (T00:00:00Z–T23:59:59Z). Taking the local calendar date would, for any zone
+  // behind UTC, name the day *before* the bucket — filtering to a window that
+  // excludes the very column that was clicked.
+  const handleSelectPoint = React.useMemo(
+    () =>
+      onSelectDay
+        ? (_label: string, index: number) => {
+            const bucket = buckets[index];
+            if (bucket) onSelectDay(dayjs.utc(bucket).format('YYYY-MM-DD'));
+          }
+        : undefined,
+    [onSelectDay, buckets]
+  );
 
   if (error) return <Banner tone='critical' title='Could not load gateway usage' message={error} />;
 
@@ -130,10 +197,28 @@ export function OverviewView({ metrics, filters, loading, error }: OverviewViewP
         </Card>
       </Box>
 
-      {/* Requests over time. */}
+      {/* Usage over time — Cost (default) | Requests | Tokens. */}
       <Card>
-        <SectionHeader title='Requests over time' icon={<ShowChartIcon />} />
-        <Chart.TimeSeries {...chart} shape='bar' format={(v) => fmtCount(v)} id='gateway-requests-over-time' />
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
+          <SectionHeader title={`${METRIC_LABEL[metric]} over time`} icon={<ShowChartIcon />} />
+          <ToggleGroup selection='single' size='sm' ariaLabel='Chart metric' value={metric} onChange={setMetric} options={METRIC_OPTIONS} />
+        </Box>
+        {/* key={metric} forces a remount when the metric changes, so the chart's
+            on-bar-total / axis plugins re-init with the right formatter — otherwise a
+            reused instance keeps the previous metric's compactFormat (e.g. the cost $).
+            Cost → default compactCurrency ($); requests/tokens → plain counts, no $. */}
+        <Box sx={handleSelectPoint ? { cursor: 'pointer' } : undefined}>
+          <Chart.TimeSeries
+            key={metric}
+            {...chart}
+            shape='bar'
+            format={metric === 'cost' ? fmtCost : fmtCount}
+            compactFormat={metric === 'cost' ? undefined : fmtCountCompact}
+            integerY={metric !== 'cost'}
+            onSelectPoint={handleSelectPoint}
+            id='gateway-usage-over-time'
+          />
+        </Box>
       </Card>
 
       {/* Breakdown tables. */}

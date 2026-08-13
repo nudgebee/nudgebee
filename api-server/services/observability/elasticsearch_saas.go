@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,10 +40,54 @@ const (
 	ElasticsearchAppClientId    = "app_client_id"
 	ElasticsearchApiKey         = "api_key"
 	ElasticsearchBearerToken    = "bearer_token"
+	ElasticsearchLogIndex       = "log_index"
 	ElasticsearchMetricsIndex   = "metrics_index"
 	ElasticsearchTraceIndex     = "trace_index"
 	ElasticsearchTLSSkipVerify  = "es_tls_skip_verify"
+	// ElasticsearchIndexAccountMapping is the "Advanced Settings" config value: a
+	// JSON array of per-account index overrides. When a bound account has an entry,
+	// its index wins over the top-level log_index / metrics_index / trace_index.
+	ElasticsearchIndexAccountMapping = "index_account_mapping"
 )
+
+// esIndexOverride is one per-account row of the index_account_mapping blob.
+// Empty fields fall back to the integration's top-level index.
+type esIndexOverride struct {
+	AccountId    string `json:"account_id"`
+	LogIndex     string `json:"log_index"`
+	MetricsIndex string `json:"metrics_index"`
+	TraceIndex   string `json:"trace_index"`
+}
+
+// resolveESIndexOverride returns the per-account index for the given indexType
+// ("logs" | "metrics" | "traces") from the index_account_mapping JSON blob, or ""
+// when the blob is empty/malformed or has no (matching, non-empty) entry for the
+// account. Tolerant by design: a bad blob must never break query resolution — the
+// caller falls back to the top-level index on "".
+func resolveESIndexOverride(mappingJSON, accountId, indexType string) string {
+	mappingJSON = strings.TrimSpace(mappingJSON)
+	if mappingJSON == "" || accountId == "" {
+		return ""
+	}
+	var rows []esIndexOverride
+	if err := json.Unmarshal([]byte(mappingJSON), &rows); err != nil {
+		return ""
+	}
+	for _, r := range rows {
+		if r.AccountId != accountId {
+			continue
+		}
+		switch indexType {
+		case "logs":
+			return strings.TrimSpace(r.LogIndex)
+		case "metrics":
+			return strings.TrimSpace(r.MetricsIndex)
+		case "traces":
+			return strings.TrimSpace(r.TraceIndex)
+		}
+	}
+	return ""
+}
 
 type ElasticsearchConfig struct {
 	Url            string
@@ -54,9 +100,55 @@ type ElasticsearchConfig struct {
 	AppClientId    string
 	ApiKey         string // Base64-encoded id:api_key for ES API Key auth
 	BearerToken    string // OAuth2 / service-account bearer token
+	LogIndex       string // index pattern for log queries; empty means the caller must supply one
 	MetricsIndex   string // index pattern for utilisation queries; defaults to "*"
 	TraceIndex     string // index pattern for trace queries; defaults to esTraceIndex
 	TLSSkipVerify  bool   // user-configured opt-in for self-signed certs
+}
+
+// BuildElasticsearchConfigFromValues maps already-decrypted config values into an
+// ElasticsearchConfig. Used both by GetElasticsearchConfig (saved integration) and by
+// the "list indices from config values" endpoint (add flow, before the integration is
+// saved). It does not apply the per-account index override — that needs an accountId.
+func BuildElasticsearchConfigFromValues(values []core.IntegrationConfigValue) *ElasticsearchConfig {
+	cfg := &ElasticsearchConfig{AuthType: "basic"}
+	for _, c := range values {
+		switch c.Name {
+		case ElasticsearchUrl:
+			cfg.Url = c.Value
+		case ElasticsearchUsername:
+			cfg.Username = c.Value
+		case ElasticsearchPassword:
+			cfg.Password = c.Value
+		case ElasticsearchAuthType:
+			cfg.AuthType = c.Value
+		case ElasticsearchRegion:
+			cfg.Region = c.Value
+		case ElasticsearchUserPoolId:
+			cfg.UserPoolId = c.Value
+		case ElasticsearchIdentityPoolId:
+			cfg.IdentityPoolId = c.Value
+		case ElasticsearchAppClientId:
+			cfg.AppClientId = c.Value
+		case ElasticsearchApiKey:
+			cfg.ApiKey = c.Value
+		case ElasticsearchBearerToken:
+			cfg.BearerToken = c.Value
+		case ElasticsearchLogIndex:
+			cfg.LogIndex = c.Value
+		case ElasticsearchMetricsIndex:
+			cfg.MetricsIndex = c.Value
+		case ElasticsearchTraceIndex:
+			cfg.TraceIndex = c.Value
+		case ElasticsearchTLSSkipVerify:
+			cfg.TLSSkipVerify = strings.EqualFold(strings.TrimSpace(c.Value), "true")
+		}
+	}
+	cfg.Url = strings.TrimRight(strings.TrimSpace(cfg.Url), "/")
+	if cfg.AuthType == "" {
+		cfg.AuthType = "basic"
+	}
+	return cfg
 }
 
 func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*ElasticsearchConfig, error) {
@@ -78,8 +170,11 @@ func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*El
 	}
 
 	integration := userIntegrations[0]
-	cfg := &ElasticsearchConfig{AuthType: "basic"}
 
+	// Decrypt config values (secrets round-trip as ciphertext), capturing the
+	// per-account index override blob for the accountId-specific resolution below.
+	values := make([]core.IntegrationConfigValue, 0, len(integration.Configs))
+	var indexAccountMapping string
 	for _, c := range integration.Configs {
 		value := c.Value
 		if c.IsEncrypted && value != "" {
@@ -89,34 +184,25 @@ func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*El
 			}
 			value = decrypted
 		}
-		switch c.Name {
-		case ElasticsearchUrl:
-			cfg.Url = value
-		case ElasticsearchUsername:
-			cfg.Username = value
-		case ElasticsearchPassword:
-			cfg.Password = value
-		case ElasticsearchAuthType:
-			cfg.AuthType = value
-		case ElasticsearchRegion:
-			cfg.Region = value
-		case ElasticsearchUserPoolId:
-			cfg.UserPoolId = value
-		case ElasticsearchIdentityPoolId:
-			cfg.IdentityPoolId = value
-		case ElasticsearchAppClientId:
-			cfg.AppClientId = value
-		case ElasticsearchApiKey:
-			cfg.ApiKey = value
-		case ElasticsearchBearerToken:
-			cfg.BearerToken = value
-		case ElasticsearchMetricsIndex:
-			cfg.MetricsIndex = value
-		case ElasticsearchTraceIndex:
-			cfg.TraceIndex = value
-		case ElasticsearchTLSSkipVerify:
-			cfg.TLSSkipVerify = strings.EqualFold(strings.TrimSpace(value), "true")
+		if c.Name == ElasticsearchIndexAccountMapping {
+			indexAccountMapping = value
 		}
+		values = append(values, core.IntegrationConfigValue{Name: c.Name, Value: value})
+	}
+
+	cfg := BuildElasticsearchConfigFromValues(values)
+
+	// Advanced Settings: a per-account index override wins over the top-level
+	// log_index / metrics_index / trace_index for this account. These become the
+	// query-time defaults when the request doesn't carry an explicit index.
+	if override := resolveESIndexOverride(indexAccountMapping, accountId, "logs"); override != "" {
+		cfg.LogIndex = override
+	}
+	if override := resolveESIndexOverride(indexAccountMapping, accountId, "metrics"); override != "" {
+		cfg.MetricsIndex = override
+	}
+	if override := resolveESIndexOverride(indexAccountMapping, accountId, "traces"); override != "" {
+		cfg.TraceIndex = override
 	}
 
 	if cfg.Url == "" {
@@ -412,6 +498,12 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 	case "dsl":
 		index, _ := fetchLogRequest.Request["index"].(string)
 		if index == "" {
+			// No explicit index in the request — fall back to the account's default:
+			// per-account index_account_mapping override → top-level log_index
+			// (both resolved into cfg.LogIndex by GetElasticsearchConfig).
+			index = cfg.LogIndex
+		}
+		if index == "" {
 			return nil, fmt.Errorf("index is required for DSL query")
 		}
 
@@ -419,6 +511,16 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		if berr != nil {
 			return nil, berr
 		}
+
+		// Log the exact index and body sent upstream. Labels/label-values hit the
+		// same cluster over aggregations with no time bound, so when they return
+		// data and this does not, the difference is in the resolved index or in
+		// this body — both need to be replayable by hand against the cluster.
+		renderedJSON, _ := json.Marshal(body)
+		slog.Info("ES log query", "index", index,
+			"url", fmt.Sprintf("%s/%s/_search", cfg.Url, index),
+			"start_ms", fetchLogRequest.StartTime, "end_ms", fetchLogRequest.EndTime,
+			"body", string(renderedJSON))
 
 		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), body, cfg)
 		if err != nil {
@@ -492,9 +594,70 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 				output = append(output, log)
 			}
 		}
+
+		// An empty log result carries no error, so the two very different causes —
+		// "the query matched nothing" and "the query matched but every hit was an
+		// unrecognised shape" — look identical at the UI. Separate them here:
+		// matched is the cluster's own hit count, returned is what came back under
+		// `size`, and parsed is what survived ParseSourceMap.
+		matched := esHitsTotal(rawJSON)
+		returned := len(searchResp.Hits.Hits)
+		switch {
+		case returned == 0:
+			slog.Info("ES log query: matched no documents",
+				"matched", matched, "returned", 0,
+				"hint", "index pattern or @timestamp window excludes everything; labels/label-values do not apply a time bound, which is why they still return data")
+		case len(output) == 0:
+			slog.Warn("ES log query: all hits dropped as unparseable",
+				"matched", matched, "returned", returned, "parsed", 0,
+				"sample_source_fields", esSourceFieldNames(searchResp.Hits.Hits[0].Source),
+				"hint", "ParseSourceMap needs a message at log|body|body.text|message and an @timestamp")
+		default:
+			slog.Info("ES log query: parsed hits",
+				"matched", matched, "returned", returned, "parsed", len(output),
+				"dropped", returned-len(output))
+		}
 	}
 
 	return output, nil
+}
+
+// esHitsTotal best-effort reads hits.total from a raw _search response for
+// logging. ES 7+/OpenSearch return an object ({value, relation}); ES 6 returned a
+// bare number. Decoded separately from SearchResponse and tolerant of both so a
+// shape it does not know can never break query parsing. Returns -1 when unknown.
+func esHitsTotal(rawJSON string) int64 {
+	var probe struct {
+		Hits struct {
+			Total json.RawMessage `json:"total"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &probe); err != nil || len(probe.Hits.Total) == 0 {
+		return -1
+	}
+	var asObject struct {
+		Value int64 `json:"value"`
+	}
+	if err := json.Unmarshal(probe.Hits.Total, &asObject); err == nil {
+		return asObject.Value
+	}
+	var asNumber int64
+	if err := json.Unmarshal(probe.Hits.Total, &asNumber); err == nil {
+		return asNumber
+	}
+	return -1
+}
+
+// esSourceFieldNames returns the sorted top-level _source field names of one hit,
+// so a schema mismatch can be identified from the log without dumping document
+// contents (which may hold customer data).
+func esSourceFieldNames(src map[string]any) []string {
+	keys := make([]string, 0, len(src))
+	for k := range src {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (e *ElasticSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabel, error) {
@@ -503,9 +666,11 @@ func (e *ElasticSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogRe
 		return nil, err
 	}
 
-	// List stable data-stream names (logs-*), not the rolled-over ".ds-*" backing
-	// indices that _cat/indices exposes. See listESIndexTargets.
-	indexNames, err := listESIndexTargets("logs", cfg)
+	// List stable data-stream names, not the rolled-over ".ds-*" backing indices
+	// that _cat/indices exposes. No type-prefix filter: client clusters don't
+	// necessarily name log streams "logs-*", so every queryable target is offered.
+	// See ListAllESIndexTargets.
+	indexNames, err := ListAllESIndexTargets(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -764,6 +929,11 @@ func (e *ElasticSaasSource) QueryLogGroup(ctx *security.RequestContext, req Fetc
 					},
 					"levels": map[string]any{
 						"terms": map[string]any{"field": "level", "size": 10},
+					},
+					// Read back by parseESLogGroupResponse. Without it every group
+					// reports the end of the query window as its last-seen.
+					"last_seen": map[string]any{
+						"max": map[string]any{"field": "@timestamp"},
 					},
 				},
 			},

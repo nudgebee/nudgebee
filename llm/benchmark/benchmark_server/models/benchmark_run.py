@@ -33,6 +33,9 @@ class BenchmarkRun(Base):
 
     # LLM config
     tool_config = Column(String(64), nullable=True)
+    # Per-request log backend pin forwarded to the llm-server chat config
+    # (e.g. "k8s" forces kubectl logs). Persisted so rerun/restart honour it.
+    log_provider_override = Column(String(32), nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

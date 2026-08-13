@@ -90,14 +90,14 @@ const getMenuItems = (disableTicket: boolean, canWrite: boolean) => [
   {
     icon: TicketsIcon,
     label: 'Create Ticket',
-    id: 0,
+    id: 'create-ticket',
     disabled: disableTicket || !canWrite,
     iconBlack: true,
   },
   {
     icon: WorkflowIcon,
     label: 'Create Automation',
-    id: 1,
+    id: 'create-automation',
     disabled: !canWrite,
     iconBlack: true,
   },
@@ -211,6 +211,7 @@ const transformTableData = (
                 eventId={item.latest_event_id}
                 accountId={item.account_id}
                 currentPriority={item.latest_computed_priority}
+                currentScore={item.latest_computed_score}
                 canWrite={canWrite}
                 onChanged={onStatusChange}
               />
@@ -519,12 +520,12 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
 
   // Menu Click Handler - handles Create Ticket, Classify, and Create Workflow
   const onMenuClick = useCallback(
-    (menuItem: { id: number }, data: any) => {
-      if (menuItem.id === 0) {
+    (menuItem: { id: string }, data: any) => {
+      if (menuItem.id === 'create-ticket') {
         // Create Ticket
         setTicketData(data);
         setIsTicketCreateFormOpen(true);
-      } else if (menuItem.id === 1) {
+      } else if (menuItem.id === 'create-automation') {
         // Create Workflow — prefill Event Trigger with row's identifying fields.
         // distinct_priority is an array on grouped rows, so skip eventPriority here
         // to keep the trigger broad (workflow fires for all severities of this event).

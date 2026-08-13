@@ -5,6 +5,7 @@ go 1.26.1
 toolchain go1.26.5
 
 require (
+	github.com/Cyprinus12138/otelgin v1.0.3
 	github.com/PagerDuty/go-pagerduty v1.8.0
 	github.com/allegro/bigcache/v3 v3.1.0
 	github.com/eko/gocache/lib/v4 v4.2.3

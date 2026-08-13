@@ -704,8 +704,11 @@ type logglyGroupEntry struct {
 	container   string
 	level       string
 	count       int64
+	lastSeen    int64 // unix seconds of the newest line in the group
 }
 
+// toLogGroup takes endTimeSec only as the fallback for a group whose own lines
+// carry no parseable timestamp.
 func (e *logglyGroupEntry) toLogGroup(endTimeSec int64) LogGroup {
 	containerID := ""
 	if e.namespace != "" && e.workload != "" {
@@ -714,6 +717,10 @@ func (e *logglyGroupEntry) toLogGroup(endTimeSec int64) LogGroup {
 	level := e.level
 	if level == "" {
 		level = "error"
+	}
+	lastSeen := e.lastSeen
+	if lastSeen <= 0 {
+		lastSeen = endTimeSec
 	}
 	return LogGroup{
 		Sample:      e.sample,
@@ -724,7 +731,7 @@ func (e *logglyGroupEntry) toLogGroup(endTimeSec int64) LogGroup {
 		PatternHash: e.patternHash,
 		Level:       level,
 		Count:       e.count,
-		Timestamps:  []int64{endTimeSec},
+		Timestamps:  []int64{lastSeen},
 		Values:      []float64{float64(e.count)},
 	}
 }
@@ -773,6 +780,10 @@ func (s *LogglySource) groupLogglyLogsByPattern(logs []OutputLog, endTime int64)
 			grouped[compositeKey] = entry
 		}
 		entry.count++
+
+		if ts := logLastSeenUnix(log.Timestamp); ts > entry.lastSeen {
+			entry.lastSeen = ts
+		}
 	}
 
 	endTimeSec := normalizeLogglyEndTimeSec(endTime)

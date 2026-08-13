@@ -312,6 +312,9 @@ class TableBlock(BaseBlock):
 class CallbackChoice(BaseModel):
     action: Callable
     action_params: Optional[BaseModel] = None
+    # None keeps the historical "primary" default; "default" renders Slack's
+    # plain grey button (the style key is omitted from the payload).
+    style: Optional[str] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -334,6 +337,7 @@ class CallbackBlock(BaseBlock):
 class LinkProp(BaseModel):
     text: str
     url: str
+    style: Optional[str] = None
 
 
 class LinksBlock(BaseBlock):

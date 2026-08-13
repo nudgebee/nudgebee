@@ -1,14 +1,12 @@
-import { Box, Typography, Tooltip, Tabs, Tab, Avatar, CircularProgress } from '@mui/material';
+import { Box, Typography, Tabs, Tab, Avatar, CircularProgress } from '@mui/material';
 import { useRouter } from 'next/router';
 import { withAccountGuard } from '@shared/AccountGuard';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ds } from 'src/utils/colors';
 import apiKubernetes from '@api1/kubernetes';
 import CollapsableCard from '@shared/widgets/CollapsableCard';
-import Datetime from '@shared/format/Datetime';
-import TroubleShootIcon from '@assets/home/node-errors-icon.svg';
-import InvestigateDropdown from '@components/k8s/investigate/InvestigateDropdown';
-import { exitCodeMapping, safeJSONParse, snakeToTitleCase } from 'src/utils/common';
+import InvestigateSidebar from '@components/k8s/investigate/InvestigateSidebar';
+import { safeJSONParse } from 'src/utils/common';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import TicketIcon from '@assets/TicketIcon';
 import Text from '@shared/format/Text';
@@ -17,22 +15,9 @@ import WorkflowTemplatesModal from '@components/workflow/components/WorkflowTemp
 import AiGenerateWorkflowModal from '@components/workflow/components/AiGenerateWorkflowModal';
 import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu';
 import apiWorkflow from '@api1/workflow';
-import {
-  BarsBlueOutlineIcon,
-  ErrorFillIcon,
-  FileOutlineIcon,
-  GraphOutlineIcon,
-  SparklesIconBG,
-  infoIcon,
-  LastStateIcon,
-  ExternalLinkIcon,
-} from '@assets';
+import { SparklesIconBG, ExternalLinkIcon } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
-import CubeIcon from '@assets/kubernetes/cube-icon.svg';
 import { Label } from '@ui/Label';
-import NBStatusBadge from '@shared/widgets/NBStatusBadge';
-import ScoreDisplay from '@shared/widgets/ScoreDisplay';
-import PriorityPinControl from '@shared/widgets/PriorityPinControl';
 import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
 import { hasReadAccess, hasWriteAccess, hasFeatureAccess } from '@lib/auth';
@@ -252,18 +237,19 @@ function sortAvailableCards(cards, criticalCards, highCards, infoCards) {
   return prioritized.map(({ C }) => C);
 }
 
-// Poll the event resolutions every 5s while a workflow resolution is live so the
-// "Workflow Resolution Status" button updates without a manual page refresh.
+// Poll the event resolutions every 5s while any resolution (workflow run,
+// resource-change fix, PR, etc.) is InProgress so status labels/buttons
+// update without a manual page refresh.
 const EVENT_RESOLUTIONS_POLL_INTERVAL_MS = 5000;
 // After an automation is triggered the InProgress event_resolution row is created
 // server-side asynchronously, so keep polling for a grace window even before any
 // InProgress row shows up — otherwise a slow insert would never surface live.
 const EVENT_RESOLUTIONS_POLL_GRACE_MS = 60000;
 
-// A WorkflowExecution resolution is "live" while InProgress; used to decide
-// whether to keep polling the event resolutions for a status change.
-const hasInProgressWorkflowResolution = (resolutions) =>
-  Array.isArray(resolutions) && resolutions.some((r) => r?.type === 'WorkflowExecution' && r?.status === 'InProgress');
+// A resolution (workflow run, deployment resource change, PR, etc.) is "live"
+// while InProgress; used to decide whether to keep polling event resolutions
+// for a status change.
+const hasInProgressResolution = (resolutions) => Array.isArray(resolutions) && resolutions.some((r) => r?.status === 'InProgress');
 
 const Investigate = () => {
   const router = useRouter();
@@ -385,8 +371,8 @@ const Investigate = () => {
   const [hasRcaFeatureAccess, setHasRcaFeatureAccess] = useState(false);
   const [sentFeedback, setSentFeedback] = useState({});
   const [alertLabels, setAlertLabels] = useState({});
-  const [showAll, setShowAll] = useState(false);
   const [tabValue, setTabValue] = useState(1);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [openResolveComponentId, setOpenResolveComponentId] = useState(null);
   const [isGeneratingCards, setIsGeneratingCards] = useState(false);
   const [alertRules, setAlertRules] = useState([]);
@@ -683,20 +669,6 @@ const Investigate = () => {
     [router]
   );
 
-  const fitCustomLabelStyles = useMemo(
-    () => ({
-      width: 'auto',
-      maxWidth: '100%',
-      minWidth: 0,
-      justifySelf: 'start',
-      whiteSpace: 'normal',
-      overflowWrap: 'anywhere',
-      padding: 'var(--ds-space-1) var(--ds-space-2)',
-      boxSizing: 'border-box',
-    }),
-    []
-  );
-
   const handleOpenKB = async () => {
     if (!row?.aggregation_key) {
       snackbar.info('No data available!');
@@ -943,7 +915,7 @@ const Investigate = () => {
       const resolutions = await refetchEventResolutions();
       if (!resolutionsPollActiveRef.current || !isMountedRef.current || document.hidden) return;
       const withinGrace = Date.now() < resolutionsPollDeadlineRef.current;
-      if (hasInProgressWorkflowResolution(resolutions) || withinGrace) {
+      if (hasInProgressResolution(resolutions) || withinGrace) {
         resolutionsPollTimeoutRef.current = setTimeout(pollResolutions, EVENT_RESOLUTIONS_POLL_INTERVAL_MS);
       } else {
         resolutionsPollActiveRef.current = false;
@@ -971,7 +943,7 @@ const Investigate = () => {
   // Loading the page on an event whose workflow is already InProgress (e.g.
   // triggered earlier or from the listing page) should poll too.
   useEffect(() => {
-    if (hasInProgressWorkflowResolution(eventResolutions)) startResolutionsPoll();
+    if (hasInProgressResolution(eventResolutions)) startResolutionsPoll();
   }, [eventResolutions, startResolutionsPoll]);
 
   // The Raise-PR panel dispatches this after a successful apply. The PR
@@ -1477,7 +1449,13 @@ const Investigate = () => {
     });
   }, []);
 
-  const handleCloseResolveComponent = useCallback(() => setOpenResolveComponentId(null), []);
+  // Also fires when a Fix-it form inside a CollapsableCard closes (submit or
+  // cancel) — refetch so a just-created InProgress resolution replaces the
+  // "Fix it" button with a live status label without waiting for a poll tick.
+  const handleCloseResolveComponent = useCallback(() => {
+    setOpenResolveComponentId(null);
+    refetchEventResolutions();
+  }, [refetchEventResolutions]);
   const handleOpenResolveComponent = useCallback((id) => setOpenResolveComponentId(id), []);
 
   const handleInsightClick = (text) => {
@@ -1604,24 +1582,6 @@ const Investigate = () => {
   };
 
   // Memoized: avoids re-running 3 regexes on every render (was called 5× inline with same args)
-  const investigateDescription = useMemo(() => {
-    let logText = row?.description;
-    if (isK8s && alertLabels?.nb_webhook_url) {
-      logText = (logText || '') + `\n\n**Alert Url -** [${alertLabels.alertname || alertLabels.nb_webhook_event_id}](${alertLabels.nb_webhook_url})`;
-    }
-    if (logText) {
-      const logSampleMatch = logText.match(/Log Sample:\s*(\{.*?\})\s*Failure Count:/s);
-      const containerIdMatch = logText.match(/Container ID:\s*(\/[^\s]+)/);
-      const failureCountMatch = logText.match(/Failure Count:\s*(\d+)/);
-      return {
-        logSample: logSampleMatch ? logSampleMatch[1] : logText,
-        containerId: containerIdMatch ? containerIdMatch[1] : '',
-        failureCount: failureCountMatch ? failureCountMatch[1] : '',
-      };
-    }
-    return { logSample: '', containerId: '', failureCount: '' };
-  }, [row?.description, isK8s, alertLabels]);
-
   const handleGenerateRCA = () => {
     apiKubernetes.generateRCA(id, router.query.accountId, true).then((response) => {
       if (response?.status) {
@@ -1688,33 +1648,6 @@ const Investigate = () => {
       });
     }
   };
-
-  const mapLabels = (label) => {
-    const labelArray = [];
-    for (let item in label) {
-      let name = item + '=' + label[item];
-      labelArray.push(
-        <Label
-          textTransform='none'
-          height='auto'
-          margin='0'
-          wordBreak={'break-all'}
-          displayTooltip
-          key={item}
-          text={name}
-          variant={'grey'}
-          maxWidth={ds.space.mul(1, 65)}
-          tooltipCharLimit={40}
-        />
-      );
-    }
-    return labelArray;
-  };
-
-  const labels = useMemo(() => mapLabels(alertLabels), [alertLabels]);
-  const visibleLabels = useMemo(() => (showAll ? labels : labels.slice(0, 5)), [labels, showAll]);
-
-  const toggleShow = () => setShowAll((prev) => !prev);
 
   const shouldShowResolveButton = (option) => {
     // AskAiCard's event code-fix "Raise PR" is rendered inline under the diff
@@ -1806,36 +1739,75 @@ const Investigate = () => {
   }, [showTrendChart]);
 
   const showReferenceLinks = () => {
-    const referenceLinks = (row?.evidences || [])
+    const evidences = row?.evidences || [];
+    const referenceLinks = evidences
       ?.map((e, i) => ({
         title: e?.additional_info?.title || e?.additional_info?.action_name || `Reference ${i}`,
         url: e?.additional_info?.reference_url,
       }))
       .filter((f) => f.url);
-    if (referenceLinks.length) {
+    // Executed provider query FetchLogs actually ran (with the resolved provider), shown for reference.
+    const referenceQueries = evidences
+      ?.map((e, i) => ({
+        title: e?.additional_info?.title || e?.additional_info?.action_name || `Reference ${i}`,
+        provider: e?.additional_info?.provider,
+        query: e?.additional_info?.executed_query,
+      }))
+      .filter((f) => f.query);
+    if (referenceLinks.length || referenceQueries.length) {
       return (
         <Box sx={{ mt: ds.space[4] }}>
           <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[2] }}>References</Typography>
           <Divider sx={{ mb: ds.space[3] }} />
-          <Box
-            component='ul'
-            sx={{ listStyleType: 'disc', pl: 'var(--ds-space-4)', m: 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
-          >
-            {referenceLinks.map((d) => (
-              <li key={d.url}>
-                <Link href={d.url} openInNew style={{ fontSize: 'var(--ds-text-body-lg)', color: ds.blue[600] }}>
-                  {d.title}
-                </Link>
-              </li>
-            ))}
-          </Box>
+          {referenceLinks.length > 0 && (
+            <Box
+              component='ul'
+              sx={{ listStyleType: 'disc', pl: 'var(--ds-space-4)', m: 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
+            >
+              {referenceLinks.map((d) => (
+                <li key={d.url}>
+                  <Link href={d.url} openInNew style={{ fontSize: 'var(--ds-text-body-lg)', color: ds.blue[600] }}>
+                    {d.title}
+                  </Link>
+                </li>
+              ))}
+            </Box>
+          )}
+          {referenceQueries.length > 0 && (
+            <Box sx={{ mt: referenceLinks.length > 0 ? ds.space[3] : 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+              {referenceQueries.map((d, idx) => (
+                <Box key={`query-${idx}`}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-body-md)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[1] }}>
+                    {d.title}
+                    {d.provider ? ` · ${d.provider}` : ''}
+                  </Typography>
+                  <Box
+                    component='pre'
+                    sx={{
+                      m: 0,
+                      p: ds.space[2],
+                      fontFamily: 'monospace',
+                      fontSize: 'var(--ds-text-body-sm)',
+                      color: ds.gray[700],
+                      backgroundColor: ds.gray[100],
+                      borderRadius: 'var(--ds-radius-sm, 4px)',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                      overflowX: 'auto',
+                    }}
+                  >
+                    {d.query}
+                  </Box>
+                </Box>
+              ))}
+            </Box>
+          )}
         </Box>
       );
     }
   };
 
   // Determine details path prefix based on source
-  const detailsPathPrefix = isCloud ? '/cloud-account/details' : '/kubernetes/details';
 
   return (
     <>
@@ -1955,12 +1927,14 @@ const Investigate = () => {
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: {
-            xs: `${ds.space.mul(1, 70)} 1fr`,
-            '@media (min-width: 1350px)': {
-              gridTemplateColumns: `${ds.space.mul(1, 80)} 1fr`,
-            },
-          },
+          gridTemplateColumns: sidebarCollapsed
+            ? 'auto 1fr'
+            : {
+                xs: `${ds.space.mul(1, 70)} 1fr`,
+                '@media (min-width: 1350px)': {
+                  gridTemplateColumns: `${ds.space.mul(1, 80)} 1fr`,
+                },
+              },
           gap: 'var(--ds-space-2)',
           pt: 'var(--ds-space-4)',
           alignItems: 'flex-start',
@@ -1972,662 +1946,28 @@ const Investigate = () => {
         {loading ? (
           <Skeleton shape='rect' height={`calc(100vh - ${ds.space.mul(1, 30)})`} width='95%' />
         ) : (
-          <>
-            <Box sx={{ position: 'sticky !important', top: `${ds.space.mul(0, 37)} !important` }}>
-              <Box
-                sx={{
-                  border: `0.5px solid ${ds.gray[300]}`,
-                  borderRadius: 'var(--ds-radius-lg)',
-                  padding: '0 var(--ds-space-4) var(--ds-space-4) var(--ds-space-4)',
-                  maxHeight: `calc(100vh - ${ds.space.mul(0, 55)})`,
-                  overflowX: 'auto',
-                  '::-webkit-scrollbar': { width: ds.space[1] },
-                }}
-              >
-                <Box
-                  sx={{
-                    position: 'sticky',
-                    top: 0,
-                    zIndex: 2,
-                    background: ds.background[100],
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--ds-space-2)',
-                    borderBottom: `1px solid ${ds.gray[200]}`,
-                    paddingTop: 'var(--ds-space-4)',
-                    paddingBottom: 'var(--ds-space-3)',
-                  }}
-                >
-                  <SafeIcon alt='kube-icon' src={TroubleShootIcon} />
-                  <Text
-                    value={row?.title || ''}
-                    showAutoEllipsis
-                    placement='right'
-                    sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-title)', fontFamily: 'Roboto' }}
-                  />
-                </Box>
-
-                <Box sx={{ mt: 'var(--ds-space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
-                    <Text value={'Where'} secondaryText />
-                    <Box
-                      role='button'
-                      tabIndex={0}
-                      onClick={handlePodClick}
-                      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handlePodClick(e)}
-                      sx={{ cursor: 'pointer' }}
-                      data-testid='pod-name-link'
-                    >
-                      <Text
-                        value={row?.subject_name ? row?.subject_name : '-'}
-                        secondaryText
-                        showAutoEllipsis
-                        sx={{
-                          color:
-                            (row?.subject_type === SUBJECT_TYPE.POD && row?.cloud_resource_id) || row?.aggregation_key === AGGREGATION_KEY.ANOMALY
-                              ? ds.blue[600]
-                              : ds.gray[700],
-                          lineHeight: '1.4',
-                        }}
-                      />
-                    </Box>
-                  </Box>
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
-                    <Text value={'When'} secondaryText />
-                    <Text
-                      value={
-                        row?.starts_at ? (
-                          <Datetime
-                            value={row?.starts_at}
-                            sx={{ fontSize: 'var(--ds-text-small)' }}
-                            sxSuffix={{ color: ds.gray[700], fontSize: 'var(--ds-text-small)' }}
-                          />
-                        ) : (
-                          ''
-                        )
-                      }
-                    />
-                  </Box>
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
-                    <Text value={'Severity'} secondaryText />
-                    <Box>
-                      <Label text={row?.priority || '-'} margin='0' width={ds.space.mul(0, 21)} />
-                    </Box>
-                  </Box>
-
-                  {row?.computed_score !== null && row?.computed_score !== undefined && (
-                    <Box
-                      sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}
-                    >
-                      <Text value={'Triage Score'} secondaryText />
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-                        <ScoreDisplay
-                          score={row?.computed_score}
-                          priority={row?.computed_priority}
-                          scoreFactors={row?.score_factors}
-                          confidence={row?.score_confidence}
-                        />
-                        <PriorityPinControl
-                          eventId={row?.id}
-                          accountId={row?.cloud_account_id || router.query.accountId}
-                          currentPriority={row?.computed_priority}
-                          canWrite={hasWriteAccess(router.query.accountId)}
-                          onChanged={() => loadData(row?.id)}
-                        />
-                      </Box>
-                    </Box>
-                  )}
-
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
-                    <Text value={'Triage Status'} secondaryText />
-                    <Box>
-                      <NBStatusBadge
-                        eventId={row?.id}
-                        currentStatus={row?.nb_status || 'OPEN'}
-                        onStatusChange={() => loadData(row?.id)}
-                        onCreateTicket={() => {
-                          setTicketData(row);
-                          setIsTicketCreateFormOpen(true);
-                        }}
-                      />
-                    </Box>
-                  </Box>
-
-                  {row?.labels?.nb_duplicate_of && (
-                    <Box
-                      sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}
-                    >
-                      <Text value={'Duplicate of'} secondaryText />
-                      <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
-                        <Link
-                          style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
-                          href={`/investigate?id=${row.labels.nb_duplicate_of}&accountId=${row?.cloud_account_id}`}
-                          openInNew={true}
-                        >
-                          <Label text={'View Original Event'} margin='0' />
-                        </Link>
-                      </Box>
-                    </Box>
-                  )}
-
-                  {recurrenceInfo?.isRecurrence && (
-                    <Box
-                      sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}
-                    >
-                      <Text value={'Recurrence'} secondaryText />
-                      <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-                          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.amber[500] }}>⚠️ Previously resolved</Typography>
-                          <Link
-                            style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
-                            href={`/investigate?id=${recurrenceInfo.previousEventId}&accountId=${row?.cloud_account_id}`}
-                            openInNew={true}
-                          >
-                            <Label text={'View Previous'} margin='0' variant='yellow' />
-                          </Link>
-                        </Box>
-                      </Box>
-                    </Box>
-                  )}
-
-                  {row?.labels?.nb_triage_rule_id && (
-                    <Box
-                      sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}
-                    >
-                      <Text value={'Triage Rule'} secondaryText />
-                      <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
-                        <Link
-                          style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
-                          href={`${detailsPathPrefix}/${row?.cloud_account_id}#events/triage-rules`}
-                          openInNew={true}
-                        >
-                          <Label text={'View Triage Rule'} margin='0' />
-                        </Link>
-                      </Box>
-                    </Box>
-                  )}
-
-                  {/* Rule */}
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
-                    <Text value={'Rule'} secondaryText />
-                    <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
-                      {row.aggregation_key && alertRules?.includes(row.aggregation_key) ? (
-                        <Link
-                          style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
-                          href={`${detailsPathPrefix}/${row?.cloud_account_id}?name=${row?.aggregation_key}#monitoring/alert-manager`}
-                          openInNew={true}
-                        >
-                          <Label
-                            text={(row?.aggregation_key?.includes('_') ? snakeToTitleCase(row?.aggregation_key) : row?.aggregation_key) || '-'}
-                            margin='0'
-                            height='auto'
-                            wordBreak='break-word'
-                            customLabelStyle={fitCustomLabelStyles}
-                            displayTooltip={isCloud}
-                            tooltipCharLimit={isCloud ? 25 : undefined}
-                          />
-                        </Link>
-                      ) : (
-                        <Label
-                          text={(row?.aggregation_key?.includes('_') ? snakeToTitleCase(row?.aggregation_key) : row?.aggregation_key) || '-'}
-                          margin='0'
-                          height='auto'
-                          wordBreak='break-word'
-                          customLabelStyle={fitCustomLabelStyles}
-                          displayTooltip={isCloud}
-                          tooltipCharLimit={isCloud ? 25 : undefined}
-                        />
-                      )}
-                    </Box>
-                  </Box>
-                </Box>
-
-                {/* K8s-only: Crash Details, Last State, Impact sections */}
-                {isK8s && (
-                  <>
-                    {podDetails?.data?.containers?.some(
-                      (pd) =>
-                        pd?.status?.reason || (pd?.status?.exitCode !== undefined && pd?.status?.exitCode !== null) || pd?.name || pd?.status?.state
-                    ) && (
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          background: ds.background[100],
-                          gap: 'var(--ds-space-1)',
-                          mb: 'var(--ds-space-4)',
-                          mt: 'var(--ds-space-5)',
-                          '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
-                        }}
-                      >
-                        <SafeIcon src={ErrorFillIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                        <Typography
-                          sx={{
-                            color: ds.gray[700],
-                            fontSize: 'var(--ds-text-body-lg)',
-                            fontWeight: 'var(--ds-font-weight-medium)',
-                            lineHeight: 'normal',
-                            minWidth: ds.space.mul(0, 51),
-                          }}
-                        >
-                          Crash Details
-                        </Typography>
-                      </Box>
-                    )}
-
-                    {podDetails?.data?.containers?.length > 0 && (
-                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-                        {podDetails?.data?.containers?.map((pd, index) => (
-                          <React.Fragment key={pd?.name || index}>
-                            <Box
-                              sx={{
-                                display: 'grid',
-                                flexDirection: 'column',
-                                alignItems: 'flex-start',
-                                gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
-                                gap: 'var(--ds-space-1)',
-                              }}
-                            >
-                              {pd?.name && (
-                                <>
-                                  {pd?.status?.reason && (
-                                    <>
-                                      <Text value={'Reason'} secondaryText />
-                                      <Label
-                                        variant={'red'}
-                                        customLabelStyle={{ padding: 'var(--ds-space-1) var(--ds-space-1)' }}
-                                        text={pd.status.reason}
-                                      />
-                                    </>
-                                  )}
-                                  <>
-                                    <Text value={'Container'} secondaryText />
-                                    <Text
-                                      value={pd.name}
-                                      copyableTooltip
-                                      showAutoEllipsis
-                                      sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], lineHeight: '1.4' }}
-                                    />
-                                  </>
-                                  {pd?.status?.exitCode !== undefined && pd?.status?.exitCode !== null && (
-                                    <>
-                                      <Text value={'Exit code'} secondaryText />
-                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-                                        <Text value={pd.status.exitCode} secondaryText sx={{ color: ds.gray[700] }} />
-                                        <Tooltip title={exitCodeMapping[pd.status.exitCode] || 'Unknown'} arrow>
-                                          <SafeIcon
-                                            src={infoIcon}
-                                            alt='info'
-                                            style={{ width: '13px', height: '13px', cursor: 'pointer', filter: 'opacity(0.5)' }}
-                                          />
-                                        </Tooltip>
-                                      </Box>
-                                    </>
-                                  )}
-                                  {pd?.status?.state && (
-                                    <>
-                                      <Text value={'Status'} secondaryText />
-                                      <Text value={pd.status.state} secondaryText sx={{ color: ds.gray[700] }} />
-                                    </>
-                                  )}
-                                </>
-                              )}
-                            </Box>
-                          </React.Fragment>
-                        ))}
-                      </Box>
-                    )}
-
-                    {podDetails?.data?.containers?.some(
-                      (pd) => pd?.lastStatus && (pd.lastStatus.state || pd.lastStatus.exitCode !== undefined || pd.lastStatus.reason)
-                    ) && (
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          background: ds.background[100],
-                          gap: 'var(--ds-space-1)',
-                          mb: 'var(--ds-space-4)',
-                          mt: 'var(--ds-space-5)',
-                          '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
-                        }}
-                      >
-                        <SafeIcon src={LastStateIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                        <Typography
-                          sx={{
-                            color: ds.gray[700],
-                            fontSize: 'var(--ds-text-body-lg)',
-                            fontWeight: 'var(--ds-font-weight-medium)',
-                            lineHeight: 'normal',
-                            minWidth: ds.space.mul(0, 35),
-                          }}
-                        >
-                          Last State
-                        </Typography>
-                      </Box>
-                    )}
-
-                    {podDetails?.data?.containers?.map((pd, index) => (
-                      <Box item xs={12} key={pd?.name || index}>
-                        <Box className='container-box' sx={{ mb: ds.space[2], fontSize: 'var(--ds-text-body)' }}>
-                          <Box>
-                            {pd?.name && pd?.lastStatus && Object.values(pd.lastStatus).some((v) => v !== null && v !== undefined) && (
-                              <Box
-                                sx={{
-                                  display: 'grid',
-                                  flexDirection: 'column',
-                                  alignItems: 'flex-start',
-                                  gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
-                                  gap: 'var(--ds-space-1)',
-                                }}
-                              >
-                                {pd.lastStatus.state && (
-                                  <>
-                                    <Text value={'State'} secondaryText />
-                                    <Text value={pd.lastStatus.state} secondaryText sx={{ color: ds.gray[700] }} />
-                                  </>
-                                )}
-                                {pd.lastStatus.exitCode !== undefined && (
-                                  <>
-                                    <Text value={'Exit Code'} secondaryText />
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-                                      <Text value={pd.lastStatus.exitCode} secondaryText sx={{ color: ds.gray[700] }} />
-                                      <Tooltip title={exitCodeMapping[pd.lastStatus.exitCode] || 'Unknown'} arrow>
-                                        <SafeIcon
-                                          src={infoIcon}
-                                          alt='info'
-                                          style={{ width: '12px', height: '12px', cursor: 'pointer', filter: 'opacity(0.5)' }}
-                                        />
-                                      </Tooltip>
-                                    </Box>
-                                  </>
-                                )}
-                                {pd.lastStatus.reason && (
-                                  <>
-                                    <Text value={'Reason'} secondaryText />
-                                    <Text value={pd.lastStatus.reason} secondaryText sx={{ color: ds.gray[700] }} />
-                                  </>
-                                )}
-                              </Box>
-                            )}
-                          </Box>
-                        </Box>
-                      </Box>
-                    ))}
-
-                    {podDetails?.data?.containers?.some(
-                      (pd) => pd?.status?.state && ((podDetails?.data?.restarts != null && podDetails?.data?.restarts > 0) || othersData?.length > 0)
-                    ) && (
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          background: ds.background[100],
-                          gap: 'var(--ds-space-1)',
-                          mb: 'var(--ds-space-4)',
-                          mt: 'var(--ds-space-5)',
-                          '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
-                        }}
-                      >
-                        <SafeIcon src={GraphOutlineIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                        <Typography
-                          sx={{
-                            color: ds.gray[700],
-                            fontSize: 'var(--ds-text-body-lg)',
-                            fontWeight: 'var(--ds-font-weight-medium)',
-                            lineHeight: 'normal',
-                            minWidth: ds.space.mul(1, 15),
-                          }}
-                        >
-                          Impact
-                        </Typography>
-                      </Box>
-                    )}
-
-                    <Box
-                      sx={{
-                        display: 'grid',
-                        flexDirection: 'column',
-                        alignItems: 'flex-start',
-                        gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
-                        gap: 'var(--ds-space-1)',
-                      }}
-                    >
-                      {podDetails?.data?.restarts != null && podDetails?.data?.restarts > 0 && (
-                        <>
-                          <Text value={'Restarts'} secondaryText />
-                          <Text
-                            value={podDetails?.data?.restarts}
-                            secondaryText
-                            sx={{ color: podDetails?.data?.restarts > 1 ? ds.red[500] : ds.gray[700] }}
-                          />
-                        </>
-                      )}
-                      {othersData?.length > 0 && (
-                        <>
-                          <Text value={'Frequency'} secondaryText />
-                          <Box>
-                            {othersData?.map((index) => (
-                              <Text key={index} value={index} secondaryText sx={{ color: ds.gray[700] }} />
-                            ))}
-                          </Box>
-                        </>
-                      )}
-                    </Box>
-                  </>
-                )}
-
-                {/* Context section */}
-                {(row?.cluster || row?.subject_namespace || row?.subject_node || matchedOptions.filter((o) => o.infoData?.length > 0).length > 0) && (
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      background: ds.background[100],
-                      gap: 'var(--ds-space-1)',
-                      mb: 'var(--ds-space-4)',
-                      mt: 'var(--ds-space-5)',
-                      '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
-                    }}
-                  >
-                    <SafeIcon src={FileOutlineIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                    <Typography
-                      sx={{
-                        color: ds.gray[700],
-                        fontSize: 'var(--ds-text-body-lg)',
-                        fontWeight: 'var(--ds-font-weight-medium)',
-                        lineHeight: 'normal',
-                        minWidth: ds.space.mul(0, 27),
-                      }}
-                    >
-                      Context
-                    </Typography>
-                  </Box>
-                )}
-
-                <Box
-                  sx={{
-                    display: 'grid',
-                    flexDirection: 'column',
-                    alignItems: 'flex-start',
-                    gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
-                    gap: 'var(--ds-space-1)',
-                  }}
-                >
-                  {isK8s && podDetails?.data?.qosClass && (
-                    <>
-                      <Text value={'Cluster'} secondaryText />
-                      <Text value={row?.cluster || '-'} secondaryText sx={{ color: ds.gray[700] }} />
-                    </>
-                  )}
-                  {row?.subject_namespace && (
-                    <>
-                      <Text value={'Namespace'} secondaryText />
-                      <Text value={row?.subject_namespace || '-'} secondaryText sx={{ color: ds.gray[700] }} />
-                    </>
-                  )}
-                  {row?.subject_node && (
-                    <>
-                      <Text value={'Node'} secondaryText />
-                      <Text
-                        value={row?.subject_node || '-'}
-                        copyableTooltip
-                        showAutoEllipsis
-                        sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], lineHeight: '1.4' }}
-                      />
-                    </>
-                  )}
-                </Box>
-
-                {/* Others section */}
-                {(row?.subject_name || row?.subject_type || podDetails?.data?.qosClass || podDetails?.data?.containers?.[0]?.imageName) && (
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      background: ds.background[100],
-                      gap: 'var(--ds-space-1)',
-                      mb: 'var(--ds-space-4)',
-                      mt: 'var(--ds-space-5)',
-                      '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
-                    }}
-                  >
-                    <SafeIcon src={BarsBlueOutlineIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                    <Typography
-                      sx={{
-                        color: ds.gray[700],
-                        fontSize: 'var(--ds-text-body-lg)',
-                        fontWeight: 'var(--ds-font-weight-medium)',
-                        lineHeight: 'normal',
-                        minWidth: ds.space.mul(0, 25),
-                      }}
-                    >
-                      Others
-                    </Typography>
-                  </Box>
-                )}
-                <Box
-                  sx={{
-                    display: 'grid',
-                    flexDirection: 'column',
-                    alignItems: 'flex-start',
-                    gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
-                    gap: 'var(--ds-space-1)',
-                  }}
-                >
-                  {isK8s && podDetails?.data?.containers?.[0]?.imageName && (
-                    <>
-                      <Text value={'Image Name'} secondaryText />
-                      <Text
-                        value={podDetails?.data?.containers[0].imageName || '-'}
-                        showAutoEllipsis
-                        sx={{ fontSize: 'var(--ds-text-small)', wordBreak: 'break-word', whiteSpace: 'normal', width: '100%', lineHeight: '1.4' }}
-                      />
-                    </>
-                  )}
-                  {row?.subject_node && (
-                    <>
-                      <Text value={'Subject Type'} secondaryText />
-                      <Text value={row?.subject_type || '-'} secondaryText sx={{ color: ds.gray[700] }} />
-                    </>
-                  )}
-                  {row?.subject_name && (
-                    <>
-                      <Text value={'Subject'} secondaryText />
-                      <Text
-                        value={row?.subject_name || '-'}
-                        copyableTooltip
-                        showAutoEllipsis
-                        sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], lineHeight: '1.4' }}
-                      />
-                    </>
-                  )}
-                  {podDetails?.data?.qosClass && (
-                    <>
-                      <Text value={'QOS Class'} secondaryText />
-                      <Text value={podDetails?.data?.qosClass} secondaryText sx={{ color: ds.gray[700] }} />
-                    </>
-                  )}
-                  {row?.description && (
-                    <>
-                      {investigateDescription.containerId && (
-                        <>
-                          <Text value={'Container Id'} secondaryText />
-                          <Text
-                            value={investigateDescription.containerId || '-'}
-                            copyableTooltip
-                            showAutoEllipsis
-                            sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700] }}
-                          />
-                        </>
-                      )}
-                      {investigateDescription.failureCount && (
-                        <>
-                          <Text value={'Failure Count'} secondaryText />
-                          <Text className='text-value' value={investigateDescription.failureCount} secondaryText sx={{ color: ds.gray[700] }} />
-                        </>
-                      )}
-                      {isCloud && (
-                        <>
-                          <Text value={'Description'} secondaryText />
-                          <Text value={investigateDescription.logSample} showAutoEllipsis sx={{ fontSize: 'var(--ds-text-small)' }} />
-                        </>
-                      )}
-                    </>
-                  )}
-                </Box>
-
-                {/* Alert labels */}
-                {Object.keys(alertLabels).length > 0 && (
-                  <>
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        background: ds.background[100],
-                        gap: 'var(--ds-space-1)',
-                        mb: 'var(--ds-space-4)',
-                        mt: 'var(--ds-space-5)',
-                        '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
-                        '& img': {
-                          filter:
-                            'brightness(0) saturate(100%) invert(44%) sepia(99%) saturate(2351%) hue-rotate(201deg) brightness(98%) contrast(97%)',
-                        },
-                      }}
-                    >
-                      <SafeIcon src={CubeIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                      <Typography
-                        sx={{
-                          color: ds.gray[700],
-                          fontSize: 'var(--ds-text-body-lg)',
-                          fontWeight: 'var(--ds-font-weight-medium)',
-                          lineHeight: 'normal',
-                          minWidth: ds.space.mul(0, 43),
-                        }}
-                      >
-                        Alert labels
-                      </Typography>
-                    </Box>
-                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--ds-space-1)' }}>{visibleLabels}</Box>
-                    {labels.length > 5 && (
-                      <Box mt={ds.space[2]}>
-                        <Button tone='link' size='xs' onClick={toggleShow} data-testid='toggle-labels-btn'>
-                          Show {showAll ? 'Less' : `More (${labels.length - 5})`}
-                        </Button>
-                      </Box>
-                    )}
-                  </>
-                )}
-                <InvestigateDropdown
-                  query={queryParam}
-                  inputMaxWidth={ds.space.mul(1, 75)}
-                  subjectName={row?.subject_name}
-                  subjectNamespace={row?.subject_namespace}
-                  resetStateWhenItemSelected={resetState}
-                />
-              </Box>
-            </Box>
-          </>
+          <InvestigateSidebar
+            row={row}
+            podDetails={podDetails}
+            othersData={othersData}
+            matchedOptions={matchedOptions}
+            recurrenceInfo={recurrenceInfo}
+            alertLabels={alertLabels}
+            alertRules={alertRules}
+            queryParam={queryParam}
+            isK8s={isK8s}
+            isCloud={isCloud}
+            onPodClick={handlePodClick}
+            onRowChange={setRow}
+            onCreateTicket={(r) => {
+              setTicketData(r);
+              setIsTicketCreateFormOpen(true);
+            }}
+            onPriorityChanged={loadData}
+            onResetState={resetState}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
+          />
         )}
 
         {/* MAIN CONTENT */}
@@ -2640,12 +1980,15 @@ const Investigate = () => {
                 minWidth: 0,
                 width: '100%',
                 maxWidth: '100%',
-                overflowX: 'hidden',
+                overflow: 'hidden',
+                backgroundColor: ds.background[100],
+                border: `0.5px solid ${ds.gray[300]}`,
+                borderRadius: 'var(--ds-radius-lg)',
               }}
             >
               <Box
                 sx={{
-                  height: `calc(100vh - ${ds.space.mul(0, 45)})`,
+                  height: `calc(100vh - ${ds.space.mul(0, 55)})`,
                   p: '0 var(--ds-space-2) var(--ds-space-3) var(--ds-space-2)',
                   display: 'flex',
                   flexDirection: 'column',
@@ -2681,13 +2024,17 @@ const Investigate = () => {
                           borderColor: 'divider',
                         }}
                       >
-                        <Box mt={ds.space[0]}>
-                          {isGeneratingCards ? (
+                        {isGeneratingCards ? (
+                          <Box mt={ds.space[0]} sx={{ display: 'flex', alignItems: 'center' }}>
                             <CircularProgress size={20} sx={{ color: ds.yellow[500], width: ds.space[5], height: ds.space[5] }} />
-                          ) : (
-                            <SafeIcon src={getNubiIconUrl()} alt={assistantName} width={24} height={24} />
-                          )}
-                        </Box>
+                          </Box>
+                        ) : (
+                          !matchedOptions.some((option) => option?.id === 'AskAiCard') && (
+                            <Box mt={ds.space[0]} sx={{ display: 'flex', alignItems: 'center' }}>
+                              <SafeIcon src={getNubiIconUrl()} alt={assistantName} width={24} height={24} />
+                            </Box>
+                          )
+                        )}
                         <Box
                           sx={{
                             textTransform: 'capitalize',
@@ -2707,7 +2054,17 @@ const Investigate = () => {
                         >
                           <Tabs value={tabValue} onChange={handleTabChange} aria-label='basic tabs example'>
                             {!isGeneratingCards && matchedOptions.some((option) => option?.id === 'AskAiCard') && (
-                              <Tab label='Investigation Analysis' {...a11yProps(0)} disabled={!!currentInvestigation} value={0} />
+                              <Tab
+                                label={
+                                  <Box component='span' sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                                    <SafeIcon src={getNubiIconUrl()} alt={assistantName} width={18} height={18} />
+                                    Investigation Analysis
+                                  </Box>
+                                }
+                                {...a11yProps(0)}
+                                disabled={!!currentInvestigation}
+                                value={0}
+                              />
                             )}
                             <Tab
                               label={
@@ -2854,6 +2211,7 @@ const Investigate = () => {
                                 icon={<RefreshIcon fontSize='small' />}
                                 aria-label='Refresh investigation'
                                 tooltip='Refresh investigation'
+                                tooltipPlacement='left'
                                 data-testid='refresh-investigation-btn'
                                 disabled={!matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted()}
                                 onClick={() => {

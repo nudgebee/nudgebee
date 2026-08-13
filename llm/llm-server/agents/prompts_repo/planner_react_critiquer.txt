@@ -86,6 +86,8 @@ You MUST evaluate the <final_answer> against these strict rules:
 
       If `<tools_invoked>` contains ONLY status-check tools AND the final answer asserts the resource is healthy / no issues / no problems → REJECT. The user asked an investigative question for a reason; the agent must look for that reason in behavioural evidence, not infer absence-of-issues from status alone.
     - **Feedback Example (no behavioural evidence):** "The answer concludes 'no issues detected' from status checks alone, but `<tools_invoked>` shows the agent never called any behavioural-evidence tool (logs / events / metrics / traces). Status fields like 'Running' / 'Active' / '0 restarts' do not prove the resource is functioning — errors, timeouts, and slow paths live in behavioural sources, not state fields. Use the `logs` tool (and `events` / `metrics` if relevant) to fetch evidence for the resource within the relevant time window before concluding."
+    - **Incident Timing — state WHEN (Investigation only):** When the behavioural evidence (log lines, events, metrics) carries timestamps AND the answer identifies a failure, the answer MUST state the incident's time window — the first and last timestamp of the matching errors/events. An answer that names the failure and its cause but omits WHEN it happened is INCOMPLETE — REJECT and instruct the agent to extract the timestamps from the EXISTING observation (do NOT request new tool calls; the timestamps are already in the `<scratchpad>`). Separately, a resource's *current* status is independent of *incident* timing: a resource being in a healthy / running state now does NOT make a timestamped past incident "current" — REJECT answers that describe a past, timestamped failure as "currently failing" / "is failing" when the evidence timestamps lie in the past. Require "failed at / between <T1> and <T2>", not "currently failing".
+    - **Feedback Example (missing when):** "The answer names the failure and its cause but never says WHEN it occurred, though the matching error/event lines in observation [X] carry a timestamp field. Re-synthesise from that existing evidence to state the incident's time window (first→last timestamp) — do not run new tool calls — and do not describe it as 'currently failing' when those timestamps are in the past."
 {{end}}
 
 5.  **The Root Cause Depth Rule:**
@@ -129,6 +131,18 @@ You MUST evaluate the <final_answer> against these strict rules:
     - **(b) The conclusion must trace to a SUPPORTED hypothesis.** The `<final_answer>`'s stated root cause must correspond to a hypothesis the notebook marks `[SUPPORTED]`. If the answer asserts a confident root cause that no hypothesis supports — or every hypothesis is REFUTED/INCONCLUSIVE yet the answer still claims a definite cause — → `<decision>refine</decision>`, instructing the agent to either record the supporting hypothesis with its evidence or soften the conclusion to match the evidence actually gathered.
     - **(c) Every REFUTED hypothesis must cite evidence.** A `[REFUTED]` status must name the evidence step-ID that disconfirmed it. A bare `[REFUTED]` with no citation is an unsupported dismissal → `<decision>refine</decision>`, asking the agent to cite the disconfirming observation or re-open the hypothesis.
     - **Tool failures are "unchecked", not refutation.** If a hypothesis could not be tested because a tool failed (auth/permission denied, connectivity error, missing scope, rate limit), the correct status is `[INCONCLUSIVE]` *with that reason stated* — ACCEPT that; it satisfies (a). Do NOT reject because a High hypothesis is unresolved when the notebook states a tool/access reason, and NEVER instruct the agent to mark a hypothesis `[REFUTED]` or `[INCONCLUSIVE]` on the basis of a tool failure as though the failure were evidence. A dead tool is a gap in coverage, not proof a cause is absent.
+{{end}}
+{{if .sdg_grounding_enabled}}
+8.  **Dependency-Claim Grounding (independent enforcement — only when `service_dependency_graph` is in <available_tools>):**
+    - When the `<final_answer>` asserts an inter-service relationship — "X calls Y", "Y depends on Z", "A routes to B", "upstream/downstream of E is F" — that claim MUST cite AT LEAST ONE of the following forms of evidence in the `<scratchpad>`:
+        - `[KG Traverse - E#]` from `service_dependency_graph` (observed dependency — preferred where available)
+        - A specific ConfigMap / env-var value showing the target hostname or URL (intended dependency — cite the key + value)
+        - A log line showing the call attempt or dial failure (observed at runtime — cite the excerpt)
+        - kubectl output showing a Service selector + matching endpoints (local-cluster routing claims only)
+    - REJECT only when the answer makes such a claim with NO cited evidence of any kind.
+    - DO NOT reject when non-SDG evidence is cited but SDG was not invoked — accept the answer, and add a soft advisory in feedback: "SDG could have provided independent confirmation for '<X calls Y>'; consider adding it in future for cross-check."
+    - **Do not fire on:** general architectural discussion ("services in a microservice architecture typically call each other"), capability-description text in short greeting responses (< 500 chars total), answers where the scratchpad shows `service_dependency_graph` was already invoked and returned "no data available for this account" or "resource not found".
+    - **Carve-out:** Skip entirely when `service_dependency_graph` is NOT in `<available_tools>`.
 {{end}}
 
 **Decision:**

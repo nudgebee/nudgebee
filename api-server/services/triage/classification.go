@@ -173,10 +173,14 @@ func ClassifyEvent(ctx context.Context, db *sqlx.DB, req ClassifyEventRequest, c
 		return nil, fmt.Errorf("failed to insert classification: %w", err)
 	}
 
-	// 7. Determine target status and update event (within transaction)
-	targetStatus := getTargetStatusForClassification(req.Classification, req.ApplyScope)
-	if err = updateEventNBStatusTx(ctx, tx, req.EventID, targetStatus, userID); err != nil {
-		return nil, fmt.Errorf("failed to update event status: %w", err)
+	// 7. Determine target status and update event (within transaction).
+	// Skipped for PreserveStatus requests (pure priority corrections): overriding
+	// severity must not force a triage-state transition like ACTION_REQUIRED.
+	if !req.PreserveStatus {
+		targetStatus := getTargetStatusForClassification(req.Classification, req.ApplyScope)
+		if err = updateEventNBStatusTx(ctx, tx, req.EventID, targetStatus, userID); err != nil {
+			return nil, fmt.Errorf("failed to update event status: %w", err)
+		}
 	}
 
 	// 8. Sync computed_score/computed_priority when priority is manually corrected
@@ -246,9 +250,13 @@ func ClassifyEvent(ctx context.Context, db *sqlx.DB, req ClassifyEventRequest, c
 		ClearTriageRulesCache()
 	}
 
-	// 12. Queue bulk update for existing events (async, outside transaction)
+	// 12. Queue bulk update for existing events (async, outside transaction).
+	// The bulk job's only effect is rewriting nb_status on same-fingerprint events,
+	// so PreserveStatus requests skip it entirely. The priority_pin rule created
+	// above applies the pinned priority to future events at evaluation time;
+	// existing siblings' computed_priority is not retro-updated by this path.
 	var bulkOp *BulkOperationResponse
-	if req.ApplyToExisting && req.ApplyScope != ApplyScopeThisEvent && event.Fingerprint != nil {
+	if req.ApplyToExisting && !req.PreserveStatus && req.ApplyScope != ApplyScopeThisEvent && event.Fingerprint != nil {
 		targetStatus := getTargetStatusForClassification(req.Classification, req.ApplyScope)
 		bulkOperation, bulkErr := queueBulkClassification(ctx, db, BulkClassificationJob{
 			Fingerprint:      *event.Fingerprint,

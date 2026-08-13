@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -20,7 +21,7 @@ func TestCacheHitPct(t *testing.T) {
 func newRouter(token string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	RegisterRoutes(r, nil, token)
+	RegisterRoutes(r, token)
 	return r
 }
 
@@ -48,6 +49,97 @@ func TestServiceToken_OptionalWhenUnset(t *testing.T) {
 	r := newRouter("") // token optional: unset → plane stays open (not 401)
 	// Past auth, but no x-tenant-id header → 400, proving auth did NOT reject it.
 	assert.Equal(t, http.StatusBadRequest, post(r, "", "", `{}`).Code)
+}
+
+func TestListRequestsFilter(t *testing.T) {
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	base := ListRequest{TenantID: "t1", StartDate: start, EndDate: end}
+
+	t.Run("no optional filters → base window only", func(t *testing.T) {
+		where, args := listRequestsFilter(base)
+		assert.Equal(t, "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3", where)
+		assert.Equal(t, []any{"t1", start, end}, args)
+	})
+
+	t.Run("user filter", func(t *testing.T) {
+		req := base
+		req.UserID = "u1"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "g.user_id = $4")
+		assert.Equal(t, []any{"t1", start, end, "u1"}, args)
+	})
+
+	t.Run("providers and models get numbered IN placeholders", func(t *testing.T) {
+		req := base
+		req.Providers = []string{"anthropic", "openai"}
+		req.Models = []string{"claude-fable-5"}
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "g.provider IN ($4,$5)")
+		assert.Contains(t, where, "g.model IN ($6)")
+		assert.Equal(t, []any{"t1", start, end, "anthropic", "openai", "claude-fable-5"}, args)
+	})
+
+	t.Run("status classes partition all rows", func(t *testing.T) {
+		req := base
+		req.Status = "success"
+		whereOK, argsOK := listRequestsFilter(req)
+		assert.Contains(t, whereOK, "AND g.status_code BETWEEN 200 AND 299")
+		assert.Len(t, argsOK, 3) // status adds no args
+
+		req.Status = "error"
+		whereErr, _ := listRequestsFilter(req)
+		assert.Contains(t, whereErr, "(g.status_code IS NULL OR g.status_code NOT BETWEEN 200 AND 299)")
+
+		req.Status = "bogus" // unknown class → ignored, not an error
+		whereAll, _ := listRequestsFilter(req)
+		assert.NotContains(t, whereAll, "status_code")
+	})
+
+	t.Run("routing_reason filter (governance drill-in)", func(t *testing.T) {
+		req := base
+		req.RoutingReason = "substitute"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "g.routing_reason = $4")
+		assert.Equal(t, []any{"t1", start, end, "substitute"}, args)
+
+		// 'passthrough' is the synthetic label for an empty routing_reason — match
+		// empty rows, add no arg.
+		req.RoutingReason = "passthrough"
+		wherePT, argsPT := listRequestsFilter(req)
+		assert.Contains(t, wherePT, "COALESCE(g.routing_reason,'') = ''")
+		assert.Len(t, argsPT, 3)
+	})
+
+	t.Run("reject_reason and dlp filters", func(t *testing.T) {
+		req := base
+		req.RejectReason = "secret_blocked"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "{derived,reject_reason}') = $4")
+		assert.Equal(t, []any{"t1", start, end, "secret_blocked"}, args)
+
+		req = base
+		req.Dlp = true
+		whereDlp, argsDlp := listRequestsFilter(req)
+		assert.Contains(t, whereDlp, "{derived,dlp}') IS NOT NULL")
+		assert.Len(t, argsDlp, 3) // dlp adds no arg
+	})
+
+	t.Run("all filters compose with correct placeholder numbering", func(t *testing.T) {
+		req := base
+		req.UserID = "u1"
+		req.Providers = []string{"anthropic"}
+		req.Models = []string{"m1", "m2"}
+		req.Status = "error"
+		req.Tool = "Bash"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "g.user_id = $4")
+		assert.Contains(t, where, "g.provider IN ($5)")
+		assert.Contains(t, where, "g.model IN ($6,$7)")
+		assert.Contains(t, where, "tool_names")
+		assert.Contains(t, where, "$8")
+		assert.Equal(t, []any{"t1", start, end, "u1", "anthropic", "m1", "m2", "Bash"}, args)
+	})
 }
 
 func TestAggregate_ValidatesRequest(t *testing.T) {

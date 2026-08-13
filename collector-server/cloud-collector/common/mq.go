@@ -1,6 +1,9 @@
 package common
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +17,10 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/wagslane/go-rabbitmq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -385,7 +392,7 @@ func anyConsumerWedged() (string, bool) {
 	return "", false
 }
 
-func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(data []byte) error) error {
+func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(ctx context.Context, data []byte) error) error {
 	conn := getConnection()
 	if conn == nil {
 		slog.Error("rbmq: initial connection to rabbitmq failed for consumer setup", "queue", queue, "exchange", exchangeName)
@@ -539,6 +546,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 type mqPublishOptions struct {
 	Expiration time.Duration
 	Headers    map[string]any
+	Ctx        context.Context
 }
 
 type MqPublishOption func(o *mqPublishOptions)
@@ -546,6 +554,15 @@ type MqPublishOption func(o *mqPublishOptions)
 func MqPublishWithExpiration(expiration time.Duration) MqPublishOption {
 	return func(o *mqPublishOptions) {
 		o.Expiration = expiration
+	}
+}
+
+// MqPublishWithContext threads a request context into the publish so the active
+// W3C trace context (traceparent) is injected into the message headers. The
+// consuming service can then extract it and continue the same distributed trace.
+func MqPublishWithContext(ctx context.Context) MqPublishOption {
+	return func(o *mqPublishOptions) {
+		o.Ctx = ctx
 	}
 }
 
@@ -601,13 +618,64 @@ func getCrashCount(headers map[string]any) int64 {
 	}
 }
 
+// inFlightMessages tracks the body fingerprints of messages this process is currently
+// handling. RabbitMQ sets Redelivered=true not only after a consumer crash but also when
+// a handler outlives the broker's consumer_timeout: the channel is force-closed with a
+// 406 PRECONDITION_FAILED and the unacked message is requeued while the handler is still
+// running. A redelivery whose body is still in flight here therefore proves the process
+// is alive (a timeout, not a crash) and must not count toward maxCrashRedeliveries (#33760).
+// Note: with multiple replicas a timeout redelivery can land on a different pod, where it
+// falls back to the crash-count path — same behavior as before this fix, no regression.
+var (
+	inFlightMessagesMux sync.Mutex
+	inFlightMessages    = map[string]int{}
+)
+
+func messageFingerprint(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func markMessageInFlight(fingerprint string) {
+	inFlightMessagesMux.Lock()
+	defer inFlightMessagesMux.Unlock()
+	inFlightMessages[fingerprint]++
+}
+
+func clearMessageInFlight(fingerprint string) {
+	inFlightMessagesMux.Lock()
+	defer inFlightMessagesMux.Unlock()
+	if inFlightMessages[fingerprint] <= 1 {
+		delete(inFlightMessages, fingerprint)
+	} else {
+		inFlightMessages[fingerprint]--
+	}
+}
+
+func isMessageInFlight(fingerprint string) bool {
+	inFlightMessagesMux.Lock()
+	defer inFlightMessagesMux.Unlock()
+	return inFlightMessages[fingerprint] > 0
+}
+
 // processMessageAndDetermineAction handles the core message processing and decides the RabbitMQ action.
 // This function is called by the handler in consumer.Run.
-func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(data []byte) error, queueName string, exchangeName string) rabbitmq.Action {
+func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(ctx context.Context, data []byte) error, queueName string, exchangeName string) rabbitmq.Action {
+	fingerprint := messageFingerprint(d.Body)
+
 	// Poison message detection: when the pod OOM-kills or crashes, RabbitMQ auto-requeues
 	// unacked messages with Redelivered=true. Without this check, the same message causes
 	// infinite crash loops. We track crash redeliveries and discard after maxCrashRedeliveries.
 	if d.Redelivered {
+		// A redelivery of a message that is still being processed in this process is a
+		// broker consumer_timeout requeue of a slow-but-healthy handler, not a crash.
+		// Discard the duplicate — the in-flight handler owns the work.
+		if isMessageInFlight(fingerprint) {
+			slog.Info("rbmq: redelivered message is still being processed here (broker consumer_timeout), discarding duplicate without crash count",
+				"queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "body_size", len(d.Body))
+			return rabbitmq.NackDiscard
+		}
+
 		crashCount := getCrashCount(d.Headers)
 		if crashCount >= int64(maxCrashRedeliveries) {
 			slog.Error("rbmq: poison message detected - discarding after repeated crash redeliveries",
@@ -638,21 +706,57 @@ func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(da
 	retryCount := getRetryCount(d.Headers)
 	slog.Debug("rbmq: processing message", "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
 
-	if err := processorFunc(d.Body); err != nil {
+	markMessageInFlight(fingerprint)
+	defer clearMessageInFlight(fingerprint)
+
+	// Continue the distributed trace: extract the W3C context the publisher
+	// injected into the AMQP headers and run the processor inside a consumer
+	// span so its logs / outbound calls share the same trace_id.
+	carrier := propagation.MapCarrier{}
+	for k, v := range d.Headers {
+		// AMQP header values arrive as string or, depending on the publisher's
+		// client library / broker encoding, []byte. Handle both so trace
+		// context extraction doesn't silently fail.
+		switch val := v.(type) {
+		case string:
+			carrier[k] = val
+		case []byte:
+			carrier[k] = string(val)
+		}
+	}
+	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+	ctx, span := otel.Tracer("mq").Start(ctx, "rabbitmq.consume", trace.WithSpanKind(trace.SpanKindConsumer))
+	defer span.End()
+
+	// Stamp the trace onto the logger so retry/discard decisions correlate with
+	// the job's own log lines in Loki. Only when a real span is present — an
+	// unpropagated message leaves the logger untouched rather than emitting an
+	// all-zero trace_id.
+	logger := slog.Default()
+	if sc := span.SpanContext(); sc.IsValid() {
+		logger = logger.With("trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+	}
+
+	if err := processorFunc(ctx, d.Body); err != nil {
+		// No-op under the default noop tracer; marks the consumer span failed
+		// when a real exporter is configured.
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+
 		// Check if this is a permanent error that should not be retried
 		var permErr *PermanentError
 		if errors.As(err, &permErr) {
-			slog.Warn("mq: permanent error processing message, discarding", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
+			logger.Warn("mq: permanent error processing message, discarding", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
 			return rabbitmq.NackDiscard
 		}
 
 		// Check if we've exceeded max retries
 		if retryCount >= int64(maxRetryCount) {
-			slog.Error("mq: max retries exceeded, discarding message", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
+			logger.Error("mq: max retries exceeded, discarding message", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
 			return rabbitmq.NackDiscard
 		}
 
-		slog.Error("mq: error processing message, will retry", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
+		logger.Error("mq: error processing message, will retry", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
 
 		// Republish with incremented retry count, then discard the original
 		newHeaders := make(map[string]any)
@@ -663,12 +767,12 @@ func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(da
 
 		err = republishWithDelay(exchangeName, queueName, d.Body, newHeaders)
 		if err != nil {
-			slog.Error("mq: failed to republish message for retry, requeueing", "error", err, "queue", queueName, "exchange", exchangeName)
+			logger.Error("mq: failed to republish message for retry, requeueing", "error", err, "queue", queueName, "exchange", exchangeName)
 			return rabbitmq.NackRequeue
 		}
 		return rabbitmq.NackDiscard
 	}
-	slog.Debug("mq: message processed successfully, acking", "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
+	logger.Debug("mq: message processed successfully, acking", "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
 	// Acknowledge the message
 	return rabbitmq.Ack
 }
@@ -867,6 +971,15 @@ func MqPublish(exchangeName string, routingKey string, message any, opts ...MqPu
 	for k, v := range options.Headers {
 		headers[k] = v
 	}
+	// Inject the active W3C trace context into the message headers so the
+	// consuming service can continue the same distributed trace.
+	if options.Ctx != nil {
+		carrier := propagation.MapCarrier{}
+		otel.GetTextMapPropagator().Inject(options.Ctx, carrier)
+		for k, v := range carrier {
+			headers[k] = v
+		}
+	}
 
 	publishOptsList := []func(*rabbitmq.PublishOptions){
 		rabbitmq.WithPublishOptionsContentType("application/json"),
@@ -1013,7 +1126,7 @@ func StartMqHeartbeat() {
 	// window, after which a missing round-trip is treated as unhealthy.
 	mqLastHeartbeatNanos.Store(time.Now().UnixNano())
 
-	err := MqConsume(mqHeartbeatExchange, mqHeartbeatKey, mqHeartbeatQueue, 1, func(_ []byte) error {
+	err := MqConsume(mqHeartbeatExchange, mqHeartbeatKey, mqHeartbeatQueue, 1, func(_ context.Context, _ []byte) error {
 		mqLastHeartbeatNanos.Store(time.Now().UnixNano())
 		return nil
 	})

@@ -223,6 +223,7 @@ export const GET_SECURITY_RECOMMENDATION_LISTING_IMAGES = `query get_security_re
       image
       package_id
       created_at
+      max_scan_status
     }
   }
 }`;
@@ -518,6 +519,7 @@ const apiRecommendations = {
     accountId,
     category,
     ruleName,
+    excludeRuleName,
     severity,
     status = ['Open', 'Assigned'],
     resourceNamespace,
@@ -534,10 +536,12 @@ const apiRecommendations = {
     serviceName = '',
     version = 0,
     resource_ids,
+    recommendationId,
   }: {
     accountId?: string;
     category?: string;
     ruleName?: string | string[];
+    excludeRuleName?: string[];
     severity?: string | string[];
     status?: string[];
     resourceNamespace?: string;
@@ -554,6 +558,7 @@ const apiRecommendations = {
     serviceName?: string;
     version?: number;
     resource_ids?: string[];
+    recommendationId?: string;
   }) {
     try {
       if (accountId === 'demo') {
@@ -573,6 +578,9 @@ const apiRecommendations = {
       }
 
       const gqlQuery: any = {};
+      if (recommendationId) {
+        gqlQuery['id'] = { _eq: recommendationId };
+      }
       if (Array.isArray(accountId)) {
         gqlQuery['account_id'] = { _in: accountId };
       } else if (accountId) {
@@ -590,6 +598,12 @@ const apiRecommendations = {
         gqlQuery['rule_name'] = { _in: ruleName };
       } else if (ruleName) {
         gqlQuery['rule_name'] = { _eq: ruleName };
+      } else if (excludeRuleName && excludeRuleName.length > 0) {
+        // Only when no explicit rule is requested: the api-server pushes an `_in`
+        // on rule_name into its subquery and drops the column's other operators,
+        // so `_in` and `_not_in` cannot be combined. An explicit rule is already
+        // narrower than the exclusion, so skipping it here loses nothing.
+        gqlQuery['rule_name'] = { _not_in: excludeRuleName };
       }
       if (Array.isArray(severity)) {
         gqlQuery['severity'] = { _in: severity };
@@ -716,6 +730,7 @@ const apiRecommendations = {
   // Invalidated by invalidateOptimisationSummaryRecommendations() when state mutates.
   async getOptimisationSummaryRecommendations({
     category,
+    excludeRuleName,
     status = ['Open', 'InProgress'],
     orderBy = 'finops_score',
     orderAsc = false,
@@ -723,13 +738,21 @@ const apiRecommendations = {
     refresh = false,
   }: {
     category?: string[];
+    excludeRuleName?: string[];
     status?: string[];
     orderBy?: string;
     orderAsc?: boolean;
     limit?: number;
     refresh?: boolean;
   }) {
-    const cacheSuffix = { category: (category || []).join(','), status: status.join(','), orderBy, orderAsc, limit };
+    const cacheSuffix = {
+      category: (category || []).join(','),
+      excludeRuleName: (excludeRuleName || []).join(','),
+      status: status.join(','),
+      orderBy,
+      orderAsc,
+      limit,
+    };
     if (!refresh) {
       const cached = cache.getWithSuffix(OPTIMISE_SUMMARY_RECS_CACHE_KEY, null, cacheSuffix);
       if (cached) return cached;
@@ -737,6 +760,7 @@ const apiRecommendations = {
 
     const where: any = {};
     if (category && category.length > 0) where['category'] = { _in: category };
+    if (excludeRuleName && excludeRuleName.length > 0) where['rule_name'] = { _not_in: excludeRuleName };
     if (status && status.length > 0) where['status'] = { _in: status };
 
     let query = LIST_k8_OPTIMISE_SUMMARY_RECOMMENDATIONS;
@@ -917,6 +941,7 @@ const apiRecommendations = {
     accountObjectId,
     category,
     ruleName,
+    excludeRuleName,
     severity,
     status = ['Open', 'Assigned'],
     recommendation,
@@ -930,6 +955,7 @@ const apiRecommendations = {
     accountObjectId?: string;
     category?: string;
     ruleName?: string | string[];
+    excludeRuleName?: string[];
     severity?: string | string[];
     status?: string[];
     recommendation?: any;
@@ -971,6 +997,9 @@ const apiRecommendations = {
         gqlQuery['rule_name'] = { _in: ruleName };
       } else if (ruleName) {
         gqlQuery['rule_name'] = { _eq: ruleName };
+      } else if (excludeRuleName && excludeRuleName.length > 0) {
+        // See getK8sRecommendation: `_in` and `_not_in` cannot coexist on rule_name.
+        gqlQuery['rule_name'] = { _not_in: excludeRuleName };
       }
       if (Array.isArray(severity)) {
         gqlQuery['severity'] = { _in: severity };

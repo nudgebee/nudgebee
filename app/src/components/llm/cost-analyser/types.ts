@@ -245,6 +245,8 @@ export interface CostFilters {
   models: string[];
   /** Provider values — free strings once sourced from the API (e.g. "googleai"). */
   providers: string[];
+  /** Agent names — the distinct agents that produced LLM calls (from the API option-set). */
+  agents: string[];
   /** Status values — free strings once sourced from the API (e.g. "success"). */
   statuses: string[];
   /** Scope the whole report to one user (their user_id). '' = all users. */

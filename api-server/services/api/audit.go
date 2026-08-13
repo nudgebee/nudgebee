@@ -23,8 +23,8 @@ import (
 // contexts, and the prior super-admin context here silently dropped every relayed
 // audit (notification rules, messaging-platform config, llm/runbook).
 func buildContextForAuditActor(c *gin.Context, tenantId string, userId string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) *security.RequestContext {
-	span := trace.SpanFromContext(c.Request.Context())
-	childLogger := logger.With("service", "audit", "trace_id", span.SpanContext().TraceID().String())
+	// trace_id/span_id are stamped by NewRequestContext from the request context.
+	childLogger := logger.With("service", "audit")
 	return security.NewRequestContext(c.Request.Context(), security.NewSecurityContextForAuditRelay(tenantId, userId), childLogger, tracer, meter)
 }
 

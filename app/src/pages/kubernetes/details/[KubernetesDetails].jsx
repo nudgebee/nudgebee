@@ -200,7 +200,7 @@ const KubernetesDetails = () => {
     }
   }, [podTab]);
 
-  const [kubeId, setKubeId] = useState(router.query.KubernetesDetails);
+  const kubeId = router.query.KubernetesDetails;
   const [clusterSummary, setClusterSummary] = useState({});
   const [selectedTab, setSelectedTab] = useState(null);
   const [selectedSubTab, setSelectedSubTab] = useState(0);
@@ -346,25 +346,25 @@ const KubernetesDetails = () => {
   const [aggregationKeyCount, setAggregationKeyCount] = useState({});
 
   useEffect(() => {
-    if (kubeId !== router.query.KubernetesDetails) {
-      setKubeId(router.query.KubernetesDetails);
-    }
-  }, [router.query.KubernetesDetails]);
-
-  useEffect(() => {
     const init = async () => {
       const grafana = selectedCluster?.agent?.connection_status?.grafanaEnabled || false;
       const isJaeger = selectedCluster?.cloud_provider === 'jaeger';
       // Grafana embeds a full query/explore surface, so restrict it to users
-      // with write access on this cluster — read-only roles are blocked.
+      // with write access on this cluster — read-only roles get the tab hidden.
+      // Gate on the sub-tab inside Monitoring (same place trace-grouping is
+      // hidden for jaeger): Grafana is not a top-level option, so an
+      // `option.name === 'Grafana'` branch here would never match.
       const canAccessGrafana = grafana && kubeId && hasWriteAccess(kubeId);
       setTabOptions((prevOptions) =>
         prevOptions.map((option) => {
-          if (option.name === 'Grafana') return { ...option, disabled: !canAccessGrafana };
           if (option.name === 'Monitoring') {
             return {
               ...option,
-              tabOptions: option.tabOptions.map((tab) => (tab.id === 'trace-grouping' ? { ...tab, hidden: isJaeger } : tab)),
+              tabOptions: option.tabOptions.map((tab) => {
+                if (tab.id === 'trace-grouping') return { ...tab, hidden: isJaeger };
+                if (tab.id === 'grafana') return { ...tab, hidden: !canAccessGrafana };
+                return tab;
+              }),
             };
           }
           return option;
@@ -630,6 +630,22 @@ const KubernetesDetails = () => {
     }
   };
 
+  // The autoscaler view list is cluster-specific (karpenter exposes Node Pool /
+  // Node Class, cluster-autoscaler exposes Deployment File). Switching clusters
+  // keeps this local state, so a value that was valid on the previous cluster
+  // can survive onto one where it isn't an option — leaving the toggle with
+  // nothing selected while the body still renders the previous cluster's view.
+  useEffect(() => {
+    const validValues = getAutoscalerTabBasedOnAutoscalerType().map((tab) => tab.value);
+    if (validValues.length > 0 && !validValues.includes(scalerRadioTabValue)) {
+      setScalerRadioTabValue(validValues[0]);
+    }
+    // Intentionally keyed on selectedCluster only: this clamps the view when the
+    // cluster (and thus its valid view set) changes. scalerRadioTabValue is read
+    // but must not re-trigger — the user's own selection would fight the clamp.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCluster]);
+
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
     if (!hash || !tabOptions.length) {
@@ -848,13 +864,13 @@ const KubernetesDetails = () => {
                       aggregation_key: podRadioTabValue === '__all__' ? undefined : podRadioTabValue,
                     }}
                     disabledFilters={['subjectType', 'source']}
-                    podAllTabRadio={podRadioTabValue === '__all__' ? 'Error Type' : ''}
+                    showEventTypeColumn={podRadioTabValue === '__all__'}
                   />
                 </>
               )}
               {selectedSubTab === 3 && (
                 <KubernetesEventsTable
-                  podAllTabRadio={selectedSubTab == 3 ? 'Error Type' : ''}
+                  showEventTypeColumn
                   accountId={kubeId}
                   enableTrendChart={false}
                   heading={''}
@@ -915,7 +931,7 @@ const KubernetesDetails = () => {
               )}
               {selectedSubTab === 5 && (
                 <KubernetesEventsTable
-                  podAllTabRadio={selectedSubTab == 5 ? 'Error Type' : ''}
+                  showEventTypeColumn
                   accountId={kubeId}
                   enableTrendChart={false}
                   heading={''}

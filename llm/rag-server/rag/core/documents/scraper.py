@@ -35,6 +35,50 @@ logger = logging.getLogger(__name__)
 lock_dir = "./.locks"
 os.makedirs(lock_dir, exist_ok=True)
 
+# Confluence auth types, mirroring the api-server integration schema
+# (api-server/services/integrations/confluence.go).
+CONFLUENCE_AUTH_CLOUD_API_TOKEN = "cloud_api_token"
+CONFLUENCE_AUTH_DATACENTER_PAT = "datacenter_pat"
+CONFLUENCE_AUTH_DATACENTER_PASSWORD = "datacenter_password"
+
+
+def confluence_auth_type(value):
+    """Normalise a stored auth_type.
+
+    Integrations created before Data Center support have no auth_type at all, so
+    an empty value must resolve to Cloud + Basic — what they already do.
+    """
+    mode = (value or "").strip()
+    if mode in (CONFLUENCE_AUTH_DATACENTER_PAT, CONFLUENCE_AUTH_DATACENTER_PASSWORD):
+        return mode
+    return CONFLUENCE_AUTH_CLOUD_API_TOKEN
+
+
+def build_confluence_client(config):
+    """Construct a Confluence client for the integration's auth mode.
+
+    Data Center personal access tokens authenticate as bearer tokens, which the
+    library sends when given ``token=``; every other mode is HTTP Basic. Cloud
+    serves its API under ``/wiki`` while Data Center serves it beneath whatever
+    context path the instance uses, so the URL is normalised here rather than
+    left to the library's hostname sniff — that sniff misses Cloud sites on
+    custom domains.
+    """
+    host = (config.get("host") or "").strip().rstrip("/")
+    mode = confluence_auth_type(config.get("auth_type"))
+
+    if mode == CONFLUENCE_AUTH_CLOUD_API_TOKEN and not host.endswith("/wiki"):
+        host = f"{host}/wiki"
+
+    if mode == CONFLUENCE_AUTH_DATACENTER_PAT:
+        return Confluence(url=host, token=config.get("token"), cloud=False)
+    return Confluence(
+        url=host,
+        username=config.get("username"),
+        password=config.get("token"),
+        cloud=(mode == CONFLUENCE_AUTH_CLOUD_API_TOKEN),
+    )
+
 
 def fetch_all_pages(confluence, space_key):
     try:
@@ -56,13 +100,19 @@ def fetch_all_pages(confluence, space_key):
         return []
 
 
-def fetch_page_content(confluence, p_id):
+def fetch_page(confluence, p_id):
+    """Fetch a page with its body and links, or None if it cannot be read."""
     try:
-        page = confluence.get_page_by_id(p_id, expand="body.storage")
-        return page["body"]["storage"]["value"]
+        return confluence.get_page_by_id(p_id, expand="body.storage")
     except Exception as e:
         logger.warning(f"Failed to fetch page {p_id}: {e}")
         return None
+
+
+def page_body_html(page):
+    body = page.get("body") or {}
+    storage = body.get("storage") or {}
+    return storage.get("value")
 
 
 def extract_content(content_html):
@@ -72,25 +122,24 @@ def extract_content(content_html):
     return text, soup
 
 
-def get_page_base_url(confluence):
-    url = confluence.url
-    # Normalize the base URL to ensure it correctly ends with /wiki
-    url = url.rstrip("/")  # Remove any trailing slash first
-    wiki = "/wiki"
-    if wiki in url:
-        # If /wiki is present, ensure the url ends with it,
-        # stripping any further path components after the first '/wiki'.
-        # Example: "http://host/path/wiki/extra" becomes "http://host/path/wiki"
-        # Example: "http://host/path/wiki" remains "http://host/path/wiki"
-        url = url.split(wiki, 1)[0] + wiki
-    else:
-        # If /wiki is not present at all, append it.
-        # Example: "http://host/path" becomes "http://host/path/wiki"
-        url += wiki
-    return url
+def confluence_page_url(confluence, page):
+    """Build an absolute page URL from Confluence's own ``_links`` block.
+
+    Confluence reports its base URL in every response, already correct for Cloud
+    (where it includes ``/wiki``) and for Data Center served under a context
+    path. Reconstructing it from the configured host gets Data Center wrong.
+    """
+    links = page.get("_links") or {}
+    webui = links.get("webui") or ""
+    if not webui:
+        return ""
+    base = (links.get("base") or "").rstrip("/")
+    if not base:
+        base = str(getattr(confluence, "url", "") or "").rstrip("/")
+    return f"{base}{webui}"
 
 
-def process_page_batch(page_queue, visited_pages, confluence, space_key):
+def process_page_batch(page_queue, visited_pages, confluence, space_key, stats):
     batch = []
 
     for _ in range(min(Config.embedding_batch_size, len(page_queue))):
@@ -101,18 +150,27 @@ def process_page_batch(page_queue, visited_pages, confluence, space_key):
         logger.info(f"Processing Confluence page ID: {page_id}")
         visited_pages.add(page_id)
 
-        html_content = fetch_page_content(confluence, page_id)
+        page = fetch_page(confluence, page_id)
+        if not page:
+            stats["failed_pages"] += 1
+            continue
+
+        html_content = page_body_html(page)
         if not html_content:
             continue
 
         content, _ = extract_content(html_content)
         if content:
-            url = get_page_base_url(confluence)
-            page_url = f"{url}/spaces/{space_key}/pages/{page_id}"
+            page_url = confluence_page_url(confluence, page)
             batch.append(Document(page_content=content, metadata={"page_id": page_id, "url": page_url}))
 
         # Extract linked pages
-        child_pages = confluence.get_child_pages(page_id)
+        try:
+            child_pages = confluence.get_child_pages(page_id)
+        except Exception as e:
+            logger.warning(f"Failed to list child pages of {page_id}: {e}")
+            stats["failed_pages"] += 1
+            continue
         for child in child_pages:
             child_id = child.get("id")
             if child_id and child_id not in visited_pages:
@@ -121,7 +179,7 @@ def process_page_batch(page_queue, visited_pages, confluence, space_key):
     return batch
 
 
-def collect_confluence_space_documents(confluence, space_key):
+def collect_confluence_space_documents(confluence, space_key, stats):
     """Walk a Confluence space and return all page documents (no embedding).
 
     Embedding is done in a single process_documents call per integration so
@@ -129,25 +187,43 @@ def collect_confluence_space_documents(confluence, space_key):
     """
     visited_pages: set = set()
     all_pages = fetch_all_pages(confluence, space_key)
+    if not all_pages:
+        # A space that yields no pages is either genuinely empty or unreadable
+        # by these credentials. On-premise instances have heterogeneous space
+        # permissions, so this is common and must not pass as a healthy sync.
+        stats["empty_spaces"] += 1
     page_queue = [page["id"] for page in all_pages]
     documents: List[Document] = []
     while page_queue:
-        documents.extend(process_page_batch(page_queue, visited_pages, confluence, space_key))
+        documents.extend(process_page_batch(page_queue, visited_pages, confluence, space_key, stats))
     logging.info(f"Collected {len(documents)} Confluence page documents for space {space_key}")
     return documents
 
 
 def fetch_all_spaces(confluence):
-    try:
-        spaces = confluence.get_all_spaces(start=0, limit=100)
-        if isinstance(spaces, dict) and "results" in spaces and isinstance(spaces["results"], list):
-            return [space["key"] for space in spaces["results"]]
-        else:
+    """List every visible space key, following pagination.
+
+    Enterprise Data Center instances routinely hold more spaces than a single
+    page returns, and a truncated list silently indexes a subset.
+    """
+    space_keys: List[str] = []
+    start = 0
+    limit = 100
+    while True:
+        try:
+            spaces = confluence.get_all_spaces(start=start, limit=limit)
+        except Exception as e:
+            logger.warning(f"Failed to fetch spaces at offset {start}: {e}")
+            break
+        results = spaces.get("results") if isinstance(spaces, dict) else None
+        if not isinstance(results, list):
             logger.warning("Unexpected format for spaces")
-            return []
-    except Exception as e:
-        logger.warning(f"Failed to fetch spaces: {e}")
-        return []
+            break
+        space_keys.extend(space["key"] for space in results if space.get("key"))
+        if len(results) < limit:
+            break
+        start += limit
+    return space_keys
 
 
 def _process_integration(integration, tenant_id, embeddings, trigger_type="system_sync", triggered_by="system"):
@@ -160,17 +236,36 @@ def _process_integration(integration, tenant_id, embeddings, trigger_type="syste
     integration_id = integration["integration_id"]
     collection_name = f"{integration_id}_knowledge_base"
     try:
-        confluence = Confluence(
-            url=config.get("host"),
-            username=config.get("username"),
-            password=config.get("token"),
-        )
+        confluence = build_confluence_client(config)
         space_key = config.get("namespace")
         space_keys = [space_key] if space_key else fetch_all_spaces(confluence)
 
+        stats = {"failed_pages": 0, "empty_spaces": 0}
         documents: List[Document] = []
         for sk in space_keys:
-            documents.extend(collect_confluence_space_documents(confluence, sk))
+            documents.extend(collect_confluence_space_documents(confluence, sk, stats))
+        if stats["failed_pages"] or stats["empty_spaces"]:
+            logger.warning(
+                "Confluence integration %s scraped with gaps: %s unreadable pages, " "%s of %s spaces returned nothing",
+                integration_id,
+                stats["failed_pages"],
+                stats["empty_spaces"],
+                len(space_keys),
+            )
+
+        # Spaces were discovered but not one page could be read. On-premise
+        # instances restrict spaces per-account, so this is the shape a
+        # permissions problem takes — reporting it as a healthy empty load hides
+        # the one fact the operator needs.
+        if space_keys and not documents and stats["empty_spaces"] == len(space_keys):
+            message = (
+                f"None of the {len(space_keys)} visible Confluence spaces returned any pages. "
+                "The credentials can list spaces but cannot read their content — check the "
+                "account's space permissions."
+            )
+            logger.error(f"Confluence integration {integration_id}: {message}")
+            update_integration_kb_load_result(integration_id, "error", error_message=message)
+            return []
 
         document_ids: List[str] = []
         if documents:

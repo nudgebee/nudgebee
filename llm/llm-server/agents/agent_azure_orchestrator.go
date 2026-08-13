@@ -60,6 +60,10 @@ func (a *AzureOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
+// IsWatchCapable: drives action sub-agents whose async outcome completes later,
+// so it may register a background watch.
+func (a *AzureOrchestratorAgent) IsWatchCapable() bool { return true }
+
 func (a *AzureOrchestratorAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }

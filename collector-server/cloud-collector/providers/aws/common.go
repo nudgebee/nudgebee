@@ -76,6 +76,37 @@ func isServiceUnavailableInRegion(err error) bool {
 	return false
 }
 
+// isThrottleError reports whether err is an API-level rate-limit rejection —
+// HTTP 429, or an AWS throttle error code. Unlike the three region-skip guards
+// above, the endpoint here resolved, connected, and answered; it just
+// rate-limited us. That means a 429 slips past isRegionEndpointMissing,
+// isServiceUnavailableInRegion, and isRegionUnreachable and would otherwise
+// surface as a hard fetch error that poisons the whole resources feature sync
+// (connection_status.resources.err) and pages "Feature Sync Errors". Throttling
+// is transient — the AWS SDK has already exhausted its own retries by the time
+// this reaches us, but a later sync cycle succeeds — so the region is skipped
+// this cycle rather than surfaced. Matched by HTTP status via the
+// HTTPStatusCode() interface (satisfied by both smithy-go and aws-sdk
+// ResponseError wrappers) and by the canonical AWS throttle error codes for
+// services that answer with a throttle code but no 429.
+func isThrottleError(err error) bool {
+	var httpStatus interface{ HTTPStatusCode() int }
+	if errors.As(err, &httpStatus) && httpStatus.HTTPStatusCode() == 429 {
+		return true
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "Throttling", "ThrottlingException", "ThrottledException",
+			"TooManyRequestsException", "RequestThrottled", "RequestThrottledException",
+			"RequestLimitExceeded", "ProvisionedThroughputExceededException",
+			"SlowDown", "EC2ThrottledException":
+			return true
+		}
+	}
+	return false
+}
+
 // GetAwsConfigFromAccount creates an AWS config for the given account, handling
 // static credentials, cross-account role assumption, and profile-based auth.
 func GetAwsConfigFromAccount(ctx context.Context, account providers.Account) (aws.Config, error) {
@@ -90,6 +121,14 @@ func getAwsConfigFromAccount(ctx context.Context, account providers.Account) (aw
 
 	opts := []func(*config.LoadOptions) error{
 		config.WithRegion(region),
+		// The collector fans a service across every opted-in region concurrently,
+		// which trips AWS API rate limits (429) — especially in low-quota opt-in
+		// regions like me-central-1/me-south-1. Adaptive mode adds a client-side
+		// rate limiter that backs off proactively instead of hammering until the
+		// default 3 attempts exhaust, and the higher attempt ceiling rides out
+		// brief throttling. Errors that still surface are handled by isThrottleError.
+		config.WithRetryMode(aws.RetryModeAdaptive),
+		config.WithRetryMaxAttempts(5),
 	}
 
 	// Allow AWS profile to be configured via environment variable

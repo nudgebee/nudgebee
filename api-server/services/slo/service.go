@@ -75,42 +75,53 @@ func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.Datab
 		return err
 	}
 
+	// Batch all report INSERTs in a single transaction to avoid per-report
+	// BEGIN/COMMIT round trips. Notifications are deferred until after commit.
+	tx, err := dbms.BeginTx()
+	if err != nil {
+		slog.Error("slo: error starting transaction", "error", err, "configId", config.Id, "accountId", accountId)
+		return err
+	}
+	defer database.LogRollback(tx)
+
+	query = `INSERT INTO slo_report (config_id, gap, error_budget_target, error_budget_measurement, error_budget_burn_rate,
+			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes, error_minutes, error_budget_consumed_ratio,
+			status, bad_events_count, good_events_count, events_count, sli_measurement, tenant_id, cloud_account_id, workload_name, workload_namespace, timestamp)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+			ON CONFLICT (tenant_id, cloud_account_id, config_id, workload_name, workload_namespace, timestamp)
+			DO UPDATE SET gap = EXCLUDED.gap, status = EXCLUDED.status, error_budget_burn_rate = EXCLUDED.error_budget_burn_rate`
+
+	alertingReports := make([]SLOReport, 0)
 	for _, report := range reports {
 		status := "OK"
 		if report.Alert {
 			status = "FIRING"
-		}
-		tx, err := dbms.Db.Begin()
-		if err != nil {
-			slog.Error("slo: error starting transaction", "error", err, "configId", config.Id, "accountId", accountId)
-			return err
+			alertingReports = append(alertingReports, report)
 		}
 		timestamp := timestampToPostgresFormat(report.EndTime)
-		query := `INSERT INTO slo_report (config_id, gap, error_budget_target, error_budget_measurement, error_budget_burn_rate,
-				error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes, error_minutes, error_budget_consumed_ratio, 
-				status, bad_events_count, good_events_count, events_count, sli_measurement, tenant_id, cloud_account_id, workload_name, workload_namespace, timestamp) 
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) 
-				ON CONFLICT (tenant_id, cloud_account_id, config_id, workload_name, workload_namespace, timestamp) 
-				DO UPDATE SET gap = EXCLUDED.gap, status = EXCLUDED.status, error_budget_burn_rate = EXCLUDED.error_budget_burn_rate`
 		_, err = tx.Exec(query, config.Id, report.Gap, report.ErrorBudgetTarget, report.ErrorBudgetMeasurement, report.ErrorBudgetBurnRate, report.ErrorBudgetBurnRateThreshold,
 			report.ErrorBudgetMinutes, report.ErrorBudgetRemainingMinutes, report.ErrorMinutes, report.ErrorBudgetConsumedRatio, status, report.BadEventsCount, report.GoodEventsCount, report.EventsCount,
 			report.SLIMeasurement, config.TenantId, config.CloudAccountId, report.Workload, report.Namespace, timestamp)
 		if err != nil {
 			return err
 		}
-		err = tx.Commit()
-		if err != nil {
-			slog.Error("slo: error committing transaction", "error", err, "configId", config.Id, "accountId", accountId)
+	}
+
+	if err = tx.Commit(); err != nil {
+		slog.Error("slo: error committing transaction", "error", err, "configId", config.Id, "accountId", accountId)
+		return err
+	}
+
+	for _, report := range alertingReports {
+		if err := triggerNotification(config, report, accountName); err != nil {
+			slog.Error("slo: error triggering notification", "error", err, "configId", config.Id, "accountId", accountId)
 		}
-		if report.Alert {
-			err = triggerNotification(config, report, accountName)
-			if err != nil {
-				slog.Error("slo: error triggering notification", "error", err, "configId", config.Id, "accountId", accountId)
-			}
-			err = GenerateSLOEvent(dbms, config, accountName)
-			if err != nil {
-				slog.Error("slo: error generating event", "error", err, "configId", config.Id, "accountId", accountId)
-			}
+	}
+	// GenerateSLOEvent queries the latest FIRING report by config/workload — it
+	// does not use per-report data, so call it once after all reports are committed.
+	if len(alertingReports) > 0 {
+		if err := GenerateSLOEvent(dbms, config, accountName); err != nil {
+			slog.Error("slo: error generating event", "error", err, "configId", config.Id, "accountId", accountId)
 		}
 	}
 	return nil
@@ -164,19 +175,14 @@ func executeSlo(config DBSLOConfig, accountId string) ([]SLOReport, error) {
 	if !ok || dataMap["data"] == nil {
 		return nil, nil
 	}
-	reports := make([]SLOReport, 0)
-	sloReports := dataMap["data"]
-	for _, m := range sloReports.([]any) {
-		jsonData, err := common.MarshalJson(m)
-		if err != nil {
-			continue
-		}
-
-		var sloReport SLOReport
-		if err := common.UnmarshalJson(jsonData, &sloReport); err != nil {
-			continue
-		}
-		reports = append(reports, sloReport)
+	// Marshal the entire array once instead of per-item marshal+unmarshal.
+	jsonData, err := common.MarshalJson(dataMap["data"])
+	if err != nil {
+		return nil, fmt.Errorf("slo: failed to marshal relay reports: %w", err)
+	}
+	var reports []SLOReport
+	if err := common.UnmarshalJson(jsonData, &reports); err != nil {
+		return nil, fmt.Errorf("slo: failed to unmarshal relay reports: %w", err)
 	}
 	return reports, nil
 }

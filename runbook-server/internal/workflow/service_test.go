@@ -1548,6 +1548,70 @@ func TestGetWorkflowVersion(t *testing.T) {
 	})
 }
 
+func TestPublishWorkflowNoChangeGuard(t *testing.T) {
+	sc := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
+	liveID := "v-live"
+	liveNum := 3
+
+	t.Run("Identical draft is rejected without creating a version", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-1").Return(&model.Workflow{
+			ID:                   "wf-1",
+			LiveVersionID:        &liveID,
+			LiveVersionNumber:    &liveNum,
+			DraftDiffersFromLive: false,
+		}, nil)
+
+		_, err := service.PublishWorkflow(sc, "test-account", "wf-1", nil, nil, true, model.WorkflowStatusPaused)
+		assert.Error(t, err)
+		var commonErr common.Error
+		assert.ErrorAs(t, err, &commonErr)
+		assert.Equal(t, http.StatusBadRequest, commonErr.Code)
+		assert.Contains(t, err.Error(), "identical to live version v3")
+		mockStore.AssertNotCalled(t, "PublishVersion")
+		mockStore.AssertNotCalled(t, "SetLiveVersion")
+	})
+
+	t.Run("Changed draft publishes", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-1").Return(&model.Workflow{
+			ID:                   "wf-1",
+			LiveVersionID:        &liveID,
+			LiveVersionNumber:    &liveNum,
+			DraftDiffersFromLive: true,
+		}, nil)
+		expected := &model.WorkflowVersion{ID: "v-new", WorkflowID: "wf-1", VersionNumber: 4, Source: model.WorkflowVersionSourcePublish, Status: model.WorkflowStatusPaused}
+		mockStore.On("PublishVersion", mock.Anything, "wf-1", mock.Anything, model.WorkflowVersionSourcePublish, (*string)(nil), (*string)(nil), (*int)(nil), model.WorkflowStatusPaused).Return(expected, nil)
+
+		// setLive=false keeps the test focused on the guard (no SetLiveVersion /
+		// trigger re-registration path).
+		got, err := service.PublishWorkflow(sc, "test-account", "wf-1", nil, nil, false, model.WorkflowStatusPaused)
+		assert.NoError(t, err)
+		assert.Equal(t, 4, got.VersionNumber)
+		mockStore.AssertExpectations(t)
+	})
+
+	t.Run("First publish without a live version is allowed", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		// Even with DraftDiffersFromLive false the guard must not fire when no
+		// live version exists — the guard is keyed on LiveVersionID.
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-new").Return(&model.Workflow{
+			ID:                   "wf-new",
+			DraftDiffersFromLive: false,
+		}, nil)
+		expected := &model.WorkflowVersion{ID: "v-1", WorkflowID: "wf-new", VersionNumber: 1, Source: model.WorkflowVersionSourcePublish, Status: model.WorkflowStatusPaused}
+		mockStore.On("PublishVersion", mock.Anything, "wf-new", mock.Anything, model.WorkflowVersionSourcePublish, (*string)(nil), (*string)(nil), (*int)(nil), model.WorkflowStatusPaused).Return(expected, nil)
+
+		got, err := service.PublishWorkflow(sc, "test-account", "wf-new", nil, nil, false, model.WorkflowStatusPaused)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, got.VersionNumber)
+		mockStore.AssertExpectations(t)
+	})
+}
+
 func TestDeleteWorkflowVersion(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
 	liveID := "v-live"

@@ -1194,7 +1194,20 @@ func getGoogleAILLM(provider, modelName, agentName string, appendAgentName bool,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
-	llm, err := googleai.New(ctx, googleai.WithAPIKey(token), googleai.WithDefaultModel(modelName))
+
+	// When an endpoint is configured for the googleai provider, route Gemini
+	// traffic through the NB AI Gateway (dogfood) instead of calling Google
+	// directly. Empty endpoint = direct Google, the default behavior. The NB
+	// token in `token` is sent in the API-key slot; the gateway swaps in the
+	// real Google key. The caching helper must resolve the SAME endpoint + token
+	// (see llm_common.go / llm_cache.go) or create-vs-reference keys diverge.
+	opts := []googleai.Option{googleai.WithAPIKey(token), googleai.WithDefaultModel(modelName)}
+	if endpoint := getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res); endpoint != "" {
+		opts = append(opts, googleai.WithBaseURL(endpoint))
+		slog.Debug("Routing Google AI traffic through gateway endpoint", "endpoint", endpoint, "agentName", agentName)
+	}
+
+	llm, err := googleai.New(ctx, opts...)
 	if err != nil {
 		slog.Error("Failed to create Google AI LLM", "error", err, "modelName", modelName)
 		return nil, err
@@ -1850,7 +1863,12 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 	if result.MaxContext > 0 {
 		contextSource = "db-config"
 	}
-	slog.Info("LLM config resolution complete",
+	// ctx.GetLogger() carries trace_id/span_id; ctx is nil for a few callers.
+	resolutionLogger := slog.Default()
+	if ctx != nil {
+		resolutionLogger = ctx.GetLogger()
+	}
+	resolutionLogger.Info("LLM config resolution complete",
 		"duration", time.Since(t0).String(),
 		"provider", result.Provider,
 		"model", result.Model,

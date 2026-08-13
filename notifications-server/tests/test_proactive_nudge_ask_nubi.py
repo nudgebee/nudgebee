@@ -55,13 +55,19 @@ def _params(accounts: Dict[str, str]) -> ProactiveNudgeParams:
     )
 
 
-def _slack_ask_nubi_url(blocks: List[Dict[str, Any]]) -> str:
-    for b in blocks:
-        for e in b.get("elements", []) or []:
-            text = e.get("text", {})
-            if isinstance(text, dict) and text.get("text") == "Ask Nubi":
-                return e["url"]
-    raise AssertionError("Ask Nubi button not found in Slack blocks")
+def _slack_ask_nubi_url(msg: Dict[str, Any]) -> str:
+    for block in msg.get("blocks", []):
+        if block.get("type") != "actions":
+            continue
+        for el in block.get("elements", []):
+            if el.get("text", {}).get("text") == "Ask Nubi":
+                return el["url"]
+    # footer CTAs ride legacy attachments (plain-string button text)
+    for a in msg.get("attachments", []):
+        for el in a.get("actions", []) or []:
+            if el.get("text") == "Ask Nubi":
+                return el["url"]
+    return ""
 
 
 def _teams_ask_nubi_url(card: Dict[str, Any]) -> str:
@@ -104,7 +110,7 @@ def test_helper_omits_account_when_multiple():
 
 def test_slack_button_links_to_nubi_scoped():
     out = get_recommendation_proactive_nudge_message_template(_params({"acc-1": "prod-aws"}))
-    url = _slack_ask_nubi_url(out["blocks"])
+    url = _slack_ask_nubi_url(out)
     assert url == "https://app/ask-nudgebee?utm=slack&accountId=acc-1"
 
 
@@ -125,6 +131,6 @@ def test_no_channel_links_to_dead_chat_page():
     slack = get_recommendation_proactive_nudge_message_template(params)
     teams = get_teams_recommendation_proactive_nudge_template(params)
     gchat = get_gchat_recommendation_proactive_nudge_template(params)
-    assert "/chat" not in _slack_ask_nubi_url(slack["blocks"])
+    assert "/chat" not in _slack_ask_nubi_url(slack)
     assert "/chat" not in _teams_ask_nubi_url(teams)
     assert "/chat" not in _gchat_ask_nubi_url(gchat["text"])

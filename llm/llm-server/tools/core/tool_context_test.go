@@ -31,3 +31,26 @@ func TestNBQueryConfig_CurrentClusterHelpers(t *testing.T) {
 		t.Fatalf("MergeFrom: expected existing values preserved, got %q / %q", dst2.CurrentCluster, dst2.CurrentClusterId)
 	}
 }
+
+// TestNBQueryConfig_LogProviderOverride guards the same contract for the per-request
+// log-provider override: MergeFrom is what carries config into a sub-agent executor
+// resumed from saved state (executor_planner.go) and into follow-up turns, so a field
+// missing from it is silently dropped on those paths.
+func TestNBQueryConfig_LogProviderOverride(t *testing.T) {
+	if (NBQueryConfig{LogProviderOverride: "k8s"}).IsEmpty() {
+		t.Fatal("IsEmpty: config with LogProviderOverride should not be empty")
+	}
+
+	dst := NBQueryConfig{}
+	dst.MergeFrom(NBQueryConfig{LogProviderOverride: "k8s"})
+	if dst.LogProviderOverride != "k8s" {
+		t.Fatalf("MergeFrom: expected override copied, got %q", dst.LogProviderOverride)
+	}
+
+	// An override set on this request wins over the one carried in from src.
+	dst2 := NBQueryConfig{LogProviderOverride: "loki"}
+	dst2.MergeFrom(NBQueryConfig{LogProviderOverride: "k8s"})
+	if dst2.LogProviderOverride != "loki" {
+		t.Fatalf("MergeFrom: expected existing override preserved, got %q", dst2.LogProviderOverride)
+	}
+}

@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"nudgebee/llm/agents"
 	"nudgebee/llm/common"
@@ -23,7 +24,7 @@ func TestEventInvestigationAsync_Test1(t *testing.T) {
 	data, err := json.Marshal(request)
 	assert.Nil(t, err)
 	assert.NotNil(t, data)
-	err = processTroubleshootingEventFromMq(data)
+	err = processTroubleshootingEventFromMq(context.Background(), data)
 	assert.Nil(t, err)
 
 	dbManager, err := common.GetDatabaseManager(common.Metastore)

@@ -37,8 +37,14 @@ func baselineRules() []rule {
 		{"private-key-header", regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY-----`)},
 
 		// GitHub personal access tokens — gh[pousr]_ prefix is reserved by
-		// GitHub for tokens; will not collide with normal text.
-		{"github-pat", regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{36,251}\b`)},
+		// GitHub for tokens; will not collide with normal text. Body is an
+		// open-ended `{36,}` minimum, not a capped range: a `{36,N}` cap plus
+		// the trailing `\b` would silently MISS any token longer than N (the
+		// `\b` can't match between two word chars), and GitHub documents that
+		// token lengths may change. The reserved prefix makes false positives
+		// impossible, so no upper bound is needed. (Mirrors the EE
+		// github-fine-grained-pat rule.)
+		{"github-pat", regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{36,}\b`)},
 
 		// OpenAI API key — sk- or sk-proj- prefix, anchored length.
 		{"openai-api-key", regexp.MustCompile(`\bsk-(?:proj-)?[A-Za-z0-9_\-]{32,}\b`)},

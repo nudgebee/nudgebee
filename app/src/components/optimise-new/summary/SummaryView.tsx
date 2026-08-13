@@ -90,8 +90,8 @@ const severityLabel = (severity: string) => {
 
 // A single labelled filter facet: caption label tightly coupled to its controls.
 // Facets are separated from each other by whitespace, not divider rules.
-const FilterFacet = ({ label, children }: { label: string; children: ReactNode }) => (
-  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+const FilterFacet = ({ id, label, children }: { id?: string; label: string; children: ReactNode }) => (
+  <Box id={id} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
     <Typography sx={{ fontSize: ds.text.caption, fontWeight: ds.weight.medium, color: ds.gray[500], whiteSpace: 'nowrap' }}>{label}</Typography>
     <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>{children}</Box>
   </Box>
@@ -133,6 +133,8 @@ const LoadingSkeleton = () => (
 
 // ─── Main component ────────────────────────────────────────────────────────
 
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 const SummaryView = () => {
   const { nubiIconUrl, assistantName } = useTenantBranding();
 
@@ -167,6 +169,9 @@ const SummaryView = () => {
   const [nubiQuery, setNubiQuery] = useState('');
   const [nubiAccountId, setNubiAccountId] = useState('');
   const [nubiConversationId, setNubiConversationId] = useState('');
+  // Bumped on every "Ask Nubi" click so the sidebar re-expands even when it's already visible
+  // (user collapsed it, then re-asked on the same or a different entry).
+  const [nubiOpenSignal, setNubiOpenSignal] = useState(0);
 
   // ── Handlers ──
   const handleOpenResource = useCallback((id: string) => {
@@ -213,6 +218,7 @@ const SummaryView = () => {
       setNubiAccountId(rec.account_id || '');
       setNubiConversationId(`recom_${rec.id}`);
       setNubiSidebarVisible(true);
+      setNubiOpenSignal((n) => n + 1);
     },
     [accounts]
   );
@@ -249,7 +255,7 @@ const SummaryView = () => {
   const accountOptions = useMemo(
     () =>
       Object.entries(accounts)
-        .map(([id, a]) => ({ value: id, label: a.account_name }))
+        .map(([id, a]) => ({ value: id, label: a.account_name, group: a.cloud_provider || 'Other' }))
         .sort((a, b) => a.label.localeCompare(b.label)),
     [accounts]
   );
@@ -294,6 +300,7 @@ const SummaryView = () => {
       <Box sx={{ flex: 1, minWidth: 0 }}>
         {/* Headline bar — KPI focus */}
         <Card
+          id='summary-savings-card'
           size='sm'
           sx={{
             display: 'flex',
@@ -336,7 +343,7 @@ const SummaryView = () => {
         >
           {/* Filter facets */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[4], flexWrap: 'wrap' }}>
-            <FilterFacet label='Category'>
+            <FilterFacet id='summary-filter-category' label='Category'>
               <Chip size='sm' tone='neutral' pressed={categoryFilter === null} onClick={() => setCategoryFilter(null)}>
                 All
               </Chip>
@@ -353,7 +360,7 @@ const SummaryView = () => {
               ))}
             </FilterFacet>
 
-            <FilterFacet label='Provider'>
+            <FilterFacet id='summary-filter-provider' label='Provider'>
               <Chip size='sm' tone='neutral' pressed={providerFilter === null} onClick={() => setProviderFilter(null)}>
                 All
               </Chip>
@@ -375,6 +382,8 @@ const SummaryView = () => {
               id='account-filter-select'
               label='Account'
               placeholder='All accounts'
+              grouped
+              groupIcon={renderAccountGroupIcon}
               options={accountOptions}
               value={accountOptions.find((opt) => opt.value === accountFilter) ?? null}
               onSelect={(_: unknown, opt: { value: string } | null) => setAccountFilter(opt?.value || null)}
@@ -507,6 +516,7 @@ const SummaryView = () => {
                     items={sortMenuItems}
                   />
                   <ToggleGroup
+                    id='summary-view-toggle'
                     selection='single'
                     size='sm'
                     value={viewMode}
@@ -687,6 +697,7 @@ const SummaryView = () => {
                     setNubiAccountId(firstAccountId);
                     setNubiConversationId('optimize_summary_overview');
                     setNubiSidebarVisible(true);
+                    setNubiOpenSignal((n) => n + 1);
                   }}
                 >
                   Ask {assistantName || 'Nubi'} about any of this →
@@ -724,6 +735,7 @@ const SummaryView = () => {
       <NubiChatSidebar
         isVisible={nubiSidebarVisible}
         onClose={() => setNubiSidebarVisible(false)}
+        openSignal={nubiOpenSignal}
         accountId={nubiAccountId}
         query={nubiQuery}
         context={{ type: 'general', data: { conversationId: nubiConversationId } }}

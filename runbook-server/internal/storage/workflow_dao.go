@@ -385,11 +385,17 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	var draftVersionID sql.NullString
 	var draftVersionNumber sql.NullInt64
 	var draftVersionName sql.NullString
+	var draftDiffersFromLive bool
 
+	// draft_differs_from_live: JSONB semantic comparison (key order irrelevant)
+	// between the draft and the live snapshot. IS DISTINCT FROM makes a missing
+	// live version (lv.definition NULL) count as "differs", so never-published
+	// workflows stay publishable.
 	query := `
 		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
-		       w.draft_version_id::text, dv.version_number, dv.name
+		       w.draft_version_id::text, dv.version_number, dv.name,
+		       (w.definition IS DISTINCT FROM lv.definition) AS draft_differs_from_live
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
 		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
@@ -401,6 +407,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 		&draftVersionID, &draftVersionNumber, &draftVersionName,
+		&draftDiffersFromLive,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve workflow: %w", err)
@@ -441,6 +448,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	applyVersionRefs(&wf,
 		liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
 		draftVersionID, draftVersionNumber, draftVersionName)
+	wf.DraftDiffersFromLive = draftDiffersFromLive
 
 	return &wf, nil
 }

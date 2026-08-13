@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import recommendationApi from '@api1/recommendation';
 import apiHome from '@api1/home';
 import apiCloudAccount from '@api1/cloud-account';
-import { NON_SECURITY_CATEGORIES, DEFAULT_STATUS } from '../utils';
+import { NON_SECURITY_CATEGORIES, DEFAULT_STATUS, UPGRADE_PLANNER_RULES } from '../utils';
 import { getBudgetExpectedMonthlyExpense } from '@lib/budget';
 import { transformApiToInsight } from './transformRecommendation';
 import type { CurrencyCostSummary, AccountCost } from './AccountClusterPane';
@@ -82,7 +82,13 @@ export function useSummaryData() {
 
     (async () => {
       try {
-        const listArgs = { category: NON_SECURITY_CATEGORIES as any, status: DEFAULT_STATUS, orderAsc: false, limit: 100 };
+        const listArgs = {
+          category: NON_SECURITY_CATEGORIES as any,
+          excludeRuleName: UPGRADE_PLANNER_RULES,
+          status: DEFAULT_STATUS,
+          orderAsc: false,
+          limit: 100,
+        };
         const [urgentResp, impactResp]: [any, any] = await Promise.all([
           recommendationApi.getOptimisationSummaryRecommendations({ ...listArgs, orderBy: 'finops_score' }),
           recommendationApi.getOptimisationSummaryRecommendations({ ...listArgs, orderBy: 'estimated_savings' }),
@@ -121,6 +127,7 @@ export function useSummaryData() {
         const rows: any = await recommendationApi.getK8sRecommendationSummaryByRuleName({
           accountId: '',
           category: NON_SECURITY_CATEGORIES as any,
+          excludeRuleName: UPGRADE_PLANNER_RULES,
           status: DEFAULT_STATUS,
         });
         if (cancelled) return;

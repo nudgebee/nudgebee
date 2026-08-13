@@ -6,9 +6,10 @@ import "fmt"
 // must be one of these (or empty = the addressed provider).
 var knownProviders = map[string]bool{"anthropic": true, "openai": true, "gemini": true}
 
-// Validate checks a rule set for P1 correctness. The key invariant is
-// endpoint-scoping: a rule's target (and every fallback) must stay in the same
-// provider family as the match — cross-provider routing needs translation (P2).
+// Validate checks a rule set. A target (or fallback) provider may differ from the
+// addressed/match provider — that is P2 cross-provider substitution, where the proxy
+// translates the request into the target's schema and the response back to the
+// client's shape. The only provider constraint is that a set provider is a known one.
 func Validate(rules []Rule) error {
 	seen := map[string]bool{}
 	for i := range rules {
@@ -28,36 +29,39 @@ func Validate(rules []Rule) error {
 			return fmt.Errorf("routing rule %q: invalid affinity %q (want %q or %q)", r.ID, r.Target.Affinity, AffinitySingle, AffinityPrefixHash)
 		}
 
-		// Endpoint-scoping (P1): target/fallback provider must match the family.
-		fam := r.Match.Provider
-		if err := sameFamily(r.ID, "target", r.Target.Provider, fam); err != nil {
+		if err := knownProviderOrEmpty(r.ID, "target", r.Target.Provider); err != nil {
 			return err
 		}
 		for _, fb := range r.Target.Fallbacks {
-			if err := sameFamily(r.ID, "fallback", fb.Provider, fam); err != nil {
+			if err := knownProviderOrEmpty(r.ID, "fallback", fb.Provider); err != nil {
 				return err
 			}
+		}
+
+		// A cross-provider substitution needs an explicit target model: the client's
+		// native model name won't exist on the target (e.g. claude-opus-4-8 on gemini),
+		// so an empty model would forward a not-found id. Blocks don't route, so skip.
+		if !r.Target.Deny && r.Target.Provider != "" && r.Target.Provider != r.Match.Provider && r.Target.Model == "" {
+			return fmt.Errorf("routing rule %q: cross-provider target %q requires target.model (the requested model won't exist on the target provider)", r.ID, r.Target.Provider)
+		}
+
+		// A deprecation shield rewrites a retired model to a replacement — that
+		// replacement model is required. A block (deny) doesn't route, so it's exempt.
+		if !r.Target.Deny && r.Target.Deprecated && r.Target.Model == "" {
+			return fmt.Errorf("routing rule %q: a deprecation needs target.model (the replacement to rewrite to)", r.ID)
 		}
 	}
 	return nil
 }
 
-// sameFamily enforces that a target/fallback provider is empty (= addressed) or
-// equal to the match provider. When the match provider is "" (any endpoint), a
-// non-empty target provider would pin one family across all endpoints — also
-// disallowed in P1 (it can't be cross-family-safe for every lane).
-func sameFamily(ruleID, kind, targetProvider, matchProvider string) error {
-	if targetProvider == "" {
-		return nil // keep the addressed provider — always faithful
+// knownProviderOrEmpty enforces that a target/fallback provider is empty (= keep the
+// addressed provider) or one of the known providers.
+func knownProviderOrEmpty(ruleID, kind, provider string) error {
+	if provider == "" {
+		return nil // keep the addressed provider
 	}
-	if !knownProviders[targetProvider] {
-		return fmt.Errorf("routing rule %q: unknown %s.provider %q", ruleID, kind, targetProvider)
-	}
-	if matchProvider == "" {
-		return fmt.Errorf("routing rule %q: %s.provider %q set but match.provider is any — pin match.provider to the same family (cross-provider routing is P2)", ruleID, kind, targetProvider)
-	}
-	if targetProvider != matchProvider {
-		return fmt.Errorf("routing rule %q: cross-provider routing %s→%s requires translation (P2); P1 %s.provider must equal match.provider or be empty", ruleID, matchProvider, targetProvider, kind)
+	if !knownProviders[provider] {
+		return fmt.Errorf("routing rule %q: unknown %s.provider %q", ruleID, kind, provider)
 	}
 	return nil
 }

@@ -289,6 +289,12 @@ tailwind.config = {
             <option value="8">8</option>
           </select>
         </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Log Backend</label>
+          <label class="flex items-center gap-2 text-[12px] text-gray-600 py-2 cursor-pointer" title="Pin the log backend to kubectl for this run (sends log_provider_override=k8s to the llm-server)">
+            <input type="checkbox" id="bm-force-k8s-logs" class="rounded border-gray-300 accent-amber-500"> Force kubectl logs
+          </label>
+        </div>
       </div>
       <div id="bm-test-selector" class="hidden mb-4">
         <div class="flex items-center justify-between mb-2">
@@ -2238,6 +2244,7 @@ function bmPayload() {
     tag_filter: tags || null,
     parallel_workers: parseInt($('bm-parallel-workers').value) || 1,
     run_name: $('bm-run-name').value.trim() || null,
+    log_provider_override: $('bm-force-k8s-logs')?.checked ? 'k8s' : null,
   };
   // Tenant override is honoured only for super_admin (the only role that
   // can switch tenants); the server validates and ignores it for others.

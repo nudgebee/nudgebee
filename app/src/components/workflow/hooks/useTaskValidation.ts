@@ -1,6 +1,62 @@
 import { useMemo } from 'react';
 import { isCronValid } from 'src/utils/common';
 import { validateDateTemplate } from 'src/utils/templateValidation';
+import { SUBTASK_BLOCKED_TYPES } from '../constants/subtaskConstants';
+
+// Validate a container node's nested sub-task list ({id, type, params} entries)
+// shared by core.foreach and core.group. Error keys use the `tasks[i].<field>`
+// prefix the SubTasksEditor slices per accordion; nested param errors recurse
+// through validateTaskData. `containerLabel` shapes the blocked-type message
+// (e.g. "foreach loop" / "group").
+const validateSubTasks = (
+  subTasks: any[],
+  blockedTypes: Set<string>,
+  containerLabel: string,
+  validationRules: any
+): { errors: Record<string, string>; isValid: boolean } => {
+  const errors: Record<string, string> = {};
+  let isValid = true;
+
+  if (subTasks.length === 0) {
+    errors['tasks'] = 'At least one sub-task is required';
+    isValid = false;
+  }
+
+  const seenIds = new Set<string>();
+  subTasks.forEach((sub: any, i: number) => {
+    const id = typeof sub?.id === 'string' ? sub.id.trim() : '';
+    if (!id) {
+      errors[`tasks[${i}].id`] = 'Sub-task name is required';
+      isValid = false;
+    } else if (seenIds.has(id)) {
+      errors[`tasks[${i}].id`] = `Duplicate sub-task name "${id}"`;
+      isValid = false;
+    } else {
+      seenIds.add(id);
+    }
+
+    if (!sub?.type) {
+      errors[`tasks[${i}].type`] = 'Sub-task action is required';
+      isValid = false;
+      return;
+    }
+    if (blockedTypes.has(sub.type)) {
+      errors[`tasks[${i}].type`] = `"${sub.type}" cannot run inside a ${containerLabel}`;
+      isValid = false;
+      return;
+    }
+
+    const nested = validateTaskData(sub.type, sub.params ?? {}, validationRules);
+    if (!nested.isValid) {
+      for (const [key, message] of Object.entries(nested.errors)) {
+        errors[`tasks[${i}].params.${key}`] = message as string;
+      }
+      isValid = false;
+    }
+  });
+
+  return { errors, isValid };
+};
 
 // Validation function for trigger configurations - validates required fields only
 export const validateTriggerData = (triggerType: string, params: any): { errors: Record<string, string>; isValid: boolean } => {
@@ -272,6 +328,16 @@ export const validateTaskData = (actionType: string, data: any, validationRules:
         warnings[fieldName] = [warnings[fieldName], ...res.warnings].filter(Boolean).join(' ');
       }
     }
+  }
+
+  // Foreach / group: validate the nested sub-task list so the node warning icon
+  // and save-gating fire without opening the tasks editor.
+  if (actionType === 'core.foreach' || actionType === 'core.group') {
+    const subTasks: any[] = Array.isArray(data?.tasks) ? data.tasks : [];
+    const containerLabel = actionType === 'core.foreach' ? 'foreach loop' : 'group';
+    const sub = validateSubTasks(subTasks, SUBTASK_BLOCKED_TYPES, containerLabel, validationRules);
+    Object.assign(errors, sub.errors);
+    if (!sub.isValid) isValid = false;
   }
 
   return { errors, warnings, isValid };

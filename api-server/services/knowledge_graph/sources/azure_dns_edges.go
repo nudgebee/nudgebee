@@ -71,5 +71,5 @@ func fetchPrivateDNSVNetLinks(reqCtx *security.RequestContext, accountID string,
 		logger.Warn("failed to fetch private DNS vnet links via CLI", "account_id", accountID, "error", err)
 		return nil
 	}
-	return parsePrivateDNSVNetLinks(extractCLIOutput(resp))
+	return parsePrivateDNSVNetLinks(ExtractCLIOutput(resp))
 }

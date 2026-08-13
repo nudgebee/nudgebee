@@ -49,6 +49,33 @@ func isWatchToolName(name string) bool {
 	return false
 }
 
+// WatchCapable is implemented by agents that take async mutating actions worth a
+// background watch. Default is OFF (read-only); only such agents opt in.
+type WatchCapable interface {
+	IsWatchCapable() bool
+}
+
+// agentWatchCapable reports whether watch tools + the async prompt wire for this
+// agent. False unless it implements WatchCapable returning true.
+func agentWatchCapable(agent NBAgent) bool {
+	if agent == nil {
+		return false
+	}
+	if w, ok := agent.(WatchCapable); ok {
+		return w.IsWatchCapable()
+	}
+	return false
+}
+
+// asyncCompletionRules returns the async prompt body for a watch-capable agent, or
+// "" for read-only agents (and when the flag is off).
+func asyncCompletionRules(agent NBAgent) string {
+	if !agentWatchCapable(agent) {
+		return ""
+	}
+	return WatchAsyncCompletionRulesPrompt()
+}
+
 // DefaultToolsOptOut lets an agent decline the planner's automatic default-tool injection
 // (shell_execute, load_skills). Implement and return true for agents whose tool list is
 // already curated by their parent — most importantly the dynamic delegate sub-agent, where
@@ -103,12 +130,10 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 		})
 	}
 
-	// 3. Inject watch tools globally when enabled. Mirrors the shell_execute pattern: any
-	// agent that takes async write actions (rollouts, jobs, helm/argocd/cert-manager,
-	// cloud-provider stack ops, github workflows, etc.) gets the same uniform watch
-	// capability, so we don't have to wire it per-agent. Same opt-out semantics as shell.
+	// 3. Inject watch tools only for watch-capable agents (read-only investigators
+	// would just register spurious watches). Still honours skipInjection.
 	if config.Config.WatchEnabled {
-		if !skipInjection {
+		if !skipInjection && agentWatchCapable(agent) {
 			for _, watchToolName := range watchToolNames {
 				already := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
 					return strings.EqualFold(t.Name(), watchToolName)
@@ -170,6 +195,19 @@ func HasShellTool(toolList []toolcore.NBTool) bool {
 func HasDelegateAgentTool(toolList []toolcore.NBTool) bool {
 	for _, t := range toolList {
 		if strings.EqualFold(t.Name(), "delegate_agent") {
+			return true
+		}
+	}
+	return false
+}
+
+// HasServiceDependencyGraphTool returns true if the service_dependency_graph tool
+// (SDG) is present in the tool list. Used by the critiquer to short-circuit its
+// Rule 8 dependency-grounding contract when the agent doesn't hold SDG — no point
+// asking for SDG evidence from an agent that can't invoke SDG.
+func HasServiceDependencyGraphTool(toolList []toolcore.NBTool) bool {
+	for _, t := range toolList {
+		if strings.EqualFold(t.Name(), "service_dependency_graph") {
 			return true
 		}
 	}
@@ -263,6 +301,16 @@ var (
 
 	// retrievalPrefixRe — plain read-only/discovery verbs → Query.
 	retrievalPrefixRe = regexp.MustCompile(`(?i)^(get|list|show|display|fetch|count|how many|describe|whoami|version)\b`)
+
+	// memoryRequestRe — explicit "store this for later" / preference-setting
+	// intent. Such a turn ("remember our prod DB is 10.14.128.5", "from now on
+	// prefer the postgres agent") is neither an investigation nor notebook-bearing,
+	// yet the memory_extractor treats it as a HIGH-VALUE user_preference fact — so
+	// it must NOT be gated out of extraction. Mirrors the imperative phrasing the
+	// extractor prompt keys on ("remember …", "always …", "from now on …",
+	// "prefer …", "default to …"). "always"/"never" are paired with an action verb
+	// to avoid firing on plain state descriptions ("pod is always running").
+	memoryRequestRe = regexp.MustCompile(`(?i)(\bremember\b|\bkeep in mind\b|\bfrom now on\b|\bgoing forward\b|\bfor (future|the future|later) reference\b|\bmake a note\b|\bnote that\b|\bdefault to\b|\bprefer\b|\b(always|never) (use|prefer|apply|route|pick|choose|default|treat|assume|include|skip|avoid)\b)`)
 )
 
 // IsInvestigationRequestTask reports whether a query is a troubleshooting /
@@ -323,6 +371,17 @@ func IsInvestigationRequestTask(input string) bool {
 	}
 
 	return false
+}
+
+// IsExplicitMemoryRequest reports whether the user is explicitly asking the
+// assistant to remember something or declaring a durable preference/routing
+// rule (e.g. "remember our prod DB is 10.14.128.5", "from now on prefer the
+// postgres agent"). These turns are not investigations and build no notebook,
+// but they are exactly what the memory_extractor is meant to capture as
+// user_preference facts, so callers gating memory extraction must treat them as
+// worth remembering.
+func IsExplicitMemoryRequest(input string) bool {
+	return memoryRequestRe.MatchString(strings.TrimSpace(input))
 }
 
 // IsConversationalQuery checks if the input is a conversational query

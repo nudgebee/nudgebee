@@ -145,7 +145,7 @@ func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId st
 			},
 		},
 	}
-	if pubErr := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message); pubErr != nil {
+	if pubErr := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext())); pubErr != nil {
 		ctx.GetLogger().Error("invitation: error publishing message to queue", "error", pubErr)
 	}
 }

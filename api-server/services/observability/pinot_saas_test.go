@@ -99,9 +99,11 @@ func TestPinotSaas_GetDynamicLabelMapping_Integration(t *testing.T) {
 	_, hasNs := m["namespace"]
 	_, hasPod := m["pod"]
 	_, hasContainer := m["container"]
+	_, hasApp := m["app"]
 	assert.False(t, hasNs, "namespace should be absent when integration stores empty string")
 	assert.False(t, hasPod, "pod should be absent when integration stores empty string")
 	assert.False(t, hasContainer, "container should be absent when integration stores empty string")
+	assert.False(t, hasApp, "app should be absent when the integration has no pinot_app_col row (AppCol has no forced default — see PinotConfig.AppCol)")
 }
 
 // TestPinotSaas_GetMergedLabelMapping_DynamicWins_Integration is the core
@@ -119,12 +121,16 @@ func TestPinotSaas_GetMergedLabelMapping_DynamicWins_Integration(t *testing.T) {
 	require.NoError(t, err)
 	snapshotTenantLogLabels(t, dbMgr, tenantID)
 
-	// Tenant tries to remap level/message to "tenant_wins_*". Integration form
-	// has level → severity, message → log. Pinot dynamic must win.
+	// Tenant tries to remap level/message to "tenant_wins_*" and sets app.
+	// Integration form has level → severity, message → log; app has no
+	// pinot_app_col row in the test fixture, so it's absent from the dynamic
+	// mapping (AppCol has no forced default). Pinot dynamic must win on
+	// level/message; the non-overlapping tenant "app" mapping should pass
+	// through untouched.
 	upsertTenantLogLabelsRaw(t, dbMgr, tenantID, map[string]string{
 		"level":   "tenant_wins_level",
 		"message": "tenant_wins_message",
-		"app":     "tenant_app_col", // non-overlapping — should fall through
+		"app":     "tenant_app_col",
 	})
 
 	ctx := security.NewRequestContext(

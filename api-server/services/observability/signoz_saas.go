@@ -806,9 +806,10 @@ func parseSignozSaasLogGroupResponse(respData map[string]any, endTime int64) (Lo
 			group.ContainerID = fmt.Sprintf("/k8s/%s/%s", group.Namespace, group.Workload)
 		}
 
-		// Generate pattern_hash from workload name
+		// Generate pattern_hash from workload name. Signoz groups by pod rather
+		// than by message, so this is an identifier — hash it verbatim.
 		if group.Workload != "" {
-			group.PatternHash = generatePatternHash(group.Workload)
+			group.PatternHash = generateRawHash(group.Workload)
 		}
 
 		points, _ := seriesMap["points"].([]any)

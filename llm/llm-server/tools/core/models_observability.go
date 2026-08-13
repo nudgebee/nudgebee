@@ -26,6 +26,10 @@ type ObservabilityTraceMetadata struct {
 type ObservabilityLogResponse struct {
 	Logs     []ObservabilityLog       `json:"logs"`
 	Metadata ObservabilityLogMetadata `json:"metadata"`
+	// Suggestion carries services-server's ValidateRequest empty-result diagnosis
+	// (unknown label name / unknown label value) when a canonical query matched nothing.
+	// Empty when the diagnosis found nothing actionable (a genuinely empty result).
+	Suggestion string `json:"suggestion,omitempty"`
 }
 
 type ObservabilityTraceResponse struct {

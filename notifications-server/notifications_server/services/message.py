@@ -27,7 +27,10 @@ from notifications_server.services.slack.slack import retriable_slack_api_error,
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
 from notifications_server.message_templates.ms_teams.finding import get_ms_teams_finding_message_template
-from notifications_server.message_templates.slack.finding import get_slack_finding_message
+from notifications_server.message_templates.slack.finding import (
+    get_slack_finding_message,
+    get_slack_resolved_finding_reply,
+)
 from notifications_server.models.db_base import BaseDB
 from notifications_server.models.models import (
     SentNotifications,
@@ -73,6 +76,46 @@ def is_batch_delivery(matched_rules: List[Dict[str, Any]]):
     return any(rule.get("delivery_mode") == "batch" for rule in matched_rules)
 
 
+# Findings carry `priority` (DEBUG/INFO/LOW/MEDIUM/HIGH — see api-server
+# services/event/types). Low-signal findings are digest-only by default:
+# real-time delivery requires a matched rule that lists the priority
+# explicitly in its severity filter.
+REALTIME_GATED_PRIORITIES = {"debug", "info", "low"}
+
+
+def _rule_severities(rule_severity) -> set:
+    """Rule severity is a single value from the UI today; tolerate array-style or
+    comma-separated strings so a future multi-select doesn't silently break."""
+    if not rule_severity:
+        return set()
+    values = rule_severity
+    if isinstance(values, str):
+        stripped = values.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            values = [v.strip().strip("'").strip('"') for v in stripped[1:-1].split(",") if v.strip()]
+        else:
+            values = stripped.split(",")
+    elif not isinstance(values, (list, tuple, set)):
+        values = [values]
+    return {str(v).strip().lower() for v in values if str(v).strip()}
+
+
+def _severity_matches(rule_severity, finding_priority):
+    severities = _rule_severities(rule_severity)
+    if not severities:
+        return True
+    if not finding_priority:
+        return False
+    return str(finding_priority).strip().lower() in severities
+
+
+def is_realtime_severity_gated(finding_priority, matched_rules: List[Dict[str, Any]]):
+    priority = str(finding_priority or "").strip().lower()
+    if priority not in REALTIME_GATED_PRIORITIES:
+        return False
+    return not any(priority in _rule_severities(rule.get("severity")) for rule in matched_rules)
+
+
 def normalize_channel(channel):
     if channel is None:
         return None
@@ -101,8 +144,8 @@ def _ids_match(rule_id, payload_id):
 
 # Notification rules are keyed by category — the tabs in the UI: "troubleshoot",
 # "optimize", "slo", "cloud" (plus "auto_pilot"). A finding's `source`, however,
-# is the raw *ingestion* source (e.g. "datadog_webhook", "prometheus", "anomaly",
-# "ebpf", "traces", "grafana", "newrelic"). Those never equal "troubleshoot", so
+# is the raw *ingestion* source (e.g. "prometheus", "anomaly", "ebpf", "traces",
+# "grafana", "newrelic"). Those never equal "troubleshoot", so
 # matching them verbatim against rule.source sends every troubleshoot finding to
 # the default channel (#28130). Map any source that is not itself a rule category
 # to "troubleshoot"; "cloud"/"optimize"/"slo" findings keep their category.
@@ -157,6 +200,10 @@ class NotificationRuleMatcher:
             type_, kwargs
         )
 
+        finding_priority = None
+        if type_ == "finding":
+            finding_priority = ((kwargs.get("parameters") or {}).get("finding") or {}).get("priority")
+
         all_rules = await self.rules_service.get_notification_rules(tenant_id)
         if not all_rules:
             LOG.debug("No rules found for tenant %s (source=%s), using defaults", tenant_id, source)
@@ -171,6 +218,7 @@ class NotificationRuleMatcher:
                 and (rule.namespace == namespace or rule.namespace is None)
                 and (rule.workload == workload or rule.workload is None)
                 and (rule.aggregation_key == aggregation_key or rule.aggregation_key is None)
+                and (type_ != "finding" or _severity_matches(rule.severity, finding_priority))
                 and rule.is_active
             )
         ]
@@ -210,6 +258,7 @@ class NotificationRuleMatcher:
                         "channels": mapping.channels,
                         "expires_at": rule.expires_at,
                         "delivery_mode": rule.delivery_mode,
+                        "severity": rule.severity,
                     }
                     for mapping in mappings
                 )
@@ -226,6 +275,7 @@ class NotificationRuleMatcher:
                         "channels": None,
                         "expires_at": rule.expires_at,
                         "delivery_mode": rule.delivery_mode,
+                        "severity": rule.severity,
                     }
                 )
 
@@ -646,6 +696,9 @@ class MessageService:
             if thread:
                 return await self.send_threaded_reply(tenant_id, thread, parameters)
 
+            if type_ == "finding_resolved":
+                return await self.send_finding_resolved_reply(tenant_id, parameters)
+
             group_result = await self._maybe_handle_grouped_message(source, parameters, tenant_id, payload)
             if group_result is not None:
                 return group_result
@@ -654,6 +707,22 @@ class MessageService:
                 matched_rules, source = await self.rule_matcher.match_notification_rules(
                     session, tenant_id, type_, payload
                 )
+
+                if type_ == "finding":
+                    finding_priority = (parameters.get("finding") or {}).get("priority")
+                    if is_realtime_severity_gated(finding_priority, matched_rules):
+                        LOG.debug(
+                            "Finding gated from real-time delivery (priority=%s, tenant=%s)",
+                            finding_priority,
+                            tenant_id,
+                        )
+                        return [
+                            system_response(
+                                "severity_gated",
+                                "Low/informational findings are digest-only by default; "
+                                "add a notification rule with this severity for real-time delivery",
+                            )
+                        ]
 
                 rule_result = self._maybe_return_rule_effect(matched_rules, tenant_id)
                 if rule_result is not None:
@@ -882,13 +951,16 @@ class MessageService:
         thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.channels)
         message, output_blocks, attachments = get_slack_finding_message(self.slack_app, ip, finding)
 
+        # Empty text/blocks must be OMITTED: with no blocks Slack renders a
+        # non-empty text as a duplicate heading, and slack_sdk drops None
+        # kwargs cleanly (the hybrid finding card is attachment-only).
         slack_response = await asyncio.to_thread(
             self.slack_sender.post_to_slack,
             tenant_id,
             ip,
             thread_id,
-            text=message,
-            blocks=output_blocks,
+            text=message or None,
+            blocks=output_blocks or None,
             attachments=attachments,
             display_as_bot=True,
         )
@@ -912,6 +984,85 @@ class MessageService:
         )
 
         return response_data, sent_notification
+
+    async def send_finding_resolved_reply(self, tenant_id, parameters):
+        """Thread-only closure when a notified finding clears: green reply in
+        the Slack thread(s) recorded in SentNotifications, at the channel the
+        firing message actually went to. Dropped silently when the firing
+        message was never sent; the resolved_notified stamp dedupes repeated
+        resolve webhooks. Slack-only — other platforms keep no thread record
+        usable here."""
+        finding = parameters.get("finding") or {}
+        fingerprint = finding.get("fingerprint")
+        account_id = finding.get("cloud_account_id")
+        if not (tenant_id and fingerprint):
+            return [system_response("dropped", "Resolved finding lacks a fingerprint")]
+
+        async with BaseDB.async_session(self.engine)() as session:
+            query = select(SentNotifications).filter_by(tenant_id=tenant_id, fingerprint=fingerprint)
+            if account_id:
+                query = query.filter_by(account_id=account_id)
+            rows = (await session.execute(query)).scalars().all()
+            rows = [row for row in rows if row.slack_thread_id and row.slack_team_id and row.slack_metadata]
+            if not rows:
+                return [system_response("dropped", "No delivered firing message for this finding")]
+
+            installs = await self.get_installed_platforms(
+                session, tenant_id=tenant_id, platform=PlatformTypes.SLACK.value
+            )
+            installs_by_team = {ip.team_id: ip for ip in installs}
+
+            responses = []
+            stamped = False
+            for row in rows:
+                try:
+                    slack_metadata = json.loads(row.slack_metadata)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(slack_metadata, dict):
+                    continue
+                channel_id = slack_metadata.get("channel")
+                ip = installs_by_team.get(row.slack_team_id)
+                if slack_metadata.get("resolved_notified") or not (channel_id and ip):
+                    continue
+
+                # Isolate per-thread failures (revoked token, deleted channel,
+                # rate limit) so one bad thread doesn't abort the fan-out.
+                _, _, attachments = get_slack_resolved_finding_reply(finding)
+                try:
+                    slack_response = await asyncio.to_thread(
+                        self.slack_app.client.reply_in_thread,
+                        token=ip.token,
+                        channel_id=channel_id,
+                        thread_ts=row.slack_thread_id,
+                        attachments=attachments,
+                        display_as_bot=True,
+                    )
+                except Exception as exc:
+                    LOG.warning("Failed to post resolved reply to thread %s: %s", row.slack_thread_id, exc)
+                    responses.append(failed_response("slack", reason="Failed to post resolved reply"))
+                    continue
+
+                if not (slack_response and slack_response.status_code == 200 and slack_response.data.get("ok")):
+                    responses.append(failed_response("slack", reason="Failed to post resolved reply"))
+                    continue
+
+                row.slack_metadata = json.dumps({**slack_metadata, "resolved_notified": True})
+                session.add(row)
+                stamped = True
+                responses.append(
+                    success_response(
+                        "slack",
+                        team_id=row.slack_team_id,
+                        channel_id=channel_id,
+                        message_ts=slack_response.data.get("ts"),
+                    )
+                )
+
+            if stamped:
+                await session.commit()
+
+        return responses or [system_response("dropped", "Resolved reply already delivered")]
 
     async def _send_finding_to_teams(self, session, tenant_id, ip, finding, _):
         token = await self.teams_sender.acquire_teams_access_token(session, ip)

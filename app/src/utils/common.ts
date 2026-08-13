@@ -148,6 +148,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'ZENDUTY_WEBHOOK':
       label = 'ZenDuty Webhook';
       break;
+    case 'FRESHDESK':
+      label = 'Freshdesk';
+      break;
     case 'POSTGRES':
       label = 'PostgreSQL';
       break;

@@ -676,14 +676,38 @@ func requestReferencesColumns(request QueryRequest, cols map[string]bool) bool {
 	return false
 }
 
-// extractFilterSQL extracts a filter for the given column from request.Where.Binary,
-// generates the SQL fragment (e.g. " AND col = 'val'" or " AND col IN ('a','b')"),
-// and removes the filter from the request to avoid redundant outer WHERE.
-// The sqlColumn parameter is the actual SQL column name to use in the generated fragment.
+// locateBinaryFilter finds filterName as a top-level equality/IN condition: first in
+// where.Binary, then within the And-chain (recursively, since _and clauses can nest).
+// It deliberately does NOT descend into Or or Not clauses — a filter nested under an
+// OR/NOT branch is conditional, and hoisting it into an unconditional pushed-down
+// "AND col = val" would change the query's meaning. Reads of a nil Binary map and a nil
+// And slice are both safe (zero value / zero iterations). It returns the operator map and
+// the Binary map that owns it so the caller can remove the entry only when it actually
+// pushes it down.
+func locateBinaryFilter(where *QueryWhereClause, filterName string) (map[BinaryWhereClauseType]any, BinaryWhereClause) {
+	if filter, ok := where.Binary[filterName]; ok {
+		return filter, where.Binary
+	}
+	for i := range where.And {
+		if filter, holder := locateBinaryFilter(&where.And[i], filterName); holder != nil {
+			return filter, holder
+		}
+	}
+	return nil, nil
+}
+
+// extractFilterSQL extracts an equality/IN filter for the given column from request.Where,
+// generates the SQL fragment (e.g. " AND col = 'val'" or " AND col IN ('a','b')"), and
+// removes the filter from the request to avoid a redundant outer WHERE. It searches both
+// request.Where.Binary and the And-chain: the security layer (service.go) and the frontend
+// both emit filters as _and lists, so a filter this function is meant to push down is
+// frequently found nested under _and rather than in the flat _binary map. Filters under
+// Or/Not are left in place (see locateBinaryFilter). The sqlColumn parameter is the actual
+// SQL column name to use in the generated fragment.
 func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string) string {
 	dialect := &postgresDialect{}
-	filter, ok := request.Where.Binary[filterName]
-	if !ok {
+	filter, holder := locateBinaryFilter(&request.Where, filterName)
+	if holder == nil {
 		return ""
 	}
 	var sql string
@@ -699,7 +723,7 @@ func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string
 		}
 	}
 	if sql != "" {
-		delete(request.Where.Binary, filterName)
+		delete(holder, filterName)
 	}
 	return sql
 }
@@ -2719,6 +2743,24 @@ var table_metadata = map[string]TableDefinition{
 			pushdownFilters += extractFilterSQL(&request, "status", "r.status")
 			pushdownFilters += extractFilterSQL(&request, "category", "r.category")
 			pushdownFilters += extractFilterSQL(&request, "rule_name", "r.rule_name")
+			// Push tenant_id into the CTE for the same reason the sibling recommendations_v2
+			// generator does (see its comment): the ROW_NUMBER() window's PARTITION BY does
+			// not include tenant_id, so the planner cannot push an outer tenant filter through
+			// the window fence. Without it the CTE windows every tenant's recommendations
+			// (joined to cloud_resourses, detoasting the meta jsonb) before the outer query
+			// narrows to one tenant. It also completes the leading column of the composite
+			// idx_recommendation_tenant_account_status index. tenant_id is injected by the
+			// security layer as an _and clause, not into _binary, so it is not extracted by
+			// the calls above — take it straight from the security context.
+			sc := ctx.GetSecurityContext()
+			tenantId := sc.GetTenantId()
+			if tenantId == "" && !sc.IsSuperAdmin() {
+				// Fail closed: a non-super-admin must always be tenant-scoped.
+				return "", request, fmt.Errorf("tenant_id is required")
+			}
+			if tenantId != "" {
+				pushdownFilters += " AND r.tenant_id = " + (&postgresDialect{}).QuoteLiteral(tenantId)
+			}
 
 			// Fast path: when no column requiring a JOIN or the dedup window function is
 			// needed (e.g. pure count queries like count_recommendations), skip the CTE
@@ -2972,7 +3014,7 @@ var table_metadata = map[string]TableDefinition{
 					json_agg(json_build_object('type', type, 'status', status, 'name', name) ORDER BY name) as integrations
 				FROM integrations
 				WHERE type IN (
-					'github', 'gitlab', 'jira', 'servicenow', 'pagerduty', 'zenduty',
+					'github', 'gitlab', 'jira', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk',
 					'pagerduty_webhook', 'zenduty_webhook', 'prometheus_alertmanager_webhook',
 					'datadog_webhook', 'azure_monitor_webhook', 'servicenow_webhook',
 					'postgresql', 'rabbitmq', 'mysql', 'redis', 'confluence', 'clickhouse',
@@ -3166,6 +3208,7 @@ var table_metadata = map[string]TableDefinition{
 			// pod_container × recommendation join.
 			nonPodColumns := map[string]bool{
 				"id": true, "severity": true, "severity_weight": true, "status": true,
+				"scan_status": true, "max_scan_status": true,
 				"image": true, "vulnerability_id": true, "package_id": true,
 				"created_at": true, "updated_at": true, "recommendation": true,
 				"count": true, "count_severity_critical": true, "count_severity_high": true,
@@ -3284,7 +3327,7 @@ var table_metadata = map[string]TableDefinition{
 				// match on that indexed column directly instead of parsing the JSON.
 				cleanUnion = `
 				UNION ALL
-				SELECT s.id, NULL as severity, s.status, s.created_at, s.updated_at` + cleanVulnCol + cleanPkgCol + cleanRecCol + `
+				SELECT s.id, NULL as severity, s.status, s.created_at, s.updated_at, s.recommendation->>'status' as scan_status` + cleanVulnCol + cleanPkgCol + cleanRecCol + `
 				FROM recommendation s
 				WHERE s.cloud_account_id = pc.cloud_account_id
 					AND s.tenant_id        = pc.tenant_id
@@ -3338,6 +3381,7 @@ var table_metadata = map[string]TableDefinition{
 					ELSE 0
 				END AS severity_weight,
 				r.status,
+				r.scan_status        AS scan_status,
 				pc.image             AS image,
 				r.created_at         AS created_at,
 				r.updated_at         AS updated_at,
@@ -3346,7 +3390,7 @@ var table_metadata = map[string]TableDefinition{
 				pc.namespace` + outerVulnCol + outerPkgCol + outerRecCol + `
 			FROM pod_container pc,
 			LATERAL (
-				SELECT rec2.id, rec2.severity, rec2.status, rec2.created_at, rec2.updated_at` + lateralVulnCol + lateralPkgCol + lateralRecCol + `
+				SELECT rec2.id, rec2.severity, rec2.status, rec2.created_at, rec2.updated_at, NULL::text as scan_status` + lateralVulnCol + lateralPkgCol + lateralRecCol + `
 				FROM recommendation rec2
 				WHERE rec2.cloud_account_id = pc.cloud_account_id
 					AND rec2.tenant_id      = pc.tenant_id
@@ -3383,6 +3427,18 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"status": {
 				Type: ColumnDefinitionTypeString,
+			},
+			// scan_status is the image's scan OUTCOME (clean|vulnerable|failed|
+			// unscannable) from the image_scan_summary row, distinct from `status`
+			// (the Open/Archive lifecycle column). NULL on per-CVE rows. Use the
+			// aggregated max_scan_status in listings — one image = one group.
+			"scan_status": {
+				Type: ColumnDefinitionTypeString,
+			},
+			"max_scan_status": {
+				Type:         ColumnDefinitionTypeString,
+				Def:          "max(scan_status)",
+				IsAggregated: true,
 			},
 			"image": {
 				Type: ColumnDefinitionTypeString,
@@ -3536,6 +3592,83 @@ var table_metadata = map[string]TableDefinition{
 			"user_id": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "user_id",
+			},
+		},
+	},
+	// llm_conversation_agent_critiques has no tenant_id column of its own —
+	// joined in from llm_conversations so the usual tenant/account scoping
+	// still applies.
+	"llm_conversation_agent_critiques_v2": {
+		Type:                Derived,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		Name:                "llm_conversation_agent_critiques_v2",
+		Def: `(
+			SELECT
+				cr.id::text as id,
+				cr.conversation_id::text as conversation_id,
+				cr.message_id::text as message_id,
+				cr.account_id::text as account_id,
+				c.tenant_id::text as tenant_id,
+				cr.agent_name,
+				cr.critiqued_content,
+				cr.input,
+				cr.critique_type,
+				cr.feedback,
+				cr.decision,
+				cr.created_at
+			FROM llm_conversation_agent_critiques cr
+			JOIN llm_conversations c ON c.id = cr.conversation_id
+		) as llm_conversation_agent_critiques_v2`,
+		Columns: map[string]ColumnDefinition{
+			"id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "id",
+			},
+			"conversation_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "conversation_id",
+			},
+			"message_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "message_id",
+			},
+			"account_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "account_id",
+			},
+			"tenant_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "tenant_id",
+			},
+			"agent_name": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "agent_name",
+			},
+			"critiqued_content": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "critiqued_content",
+			},
+			"input": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "input",
+			},
+			"critique_type": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "critique_type",
+			},
+			"feedback": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "feedback",
+			},
+			"decision": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "decision",
+			},
+			"created_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "created_at",
 			},
 		},
 	},
@@ -6353,6 +6486,7 @@ var table_metadata = map[string]TableDefinition{
 				ca.cloud_provider,
 				ca.tenant::text AS tenant_id,
 				ca.account_type,
+				ca.account_env,
 				ca.account_access,
 				ca.synced_at,
 				ca.agent_synced_at,
@@ -6434,6 +6568,10 @@ var table_metadata = map[string]TableDefinition{
 			"account_type": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "account_type",
+			},
+			"account_env": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "account_env",
 			},
 			"account_access": {
 				Type: ColumnDefinitionTypeJson,
@@ -9315,6 +9453,7 @@ var tableAliases = map[string]string{
 	// llm_* → ai_* migration (table queries). ai_get_conversation_detail (non-polling)
 	// was dead code in main and dropped — only the polling variant is still used.
 	"ai_get_conversation_detail_polling": "llm_conversation_detail_polling_v2",
+	"critiques_list":                     "llm_conversation_agent_critiques_v2",
 	"ai_aggregate_conversations":         "llm_conversation_groupings_v2",
 	"ai_list_functions":                  "llm_functions_v2",
 	"ai_list_agent_installations":        "llm_agents_installation_v2",

@@ -3,6 +3,8 @@ package observability
 import (
 	"strings"
 	"testing"
+
+	"nudgebee/services/query"
 )
 
 // Regression for the logs_get_query "BETWEEN 0 AND 0" bug: when callers don't
@@ -71,5 +73,85 @@ func TestBuildPinotSQL_EmitsLte_WhenOnlyEndBoundSet(t *testing.T) {
 	}
 	if !strings.Contains(sql, `"timestamp" <= 1700000060000`) {
 		t.Fatalf("expected <= predicate for end-only bound, got: %s", sql)
+	}
+}
+
+// trace_id is rarely a real column in log tables — when the schema lacks it,
+// the condition must be rewritten to a message-column LIKE so trace
+// correlation works against the message text (mirrors the Loki line filter).
+func TestRewritePinotTraceIDFilter_NoColumn_RewritesToMessageContains(t *testing.T) {
+	where := query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{
+			"trace_id": {query.Eq: "bf2edd20410b130854122b3cbe75e002"},
+		},
+	}
+	rewritten := rewritePinotTraceIDFilter(where, nil, "message")
+	sql, err := buildPinotWhereClause(rewritten)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != `"message" LIKE '%bf2edd20410b130854122b3cbe75e002%'` {
+		t.Fatalf("expected message LIKE rewrite, got: %s", sql)
+	}
+}
+
+// A table that declares a real trace_id column keeps the direct condition.
+func TestRewritePinotTraceIDFilter_ColumnExists_KeepsDirectCondition(t *testing.T) {
+	schema := &pinotSchemaResponse{
+		DimensionFieldSpecs: []pinotFieldSpec{{Name: "trace_id", DataType: "STRING"}},
+	}
+	where := query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{
+			"trace_id": {query.Eq: "bf2edd20410b130854122b3cbe75e002"},
+		},
+	}
+	rewritten := rewritePinotTraceIDFilter(where, schema, "message")
+	sql, err := buildPinotWhereClause(rewritten)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != `"trace_id" = 'bf2edd20410b130854122b3cbe75e002'` {
+		t.Fatalf("expected direct trace_id condition, got: %s", sql)
+	}
+}
+
+// The rewrite must reach trace_id conditions nested under And clauses (the
+// shape buildWorkloadLogWhereClause-style composites produce).
+func TestRewritePinotTraceIDFilter_RewritesNestedAnd(t *testing.T) {
+	where := query.QueryWhereClause{
+		And: []query.QueryWhereClause{
+			{Binary: query.BinaryWhereClause{"kaas_namespace": {query.Eq: "shop"}}},
+			{Binary: query.BinaryWhereClause{"trace_id": {query.Eq: "abc123"}}},
+		},
+	}
+	rewritten := rewritePinotTraceIDFilter(where, nil, "message")
+	sql, err := buildPinotWhereClause(rewritten)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, `"kaas_namespace" = 'shop'`) || !strings.Contains(sql, `"message" LIKE '%abc123%'`) {
+		t.Fatalf("expected namespace condition plus message LIKE, got: %s", sql)
+	}
+	if strings.Contains(sql, `"trace_id"`) {
+		t.Fatalf("trace_id column must not survive the rewrite, got: %s", sql)
+	}
+}
+
+// The rewrite must not mutate the caller's clause — req.QueryRequest.Where is
+// logged and reused by later pipeline stages after GetQuery runs.
+func TestRewritePinotTraceIDFilter_DoesNotMutateInput(t *testing.T) {
+	original := query.QueryWhereClause{
+		And: []query.QueryWhereClause{
+			{Binary: query.BinaryWhereClause{"kaas_namespace": {query.Eq: "shop"}}},
+			{Binary: query.BinaryWhereClause{"trace_id": {query.Eq: "abc123"}}},
+		},
+	}
+	_ = rewritePinotTraceIDFilter(original, nil, "message")
+
+	if _, ok := original.And[1].Binary["trace_id"]; !ok {
+		t.Fatal("input clause lost its trace_id condition — rewrite mutated the caller's maps")
+	}
+	if _, ok := original.And[1].Binary["message"]; ok {
+		t.Fatal("input clause gained a message condition — rewrite mutated the caller's maps")
 	}
 }

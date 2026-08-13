@@ -32,7 +32,7 @@ const KubernetesLogSensitiveInfo = ({ accountId }) => {
   const errorMessage = 'Failed to fetch the sensitive log information';
 
   const onMenuClick = (menuItems, data) => {
-    if (menuItems.id === 0) {
+    if (menuItems.id === 'create-ticket') {
       setTicketData(data?.metric);
       setIsTicketCreateFormOpen(true);
     }
@@ -99,7 +99,7 @@ const KubernetesLogSensitiveInfo = ({ accountId }) => {
             <Box display={'flex'} justifyContent={'flex-end'}>
               <ThreeDotsMenu
                 sx={{ ...action.primary }}
-                menuItems={[{ icon: TicketsIcon, label: 'Create Ticket', id: 0, disabled: !!existingTicket }]}
+                menuItems={[{ icon: TicketsIcon, label: 'Create Ticket', id: 'create-ticket', disabled: !!existingTicket }]}
                 data={item}
                 onMenuClick={onMenuClick}
               />

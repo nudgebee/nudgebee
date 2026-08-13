@@ -3,6 +3,7 @@
     {
       "unique_key": "gcp:test-account-gcp-1:global:SecurityGroup:my-fw:my-fw",
       "node_type": "SecurityGroup",
+      "specific_type": "GCPFirewall",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -37,11 +38,16 @@
       "labels": {},
       "query_attributes": {
         "name": "my-fw"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "my-fw"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
       "node_type": "VPC",
+      "specific_type": "GCPVpc",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -67,6 +73,10 @@
       },
       "labels": {},
       "query_attributes": {
+        "name": "my-vpc"
+      },
+      "ontology_attributes": {
+        "location": "global",
         "name": "my-vpc"
       }
     }

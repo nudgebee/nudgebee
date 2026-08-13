@@ -84,7 +84,10 @@ func (t *LLMEventInvestigateTask) Execute(taskCtx types.TaskContext, params map[
 		AccountId: accountID,
 		TaskToken: encodedToken,
 	}
-	if err := common.MqPublish(exch, rk, req); err != nil {
+	// Publish with the activity context: the tracing.Propagator restored the
+	// originating event's trace context onto it, so llm-server's consumer
+	// continues the same distributed trace.
+	if err := common.MqPublishCtx(taskCtx.GetContext(), exch, rk, req); err != nil {
 		taskCtx.GetLogger().Error("llm.event_investigate: failed to publish troubleshoot request", "error", err, "event_id", eventID)
 		return nil, fmt.Errorf("failed to enqueue investigation: %w", err)
 	}

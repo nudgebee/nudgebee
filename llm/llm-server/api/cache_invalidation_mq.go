@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -59,7 +60,7 @@ func init() {
 // integration-derived caches for every account it lists. Returning nil
 // always — invalid payloads are logged and dropped (Ack), since requeueing
 // a malformed message would just loop forever.
-func processCacheInvalidationMessage(data []byte) error {
+func processCacheInvalidationMessage(_ context.Context, data []byte) error {
 	common.MetricsApiRequestsTotal("cache_invalidation_mq")
 
 	var msg cacheInvalidationMessage

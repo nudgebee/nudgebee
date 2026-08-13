@@ -234,10 +234,19 @@ func BuildContextFromPayload(c *gin.Context, tracer *trace.Tracer, meter *metric
 		ctx = context.Background()
 	}
 	span := trace.SpanFromContext(ctx)
-	acctIfc, _ := c.Get("accountID")
+	// Guard the gin lookup: the ctx block above already treats c as possibly nil,
+	// so don't dereference it unconditionally here.
+	var acctIfc any
+	if c != nil {
+		acctIfc, _ = c.Get("accountID")
+	}
 
-	traceId := span.SpanContext().TraceID()
-	childLogger := logger.With("account_id", acctIfc, "trace_id", traceId.String())
+	childLogger := logger.With("account_id", acctIfc)
+	// Only attach trace_id when a real span is active; otherwise SpanContext()
+	// is all-zeros and would log a noisy "000…0" trace_id into Loki.
+	if sc := span.SpanContext(); sc.IsValid() {
+		childLogger = childLogger.With("trace_id", sc.TraceID().String())
+	}
 	return childLogger, tracer, meter
 }
 

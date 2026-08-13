@@ -2,6 +2,7 @@ package sources
 
 import (
 	"fmt"
+	"net/url"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"strings"
@@ -226,4 +227,65 @@ func IsELBv2LoadBalancerARN(arn string) bool {
 	return strings.Contains(arn, ":loadbalancer/app/") ||
 		strings.Contains(arn, ":loadbalancer/net/") ||
 		strings.Contains(arn, ":loadbalancer/gwy/")
+}
+
+// ExtractEndpointAddress reads a connection endpoint that some cloud APIs return
+// as a bare string and others as {"Address": "...", "Port": ...}. Shared by AWS
+// (cache/db endpoints) and reachable from the per-cloud subpackages.
+func ExtractEndpointAddress(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case map[string]interface{}:
+		if addr, ok := val["Address"].(string); ok {
+			return addr
+		}
+	}
+	return ""
+}
+
+// TruncateString truncates s to maxLen characters, appending "..." when cut.
+// Shared by AWS and GCP (CLI-response logging).
+func TruncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// ExtractCLIOutput extracts the JSON string payload from a cloud-collector CLI
+// response, which may carry it under "data", "output", or "result". Shared by the
+// Azure source and the Azure private-DNS enricher.
+func ExtractCLIOutput(resp map[string]any) string {
+	if dataStr, ok := resp["data"].(string); ok && dataStr != "" {
+		return dataStr
+	}
+	if outputStr, ok := resp["output"].(string); ok && outputStr != "" {
+		return outputStr
+	}
+	if resultStr, ok := resp["result"].(string); ok && resultStr != "" {
+		return resultStr
+	}
+	return ""
+}
+
+// RepoURIHost returns the host portion of a container-registry repository URI of
+// the form `<account>.dkr.ecr.<region>.amazonaws.com/<repo>` (or
+// `public.ecr.aws/...`, GCP Artifact Registry, etc.). Returns "" for unparseable
+// inputs. Providers sometimes emit the URI without a scheme; url.Parse accepts
+// that and treats the whole thing as a path, so we patch in `https://` when
+// missing. Shared by AWS and GCP.
+func RepoURIHost(uri string) string {
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		return ""
+	}
+	if !strings.Contains(uri, "://") {
+		uri = "https://" + uri
+	}
+	parsed, err := url.Parse(uri)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	return parsed.Host
 }

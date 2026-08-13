@@ -28,7 +28,9 @@ const (
 // DeriveSafetyBand maps a knowledge-graph ImpactSummary to a safety band. It is
 // deliberately conservative: it never returns "safe" unless the graph actually
 // observed the resource's neighbourhood, so a thin or absent graph downgrades to
-// "review"/"unknown" rather than manufacturing false confidence.
+// "review"/"unknown" rather than manufacturing false confidence. Only upstream
+// dependents feed the band — DownstreamDependencies are operator context, not
+// risk to callers.
 func DeriveSafetyBand(impact *core.ImpactSummary) (SafetyBand, string) {
 	if impact == nil || impact.CoverageConfidence == core.CoverageNone {
 		return SafetyBandUnknown, "resource not found in the dependency graph; impact unknown"
@@ -40,10 +42,14 @@ func DeriveSafetyBand(impact *core.ImpactSummary) (SafetyBand, string) {
 	case impact.Truncated:
 		return SafetyBandRisky, "very large blast radius (dependents exceeded the traversal cap)"
 	case impact.DependentCount == 0:
-		if impact.CoverageConfidence == core.CoverageHigh {
+		switch impact.CoverageConfidence {
+		case core.CoverageHigh:
 			return SafetyBandSafe, "no known dependents (well-observed in the graph)"
+		case core.CoverageObserved:
+			return SafetyBandSafe, "no dependents seen by an active traffic signal watching this scope"
+		default:
+			return SafetyBandReview, "no dependents observed, but graph coverage is limited"
 		}
-		return SafetyBandReview, "no dependents observed, but graph coverage is limited"
 	default:
 		return SafetyBandReview, fmt.Sprintf("%d dependent(s); none detected as production", impact.DependentCount)
 	}

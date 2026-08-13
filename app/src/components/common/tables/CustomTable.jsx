@@ -1175,6 +1175,19 @@ const CustomTable = ({
                 } else {
                   thWidth = head?.width || '20%';
                 }
+
+                const infoNode = head?.info ? (
+                  <Tooltip title={head.info} placement={head?.infoPlacement}>
+                    <Box
+                      component='span'
+                      onClick={(e) => e.stopPropagation()}
+                      sx={{ position: 'relative', top: ds.space[0], opacity: '50%', mr: 'var(--ds-space-1)' }}
+                    >
+                      <SafeIcon src={infoIcon} alt='info' width={12} height={14} />
+                    </Box>
+                  </Tooltip>
+                ) : null;
+
                 return (
                   <TableCell
                     key={head?.name ?? head}
@@ -1202,6 +1215,7 @@ const CustomTable = ({
                         <span style={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
                           {head.secondryText}
                         </span>
+                        {infoNode}
                         <SortIcon active={sort?.name === (head?.name || head)} direction={sort?.order} />
                       </Box>
                     ) : (
@@ -1210,14 +1224,8 @@ const CustomTable = ({
                         <span style={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
                           {head.secondryText}
                         </span>
+                        {infoNode}
                       </>
-                    )}
-                    {head?.info && (
-                      <Tooltip title={head.info} placement={head?.infoPlacement}>
-                        <Box component='span' sx={{ position: 'relative', top: ds.space[0], opacity: '50%' }}>
-                          <SafeIcon src={infoIcon} alt='info' width={12} height={14} />{' '}
-                        </Box>
-                      </Tooltip>
                     )}
                     {showColumnIcon && (
                       <Tooltip title='Select columns'>

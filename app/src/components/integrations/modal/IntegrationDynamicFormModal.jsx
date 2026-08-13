@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { FormControlLabel, Box, Typography, Grid } from '@mui/material';
+import { FormControlLabel, Box, Typography, Grid, Collapse } from '@mui/material';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import { Switch } from '@ui/Switch';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
@@ -9,6 +10,7 @@ import apiUser from '@api1/user';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import apiIntegrations from '@api1/integrations';
+import observability from '@api1/observability';
 import { ENCRYPTED_MASK } from '@api1/integrations/helpers';
 import { ds } from 'src/utils/colors';
 import CopyButton from '@shared/buttons/CopyButton';
@@ -27,6 +29,19 @@ import { docsUrl } from '@lib/externalUrls';
 // cloud_provider: K8S/AWS/Azure/GCP) to its provider icon. Same pattern as the
 // Account filter on the Troubleshoot/Events page.
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />;
+
+// Log/observability integrations that support per-account "Default Log Filters"
+// (always-apply where-clause filters injected into every log query for the account).
+const LOG_FILTER_INTEGRATIONS = new Set(['pinot', 'ES', 'loki', 'signoz', 'openobserve', 'datadog', 'dynatrace', 'chronosphere']);
+
+// Display labels for enum values whose stored form doesn't title-case into
+// something readable. Values not listed here fall back to snakeToTitleCase.
+const ENUM_VALUE_LABELS = {
+  vm_agent: 'Proxy Agent',
+  cloud_api_token: 'Confluence Cloud — email + API token',
+  datacenter_pat: 'Data Center / Server — personal access token',
+  datacenter_password: 'Data Center / Server — username + password',
+};
 
 const COMMON_WEBHOOK_LABEL_KEYS = [
   'alertname',
@@ -92,6 +107,15 @@ const IntegrationDynamicFormModal = ({
   const autogenCacheRef = useRef(new Map());
   const autogenDebounceRef = useRef(null);
   const [rules, setRules] = useState([{ match: [{ key: '', value: '' }], accountId: '' }]);
+  // Per-account "Default Log Filters" (log integrations only): each card is an
+  // account + a list of key=value filters always AND-ed into that account's log queries.
+  const [defaultFilterRules, setDefaultFilterRules] = useState([{ accountId: '', filters: [{ key: '', value: '' }] }]);
+  // Per-account ES index override (Advanced Settings): each card maps an account to
+  // its own log/metrics/trace index; unmapped accounts fall back to the top-level index.
+  const [indexRules, setIndexRules] = useState([{ accountId: '', log_index: '', metrics_index: '', trace_index: '' }]);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // On-demand column validation per card: { [cardIdx]: { loading, done, invalid: [colNames] } }.
+  const [columnValidation, setColumnValidation] = useState({});
   // Per-source subject/namespace/severity label mapping (webhook_label_mapping).
   // Each field is a comma-separated list of label key specs; persisted as arrays.
   const [labelMapping, setLabelMapping] = useState({ subject_name_labels: [], namespace_labels: [], severity_labels: [] });
@@ -100,6 +124,10 @@ const IntegrationDynamicFormModal = ({
   const [vmAgentCredentials, setVmAgentCredentials] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
   const [connectionVerified, setConnectionVerified] = useState(!!editData);
+  // Cluster indices for the ES per-account index picker; fetched once the
+  // connection is verified. Cleared when a testable field changes (handleChange).
+  const [esIndexes, setEsIndexes] = useState([]);
+  const [esIndexesLoading, setEsIndexesLoading] = useState(false);
 
   const isTestable = (() => {
     if (!config?.testable) return false;
@@ -152,7 +180,9 @@ const IntegrationDynamicFormModal = ({
         //   New Relic by product decision (issue #29403) even though it is technically
         //   capable. Agent-sourced providers (loki, prometheus, otel, ES-agent) are
         //   never cloud-eligible, hence !isAgentSource.
-        const CLOUD_CAPABLE_INTEGRATIONS = ['datadog', 'observe', 'dynatrace', 'splunk_observability_platform', 'solarwinds', 'elasticsearch'];
+        // 'es' is the ES page's integrationName (account-form.jsx passes {'ES'}); the
+        // check lowercases it, so 'es' — not 'elasticsearch' — is what matches here.
+        const CLOUD_CAPABLE_INTEGRATIONS = ['datadog', 'observe', 'dynatrace', 'splunk_observability_platform', 'solarwinds', 'elasticsearch', 'es'];
         const isWebhook = configs.category === 'incident_webhook' || (integrationName || '').toLowerCase().includes('webhook');
         const showAllAccounts = isWebhook || (!isAgentSource && CLOUD_CAPABLE_INTEGRATIONS.includes((integrationName || '').toLowerCase()));
         for (const key in updatedConfig.properties) {
@@ -193,7 +223,7 @@ const IntegrationDynamicFormModal = ({
             }
           } else if (field.enum && field.enum.length > 0) {
             updatedConfig.properties[key].possible_values = field.enum.map((value) => ({
-              label: { vm_agent: 'Proxy Agent' }[value] || snakeToTitleCase(value),
+              label: ENUM_VALUE_LABELS[value] || snakeToTitleCase(value),
               value: value,
             }));
           }
@@ -435,6 +465,49 @@ const IntegrationDynamicFormModal = ({
     }
   }, [editData]);
 
+  // Hydrate per-account Default Log Filters from the saved default_filters config.
+  useEffect(() => {
+    const raw = editData?.integration_config_values?.default_filters;
+    if (!raw) return;
+    const parsed = safeJSONParse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return;
+    const normalizeAcc = (a) => (typeof a === 'object' && a !== null ? a.value || '' : a || '');
+    const next = parsed.map((e) => ({
+      accountId: normalizeAcc(e.accountId),
+      filters:
+        Array.isArray(e.filters) && e.filters.length > 0
+          ? e.filters.map((f) => ({ key: f.key || '', value: String(f.value ?? '') }))
+          : [{ key: '', value: '' }],
+    }));
+    setDefaultFilterRules(next);
+  }, [editData]);
+
+  // Hydrate the ES per-account index override from the saved index_account_mapping
+  // blob (JSON array of { account_id, log_index?, metrics_index?, trace_index? }).
+  useEffect(() => {
+    const raw = editData?.integration_config_values?.index_account_mapping;
+    if (!raw) return;
+    const parsed = safeJSONParse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return;
+    const normalizeAcc = (a) => (typeof a === 'object' && a !== null ? a.value || '' : a || '');
+    setIndexRules(
+      parsed.map((e) => ({
+        accountId: normalizeAcc(e.account_id ?? e.accountId),
+        log_index: e.log_index || '',
+        metrics_index: e.metrics_index || '',
+        trace_index: e.trace_index || '',
+      }))
+    );
+  }, [editData]);
+
+  // Auto-expand Advanced Settings for ES so the Per-Account Index cards are visible
+  // without an extra click (collapsed by default for other integrations).
+  useEffect(() => {
+    if (openModal && (integrationName === 'ES' || integrationName === 'elasticsearch')) {
+      setAdvancedOpen(true);
+    }
+  }, [openModal, integrationName]);
+
   // Hydrate the per-source label mapping (webhook_label_mapping) from the saved
   // config value. Stored as arrays; rendered as arrays for FilterDropdown multi-select.
   useEffect(() => {
@@ -570,6 +643,7 @@ const IntegrationDynamicFormModal = ({
   const handleChange = (key, value) => {
     if (isTestable && config.properties?.[key]?.is_testable) {
       setConnectionVerified(false);
+      setEsIndexes([]);
     }
     setFormValues((prevValues) => {
       let updatedValues = { ...prevValues, [key]: value };
@@ -704,6 +778,71 @@ const IntegrationDynamicFormModal = ({
     );
   };
 
+  // --- Default Log Filters (per-account) handlers ---
+  // Clear a card's stale validation result whenever it is edited.
+  const clearCardValidation = (cardIdx) => setColumnValidation((prev) => ({ ...prev, [cardIdx]: undefined }));
+  const handleAddDefaultFilterCard = () => {
+    setDefaultFilterRules([...defaultFilterRules, { accountId: '', filters: [{ key: '', value: '' }] }]);
+  };
+  const handleRemoveDefaultFilterCard = (cardIdx) => {
+    setDefaultFilterRules(defaultFilterRules.filter((_, i) => i !== cardIdx));
+    setColumnValidation({}); // indices shift on removal — clear all
+  };
+  const handleDefaultFilterAccountChange = (cardIdx, accountId) => {
+    setDefaultFilterRules(defaultFilterRules.map((c, i) => (i === cardIdx ? { ...c, accountId } : c)));
+    clearCardValidation(cardIdx);
+  };
+  const handleAddDefaultFilterRow = (cardIdx) => {
+    setDefaultFilterRules(defaultFilterRules.map((c, i) => (i === cardIdx ? { ...c, filters: [...c.filters, { key: '', value: '' }] } : c)));
+    clearCardValidation(cardIdx);
+  };
+  const handleRemoveDefaultFilterRow = (cardIdx, rowIdx) => {
+    setDefaultFilterRules(
+      defaultFilterRules.map((c, i) => {
+        if (i !== cardIdx) return c;
+        const next = c.filters.filter((_, j) => j !== rowIdx);
+        return { ...c, filters: next.length > 0 ? next : [{ key: '', value: '' }] };
+      })
+    );
+    clearCardValidation(cardIdx);
+  };
+  const handleDefaultFilterRowChange = (cardIdx, rowIdx, field, value) => {
+    setDefaultFilterRules(
+      defaultFilterRules.map((c, i) =>
+        i === cardIdx ? { ...c, filters: c.filters.map((f, j) => (j === rowIdx ? { ...f, [field]: value } : f)) } : c
+      )
+    );
+    clearCardValidation(cardIdx);
+  };
+  // On-demand: fetch the card's account log labels and flag any column that isn't a known label.
+  const handleValidateCard = async (cardIdx) => {
+    const card = defaultFilterRules[cardIdx];
+    const cols = (card.filters || []).map((f) => (f.key || '').trim()).filter(Boolean);
+    if (!card.accountId || cols.length === 0) return;
+    setColumnValidation((prev) => ({ ...prev, [cardIdx]: { loading: true, done: false, invalid: [] } }));
+    try {
+      const res = await observability.fetchLogLabels({ account_id: card.accountId });
+      // logs_list_labels returns [{ label, attributes }] — compare against the label names.
+      const labels = (res?.data?.data?.logs_list_labels || []).map((l) => (typeof l === 'string' ? l : l?.label ?? l?.name)).filter(Boolean);
+      const invalid = labels.length > 0 ? cols.filter((c) => !labels.includes(c)) : [];
+      setColumnValidation((prev) => ({ ...prev, [cardIdx]: { loading: false, done: true, invalid } }));
+    } catch {
+      setColumnValidation((prev) => ({ ...prev, [cardIdx]: { loading: false, done: false, invalid: [] } }));
+      snackbar.error('Could not fetch log labels to validate columns.');
+    }
+  };
+
+  // --- Per-account ES index (Advanced Settings) handlers ---
+  const handleAddIndexCard = () => {
+    setIndexRules([...indexRules, { accountId: '', log_index: '', metrics_index: '', trace_index: '' }]);
+  };
+  const handleRemoveIndexCard = (cardIdx) => {
+    setIndexRules(indexRules.filter((_, i) => i !== cardIdx));
+  };
+  const handleIndexCardChange = (cardIdx, field, value) => {
+    setIndexRules(indexRules.map((c, i) => (i === cardIdx ? { ...c, [field]: value } : c)));
+  };
+
   const handleCloseModal = (trigger) => {
     setIsSubmitting(false);
     setConfig({});
@@ -711,6 +850,9 @@ const IntegrationDynamicFormModal = ({
     setErrors({});
     setShowModal(false);
     setRules([{ match: [{ key: '', value: '' }], accountId: '' }]);
+    setDefaultFilterRules([{ accountId: '', filters: [{ key: '', value: '' }] }]);
+    setIndexRules([{ accountId: '', log_index: '', metrics_index: '', trace_index: '' }]);
+    setAdvancedOpen(false);
     setLabelMapping({ subject_name_labels: [], namespace_labels: [], severity_labels: [] });
     setAgentAccountProviders([]);
     setProviderFields([]);
@@ -786,38 +928,74 @@ const IntegrationDynamicFormModal = ({
     return !testableFieldChanged;
   };
 
+  // Build the config-values payload for connectivity / index probes: booleans and
+  // integers stringified; untyped encrypted secrets sent as the stored ciphertext
+  // with is_encrypted=true (omit-to-keep). Shared by Test Connection and the ES
+  // index fetch.
+  const buildProbeConfigValues = () => {
+    const { account_id: _a, integration_config_name: _n, account_mapping: _m, ...restFormValues } = formValues;
+    return Object.entries(restFormValues).map(([key, value]) => {
+      const field = config.properties?.[key];
+      const fieldType = field?.type;
+      let transformedValue = value;
+      if (fieldType === 'boolean' || fieldType === 'bool' || fieldType === 'integer') {
+        transformedValue = String(value);
+      } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK) {
+        transformedValue = editData?.integration_config_values?.[key];
+      }
+      return {
+        name: key,
+        value: transformedValue,
+        is_encrypted: field?.is_encrypted && !!editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK,
+      };
+    });
+  };
+
+  const currentAccountIds = () =>
+    Array.isArray(formValues.account_id) ? formValues.account_id : formValues.account_id ? [formValues.account_id] : [];
+
+  // Fetch the ES cluster's queryable indices for the per-account index picker,
+  // using the current (unsaved) config values. Called once the connection is verified.
+  const fetchESIndexes = async () => {
+    setEsIndexesLoading(true);
+    try {
+      const res = await apiIntegrations.listESIndexes(
+        integrationName === 'elasticsearch' ? 'ES' : integrationName,
+        currentAccountIds(),
+        buildProbeConfigValues(),
+        editData?.source || 'user',
+        editData?.id
+      );
+      setEsIndexes(Array.isArray(res?.indexes) ? res.indexes : []);
+      if (res?.error) snackbar.error(`Failed to load cluster indices: ${res.error}`);
+    } catch {
+      setEsIndexes([]);
+    } finally {
+      setEsIndexesLoading(false);
+    }
+  };
+
+  // Populate the ES index picker once the connection is verified — on edit-open
+  // (connectionVerified starts true) or after a successful Test Connection. The
+  // esIndexesLoading guard prevents a duplicate fetch when deps change together.
+  useEffect(() => {
+    const isES = integrationName === 'ES' || integrationName === 'elasticsearch';
+    if (!openModal || isLoadingSchema || !isES || !connectionVerified) return;
+    if (!formValues?.url || esIndexesLoading) return;
+    fetchESIndexes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openModal, connectionVerified, isLoadingSchema, formValues?.url]);
+
   const handleTestConnection = async () => {
     if (!validateForm()) return;
     setIsTesting(true);
     try {
-      const { account_id, integration_config_name: _, account_mapping: _m, ...restFormValues } = formValues;
-      const configValues = Object.entries(restFormValues).map(([key, value]) => {
-        const field = config.properties?.[key];
-        const fieldType = field?.type;
-        let transformedValue = value;
-        if (fieldType === 'boolean' || fieldType === 'bool' || fieldType === 'integer') {
-          transformedValue = String(value);
-        } else if (
-          field?.is_encrypted &&
-          editData?.integration_config_values?.[key] &&
-          value === '*************************************************'
-        ) {
-          transformedValue = editData?.integration_config_values?.[key];
-        }
-        return {
-          name: key,
-          value: transformedValue,
-          is_encrypted:
-            field?.is_encrypted && !!editData?.integration_config_values?.[key] && value === '*************************************************',
-        };
-      });
-
-      const accountIds = Array.isArray(account_id) ? account_id : account_id ? [account_id] : [];
       const result = await apiIntegrations.testIntegrationConnectionByConfig(
         integrationName === 'elasticsearch' ? 'ES' : integrationName,
-        accountIds,
-        configValues,
-        editData?.source || 'user'
+        currentAccountIds(),
+        buildProbeConfigValues(),
+        editData?.source || 'user',
+        editData?.id
       );
       if (result?.success) {
         setConnectionVerified(true);
@@ -836,9 +1014,53 @@ const IntegrationDynamicFormModal = ({
     if (!validateForm()) {
       return;
     }
+    if (LOG_FILTER_INTEGRATIONS.has(integrationName)) {
+      // Any card that has a filter entered must have an account selected.
+      const cardMissingAccount = defaultFilterRules.some(
+        (c) => !c.accountId && (c.filters || []).some((f) => (f.key || '').trim() || (f.value || '').trim())
+      );
+      if (cardMissingAccount) {
+        snackbar.error('Default Log Filters: please select an account for each filter card.');
+        return;
+      }
+    }
+    if (integrationName === 'ES' || integrationName === 'elasticsearch') {
+      // Any index card with an index entered must have an account selected.
+      const indexCardMissingAccount = indexRules.some(
+        (c) => !c.accountId && ((c.log_index || '').trim() || (c.metrics_index || '').trim() || (c.trace_index || '').trim())
+      );
+      if (indexCardMissingAccount) {
+        snackbar.error('Per-Account Index: please select an account for each index card.');
+        return;
+      }
+      // Validate each provided index resolves against the cluster — exact name or a
+      // glob pattern (logs-generic.* matches logs-generic.otel-default). Blank fields
+      // are ignored (they fall back to the top-level index). Skipped when the index
+      // list couldn't be loaded, so a fetch failure never blocks saving.
+      if (esIndexes.length > 0) {
+        const matchesCluster = (raw) => {
+          const p = raw.trim();
+          if (!p || esIndexes.includes(p)) return true;
+          const rx = new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+          return esIndexes.some((idx) => rx.test(idx));
+        };
+        const accLabel = (id) => accountOptions.find((o) => o.value === id)?.label || id;
+        for (const card of indexRules) {
+          const bad = [
+            ['log_index', 'Log Index'],
+            ['metrics_index', 'Metrics Index'],
+            ['trace_index', 'Trace Index'],
+          ].find(([field]) => (card[field] || '').trim() && !matchesCluster(card[field]));
+          if (bad) {
+            snackbar.error(`${bad[1]} "${(card[bad[0]] || '').trim()}" not found in the cluster for account ${accLabel(card.accountId)}.`);
+            return;
+          }
+        }
+      }
+    }
     setIsSubmitting(true);
 
-    if (['pagerduty', 'servicenow', 'github', 'gitlab', 'zenduty'].includes(integrationName)) {
+    if (['pagerduty', 'servicenow', 'github', 'gitlab', 'zenduty', 'freshdesk'].includes(integrationName)) {
       const { integration_config_name, ...restFormValues } = formValues;
       const transformedValues = Object.entries(restFormValues).reduce((acc, [key, value]) => {
         const field = config.properties?.[key];
@@ -975,6 +1197,56 @@ const IntegrationDynamicFormModal = ({
       }
     }
 
+    // Per-account Default Log Filters → default_filters. Keep a card only if it has
+    // an account and at least one non-empty (key, value); each row is stored as
+    // { key, op:'_eq', value } (equality only for now). Emit an empty array when a
+    // previously-saved config is cleared so filters can be removed.
+    if (LOG_FILTER_INTEGRATIONS.has(integrationName)) {
+      const cleanedFilters = defaultFilterRules
+        .map((c) => ({
+          accountId: c.accountId || '',
+          filters: (c.filters || [])
+            .map((f) => ({ key: (f.key || '').trim(), op: '_eq', value: (f.value || '').trim() }))
+            .filter((f) => f.key && f.value),
+        }))
+        .filter((c) => c.accountId && c.filters.length > 0);
+      const previouslySet = !!editData?.integration_config_values?.default_filters;
+      if (cleanedFilters.length > 0 || previouslySet) {
+        transformedValues.push({
+          name: 'default_filters',
+          value: JSON.stringify(cleanedFilters),
+          is_encrypted: false,
+        });
+      }
+    }
+
+    // Per-account ES index override → index_account_mapping. Keep a card only if it
+    // has an account and at least one non-empty index. Emit an empty array when a
+    // previously-saved config is cleared, so a stale mapping can be removed — config
+    // values are upserted per-name (no full wipe), so omitting it would leave the old value.
+    if (integrationName === 'ES' || integrationName === 'elasticsearch') {
+      const cleanedIndexRows = indexRules
+        .map((c) => {
+          const row = { account_id: c.accountId || '' };
+          const log = (c.log_index || '').trim();
+          const metrics = (c.metrics_index || '').trim();
+          const trace = (c.trace_index || '').trim();
+          if (log) row.log_index = log;
+          if (metrics) row.metrics_index = metrics;
+          if (trace) row.trace_index = trace;
+          return row;
+        })
+        .filter((r) => r.account_id && (r.log_index || r.metrics_index || r.trace_index));
+      const indexPreviouslySet = !!editData?.integration_config_values?.index_account_mapping;
+      if (cleanedIndexRows.length > 0 || indexPreviouslySet) {
+        transformedValues.push({
+          name: 'index_account_mapping',
+          value: JSON.stringify(cleanedIndexRows),
+          is_encrypted: false,
+        });
+      }
+    }
+
     // Per-source subject/namespace/severity mapping → webhook_label_mapping.
     // Each field is a comma-separated list of label key specs; serialize to
     // arrays. Emit when any field is set, or when a saved mapping is being
@@ -1004,7 +1276,7 @@ const IntegrationDynamicFormModal = ({
 
     // Ticketing systems use ticket_integration_create_config (ticket server)
     // Webhooks and other integrations use integrations_create_config (services server)
-    const ticketingIntegrations = ['pagerduty', 'jira', 'github', 'gitlab', 'zenduty', 'servicenow'];
+    const ticketingIntegrations = ['pagerduty', 'jira', 'github', 'gitlab', 'zenduty', 'servicenow', 'freshdesk'];
     const isTicketingSystem = ticketingIntegrations.includes(integrationName);
 
     if (isTicketingSystem) {
@@ -1283,6 +1555,13 @@ const IntegrationDynamicFormModal = ({
   // multiple rules (different label-combos routing to the same target), so
   // we don't filter the dropdown — just expose the full account list.
   const accountOptions = config.properties?.account_id?.possible_values || [];
+
+  // ES (integrationName is 'ES' or 'elasticsearch') shows the Advanced Settings
+  // section for the Per-Account Index mapping in BOTH add and edit flows. Default
+  // Log Filters is not shown for ES (per product decision), but for the other
+  // LOG_FILTER_INTEGRATIONS it's now shown in both add and edit flows too.
+  const isESIntegration = integrationName === 'ES' || integrationName === 'elasticsearch';
+  const showLogFilters = LOG_FILTER_INTEGRATIONS.has(integrationName) && !isESIntegration;
 
   // A fresh tenant with no onboarded cluster / cloud account has nothing to link
   // an account-scoped integration to. The `account_id` schema field is present
@@ -1944,6 +2223,8 @@ const IntegrationDynamicFormModal = ({
                       </Typography>
                       <FilterDropdown
                         label='Account'
+                        grouped
+                        groupIcon={renderAccountGroupIcon}
                         options={accountOptions}
                         value={rule.accountId}
                         onSelect={(_event, value) => handleRuleAccountChange(ruleIdx, value?.value ?? value)}
@@ -2030,6 +2311,300 @@ const IntegrationDynamicFormModal = ({
                   />
                 </Box>
               </>
+            )}
+            {(showLogFilters || isESIntegration) && (
+              <Box sx={{ mt: ds.space[6] }}>
+                <Box
+                  sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', mb: ds.space[2] }}
+                  onClick={() => setAdvancedOpen((v) => !v)}
+                  data-testid='advanced-settings-toggle'
+                >
+                  <KeyboardArrowDownIcon
+                    sx={{ transform: advancedOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s', color: ds.brand[500] }}
+                  />
+                  <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+                    Advanced Settings
+                  </Typography>
+                </Box>
+                <Collapse in={advancedOpen}>
+                  {showLogFilters && (
+                    <>
+                      <Typography
+                        sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[1] }}
+                      >
+                        Default Log Filters (Optional)
+                      </Typography>
+                      <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', mb: ds.space[4], pl: ds.space[1] }}>
+                        Filters always applied to every log query for the selected account (e.g. a central provider scoped to one cluster:{' '}
+                        <em>cluster_id = nudgebee</em>). Enter the provider-native column name. Conditions in a card are combined with AND.
+                      </Typography>
+                      {defaultFilterRules.map((card, cardIdx) => {
+                        const cardNeedsAccount = !card.accountId && (card.filters || []).some((f) => (f.key || '').trim() || (f.value || '').trim());
+                        const cardVal = columnValidation[cardIdx];
+                        return (
+                          <Box
+                            key={cardIdx}
+                            sx={{
+                              border: `1px solid ${ds.blue[400]}`,
+                              borderRadius: 'var(--ds-radius-lg)',
+                              p: 2,
+                              mb: ds.space[4],
+                              backgroundColor: ds.blue[100],
+                            }}
+                            data-testid={`default-filter-card-${cardIdx}`}
+                          >
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: ds.space[3] }}>
+                              <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}>
+                                Account {cardIdx + 1}
+                              </Typography>
+                              {defaultFilterRules.length > 1 && (
+                                <Button
+                                  tone='secondary'
+                                  size='xs'
+                                  composition='icon-only'
+                                  icon={
+                                    <SafeIcon
+                                      src={NewDelete}
+                                      alt='Remove account'
+                                      style={{ width: ds.space.mul(0, 7), height: ds.space.mul(0, 7) }}
+                                    />
+                                  }
+                                  aria-label='Remove account'
+                                  onClick={() => handleRemoveDefaultFilterCard(cardIdx)}
+                                />
+                              )}
+                            </Box>
+                            <FilterDropdown
+                              label='Account'
+                              grouped
+                              groupIcon={renderAccountGroupIcon}
+                              options={accountOptions}
+                              value={card.accountId}
+                              onSelect={(_event, value) => handleDefaultFilterAccountChange(cardIdx, value?.value ?? value)}
+                              isOptionsLoading={loadingOptions.account_id}
+                              disabled={!accountOptions.length}
+                              sx={{
+                                height: ds.space.mul(0, 22),
+                                mb: cardNeedsAccount ? ds.space[1] : ds.space[3],
+                                ...(cardNeedsAccount ? { borderColor: 'var(--ds-red-500)', boxShadow: '0 0 0 3px var(--ds-red-100)' } : {}),
+                              }}
+                            />
+                            {cardNeedsAccount && (
+                              <Typography sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)', mb: ds.space[3], pl: ds.space[1] }}>
+                                Select an account to apply these filters.
+                              </Typography>
+                            )}
+                            <Typography
+                              sx={{
+                                fontSize: 'var(--ds-text-small)',
+                                fontWeight: 'var(--ds-font-weight-semibold)',
+                                color: ds.brand[500],
+                                mb: ds.space[2],
+                              }}
+                            >
+                              ALWAYS APPLY
+                            </Typography>
+                            {card.filters.map((f, rowIdx) => (
+                              <Box key={rowIdx} sx={{ display: 'flex', gap: ds.space[3], alignItems: 'flex-end', mb: ds.space[2] }}>
+                                <Box sx={{ flex: 1 }}>
+                                  <Input
+                                    label={rowIdx === 0 ? 'Column' : ''}
+                                    placeholder='e.g. cluster_id'
+                                    value={f.key}
+                                    onChange={(value) => handleDefaultFilterRowChange(cardIdx, rowIdx, 'key', value)}
+                                    size='sm'
+                                    error={
+                                      cardVal?.done && (f.key || '').trim() && cardVal.invalid.includes((f.key || '').trim())
+                                        ? 'Not a known log column for this account.'
+                                        : undefined
+                                    }
+                                  />
+                                </Box>
+                                <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.brand[500], pb: ds.space[1] }}>=</Typography>
+                                <Box sx={{ flex: 1 }}>
+                                  <Input
+                                    label={rowIdx === 0 ? 'Value' : ''}
+                                    placeholder='e.g. nudgebee'
+                                    value={f.value}
+                                    onChange={(value) => handleDefaultFilterRowChange(cardIdx, rowIdx, 'value', value)}
+                                    size='sm'
+                                  />
+                                </Box>
+                                <Box sx={{ paddingBottom: ds.space[1] }}>
+                                  <Button
+                                    tone='secondary'
+                                    size='xs'
+                                    composition='icon-only'
+                                    icon={<SafeIcon src={NewDelete} alt='Remove' style={{ width: ds.space.mul(0, 7), height: ds.space.mul(0, 7) }} />}
+                                    aria-label='Remove filter'
+                                    disabled={card.filters.length === 1}
+                                    onClick={() => handleRemoveDefaultFilterRow(cardIdx, rowIdx)}
+                                  />
+                                </Box>
+                              </Box>
+                            ))}
+                            <Box sx={{ mt: ds.space[2], display: 'flex', alignItems: 'center', gap: ds.space[3], flexWrap: 'wrap' }}>
+                              <Button tone='secondary' size='sm' onClick={() => handleAddDefaultFilterRow(cardIdx)}>
+                                + Add filter
+                              </Button>
+                              <Button
+                                tone='secondary'
+                                size='sm'
+                                onClick={() => handleValidateCard(cardIdx)}
+                                disabled={!card.accountId || cardVal?.loading}
+                              >
+                                {cardVal?.loading ? 'Validating…' : 'Validate columns'}
+                              </Button>
+                              {cardVal?.done &&
+                                (cardVal.invalid.length === 0 ? (
+                                  <Typography sx={{ color: 'var(--ds-green-600)', fontSize: 'var(--ds-text-caption)' }}>
+                                    All columns valid ✓
+                                  </Typography>
+                                ) : (
+                                  <Typography sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)' }}>
+                                    {cardVal.invalid.length} unknown column{cardVal.invalid.length > 1 ? 's' : ''}
+                                  </Typography>
+                                ))}
+                            </Box>
+                          </Box>
+                        );
+                      })}
+                      <Button tone='secondary' size='md' onClick={handleAddDefaultFilterCard}>
+                        + Add account
+                      </Button>
+                    </>
+                  )}
+                  {isESIntegration && (
+                    <>
+                      <Typography
+                        sx={{
+                          color: ds.brand[500],
+                          fontSize: 'var(--ds-text-body)',
+                          fontWeight: 'var(--ds-font-weight-medium)',
+                          mt: showLogFilters ? ds.space[6] : 0,
+                          mb: ds.space[1],
+                        }}
+                      >
+                        Per-Account Index (Optional)
+                      </Typography>
+                      <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', mb: ds.space[4], pl: ds.space[1] }}>
+                        When one Elasticsearch endpoint serves multiple accounts, map each account to its own index. Leave a field blank to fall back
+                        to the index configured above.
+                      </Typography>
+                      {!connectionVerified ? (
+                        <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', pl: ds.space[1], mb: ds.space[3] }}>
+                          Run Test Connection to load the cluster&apos;s indices and configure per-account mapping.
+                        </Typography>
+                      ) : (
+                        <>
+                          {indexRules.map((card, cardIdx) => {
+                            const cardNeedsAccount =
+                              !card.accountId &&
+                              ((card.log_index || '').trim() || (card.metrics_index || '').trim() || (card.trace_index || '').trim());
+                            return (
+                              <Box
+                                key={cardIdx}
+                                sx={{
+                                  border: `1px solid ${ds.blue[400]}`,
+                                  borderRadius: 'var(--ds-radius-lg)',
+                                  p: 2,
+                                  mb: ds.space[4],
+                                  backgroundColor: ds.blue[100],
+                                }}
+                                data-testid={`index-map-card-${cardIdx}`}
+                              >
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: ds.space[3] }}>
+                                  <Typography
+                                    sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}
+                                  >
+                                    Account {cardIdx + 1}
+                                  </Typography>
+                                  {indexRules.length > 1 && (
+                                    <Button
+                                      tone='secondary'
+                                      size='xs'
+                                      composition='icon-only'
+                                      icon={
+                                        <SafeIcon
+                                          src={NewDelete}
+                                          alt='Remove account'
+                                          style={{ width: ds.space.mul(0, 7), height: ds.space.mul(0, 7) }}
+                                        />
+                                      }
+                                      aria-label='Remove account'
+                                      onClick={() => handleRemoveIndexCard(cardIdx)}
+                                    />
+                                  )}
+                                </Box>
+                                <FilterDropdown
+                                  label='Account'
+                                  grouped={config.properties?.account_id?.grouped}
+                                  groupIcon={config.properties?.account_id?.grouped ? renderAccountGroupIcon : undefined}
+                                  options={accountOptions}
+                                  value={card.accountId}
+                                  onSelect={(_event, value) => handleIndexCardChange(cardIdx, 'accountId', value?.value ?? value)}
+                                  isOptionsLoading={loadingOptions.account_id}
+                                  disabled={!accountOptions.length}
+                                  sx={{
+                                    height: ds.space.mul(0, 22),
+                                    mb: cardNeedsAccount ? ds.space[1] : ds.space[3],
+                                    ...(cardNeedsAccount ? { borderColor: 'var(--ds-red-500)', boxShadow: '0 0 0 3px var(--ds-red-100)' } : {}),
+                                  }}
+                                />
+                                {cardNeedsAccount && (
+                                  <Typography
+                                    sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)', mb: ds.space[3], pl: ds.space[1] }}
+                                  >
+                                    Select an account to apply these indices.
+                                  </Typography>
+                                )}
+                                <Box sx={{ display: 'flex', gap: ds.space[3], flexWrap: 'wrap' }}>
+                                  <Box sx={{ flex: '1 1 30%', minWidth: 180 }}>
+                                    <FilterDropdown
+                                      label='Log Index'
+                                      freeSolo
+                                      options={esIndexes}
+                                      value={card.log_index}
+                                      onSelect={(_e, v) => handleIndexCardChange(cardIdx, 'log_index', v?.value ?? v ?? '')}
+                                      isOptionsLoading={esIndexesLoading}
+                                      placeholder={formValues.log_index ? `inherit: ${formValues.log_index}` : 'inherit top-level'}
+                                    />
+                                  </Box>
+                                  <Box sx={{ flex: '1 1 30%', minWidth: 180 }}>
+                                    <FilterDropdown
+                                      label='Metrics Index'
+                                      freeSolo
+                                      options={esIndexes}
+                                      value={card.metrics_index}
+                                      onSelect={(_e, v) => handleIndexCardChange(cardIdx, 'metrics_index', v?.value ?? v ?? '')}
+                                      isOptionsLoading={esIndexesLoading}
+                                      placeholder={formValues.metrics_index ? `inherit: ${formValues.metrics_index}` : 'inherit top-level'}
+                                    />
+                                  </Box>
+                                  <Box sx={{ flex: '1 1 30%', minWidth: 180 }}>
+                                    <FilterDropdown
+                                      label='Trace Index'
+                                      freeSolo
+                                      options={esIndexes}
+                                      value={card.trace_index}
+                                      onSelect={(_e, v) => handleIndexCardChange(cardIdx, 'trace_index', v?.value ?? v ?? '')}
+                                      isOptionsLoading={esIndexesLoading}
+                                      placeholder={formValues.trace_index ? `inherit: ${formValues.trace_index}` : 'inherit top-level'}
+                                    />
+                                  </Box>
+                                </Box>
+                              </Box>
+                            );
+                          })}
+                          <Button tone='secondary' size='md' onClick={handleAddIndexCard}>
+                            + Add account
+                          </Button>
+                        </>
+                      )}
+                    </>
+                  )}
+                </Collapse>
+              </Box>
             )}
             <Box
               sx={{

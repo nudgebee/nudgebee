@@ -63,7 +63,7 @@ const KubernetesSSLCertificateRecommendation = (props) => {
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
     }
@@ -102,7 +102,7 @@ const KubernetesSSLCertificateRecommendation = (props) => {
             {
               icon: TicketsIcon,
               label: 'Create Ticket',
-              id: 0,
+              id: 'create-ticket',
               disabled: item.ticket !== undefined,
             },
           ];

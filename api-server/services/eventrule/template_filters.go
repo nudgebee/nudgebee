@@ -144,6 +144,11 @@ func init() {
 			for _, item := range v {
 				inputArray = append(inputArray, item)
 			}
+		case error:
+			// Upstream expressions (e.g. a failed series/label lookup) can resolve
+			// to an error value. Treat it as "no data" rather than piping the error
+			// downstream, where rendering its String() nil-panicked the whole eval.
+			return exec.AsValue([]interface{}{})
 		default:
 			return exec.AsValue(fmt.Errorf("pluck filter expects array, got %T", v))
 		}
@@ -183,6 +188,17 @@ func init() {
 		switch v := in.Interface().(type) {
 		case []interface{}:
 			inputArray = v
+		case []map[string]any:
+			// Mirror pluck: a raw series/label slice is often []map[string]any.
+			for _, item := range v {
+				inputArray = append(inputArray, item)
+			}
+		case error:
+			// Upstream expressions (e.g. a failed series/label lookup) can resolve
+			// to an error value. Treat it as "no data" so for_each degrades to zero
+			// iterations, instead of piping the error downstream where rendering its
+			// String() nil-panicked the whole control-parameter evaluation.
+			return exec.AsValue([]interface{}{})
 		default:
 			return exec.AsValue(fmt.Errorf("top filter expects array, got %T", v))
 		}

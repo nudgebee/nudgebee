@@ -1,6 +1,7 @@
 package account
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -30,7 +31,9 @@ var (
 // publishKGUpdate publishes a KG update message for a tenant.
 // Each tenant_id is published at most once per hour (deduplicated via in-memory cache).
 // Failures are logged but do NOT propagate — KG updates are best-effort.
-func publishKGUpdate(tenantID string) {
+// ctx carries the caller's trace context so the api-server KG consumer
+// continues the same distributed trace.
+func publishKGUpdate(ctx context.Context, tenantID string) {
 	now := time.Now().UTC()
 
 	kgUpdateCacheMu.Lock()
@@ -63,6 +66,7 @@ func publishKGUpdate(tenantID string) {
 		config.Config.RabbitMqKGUpdateQueue,
 		message,
 		common.MqPublishWithExpiration(2*time.Hour),
+		common.MqPublishWithContext(ctx),
 	)
 	if err != nil {
 		// Evict from cache so a retry is allowed on next call.

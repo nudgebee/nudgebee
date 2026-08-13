@@ -40,6 +40,7 @@ const (
 
 type GcpOnboardRequest struct {
 	AccountName    string `json:"account_name"`
+	AccountEnv     string `json:"account_env,omitempty" validate:"omitempty,oneof=prod non_prod"`
 	GcpProjectId   string `json:"gcp_project_id"`
 	GcpCredentials string `json:"gcp_credentials"`
 }
@@ -87,6 +88,7 @@ func GcpOnboard(context *security.RequestContext, query GcpOnboardRequest) (GcpO
 	// Create the account in the database
 	createAccountRequest := AccountCreateRequest{
 		AccountName:   query.AccountName,
+		AccountEnv:    query.AccountEnv,
 		CloudProvider: "GCP",
 		AccountType:   "cloud",
 		Tenant:        tenant,
@@ -210,6 +212,7 @@ func GcpBulkOnboard(context *security.RequestContext, query GcpBulkOnboardReques
 
 	parentResp, err := CreateAccount(context, AccountCreateRequest{
 		AccountName:   parentAccountName,
+		AccountEnv:    query.AccountEnv,
 		CloudProvider: "GCP",
 		AccountType:   "cloud",
 		Tenant:        tenant,
@@ -249,6 +252,7 @@ func GcpBulkOnboard(context *security.RequestContext, query GcpBulkOnboardReques
 
 		createResp, err := CreateAccount(context, AccountCreateRequest{
 			AccountName:     accountName,
+			AccountEnv:      query.AccountEnv,
 			CloudProvider:   "GCP",
 			AccountType:     "cloud",
 			Tenant:          tenant,
@@ -1194,6 +1198,14 @@ func AwsOnBoardUrl(context *security.RequestContext, query AccountCreateRequest)
 				Name: fmt.Sprintf("aws_onboard_ssm_access_%s", externalId), Value: "enabled",
 			})
 		}
+		// The cloud_accounts row is created later by cloud-collector when the stack calls
+		// back, so the chosen environment has to travel through tenant_attrs like the
+		// access mode above. Only stored when it differs from the column default.
+		if query.AccountEnv != "" && query.AccountEnv != "non_prod" {
+			tenantAttrs = append(tenantAttrs, tenantpkg.AttributeObject{
+				Name: fmt.Sprintf("aws_onboard_env_%s", externalId), Value: query.AccountEnv,
+			})
+		}
 		_, err = tenantpkg.UpsertTenantAttributes(context, tenantpkg.TenantAttributeUpsertRequest{
 			Object: tenantAttrs,
 		})
@@ -1261,7 +1273,7 @@ func AwsOnBoardUrl(context *security.RequestContext, query AccountCreateRequest)
 			AutoDetectionEnabled: config.Config.AwsOrgSnsTopicArn != "",
 		}, nil
 	}
-	return AwsOnBoardResponse{}, fmt.Errorf("acount: only for AWS")
+	return AwsOnBoardResponse{}, fmt.Errorf("account: only for AWS")
 }
 
 // AwsOnboardStatus checks if a single-account auto-registration has completed.
@@ -2264,6 +2276,7 @@ func AzureBulkOnboard(context *security.RequestContext, query AzureBulkOnboardRe
 
 	firstResp, err := CreateAccount(context, AccountCreateRequest{
 		AccountName:   firstAccountName,
+		AccountEnv:    query.AccountEnv,
 		CloudProvider: "Azure",
 		AccountType:   "cloud",
 		Tenant:        tenant,
@@ -2305,6 +2318,7 @@ func AzureBulkOnboard(context *security.RequestContext, query AzureBulkOnboardRe
 
 				createResp, err := CreateAccount(context, AccountCreateRequest{
 					AccountName:     accountName,
+					AccountEnv:      query.AccountEnv,
 					CloudProvider:   "Azure",
 					AccountType:     "cloud",
 					Tenant:          tenant,
@@ -2542,8 +2556,8 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 		return AccountUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 
-	if request.Status == "" && request.AccountName == "" && len(request.Data) == 0 {
-		return AccountUpdateResponse{}, fmt.Errorf("at least one of status, account_name, or data must be provided")
+	if request.Status == "" && request.AccountName == "" && request.AccountEnv == "" && len(request.Data) == 0 {
+		return AccountUpdateResponse{}, fmt.Errorf("at least one of status, account_name, account_env, or data must be provided")
 	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -2566,6 +2580,11 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 		}
 		setClauses = append(setClauses, fmt.Sprintf("account_name = $%d", argIdx))
 		args = append(args, request.AccountName)
+		argIdx++
+	}
+	if request.AccountEnv != "" {
+		setClauses = append(setClauses, fmt.Sprintf("account_env = $%d", argIdx))
+		args = append(args, request.AccountEnv)
 		argIdx++
 	}
 	if len(request.Data) > 0 {
@@ -2602,7 +2621,7 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 			TargetID:      request.Id,
 			AccountID:     request.Id,
 			TableName:     "cloud_accounts",
-			NewData:       map[string]any{"id": request.Id, "status": request.Status, "account_name": request.AccountName},
+			NewData:       map[string]any{"id": request.Id, "status": request.Status, "account_name": request.AccountName, "account_env": request.AccountEnv},
 		})
 	}
 	return AccountUpdateResponse{AffectedRows: int(affected)}, nil

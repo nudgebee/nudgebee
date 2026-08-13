@@ -382,7 +382,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						return "", fmt.Errorf("like clause %s not supported for non string type", binaryType)
 					}
 				case Eq:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					if columnDef.Type == "json" && tableDef.Source != database.AgentWarehouse {
 						binaryCondition.WriteString(" ")
 						binaryCondition.WriteString("@>")

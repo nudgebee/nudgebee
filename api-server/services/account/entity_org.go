@@ -3,6 +3,7 @@ package account
 // AwsOrgOnboardRequest is the request payload for initiating AWS Organization onboarding.
 type AwsOrgOnboardRequest struct {
 	AccountName string `json:"account_name" mapstructure:"account_name" validate:"required"`
+	AccountEnv  string `json:"account_env,omitempty" mapstructure:"account_env" validate:"omitempty,oneof=prod non_prod"`
 }
 
 // AwsOrgOnboardResponse is returned after initiating org onboarding.

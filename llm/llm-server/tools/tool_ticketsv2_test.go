@@ -186,9 +186,10 @@ func TestInferTicketPlatformFromQuery(t *testing.T) {
 		{"single platform lowercase", "list jira tickets", "jira"},
 		{"single platform mixed case", "Open GitHub Issues", "github"},
 		{"surrounding whitespace", "   pagerduty  alerts  ", "pagerduty"},
-		{"all six platforms recognized — gitlab", "show gitlab tickets", "gitlab"},
-		{"all six platforms recognized — servicenow", "servicenow incidents", "servicenow"},
-		{"all six platforms recognized — zenduty", "zenduty alerts", "zenduty"},
+		{"all seven platforms recognized — gitlab", "show gitlab tickets", "gitlab"},
+		{"all seven platforms recognized — servicenow", "servicenow incidents", "servicenow"},
+		{"all seven platforms recognized — zenduty", "zenduty alerts", "zenduty"},
+		{"all seven platforms recognized — freshdesk", "freshdesk tickets", "freshdesk"},
 		{"two distinct platforms → no inference", "compare jira and github", ""},
 		{"three distinct platforms → no inference", "jira github gitlab", ""},
 		{"no platform mentioned", "what is happening with my service", ""},
@@ -923,6 +924,7 @@ func TestTicketMasterV2_Metadata(t *testing.T) {
 		assert.Contains(t, desc, "ServiceNow")
 		assert.Contains(t, desc, "PagerDuty")
 		assert.Contains(t, desc, "ZenDuty")
+		assert.Contains(t, desc, "Freshdesk")
 	})
 
 	t.Run("InputSchema has command property", func(t *testing.T) {
@@ -1070,4 +1072,60 @@ func TestTicketServerListTypes(t *testing.T) {
 		assert.Empty(t, result.Tickets)
 		assert.Equal(t, 0, result.Total)
 	})
+}
+
+// TestTicketServerGetTicketResponse_ParsesAttachments verifies the get-ticket
+// response type carries the normalized attachments through JSON unmarshal.
+func TestTicketServerGetTicketResponse_ParsesAttachments(t *testing.T) {
+	body := []byte(`{"data":{"id":"146","ticket_id":"146","title":"t","attachments":[
+		{"name":"trace.json","content_type":"application/json","size":512,"url":"https://s3/f2?sig=y","source":"conversation:9001"},
+		{"name":"inline-image-1","content_type":"image","url":"https://indattachment.freshdesk.com/inline/x","source":"inline"}
+	]}}`)
+	var result ticketServerGetTicketResponse
+	err := common.UnmarshalJson(body, &result)
+	assert.NoError(t, err)
+	assert.Len(t, result.Data.Attachments, 2)
+	assert.Equal(t, "trace.json", result.Data.Attachments[0].Name)
+	assert.Equal(t, "https://s3/f2?sig=y", result.Data.Attachments[0].URL)
+	assert.Equal(t, "conversation:9001", result.Data.Attachments[0].Source)
+	assert.Equal(t, int64(512), result.Data.Attachments[0].Size)
+	assert.Equal(t, "inline", result.Data.Attachments[1].Source)
+}
+
+// TestRenderV2TicketDetail_Attachments verifies the get_ticket output lists each
+// attachment (name + URL + source) and the download-guidance line.
+func TestRenderV2TicketDetail_Attachments(t *testing.T) {
+	detail := ticketServerTicketDetail{
+		TicketID:    "146",
+		Title:       "DNS failure",
+		Status:      "Open",
+		Description: "See screenshot",
+		Attachments: []ticketServerAttachment{
+			{Name: "app-error.log", ContentType: "text/plain", Size: 20481, URL: "https://s3/file1?sig=x", Source: "ticket"},
+			{Name: "inline-image-1", ContentType: "image", URL: "https://indattachment.freshdesk.com/inline/x", Source: "inline"},
+		},
+	}
+
+	out := renderV2TicketDetail(detail)
+
+	// Base fields still render after the refactor.
+	assert.Contains(t, out, "**146** — DNS failure")
+	assert.Contains(t, out, "**Description:**")
+	// Attachments section lists each entry with name, URL, and source tag.
+	assert.Contains(t, out, "**Attachments (2):**")
+	assert.Contains(t, out, "app-error.log")
+	assert.Contains(t, out, "https://s3/file1?sig=x")
+	assert.Contains(t, out, "[ticket]")
+	assert.Contains(t, out, "inline-image-1")
+	assert.Contains(t, out, "https://indattachment.freshdesk.com/inline/x")
+	assert.Contains(t, out, "[inline]")
+	// Download guidance is present.
+	assert.Contains(t, out, "shell_execute")
+}
+
+// TestRenderV2TicketDetail_NoAttachments verifies no Attachments section is printed
+// when the ticket has none (keeps non-Freshdesk adapters unaffected).
+func TestRenderV2TicketDetail_NoAttachments(t *testing.T) {
+	out := renderV2TicketDetail(ticketServerTicketDetail{TicketID: "1", Title: "x"})
+	assert.NotContains(t, out, "Attachments")
 }

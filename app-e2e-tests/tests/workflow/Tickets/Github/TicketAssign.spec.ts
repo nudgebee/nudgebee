@@ -58,9 +58,15 @@ test("Automation workflow Github Ticket Assign", async ({ page }) => {
   await selectProjectKey(page, locators, process.env.GITHUB_PROJECT_KEY ?? "");
 
   const assignee = process.env.GITHUB_ASSIGNEE ?? "";
-  const assigneeInput = locators.dialog.getByRole("combobox", { name: /assignee/i });
-  await assigneeInput.fill(assignee);
-  await assigneeInput.press("Enter");
+  const assigneeBtn = locators.dialog.getByRole("button", { name: /Select or type assignee/i });
+  await assigneeBtn.waitFor({ state: "visible", timeout: 15000 });
+  await assigneeBtn.click();
+  await page.waitForTimeout(300);
+  await page.keyboard.type(assignee);
+  await page.waitForTimeout(300);
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
   console.log(`Filled assignee: ${assignee}`);
 
   await dryRunAction(page, locators);

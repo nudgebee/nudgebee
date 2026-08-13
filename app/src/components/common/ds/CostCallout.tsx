@@ -52,7 +52,7 @@ export interface CostCalloutProps {
 }
 
 const TONE_COLOR: Record<CostTone, string> = {
-  'high-savings': 'var(--ds-green-700)',
+  'high-savings': 'var(--ds-green-600)',
   'medium-savings': 'var(--ds-green-600)',
   'low-savings': 'var(--ds-green-600)',
   neutral: 'var(--ds-gray-600)',

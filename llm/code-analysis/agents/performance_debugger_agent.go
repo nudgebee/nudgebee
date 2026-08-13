@@ -65,6 +65,16 @@ func NewPerformanceDebuggerAgentWithTracker(cfg *config.Config, llmClient *llm.C
 	}
 }
 
+// Ledger exposes the specialist's investigation ledger so the orchestrator can
+// hand its distilled knowledge to the fixer instead of letting the fixer
+// re-investigate from step 1.
+func (a *PerformanceDebuggerAgent) Ledger() *planners.Ledger {
+	if a == nil || a.planner == nil {
+		return nil
+	}
+	return a.planner.Ledger()
+}
+
 func (a *PerformanceDebuggerAgent) SetLogger(logger *common.Logger) {
 	a.logger = logger
 	if a.planner != nil {

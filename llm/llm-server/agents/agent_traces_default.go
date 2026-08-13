@@ -46,22 +46,13 @@ func (l TracesDefaultAgent) GetSystemPrompt(ctx *security.RequestContext, query 
 		"The tool takes a JSON query in the unified Nudgebee trace schema. The services-server translates it for the underlying provider.",
 		"The JSON query schema is: `{\"where\": {\"<field>\":{\"<operator>\":\"<value>\"}}}`",
 		"Available fields and operators:",
-		"  - **service_name** (string): The service name. Operators: `_eq`, `_in`",
-		"  - **workload_name** (string): Source workload/service name. Operators: `_eq`, `_in`",
-		"  - **span_name** (string): The operation/span name. Operators: `_eq`",
-		"  - **trace_id** (string): A specific trace ID. Operators: `_eq`",
-		"  - **duration_ns** (integer, nanoseconds): Span duration. Operators: `_gt`, `_gte`, `_lt`, `_lte`",
-		"  - **http_status_code** (integer): HTTP response status code. Operators: `_eq`, `_in`",
-		"  - **status_code** (string): Span status. Values: `STATUS_CODE_ERROR`, `STATUS_CODE_OK`, `STATUS_CODE_UNSET`. Operators: `_eq`",
-		"  - **resource** (string): HTTP URL or DB statement. Operators: `_eq`, `_like`",
-		"  - **destination_workload_name** (string): Target service that received the request. Operators: `_eq`, `_in`. MUST always be combined with service_name or workload_name.",
-		"  - **destination_workload_namespace** (string): Namespace of the destination service. Operators: `_eq`. MUST always be used with destination_workload_name.",
-		"**Source vs Destination:** `service_name`/`workload_name` is the source service. `destination_workload_name` is the target. When the user mentions only one service (e.g. 'get traces for llm-server'), use `service_name` only — do NOT add destination_workload_name.",
-		"**Duration conversion:** 1 second = 1000000000 nanoseconds, 1 millisecond = 1000000 nanoseconds.",
+	}
+	instructions = append(instructions, genericTraceFieldDocLines()...)
+	instructions = append(instructions,
 		"Once you have results, provide a concise, human-readable answer.",
 		"**STRICT SECURITY RULE:** You MUST NOT include the JSON query, the tool name, or any internal implementation details in your final answer to the user.",
 		"**Empty Results Handling:** If the tool returns no data, state 'No traces were found for the specified criteria'. Do not expose internal queries.",
-	}
+	)
 
 	constraints := []string{
 		"Only use the `traces_execute_default` tool to query trace data.",
@@ -148,4 +139,27 @@ func (l TracesDefaultAgent) GetPlannerType() core.AgentPlannerType {
 
 func (l TracesDefaultAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
 	return toolResponse
+}
+
+// genericTraceFieldDocLines documents the provider-independent canonical trace field
+// vocabulary plus the source-vs-destination and duration-conversion rules. It is the
+// single source of truth shared by TracesDefaultAgent (v1) and TracesDefaultAgentV2's
+// empty-capabilities fallback (when a provider advertises no label mappings).
+func genericTraceFieldDocLines() []string {
+	return []string{
+		"  - **service_name** (string): The service name. Operators: `_eq`, `_in`",
+		"  - **workload_name** (string): Source workload/service name. Operators: `_eq`, `_in`",
+		"  - **span_name** (string): The operation/span name. Operators: `_eq`",
+		"  - **trace_id** (string): A specific trace ID. Operators: `_eq`",
+		"  - **duration_ns** (integer, nanoseconds): Span duration. Operators: `_gt`, `_gte`, `_lt`, `_lte`",
+		"  - **http_status_code** (integer): HTTP response status code. Operators: `_eq`, `_in`",
+		"  - **http_method** (string): HTTP request method, e.g. `GET`, `POST`, `PUT`, `DELETE`. Operators: `_eq`, `_in`",
+		"  - **status_code** (string): Span status. Values: `STATUS_CODE_ERROR`, `STATUS_CODE_OK`, `STATUS_CODE_UNSET`. Operators: `_eq`",
+		"  - **deployment_environment** (string): Deployment environment, e.g. `production`, `staging`, `dev`. Operators: `_eq`, `_in`",
+		"  - **resource** (string): HTTP URL or DB statement. Operators: `_eq`, `_like`. Do NOT use for HTTP method or environment — use http_method / deployment_environment.",
+		"  - **destination_workload_name** (string): Target service that received the request. Operators: `_eq`, `_in`. MUST always be combined with service_name or workload_name.",
+		"  - **destination_workload_namespace** (string): Namespace of the destination service. Operators: `_eq`. MUST always be used with destination_workload_name.",
+		"**Source vs Destination:** `service_name`/`workload_name` is the source service. `destination_workload_name` is the target. When the user mentions only one service (e.g. 'get traces for llm-server'), use `service_name` only — do NOT add destination_workload_name.",
+		"**Duration conversion:** 1 second = 1000000000 nanoseconds, 1 millisecond = 1000000 nanoseconds.",
+	}
 }

@@ -10,13 +10,27 @@ import (
 // NodeMatcher provides flexible node matching capabilities for flow sources
 // Flow sources use this to find nodes in the existing graph that match their flow data
 type NodeMatcher struct {
-	nodes []*core.DbNode
+	nodes          []*core.DbNode
+	uniqueKeyIndex map[string]*core.DbNode
+	nodeTypeIndex  map[core.NodeType][]*core.DbNode
 }
 
 // NewNodeMatcher creates a new NodeMatcher with the given nodes
 func NewNodeMatcher(nodes []*core.DbNode) *NodeMatcher {
+	ukIndex := make(map[string]*core.DbNode, len(nodes))
+	ntIndex := make(map[core.NodeType][]*core.DbNode)
+	for _, n := range nodes {
+		if n.UniqueKey != "" {
+			if _, exists := ukIndex[n.UniqueKey]; !exists {
+				ukIndex[n.UniqueKey] = n
+			}
+		}
+		ntIndex[n.NodeType] = append(ntIndex[n.NodeType], n)
+	}
 	return &NodeMatcher{
-		nodes: nodes,
+		nodes:          nodes,
+		uniqueKeyIndex: ukIndex,
+		nodeTypeIndex:  ntIndex,
 	}
 }
 
@@ -86,7 +100,13 @@ func (m *NodeMatcher) FindNode(criteria MatchCriteria) (*MatchResult, error) {
 func (m *NodeMatcher) FindNodes(criteria MatchCriteria) []*MatchResult {
 	results := make([]*MatchResult, 0)
 
-	for _, node := range m.nodes {
+	// When a NodeType filter is set, scan only nodes of that type via the index
+	candidates := m.nodes
+	if criteria.NodeType != "" {
+		candidates = m.nodeTypeIndex[criteria.NodeType]
+	}
+
+	for _, node := range candidates {
 		if match, confidence, matchedBy, strategy := m.matchNode(node, criteria); match {
 			results = append(results, &MatchResult{
 				Node:          node,
@@ -103,23 +123,15 @@ func (m *NodeMatcher) FindNodes(criteria MatchCriteria) []*MatchResult {
 
 // FindNodeByUniqueKey finds a node by its exact unique key
 func (m *NodeMatcher) FindNodeByUniqueKey(uniqueKey string) (*core.DbNode, error) {
-	for _, node := range m.nodes {
-		if node.UniqueKey == uniqueKey {
-			return node, nil
-		}
+	if node, ok := m.uniqueKeyIndex[uniqueKey]; ok {
+		return node, nil
 	}
 	return nil, fmt.Errorf("node with unique_key '%s' not found", uniqueKey)
 }
 
 // FindNodesByType finds all nodes of a specific type
 func (m *NodeMatcher) FindNodesByType(nodeType core.NodeType) []*core.DbNode {
-	matches := make([]*core.DbNode, 0)
-	for _, node := range m.nodes {
-		if node.NodeType == nodeType {
-			matches = append(matches, node)
-		}
-	}
-	return matches
+	return m.nodeTypeIndex[nodeType]
 }
 
 // FindNodeByProperty finds nodes by a single property match

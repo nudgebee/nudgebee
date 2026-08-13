@@ -36,11 +36,17 @@ import (
 const CTX_IS_PUBLIC = "isPublic"
 
 var errorFormatter = slogformatter.ErrorFormatter("error")
+
+// TraceLogHandler stamps trace_id/span_id from the record context onto every
+// slog.XxxContext line, so context-style logging correlates in Loki without
+// threading a stamped logger through every call site.
 var logger = slog.New(
-	slogformatter.NewFormatterHandler(errorFormatter)(
-		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		}),
+	common.NewTraceLogHandler(
+		slogformatter.NewFormatterHandler(errorFormatter)(
+			slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelInfo,
+			}),
+		),
 	),
 )
 
@@ -184,8 +190,14 @@ func main() {
 	r := gin.New()
 	pprof.Register(r)
 	r.Use(gin.Recovery())
-	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
+	// otelgin must run before sloggin so the server span is on the request
+	// context when the access log line is emitted with trace_id/span_id.
 	r.Use(otelgin.Middleware(config.SERVICE_NAME))
+	slogginConfig := sloggin.DefaultConfig()
+	slogginConfig.WithTraceID = true
+	slogginConfig.WithSpanID = true
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health")}
+	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
 

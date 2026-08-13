@@ -45,6 +45,7 @@ const GithubAccountModal = ({ openModal, handleClose, editConfig = null }) => {
       setGithubName(editConfig.name || '');
       setGithubToken(TOKEN_PLACEHOLDER);
       setGithubUserName(editConfig.username || '');
+      setAuthType(editConfig.auth_type === 'application' ? 'github-app' : 'user-token');
     } else {
       setGithubName('');
       setGithubToken('');
@@ -487,6 +488,7 @@ GithubAccountModal.propTypes = {
     name: PropTypes.string,
     url: PropTypes.string,
     username: PropTypes.string,
+    auth_type: PropTypes.string,
   }),
 };
 

@@ -40,7 +40,7 @@ func TestGenerateCanonicalLogQuery_Live(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(tenant, user, nil)
 
 	a := newFetchLogsAgentV2(account)
-	a.ensureLabelsAndIndices()
+	a.fields, a.indices = fetchLabelsAndIndices(account, a.provider)
 	t.Logf("provider=%q\n  label_mappings=%v\n  supported_operators=%v\n  backend_labels=%v\n  default_index=%q",
 		a.provider.Provider, a.provider.Capabilities.LabelMappings,
 		a.provider.Capabilities.SupportedOperators, a.fields, a.provider.DefaultIndex)

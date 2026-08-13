@@ -53,12 +53,13 @@ func ValidateAndGetMetadataWithContext(ctx context.Context, configuration models
 		"servicenow": validateServiceNowConfigurationAndReturnMetadata,
 		"pagerduty":  validatePagerDutyConfigurationAndReturnMetadata,
 		"zenduty":    validateZenDutyConfigurationAndReturnMetadata,
+		"freshdesk":  validateFreshdeskConfigurationAndReturnMetadata,
 	}
 
 	if validateFunc, exists := validationFunctions[configuration.Tool]; exists {
 		return validateFunc(ctx, configuration)
 	}
-	return nil, fmt.Errorf("invalid tool: %s (supported tools: jira, github, gitlab, servicenow, pagerduty, zenduty)", configuration.Tool)
+	return nil, fmt.Errorf("invalid tool: %s (supported tools: jira, github, gitlab, servicenow, pagerduty, zenduty, freshdesk)", configuration.Tool)
 }
 
 // ExistingConfig holds the stored fields of an integration that the edit/test
@@ -176,8 +177,10 @@ func QuickValidateCredentials(ctx context.Context, configuration models.TicketCo
 		return quickValidatePagerDuty(ctx, configuration)
 	case "zenduty":
 		return quickValidateZenDuty(ctx, configuration)
+	case "freshdesk":
+		return quickValidateFreshdesk(ctx, configuration)
 	default:
-		return fmt.Errorf("invalid tool: %s (supported tools: jira, github, gitlab, servicenow, pagerduty, zenduty)", configuration.Tool)
+		return fmt.Errorf("invalid tool: %s (supported tools: jira, github, gitlab, servicenow, pagerduty, zenduty, freshdesk)", configuration.Tool)
 	}
 }
 
@@ -364,6 +367,10 @@ func quickValidateZenDuty(ctx context.Context, configuration models.TicketConfig
 		return fmt.Errorf("zenduty user '%s' not found in this account", configuration.Username)
 	}
 	return nil
+}
+
+func quickValidateFreshdesk(ctx context.Context, configuration models.TicketConfigurations) error {
+	return tools.QuickValidateFreshdesk(ctx, configuration)
 }
 
 // PopulateMetadataAsync fetches full metadata in the background and updates the DB.
@@ -728,6 +735,41 @@ func validateZenDutyConfigurationAndReturnMetadata(ctx context.Context, configur
 		{"projects": projects},
 		{"priorities": priorities},
 		{"users": users},
+	}, nil
+}
+
+// validateFreshdeskConfigurationAndReturnMetadata validates Freshdesk credentials
+// and returns the group list as projects (Project.Key is the numeric group_id)
+// plus the four static Freshdesk priorities.
+//
+// Connectivity is validated with a ticket read (which a ticket-scoped key can do)
+// so this is the authoritative validity gate — an invalid URL/key fails here and
+// the caller (SyncConfigurations) correctly disables the integration. Listing
+// groups is create-ticket metadata only and requires an admin-scoped key (a
+// ticket-read-only key gets 403), so a group-list failure is treated as
+// non-fatal: the integration stays enabled for read/RCA use with empty projects,
+// instead of being disabled for lacking group permission.
+func validateFreshdeskConfigurationAndReturnMetadata(ctx context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
+	if err := tools.QuickValidateFreshdesk(ctx, configuration); err != nil {
+		return nil, err
+	}
+
+	projects, err := tools.FetchFreshdeskGroups(ctx, configuration)
+	if err != nil {
+		slog.Warn("Freshdesk: could not list groups; create-ticket metadata unavailable, continuing with read-only capability", "error", err)
+		projects = []models.Project{}
+	}
+
+	priorities := []models.Priority{
+		{ID: "1", Name: "Low"},
+		{ID: "2", Name: "Medium"},
+		{ID: "3", Name: "High"},
+		{ID: "4", Name: "Urgent"},
+	}
+
+	return []map[string]interface{}{
+		{"projects": projects},
+		{"priorities": priorities},
 	}, nil
 }
 

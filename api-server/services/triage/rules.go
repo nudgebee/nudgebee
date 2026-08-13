@@ -597,26 +597,37 @@ func applyClassificationRule(rule *TriageRule) *AutoClassification {
 
 // applyAutoClassificationToEvent applies auto-classification to an event
 func applyAutoClassificationToEvent(ctx context.Context, db *sqlx.DB, event *models.Event, ac *AutoClassification) error {
+	// Resolve the duplicate link BEFORE mutating nb_status - always use TRUE first event
+	// from chain
+	if ac.Classification == ClassificationDuplicate && event.Fingerprint != nil && event.CloudAccountId != nil {
+		firstEventID := getFirstEventIDFromChain(ctx, db, *event.Fingerprint, *event.CloudAccountId)
+		if firstEventID == event.Id {
+			// This event IS the chain's original: marking it a duplicate of itself would
+			// leave the whole chain DUPLICATE with nothing to link to and no open event.
+			// Reachable only when a stale occurrence number slipped past the rule match
+			// (e.g. the event was re-processed after later chain members were recorded).
+			slog.WarnContext(ctx, "Refusing to auto-classify chain-first event as duplicate of itself",
+				"event_id", event.Id,
+				"fingerprint", *event.Fingerprint,
+			)
+			return nil
+		}
+		if firstEventID != "" {
+			// Update ac.LinkedEventID to use the correct first event for classification record
+			ac.LinkedEventID = &firstEventID
+		}
+		// else: fall back to the rule-provided linked_event_id (if any) when no chain found
+	}
+
 	// Update nb_status
 	if err := updateEventNBStatusFromEvent(ctx, db, event.Id, ac.NewStatus); err != nil {
 		return err
 	}
 
-	// Add duplicate label if applicable - always use TRUE first event from chain
-	if ac.Classification == ClassificationDuplicate && event.Fingerprint != nil && event.CloudAccountId != nil {
-		// Look up the TRUE first event from the duplicate chain
-		firstEventID := getFirstEventIDFromChain(ctx, db, *event.Fingerprint, *event.CloudAccountId)
-		if firstEventID != "" && firstEventID != event.Id {
-			if err := addDuplicateLabel(ctx, db, event.Id, firstEventID); err != nil {
-				slog.WarnContext(ctx, "Failed to add duplicate label", "error", err)
-			}
-			// Update ac.LinkedEventID to use the correct first event for classification record
-			ac.LinkedEventID = &firstEventID
-		} else if ac.LinkedEventID != nil {
-			// Fallback to provided linked_event_id if no chain found
-			if err := addDuplicateLabel(ctx, db, event.Id, *ac.LinkedEventID); err != nil {
-				slog.WarnContext(ctx, "Failed to add duplicate label", "error", err)
-			}
+	// Add duplicate label if applicable
+	if ac.Classification == ClassificationDuplicate && event.Fingerprint != nil && event.CloudAccountId != nil && ac.LinkedEventID != nil {
+		if err := addDuplicateLabel(ctx, db, event.Id, *ac.LinkedEventID); err != nil {
+			slog.WarnContext(ctx, "Failed to add duplicate label", "error", err)
 		}
 	}
 

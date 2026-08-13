@@ -260,7 +260,7 @@ type IConversationDao interface {
 	GetAgentNameFromAgentId(agentId string) (string, error)
 	UpdateConversationAgentThought(agentId, thought string) error
 	GetConversationAgentInput(agentId, accountId string) (string, error)
-	SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference, metadata []byte) error
+	SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference, metadata []byte, memoryRefs []byte) error
 	TerminateConversation(context *security.RequestContext, accountId, conversationId string) error
 	CountWaitingSubAgents(parentAgentId, messageId string) (int, error)
 	MarkInProgressConversationAsKilled() error
@@ -290,6 +290,9 @@ type IConversationDao interface {
 	GetLatestConversationBySessionIDWithMessages(sessionID string, accountId string) (*ConversationWithMessages, error)
 	ListConversations(accountId string, userId string, queryLike string, source string, limit int, offset int) ([]Conversation, error)
 	SaveCritique(critique *ConversationCritique) error
+	GetCritiqueSummary(filter CritiqueFilter) (CritiqueSummary, error)
+	GetCritiqueTrend(filter CritiqueFilter, granularity string) (CritiqueTrend, error)
+	GetCritiqueList(filter CritiqueFilter, limit, offset int) (CritiqueList, error)
 	SaveLongTermMemory(accountId, conversationId, messageId, content string, memoryType MemoryType) (string, error)
 	LoadLongTermMemories(accountId string, query string, limit int) ([]string, error)
 	ListLongTermMemories(accountId string, conversationId string, messageId string, memoryType string, query string, limit int, offset int) ([]LongTermMemory, error)
@@ -320,6 +323,17 @@ const (
 	AgentReferenceTypeMemory       AgentReferenceType = "memory"
 	AgentReferenceTypeKB           AgentReferenceType = "knowledge_base"
 	AgentReferenceTypeContextState AgentReferenceType = "context_state"
+
+	// Memory-v2 injection reference types. Written by the memory bridge for
+	// every item that made it into the composed slab; the hydration SELECT in
+	// GetConversationReferences joins each of these to its owning
+	// llm_memory_<layer> table to surface subject/content for the UI.
+	AgentReferenceTypeMemorySoul        AgentReferenceType = "memory_soul"
+	AgentReferenceTypeMemoryPreferences AgentReferenceType = "memory_preferences"
+	AgentReferenceTypeMemoryPatterns    AgentReferenceType = "memory_patterns"
+	AgentReferenceTypeMemoryDecisions   AgentReferenceType = "memory_decisions"
+	AgentReferenceTypeMemoryCollective  AgentReferenceType = "memory_collective"
+	AgentReferenceTypeMemorySession     AgentReferenceType = "memory_session"
 )
 
 type AgentReference struct {
@@ -339,6 +353,17 @@ type ConversationReference struct {
 	Metadata       map[string]any     `json:"metadata,omitempty" db:"metadata"`
 	Content        *string            `json:"content" db:"content"`
 	CreatedAt      time.Time          `json:"created_at" db:"created_at"`
+	// Used is derived at read time from EXISTS on llm_conversation_tool_calls.memory_refs
+	// containing this reference's position (metadata->>'position'). Point 7
+	// of the memory data-audit baseline — the audit UI shows a "used ✓"
+	// chip when the LLM self-attributed at least one action to this row.
+	Used bool `json:"used" db:"used"`
+	// UsedByAgent is the citing agent's display name (from
+	// llm_conversation_agent.agent_name via r.agent_id JOIN). Empty when
+	// agent_id has no matching row — never treat as authoritative on its
+	// own; always show alongside Used=true so a stale/orphan agent_name
+	// can't imply the ref was actually cited.
+	UsedByAgent string `json:"used_by_agent,omitempty" db:"used_by_agent"`
 }
 
 type ConversationDao struct {
@@ -387,16 +412,99 @@ type TokenUsageRecord struct {
 }
 
 func (chat *ConversationDao) ListAgentReferences(accountId, conversationId, messageId, agentId string, limit int) ([]ConversationReference, error) {
+	// Memory-v2 hydration notes:
+	//   * patterns/decisions/collective/preferences JOIN their own layer table
+	//     by UUID and project a subject-first display string so the UI's
+	//     Additional Contexts panel shows something meaningful, not just a
+	//     reference_id.
+	//   * soul and session don't have UUID PKs (soul = (tenant,scope,user);
+	//     session = session_id), so their reference_id is a composite string
+	//     and we fall back to r.metadata->>'subject' — populated by the memory
+	//     bridge — for the display value. The (reference_type, content) dedup
+	//     below still applies.
+	//   * The inner subquery pre-computes `reference_uuid` once via a
+	//     regex-guarded cast. Doing this in one place instead of six
+	//     defends against Postgres constant-folding the cast on non-UUID
+	//     reference_ids (which would blow up the whole query with
+	//     "invalid input syntax for type uuid") and keeps the JOIN clauses
+	//     readable. Indexes on the joined tables' `id` columns are still
+	//     used — the planner sees a plain uuid comparison.
 	query := `SELECT r.id, r.account_id, r.conversation_id, r.message_id, r.agent_id, r.reference_id, r.reference_type, r.metadata::text, r.created_at,
 			    CASE
 					WHEN r.reference_type = 'context_state' THEN r.metadata::text
 					WHEN r.reference_type = 'memory' THEN m.content
 					WHEN r.reference_type = 'knowledge_base' THEN k.data
-				END AS content
-			  FROM llm_conversation_references r
-			  LEFT JOIN llm_conversation_memory m ON (r.reference_id::uuid = m.id AND r.reference_type = 'memory')
-			  LEFT JOIN llm_knowledgebases k ON (r.reference_id::uuid = k.id AND r.reference_type = 'knowledge_base')
-			  WHERE r.account_id = $1::text`
+					-- COALESCE(joined-projection, metadata->>'subject', '') so a
+					-- memory row deleted/decayed between injection and read still
+					-- surfaces its historical subject (from the metadata stamped
+					-- at write time) instead of vanishing from the audit trail.
+					WHEN r.reference_type = 'memory_patterns' THEN COALESCE(mp.subject || CASE WHEN COALESCE(mp.description,'') <> '' THEN ': ' || mp.description ELSE '' END, r.metadata->>'subject', '')
+					WHEN r.reference_type = 'memory_decisions' THEN COALESCE(md.subject || CASE WHEN COALESCE(md.rationale,'') <> '' THEN ': ' || md.rationale ELSE '' END, r.metadata->>'subject', '')
+					WHEN r.reference_type = 'memory_collective' THEN COALESCE(mc.subject || CASE WHEN COALESCE(mc.body,'') <> '' THEN ': ' || mc.body ELSE '' END, r.metadata->>'subject', '')
+					WHEN r.reference_type = 'memory_preferences' THEN COALESCE(mpr.key || CASE WHEN mpr.value IS NOT NULL THEN ': ' || mpr.value::text ELSE '' END, r.metadata->>'subject', '')
+					WHEN r.reference_type IN ('memory_soul','memory_session') THEN COALESCE(NULLIF(r.metadata->>'content',''), r.metadata->>'subject', '')
+				END AS content,
+				-- used = point 7 audit signal. Only meaningful for memory_* rows:
+				-- true when at least one llm_conversation_tool_calls row on the
+				-- same message_id carries this reference's position in its
+				-- memory_refs jsonb. False (or trivially false) for context_state,
+				-- memory (legacy), and knowledge_base — those aren't in the
+				-- <memory_index> the LLM cites from.
+				CASE
+					-- LIKE pattern escapes the literal underscore in 'memory_%'
+					-- ('_' is a single-char wildcard in LIKE) so a hypothetical
+					-- 'memoryX_foo' reference_type wouldn't match. jsonb_exists()
+					-- avoids the '?' operator, which some Go SQL layers rebind as
+					-- a placeholder.
+					WHEN r.reference_type LIKE 'memory\_%' AND r.reference_type NOT IN ('memory') AND jsonb_exists(r.metadata, 'position') THEN
+						EXISTS (
+							-- Uuid casts hoisted into the outer subquery
+							-- (r.conversation_uuid, r.message_uuid) so this
+							-- correlated EXISTS is a plain column-to-column
+							-- compare — no repeated regex CASE, planner keeps
+							-- b-tree lookups on tc's (conversation_id, message_id).
+							-- Compare jsonb-to-jsonb via '->' (not '->>'::int) so a
+							-- non-numeric position on a legacy/malformed row
+							-- returns null and fails the containment cleanly
+							-- instead of throwing a cast error and 500-ing the
+							-- whole list. writer stores position as a JSON
+							-- number, so both sides are jsonb numbers.
+							SELECT 1 FROM llm_conversation_tool_calls tc
+							WHERE tc.conversation_id = r.conversation_uuid
+							  AND tc.message_id = r.message_uuid
+							  AND tc.memory_refs @> jsonb_build_array(jsonb_build_object('position', r.metadata->'position'))
+						)
+					ELSE FALSE
+				END AS used,
+				-- used_by_agent surfaces the citing agent's display name so the
+				-- UI can render a "used by <agent>" chip next to the ✓ mark.
+				-- Joined off r.agent_id — the agent the memory batch was
+				-- injected into — which today is always the same as the tool
+				-- call's agent (memory composes per-agent-turn). LEFT JOIN so
+				-- an orphan agent_id (agent row expired / rewritten) doesn't
+				-- drop the reference from the result.
+				COALESCE(a.agent_name, '') AS used_by_agent
+			  FROM (
+				-- Pre-compute all three uuid casts once, guarded by regex so a
+				-- malformed legacy text value returns NULL (JOINs fail the row
+				-- cleanly) instead of raising 'invalid input syntax for type
+				-- uuid' and 500-ing the whole endpoint. Reused unchanged in the
+				-- LEFT JOINs below AND in the correlated EXISTS for 'used'.
+				SELECT *,
+					CASE WHEN reference_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN reference_id::uuid END AS reference_uuid,
+					CASE WHEN conversation_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN conversation_id::uuid END AS conversation_uuid,
+					CASE WHEN message_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN message_id::uuid END AS message_uuid
+				FROM llm_conversation_references
+				WHERE account_id = $1::text
+			  ) r
+			  LEFT JOIN llm_conversation_memory m ON (r.reference_type = 'memory' AND m.id = r.reference_uuid)
+			  LEFT JOIN llm_knowledgebases k ON (r.reference_type = 'knowledge_base' AND k.id = r.reference_uuid)
+			  LEFT JOIN llm_memory_patterns mp ON (r.reference_type = 'memory_patterns' AND mp.id = r.reference_uuid)
+			  LEFT JOIN llm_memory_decisions md ON (r.reference_type = 'memory_decisions' AND md.id = r.reference_uuid)
+			  LEFT JOIN llm_memory_collective mc ON (r.reference_type = 'memory_collective' AND mc.id = r.reference_uuid)
+			  LEFT JOIN llm_memory_preferences mpr ON (r.reference_type = 'memory_preferences' AND mpr.id = r.reference_uuid)
+			  LEFT JOIN llm_conversation_agent a ON a.id = r.agent_id
+			  WHERE 1=1`
 	args := []any{accountId}
 	argCounter := 2
 
@@ -441,7 +549,7 @@ func (chat *ConversationDao) ListAgentReferences(accountId, conversationId, mess
 		var ref ConversationReference
 		var metaStr sql.NullString
 		var content sql.NullString
-		if err := rows.Scan(&ref.ID, &ref.AccountID, &ref.ConversationID, &ref.MessageID, &ref.AgentID, &ref.ReferenceID, &ref.Type, &metaStr, &ref.CreatedAt, &content); err != nil {
+		if err := rows.Scan(&ref.ID, &ref.AccountID, &ref.ConversationID, &ref.MessageID, &ref.AgentID, &ref.ReferenceID, &ref.Type, &metaStr, &ref.CreatedAt, &content, &ref.Used, &ref.UsedByAgent); err != nil {
 			return nil, fmt.Errorf("history: failed to scan agent reference: %w", err)
 		}
 		if !content.Valid {
@@ -1798,7 +1906,7 @@ func (chat *ConversationDao) GetConversationToolResponse(toolId, messageId, conv
 	return response, status, nil
 }
 
-func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference, metadata []byte) error {
+func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference, metadata []byte, memoryRefs []byte) error {
 
 	// Termination override — see UpdateConversationToolResponse for rationale.
 	// SaveConversationToolCall is the primary persistence path (planner_callback_handler
@@ -1836,24 +1944,35 @@ func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID,
 	if len(metadata) > 0 {
 		metadataParam = string(metadata)
 	}
+	// memoryRefs is the LLM's per-action memory attribution — jsonb array
+	// of {position, note}. Stringify (same reason as metadataParam) — passing
+	// a raw []byte routes through bytea and jsonb rejects that at insert.
+	// Empty/nil defaults to '[]' via the column default; the ON CONFLICT
+	// UPDATE below deliberately DOES NOT touch memory_refs so a later
+	// status update (in-progress → success) doesn't clobber the attribution
+	// captured at first insert.
+	memoryRefsParam := "[]"
+	if len(memoryRefs) > 0 {
+		memoryRefsParam = string(memoryRefs)
+	}
 
 	query := `INSERT INTO public.llm_conversation_tool_calls
-	(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references", metadata)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+	(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references", metadata, memory_refs)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	ON CONFLICT (conversation_id, message_id, tool_id, tool_name, agent_id)
 	DO UPDATE SET response = EXCLUDED.response, updated_at = now(), status = EXCLUDED.status, tool_type = EXCLUDED.tool_type, child_agent_id = EXCLUDED.child_agent_id, "references" = EXCLUDED.references, metadata = EXCLUDED.metadata
 	WHERE llm_conversation_tool_calls.status NOT IN ('success', 'error', 'terminated');`
 
 	if childAgentId == nil || *childAgentId == "" {
 		query = `INSERT INTO public.llm_conversation_tool_calls
-		(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references", metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references", metadata, memory_refs)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (conversation_id, message_id, tool_id, tool_name, agent_id)
 		DO UPDATE SET response = EXCLUDED.response, updated_at = now(), status = EXCLUDED.status, tool_type = EXCLUDED.tool_type, "references" = EXCLUDED.references, metadata = EXCLUDED.metadata
 		WHERE llm_conversation_tool_calls.status NOT IN ('success', 'error', 'terminated');`
 	}
 
-	_, err := chat.dbManager.Db.Exec(query, conversationID, messageId, toolId, toolName, toolArgs, toolResult, userIDSql, accountID, agenId, thought, toolArgsSql, strings.ToLower(string(status)), toolType, childAgentId, referenceText, metadataParam)
+	_, err := chat.dbManager.Db.Exec(query, conversationID, messageId, toolId, toolName, toolArgs, toolResult, userIDSql, accountID, agenId, thought, toolArgsSql, strings.ToLower(string(status)), toolType, childAgentId, referenceText, metadataParam, memoryRefsParam)
 	if err != nil {
 		return fmt.Errorf("history: error inserting tool call: %w", err)
 	}

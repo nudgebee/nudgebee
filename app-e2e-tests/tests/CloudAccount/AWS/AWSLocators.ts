@@ -1,4 +1,4 @@
-import { Page, Locator, test } from "@playwright/test";
+import { Page, Locator, test, expect } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 import { checkIntegrationWithCache } from "../../utils/IntegrationStatusCache";
 
@@ -62,6 +62,34 @@ export class AWSLocators extends CommonLocators {
   readonly ServicesDrilldownTabCostTrend: Locator;
   readonly ServicesDrilldownTabRecommendations: Locator;
 
+  // Expected URL hash after navigating to each sub-tab
+  readonly OptimizeRightSizingUrl: RegExp;
+  readonly OptimizeConfigurationUrl: RegExp;
+  readonly OptimizeSecurityTabUrl: RegExp;
+  readonly OptimizeInfraUpgradeUrl: RegExp;
+  readonly OptimizeRecommendationResolutionUrl: RegExp;
+  readonly TroubleshootEventsUrl: RegExp;
+  readonly TroubleshootTriageRulesUrl: RegExp;
+  readonly MonitoringAlertManagerUrl: RegExp;
+  readonly MonitoringCloudLogsUrl: RegExp;
+  readonly MonitoringCloudMetricsUrl: RegExp;
+  readonly EC2SummaryUrl: RegExp;
+  readonly EC2OptimizeUrl: RegExp;
+  readonly EC2InstancesUrl: RegExp;
+  readonly EC2EventsUrl: RegExp;
+  readonly RDSSummaryUrl: RegExp;
+  readonly RDSOptimizeUrl: RegExp;
+  readonly RDSInstancesUrl: RegExp;
+  readonly RDSEventsUrl: RegExp;
+  readonly S3SummaryUrl: RegExp;
+  readonly S3OptimizeUrl: RegExp;
+  readonly S3InstancesUrl: RegExp;
+  readonly S3EventsUrl: RegExp;
+  readonly ECSSummaryUrl: RegExp;
+  readonly ECSOptimizeUrl: RegExp;
+  readonly ECSInstancesUrl: RegExp;
+  readonly ECSEventsUrl: RegExp;
+
   constructor(page: Page) {
     super(page);
 
@@ -123,6 +151,34 @@ export class AWSLocators extends CommonLocators {
     this.ServicesDrilldownTabResources = page.getByRole("tab", { name: "Resources" });
     this.ServicesDrilldownTabCostTrend = page.getByRole("tab", { name: "Cost Trend" });
     this.ServicesDrilldownTabRecommendations = page.getByRole("tab", { name: "Recommendations" });
+
+    // Expected URL hash after navigating to each sub-tab
+    this.OptimizeRightSizingUrl = /#optimize\/right-sizing/;
+    this.OptimizeConfigurationUrl = /#optimize\/configuration/;
+    this.OptimizeSecurityTabUrl = /#optimize\/security/;
+    this.OptimizeInfraUpgradeUrl = /#optimize\/infra-upgrade/;
+    this.OptimizeRecommendationResolutionUrl = /#optimize\/recommendation-resolution/;
+    this.TroubleshootEventsUrl = /#events\/events/;
+    this.TroubleshootTriageRulesUrl = /#events\/triage-rules/;
+    this.MonitoringAlertManagerUrl = /#monitoring\/alert-manager/;
+    this.MonitoringCloudLogsUrl = /#monitoring\/cloud-logs/;
+    this.MonitoringCloudMetricsUrl = /#monitoring\/metrics/;
+    this.EC2SummaryUrl = /#ec2\/summary/;
+    this.EC2OptimizeUrl = /#ec2\/optimize/;
+    this.EC2InstancesUrl = /#ec2\/instances/;
+    this.EC2EventsUrl = /#ec2\/events/;
+    this.RDSSummaryUrl = /#rds\/summary/;
+    this.RDSOptimizeUrl = /#rds\/optimize/;
+    this.RDSInstancesUrl = /#rds\/instances/;
+    this.RDSEventsUrl = /#rds\/events/;
+    this.S3SummaryUrl = /#s3\/summary/;
+    this.S3OptimizeUrl = /#s3\/optimize/;
+    this.S3InstancesUrl = /#s3\/instances/;
+    this.S3EventsUrl = /#s3\/events/;
+    this.ECSSummaryUrl = /#ecs\/summary/;
+    this.ECSOptimizeUrl = /#ecs\/optimize/;
+    this.ECSInstancesUrl = /#ecs\/instances/;
+    this.ECSEventsUrl = /#ecs\/events/;
   }
 
   // Returns the expand arrow for the first row inside the Resources drilldown table.
@@ -201,5 +257,16 @@ export class AWSLocators extends CommonLocators {
     await this.page.waitForURL(/cloud-account/, { timeout: 15000 });
     await this.page.waitForLoadState("networkidle");
     console.log("AWS cloud account detail page loaded");
+  }
+
+  async navigateToSubTab(anchorTab: Locator, subTab: Locator, expectedUrl: RegExp) {
+    await expect(anchorTab).toBeVisible();
+
+    await expect(async () => {
+      await anchorTab.hover();
+      await subTab.waitFor({ state: "visible", timeout: 3000 });
+      await subTab.click();
+      await this.page.waitForURL(expectedUrl, { timeout: 5000 });
+    }).toPass({ timeout: 30000, intervals: [500, 1000, 2000] });
   }
 }

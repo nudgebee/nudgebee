@@ -18,6 +18,9 @@ type TaskContext interface {
 	GetAccountID() string
 	GetWorkflowID() string
 	GetWorkflowRunID() string
+	// GetEventID returns the ID of the event that triggered this run, or ""
+	// for manual/scheduled/webhook runs.
+	GetEventID() string
 	GetTaskID() string
 	GetUserID() string
 	GetWorkflowName() string

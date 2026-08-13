@@ -336,11 +336,11 @@ func TestResolveOrchestratorThinkingLevel(t *testing.T) {
 }
 
 // renderReactCritiquer renders the embedded react critiquer prompt with the
-// given question_type / hypothesis gate, using the same variable set runCritique
-// declares. It guards against conditional-block imbalance and undeclared
-// template variables (both would fail Format), and lets the fence test assert
-// the hypothesis completion gate is scoped to hypothesis_mode_enabled.
-func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabled bool) string {
+// given question_type / hypothesis / SDG-grounding gates, using the same variable
+// set runCritique declares. It guards against conditional-block imbalance and
+// undeclared template variables (both would fail Format), and lets the fence
+// tests assert that gate-scoped rules only render when their respective flag is on.
+func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabled, sdgGroundingEnabled bool) string {
 	t.Helper()
 	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer)
 	assert.NotEmpty(t, base, "embedded react critiquer prompt must load")
@@ -348,7 +348,7 @@ func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabl
 	vars := []string{
 		"input", "scratchpad", "final_answer", "question_type", "tool_names",
 		"tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled",
-		"notebook", "today",
+		"sdg_grounding_enabled", "notebook", "today",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
 	out, err := tmpl.Format(map[string]any{
@@ -363,6 +363,7 @@ func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabl
 		"shell_tool_enabled":      false,
 		"tools_invoked":           "kubectl",
 		"hypothesis_mode_enabled": hypothesisModeEnabled,
+		"sdg_grounding_enabled":   sdgGroundingEnabled,
 	})
 	assert.NoError(t, err, "react critiquer prompt must render without template errors")
 	return out
@@ -378,7 +379,7 @@ func TestReAct3CritiquerHypothesisGateFence(t *testing.T) {
 	const staleMarkerCarveOut = "Stale-marker carve-out"
 
 	t.Run("hypothesis mode on: completion gate present", func(t *testing.T) {
-		out := renderReactCritiquer(t, "investigation", true)
+		out := renderReactCritiquer(t, "investigation", true, false)
 		assert.Contains(t, out, gateHeader)
 		assert.Contains(t, out, toolFailureCarveOut)
 		assert.Contains(t, out, staleMarkerCarveOut,
@@ -386,14 +387,60 @@ func TestReAct3CritiquerHypothesisGateFence(t *testing.T) {
 	})
 
 	t.Run("investigation without hypothesis mode: no completion gate", func(t *testing.T) {
-		out := renderReactCritiquer(t, "investigation", false)
+		out := renderReactCritiquer(t, "investigation", false, false)
 		assert.NotContains(t, out, gateHeader)
 		assert.NotContains(t, out, staleMarkerCarveOut)
 	})
 
 	t.Run("plain query: no completion gate", func(t *testing.T) {
-		out := renderReactCritiquer(t, "query", false)
+		out := renderReactCritiquer(t, "query", false, false)
 		assert.NotContains(t, out, gateHeader)
+	})
+}
+
+// TestReAct3CritiquerSDGGroundingGateFence verifies Rule 8 (dependency-claim
+// grounding) renders in the critiquer prompt only when sdg_grounding_enabled is
+// set, and — critically — that the rule's balance holds: it accepts multiple
+// evidence forms (SDG, ConfigMap, log line, kubectl endpoint) and carves out
+// short greeting responses, general architectural discussion, and prior
+// "no data for this account" observations. If any of these balance clauses go
+// missing in a future refactor, this test flags it before the rule ships as
+// too-strict "SDG or reject" enforcement.
+func TestReAct3CritiquerSDGGroundingGateFence(t *testing.T) {
+	const ruleHeader = "Dependency-Claim Grounding"
+	const acceptSDGCitation = "[KG Traverse - E#]"
+	const acceptConfigMapEvidence = "ConfigMap / env-var value"
+	const acceptLogEvidence = "log line showing the call attempt"
+	const acceptKubectlEndpoint = "kubectl output showing a Service selector"
+	const softAdvisoryLanguage = "add a soft advisory in feedback"
+	const noDataCarveOut = "no data available for this account"
+	const greetingCarveOut = "short greeting responses"
+	const availableToolsCarveOut = "Skip entirely when `service_dependency_graph` is NOT in `<available_tools>`"
+
+	t.Run("sdg_grounding_enabled on: rule + all balance clauses present", func(t *testing.T) {
+		out := renderReactCritiquer(t, "investigation", true, true)
+		assert.Contains(t, out, ruleHeader, "Rule 8 header must render")
+		assert.Contains(t, out, acceptSDGCitation, "SDG citation must be listed as an accepted evidence form")
+		assert.Contains(t, out, acceptConfigMapEvidence, "ConfigMap / env-var evidence must be accepted (balance clause)")
+		assert.Contains(t, out, acceptLogEvidence, "log-line evidence must be accepted (balance clause)")
+		assert.Contains(t, out, acceptKubectlEndpoint, "kubectl endpoint evidence must be accepted (balance clause)")
+		assert.Contains(t, out, softAdvisoryLanguage, "non-SDG evidence with SDG-not-invoked must produce advisory, not reject")
+		assert.Contains(t, out, noDataCarveOut, "prior 'no data for this account' observation must carve the rule out")
+		assert.Contains(t, out, greetingCarveOut, "short greeting responses must carve the rule out to prevent capability-blurb false positives")
+		assert.Contains(t, out, availableToolsCarveOut, "rule must skip entirely when SDG is not in the agent's available tools")
+	})
+
+	t.Run("sdg_grounding_enabled off: rule completely absent", func(t *testing.T) {
+		out := renderReactCritiquer(t, "investigation", true, false)
+		assert.NotContains(t, out, ruleHeader, "Rule 8 must not render when flag is off")
+		assert.NotContains(t, out, acceptConfigMapEvidence)
+		assert.NotContains(t, out, softAdvisoryLanguage)
+	})
+
+	t.Run("sdg_grounding on works for plain query too (rule is question-type agnostic)", func(t *testing.T) {
+		out := renderReactCritiquer(t, "query", false, true)
+		assert.Contains(t, out, ruleHeader,
+			"Rule 8 does not gate on question_type — a dependency claim in a plain-query answer is just as ungrounded as in an investigation")
 	})
 }
 

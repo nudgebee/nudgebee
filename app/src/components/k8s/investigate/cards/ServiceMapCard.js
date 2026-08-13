@@ -1,8 +1,21 @@
-import KubernetesServiceMapWrapper from '@components/k8s/details/KubernetesServiceMap';
+import dynamic from 'next/dynamic';
+import { Box, CircularProgress } from '@mui/material';
 import { formatDateForPlusMinusDuration } from 'src/utils/common';
 import ServiceMapIcon from '@assets/kubernetes/monitoring/service-map-icon.icon.svg';
 import apiKubernetes from '@api1/kubernetes';
 import { formatDate } from '@lib/formatter';
+
+// The card only renders a service map once canRenderContent() resolves true, but
+// a static import put reactflow in the investigate chunk unconditionally. The
+// other two ServiceMap call sites are already dynamic; this was the last one.
+const KubernetesServiceMapWrapper = dynamic(() => import('@components/k8s/details/KubernetesServiceMap'), {
+  ssr: false,
+  loading: () => (
+    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 300 }}>
+      <CircularProgress size={24} />
+    </Box>
+  ),
+});
 
 class ServiceMapCard {
   constructor(evidenceData, event, index) {

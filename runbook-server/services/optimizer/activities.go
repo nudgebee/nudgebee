@@ -226,6 +226,7 @@ func (c *SimpleTaskContext) GetWorkflowID() string                          { re
 func (c *SimpleTaskContext) GetWorkflowName() string                        { return "" }
 func (c *SimpleTaskContext) GetUserDisplayName() string                     { return "" }
 func (c *SimpleTaskContext) GetWorkflowRunID() string                       { return c.ExecID }
+func (c *SimpleTaskContext) GetEventID() string                             { return "" }
 func (c *SimpleTaskContext) GetTaskID() string                              { return c.ExecID }
 func (c *SimpleTaskContext) GetNewRequestContext() *security.RequestContext { return c.ReqCtx }
 func (c *SimpleTaskContext) GetNewRequestContextForAccount(accountID string) *security.RequestContext {

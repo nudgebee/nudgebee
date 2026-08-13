@@ -1,8 +1,9 @@
 import { Box, Grid, Typography } from '@mui/material';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { withAccountGuard } from '@shared/AccountGuard';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
+import userApi from '@api1/user';
 import { v4 as uuidv4 } from 'uuid';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import { safeJSONParse } from '@utils/common';
@@ -26,6 +27,7 @@ import MsTeamsIcon from '@assets/ou-management/ms_teams.icon.svg';
 import GChatIcon from '@assets/gchat-icon.icon.svg';
 import PagerDutyIcon from '@assets/auto-pilot/pager-duty.svg';
 import ServiceNowIcon from '@assets/servicenow.icon.svg';
+import FreshdeskIcon from '@assets/freshdesk.icon.svg';
 import JiraIcon from '@assets/jira_icon.icon.svg';
 import GithubIcon from '@assets/github-icon.icon.svg';
 import LogsIcon from '@assets/home/logs-icon.icon.svg';
@@ -80,7 +82,7 @@ import { Input } from '@ui/Input';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import ConnectClusterHelp from '@components/onboarding/ConnectClusterHelp';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { getUserSession } from '@lib/auth';
+import { getUserSession, getCurrentTenant } from '@lib/auth';
 import { FiArrowRight } from 'react-icons/fi';
 import useCurrencySymbol from '@hooks/useCurrencySymbol';
 import PendingFollowUps from '@components/home/PendingFollowUps';
@@ -657,8 +659,13 @@ SectionHeader.propTypes = {
   tone: PropTypes.oneOf(['critical', 'info', 'warning', 'success', 'agent', 'neutral']),
 };
 
-const AutomationsCard = ({ workflowData, accountId, onManage }) => {
+const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows }) => {
   const { totalCount = 0, actionedCount = 0, configuredCount = 0 } = workflowData || {};
+
+  // Deep-link a stat to the automations listing with the matching filters.
+  // `filters` maps to the URL query params WorkflowListing reads (status / type /
+  // last_execution_status). accountId is threaded so the target lands on the same cluster.
+  const viewWorkflows = (filters) => onViewWorkflows?.({ accountId, ...filters });
 
   // Mirror the legacy behaviour: hide the card entirely when the cluster has no
   // workflows / no recent executions. Showing "0 / 0 / 0" looks like the fetch
@@ -707,9 +714,32 @@ const AutomationsCard = ({ workflowData, accountId, onManage }) => {
   return (
     <DSCard size='sm' elevation='flat' header={header} sx={{ overflow: 'hidden' }}>
       <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--ds-space-3)' }}>
-        <Stat size='sm' align='center' label='Configured' value={String(totalCount)} />
-        <Stat size='sm' align='center' label='Triggered (24h)' value={String(actionedCount)} />
-        <Stat size='sm' align='center' label='Event-based' value={String(configuredCount)} />
+        {/* Each stat deep-links to its filtered slice. onClick is only wired when the count
+            is non-zero so a 0 stat isn't a dead-end that navigates to an empty list. */}
+        <Stat
+          size='sm'
+          align='center'
+          label='Configured'
+          value={String(totalCount)}
+          id='automations-configured-stat'
+          onClick={totalCount > 0 ? () => viewWorkflows({ status: 'Active' }) : undefined}
+        />
+        <Stat
+          size='sm'
+          align='center'
+          label='Triggered (24h)'
+          value={String(actionedCount)}
+          id='automations-triggered-stat'
+          onClick={actionedCount > 0 ? () => viewWorkflows({ status: 'Active', last_execution_status: 'Completed' }) : undefined}
+        />
+        <Stat
+          size='sm'
+          align='center'
+          label='Event-based'
+          value={String(configuredCount)}
+          id='automations-event-based-stat'
+          onClick={configuredCount > 0 ? () => viewWorkflows({ status: 'Active', type: 'event' }) : undefined}
+        />
       </Box>
     </DSCard>
   );
@@ -718,6 +748,7 @@ AutomationsCard.propTypes = {
   workflowData: PropTypes.object,
   accountId: PropTypes.string,
   onManage: PropTypes.func,
+  onViewWorkflows: PropTypes.func,
 };
 
 const EMPTY_STATE_NO_DATA_THRESHOLD_MS = 48 * 60 * 60 * 1000;
@@ -1558,7 +1589,24 @@ const QUICK_LINKS_CONFIG = [
 // reference-stable (wrap inline objects/functions in useMemo/useCallback) or
 // memo here becomes wasted work.
 const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
-  const links = QUICK_LINKS_CONFIG.filter((d) => d.cloudProvider === selectedCluster?.cloud_provider).flatMap((d) => d.links);
+  // `cluster` is the accountId from the URL (?accountId=…). selectedCluster is
+  // authoritative (validated against the real accounts list), but it's empty
+  // just after a redirect — until it resolves, match the URL accountId against
+  // the account last used for each provider (saved per tenant by
+  // ClusterDropDown) so the right provider's quick links render immediately
+  // instead of a skeleton. Resolved in an effect, not during render: the
+  // lookup reads localStorage, which doesn't exist during SSR and would risk
+  // a hydration mismatch (same pattern as CardsBlock's isStale).
+  const [matchedProvider, setMatchedProvider] = useState(null);
+  const tenantId = getCurrentTenant()?.id;
+  useEffect(() => {
+    const savedProvider = userApi.getLastAccountProviderById(cluster, tenantId);
+    // Saved provider keys are uppercased; map back to the config's casing ('K8s', 'AWS', …).
+    setMatchedProvider(savedProvider ? QUICK_LINKS_CONFIG.find((d) => d.cloudProvider.toUpperCase() === savedProvider)?.cloudProvider || null : null);
+  }, [cluster, tenantId]);
+  const cloudProvider = selectedCluster?.cloud_provider || matchedProvider;
+  const linkAccountId = selectedCluster?.value || cluster;
+  const links = QUICK_LINKS_CONFIG.filter((d) => d.cloudProvider === cloudProvider).flatMap((d) => d.links);
 
   const header = (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
@@ -1595,7 +1643,7 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
   // already-tinted) to gray-700.
   const GRAY_700_FILTER = 'brightness(0) saturate(100%) invert(28%) sepia(3%) saturate(0%) hue-rotate(0deg) brightness(95%) contrast(90%)';
 
-  const isLoading = !selectedCluster?.cloud_provider;
+  const isLoading = !cloudProvider;
 
   const skeletonGrid = (
     <Box
@@ -1630,7 +1678,7 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
         >
           {links.map((link) => (
             <Link
-              href={buildUrl(selectedCluster, selectedCluster?.value || cluster, link.fragment, 'details', {})}
+              href={buildUrl({ cloud_provider: cloudProvider }, linkAccountId, link.fragment, 'details', {})}
               key={link.name}
               style={{ textDecoration: 'none' }}
             >
@@ -1732,6 +1780,7 @@ const Home = () => {
       options: [
         { name: 'Service Now', icon: ServiceNowIcon, redirect: '/accounts/account-form?cloudProvider=SERVICENOW' },
         { name: 'Jira', icon: JiraIcon, redirect: '/accounts/account-form?cloudProvider=JIRA' },
+        { name: 'Freshdesk', icon: FreshdeskIcon, redirect: '/accounts/account-form?cloudProvider=FRESHDESK' },
       ],
       actionText: 'Add Ticketing',
       actionIcon: <FiArrowRight />,
@@ -1911,23 +1960,33 @@ const Home = () => {
     setShowModal(false);
   };
 
-  const troubleshootItems = insightData.filter(
-    (o) =>
-      o.type == 'Troubleshooting' ||
-      o.rule?.category == 'Troubleshooting' ||
-      o.type == 'Performance' ||
-      (selectedCluster?.cloud_provider != 'K8s' && o.type == 'Ops')
+  // Memoize category filters — insightData only changes on API response, not on
+  // unrelated state updates (e.g. typing in the "Ask Nubi" input).
+  const troubleshootItems = useMemo(
+    () =>
+      insightData.filter(
+        (o) =>
+          o.type == 'Troubleshooting' ||
+          o.rule?.category == 'Troubleshooting' ||
+          o.type == 'Performance' ||
+          (selectedCluster?.cloud_provider != 'K8s' && o.type == 'Ops')
+      ),
+    [insightData, selectedCluster?.cloud_provider]
   );
-  const optimizeItems = insightData.filter(
-    (g) =>
-      g.type == 'Optimization' ||
-      g.rule?.category == 'Optimization' ||
-      g.type == 'Cost' ||
-      g.type == 'InfraUpgrade' ||
-      g.type == 'Security' ||
-      g.type == 'Configuration'
+  const optimizeItems = useMemo(
+    () =>
+      insightData.filter(
+        (g) =>
+          g.type == 'Optimization' ||
+          g.rule?.category == 'Optimization' ||
+          g.type == 'Cost' ||
+          g.type == 'InfraUpgrade' ||
+          g.type == 'Security' ||
+          g.type == 'Configuration'
+      ),
+    [insightData]
   );
-  const opsItems = insightData.filter((g) => g.type == 'Ops' || g.rule?.category == 'Ops');
+  const opsItems = useMemo(() => insightData.filter((g) => g.type == 'Ops' || g.rule?.category == 'Ops'), [insightData]);
 
   const securityHasExternal =
     Object.keys(imageScanData).length > 0 ||
@@ -1941,15 +2000,13 @@ const Home = () => {
   const troubleshootSubtitle = 'Active incidents and event trends';
   const optimizeSubtitle = 'Right-sizing, storage, and cost recommendations';
 
-  // Security subtitle stays live — driven by separate image-scan / cert APIs
-  // whose counts match the row data exactly.
-  const securitySubtitle = (() => {
+  const securitySubtitle = useMemo(() => {
     const parts = [];
     if (imageScanData?.totalCritical) parts.push(`${imageScanData.totalCritical} critical CVEs`);
     if (certificateData?.expiringSoon) parts.push(`${certificateData.expiringSoon} certs expiring`);
     if (opsItems.length) parts.push(`${opsItems.length} ops issues`);
     return parts.length ? parts.join(' · ') : 'Vulnerabilities, certificates, image scans';
-  })();
+  }, [imageScanData?.totalCritical, certificateData?.expiringSoon, opsItems.length]);
 
   return (
     <Grid container spacing={6} mt='calc(var(--ds-space-0) * 14)'>
@@ -1999,7 +2056,8 @@ const Home = () => {
                   width: 36,
                   height: 36,
                   borderRadius: '50%',
-                  backgroundColor: 'var(--ds-yellow-200, var(--ds-yellow-200))',
+                  backgroundColor: 'var(--ds-background-100)',
+                  border: '1px solid var(--ds-gray-300)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -2389,6 +2447,7 @@ const Home = () => {
           workflowData={workflowData}
           accountId={selectedCluster?.value || ''}
           onManage={(id) => window.open(`/automation?accountId=${id}&status=Active`, '_blank')}
+          onViewWorkflows={(query) => router.push({ pathname: '/automation', query })}
         />
         <PendingFollowUps accountId={cluster} />
         <HomeWidgets selectedCluster={selectedCluster} cluster={cluster} />

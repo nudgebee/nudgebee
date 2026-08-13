@@ -6,6 +6,8 @@ from typing import Any, Callable, cast
 from kombu import Connection, Exchange, Message, Producer, Queue
 from kombu.exceptions import OperationalError
 from kombu.transport.virtual import Channel
+from opentelemetry import trace
+from opentelemetry.propagate import extract
 from server.utils.utils import QueueConfig
 
 RETRY_POLICY = {
@@ -101,7 +103,15 @@ class KombuConsumerThread(threading.Thread):
 
     def callback_internal(self, message: Message) -> None:
         try:
-            self.callback(message.body)
+            # Continue the distributed trace: extract the W3C context the
+            # publisher injected into the AMQP headers and run the handler
+            # inside a consumer span so downstream logs/outbound calls share
+            # the same trace_id.
+            ctx = extract(message.headers or {})
+            with trace.get_tracer(__name__).start_as_current_span(
+                "rabbitmq.consume", context=ctx, kind=trace.SpanKind.CONSUMER
+            ):
+                self.callback(message.body)
         except Exception as e:
             logger.exception("Unable to process message - ", exc_info=True)
             # Retry and send to DLX in case of failure

@@ -1,9 +1,14 @@
 import json
 
 from pydantic import BaseModel
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 from notifications_server.configs.settings import settings
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_NEUTRAL,
+    header_block,
+    legacy_attachment,
+)
 
 
 class DefaultParams(BaseModel):
@@ -23,23 +28,14 @@ def get_default_message_params(**params) -> DefaultParams:
 def get_slack_default_message_template(params: DefaultParams):
     branding_name = settings.urls.branding_name
     title = params.title or f"{branding_name} Notification"
-    blocks: List[Dict[str, Any]] = []
-    title_block = {
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": f"*{title}*",
-        },
-    }
 
-    blocks.append(title_block)
+    lines = []
     if params.message:
-        message_block = {"type": "section", "text": {"type": "mrkdwn", "text": params.message}}
-        blocks.append(message_block)
-
+        lines.append(params.message)
     if params.parameters:
-        formatted = format_parameters(params.parameters)
-        params_block = {"type": "section", "text": {"type": "mrkdwn", "text": formatted}}
-        blocks.append(params_block)
+        lines.append(format_parameters(params.parameters))
 
-    return {"text": f"{branding_name} Notification", "blocks": blocks, "unfurl_links": False}
+    message = {"blocks": [header_block(title)], "unfurl_links": False}
+    if lines:
+        message["attachments"] = [legacy_attachment(STRIPE_NEUTRAL, title, text="\n".join(lines))]
+    return message

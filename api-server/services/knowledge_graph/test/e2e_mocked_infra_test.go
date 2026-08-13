@@ -25,6 +25,8 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/knowledge_graph/sources"
+	"nudgebee/services/knowledge_graph/sources/aws"
+	"nudgebee/services/knowledge_graph/sources/gcp"
 	"nudgebee/services/security"
 )
 
@@ -93,11 +95,11 @@ func TestE2E_MockedInfra_AWSManages(t *testing.T) {
 	req := &core.SourceBuildRequest{TenantID: e2eTenantID, CloudAccountID: e2eAWSAccount}
 	resources := loadCloudResourceRows(t, filepath.Join("testdata", "e2e", "aws_manages", "input", "aws.json"))
 
-	awsSource, err := sources.NewAWSSource(sources.AWSSourceConfig{}, nil)
+	awsSource, err := aws.NewAWSSource(aws.AWSSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("NewAWSSource: %v", err)
 	}
-	h := sources.NewAWSSourceTestHelper(awsSource)
+	h := aws.NewAWSSourceTestHelper(awsSource)
 	nodes, edges := h.ConvertResourcesToGraphWithCache(mockedInfraReqCtx(), resources, req)
 	nodes, edges = mergeGraph(nodes, edges, mergeOpts{})
 
@@ -143,11 +145,11 @@ func TestE2E_MockedInfra_GCPFirewallProtects(t *testing.T) {
 		{ID: "fw-1", ResourceID: "my-fw", Name: "my-fw", Type: "firewall-rule", ServiceName: "Networking", Account: "proj-1", Region: "global", CloudProvider: "GCP", IsActive: true, ExternalResourceID: "fw-1", Meta: json.RawMessage(`{"network":"projects/proj-1/global/networks/my-vpc","direction":"INGRESS"}`)},
 	}
 
-	gcpSource, err := sources.NewGCPSource(sources.GCPSourceConfig{}, nil)
+	gcpSource, err := gcp.NewGCPSource(gcp.GCPSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("NewGCPSource: %v", err)
 	}
-	h := sources.NewGCPSourceTestHelper(gcpSource)
+	h := gcp.NewGCPSourceTestHelper(gcpSource)
 	nodes, edges := h.ConvertResourcesToGraph(mockedInfraReqCtx(), resources, req)
 	nodes, edges = mergeGraph(nodes, edges, mergeOpts{})
 
@@ -206,11 +208,11 @@ func TestE2E_MockedInfra_GCPLoadBalancerChain(t *testing.T) {
 		{ID: "vpc-1", ResourceID: "my-vpc", Name: "my-vpc", Type: "vpc-network", ServiceName: "Networking", Account: "proj-1", Region: "global", CloudProvider: "GCP", IsActive: true, ExternalResourceID: "vpc-1", Meta: json.RawMessage("{}")},
 	}
 
-	gcpSource, err := sources.NewGCPSource(sources.GCPSourceConfig{}, nil)
+	gcpSource, err := gcp.NewGCPSource(gcp.GCPSourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("NewGCPSource: %v", err)
 	}
-	h := sources.NewGCPSourceTestHelper(gcpSource)
+	h := gcp.NewGCPSourceTestHelper(gcpSource)
 	nodes, edges := h.ConvertResourcesToGraph(mockedInfraReqCtx(), resources, req)
 	nodes, edges = mergeGraph(nodes, edges, mergeOpts{})
 

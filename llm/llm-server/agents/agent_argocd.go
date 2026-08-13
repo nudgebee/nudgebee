@@ -208,3 +208,7 @@ func (l ArgoCDAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 func (l ArgoCDAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
+
+// IsWatchCapable: triggers sync/rollback whose outcome completes later, so it
+// may register a background watch.
+func (l ArgoCDAgent) IsWatchCapable() bool { return true }

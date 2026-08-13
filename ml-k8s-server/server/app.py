@@ -6,6 +6,8 @@ import threading
 
 from dotenv import load_dotenv
 from flask import Flask
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
 from server import setup_logger
 from server.controllers import health
@@ -33,9 +35,14 @@ try:
     set_global_trace()
     setup_logger()
     set_metrics_exporter()
+    # Propagate the W3C traceparent on outbound HTTP (relay / metrics calls).
+    RequestsInstrumentor().instrument()
 
     app = Flask(__name__)
     app.config["TIMEOUT"] = 600
+    # Extract the inbound traceparent and start a server span so this service
+    # continues the caller's distributed trace instead of starting a new root.
+    FlaskInstrumentor().instrument_app(app)
 
     basedir = os.path.abspath(os.path.dirname(__file__))
     controllers = glob.glob(basedir + "/controllers/*.py")
@@ -50,6 +57,7 @@ try:
 
     health_app = Flask("health_app")
     health_app.register_blueprint(health.app)
+    FlaskInstrumentor().instrument_app(health_app)
 
 except Exception as e:
     logger.critical(f"Failed to initialize application: {e}", exc_info=True)

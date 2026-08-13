@@ -23,6 +23,7 @@ import { isK8sAccountNameValid, parseHttpResponseBodyMessage } from 'src/utils/c
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import MarkDowns from '@shared/viewers/MarkDowns';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import { ds } from 'src/utils/colors';
 
 const StepConnectorStyled = styled(StepConnector)(() => ({
@@ -110,6 +111,7 @@ const STEP_LABELS = ['Credentials', 'Select Subscriptions', 'Review & Onboard'];
 const AddAzureAccountModal = ({ open, onClose }) => {
   // Step 0: Credentials
   const [accountNameValue, setAccountNameValue] = useState('');
+  const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
   const [tenantId, setTenantId] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
@@ -131,6 +133,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
 
   const clearForm = () => {
     setAccountNameValue('');
+    setAccountEnvValue(DEFAULT_ACCOUNT_ENV);
     setTenantId('');
     setClientId('');
     setClientSecret('');
@@ -322,6 +325,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
     try {
       const response = await apiAccount.azureBulkOnboard({
         account_name: accountNameValue,
+        account_env: accountEnvValue,
         tenant_id: tenantId,
         client_id: clientId,
         client_secret: clientSecret,
@@ -452,6 +456,9 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                 onBlur={(e) => validateField('accountName', e.target.value)}
                 error={validationError.accountName || undefined}
               />
+            </Box>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
+              <AccountEnvToggle id='azure-account-env' value={accountEnvValue} onChange={setAccountEnvValue} disabled={isSubmitting} />
             </Box>
             <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input

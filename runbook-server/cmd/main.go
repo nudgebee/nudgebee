@@ -16,6 +16,7 @@ import (
 	"nudgebee/runbook/internal/system"
 	"nudgebee/runbook/internal/tasks"
 	"nudgebee/runbook/internal/templatesource"
+	"nudgebee/runbook/internal/tracing"
 	"nudgebee/runbook/internal/workflow"
 	configSvc "nudgebee/runbook/services/config"
 	"nudgebee/runbook/services/optimizer"
@@ -26,7 +27,10 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
+	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
+	temporalworkflow "go.temporal.io/sdk/workflow"
 	"google.golang.org/grpc"
 )
 
@@ -97,6 +101,14 @@ func main() {
 	temporalClient, err := client.Dial(client.Options{
 		HostPort:      temporalGRPCAddress,
 		DataConverter: dc,
+		// Route Temporal SDK logs through the service's structured slog logger
+		// (JSON to stdout) instead of the SDK's plaintext default, so worker/
+		// workflow lines are parseable in Loki alongside the rest of the service.
+		Logger: tlog.NewStructuredLogger(logger),
+		// Carry the W3C trace context through workflow/activity headers so a
+		// distributed trace entering via MQ or HTTP survives the durable
+		// execution and reaches activities' outbound calls (see internal/tracing).
+		ContextPropagators: []temporalworkflow.ContextPropagator{tracing.NewPropagator()},
 		ConnectionOptions: client.ConnectionOptions{
 			DialOptions: []grpc.DialOption{
 				grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64 * 1024 * 1024)),
@@ -183,7 +195,11 @@ func main() {
 	defer executor.Stop()
 
 	// --- System Worker Setup ---
-	systemWorker := worker.New(temporalClient, system.SystemTaskQueue, worker.Options{})
+	systemWorker := worker.New(temporalClient, system.SystemTaskQueue, worker.Options{
+		// Stamp trace_id/span_id (carried by tracing.Propagator) onto every
+		// workflow/activity logger so their lines correlate in Loki.
+		Interceptors: []interceptor.WorkerInterceptor{tracing.NewLogInterceptor()},
+	})
 	systemActivities := system.NewSystemActivities(dbStore)
 	systemWorker.RegisterActivityWithOptions(systemActivities.CleanupExpiredStateActivity, activity.RegisterOptions{
 		Name: system.CleanupExpiredStateActivityName,
@@ -214,7 +230,11 @@ func main() {
 	// --- Optimizer Worker Setup ---
 	if config.Config.OptimizationEnabled {
 		optimizerActivities := optimizer.NewActivities(optimizerService, optimizerDao)
-		optimizerWorker := worker.New(temporalClient, workflow.OptimizerTaskQueue, worker.Options{})
+		optimizerWorker := worker.New(temporalClient, workflow.OptimizerTaskQueue, worker.Options{
+			// Stamp trace_id/span_id (carried by tracing.Propagator) onto every
+			// workflow/activity logger so their lines correlate in Loki.
+			Interceptors: []interceptor.WorkerInterceptor{tracing.NewLogInterceptor()},
+		})
 		optimizerWorker.RegisterWorkflow(workflow.OptimizerWorkflow)
 		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.GenerateTasksActivity, activity.RegisterOptions{Name: workflow.GenerateTasksActivityName})
 		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.ExecuteTaskActivity, activity.RegisterOptions{Name: workflow.ExecuteTaskActivityName})

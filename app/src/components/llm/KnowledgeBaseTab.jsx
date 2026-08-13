@@ -934,7 +934,10 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const hasAccess = hasWriteAccess(accountId);
 
   // silent = background poll: skip the full-page spinner and error toasts.
-  const fetchKnowledgeBases = async (silent = false) => {
+  // isStale lets an account-scoped caller discard a response that resolved after
+  // the account changed; mutation-driven refreshes leave it at the default and
+  // always apply.
+  const fetchKnowledgeBases = async (silent = false, isStale = () => false) => {
     if (!accountId) {
       setError('Account ID is required');
       setLoading(false);
@@ -944,6 +947,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
     try {
       if (!silent) setLoading(true);
       const response = await apiKnowledgeBase.getKnowledgeBases(accountId);
+      if (isStale()) return;
       if (response.errors && response.errors.length > 0) {
         if (!silent) {
           setError('Failed to fetch knowledge bases');
@@ -957,25 +961,35 @@ const KnowledgeBaseTab = ({ accountId }) => {
       }
     } catch (err) {
       console.error('Error fetching knowledge bases:', err);
-      if (!silent) {
+      if (!silent && !isStale()) {
         setError('An error occurred while fetching knowledge bases');
         snackbar.error('An error occurred while fetching knowledge bases');
       }
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && !isStale()) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchKnowledgeBases();
+    let cancelled = false;
+    fetchKnowledgeBases(false, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
 
   // Poll every 60s so async KB status changes (processing -> active) appear
   // without a manual reload.
   useEffect(() => {
     if (!accountId) return undefined;
-    const intervalId = setInterval(() => fetchKnowledgeBases(true), 60000);
-    return () => clearInterval(intervalId);
+    let cancelled = false;
+    const intervalId = setInterval(() => fetchKnowledgeBases(true, () => cancelled), 60000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
 
   const handleCreate = () => {

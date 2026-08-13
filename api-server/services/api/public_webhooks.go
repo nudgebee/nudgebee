@@ -96,7 +96,7 @@ func genericWebhookHandler(webhookName string, tracer *trace.Tracer, meter *metr
 		}
 
 		payload := string(bodybytes)
-		sc := security.NewRequestContextForSuperAdmin(logger, tracer, meter)
+		sc := security.NewRequestContext(c.Request.Context(), security.NewSecurityContextForSuperAdmin(), logger, tracer, meter)
 
 		webhookRowID, err := core.ValidateAndStoreWebhook(sc, requestUrl, headers, payload)
 		if err != nil {
@@ -107,7 +107,7 @@ func genericWebhookHandler(webhookName string, tracer *trace.Tracer, meter *metr
 			return
 		}
 
-		if pubErr := webhook_queue.PublishWebhookProcess(webhookRowID); pubErr != nil {
+		if pubErr := webhook_queue.PublishWebhookProcess(c.Request.Context(), webhookRowID); pubErr != nil {
 			// RabbitMQ unavailable — fall back to sync processing
 			logger.Warn("webhook: RabbitMQ unavailable, falling back to sync processing", "webhook", webhookName, "error", pubErr)
 			if procErr := core.ProcessStoredWebhook(sc, webhookRowID); procErr != nil {
@@ -264,11 +264,13 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 
 		prURL, action, terminal, interesting := extractGithubPRSignal(event)
 		if !interesting {
+			common.MetricsPRFollowupWebhook(c.Request.Context(), "ignored")
 			c.JSON(200, map[string]string{"status": "ignored"})
 			return
 		}
 
 		if prURL == "" {
+			common.MetricsPRFollowupWebhook(c.Request.Context(), "no_pr_url")
 			logger.Info("github webhook: event matched but no PR URL extracted",
 				"event_type", eventType, "action", action)
 			c.JSON(200, map[string]string{"status": "no_pr_url"})
@@ -283,6 +285,7 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			return
 		}
 		if resolutionID == "" {
+			common.MetricsPRFollowupWebhook(c.Request.Context(), "no_match")
 			logger.Info("github webhook: no open resolution row for PR", "pr_url", prURL, "event_type", eventType)
 			c.JSON(200, map[string]string{"status": "no_match"})
 			return
@@ -297,6 +300,7 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			if pre, ok := event.(*github.PullRequestEvent); ok {
 				merged = pre.GetPullRequest().GetMerged()
 			}
+			common.MetricsPRFollowupWebhook(c.Request.Context(), "terminal")
 			logger.Info("github webhook: PR terminal, retiring resolution",
 				"pr_url", prURL, "event_type", eventType, "action", action,
 				"merged", merged, "resolution_id", resolutionID, "table", tableName)
@@ -324,6 +328,7 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			return
 		}
 
+		common.MetricsPRFollowupWebhook(c.Request.Context(), "dispatched")
 		logger.Info("github webhook: dispatching followup",
 			"pr_url", prURL,
 			"event_type", eventType,

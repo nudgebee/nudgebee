@@ -106,7 +106,7 @@ const KubernetesClusterUpgradeRecommendation = (props) => {
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
     }
@@ -197,7 +197,7 @@ const KubernetesClusterUpgradeRecommendation = (props) => {
             MENU_ITEMS.push({
               icon: TicketsIcon,
               label: 'Create Ticket',
-              id: 0,
+              id: 'create-ticket',
               disabled: item.ticket !== undefined,
             });
           }

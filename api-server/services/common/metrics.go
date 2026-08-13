@@ -25,6 +25,11 @@ const (
 	MetricKeyDatabase       = "database"
 	MetricKeyProvider       = "provider"
 	MetricKeyNodeType       = "node_type"
+	MetricKeyTable          = "table"
+	MetricKeyTrigger        = "trigger"
+	MetricKeyOutcome        = "outcome"
+	MetricKeyUnresolved     = "unresolved"
+	MetricKeyResult         = "result"
 )
 
 // Metric attribute value constants
@@ -46,18 +51,22 @@ const (
 )
 
 var (
-	meter                          metric.Meter
-	metricsApiRequestsFailedTotal  metric.Int64Counter
-	metricsApiRequestsTotal        metric.Int64Counter
-	metricsEventProcessingDuration metric.Float64Histogram
-	metricsEventProcessingTotal    metric.Int64Counter
-	metricsEventProcessingFailed   metric.Int64Counter
-	metricsPlaybookActionDuration  metric.Float64Histogram
-	metricsPlaybookActionTotal     metric.Int64Counter
-	metricsPlaybookActionFailed    metric.Int64Counter
-	metricsSubjectResolutionTotal  metric.Int64Counter
-	metricsKGEndpointCollision     metric.Int64Counter
-	metricsKGRoute53Unmatched      metric.Int64Counter
+	meter                           metric.Meter
+	metricsApiRequestsFailedTotal   metric.Int64Counter
+	metricsApiRequestsTotal         metric.Int64Counter
+	metricsEventProcessingDuration  metric.Float64Histogram
+	metricsEventProcessingTotal     metric.Int64Counter
+	metricsEventProcessingFailed    metric.Int64Counter
+	metricsPlaybookActionDuration   metric.Float64Histogram
+	metricsPlaybookActionTotal      metric.Int64Counter
+	metricsPlaybookActionFailed     metric.Int64Counter
+	metricsSubjectResolutionTotal   metric.Int64Counter
+	metricsKGEndpointCollision      metric.Int64Counter
+	metricsKGRoute53Unmatched       metric.Int64Counter
+	metricsPRFollowupDispatchTotal  metric.Int64Counter
+	metricsPRFollowupOutcomeTotal   metric.Int64Counter
+	metricsPRFollowupReclaimedTotal metric.Int64Counter
+	metricsPRFollowupWebhookTotal   metric.Int64Counter
 )
 
 // Histogram bucket boundaries for event and playbook processing.
@@ -171,6 +180,30 @@ func InitMetrics() {
 		meter,
 		"nb_services_kg_route53_unmatched",
 		"Knowledge graph external services where Route53 resolved an AWS endpoint but no matching cloud-resource node existed in the graph",
+	)
+
+	metricsPRFollowupDispatchTotal = mustCreateInt64Counter(
+		meter,
+		"nb_services_pr_followup_dispatch",
+		"Total number of PR-followup runs dispatched (claimed row -> addressing), labelled by table and trigger (cron/webhook)",
+	)
+
+	metricsPRFollowupOutcomeTotal = mustCreateInt64Counter(
+		meter,
+		"nb_services_pr_followup_outcome",
+		"Total number of PR-followup runs finalized, labelled by outcome (success/no_op/failed) and whether a no_op was actually unresolved (agent couldn't apply)",
+	)
+
+	metricsPRFollowupReclaimedTotal = mustCreateInt64Counter(
+		meter,
+		"nb_services_pr_followup_reclaimed",
+		"Total number of PR-followup rows reclaimed from a stuck 'addressing' state (run died mid-flight without finalizing)",
+	)
+
+	metricsPRFollowupWebhookTotal = mustCreateInt64Counter(
+		meter,
+		"nb_services_pr_followup_webhook",
+		"Total number of inbound GitHub PR webhook signals, labelled by result (dispatched/no_match/no_pr_url/ignored/terminal/pending)",
 	)
 }
 
@@ -439,5 +472,50 @@ func MetricsKGRoute53Unmatched(ctx context.Context, tenantId, accountId string) 
 	metricsKGRoute53Unmatched.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(MetricKeyTenantID, tenantId),
 		attribute.String(MetricKeyAccountID, accountId),
+	))
+}
+
+// MetricsPRFollowupDispatch records a PR-followup run being dispatched (the row
+// was claimed created/needs_followup -> addressing). trigger is "cron" or "webhook".
+func MetricsPRFollowupDispatch(ctx context.Context, table, trigger string) {
+	if metricsPRFollowupDispatchTotal == nil {
+		return
+	}
+	metricsPRFollowupDispatchTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(MetricKeyTable, table),
+		attribute.String(MetricKeyTrigger, trigger),
+	))
+}
+
+// MetricsPRFollowupOutcome records a finalized PR-followup run. outcome is
+// "success", "no_op", or "failed". unresolved is true only for a no_op where the
+// agent had actionable input (review comments / CI failure) but couldn't apply a
+// change — the churn signal that is otherwise indistinguishable from "nothing to do".
+func MetricsPRFollowupOutcome(ctx context.Context, outcome string, unresolved bool) {
+	if metricsPRFollowupOutcomeTotal == nil {
+		return
+	}
+	metricsPRFollowupOutcomeTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(MetricKeyOutcome, outcome),
+		attribute.Bool(MetricKeyUnresolved, unresolved),
+	))
+}
+
+// MetricsPRFollowupReclaimed records rows reclaimed from a stuck 'addressing' state.
+func MetricsPRFollowupReclaimed(ctx context.Context, count int64) {
+	if metricsPRFollowupReclaimedTotal == nil || count <= 0 {
+		return
+	}
+	metricsPRFollowupReclaimedTotal.Add(ctx, count)
+}
+
+// MetricsPRFollowupWebhook records an inbound GitHub PR webhook signal by result:
+// "dispatched", "no_match", "no_pr_url", "ignored", "terminal", or "pending".
+func MetricsPRFollowupWebhook(ctx context.Context, result string) {
+	if metricsPRFollowupWebhookTotal == nil {
+		return
+	}
+	metricsPRFollowupWebhookTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(MetricKeyResult, result),
 	))
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/router';
 import { v4 as uuidv4 } from 'uuid';
 import { md5 } from '@lib/encode';
@@ -175,6 +175,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   const [logOperations, setLogOperations] = useState<any[]>([]);
   const [qLEditor, setQLEditor] = useState('code');
   const [esIndex, setEsIndex] = useState('');
+  // Tracks the currently-selected provider so an async index resolve (on ES
+  // override) can bail if the user has switched away before it returns.
+  const selectedLogProviderRef = useRef('');
   const [logLimit, setLogLimit] = useState(Number(router.query.limit) || 100);
   const [queryRequestFromProps, setQueryRequestFromProps] = useState<any[] | null>(null);
   const [checkMapper, setCheckMapper] = useState(false);
@@ -271,9 +274,35 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     }
     const descriptors = getDescriptorsForProvider(newProvider);
     resetStates();
-    setEsIndex(newProvider === defaultProvider ? defaultIndex : '');
     setOperatorDescriptors(descriptors);
+    selectedLogProviderRef.current = newProvider;
     setLogProvider(newProvider);
+
+    if (newProvider === defaultProvider) {
+      // Switching back to the account default — its per-account/top-level index
+      // was already resolved on load.
+      setEsIndex(defaultIndex);
+      return;
+    }
+
+    // Overriding to a non-default provider. The index picker only renders for ES,
+    // so only ES needs a resolved default; ask the backend for ES's per-account
+    // (Advanced Settings mapping) / top-level index instead of leaving it blank.
+    setEsIndex('');
+    if (newProvider === 'ES' && accountId && accountId !== 'demo') {
+      apiAccount
+        .getDefaultProvider({ account_id: accountId, provider_type: 'logs', provider: 'ES' })
+        .then((res: any) => {
+          const resolved = res?.data?.data?.observability_get_default_provider?.default_index || '';
+          // Ignore a stale response if the user has since switched providers.
+          if (resolved && selectedLogProviderRef.current === 'ES') {
+            setEsIndex(resolved);
+          }
+        })
+        .catch(() => {
+          // Non-fatal: the picker is free-solo, so the user can still type an index/pattern.
+        });
+    }
   };
 
   const handleLogQueryFromDrilldown = useCallback(
@@ -334,7 +363,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           {
             icon: TicketsIcon,
             label: existingTicket ? `Ticket created: ${existingTicket.ticket_id}` : 'Create Ticket',
-            id: 0,
+            id: 'create-ticket',
             disabled: !!existingTicket,
           },
         ];
@@ -747,6 +776,12 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     // provider changes — NOT on every selectedCluster identity churn, which
     // would silently revert a user's provider selection back to the default.
   }, [accountId, selectedCluster?.agent?.connection_status?.logsConnectionProvider]);
+
+  // Keep the ref aligned with the active provider (incl. resets from initProvider)
+  // so a pending ES index resolve can detect a switch-away and skip a stale apply.
+  useEffect(() => {
+    selectedLogProviderRef.current = logProvider;
+  }, [logProvider]);
 
   // 2. Parse URL Params & Initialize Query
   useEffect(() => {

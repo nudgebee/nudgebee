@@ -143,6 +143,13 @@ func (p Pinot) ConfigSchema() core.IntegrationSchema {
 				AutoGenerateFunc: pinotColumnAutogenFunc,
 				DependsOn:        pinotColumnAutogenDeps,
 			},
+			"pinot_app_col": {
+				Type:             core.ToolSchemaTypeString,
+				Description:      "Column for application/workload name (optional) — used to filter/group logs by app",
+				Priority:         37,
+				AutoGenerateFunc: pinotColumnAutogenFunc,
+				DependsOn:        pinotColumnAutogenDeps,
+			},
 			core.DefaultLogProvider: {
 				Type:             core.ToolSchemaTypeBoolean,
 				Description:      "Make Pinot default Logs Provider",
@@ -370,6 +377,7 @@ func (p Pinot) ValidateConfig(sc *security.SecurityContext, config []core.Integr
 		{"pinot_namespace_col", configMap["pinot_namespace_col"]},
 		{"pinot_pod_col", configMap["pinot_pod_col"]},
 		{"pinot_container_col", configMap["pinot_container_col"]},
+		{"pinot_app_col", configMap["pinot_app_col"]},
 	} {
 		if pair.value == "" {
 			continue

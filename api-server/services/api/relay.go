@@ -100,6 +100,7 @@ var readActions = map[string]bool{
 	"oom_killer_enricher":                 true,
 	"pod_metric_enricher":                 true,
 	"pod_node_metrics_enricher":           true,
+	"service_endpoints_enricher":          true,
 
 	// External observability/incident fetches (read details only).
 	"alert_rule_details":           true,
@@ -251,9 +252,9 @@ func handleRelayApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, l
 			return
 		}
 
-		span := trace.SpanFromContext(c.Request.Context())
+		// trace_id/span_id are stamped by NewRequestContext from the request context.
 		childLogger := logger.With("service", "relay", "action", action, "action_name", actionName,
-			"account_id", accountId, "trace_id", span.SpanContext().TraceID().String())
+			"account_id", accountId)
 
 		reqCtx := security.NewRequestContext(c.Request.Context(), securityContext, childLogger, tracer, meter)
 		forwardRelayRequest(c, action, &reqPayload, userId, tenantId, reqCtx)

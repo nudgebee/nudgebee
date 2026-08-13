@@ -11,6 +11,28 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 )
 
+const (
+	// workloadLookupSelect is the SELECT/WHERE prefix (through `AND `) for a
+	// k8s_workloads match; the caller appends a per-strategy predicate.
+	workloadLookupSelect = `SELECT name, namespace, kind, cloud_resource_id FROM k8s_workloads WHERE tenant_id = $1 AND cloud_account_id = $2 AND `
+	// workloadLookupFilter is the trailing activeness/kind filter shared by the
+	// match lookup and the namespace-ambiguity COUNT query.
+	workloadLookupFilter = ` AND is_active = true AND kind NOT IN ('Job','CronJob')`
+)
+
+// buildWorkloadLookupQuery assembles the k8s_workloads lookup for one match
+// strategy. `predicate` is the strategy's WHERE fragment ($3 = candidate). When
+// namespaceScoped is true an `AND namespace = $4` clause is added so a workload
+// name present in multiple namespaces resolves to the row for the event's own
+// namespace rather than an arbitrary LIMIT 1 pick.
+func buildWorkloadLookupQuery(predicate string, namespaceScoped bool) string {
+	q := workloadLookupSelect + predicate
+	if namespaceScoped {
+		q += ` AND namespace = $4`
+	}
+	return q + workloadLookupFilter + ` LIMIT 1`
+}
+
 // MatchWorkloadAndEnrich validates EventSubjectName against the k8s_workloads
 // inventory for the given account and enriches the event with namespace, kind,
 // cloud_resource_id, and matching labels.
@@ -69,29 +91,65 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 	}
 	var workload workloadResult
 
-	queries := []string{
-		`SELECT name, namespace, kind, cloud_resource_id FROM k8s_workloads WHERE tenant_id = $1 AND cloud_account_id = $2 AND name = $3 AND is_active = true AND kind NOT IN ('Job','CronJob') LIMIT 1`,
-		`SELECT name, namespace, kind, cloud_resource_id FROM k8s_workloads WHERE tenant_id = $1 AND cloud_account_id = $2 AND labels->>'app.kubernetes.io/name' = $3 AND is_active = true AND kind NOT IN ('Job','CronJob') LIMIT 1`,
-		`SELECT name, namespace, kind, cloud_resource_id FROM k8s_workloads WHERE tenant_id = $1 AND cloud_account_id = $2 AND labels->>'app' = $3 AND is_active = true AND kind NOT IN ('Job','CronJob') LIMIT 1`,
-		// Datadog convention — workloads tagged with tags.datadoghq.com/service.
-		`SELECT name, namespace, kind, cloud_resource_id FROM k8s_workloads WHERE tenant_id = $1 AND cloud_account_id = $2 AND labels->>'tags.datadoghq.com/service' = $3 AND is_active = true AND kind NOT IN ('Job','CronJob') LIMIT 1`,
-	}
+	// Namespace-qualify the lookup whenever the event already knows its namespace
+	// (the common case). Without it, a workload NAME present in several namespaces
+	// of the same account resolves every event to one arbitrary LIMIT 1 row, so a
+	// single cloud_resource_id gets shared across namespaces and triage then emits
+	// false same_resource correlations across independent deployments.
+	ns := e.EventSubjectNamespace
 
+	// Per-strategy WHERE predicate ($3 = candidate). Exact name first, then the
+	// three label conventions. Order is significant (first match wins).
+	predicates := []string{
+		`name = $3`,
+		`labels->>'app.kubernetes.io/name' = $3`,
+		`labels->>'app' = $3`,
+		// Datadog convention — workloads tagged with tags.datadoghq.com/service.
+		`labels->>'tags.datadoghq.com/service' = $3`,
+	}
 	matched := false
 	matchedCandidate := ""
+	matchedPredicate := ""
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
 		}
-		for _, q := range queries {
-			if err := dbms.Db.Get(&workload, q, tenantId, accountId, candidate); err == nil {
+		for _, pred := range predicates {
+			q := buildWorkloadLookupQuery(pred, ns != "")
+			args := []interface{}{tenantId, accountId, candidate}
+			if ns != "" {
+				args = append(args, ns)
+			}
+			if err := dbms.Db.Get(&workload, q, args...); err == nil {
 				matched = true
 				matchedCandidate = candidate
+				matchedPredicate = pred
 				break
 			}
 		}
 		if matched {
 			break
+		}
+	}
+
+	// Namespace-unknown fallback: the name-only match returned an arbitrary row.
+	// If the same predicate matches workloads in more than one namespace, the
+	// resource identity is ambiguous — do NOT trust the row's cloud_resource_id /
+	// service_key (either would fabricate a cross-namespace same_resource edge).
+	ambiguous := false
+	if matched && ns == "" {
+		// Count distinct namespaces, not cloud_resource_id: unresolved workloads
+		// often have NULL/empty cloud_resource_id, which would collapse to 0/1 and
+		// hide a genuine cross-namespace name collision.
+		var distinctNamespaces int
+		countQ := `SELECT COUNT(DISTINCT namespace) FROM k8s_workloads WHERE tenant_id = $1 AND cloud_account_id = $2 AND ` + matchedPredicate + workloadLookupFilter
+		if err := dbms.Db.Get(&distinctNamespaces, countQ, tenantId, accountId, matchedCandidate); err != nil {
+			// Can't verify uniqueness — fail safe and treat as ambiguous so a DB
+			// error can't cause a fabricated cross-namespace identity.
+			sc.GetLogger().Error("subject_resolution: namespace ambiguity check failed", "error", err, "candidate", matchedCandidate)
+			ambiguous = true
+		} else if distinctNamespaces > 1 {
+			ambiguous = true
 		}
 	}
 
@@ -104,8 +162,6 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 		e.Investigation.Labels["nb_matched_workload"] = "false"
 		return
 	}
-	_ = matchedCandidate // available for future debug logging
-
 	// Capture the pre-update name so we can keep EventSubjectOwner consistent
 	// with EventSubjectName when the webhook had set them in lockstep
 	// (datadog/dynatrace/newrelic pattern). Webhooks that intentionally use
@@ -114,12 +170,27 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 	priorSubjectName := e.EventSubjectName
 
 	e.EventSubjectName = workload.Name
-	if e.EventSubjectNamespace == "" {
-		e.EventSubjectNamespace = workload.Namespace
-	}
 	kindLower := strings.ToLower(workload.Kind)
 	e.EventSubjectKind = kindLower
-	e.CloudResourceId = workload.CloudResourceId
+
+	// Namespace-identifying enrichment (namespace, cloud_resource_id, service_key)
+	// is only trustworthy when the match was namespace-qualified. In the ambiguous
+	// name-only case the row is one arbitrary namespace's — writing it would forge
+	// a cross-namespace identity, so skip those fields. Kind/owner are the same
+	// across namespaces, so they stay.
+	if !ambiguous {
+		if e.EventSubjectNamespace == "" {
+			e.EventSubjectNamespace = workload.Namespace
+		}
+		e.CloudResourceId = workload.CloudResourceId
+		// Canonical KG-aligned service key (namespace:Kind:name, capitalized kind to
+		// match the knowledge-graph node/alias format) so triage correlation's
+		// dependency path can key-match. Guarded on empty so cloud webhooks
+		// (GCP/PagerDuty) that already set an ARN-style service_key keep it.
+		if e.ServiceKey == "" && e.EventSubjectNamespace != "" {
+			e.ServiceKey = e.EventSubjectNamespace + ":" + workload.Kind + ":" + workload.Name
+		}
+	}
 
 	if e.EventSubjectOwner == "" || e.EventSubjectOwner == priorSubjectName {
 		e.EventSubjectOwner = workload.Name
@@ -129,12 +200,16 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 	}
 
 	e.Investigation.Labels["pod"] = workload.Name
-	if workload.Namespace != "" {
-		e.Investigation.Labels["namespace"] = workload.Namespace
-	}
 	e.Investigation.Labels["kind"] = workload.Kind
-	e.Investigation.Labels["cloud_resource_id"] = workload.CloudResourceId
 	e.Investigation.Labels["nb_matched_workload"] = "true"
+	if ambiguous {
+		e.Investigation.Labels["nb_workload_ambiguous_namespace"] = "true"
+	} else {
+		if workload.Namespace != "" {
+			e.Investigation.Labels["namespace"] = workload.Namespace
+		}
+		e.Investigation.Labels["cloud_resource_id"] = workload.CloudResourceId
+	}
 }
 
 // skipWorkloadMatchLabel marks an event whose EventSubjectName is display-only

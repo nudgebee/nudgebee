@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"strings"
@@ -50,6 +51,9 @@ func extractRequestAttributes(_ schemas.ModelProvider, body []byte) map[string]a
 			Function struct { // OpenAI
 				Name string `json:"name"`
 			} `json:"function"`
+			FunctionDeclarations []struct { // Gemini
+				Name string `json:"name"`
+			} `json:"functionDeclarations"`
 		} `json:"tools"`
 		ToolChoice json.RawMessage `json:"tool_choice"`
 	}
@@ -89,6 +93,9 @@ func toolNames(tools []struct {
 	Function struct {
 		Name string `json:"name"`
 	} `json:"function"`
+	FunctionDeclarations []struct {
+		Name string `json:"name"`
+	} `json:"functionDeclarations"`
 }) []string {
 	names := make([]string, 0, len(tools))
 	for _, t := range tools {
@@ -97,6 +104,12 @@ func toolNames(tools []struct {
 			names = append(names, t.Name) // Anthropic
 		case t.Function.Name != "":
 			names = append(names, t.Function.Name) // OpenAI
+		case len(t.FunctionDeclarations) > 0: // Gemini: one entry declares many functions
+			for _, fd := range t.FunctionDeclarations {
+				if fd.Name != "" {
+					names = append(names, fd.Name)
+				}
+			}
 		}
 	}
 	return names
@@ -139,6 +152,60 @@ func extractResponseAttributes(body []byte) map[string]any {
 		return nil
 	}
 	return attrs
+}
+
+// respondedModel sniffs the model id the PROVIDER echoed in its response — the
+// "responded" model (e.g. a dated snapshot like gpt-4o-mini-2024-07-18), completing
+// the requested→resolved→responded audit trail and exposing silent snapshot/alias
+// drift. Handles a raw JSON body (unary) and an SSE first chunk (streaming):
+// OpenAI/Anthropic top-level `model`, Anthropic's stream `message.model`
+// (message_start), and Gemini's `modelVersion`. Empty when not found.
+func respondedModel(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	b := bytes.TrimSpace(body)
+	// SSE frame (streaming chunk): take the JSON from the first line that STARTS with
+	// "data:". Scanning line-by-line with HasPrefix (not a substring search) avoids
+	// matching "data:" inside a comment line (": ...") or an event line.
+	if !bytes.HasPrefix(b, []byte("{")) {
+		found := false
+		for rest := b; len(rest) > 0; {
+			var line []byte
+			if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+				line, rest = rest[:i], rest[i+1:]
+			} else {
+				line, rest = rest, nil
+			}
+			if line = bytes.TrimSpace(line); bytes.HasPrefix(line, []byte("data:")) {
+				b = bytes.TrimSpace(line[len("data:"):])
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ""
+		}
+	}
+	var r struct {
+		Model        string `json:"model"`        // OpenAI, Anthropic (unary + OpenAI stream)
+		ModelVersion string `json:"modelVersion"` // Gemini
+		Message      struct {
+			Model string `json:"model"` // Anthropic stream: message_start.message.model
+		} `json:"message"`
+	}
+	if json.Unmarshal(b, &r) != nil {
+		return ""
+	}
+	switch {
+	case r.Model != "":
+		return r.Model
+	case r.Message.Model != "":
+		return r.Message.Model
+	case r.ModelVersion != "":
+		return r.ModelVersion
+	}
+	return ""
 }
 
 // deriveAttributes computes NB's normalized view from the request context. Kept
@@ -266,6 +333,27 @@ func rewriteGeminiModelPath(path, resolved string) string {
 
 // modelFromPath extracts the model for providers that carry it in the URL rather
 // than the body (Gemini: /models/{model}:generateContent or /models/{model}).
+// isAdminCall reports whether a forwarded path is a non-inference auxiliary call —
+// model caching (cachedContents), token counting (:countTokens), or model listing
+// (…/models) — which produce no model and no billable usage. Metered into the usage
+// dashboard only when gateway_capture_admin_calls is on; otherwise skipped so these
+// don't clutter the Requests tab. They still hit the provider, so rate limits and the
+// quota reconcile are unaffected.
+func isAdminCall(path string) bool {
+	// Trim a trailing slash so a model-list call with one (e.g. /v1/models/) still
+	// matches the "/models" suffix rather than slipping through as inference.
+	p := strings.TrimSuffix(strings.ToLower(path), "/")
+	switch {
+	case strings.Contains(p, "/cachedcontents"):
+		return true
+	case strings.Contains(p, ":counttokens"):
+		return true
+	case strings.HasSuffix(p, "/models"):
+		return true
+	}
+	return false
+}
+
 func modelFromPath(provider schemas.ModelProvider, path string) string {
 	if provider != schemas.Gemini {
 		return ""

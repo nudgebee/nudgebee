@@ -31,9 +31,7 @@ def get_gchat_recommendation_proactive_nudge_template(
         for rec in acc_data.recommendations[:5]:
             lines.append(f"  {counter}. *{rec.resource_name}* \u2014 {format_rule_name(rec.rule_name)}")
             lines.append(
-                f"     Score: {rec.finops_score}/100 \u00b7 "
-                f"Savings: {format_savings(rec.estimated_savings)}/mo \u00b7 "
-                f"Severity: {rec.severity}"
+                f"     Savings: {format_savings(rec.estimated_savings)}/mo \u00b7 " f"Severity: {rec.severity}"
             )
             counter += 1
 

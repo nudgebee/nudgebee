@@ -8,6 +8,8 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,7 +23,22 @@ const (
 
 	SignozModeSelfHosted = "self_hosted"
 	SignozModeCloud      = "cloud"
+
+	// SignozMaxTestedVersion is the highest self-hosted SigNoz release this
+	// integration has been validated against. Newer releases have changed the
+	// auth/query API (e.g. v0.132's POST /api/v1/login returns HTML instead of a
+	// JWT), which silently breaks log ingestion. We probe GET /api/v1/version at
+	// config time and reject a newer release so the failure is a clear message
+	// up front rather than an opaque runtime error later. Cloud is a managed,
+	// always-latest deployment on a separate /api/v2 auth flow, so this gate
+	// applies to self-hosted only.
+	SignozMaxTestedVersion = "0.51.0"
 )
+
+// signozVersionRegex extracts a leading "major.minor.patch" (optionally
+// "v"-prefixed) from SigNoz's /api/v1/version "version" field. Tolerates
+// pre-release/build suffixes (e.g. "v0.52.0-rc.1") by matching only the head.
+var signozVersionRegex = regexp.MustCompile(`v?(\d+)\.(\d+)\.(\d+)`)
 
 type Signoz struct {
 }
@@ -94,6 +111,13 @@ func normalizeSignozURL(raw string) string {
 // validateSignozSelfHosted probes POST /api/v1/login (the self-hosted JWT
 // endpoint used by observability/signoz_saas.go:GetJwtToken).
 func validateSignozSelfHosted(url, username, password string) []error {
+	// Reject a SigNoz release newer than the highest tested version before we
+	// probe login — on such versions login itself returns HTML rather than a
+	// JWT, so surfacing the version mismatch first gives a clear error.
+	if errs := checkSignozVersion(url); len(errs) > 0 {
+		return errs
+	}
+
 	resp, err := common.HttpPost(
 		fmt.Sprintf("%s/api/v1/login", url),
 		common.HttpWithJsonBody(map[string]string{"email": username, "password": password}),
@@ -120,6 +144,75 @@ func validateSignozSelfHosted(url, username, password string) []error {
 	default:
 		return []error{fmt.Errorf("SigNoz returned unexpected status: HTTP %d", resp.StatusCode)}
 	}
+}
+
+// checkSignozVersion probes GET /api/v1/version (unauthenticated on
+// self-hosted SigNoz) and rejects the config when the running version is newer
+// than SignozMaxTestedVersion. It deliberately does NOT block when the version
+// can't be determined — an unreachable endpoint, a non-200, or a non-semver
+// build (dev/custom images report a git hash) all fall through so a working
+// older setup we merely couldn't identify is never broken. Real connectivity
+// or auth problems are surfaced by the login probe that follows.
+func checkSignozVersion(url string) []error {
+	resp, err := common.HttpGet(
+		fmt.Sprintf("%s/api/v1/version", url),
+		common.HttpWithTimeout(15*time.Second),
+	)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var parsed struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil
+	}
+
+	got, ok := parseSignozVersion(parsed.Version)
+	if !ok {
+		return nil
+	}
+	maxTested, _ := parseSignozVersion(SignozMaxTestedVersion)
+	if signozVersionGreater(got, maxTested) {
+		return []error{fmt.Errorf(
+			"SigNoz %s is newer than the highest tested version (v%s) — this integration is only validated up to SigNoz v%s; newer self-hosted releases have changed the auth/query API and are not supported",
+			strings.TrimSpace(parsed.Version), SignozMaxTestedVersion, SignozMaxTestedVersion)}
+	}
+	return nil
+}
+
+// parseSignozVersion extracts (major, minor, patch) from a SigNoz version
+// string. Returns ok=false when no "N.N.N" can be found.
+func parseSignozVersion(s string) ([3]int, bool) {
+	m := signozVersionRegex.FindStringSubmatch(strings.TrimSpace(s))
+	if len(m) < 4 {
+		return [3]int{}, false
+	}
+	var v [3]int
+	for i := 0; i < 3; i++ {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return [3]int{}, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
+
+// signozVersionGreater reports whether a is a strictly higher version than b.
+func signozVersionGreater(a, b [3]int) bool {
+	for i := 0; i < 3; i++ {
+		if a[i] != b[i] {
+			return a[i] > b[i]
+		}
+	}
+	return false
 }
 
 // validateSignozCloud performs the two-step Cloud handshake:

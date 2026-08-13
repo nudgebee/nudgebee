@@ -514,7 +514,11 @@ const InstancesView = (props: {
   }, [props?.accountId, selectedTagKey]);
 
   useEffect(() => {
-    listEC2Instances();
+    let stale = false;
+    listEC2Instances(() => stale);
+    return () => {
+      stale = true;
+    };
   }, [
     props?.accountId,
     props?.serviceName,
@@ -527,7 +531,7 @@ const InstancesView = (props: {
     appliedInstanceIdName,
   ]);
 
-  const listEC2Instances = async () => {
+  const listEC2Instances = async (isStale: () => boolean = () => false) => {
     if (!props?.accountId) {
       return;
     }
@@ -551,6 +555,12 @@ const InstancesView = (props: {
 
       const ec2ResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
       const resources = res.data?.data?.cloud_resourses || [];
+
+      // A request superseded during the first await must not trigger the
+      // expensive live-metrics call below — it would only produce stale rows.
+      if (isStale()) {
+        return;
+      }
 
       // Fetch live CPU and memory metrics directly from cloud provider APIs
       let metricsMap: Record<string, Record<string, { value: number; timestamp: string }>> = {};
@@ -641,12 +651,20 @@ const InstancesView = (props: {
 
         return data;
       });
+      // A superseded request (deps changed / unmounted mid-flight) must not
+      // overwrite the newer request's rows — the two sequential awaits above
+      // widen the window where a stale response could land last.
+      if (isStale()) {
+        return;
+      }
       setEC2Instances(ec2ResourceData);
       setEC2InstancesCount(ec2ResourceCount);
     } catch (error) {
       console.error(error);
     } finally {
-      setLoading(false);
+      if (!isStale()) {
+        setLoading(false);
+      }
     }
   };
 

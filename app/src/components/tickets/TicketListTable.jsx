@@ -19,6 +19,9 @@ import apiAccount from '@api1/account';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
 
+// Leading provider icon for each cloud-provider group header in the Account filter.
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 const TICKET_HEADERS = [
   { name: 'Ticket ID', width: '10%' },
   { name: 'Tool', width: '5%' },
@@ -38,6 +41,7 @@ const TOOL_DISPLAY_NAMES = {
   servicenow: 'ServiceNow',
   pagerduty: 'PagerDuty',
   zenduty: 'ZenDuty',
+  freshdesk: 'Freshdesk',
 };
 
 const customPriorityOrder = ['Highest', 'High', 'Medium', 'Low', 'Lowest', 'NA', 'Critical'];
@@ -708,7 +712,7 @@ const TicketListTable = ({
         const accounts = res?.data?.all_accounts || [];
         setAccountsData(accounts);
         if (setAccountFilter) {
-          setAccountFilter(accounts.map((acc) => ({ label: acc.account_name, value: acc.id })));
+          setAccountFilter(accounts.map((acc) => ({ label: acc.account_name, value: acc.id, group: acc.cloud_provider || 'Other' })));
         }
       })
       .catch(() => {
@@ -749,6 +753,8 @@ const TicketListTable = ({
         <FilterDropdown
           id='ticket-filter-account'
           label='Account'
+          grouped
+          groupIcon={renderAccountGroupIcon}
           options={accountFilter || []}
           value={selectedAccount}
           onSelect={handleAccountFilterChange}

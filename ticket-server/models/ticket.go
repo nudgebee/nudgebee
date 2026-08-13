@@ -44,6 +44,24 @@ type Ticket struct {
 	// Populated only by Get; nil otherwise. Reference fields keep their
 	// {"value": "...", "display_value": "..."} shape from the source.
 	Raw map[string]any `json:"raw,omitempty" db:"-"`
+	// Attachments are files and inline images attached to the ticket and its
+	// conversation thread. Populated only by Get (no backing tickets column);
+	// URL is a source-provided, typically short-lived download link. Platform-
+	// generic: each adapter fills it if it can, empty otherwise.
+	Attachments []Attachment `json:"attachments,omitempty" db:"-"`
+}
+
+// Attachment is a normalized ticket attachment (file or inline image). URL is a
+// direct download link supplied by the source platform; for Freshdesk it is a
+// pre-signed, short-lived S3 URL (files) or a token URL (inline images).
+type Attachment struct {
+	Name        string `json:"name"`
+	ContentType string `json:"content_type,omitempty"`
+	Size        int64  `json:"size,omitempty"`
+	URL         string `json:"url"`
+	// Source tags where the attachment came from: "ticket", "conversation:<id>",
+	// "inline" (ticket description), or "inline:conversation:<id>".
+	Source string `json:"source,omitempty"`
 }
 
 type Comments struct {

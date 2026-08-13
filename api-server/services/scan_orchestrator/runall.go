@@ -127,12 +127,18 @@ func RunOne(ctx *security.RequestContext, account ScanAccount, scannerName strin
 	recs, err := RunScan(ctx, account, scannerName, params)
 	if err != nil {
 		logger.Error("scan_orchestrator: RunScan failed", "error", err)
-		// Record the failure per-image so the discovery loop backs it off (short
-		// retry window) instead of re-selecting it every cycle, and so the failure
-		// is visible rather than silent. Only image_scanner is per-image.
+		// Record the failure per-image so the discovery loop backs it off instead of
+		// re-selecting it every cycle, and so the failure is visible rather than
+		// silent. An image that couldn't be pulled (unscannable) backs off to the
+		// longer window and is surfaced distinctly in the UI; a genuine scan failure
+		// retries on the short window. Only image_scanner is per-image.
 		if scannerName == "image_scanner" {
-			if sErr := upsertImageScanSummary(ctx, account, imageScanStatusFailed, nil, err); sErr != nil {
-				logger.Error("scan_orchestrator: image scan summary (failed) persist error", "image", account.TargetImage, "error", sErr)
+			status := imageScanStatusFailed
+			if isImagePullFailure(err) {
+				status = imageScanStatusUnscannable
+			}
+			if sErr := upsertImageScanSummary(ctx, account, status, nil, err); sErr != nil {
+				logger.Error("scan_orchestrator: image scan summary persist error", "image", account.TargetImage, "status", status, "error", sErr)
 			}
 		}
 		return err

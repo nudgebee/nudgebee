@@ -162,7 +162,34 @@ const (
 	// query_generator / summariser) so ResolveLLMConfig picks a category model.
 	// Absent = no category opted → normal resolution flow.
 	ContextKeyModelTier LLMContextKey = "model_tier"
+	// ContextKeyPromptVariant carries the orchestrator prompt shape for this turn.
+	// promptVariantLean = a top-level plain-retrieval turn that drops the heavy
+	// investigation overlays; "" = the full/default prompt. Stamped once per turn
+	// (applyPromptVariant) and read both when building the prompt (planner) and
+	// when keying the cache slot, so the cached prefix and its key always move
+	// together — a lean prompt and a full prompt land in distinct cache slots
+	// instead of thrashing one.
+	ContextKeyPromptVariant LLMContextKey = "prompt_variant"
 )
+
+// promptVariantLean marks the lean (investigation-overlays-dropped) orchestrator
+// prompt. It is used both as the ContextKeyPromptVariant value and as the cache
+// key suffix. Kept short because it is appended to the Google AI cache key.
+const promptVariantLean = "lean"
+
+// promptVariantFromCtx returns the ContextKeyPromptVariant value on ctx, or ""
+// when unset (the full/default prompt).
+func promptVariantFromCtx(ctx *security.RequestContext) string {
+	if ctx == nil {
+		return ""
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		return ""
+	}
+	v, _ := goCtx.Value(ContextKeyPromptVariant).(string)
+	return v
+}
 
 // TokenInfo contains detailed token breakdown including cache information
 type TokenInfo struct {
@@ -215,6 +242,7 @@ type retryContext struct {
 	lastCacheInfo            *CacheResponse // Track cache info from last LLM call
 	cacheScope               CacheScope
 	capabilities             toolcore.AgentCapabilities // Forwarded to CacheRequest for capability fingerprinting
+	promptVariant            string                     // Forwarded to CacheRequest to isolate the lean vs full prompt cache slot
 	totalStart               time.Time                  // Track when the entire retry loop started
 	maxTotalDuration         time.Duration              // Maximum allowed time for the entire retry loop
 	enableCaching            bool                       // Whether provider-level prompt caching is enabled for this call
@@ -1046,6 +1074,10 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		cacheManager := GetCacheManager()
 		appendAgentName := rc.agentName != ""
 		apiKey := getLLMApiKey(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
+		// Resolve the endpoint with the SAME layering the generation client uses,
+		// so cache create/reference and generation all resolve to the same key
+		// through the AI Gateway. Empty = talk to Google directly (default).
+		endpoint := getLLMApiEndpoint(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
 
 		// Pull tenant_id from security context so the lifecycle row gets the right
 		// tenant scoping for budget rollups. Best-effort — caller-context loss here
@@ -1063,8 +1095,10 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 			Provider:       rc.currentProvider,
 			Messages:       rc.promptMessages,
 			ApiKey:         apiKey,
+			Endpoint:       endpoint,
 			Scope:          rc.cacheScope,
 			Capabilities:   rc.capabilities,
+			PromptVariant:  rc.promptVariant,
 		}
 
 		cacheResp := cacheManager.ApplyCache(ctx, cacheReq)
@@ -2061,6 +2095,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 		cacheScope = CacheScopeConversation
 	}
 	capabilities, _ := ctx.GetContext().Value(ContextKeyCapabilities).(toolcore.AgentCapabilities)
+	promptVariant := promptVariantFromCtx(ctx)
 
 	rc := &retryContext{
 		ctx:              ctx,
@@ -2080,6 +2115,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 		enableCaching:    config.Config.LlmEnableCaching && !disableCaching,
 		cacheScope:       cacheScope,
 		capabilities:     capabilities,
+		promptVariant:    promptVariant,
 	}
 
 	// Use the provided resolution or resolve it now

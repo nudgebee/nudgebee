@@ -48,6 +48,14 @@ var ClickhouseTraceTableDefinition = map[string]query.ColumnDefinition{
 	},
 	"status_code": {
 		Type: query.ColumnDefinitionTypeString,
+		// Deliberately NO WhereDef: otel_traces stores span status in two vocabularies
+		// (OTEL long form STATUS_CODE_ERROR/OK/UNSET and short Error/Ok/Unset), but a
+		// column-only WhereDef normalization breaks existing short-form-VALUE callers —
+		// notably the By-Spans trace UI, whose dropdown value is the raw stored status
+		// (traces_label_values). This path is un-gated, and ClickHouse is carved out of
+		// the v2 canonical agent, so normalizing here only ever helped a dev-only forced
+		// path while regressing the live UI. If cross-vocabulary matching is wanted,
+		// canonicalize the VALUE side (match {value, canonical(value)}), not the column.
 	},
 	"span_name": {
 		Type: query.ColumnDefinitionTypeString,
@@ -72,6 +80,14 @@ var ClickhouseTraceTableDefinition = map[string]query.ColumnDefinition{
 	},
 	"http_status_code": {
 		Type: query.ColumnDefinitionTypeString,
+	},
+	"http_method": {
+		Type: query.ColumnDefinitionTypeString,
+		Def:  "spanattributes['http.method']",
+	},
+	"deployment_environment": {
+		Type: query.ColumnDefinitionTypeString,
+		Def:  "resourceattributes['deployment.environment']",
 	},
 	"request_payload": {
 		Type: query.ColumnDefinitionTypeString,
@@ -1002,6 +1018,54 @@ func (s *OtelClickhouseTraceSource) getTraceTableDef(ctx *security.RequestContex
 	return tableDef
 }
 
+// chAttrQuote escapes a map key for safe inclusion as a ClickHouse string literal
+// inside an attribute-map access (e.g. spanattributes['<key>']). The key comes from
+// the model-supplied where clause, so it must never be interpolated raw.
+func chAttrQuote(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "'", "\\'")
+	return "'" + s + "'"
+}
+
+// augmentTraceColumnsForAttributes returns the trace column set to use for WHERE
+// resolution: the curated schema plus a dynamic definition for every referenced
+// where-clause field that is not already a known column. Each dynamic field
+// resolves to the ClickHouse attribute maps — span attributes first, resource
+// attributes as fallback — so backend-discovered attributes advertised to the
+// agent via traces_list_labels are queryable as flat fields (e.g. `rpc.method`,
+// `db.system`). Returns the shared base map unchanged (no copy) when every field
+// is already known; the base map is never mutated. Unknown/typo fields resolve to
+// an empty attribute value (no rows) and are then surfaced by
+// validateReferencedTraceLabels, which runs on empty/error results.
+func augmentTraceColumnsForAttributes(base map[string]query.ColumnDefinition, where query.QueryWhereClause) map[string]query.ColumnDefinition {
+	referenced := map[string]struct{}{}
+	collectWhereFieldNames(where, referenced)
+	var extra []string
+	for k := range referenced {
+		if k == "" {
+			continue
+		}
+		if _, ok := base[k]; !ok {
+			extra = append(extra, k)
+		}
+	}
+	if len(extra) == 0 {
+		return base
+	}
+	cp := make(map[string]query.ColumnDefinition, len(base)+len(extra))
+	for k, v := range base {
+		cp[k] = v
+	}
+	for _, k := range extra {
+		q := chAttrQuote(k)
+		cp[k] = query.ColumnDefinition{
+			Type:     query.ColumnDefinitionTypeString,
+			WhereDef: fmt.Sprintf("if(mapContains(spanattributes, %s), spanattributes[%s], resourceattributes[%s])", q, q, q),
+		}
+	}
+	return cp
+}
+
 // GetBaseRootSpanTraceQuery wraps the standard span base query in a subquery that keeps one row
 // per trace — the root span (empty parent_span_id) or, when no root is captured in the window,
 // the earliest span by timestamp. The time window is applied INSIDE this subquery (before the
@@ -1090,6 +1154,11 @@ func (s *OtelClickhouseTraceSource) QueryTraces(ctx *security.RequestContext, fe
 	var err error
 	if fetchTraceRequest.Query == "" {
 		tableDef := s.getTraceTableDef(ctx, fetchTraceRequest.AccountId)
+		// Make backend-discovered span/resource attributes (advertised to the agent
+		// via traces_list_labels) queryable as flat canonical fields: any where-clause
+		// field not in the curated schema resolves to the attribute maps. Only affects
+		// WHERE resolution; SELECT still uses the curated column set.
+		tableDef.Columns = augmentTraceColumnsForAttributes(tableDef.Columns, fetchTraceRequest.QueryRequest.Where)
 		queryRequest := getQueryRequest(ctx, fetchTraceRequest.QueryRequest, tableDef, "traces_v2")
 		sqlQuery, err = query.GenerateSqlQuery(ctx, fetchTraceRequest.AccountId, queryRequest, tableDef)
 	} else {

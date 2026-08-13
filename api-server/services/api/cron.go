@@ -55,8 +55,8 @@ func buildContextFromCronPayload(c *gin.Context, h *CronRequest, tracer *trace.T
 	} else {
 		ctx = context.Background()
 	}
-	span := trace.SpanFromContext(ctx)
-	childLogger := logger.With("cron_job", h.Name, "cron_id", h.Id, "trace_id", span.SpanContext().TraceID().String())
+	// trace_id/span_id are stamped by NewRequestContext from ctx.
+	childLogger := logger.With("cron_job", h.Name, "cron_id", h.Id)
 	return security.NewRequestContext(ctx, security.NewSecurityContextForSuperAdmin(), childLogger, tracer, meter)
 }
 
@@ -93,6 +93,17 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 					ctx.GetLogger().Error("cron: error sending recommendation nudge digest", "error", err)
 				}
 				ctx.GetLogger().Info("cron: recommendation nudge digest done", "duration", time.Since(t0))
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
+		case "security-posture-alert":
+			go func() {
+				t0 := time.Now()
+				ctx.GetLogger().Info("cron: sending security posture alert")
+				err := reports.SendSecurityPostureAlert(ctx)
+				if err != nil {
+					ctx.GetLogger().Error("cron: error sending security posture alert", "error", err)
+				}
+				ctx.GetLogger().Info("cron: security posture alert done", "duration", time.Since(t0))
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
 		case "recommendation-proactive-nudge":
@@ -499,7 +510,7 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 			queuedCount := 0
 			failedCount := 0
 			for tenantID := range tenantIDSet {
-				if err := kgqueue.PublishKGUpdate(tenantID, "cron"); err != nil {
+				if err := kgqueue.PublishKGUpdate(ctx.GetContext(), tenantID, "cron"); err != nil {
 					ctx.GetLogger().Error("cron: failed to publish KG update message", "tenant_id", tenantID, "error", err)
 					failedCount++
 				} else {

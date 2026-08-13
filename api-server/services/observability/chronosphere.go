@@ -296,8 +296,32 @@ func (s *ChronosphereMetricSource) FetchMetricsQuery(
 	return output, nil
 }
 
+// chronosphereTraceLabelMapping is the canonical→backend trace field vocabulary for
+// Chronosphere, surfaced through provider capabilities so the integration-agnostic
+// (v2) trace agent advertises Chronosphere's real fields instead of the generic
+// schema. Entries are identity today (Chronosphere consumes these names directly, as
+// the dedicated agent sent them through an empty passthrough map) — map a canonical
+// name to a different backend field here if one ever diverges. Shared by the agent and
+// SaaS trace sources.
+var chronosphereTraceLabelMapping = map[string]string{
+	"service_name":           "service_name",
+	"trace_id":               "trace_id",
+	"span_id":                "span_id",
+	"component":              "component",
+	"controller":             "controller",
+	"controller.action":      "controller.action",
+	"deployment.environment": "deployment.environment",
+	"k8s_cluster":            "k8s_cluster",
+	"http.host":              "http.host",
+	"http.method":            "http.method",
+	"http.status_code":       "http.status_code",
+	"http.url":               "http.url",
+	"request.format":         "request.format",
+	"process.command":        "process.command",
+}
+
 func (s *ChronosphereTraceSource) GetLabelMapping() map[string]string {
-	return map[string]string{}
+	return chronosphereTraceLabelMapping
 }
 
 func (s *ChronosphereTraceSource) GetSupportedOperators() []string {

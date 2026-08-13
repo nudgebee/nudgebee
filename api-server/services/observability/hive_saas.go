@@ -463,7 +463,7 @@ func (h *HiveSaasSource) QueryLogGroup(ctx *security.RequestContext, req FetchLo
 	}
 	// Reuse the relay-mode parser by re-marshalling the response.
 	// parseHiveLogGroupBytes expects the same JSON shape we already have.
-	return parseHiveLogGroupFromStruct(r, cols, req.EndTime), nil
+	return parseHiveLogGroupFromStruct(r, cols, tsMode, req.EndTime), nil
 }
 
 // parseHiveResult is a thin wrapper around parseHiveResultBytes that takes the
@@ -538,7 +538,7 @@ func parseHiveResult(r *hiveQueryResponse, tsCol, msgCol, sevCol string, tsConv 
 
 // parseHiveLogGroupFromStruct mirrors parseHiveLogGroupBytes but takes the
 // in-memory hiveQueryResponse — avoids a round-trip through JSON for direct mode.
-func parseHiveLogGroupFromStruct(r *hiveQueryResponse, cols hiveLogGroupCols, endTime int64) LogGroupOutput {
+func parseHiveLogGroupFromStruct(r *hiveQueryResponse, cols hiveLogGroupCols, tsMode hiveTsMode, endTime int64) LogGroupOutput {
 	if r == nil {
 		return LogGroupOutput{}
 	}
@@ -573,16 +573,11 @@ func parseHiveLogGroupFromStruct(r *hiveQueryResponse, cols hiveLogGroupCols, en
 		}
 	}
 	idxCnt, hasCnt := lookup("cnt")
+	idxMaxTs, hasMaxTs := lookup("max_ts")
+	convertMaxTs := hiveMaxTsToUnixSec(tsMode)
 
-	var endTimeSec int64
-	switch {
-	case endTime <= 0:
-		endTimeSec = time.Now().Unix()
-	case endTime >= 1e12:
-		endTimeSec = endTime / 1000
-	default:
-		endTimeSec = endTime
-	}
+	// Only used when a group has no usable max_ts.
+	endTimeSec := logGroupWindowEndUnix(endTime)
 
 	groups := make([]LogGroup, 0, len(r.Rows))
 	for _, row := range r.Rows {
@@ -629,6 +624,12 @@ func parseHiveLogGroupFromStruct(r *hiveQueryResponse, cols hiveLogGroupCols, en
 		if namespace != "" && workload != "" {
 			containerID = fmt.Sprintf("/k8s/%s/%s", namespace, workload)
 		}
+		lastSeen := endTimeSec
+		if hasMaxTs && idxMaxTs < len(row) {
+			if v := convertMaxTs(row[idxMaxTs]); v > 0 {
+				lastSeen = v
+			}
+		}
 		groups = append(groups, LogGroup{
 			Sample:      sample,
 			Namespace:   namespace,
@@ -638,7 +639,7 @@ func parseHiveLogGroupFromStruct(r *hiveQueryResponse, cols hiveLogGroupCols, en
 			PatternHash: generatePatternHash(message),
 			Level:       level,
 			Count:       count,
-			Timestamps:  []int64{endTimeSec},
+			Timestamps:  []int64{lastSeen},
 			Values:      []float64{float64(count)},
 		})
 	}

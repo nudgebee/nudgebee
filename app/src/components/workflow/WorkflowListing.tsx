@@ -4,7 +4,7 @@ import apiUser from '@api1/user';
 import type { WorkflowCreateRequest } from '@api1/workflow/types';
 import { useEffect, useState, useCallback, useRef, createContext, useContext } from 'react';
 import CustomTable2 from '@shared/tables/CustomTable2';
-import { Box, CircularProgress, DialogContent, DialogContentText, Link, Tooltip } from '@mui/material';
+import { Box, CircularProgress, DialogContentText, Link, Tooltip } from '@mui/material';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import { Label } from '@ui/Label';
@@ -85,7 +85,7 @@ interface WorkflowActionsCellProps {
   accountId: string | undefined;
   onStop: (workflow: any) => void;
   onEdit: (workflowId: string) => void;
-  getMenuItems: (workflow: any) => { label: string; id: number; icon: any; disabled?: boolean }[];
+  getMenuItems: (workflow: any) => { label: string; id: string; icon: any; disabled?: boolean }[];
   onMenuClick: (menuItem: any, workflow: any) => void;
 }
 
@@ -186,11 +186,11 @@ const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
       <Label text={status.toLowerCase()} tone={getStatusTone(status)} textTransform='capitalize' />
       {version !== undefined && version !== null && (
         <>
-          <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiary, mx: 'var(--ds-space-0)' }} />
-          <Text value={`v${version}`} sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondary, fontFamily: 'var(--ds-font-mono)' }} />
+          <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mx: 'var(--ds-space-0)' }} />
+          <Text value={`v${version}`} sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', fontFamily: 'var(--ds-font-mono)' }} />
         </>
       )}
-      <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiary, mx: 'var(--ds-space-0)' }} />
+      <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mx: 'var(--ds-space-0)' }} />
       <Datetime
         baseDate={new Date()}
         value={time}
@@ -359,22 +359,22 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     }
   };
 
-  const getMenuItems = (workflow: any): { label: string; id: number; icon: any; disabled?: boolean }[] => {
-    const MENU_ITEMS: { label: string; id: number; icon: any; disabled?: boolean }[] = [];
+  const getMenuItems = (workflow: any): { label: string; id: string; icon: any; disabled?: boolean }[] => {
+    const MENU_ITEMS: { label: string; id: string; icon: any; disabled?: boolean }[] = [];
     const isRunning = ['RUNNING', 'IN_PROGRESS'].includes(workflow?.last_execution_status?.toUpperCase());
 
     if (accountId && hasWriteAccess(accountId)) {
       // Add trigger option for all workflows
       MENU_ITEMS.push({
         label: 'Manual run',
-        id: 3,
+        id: 'manual-run',
         icon: manualTriggerIcon,
         disabled: isRunning,
       });
 
       MENU_ITEMS.push({
         label: 'Duplicate',
-        id: 4,
+        id: 'duplicate',
         icon: CopyIconBlue,
       });
 
@@ -388,13 +388,13 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
         if (toggleAction === 'pause') {
           MENU_ITEMS.push({
             label: 'Pause',
-            id: 1,
+            id: 'pause',
             icon: pauseIcon,
           });
         } else if (toggleAction === 'activate') {
           MENU_ITEMS.push({
             label: 'Activate',
-            id: 2,
+            id: 'resume',
             icon: playIcon,
           });
         }
@@ -402,7 +402,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
 
       MENU_ITEMS.push({
         label: 'Delete',
-        id: 0,
+        id: 'delete',
         icon: DeleteIconRed,
       });
     }
@@ -411,7 +411,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const onMenuClick = (menuItem: any, workflow: any) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'delete') {
       setSelectedWorkflow(workflow);
       setDeleteCallers(null);
       setDeleteCallersLoading(true);
@@ -436,16 +436,16 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
           }
         }
       })();
-    } else if (menuItem.id === 1) {
+    } else if (menuItem.id === 'pause') {
       setSelectedWorkflow(workflow);
       setPauseModalOpen(true);
-    } else if (menuItem.id === 2) {
+    } else if (menuItem.id === 'resume') {
       setSelectedWorkflow(workflow);
       setResumeModalOpen(true);
-    } else if (menuItem.id === 3) {
+    } else if (menuItem.id === 'manual-run') {
       setSelectedWorkflow(workflow);
       setTriggerModalOpen(true);
-    } else if (menuItem.id === 4) {
+    } else if (menuItem.id === 'duplicate') {
       handleDuplicateWorkflow(workflow);
     }
   };
@@ -1021,7 +1021,17 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     }
 
     if (status === 'FAILED') {
-      return { status: 'FAILED', errorMessage: lastGenMsg?.response || 'Automation generation failed. Please try again.' };
+      // The generation message's own `response` is empty for the Automation flow — the actionable
+      // detail (e.g. an auto-save failure with the runbook server's reason) lives on the agent
+      // record. Fall back to the last agent response before the generic message.
+      const agentResponse = (lastGenMsg?.llm_conversation_agents || [])
+        .map((a: any) => a?.response)
+        .filter(Boolean)
+        .pop();
+      return {
+        status: 'FAILED',
+        errorMessage: lastGenMsg?.response || agentResponse || 'Automation generation failed. Please try again.',
+      };
     }
 
     if (status !== 'WAITING') {
@@ -1623,11 +1633,11 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       <Modal
         open={deleteModalOpen}
         handleClose={handleCloseDeleteModal}
-        width='md'
+        width='sm'
         title={`Delete Automation "${selectedWorkflow.name}"`}
         loader={loading}
         actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2, px: 2, py: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
             <DsButton id='workflow-delete-cancel-btn' tone='secondary' size='md' onClick={handleCloseDeleteModal} disabled={loading}>
               Cancel
             </DsButton>
@@ -1637,56 +1647,54 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
           </Box>
         }
       >
-        <DialogContent sx={{ padding: 'var(--ds-space-5)' }}>
-          <DialogContentText>Are you sure you want to delete this automation? This action cannot be undone.</DialogContentText>
-          {deleteCallersLoading && (
-            <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 1, color: colors.text.secondary, fontSize: 'var(--ds-text-small)' }}>
-              <CircularProgress size={14} />
-              <span>Checking which automations reference this one…</span>
+        <DialogContentText>Are you sure you want to delete this automation? This action cannot be undone.</DialogContentText>
+        {deleteCallersLoading && (
+          <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 1, color: 'var(--ds-brand-500)', fontSize: 'var(--ds-text-small)' }}>
+            <CircularProgress size={14} />
+            <span>Checking which automations reference this one…</span>
+          </Box>
+        )}
+        {!deleteCallersLoading && deleteCallers && deleteCallers.length > 0 && (
+          <Box
+            data-testid='workflow-delete-callers-warning'
+            sx={{
+              mt: 2,
+              p: 1.5,
+              borderRadius: 'var(--ds-radius-sm)',
+              border: '1px solid var(--ds-red-200)',
+              backgroundColor: 'var(--ds-yellow-100)',
+            }}
+          >
+            <Box sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-red-600)', mb: 0.5 }}>
+              Used by {deleteCallers.length} other automation{deleteCallers.length === 1 ? '' : 's'}
             </Box>
-          )}
-          {!deleteCallersLoading && deleteCallers && deleteCallers.length > 0 && (
-            <Box
-              data-testid='workflow-delete-callers-warning'
-              sx={{
-                mt: 2,
-                p: 1.5,
-                borderRadius: 1,
-                border: `1px solid ${colors.background.errorLight ?? '#fca5a5'}`,
-                backgroundColor: 'var(--ds-yellow-100)',
-              }}
-            >
-              <Box sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.error ?? '#b91c1c', mb: 0.5 }}>
-                Used by {deleteCallers.length} other automation{deleteCallers.length === 1 ? '' : 's'}
-              </Box>
-              <Box sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondary, mb: 1 }}>
-                These automations call this one via a Call Workflow step. Deleting will break them at runtime — they reference by name and won&apos;t
-                be auto-updated.
-              </Box>
-              <Box component='ul' sx={{ m: 0, pl: 2.5, maxHeight: 140, overflowY: 'auto' }}>
-                {deleteCallers.map((c) => (
-                  <Box component='li' key={c.id} sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.primary, mb: 0.25 }}>
-                    <span>{c.name}</span>
-                    <span style={{ color: colors.text.tertiary, marginLeft: 8 }}>({c.status})</span>
-                  </Box>
-                ))}
-              </Box>
-              <Box sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary, mt: 1 }}>
-                Note: automations that pass <code>workflow_name</code> as a template (<code>{`{{ ... }}`}</code>) can&apos;t be detected here.
-              </Box>
+            <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-500)', mb: 1 }}>
+              These automations call this one via a Call Workflow step. Deleting will break them at runtime — they reference by name and won&apos;t be
+              auto-updated.
             </Box>
-          )}
-        </DialogContent>
+            <Box component='ul' sx={{ m: 0, pl: 2.5, maxHeight: 140, overflowY: 'auto' }}>
+              {deleteCallers.map((c) => (
+                <Box component='li' key={c.id} sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-blue-500)', mb: 0.25 }}>
+                  <span>{c.name}</span>
+                  <span style={{ color: 'var(--ds-gray-600)', marginLeft: 8 }}>({c.status})</span>
+                </Box>
+              ))}
+            </Box>
+            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mt: 1 }}>
+              Note: automations that pass <code>workflow_name</code> as a template (<code>{`{{ ... }}`}</code>) can&apos;t be detected here.
+            </Box>
+          </Box>
+        )}
       </Modal>
 
       <Modal
         open={pauseModalOpen}
         handleClose={handleClosePauseModal}
-        width='md'
+        width='sm'
         title={`Pause Automation "${selectedWorkflow.name}"`}
         loader={loading}
         actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2, px: 2, py: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
             <DsButton id='workflow-pause-cancel-btn' tone='secondary' size='md' onClick={handleClosePauseModal} disabled={loading}>
               Cancel
             </DsButton>
@@ -1696,19 +1704,17 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
           </Box>
         }
       >
-        <DialogContent sx={{ padding: 'var(--ds-space-5)' }}>
-          <DialogContentText>Are you sure you want to pause this scheduled automation? It will stop executing until resumed.</DialogContentText>
-        </DialogContent>
+        <DialogContentText>Are you sure you want to pause this scheduled automation? It will stop executing until resumed.</DialogContentText>
       </Modal>
 
       <Modal
         open={resumeModalOpen}
         handleClose={handleCloseResumeModal}
-        width='md'
+        width='sm'
         title={`Activate Automation "${selectedWorkflow.name}"`}
         loader={loading}
         actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2, px: 2, py: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
             <DsButton id='workflow-activate-cancel-btn' tone='secondary' size='md' onClick={handleCloseResumeModal} disabled={loading}>
               Cancel
             </DsButton>
@@ -1718,21 +1724,19 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
           </Box>
         }
       >
-        <DialogContent sx={{ padding: 'var(--ds-space-5)' }}>
-          <DialogContentText>
-            Are you sure you want to activate this scheduled automation? It will start executing according to its schedule.
-          </DialogContentText>
-        </DialogContent>
+        <DialogContentText>
+          Are you sure you want to activate this scheduled automation? It will start executing according to its schedule.
+        </DialogContentText>
       </Modal>
 
       <Modal
         open={stopExecutionModalOpen}
         handleClose={handleCloseStopExecutionModal}
-        width='md'
+        width='sm'
         title={`Cancel Running Execution — "${selectedWorkflow.name}"`}
         loader={stopExecutionLoading}
         actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2, px: 2, py: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
             <DsButton
               id='workflow-stop-execution-cancel-btn'
               tone='secondary'
@@ -1748,9 +1752,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
           </Box>
         }
       >
-        <DialogContent sx={{ padding: 'var(--ds-space-5)' }}>
-          <DialogContentText>Are you sure you want to cancel the currently running execution? This action cannot be undone.</DialogContentText>
-        </DialogContent>
+        <DialogContentText>Are you sure you want to cancel the currently running execution? This action cannot be undone.</DialogContentText>
       </Modal>
 
       <TriggerWorkflowModal

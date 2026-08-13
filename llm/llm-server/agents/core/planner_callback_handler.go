@@ -172,7 +172,21 @@ func (h *plannerExecutorCallbackHandler) BeforeToolCall(toolcall NBAgentPlannerT
 		parameters = agentInput
 		sqlArgs = fmt.Sprintf("%v", toolcall.ToolInput)
 	}
-	err := GetConversationDao().SaveConversationToolCall(h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId, h.request.AgentId, toolcall.ToolID, toolcall.Tool, stripNullBytes(parameters), stripNullBytes(log), stripNullBytes(sqlArgs), "", toolcore.NBToolResponseStatusInProgress, tool.GetType(), nil, nil, nil)
+	// memoryRefsJSON is the LLM's per-action attribution (point 7 of the
+	// memory data-audit baseline). Marshalled here so the DAO layer stays
+	// []byte-only. Nil ⇒ SQL '[]'::jsonb default. Written on the initial
+	// in-progress insert; the AfterToolCallResponse UPDATE deliberately
+	// doesn't touch memory_refs so the attribution survives status flips.
+	var memoryRefsJSON []byte
+	if len(toolcall.MemoryRefs) > 0 {
+		var mErr error
+		memoryRefsJSON, mErr = common.MarshalJson(toolcall.MemoryRefs)
+		if mErr != nil {
+			h.ctx.GetLogger().Warn("toolcallbackhandler: failed to marshal memory_refs, skipping attribution", "error", mErr)
+			memoryRefsJSON = nil
+		}
+	}
+	err := GetConversationDao().SaveConversationToolCall(h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId, h.request.AgentId, toolcall.ToolID, toolcall.Tool, stripNullBytes(parameters), stripNullBytes(log), stripNullBytes(sqlArgs), "", toolcore.NBToolResponseStatusInProgress, tool.GetType(), nil, nil, nil, memoryRefsJSON)
 	if err != nil {
 		h.ctx.GetLogger().Error("toolcallbackhandler: unable to save tool call", "error", err.Error())
 	}
@@ -212,7 +226,11 @@ func (h *plannerExecutorCallbackHandler) AfterToolCallResponse(tcr NBAgentPlanne
 	if mErr != nil {
 		h.ctx.GetLogger().Warn("toolcallbackhandler: failed to marshal tool metadata", "error", mErr)
 	}
-	err := GetConversationDao().SaveConversationToolCall(h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId, h.request.AgentId, tcr.ToolID, tcr.Tool, "", stripNullBytes(tcr.Log), "", stripNullBytes(response.Data), status, tool.GetType(), refAgentId, response.References, metadataJSON)
+	// Pass nil for memoryRefs here — the ON CONFLICT UPDATE clause in
+	// SaveConversationToolCall deliberately doesn't touch memory_refs, so
+	// the attribution captured on the initial in-progress insert survives
+	// this status-update path.
+	err := GetConversationDao().SaveConversationToolCall(h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId, h.request.AgentId, tcr.ToolID, tcr.Tool, "", stripNullBytes(tcr.Log), "", stripNullBytes(response.Data), status, tool.GetType(), refAgentId, response.References, metadataJSON, nil)
 	if err != nil {
 		h.ctx.GetLogger().Error("toolcallbackhandler: unable to save tool call", "error", err.Error())
 	}

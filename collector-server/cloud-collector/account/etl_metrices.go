@@ -181,7 +181,7 @@ func StoreMetricesForAllAccounts(ctx *security.RequestContext, targetAccountId s
 				EndDate:         endDate.Format(time.RFC3339),
 				TargetAccountId: targetAccountId,
 			}
-			err = common.MqPublish(config.Config.RabbitMqCloudAccountMetricsExchange, config.Config.RabbitMqCloudAccountMetricsQueue, job)
+			err = common.MqPublish(config.Config.RabbitMqCloudAccountMetricsExchange, config.Config.RabbitMqCloudAccountMetricsQueue, job, common.MqPublishWithContext(ctx.GetContext()))
 			if err != nil {
 				ctx.GetLogger().Error("metrics: failed to publish job", "error", err, "accountId", accountId, "service", serviceName, "job_id", job.JobId)
 				failedCount++
@@ -212,7 +212,7 @@ func ConsumeCloudAccountMetricsJobs(ctx *security.RequestContext, concurrency in
 		ctx.GetLogger().Error("metrics: failed to declare DLQ", "error", err)
 	}
 
-	processor := func(data []byte) error {
+	processor := func(msgCtx context.Context, data []byte) error {
 		var job CloudAccountMetricsJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
@@ -226,11 +226,13 @@ func ConsumeCloudAccountMetricsJobs(ctx *security.RequestContext, concurrency in
 			return nil // Return nil to ACK and drop the message
 		}
 
-		logger := ctx.GetLogger().With("accountId", job.AccountId, "service", job.ServiceName, "job_id", job.JobId)
+		// Create a new request context for this specific account. msgCtx carries
+		// the trace context extracted from the consumed message's headers, so the
+		// trace continues from the publisher into metrics ETL. Build it before any
+		// job-level logging so those lines carry the stamped trace_id too.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), ctx.GetLogger().With("accountId", job.AccountId, "service", job.ServiceName, "job_id", job.JobId), ctx.GetTracer(), ctx.GetMeter())
+		logger := jobCtx.GetLogger()
 		logger.Info("metrics: processing metrics job")
-
-		// Create a new request context for this specific account
-		jobCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Execute StoreMetrices logic
 		_, err = StoreMetrices(jobCtx, job.AccountId, StoreMetricesRequest{

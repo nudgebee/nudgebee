@@ -7,12 +7,10 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/lithammer/fuzzysearch/fuzzy"
 )
 
@@ -64,13 +62,14 @@ type K8sResourceSearchStrategy struct {
 var k8sResourceTypeMappings = map[string][]string{
 	"pod":                {"pods", "po"},
 	"service":            {"services", "svc"},
-	"deployment":         {"deployments", "deploy", "statefulsets", "sts", "daemonsets", "ds"}, // Generic "deployment" includes all workload types
+	"deployment":         {"deployments", "deploy", "statefulsets", "sts", "daemonsets", "ds", "rollouts"}, // Generic "deployment" includes all workload types
 	"statefulset":        {"statefulsets", "sts"},
 	"daemonset":          {"daemonsets", "ds"},
 	"job":                {"jobs", "cronjobs", "cj"}, // Generic "job" includes both job types
 	"cronjob":            {"cronjobs", "cj"},
-	"workload":           {"deployments", "statefulsets", "daemonsets", "jobs", "cronjobs"}, // Generic workload term
-	"app":                {"deployments", "statefulsets", "daemonsets"},                     // Generic app term
+	"rollout":            {"rollouts", "ro"},
+	"workload":           {"deployments", "statefulsets", "daemonsets", "jobs", "cronjobs", "rollouts"}, // Generic workload term
+	"app":                {"deployments", "statefulsets", "daemonsets", "rollouts"},                     // Generic app term
 	"configmap":          {"configmaps", "cm"},
 	"secret":             {"secrets"},
 	"ingress":            {"ingresses", "ing"},
@@ -365,22 +364,22 @@ func (r K8sResourceSearchTool) handleFuzzyResourceType(request K8sResourceSearch
 	return string(responseJSON), nil
 }
 
+// searchDbForResources looks up K8s resources for the current account (which is
+// a single cluster) in the cloud_resourses inventory. The k8s-collector writes
+// this table in near-real-time — a newly created pod is queryable within ~1s —
+// so it is the authoritative, fast source and avoids a live relay round-trip.
+// Scoped to cloud_provider = 'K8s' and is_active = true: is_active is a PRESENCE
+// flag, so failing pods (CrashLoopBackOff/OOMKilled) are included — only deleted
+// resources and stale skeleton rows (is_active NULL) are excluded. Namespace and
+// live phase come from the meta JSONB. The caller applies any resource-type
+// filter; live kubectl remains the fallback when this returns empty.
 func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId string, nbRequestContext core.NbToolContext) []K8sResourceInfo {
-	var resources []K8sResourceInfo
+	resourceName = strings.TrimSpace(resourceName)
 	if resourceName == "" {
-		return resources
+		return nil
 	}
 
-	dbms, err := common.GetDatabaseManager(common.Metastore)
-	if err != nil {
-		return resources
-	}
-
-	// 1. Try to Identify Tenant
-	var tenantId string
-	_ = dbms.Db.Get(&tenantId, "SELECT tenant FROM cloud_accounts WHERE id = $1", accountId)
-
-	// Prepare variations
+	// Name variations so "orders api" also matches "orders-api" / "orders_api".
 	searchTerms := strings.Fields(strings.ToLower(resourceName))
 	variations := []string{strings.ToLower(resourceName)}
 	if len(searchTerms) > 1 {
@@ -390,58 +389,135 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 	}
 
 	for _, v := range variations {
-		var rows *sqlx.Rows
-		var err error
-		if tenantId != "" {
-			// Tenant-wide search
-			rows, err = dbms.Db.Queryx(`
-				(select 'workload' as type, kw.external_id as name, kw.namespace
-				FROM k8s_workloads kw
-				JOIN cloud_accounts ca ON kw.cloud_account_id = ca.id
-				where ca.tenant = $1 and (kw.external_id ilike $2 or kw.name ilike $2) and kw.is_active and ca.status = 'active'
-				LIMIT 10)
-				UNION ALL
-				(select 'node' as type, kn.name, '' as namespace
-				FROM k8s_nodes kn
-				JOIN cloud_accounts ca ON kn.cloud_account_id = ca.id
-				where ca.tenant = $1 and kn.name ilike $2 and kn.is_active and ca.status = 'active'
-				LIMIT 10)`,
-				tenantId, "%"+v+"%")
-		} else {
-			// Fallback to Account-only search
-			rows, err = dbms.Db.Queryx(`
-				(select 'workload' as type, external_id as name, namespace
-				FROM k8s_workloads
-				where cloud_account_id = $1 and (external_id ilike $2 or name ilike $2) and is_active
-				LIMIT 10)
-				UNION ALL
-				(select 'node' as type, name, '' as namespace
-				FROM k8s_nodes
-				where cloud_account_id = $1 and name ilike $2 and is_active
-				LIMIT 10)`,
-				accountId, "%"+v+"%")
-		}
-
+		found, err := r.queryK8sResourcesByName(accountId, "%"+v+"%")
 		if err != nil {
+			// Soft failure — fall through to the next variation and ultimately
+			// the live-kubectl fallback, but surface the error so DB issues
+			// aren't invisible. Queryx never returns sql.ErrNoRows, so any error
+			// here is unexpected.
+			nbRequestContext.Ctx.GetLogger().Warn("resource_search: cloud_resourses lookup failed", "term", v, "account", accountId, "error", err)
 			continue
 		}
-
-		for rows.Next() {
-			var res K8sResourceInfo
-			if err := rows.Scan(&res.Type, &res.Name, &res.Namespace); err == nil {
-				resources = append(resources, res)
-			}
-		}
-		_ = rows.Close()
-
-		nbRequestContext.Ctx.GetLogger().Info("resource_search: db lookup result", "term", v, "count", len(resources), "tenant", tenantId)
-
-		if len(resources) > 0 {
-			break
+		nbRequestContext.Ctx.GetLogger().Info("resource_search: cloud_resourses lookup", "term", v, "account", accountId, "count", len(found))
+		if len(found) > 0 {
+			return found
 		}
 	}
 
-	return resources
+	return nil
+}
+
+// queryK8sResourcesByName runs the scoped cloud_resourses lookup for a single
+// name pattern. Split from searchDbForResources so the *sqlx.Rows is closed via
+// defer (one query per call, not accumulated across the variations loop).
+//
+// account = the cluster; leading with the indexed account column narrows the
+// scan to this cluster's active rows before the name ILIKE, so it never
+// seq-scans the full inventory.
+func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, pattern string) ([]K8sResourceInfo, error) {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, err
+	}
+
+	const query = `
+		SELECT type,
+		       name,
+		       COALESCE(meta->>'namespace', '') AS namespace,
+		       COALESCE(meta->>'status', '')    AS status
+		FROM cloud_resourses
+		WHERE account = $1
+		  AND cloud_provider = 'K8s'
+		  AND is_active = true
+		  AND (name ILIKE $2 OR resourse_id ILIKE $2)
+		ORDER BY name
+		LIMIT 20`
+
+	rows, err := dbms.Db.Queryx(query, accountId, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []K8sResourceInfo
+	for rows.Next() {
+		var res K8sResourceInfo
+		if scanErr := rows.Scan(&res.Type, &res.Name, &res.Namespace, &res.Status); scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, res)
+	}
+	return out, rows.Err()
+}
+
+// isSpecificResourceType reports whether resourceType names a concrete kind to
+// filter on (not empty / "all" / "resource").
+func (r K8sResourceSearchTool) isSpecificResourceType(resourceType string) bool {
+	return resourceType != "" && resourceType != "all" && resourceType != "resource"
+}
+
+// filterResourcesByType keeps only resources whose kind matches resourceType,
+// normalizing across sources: cloud_resourses uses K8s Kind names ("Pod",
+// "Deployment", "node") while kubectl output uses plural/short forms ("pods",
+// "no"). Both collapse to a canonical singular before comparison.
+func (r K8sResourceSearchTool) filterResourcesByType(resources []K8sResourceInfo, resourceType string) []K8sResourceInfo {
+	want := normalizeK8sType(resourceType)
+	var filtered []K8sResourceInfo
+	for _, res := range resources {
+		if normalizeK8sType(res.Type) == want {
+			filtered = append(filtered, res)
+		}
+	}
+	return filtered
+}
+
+// normalizeK8sType collapses a resource type/kind to a canonical lowercase
+// singular so values from cloud_resourses ("Pod", "ReplicaSet") and kubectl
+// ("pods", "rs") compare equal.
+func normalizeK8sType(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "po", "pod", "pods":
+		return "pod"
+	case "deploy", "deployment", "deployments":
+		return "deployment"
+	case "rs", "replicaset", "replicasets":
+		return "replicaset"
+	case "sts", "statefulset", "statefulsets":
+		return "statefulset"
+	case "ds", "daemonset", "daemonsets":
+		return "daemonset"
+	case "svc", "service", "services":
+		return "service"
+	case "no", "node", "nodes":
+		return "node"
+	case "job", "jobs":
+		return "job"
+	case "cj", "cronjob", "cronjobs":
+		return "cronjob"
+	case "ing", "ingress", "ingresses":
+		return "ingress"
+	case "netpol", "networkpolicy", "networkpolicies":
+		return "networkpolicy"
+	case "sc", "storageclass", "storageclasses":
+		return "storageclass"
+	case "cm", "configmap", "configmaps":
+		return "configmap"
+	case "secret", "secrets":
+		return "secret"
+	case "pv", "persistentvolume", "persistentvolumes":
+		return "persistentvolume"
+	case "pvc", "persistentvolumeclaim", "persistentvolumeclaims":
+		return "persistentvolumeclaim"
+	case "ns", "namespace", "namespaces":
+		return "namespace"
+	case "sa", "serviceaccount", "serviceaccounts":
+		return "serviceaccount"
+	case "crd", "crds", "customresourcedefinition", "customresourcedefinitions":
+		return "customresourcedefinition"
+	default:
+		// Naive fallback for uncommon kinds; correct only for simple "-s" plurals.
+		return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(t)), "s")
+	}
 }
 
 // handleResourceSuggestions finds actual resources using kubectl and returns resource data
@@ -454,66 +530,45 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 	var resources []K8sResourceInfo
 	searchName := request.ResourceName
 
-	// 1. Try DB Search first (Fastest)
-	dbResources := r.searchDbForResources(request.ResourceName, nbRequestContext.AccountId, nbRequestContext)
-	if len(dbResources) > 0 {
-		resources = dbResources
-		// Use found names to do a more precise K8s search
-		// But only use the DB name if the original query had spaces (meaning it needed a delimiter fix)
-		// Otherwise, keep the original query name which might be more general and match multiple resources in K8s grep
-		if strings.Contains(request.ResourceName, " ") {
-			searchName = dbResources[0].Name
-		}
-
-		uniqueNamespaces := make(map[string]bool)
-		for _, dr := range dbResources {
-			if dr.Namespace != "" {
-				uniqueNamespaces[dr.Namespace] = true
-			}
-		}
-
-		if (request.Namespace == "" || request.Namespace == "--all-namespaces") && len(uniqueNamespaces) == 1 {
-			for ns := range uniqueNamespaces {
-				namespace = ns
-				break
-			}
-		}
+	// 1. DB-first: cloud_resourses is the collector's near-real-time inventory
+	// (a new pod is queryable within ~1s), scoped to this account (= this
+	// cluster). It's authoritative and fast, so live kubectl runs only as a
+	// fallback when the DB returns nothing.
+	resources = r.searchDbForResources(request.ResourceName, nbRequestContext.AccountId, nbRequestContext)
+	if r.isSpecificResourceType(request.ResourceType) {
+		resources = r.filterResourcesByType(resources, request.ResourceType)
 	}
 
-	// 2. Try to find actual resources using multiple strategies
-	k8sResources := r.findActualResources(searchName, namespace, request.ResourceType, nbRequestContext)
-	// Filter out any resources whose names don't contain a meaningful term from the query.
-	// This guards against grep-pipe failures on the relay returning unrelated resources.
-	k8sResources = r.filterResourcesByRelevance(k8sResources, searchName)
-	if len(k8sResources) > 0 {
-		resources = k8sResources
-	}
+	if len(resources) == 0 {
+		// 2. Fallback: find actual resources via live kubectl strategies.
+		k8sResources := r.findActualResources(searchName, namespace, request.ResourceType, nbRequestContext)
+		// Filter out any resources whose names don't contain a meaningful term from the query.
+		// This guards against grep-pipe failures on the relay returning unrelated resources.
+		k8sResources = r.filterResourcesByRelevance(k8sResources, searchName)
+		if len(k8sResources) > 0 {
+			resources = k8sResources
+		}
 
-	// 3. Internalized discovery: If nothing found, execute fallback strategies automatically
-	if len(resources) == 0 && searchName != "" {
-		strategies := r.generateResourceSearchStrategies(searchName, namespace)
-		// Try executing the strategies internally instead of suggesting them
-		for _, strategy := range strategies {
-			found := r.executeKubectlAndParseResources(strategy.Command, strategy.ResourceType, namespace, nbRequestContext)
-			// Guard: filter by relevance before accepting results. The grep pipe in the
-			// strategy commands may not be supported by every relay implementation, so we
-			// must validate results client-side as well.
-			found = r.filterResourcesByRelevance(found, searchName)
-			if len(found) > 0 {
-				// Filter by requested type if it's specific
-				if request.ResourceType != "" && request.ResourceType != "all" && request.ResourceType != "resource" {
-					var filtered []K8sResourceInfo
-					for _, res := range found {
-						if strings.EqualFold(res.Type, request.ResourceType) || slices.Contains(k8sResourceTypeMappings[request.ResourceType], strings.ToLower(res.Type)) {
-							filtered = append(filtered, res)
-						}
+		// 3. Internalized discovery: if still nothing, execute fallback strategies automatically.
+		if len(resources) == 0 && searchName != "" {
+			strategies := r.generateResourceSearchStrategies(searchName, namespace)
+			// Try executing the strategies internally instead of suggesting them
+			for _, strategy := range strategies {
+				found := r.executeKubectlAndParseResources(strategy.Command, strategy.ResourceType, namespace, nbRequestContext)
+				// Guard: filter by relevance before accepting results. The grep pipe in the
+				// strategy commands may not be supported by every relay implementation, so we
+				// must validate results client-side as well.
+				found = r.filterResourcesByRelevance(found, searchName)
+				if len(found) > 0 {
+					// Filter by requested type if it's specific
+					if r.isSpecificResourceType(request.ResourceType) {
+						found = r.filterResourcesByType(found, request.ResourceType)
 					}
-					found = filtered
-				}
 
-				resources = append(resources, found...)
-				if len(resources) > 10 {
-					break // Don't over-collect
+					resources = append(resources, found...)
+					if len(resources) > 10 {
+						break // Don't over-collect
+					}
 				}
 			}
 		}
@@ -980,7 +1035,7 @@ func (r K8sResourceSearchTool) expandWorkloadResources(resources []K8sResourceIn
 	expandedResources = append(expandedResources, resources...) // Keep original resources
 
 	for _, resource := range resources {
-		if resource.Type == "deployments" || resource.Type == "statefulsets" || resource.Type == "daemonsets" || resource.Type == "jobs" {
+		if resource.Type == "deployments" || resource.Type == "statefulsets" || resource.Type == "daemonsets" || resource.Type == "jobs" || resource.Type == "rollouts" {
 			relatedPods := r.findRelatedPods(resource, nbRequestContext)
 			expandedResources = append(expandedResources, relatedPods...)
 		}

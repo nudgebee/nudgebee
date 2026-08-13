@@ -12,7 +12,6 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { useRouter } from 'next/router';
 import React, { useEffect, useState, useRef } from 'react';
 import k8sApi from '@api1/kubernetes';
-import { Link } from '@ui/Link';
 import apiKubernetes1 from '@api1/kubernetes1';
 import apiAppGrouping from '@api1/application-groupings';
 import { formatDateForTrace } from 'src/utils/common';
@@ -23,7 +22,7 @@ import { ds } from '@utils/colors';
 import apiTrace from '@api1/kubernetes/trace';
 import Tooltip from '@ui/Tooltip';
 
-const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab, setRenderForApplicationIssue }) => {
+const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab, setEventsFilter }) => {
   const router = useRouter();
   const endDate = new Date();
   const startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
@@ -104,7 +103,14 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
     return (
       items?.map((item) => {
         const keyField = isAggregation ? item.aggregation_key : item.subject_owner;
-        const linkParams = isAggregation ? `eventAggregationKey=${item.aggregation_key}&eventPriority=HIGH` : '';
+        const openFilteredEvents = () => {
+          setEventsFilter(
+            isAggregation
+              ? { aggregation_key: [item.aggregation_key], eventPriority: 'HIGH' }
+              : { workloadName: item.subject_owner, eventPriority: 'HIGH' }
+          );
+          setTab(1);
+        };
 
         return [
           {
@@ -124,13 +130,27 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
           },
           {
             component: (
-              <Typography textAlign={'end'}>
-                <Link
-                  href={`/kubernetes/details/${accountId}?${linkParams}#events/all-events`}
-                  style={{ color: 'var(--ds-brand-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}
-                >
-                  {item?.event_count}
-                </Link>
+              <Typography
+                textAlign={'end'}
+                role='button'
+                tabIndex={0}
+                onClick={openFilteredEvents}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openFilteredEvents();
+                  }
+                }}
+                sx={{
+                  cursor: 'pointer',
+                  color: 'var(--ds-brand-500)',
+                  fontSize: 'var(--ds-text-small)',
+                  fontWeight: 'var(--ds-font-weight-medium)',
+                  '&:hover': { color: 'var(--ds-blue-500)' },
+                  '&:focus-visible': { outline: '2px solid var(--ds-blue-500)' },
+                }}
+              >
+                {item?.event_count}
               </Typography>
             ),
           },
@@ -295,7 +315,7 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
         { name: 'event_count', order: 'desc' }
       );
 
-      const tableData = createEventTableData(response?.data?.event_groupings, false);
+      const tableData = createEventTableData(response?.data?.event_groupings);
       setApplicationEventData(tableData);
     } catch (error) {
       console.error('Error fetching application event data:', error);
@@ -334,34 +354,40 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
 
   const fetchSLOObsersavation = async (accountId, namespaces, workloads, timestamp) => {
     try {
-      const response = await apiKubernetes1.getSLOObservation({ accountId, namespaces, workloads, timestamp });
-      const sloResponseData = response?.data?.data?.slo_report_observation_v2?.rows || [];
-      if (sloResponseData.length > 0) {
-        const statusMap = {};
-        sloResponseData.forEach((item) => {
-          const key = `${item.workload_namespace}/${item.workload_name}`;
-          if (!statusMap[key]) {
-            statusMap[key] = item.status;
-          } else if (item.status === 'FIRING') {
-            statusMap[key] = 'FIRING';
-          }
-        });
-        const firingCount = Object.values(statusMap).filter((status) => status === 'FIRING').length;
-        const distinctCount = Object.keys(statusMap).length;
-        const firingArray = Object.entries(statusMap)
-          .filter(([_, _status]) => status === 'FIRING')
-          .map(([key, _status]) => {
-            const [workload_namespace, workload_name] = key.split('/');
-            return { workload_namespace, workload_name };
-          });
-        setSLOData({
-          count: distinctCount,
-          firingCount,
-          firingWorkloads: firingArray.length > 0 ? firingArray.map((f) => `${f.workload_namespace}/${f.workload_name}`) : [],
-        });
-      }
+      const [configResponse, observationResponse] = await Promise.all([
+        apiKubernetes1.listSLOConfigs({ cloud_account_id: accountId, namespace: namespaces, workload_name: workloads }),
+        apiKubernetes1.getSLOObservation({ accountId, namespaces, workloads, timestamp }),
+      ]);
+
+      // Total configured SLOs (distinct workloads) for this group's applications
+      const configuredSLOs = configResponse?.data?.data?.slo_config || [];
+      const configuredWorkloads = new Set();
+      configuredSLOs.forEach((config) => {
+        configuredWorkloads.add(`${config.workload_namespace}/${config.workload_name}`);
+      });
+
+      // Firing SLOs derived from observations
+      const sloResponseData = observationResponse?.data?.data?.slo_report_observation_v2?.rows || [];
+      const statusMap = {};
+      sloResponseData.forEach((item) => {
+        const key = `${item.workload_namespace}/${item.workload_name}`;
+        if (!statusMap[key]) {
+          statusMap[key] = item.status;
+        } else if (item.status === 'FIRING') {
+          statusMap[key] = 'FIRING';
+        }
+      });
+      const firingWorkloads = Object.entries(statusMap)
+        .filter(([, status]) => status === 'FIRING')
+        .map(([key]) => key);
+
+      setSLOData({
+        count: configuredWorkloads.size,
+        firingCount: firingWorkloads.length,
+        firingWorkloads,
+      });
     } catch (error) {
-      console.error('Error fetching SLO observations:', error);
+      console.error('Error fetching SLO data:', error);
     }
   };
 
@@ -506,7 +532,6 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
                     fontWeight={600}
                     onClick={() => {
                       if (workloadKindCounts?.Count > 0) {
-                        setRenderForApplicationIssue(false);
                         setTab(2);
                       }
                     }}
@@ -599,7 +624,7 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
                       fontWeight={600}
                       onClick={() => {
                         if (eventSummaryData.applicationEvents > 0) {
-                          setRenderForApplicationIssue(true);
+                          setEventsFilter({ aggregation_key: ['HighErrorCriticalLogs', 'ApplicationAPIFailures'], finding_type: 'issue' });
                           setTab(1);
                         }
                       }}
@@ -797,7 +822,8 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
                   aria-label='Open in details'
                   icon={<SafeIcon src={ExternalLinkIcon} alt='redirect' />}
                   onClick={() => {
-                    router.push(`/kubernetes/details/${accountId}?accountId=${accountId}&section=0#events/grouped-events`);
+                    setEventsFilter({ eventPriority: 'HIGH' });
+                    setTab(1);
                   }}
                 />
               }
@@ -826,7 +852,8 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
                   aria-label='Open in details'
                   icon={<SafeIcon src={ExternalLinkIcon} alt='redirect' />}
                   onClick={() => {
-                    router.push(`/kubernetes/details/${accountId}?accountId=${accountId}&section=1#events/grouped-events`);
+                    setEventsFilter({ eventPriority: 'HIGH' });
+                    setTab(1);
                   }}
                 />
               }
@@ -881,7 +908,7 @@ KubernetesApplicationGroupingSummary.propTypes = {
   accountId: PropTypes.string.isRequired,
   applications: PropTypes.array.isRequired,
   setTab: PropTypes.func.isRequired,
-  setRenderForApplicationIssue: PropTypes.func.isRequired,
+  setEventsFilter: PropTypes.func.isRequired,
 };
 
 export default KubernetesApplicationGroupingSummary;

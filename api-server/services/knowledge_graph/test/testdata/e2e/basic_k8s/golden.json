@@ -3,6 +3,7 @@
     {
       "unique_key": "k8s:test-account-k8s-1::Cluster::my-eks-cluster",
       "node_type": "Cluster",
+      "specific_type": "KubernetesCluster",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -15,11 +16,15 @@
       "labels": {},
       "query_attributes": {
         "name": "my-eks-cluster"
+      },
+      "ontology_attributes": {
+        "name": "my-eks-cluster"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::K8sService:production:api-service",
       "node_type": "K8sService",
+      "specific_type": "KubernetesService",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -57,11 +62,18 @@
         "name": "api-service",
         "namespace": "production",
         "service_type": "ClusterIP"
+      },
+      "ontology_attributes": {
+        "cluster_ip": "10.100.10.10",
+        "name": "api-service",
+        "namespace": "production",
+        "type": "ClusterIP"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Namespace::kube-system",
       "node_type": "Namespace",
+      "specific_type": "KubernetesNamespace",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -76,11 +88,15 @@
       "query_attributes": {
         "cluster": "",
         "name": "kube-system"
+      },
+      "ontology_attributes": {
+        "name": "kube-system"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Namespace::production",
       "node_type": "Namespace",
+      "specific_type": "KubernetesNamespace",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -95,11 +111,15 @@
       "query_attributes": {
         "cluster": "",
         "name": "production"
+      },
+      "ontology_attributes": {
+        "name": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
       "node_type": "Node",
+      "specific_type": "KubernetesNode",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -150,12 +170,27 @@
       },
       "query_attributes": {
         "cluster": "my-eks-cluster",
-        "name": "k8s-node-1"
+        "cpu_capacity": 4,
+        "memory_capacity": "16.00Ki",
+        "name": "k8s-node-1",
+        "node_flavor": "t3.xlarge",
+        "node_region": "us-east-1",
+        "node_type": "worker",
+        "node_zone": "us-east-1a"
+      },
+      "ontology_attributes": {
+        "capacity_cpu": 4,
+        "capacity_memory": "16.00Ki",
+        "cluster": "my-eks-cluster",
+        "name": "k8s-node-1",
+        "region": "us-east-1",
+        "type": "t3.xlarge"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Node::k8s-node-2",
       "node_type": "Node",
+      "specific_type": "KubernetesNode",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -205,18 +240,34 @@
       },
       "query_attributes": {
         "cluster": "my-eks-cluster",
-        "name": "k8s-node-2"
+        "cpu_capacity": 4,
+        "memory_capacity": "16.00Ki",
+        "name": "k8s-node-2",
+        "node_flavor": "t3.xlarge",
+        "node_region": "us-east-1",
+        "node_type": "worker",
+        "node_zone": "us-east-1b"
+      },
+      "ontology_attributes": {
+        "capacity_cpu": 4,
+        "capacity_memory": "16.00Ki",
+        "cluster": "my-eks-cluster",
+        "name": "k8s-node-2",
+        "region": "us-east-1",
+        "type": "t3.xlarge"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Pod:production:api-pod-1",
       "node_type": "Pod",
+      "specific_type": "KubernetesPod",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
       "source": "k8s",
       "properties": {
         "cluster": "",
+        "host_ip": "10.0.1.100",
         "is_active": false,
         "k8s_workload_id": "wl-pod-1",
         "kind": "Pod",
@@ -230,6 +281,7 @@
         "nb_resource_id": "wl-pod-1",
         "node_name": "k8s-node-1",
         "phase": "Running",
+        "pod_ip": "10.244.1.10",
         "ready": true,
         "restart_policy": "Always",
         "source": "k8s",
@@ -242,15 +294,23 @@
       },
       "query_attributes": {
         "cluster": "",
+        "host_ip": "10.0.1.100",
+        "kind": "Pod",
         "name": "api-pod-1",
         "namespace": "production",
         "node_name": "k8s-node-1",
-        "phase": "Running"
+        "phase": "Running",
+        "pod_ip": "10.244.1.10"
+      },
+      "ontology_attributes": {
+        "name": "api-pod-1",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Pod:production:api-pod-2",
       "node_type": "Pod",
+      "specific_type": "KubernetesPod",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -270,6 +330,7 @@
         "nb_resource_id": "wl-pod-2",
         "node_name": "k8s-node-2",
         "phase": "Running",
+        "pod_ip": "10.244.2.10",
         "source": "k8s",
         "subtype": "Pod"
       },
@@ -280,15 +341,22 @@
       },
       "query_attributes": {
         "cluster": "",
+        "kind": "Pod",
         "name": "api-pod-2",
         "namespace": "production",
         "node_name": "k8s-node-2",
-        "phase": "Running"
+        "phase": "Running",
+        "pod_ip": "10.244.2.10"
+      },
+      "ontology_attributes": {
+        "name": "api-pod-2",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Pod:production:postgres-0",
       "node_type": "Pod",
+      "specific_type": "KubernetesPod",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -308,6 +376,7 @@
         "nb_resource_id": "wl-pod-3",
         "node_name": "k8s-node-1",
         "phase": "Running",
+        "pod_ip": "10.244.1.20",
         "source": "k8s",
         "subtype": "Pod"
       },
@@ -318,15 +387,22 @@
       },
       "query_attributes": {
         "cluster": "",
+        "kind": "Pod",
         "name": "postgres-0",
         "namespace": "production",
         "node_name": "k8s-node-1",
-        "phase": "Running"
+        "phase": "Running",
+        "pod_ip": "10.244.1.20"
+      },
+      "ontology_attributes": {
+        "name": "postgres-0",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:kube-system:monitoring-agent",
       "node_type": "Workload",
+      "specific_type": "KubernetesDaemonSet",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -355,11 +431,17 @@
         "kind": "DaemonSet",
         "name": "monitoring-agent",
         "namespace": "kube-system"
+      },
+      "ontology_attributes": {
+        "name": "monitoring-agent",
+        "namespace": "kube-system",
+        "type": "DaemonSet"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:api-deployment",
       "node_type": "Workload",
+      "specific_type": "KubernetesDeployment",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -395,12 +477,20 @@
         "cluster": "",
         "kind": "Deployment",
         "name": "api-deployment",
-        "namespace": "production"
+        "namespace": "production",
+        "replicas": 3
+      },
+      "ontology_attributes": {
+        "name": "api-deployment",
+        "namespace": "production",
+        "replicas": 3,
+        "type": "Deployment"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:api-ingress",
       "node_type": "Workload",
+      "specific_type": "KubernetesIngress",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -434,11 +524,16 @@
         "kind": "Ingress",
         "name": "api-ingress",
         "namespace": "production"
+      },
+      "ontology_attributes": {
+        "name": "api-ingress",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:app-config",
       "node_type": "Workload",
+      "specific_type": "KubernetesConfigMap",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -465,11 +560,16 @@
         "kind": "ConfigMap",
         "name": "app-config",
         "namespace": "production"
+      },
+      "ontology_attributes": {
+        "name": "app-config",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:app-secrets",
       "node_type": "Workload",
+      "specific_type": "KubernetesSecret",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -496,11 +596,16 @@
         "kind": "Secret",
         "name": "app-secrets",
         "namespace": "production"
+      },
+      "ontology_attributes": {
+        "name": "app-secrets",
+        "namespace": "production"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:frontend-deployment",
       "node_type": "Workload",
+      "specific_type": "KubernetesDeployment",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -531,12 +636,20 @@
         "cluster": "",
         "kind": "Deployment",
         "name": "frontend-deployment",
-        "namespace": "production"
+        "namespace": "production",
+        "replicas": 2
+      },
+      "ontology_attributes": {
+        "name": "frontend-deployment",
+        "namespace": "production",
+        "replicas": 2,
+        "type": "Deployment"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:postgres-data",
       "node_type": "Workload",
+      "specific_type": "KubernetesPersistentVolumeClaim",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -565,12 +678,21 @@
         "cluster": "",
         "kind": "PersistentVolumeClaim",
         "name": "postgres-data",
-        "namespace": "production"
+        "namespace": "production",
+        "phase": "Bound",
+        "storage_class": "gp3"
+      },
+      "ontology_attributes": {
+        "name": "postgres-data",
+        "namespace": "production",
+        "state": "Bound",
+        "storage_class": "gp3"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Workload:production:postgres-statefulset",
       "node_type": "Workload",
+      "specific_type": "KubernetesStatefulSet",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -600,7 +722,14 @@
         "cluster": "",
         "kind": "StatefulSet",
         "name": "postgres-statefulset",
-        "namespace": "production"
+        "namespace": "production",
+        "replicas": 1
+      },
+      "ontology_attributes": {
+        "name": "postgres-statefulset",
+        "namespace": "production",
+        "replicas": 1,
+        "type": "StatefulSet"
       }
     }
   ],

@@ -557,7 +557,7 @@ const CFInstancesView = (props: {
     setPage(0);
   };
 
-  const onMenuClick = (_menuItem: { id: number }, _data: any) => undefined;
+  const onMenuClick = (_menuItem: { id: string }, _data: any) => undefined;
 
   useEffect(() => {
     if (props?.accountId) {

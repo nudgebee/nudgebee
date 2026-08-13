@@ -631,7 +631,7 @@ def get_last_config_change(config_change_event, data, finding):
 def get_resource_info(cloud_account_id, finding, tenant):
     resources_data = []
     resource_key = finding["service_key"]
-    if finding["subject_type"] in ["deployment", "pod", "job", "daemonset", "statefulset"]:
+    if finding["subject_type"] in ["deployment", "pod", "job", "daemonset", "statefulset", "rollout"]:
         resource_select_query = sql.SQL(
             """select id,resourse_id from cloud_resourses where resourse_id = %s and tenant = %s and account = %s"""
         ).format(sql.Identifier("cloud_resourses"))
@@ -1846,6 +1846,8 @@ def get_kind(kind: str):
         return "DaemonSet"
     if kind == "pods":
         return "Pod"
+    if kind == "rollouts":
+        return "Rollout"
     return kind
 
 
@@ -2421,6 +2423,8 @@ def handle_trivy_cis_scan(raw_content: dict, tenant: str, cloud_account_id: str,
     recommendations = []
     for r in report["data"]:
         for image in r["content"]:
+            if not image or "Results" not in image or image["Results"] is None:
+                continue
             results = image["Results"]
             for result in results:
                 if "Results" not in result or result["Results"] is None:

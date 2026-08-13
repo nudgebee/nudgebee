@@ -5,9 +5,11 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"nudgebee/llm/utils"
+	"sort"
 	"strings"
 )
 
@@ -39,20 +41,85 @@ func (e ElasticSearchMetricsAgent) GetDescription() string {
 	return `Retrieves and analyzes metrics from Elasticsearch/Opensearch using aggregation DSL queries.`
 }
 
-func (e ElasticSearchMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	indexCfg := utils.GetESAccountMetricsIndexConfig(e.accountId)
-	metricPatterns := []string{"metrics-*", "metricbeat-*", "metrix-*"}
+// esMetricSchema identifies the ingestion pipeline / field schema for a metric index.
+type esMetricSchema string
 
-	// Add configured indices that aren't already in our common patterns, filtering out known log patterns.
-	availableIndices := append([]string{}, metricPatterns...)
-	if indexCfg.DefaultIndex != "" && !isLogIndex(indexCfg.DefaultIndex) {
-		availableIndices = append(availableIndices, indexCfg.DefaultIndex)
+const (
+	schemaOTel       esMetricSchema = "otel"
+	schemaMetricbeat esMetricSchema = "metricbeat"
+	schemaElasticK8s esMetricSchema = "elastic_k8s"
+	schemaCloudWatch esMetricSchema = "cloudwatch"
+)
+
+// classifyIndex returns the metric schema for a given index pattern based on naming conventions.
+func classifyIndex(pattern string) esMetricSchema {
+	lower := strings.ToLower(pattern)
+	if strings.Contains(lower, "cloudwatch") {
+		return schemaCloudWatch
 	}
-	for _, pattern := range indexCfg.Indices {
-		if !isLogIndex(pattern) {
-			availableIndices = append(availableIndices, pattern)
+	if strings.Contains(lower, "kubernetes") {
+		return schemaElasticK8s
+	}
+	if strings.Contains(lower, "metricbeat") || strings.Contains(lower, "metricsbeat") {
+		return schemaMetricbeat
+	}
+	return schemaOTel
+}
+
+// detectMetricSchemas inspects the account's configured index patterns and returns
+// the set of active schemas plus a deduplicated list of queryable index patterns.
+// Falls back to the standard OTel trio when no index is explicitly configured.
+func detectMetricSchemas(indexCfg utils.ESIndexConfig) (schemas map[esMetricSchema]bool, availableIndices []string) {
+	schemas = make(map[esMetricSchema]bool)
+	seen := make(map[string]bool)
+
+	add := func(pattern string) {
+		if pattern == "" || isLogIndex(pattern) || seen[pattern] {
+			return
+		}
+		seen[pattern] = true
+		schemas[classifyIndex(pattern)] = true
+		availableIndices = append(availableIndices, pattern)
+	}
+
+	add(indexCfg.DefaultIndex)
+	for _, p := range indexCfg.Indices {
+		add(p)
+	}
+
+	// When OTel schema is active, ensure standard OTel index variants are listed.
+	if schemas[schemaOTel] {
+		for _, p := range []string{"metrics-*", "metrix-*"} {
+			if !seen[p] {
+				seen[p] = true
+				availableIndices = append(availableIndices, p)
+			}
 		}
 	}
+
+	// Default fallback: no config found → assume OTel.
+	if len(schemas) == 0 {
+		schemas[schemaOTel] = true
+		availableIndices = []string{"metrics-*", "metrix-*"}
+	}
+
+	// Sort availableIndices for deterministic LLM prompt generation & caching.
+	sort.Strings(availableIndices)
+
+	return schemas, availableIndices
+}
+
+func (e ElasticSearchMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	var indexCfg utils.ESIndexConfig
+	if ctx != nil {
+		if provider, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics"); err == nil && provider.DefaultIndex != "" {
+			indexCfg.DefaultIndex = provider.DefaultIndex
+		}
+	}
+	if indexCfg.DefaultIndex == "" || indexCfg.DefaultIndex == "*" {
+		indexCfg = utils.GetESAccountIndexConfig(e.accountId, "metrics")
+	}
+	_, availableIndices := detectMetricSchemas(indexCfg)
 
 	instructions := []string{
 		"**Your Primary Goal:** Answer user questions about metrics stored in Elasticsearch / Opensearch.",
@@ -234,10 +301,20 @@ func (e ElasticSearchMetricsAgent) GetSystemPrompt(ctx *security.RequestContext,
 }
 
 func (e ElasticSearchMetricsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+	defaultIndex := ""
+	if ctx != nil {
+		if providerInfo, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics"); err == nil && providerInfo.DefaultIndex != "" {
+			defaultIndex = providerInfo.DefaultIndex
+		}
+	}
+	if defaultIndex == "" {
+		defaultIndex = utils.GetESAccountIndexConfig(e.accountId, "metrics").DefaultIndex
+	}
 	return []toolcore.NBTool{
 		tools.ESMetricsQueryTool{},
-		tools.MetricsListTool{Provider: "ES"},
-		tools.ListMetricsLabelsTool{Provider: "ES"},
+		tools.MetricsListTool{Provider: "ES", DefaultIndex: defaultIndex},
+		tools.ListMetricsLabelsTool{Provider: "ES", DefaultIndex: defaultIndex},
+		tools.ListMetricsLabelValuesTool{Provider: "ES", DefaultIndex: defaultIndex},
 	}
 }
 

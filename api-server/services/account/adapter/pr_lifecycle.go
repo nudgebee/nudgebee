@@ -51,6 +51,11 @@ func CheckAndFollowupOpenPRs(ctx *security.RequestContext) error {
 		return fmt.Errorf("failed to get database connection: %w", err)
 	}
 
+	// Reclaim rows stranded in 'addressing' by a run whose process died before it
+	// could finalize (rolling deploy / OOM / eviction). This runs first so a
+	// reclaimed row is a normal needs_followup candidate for the query below.
+	reclaimStuckAddressing(ctx, dbms)
+
 	// Retire stale auto-PRs before querying followup candidates so they drop out
 	// of this sweep and stop churning no-op followups.
 	markStaleResolutions(ctx, dbms)
@@ -71,7 +76,7 @@ func CheckAndFollowupOpenPRs(ctx *security.RequestContext) error {
 		// Cron entries already passed the 60m cooldown in queryOpenPRResolutions,
 		// so the shorter webhook debounce is a no-op for them; pass false anyway to
 		// keep "external entry point" behaviour explicit.
-		if err := processResolution(ctx, dbms, row, maxRedispatchChain, false); err != nil {
+		if err := processResolution(ctx, dbms, row, maxRedispatchChain, false, "cron"); err != nil {
 			ctx.GetLogger().Error("pr_lifecycle: failed to process resolution",
 				"id", row.ID, "table", row.TableName, "error", err)
 			continue
@@ -103,6 +108,18 @@ const (
 	// followups in 16 minutes. A genuinely new event still triggers a followup
 	// once the window elapses; the 60m cron is the backstop if it is debounced.
 	followupWebhookDebounce = "10 minutes"
+	// followupAddressingLease is how long a row may sit in 'addressing' before the
+	// cron treats the claiming run as dead and reclaims it to 'needs_followup'. A
+	// followup goroutine is hard-bounded at 35 min (see the context.WithTimeout in
+	// processResolution's dispatch), after which it finalizes the row itself. But
+	// if the process holding that goroutine dies mid-run — a rolling deploy SIGTERM,
+	// OOM, or eviction — the goroutine is dropped and the row is stranded in
+	// 'addressing' forever: the cron query only admits created/needs_followup and
+	// the webhook path only marks pending. last_pr_check_at is stamped at claim (and
+	// on every subsequent pending-mark), so "no claim/finalize/signal for longer than
+	// the run bound" is an unambiguous dead-run signal. The lease is set safely above
+	// the 35-min bound so a genuinely in-flight run is never reclaimed.
+	followupAddressingLease = "45 minutes"
 	// followupStaleAfter retires a followup that has been open this long while
 	// still unmerged after at least followupIterationCap attempts. These are
 	// auto-generated PRs nobody reviewed or merged; without a stale exit they
@@ -242,6 +259,53 @@ func prURLFromRow(row prResolutionRow) string {
 		return ""
 	}
 	return meta.PRURL
+}
+
+// reclaimStuckAddressing returns rows stranded in 'addressing' past
+// followupAddressingLease back to 'needs_followup' so the normal claim/dispatch
+// path picks them up. It is the recovery for a followup goroutine that died mid-run
+// without finalizing (rolling deploy / OOM / eviction) — otherwise the row sits in
+// 'addressing' forever, invisible to both the cron query (created/needs_followup
+// only) and the webhook path (which merely marks pending). The iteration counter is
+// preserved (the dead attempt is not charged, matching a no-op) and pr_followup_pending
+// is cleared so the reclaimed run starts from a clean slate. Best-effort — a failure
+// here must not stop the sweep, so the error is logged, not returned.
+func reclaimStuckAddressing(ctx *security.RequestContext, dbms *database.DatabaseManager) {
+	reclaimStuckAddressingInTables(ctx, dbms, prResolutionTables)
+}
+
+// reclaimStuckAddressingInTables is the table-parameterized core of
+// reclaimStuckAddressing, split out so the SQL can be exercised against throwaway
+// tables in tests. Returns the number of rows reclaimed.
+func reclaimStuckAddressingInTables(ctx *security.RequestContext, dbms *database.DatabaseManager, tables []string) int64 {
+	var total int64
+	for _, tbl := range tables {
+		// now() on both sides: the lease compares last_pr_check_at (written by other
+		// replicas' claims) against a single authoritative DB clock, and the fresh
+		// stamp uses that same clock — no dependence on app/DB clock sync.
+		res, err := dbms.Db.ExecContext(ctx.GetContext(),
+			fmt.Sprintf(`UPDATE %s SET
+				pr_lifecycle_state = 'needs_followup',
+				pr_followup_pending = false,
+				last_pr_check_at = now()
+				WHERE type = 'PullRequest'
+				  AND status = 'InProgress'
+				  AND pr_lifecycle_state = 'addressing'
+				  AND last_pr_check_at < now() - $1::interval`, tbl),
+			followupAddressingLease)
+		if err != nil {
+			ctx.GetLogger().Error("pr_lifecycle: failed to reclaim stuck addressing rows", "table", tbl, "error", err)
+			continue
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			total += n
+		}
+	}
+	if total > 0 {
+		ctx.GetLogger().Warn("pr_lifecycle: reclaimed rows stuck in addressing", "count", total, "lease", followupAddressingLease)
+		common.MetricsPRFollowupReclaimed(ctx.GetContext(), total)
+	}
+	return total
 }
 
 // markStaleResolutions retires followups that have stayed open past
@@ -388,7 +452,7 @@ func ProcessOpenPRResolution(ctx *security.RequestContext, resolutionID, tableNa
 	// closes the lost-update window where an event arriving during 'addressing'
 	// was silently dropped.
 	// Webhook entry: debounce a burst of events on the same PR into one followup.
-	return processResolution(ctx, dbms, row, maxRedispatchChain, false)
+	return processResolution(ctx, dbms, row, maxRedispatchChain, false, "webhook")
 }
 
 // fetchResolutionRow loads the metadata a followup needs (data, iteration count,
@@ -593,7 +657,7 @@ func claimOrMarkResolution(dbms *database.DatabaseManager, tableName, id string,
 	return claimed, oldState, oldIters, nil
 }
 
-func processResolution(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow, redispatchBudget int, bypassDebounce bool) error {
+func processResolution(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow, redispatchBudget int, bypassDebounce bool, trigger string) error {
 	claimed, oldState, oldIters, err := claimOrMarkResolution(dbms, row.TableName, row.ID, bypassDebounce)
 	if err != nil {
 		return fmt.Errorf("failed to claim resolution row: %w", err)
@@ -659,6 +723,7 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 
 	ctx.GetLogger().Info("pr_lifecycle: triggering followup for PR",
 		"id", row.ID, "pr_url", meta.PRURL, "current_iteration_count", oldIters)
+	common.MetricsPRFollowupDispatch(ctx.GetContext(), row.TableName, trigger)
 
 	prBranch := meta.PRBranch
 	if prBranch == "" {
@@ -721,8 +786,10 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 				"id", row.ID,
 				"response_status", response.Status,
 				"outcome", outcome.name,
+				"unresolved", outcome.unresolved,
 				"new_state", outcome.newState)
 		}
+		common.MetricsPRFollowupOutcome(tenantCtx.GetContext(), outcome.name, outcome.unresolved)
 
 		// Finalize atomically and learn whether a new actionable signal arrived
 		// while this run was in flight (pr_followup_pending). If so, re-dispatch
@@ -740,7 +807,7 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 			// bypassDebounce: this fires for a real signal that arrived mid-run;
 			// finalize just stamped last_pr_check_at=now(), which would otherwise
 			// debounce the re-dispatch away. Bounded by redispatchBudget.
-			if perr := processResolution(tenantCtx, dbms, next, redispatchBudget-1, true); perr != nil {
+			if perr := processResolution(tenantCtx, dbms, next, redispatchBudget-1, true, "redispatch"); perr != nil {
 				tenantCtx.GetLogger().Error("pr_lifecycle: re-dispatch failed", "id", row.ID, "error", perr)
 			}
 		}
@@ -765,6 +832,12 @@ type followupOutcome struct {
 	// -<huge> = success-reset (we clamp to 0 in the UPDATE).
 	counterDelta int
 	resetCounter bool
+	// unresolved distinguishes a no_op where the agent had actionable input
+	// (review comments / CI failure) but couldn't apply a change, from a no_op
+	// where there was genuinely nothing to do. It is observability-only — it does
+	// NOT change counterDelta/newState — surfaced via the outcome metric so the
+	// otherwise-invisible "97% no_op is mostly couldn't-apply" churn is measurable.
+	unresolved bool
 }
 
 var (
@@ -827,6 +900,12 @@ func applyFollowupOutcome(ctx *security.RequestContext, dbms *database.DatabaseM
 //	                             but produced no observable change
 //	execution_status="failed"  — agent attempted work and explicitly failed
 //
+// Additive, backward-compatible field: followup_unresolved=true on a no_op means
+// the agent DID have actionable input (review comments / CI failure) but couldn't
+// apply a change (the non-convergence path). It is observability-only here — the
+// outcome is still no_op (counter-neutral); we only tag the metric. An older
+// code-analysis that never emits the field simply reports unresolved=false.
+//
 // Anything else (parse failure, missing field, unexpected value) collapses to
 // "failed" so the cron retries rather than mistaking noise for a fix.
 //
@@ -849,7 +928,13 @@ func classifyFollowupOutcome(responses []string) followupOutcome {
 	case "success", "partial_success":
 		return followupOutcomeSuccess
 	case "no_op":
-		return followupOutcomeNoOp
+		outcome := followupOutcomeNoOp
+		// followup_unresolved is additive and may be absent (older agent) — a
+		// missing/false value keeps the plain no_op semantics.
+		if unresolved, ok := agentResp["followup_unresolved"].(bool); ok && unresolved {
+			outcome.unresolved = true
+		}
+		return outcome
 	default:
 		// Backwards compatibility: some legacy code paths emit a top-level
 		// `success: true/false` instead of execution_status. Honour it when

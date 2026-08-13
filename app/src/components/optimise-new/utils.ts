@@ -3,7 +3,7 @@ import { recommendationDetails } from '@api1/recommendation/data';
 
 // ─── Shared types ───
 
-export type SortField = 'severity' | 'estimated_savings' | 'updated_at';
+export type SortField = 'severity' | 'estimated_savings' | 'updated_at' | 'finops_score' | 'safety_band' | 'category';
 export type SortDirection = 'asc' | 'desc';
 
 // ─── Shared constants ───
@@ -49,6 +49,30 @@ export const RULE_LABELS: Record<string, string> = {
 
 export const NON_SECURITY_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'];
 export const DEFAULT_STATUS = ['Open', 'InProgress'];
+
+// InfraUpgrade rules that belong to the cluster-upgrade feature rather than to
+// cost optimisation. Each already has a dedicated surface — the Upgrade Planner
+// cards, the Cluster Upgrade tab, or the Helm Upgrade tab — so optimise excludes
+// them. What remains under InfraUpgrade here is the cloud-collector set
+// (aws_ec2_ebs_generation_upgrade, azure_sql_database_pricing_model_upgrade, …),
+// which are genuine optimisation recommendations.
+//
+// Two producers write these, so check both when extending the list:
+// the k8s collector (upgrade_handler.py / event_handler.py) and the api-server
+// k8s_upgrade service, which stores a row per upgrade plan named for the health
+// check type (StoreHealthCheckWithPlanID).
+export const UPGRADE_PLANNER_RULES = [
+  'k8s_api_deprecated',
+  'k8s_api_deleted',
+  'kube_proxy_version',
+  'eks_add_ons_version',
+  'eks_cluster_upgrade',
+  'cluster_upgrade_confidence',
+  'k8s_helm_compatibility',
+  'helm_chart_upgrade',
+  'pre_flight',
+  'post_flight',
+];
 
 // ─── Shared helpers ───
 
@@ -167,6 +191,20 @@ const buildContainerPatch = (containerName: string, entries: any[], workloadType
   }
   if (mem?.recommended?.limit != null) {
     limits.push(`memory=${formatMemValue(Number(mem.recommended.limit))}`);
+  }
+
+  // Stock kubectl's `set resources` only supports built-in workload types, not
+  // the Argo Rollout CRD — emit an edit instruction with the values instead.
+  if (workloadType.toLowerCase() === 'rollout') {
+    const lines = [`# Argo Rollout: kubectl set resources does not support the Rollout CRD.`];
+    lines.push(`# In \`kubectl edit rollout/${workloadName} -n ${ns}\`, set for container "${containerName}":`);
+    if (requests.length > 0) {
+      lines.push(`#   requests: ${requests.join(', ')}`);
+    }
+    if (limits.length > 0) {
+      lines.push(`#   limits: ${limits.join(', ')}`);
+    }
+    return requests.length > 0 || limits.length > 0 ? [lines.join('\n')] : [];
   }
 
   const base = `kubectl set resources ${workloadType}/${workloadName} -n ${ns} -c ${containerName}`;

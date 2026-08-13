@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
@@ -81,7 +82,7 @@ func init() {
 // Returns nil on every path so the message is always ack'd — a dropped
 // callback degrades to "the lifecycle phase didn't fire for this event",
 // never an MQ redelivery storm.
-func processInvestigationCompleted(data []byte) error {
+func processInvestigationCompleted(msgCtx context.Context, data []byte) error {
 	var env InvestigationCompletedEnvelope
 	if err := common.UnmarshalJson(data, &env); err != nil {
 		slog.Error("investigation_completed_queue: failed to unmarshal envelope", "error", err, "data", string(data))
@@ -134,7 +135,7 @@ func processInvestigationCompleted(data []byte) error {
 		return nil
 	}
 
-	ctx, eventMap, err := loadEventMapFn(env.EventID, logger)
+	ctx, eventMap, err := loadEventMapFn(msgCtx, env.EventID, logger)
 	if err != nil {
 		// Distinguish permanent from transient failures. A missing event
 		// (sql.ErrNoRows) is permanent — ACK so we don't requeue forever. Any
@@ -167,14 +168,17 @@ func processInvestigationCompleted(data []byte) error {
 		extra["analysis_status_reason"] = env.StatusReason
 	}
 
-	logger.Info("investigation_completed_queue: emitting lifecycle phase", "phase", string(phase), "status", env.Status)
+	// Log through the request context from here on — its logger carries the
+	// trace_id/span_id stamped by NewRequestContext (plus event_id/account_id
+	// from the logger passed into loadEventMapFn above).
+	ctx.GetLogger().Info("investigation_completed_queue: emitting lifecycle phase", "phase", string(phase), "status", env.Status)
 	emitLifecycleFn(ctx, phase, eventMap, extra)
 
 	// Mark processed only after the deferred processors have run, so a
 	// transient failure above doesn't permanently suppress this event.
 	if err := common.CacheSet(investigationCompletedDedupNamespace, dedupKey, []byte("1"),
 		common.CacheSetWithExpiration(investigationCompletedDedupTTL)); err != nil {
-		logger.Warn("investigation_completed_queue: failed to set dedup marker (may double-run on redelivery)", "error", err)
+		ctx.GetLogger().Warn("investigation_completed_queue: failed to set dedup marker (may double-run on redelivery)", "error", err)
 	}
 
 	return nil

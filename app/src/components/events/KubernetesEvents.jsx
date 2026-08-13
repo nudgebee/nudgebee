@@ -241,6 +241,7 @@ const KubernetesEventsTable = ({
   resource_ids = [],
   showTimeFilter = true,
   isTroubleshootPage = false,
+  showEventTypeColumn = false,
 }) => {
   const router = useRouter();
 
@@ -390,7 +391,18 @@ const KubernetesEventsTable = ({
     ],
     []
   );
-  const [tableColumns, setTableColumns] = useState(() => (isTroubleshootPage ? troubleshootColumns : initialTableColumns));
+  // Aggregate views (Pod Errors "All", Node Errors, All Events) mix several
+  // error types in one table, so the Event Type column has to be on for the
+  // rows to be tellable apart. It is `defaultVisible: false` otherwise because
+  // a single-aggregation-key view repeats the same value on every row.
+  const resolvedInitialColumns = useMemo(
+    () =>
+      showEventTypeColumn
+        ? initialTableColumns.map((col) => (col?.name === 'Event Type' ? { ...col, defaultVisible: true } : col))
+        : initialTableColumns,
+    [initialTableColumns, showEventTypeColumn]
+  );
+  const [tableColumns, setTableColumns] = useState(() => (isTroubleshootPage ? troubleshootColumns : resolvedInitialColumns));
   const [data, setData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -574,9 +586,9 @@ const KubernetesEventsTable = ({
     if (isTroubleshootPage) {
       setTableColumns(troubleshootColumns);
     } else {
-      setTableColumns(initialTableColumns);
+      setTableColumns(resolvedInitialColumns);
     }
-  }, [isTroubleshootPage, initialTableColumns, troubleshootColumns]);
+  }, [isTroubleshootPage, resolvedInitialColumns, troubleshootColumns]);
 
   const currentHeader = useMemo(() => {
     return tableColumns.map((item) => {
@@ -597,7 +609,6 @@ const KubernetesEventsTable = ({
     });
   }, [tableColumns]);
 
-  const prevDefaultAggregationKeyRef = useRef(defaultQuery?.aggregation_key);
   const rawEventsRef = useRef([]);
   const ticketReferenceMapRef = useRef(new Map());
   const buildRowDataRef = useRef(null);
@@ -605,18 +616,37 @@ const KubernetesEventsTable = ({
   // later, faster one (e.g. rapid filter changes firing overlapping API calls).
   const eventsRequestIdRef = useRef(0);
   const trendRequestIdRef = useRef(0);
-  useEffect(() => {
+
+  // Mirror the parent's defaultQuery.aggregation_key into the filter state while
+  // rendering (React applies the update before running effects) rather than in
+  // an effect. listEvents() overwrites the query key with selectedAggregationKey,
+  // so if this sync landed a commit later — as an effect would — the fetch effect
+  // below would fire once with the previous tab's key. Adjusting state during
+  // render keeps them in the same commit. See react.dev "You Might Not Need an
+  // Effect" → adjusting state when a prop changes.
+  const aggKeyJson = JSON.stringify(defaultQuery?.aggregation_key);
+  const [prevAggKeyJson, setPrevAggKeyJson] = useState(aggKeyJson);
+  if (aggKeyJson !== prevAggKeyJson) {
+    setPrevAggKeyJson(aggKeyJson);
     const next = defaultQuery?.aggregation_key;
-    const prev = prevDefaultAggregationKeyRef.current;
-    prevDefaultAggregationKeyRef.current = next;
-    if (JSON.stringify(prev) === JSON.stringify(next)) return;
     const nextState = next
       ? (Array.isArray(next) ? next : typeof next === 'string' ? next.split(',') : [next])
           .filter((v) => v != null && v !== '')
           .map((v) => ({ value: v }))
       : [];
-    setSelectedAggregationKey((curr) => (JSON.stringify(curr) === JSON.stringify(nextState) ? curr : nextState));
-  }, [JSON.stringify(defaultQuery?.aggregation_key)]);
+    if (JSON.stringify(selectedAggregationKey) !== JSON.stringify(nextState)) {
+      setSelectedAggregationKey(nextState);
+    }
+  }
+
+  // Reset paging whenever the parent swaps the query (e.g. the Pod Errors
+  // error-type toggle). Holding the old offset refetches page N of a different
+  // result set, which usually renders an empty table under a paginator that
+  // still reads page N.
+  useEffect(() => {
+    setCurrentPage(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(defaultQuery)]);
 
   // --- Filter Handlers ---
 
@@ -752,20 +782,20 @@ const KubernetesEventsTable = ({
         {
           icon: TicketsIcon,
           label: 'Create Ticket',
-          id: 0,
+          id: 'create-ticket',
           disabled: disableTicket,
           iconBlack: true,
         },
         {
           icon: ClassifyIcon,
           label: 'Classify',
-          id: 4,
+          id: 'classify',
           iconBlack: true,
         },
         {
           icon: WorkflowIcon,
           label: 'Create Automation',
-          id: 5,
+          id: 'create-automation',
           iconBlack: true,
         },
       ];
@@ -774,7 +804,7 @@ const KubernetesEventsTable = ({
         {
           icon: TicketsIcon,
           label: 'Create Ticket',
-          id: 0,
+          id: 'create-ticket',
           disabled: disableTicket,
           iconBlack: true,
         },
@@ -784,15 +814,15 @@ const KubernetesEventsTable = ({
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
     }
-    if (menuItem.id == 4) {
+    if (menuItem.id === 'classify') {
       setSelectedEvent(data);
       setIsClassifyModalOpen(true);
     }
-    if (menuItem.id === 5) {
+    if (menuItem.id === 'create-automation') {
       const accountId = data.account_id || router.query.accountId;
       const params = new URLSearchParams({ accountId, returnUrl: router.asPath });
       if (data.aggregation_key) params.set('eventType', data.aggregation_key);
@@ -806,6 +836,15 @@ const KubernetesEventsTable = ({
 
   const handleTicketSuccess = () => {
     listEvents();
+  };
+
+  const handlePriorityChange = (eventId, newPriority, newScore) => {
+    rawEventsRef.current = rawEventsRef.current.map((e) =>
+      e.id === eventId ? { ...e, computed_priority: newPriority, ...(newScore !== undefined ? { computed_score: newScore } : {}) } : e
+    );
+    if (buildRowDataRef.current) {
+      setData(buildRowDataRef.current(rawEventsRef.current, ticketReferenceMapRef.current));
+    }
   };
 
   const handleTicketFailure = (res) => {
@@ -857,23 +896,35 @@ const KubernetesEventsTable = ({
     if (defaultQuery) {
       query = { ...query, ...defaultQuery };
     }
-    if (selectedNamespace && isK8sFilterVisible) {
-      query.subject_namespace = selectedNamespace;
+    if (isK8sFilterVisible) {
+      if (selectedNamespace) {
+        query.subject_namespace = selectedNamespace;
+      } else {
+        delete query.subject_namespace;
+      }
+      if (selectedAggregationKey?.length > 0) {
+        query.aggregation_key = selectedAggregationKey.map((f) => f.value || f);
+      } else {
+        delete query.aggregation_key;
+      }
+      if (selectedWorkload) {
+        query.subject_name = selectedWorkload;
+      } else {
+        delete query.subject_name;
+      }
     }
     if (selectedSubjectType && isK8sFilterVisible) {
       query.subject_type = selectedSubjectType;
     }
-    if (selectedAggregationKey?.length > 0 && isK8sFilterVisible) {
-      query.aggregation_key = selectedAggregationKey.map((f) => f.value || f);
-    }
     if (selectedPriority) {
       query.priority = selectedPriority;
+    } else {
+      delete query.priority;
     }
     if (selectedStatus) {
       query.status = selectedStatus;
-    }
-    if (selectedWorkload && isK8sFilterVisible) {
-      query.subject_name = selectedWorkload;
+    } else {
+      delete query.status;
     }
     if (selectedSource && selectedSource.length > 0) {
       query.source = selectedSource?.map((e) => e.value);
@@ -928,11 +979,16 @@ const KubernetesEventsTable = ({
 
     // Build row data from events + ticket map
     const buildRowData = (events, ticketReferenceMap) => {
+      // Pre-compute header names as a Set for O(1) lookups instead of
+      // rebuilding an array and calling .includes() per row.
+      const headersSet = new Set(currentHeader.map((h) => h.name));
+      // Pre-index accounts by id for O(1) lookup per row.
+      const accountById = isTroubleshootPage ? new Map(accounts.map((acc) => [acc.id || acc.value, acc])) : null;
+
       return events?.map((item) => {
         const row = [];
-        const headersArray = currentHeader.map((item) => item.name);
 
-        if (headersArray.includes('Severity')) {
+        if (headersSet.has('Severity')) {
           row.push({
             component: (
               <Box
@@ -956,8 +1012,8 @@ const KubernetesEventsTable = ({
           });
         }
 
-        if (headersArray.includes('Application')) {
-          const account = isTroubleshootPage ? accounts.find((acc) => (acc.id || acc.value) === item.account_id) : null;
+        if (headersSet.has('Application')) {
+          const account = accountById?.get(item.account_id) ?? null;
           const cloudProvider = account?.cloud_provider || resolvedAccountType;
           const namespaceLabel = cloudProvider && cloudProvider !== 'K8s' ? 'svc' : 'ns';
           row.push({
@@ -996,7 +1052,7 @@ const KubernetesEventsTable = ({
             ),
           });
         }
-        if (headersArray.includes('Message') || headersArray.includes('Title')) {
+        if (headersSet.has('Message') || headersSet.has('Title')) {
           row.push({
             component: ClusterNameWithRegion({
               name: item.title,
@@ -1028,13 +1084,13 @@ const KubernetesEventsTable = ({
             data: item.title,
           });
         }
-        if (headersArray.includes('Event Type')) {
+        if (headersSet.has('Event Type')) {
           row.push({
             component: <Text showAutoEllipsis value={titleCaseForAggregationKey(item.aggregation_key)} />,
             data: item.aggregation_key,
           });
         }
-        if (headersArray.includes('Triage Score')) {
+        if (headersSet.has('Triage Score')) {
           row.push({
             component: (
               <Box sx={{ justifySelf: 'center', display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
@@ -1048,14 +1104,15 @@ const KubernetesEventsTable = ({
                   eventId={item.id}
                   accountId={item.account_id}
                   currentPriority={item.computed_priority}
+                  currentScore={item.computed_score}
                   canWrite={hasWriteAccess(item.account_id)}
-                  onChanged={listEvents}
+                  onChanged={(newPriority, newScore) => handlePriorityChange(item.id, newPriority, newScore)}
                 />
               </Box>
             ),
           });
         }
-        if (headersArray.includes('Alert Status')) {
+        if (headersSet.has('Alert Status')) {
           row.push({
             component: (
               <Box
@@ -1074,7 +1131,7 @@ const KubernetesEventsTable = ({
             ),
           });
         }
-        if (headersArray.includes('Error Type')) {
+        if (headersSet.has('Error Type')) {
           const alertData = safeJSONParse(item.labels) || '{}';
           if (alertData && Object.keys(alertData).length > 0) {
             const navigateUrl = !router.pathname.includes('/kubernetes/details')
@@ -1117,7 +1174,7 @@ const KubernetesEventsTable = ({
             });
           }
         }
-        if (headersArray.includes('Triage Status')) {
+        if (headersSet.has('Triage Status')) {
           row.push({
             component: (
               <NBStatusBadge
@@ -1685,7 +1742,7 @@ KubernetesEventsTable.propTypes = {
   disabledFilters: PropTypes.arrayOf(PropTypes.string),
   enableTrendChart: PropTypes.bool,
   heading: PropTypes.string,
-  podAllTabRadio: PropTypes.node,
+  showEventTypeColumn: PropTypes.bool,
   tableColumns: PropTypes.arrayOf(
     PropTypes.oneOfType([
       PropTypes.string,

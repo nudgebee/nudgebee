@@ -677,7 +677,7 @@ const KubernetesClusterUpgradePlanner: React.FC<KubernetesClusterUpgradePlannerP
           </Box>
         ) : isLoading ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: ds.space.mul(0, 200) }}>
-            <Loader style={{ height: '100%', width: '100%' }} />
+            <Loader style={{ position: 'static', height: '100%', width: '100%' }} />
           </Box>
         ) : (
           <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: ds.space.mul(0, 200), p: ds.space[6] }}>

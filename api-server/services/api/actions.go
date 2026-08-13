@@ -106,8 +106,8 @@ func buildContextFromPayload(c *gin.Context, h *ActionRequest, tracer *trace.Tra
 		}
 	}
 
-	span := trace.SpanFromContext(ctx)
-	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
+	// trace_id/span_id are stamped by NewRequestContext from ctx.
+	childLogger := logger.With("tenant_id", tenantId, "user_id", userId)
 	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
 }
 

@@ -12,6 +12,10 @@ import (
 	"nudgebee/services/knowledge_graph/flow_sources"
 	kgmodels "nudgebee/services/knowledge_graph/models"
 	"nudgebee/services/knowledge_graph/sources"
+	_ "nudgebee/services/knowledge_graph/sources/aws"   // register AWS source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/azure" // register Azure source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/gcp"   // register GCP source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/k8s"   // register K8s source factory (init side-effect)
 	"nudgebee/services/security"
 )
 
@@ -33,7 +37,7 @@ func init() {
 	}
 }
 
-func processKGUpdateMessage(data []byte) error {
+func processKGUpdateMessage(msgCtx context.Context, data []byte) error {
 	// 1. Unmarshal message
 	var message KGUpdateMessage
 	if err := common.UnmarshalJson(data, &message); err != nil {
@@ -41,7 +45,9 @@ func processKGUpdateMessage(data []byte) error {
 		return nil // Don't requeue malformed messages
 	}
 
-	logger := slog.Default().With(
+	// Stamp trace_id/span_id from the consumer span (msgCtx) so the whole KG
+	// update flow — which threads this logger, not a RequestContext — correlates.
+	logger := common.LoggerWithTrace(msgCtx, slog.Default()).With(
 		"tenant_id", message.TenantID,
 		"source", message.Source,
 		"correlation_id", message.CorrelationID,
@@ -61,7 +67,7 @@ func processKGUpdateMessage(data []byte) error {
 
 	// 3. Process KG update for tenant
 	logger.Info("kg_queue: starting KG update for tenant")
-	if err := processKGUpdateForTenant(message.TenantID, message.CorrelationID, logger); err != nil {
+	if err := processKGUpdateForTenant(msgCtx, message.TenantID, message.CorrelationID, logger); err != nil {
 		logger.Error("kg_queue: failed to process KG update", "error", err)
 		return nil // Ack to prevent infinite retry, error is logged
 	}
@@ -83,16 +89,17 @@ func tryClaimTenantProcessing(tenantID string, logger *slog.Logger) (bool, error
 }
 
 // processKGUpdateForTenant processes all enabled filters for a specific tenant
-func processKGUpdateForTenant(tenantID string, correlationID string, logger *slog.Logger) error {
+func processKGUpdateForTenant(msgCtx context.Context, tenantID string, correlationID string, logger *slog.Logger) error {
 	// Get database manager
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return err
 	}
 
-	// Create context with timeout
+	// Create context with timeout. msgCtx carries the trace context extracted
+	// from the consumed message's headers so the trace continues into the build.
 	timeout := time.Duration(config.Config.KGUpdateProcessingTimeoutMinutes) * time.Minute
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(msgCtx, timeout)
 	defer cancel()
 
 	// Create security context for tenant

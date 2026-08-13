@@ -1082,7 +1082,10 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	setTriggeredByUser(wf, ctx.GetSecurityContext().GetUserId())
 	wf.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
 
-	we, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, wf, inputs)
+	// Thread the request context so the tracing.Propagator injects the
+	// caller's trace context into the workflow header (start call is a fast
+	// gRPC roundtrip; matches the retrigger path below).
+	we, err := s.temporalClient.ExecuteWorkflow(ctx.GetContext(), options, s.workflowExecutor.ExecuteWorkflowInternal, wf, inputs)
 	if err != nil {
 		return "", err
 	}
@@ -4008,11 +4011,13 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 		}
 
 		for containerID, children := range containerChildren {
-			// Find definitions to get the type
+			// Find definitions to get the type and params
 			var taskType string
+			var taskParams map[string]any
 			for _, t := range wfDef.Tasks {
 				if t.ID == containerID {
 					taskType = t.Type
+					taskParams = t.Params
 					break
 				}
 			}
@@ -4118,9 +4123,13 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 				containerTask.Children = children
 			} else {
 				containerTask = model.TaskExecutionDetails{
-					ID:       containerID,
-					Type:     taskType,
-					Status:   model.TaskStatusCompleted,
+					ID:     containerID,
+					Type:   taskType,
+					Status: model.TaskStatusCompleted,
+					// Synthesized containers never ran as an activity, so they have
+					// no recorded input. Surface the definition params instead —
+					// otherwise the executions panel renders every field as N/A.
+					Input:    taskParams,
 					Children: children,
 				}
 			}
@@ -4418,6 +4427,20 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 			return nil, fmt.Errorf("workflow with ID %s not found: %w", id, sql.ErrNoRows)
 		}
 		return nil, err
+	}
+	// No-change guard: publishing a draft that is byte-for-byte (JSONB
+	// semantically) identical to the live version would only mint a duplicate
+	// workflow_versions row, so reject it outright. Find computes
+	// DraftDiffersFromLive as true whenever no live version exists, keeping
+	// first-time publishes unaffected. Known TOCTOU: Find runs outside
+	// PublishVersion's tx, so a concurrent racing publish can still slip
+	// through — worst case is the old (pre-guard) behavior.
+	if wf.LiveVersionID != nil && !wf.DraftDiffersFromLive {
+		liveV := 0
+		if wf.LiveVersionNumber != nil {
+			liveV = *wf.LiveVersionNumber
+		}
+		return nil, common.ErrorBadRequest(fmt.Sprintf("no changes to publish: draft is identical to live version v%d", liveV))
 	}
 	userID := ctx.GetSecurityContext().GetUserId()
 	v, err := s.store.PublishVersion(ctx.GetContext(), id, userID, model.WorkflowVersionSourcePublish, name, description, nil, status)

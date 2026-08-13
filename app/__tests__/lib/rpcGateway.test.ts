@@ -22,6 +22,7 @@ jest.mock('next-auth/jwt', () => ({ getToken: jest.fn() }));
 jest.mock('@lib/internal', () => ({ decrypt: jest.fn() }));
 
 import { applySelection, buildSessionVariables, parseOperation, tryBypassGraphQL } from '@lib/rpcGateway';
+import { LIST_GATEWAY_REQUESTS } from '@api1/gateway-usage';
 
 // Pull a top-level field's selection set out of a query string. The bypass
 // uses these to prune upstream payloads, so we re-build them the same way the
@@ -173,6 +174,50 @@ describe('parseOperation', () => {
       return;
     }
     expect(result.reason).toMatch(/^parse_failed:/);
+  });
+});
+
+describe('gateway-usage list-requests contract', () => {
+  // Guards the FE → Go-handler contract: the real mutation from
+  // @api1/gateway-usage must resolve into an upstream request body carrying
+  // every filter field the gateway's apiListRequest binds (snake_case). A
+  // field silently dropped here means "filter selected but rows unfiltered".
+  it('carries every Requests-tab filter into the upstream body', () => {
+    const result = parseOperation(LIST_GATEWAY_REQUESTS, {
+      startDate: '2026-07-08T00:00:00Z',
+      endDate: '2026-07-14T23:59:59.999Z',
+      userId: 'u-1',
+      providers: ['anthropic'],
+      models: ['claude-fable-5'],
+      status: 'error',
+      tool: '',
+      routingReason: 'substitute',
+      rejectReason: '',
+      dlp: false,
+      limit: 50,
+      offset: 0,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.fields[0].name).toBe('llm_gateway_list_requests');
+    expect(result.fields[0].input).toEqual({
+      request: {
+        start_date: '2026-07-08T00:00:00Z',
+        end_date: '2026-07-14T23:59:59.999Z',
+        user_id: 'u-1',
+        providers: ['anthropic'],
+        models: ['claude-fable-5'],
+        status: 'error',
+        tool: '',
+        routing_reason: 'substitute',
+        reject_reason: '',
+        dlp: false,
+        limit: 50,
+        offset: 0,
+      },
+    });
   });
 });
 

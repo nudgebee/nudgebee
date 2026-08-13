@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	// trailing provider date suffix, e.g. "-20251001".
-	dateSuffixRe = regexp.MustCompile(`-\d{8}$`)
+	// trailing provider date suffix — Anthropic/Gemini "-20251001" (contiguous) OR
+	// OpenAI "-2024-07-18" (dashed). Either form is stripped to the undated name.
+	dateSuffixRe = regexp.MustCompile(`-\d{8}$|-\d{4}-\d{2}-\d{2}$`)
 	// a dashed 1-digit.1-digit version segment, e.g. "-4-5-" in claude-haiku-4-5-…
 	// (word-bounded so a date like "-4-20250514" is NOT touched).
 	dashVersionRe = regexp.MustCompile(`\b(\d)-(\d)\b`)

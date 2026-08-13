@@ -11,6 +11,7 @@ import (
 	"nudgebee/relay-server/pkg/config"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
 )
 
 // RPCClient defines a simple RabbitMQ-backed RPC interface.
@@ -185,6 +186,11 @@ func (c *ClientImpl) Call(
 	respCh := make(chan []byte, 1)
 	c.pending.Store(corrID, respCh)
 
+	// Inject the active W3C trace context into the AMQP headers so the
+	// in-cluster agent consuming this message can continue the same trace.
+	headers := amqp.Table{}
+	otel.GetTextMapPropagator().Inject(ctx, amqpHeaderCarrier(headers))
+
 	// publish the RPC request
 	err := c.pubCh.PublishWithContext(
 		ctx,
@@ -196,6 +202,7 @@ func (c *ClientImpl) Call(
 			Body:          payload,
 			CorrelationId: corrID,
 			ReplyTo:       c.replyQ.Name,
+			Headers:       headers,
 		},
 	)
 	if err != nil {

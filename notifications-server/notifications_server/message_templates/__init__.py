@@ -18,6 +18,10 @@ from notifications_server.message_templates.slack.batched_findings import (
     get_batched_findings_message_template,
     get_batched_findings_message_params,
 )
+from notifications_server.message_templates.slack.security_posture_alert import (
+    get_security_posture_alert_message_template,
+    get_security_posture_alert_message_params,
+)
 from notifications_server.message_templates.slack.cloud_cost_summary import (
     get_cloud_cost_message_template,
     get_cloud_cost_summary_message_params,
@@ -159,6 +163,13 @@ template_mapping = {
     "batched_findings": {
         "common_params": get_batched_findings_message_params,
         "slack": get_batched_findings_message_template,
+        "ms_teams": None,
+        "google_chat": None,
+        "discord": None,
+    },
+    "security_posture_alert": {
+        "common_params": get_security_posture_alert_message_params,
+        "slack": get_security_posture_alert_message_template,
         "ms_teams": None,
         "google_chat": None,
         "discord": None,

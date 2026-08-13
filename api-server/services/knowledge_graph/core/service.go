@@ -225,9 +225,9 @@ const (
 // values slice built per row in SaveNodes.
 var nodeUpsertCols = []string{
 	"id", "created_at", "updated_at",
-	"properties", "labels", "query_attributes",
+	"properties", "labels", "query_attributes", "ontology_attributes",
 	"cloud_account_id", "tenant_id",
-	"unique_key", "node_type", "level",
+	"unique_key", "node_type", "specific_type", "level",
 	"last_sync_version", "is_active", "source",
 }
 
@@ -1568,6 +1568,11 @@ func (s *Service) SaveNodes(nodes []*DbNode, syncVersion int64) error {
 			return fmt.Errorf("failed to marshal node query_attributes: %w", err)
 		}
 
+		ontologyAttributesJSON, err := marshalMapOrEmpty(node.OntologyAttributes)
+		if err != nil {
+			return fmt.Errorf("failed to marshal node ontology_attributes: %w", err)
+		}
+
 		// Set level to "Tenant" for all nodes
 		if node.Level == "" {
 			node.Level = "Tenant"
@@ -1580,10 +1585,12 @@ func (s *Service) SaveNodes(nodes []*DbNode, syncVersion int64) error {
 			propertiesJSON,
 			labelsJSON,
 			queryAttributesJSON,
+			ontologyAttributesJSON,
 			node.CloudAccountID,
 			node.TenantID,
 			node.UniqueKey,
 			node.NodeType,
+			node.SpecificType,
 			node.Level,
 			syncVersion,
 			true,
@@ -1599,7 +1606,7 @@ func (s *Service) SaveNodes(nodes []*DbNode, syncVersion int64) error {
 
 	// Use database manager's bulk insert with conflict resolution
 	onConflict := []string{"id"}
-	onConflictUpdate := []string{"updated_at", "properties", "labels", "query_attributes", "last_sync_version", "is_active", "source"}
+	onConflictUpdate := []string{"updated_at", "properties", "labels", "query_attributes", "ontology_attributes", "specific_type", "last_sync_version", "is_active", "source"}
 
 	// Insert in batches to avoid PostgreSQL parameter limit (65535)
 	tx, err := s.dbManager.BeginTx()
@@ -2105,7 +2112,7 @@ func (s *Service) GetCompleteGraphFromDatabaseWithFilters(reqCtx *security.Reque
 	}
 
 	// If no filters provided, use the regular method
-	if filters == nil || (len(filters.AccountIDs) == 0 && len(filters.NodeTypes) == 0 && len(filters.Labels) == 0 && len(filters.LabelKeys) == 0 && len(filters.Attributes) == 0 && len(filters.AttributeKeys) == 0) {
+	if filters == nil || (len(filters.AccountIDs) == 0 && len(filters.NodeTypes) == 0 && len(filters.SpecificTypes) == 0 && len(filters.Labels) == 0 && len(filters.LabelKeys) == 0 && len(filters.Attributes) == 0 && len(filters.AttributeKeys) == 0 && len(filters.OntologyAttributes) == 0 && len(filters.OntologyAttributeKeys) == 0) {
 		return s.GetCompleteGraphFromDatabase(reqCtx, tenantID)
 	}
 
@@ -2191,7 +2198,7 @@ func (s *Service) GetNodesByTenant(tenantID string) ([]*DbNode, error) {
 	}
 
 	query := `
-		SELECT id, created_at, updated_at, properties, labels, query_attributes, cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, '')
+		SELECT id, created_at, updated_at, properties, labels, query_attributes, cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, ''), COALESCE(specific_type, ''), ontology_attributes
 		FROM knowledge_graph_node
 		WHERE tenant_id = $1 AND level = 'Tenant' AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false') AND is_active = true
 		ORDER BY created_at DESC
@@ -2213,6 +2220,7 @@ func (s *Service) GetNodesByTenant(tenantID string) ([]*DbNode, error) {
 		var propertiesJSON []byte
 		var labelsJSON []byte
 		var queryAttributesJSON []byte
+		var ontologyAttributesJSON []byte
 
 		err := rows.Scan(
 			&node.ID,
@@ -2227,6 +2235,8 @@ func (s *Service) GetNodesByTenant(tenantID string) ([]*DbNode, error) {
 			&node.NodeType,
 			&node.Level,
 			&node.Source,
+			&node.SpecificType,
+			&ontologyAttributesJSON,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan node: %w", err)
@@ -2245,6 +2255,11 @@ func (s *Service) GetNodesByTenant(tenantID string) ([]*DbNode, error) {
 		// Parse query_attributes JSON
 		if err := json.Unmarshal(queryAttributesJSON, &node.QueryAttributes); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal node query_attributes: %w", err)
+		}
+
+		// Parse ontology_attributes JSON
+		if err := json.Unmarshal(ontologyAttributesJSON, &node.OntologyAttributes); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal node ontology_attributes: %w", err)
 		}
 
 		nodes = append(nodes, node)
@@ -2329,7 +2344,7 @@ func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFil
 
 	// Build dynamic query with filters
 	query := `
-		SELECT id, created_at, updated_at, properties, labels, query_attributes, cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, '')
+		SELECT id, created_at, updated_at, properties, labels, query_attributes, cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, ''), COALESCE(specific_type, ''), ontology_attributes
 		FROM knowledge_graph_node
 		WHERE tenant_id = $1 AND level = 'Tenant' AND is_active = true AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')
 	`
@@ -2359,6 +2374,12 @@ func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFil
 		query += fmt.Sprintf(" AND (%s)", strings.Join(typeConditions, " OR "))
 	}
 
+	// Filter by concrete specific_type (e.g. EC2Instance) — parallel to node_type.
+	if len(filters.SpecificTypes) > 0 {
+		query += fmt.Sprintf(" AND specific_type = ANY($%d::text[])", argCounter)
+		args = append(args, pq.Array(filters.SpecificTypes))
+	}
+
 	query += " ORDER BY created_at DESC"
 
 	rows, err := s.dbManager.Query(query, args...)
@@ -2377,6 +2398,7 @@ func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFil
 		var propertiesJSON []byte
 		var labelsJSON []byte
 		var queryAttributesJSON []byte
+		var ontologyAttributesJSON []byte
 
 		err := rows.Scan(
 			&node.ID,
@@ -2391,6 +2413,8 @@ func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFil
 			&node.NodeType,
 			&node.Level,
 			&node.Source,
+			&node.SpecificType,
+			&ontologyAttributesJSON,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan node: %w", err)
@@ -2409,6 +2433,11 @@ func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFil
 		// Parse query_attributes JSON
 		if err := json.Unmarshal(queryAttributesJSON, &node.QueryAttributes); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal node query_attributes: %w", err)
+		}
+
+		// Parse ontology_attributes JSON
+		if err := json.Unmarshal(ontologyAttributesJSON, &node.OntologyAttributes); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal node ontology_attributes: %w", err)
 		}
 
 		// Apply label and attribute filters (in-memory filtering since labels and attributes are in JSON properties)
@@ -2480,6 +2509,37 @@ func (s *Service) matchesFilters(node *DbNode, filters *GraphFilters) bool {
 		}
 	}
 
+	// Check specific_type filter (concrete cloud/native type, OR logic).
+	if len(filters.SpecificTypes) > 0 {
+		matched := false
+		for _, st := range filters.SpecificTypes {
+			if node.SpecificType == st {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	// Check normalized ontology_attributes filters.
+	ontologyAttributes := node.OntologyAttributes
+	if ontologyAttributes == nil {
+		ontologyAttributes = make(map[string]interface{})
+	}
+	for key, expectedValue := range filters.OntologyAttributes {
+		actualValue, exists := ontologyAttributes[key]
+		if !exists || fmt.Sprintf("%v", actualValue) != expectedValue {
+			return false
+		}
+	}
+	for _, key := range filters.OntologyAttributeKeys {
+		if _, exists := ontologyAttributes[key]; !exists {
+			return false
+		}
+	}
+
 	return true
 }
 
@@ -2531,7 +2591,7 @@ func (s *Service) GetNodeNeighbors(reqCtx *security.RequestContext, nodeID strin
 
 	// Step 1: Get the target node
 	nodeQuery := `
-		SELECT id, created_at, updated_at, properties, labels, query_attributes, cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, '')
+		SELECT id, created_at, updated_at, properties, labels, query_attributes, cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, ''), COALESCE(specific_type, ''), ontology_attributes
 		FROM knowledge_graph_node
 		WHERE id = $1 AND level = 'Tenant'
 	`
@@ -2552,6 +2612,7 @@ func (s *Service) GetNodeNeighbors(reqCtx *security.RequestContext, nodeID strin
 		var propertiesJSON []byte
 		var labelsJSON []byte
 		var queryAttributesJSON []byte
+		var ontologyAttributesJSON []byte
 
 		err := rows.Scan(
 			&targetNode.ID,
@@ -2566,6 +2627,8 @@ func (s *Service) GetNodeNeighbors(reqCtx *security.RequestContext, nodeID strin
 			&targetNode.NodeType,
 			&targetNode.Level,
 			&targetNode.Source,
+			&targetNode.SpecificType,
+			&ontologyAttributesJSON,
 		)
 		if err != nil {
 			return KnowledgeGraph{}, fmt.Errorf("failed to scan node: %w", err)
@@ -2584,6 +2647,11 @@ func (s *Service) GetNodeNeighbors(reqCtx *security.RequestContext, nodeID strin
 		// Parse query_attributes JSON
 		if err := json.Unmarshal(queryAttributesJSON, &targetNode.QueryAttributes); err != nil {
 			return KnowledgeGraph{}, fmt.Errorf("failed to unmarshal node query_attributes: %w", err)
+		}
+
+		// Parse ontology_attributes JSON
+		if err := json.Unmarshal(ontologyAttributesJSON, &targetNode.OntologyAttributes); err != nil {
+			return KnowledgeGraph{}, fmt.Errorf("failed to unmarshal node ontology_attributes: %w", err)
 		}
 	}
 
@@ -2678,7 +2746,7 @@ func (s *Service) GetNodeNeighbors(reqCtx *security.RequestContext, nodeID strin
 		}
 
 		neighborsQuery := fmt.Sprintf(`
-			SELECT id, created_at, updated_at, properties, labels, query_attributes, cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, '')
+			SELECT id, created_at, updated_at, properties, labels, query_attributes, cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, ''), COALESCE(specific_type, ''), ontology_attributes
 			FROM knowledge_graph_node
 			WHERE id IN (%s) AND level = 'Tenant'
 		`, strings.Join(placeholders, ","))
@@ -2698,6 +2766,7 @@ func (s *Service) GetNodeNeighbors(reqCtx *security.RequestContext, nodeID strin
 			var propertiesJSON []byte
 			var labelsJSON []byte
 			var queryAttributesJSON []byte
+			var ontologyAttributesJSON []byte
 
 			err := neighborRows.Scan(
 				&node.ID,
@@ -2712,6 +2781,8 @@ func (s *Service) GetNodeNeighbors(reqCtx *security.RequestContext, nodeID strin
 				&node.NodeType,
 				&node.Level,
 				&node.Source,
+				&node.SpecificType,
+				&ontologyAttributesJSON,
 			)
 			if err != nil {
 				return KnowledgeGraph{}, fmt.Errorf("failed to scan neighbor node: %w", err)
@@ -2730,6 +2801,11 @@ func (s *Service) GetNodeNeighbors(reqCtx *security.RequestContext, nodeID strin
 			// Parse query_attributes JSON
 			if err := json.Unmarshal(queryAttributesJSON, &node.QueryAttributes); err != nil {
 				return KnowledgeGraph{}, fmt.Errorf("failed to unmarshal neighbor node query_attributes: %w", err)
+			}
+
+			// Parse ontology_attributes JSON
+			if err := json.Unmarshal(ontologyAttributesJSON, &node.OntologyAttributes); err != nil {
+				return KnowledgeGraph{}, fmt.Errorf("failed to unmarshal neighbor node ontology_attributes: %w", err)
 			}
 
 			neighborNodes = append(neighborNodes, node)
@@ -3333,7 +3409,8 @@ func (s *Service) fetchNodesByIDs(nodeIDs []string) ([]*DbNode, error) {
 
 	query := `
 		SELECT id, created_at, updated_at, properties, labels, query_attributes,
-			   cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, '')
+			   cloud_account_id, tenant_id, unique_key, node_type, level, COALESCE(source, ''),
+			   COALESCE(specific_type, ''), ontology_attributes
 		FROM knowledge_graph_node
 		WHERE id = ANY($1::uuid[])
 		  AND level = 'Tenant'
@@ -3353,7 +3430,7 @@ func (s *Service) fetchNodesByIDs(nodeIDs []string) ([]*DbNode, error) {
 	var nodes []*DbNode
 	for rows.Next() {
 		node := &DbNode{}
-		var propertiesJSON, labelsJSON, queryAttributesJSON []byte
+		var propertiesJSON, labelsJSON, queryAttributesJSON, ontologyAttributesJSON []byte
 
 		err := rows.Scan(
 			&node.ID,
@@ -3368,6 +3445,8 @@ func (s *Service) fetchNodesByIDs(nodeIDs []string) ([]*DbNode, error) {
 			&node.NodeType,
 			&node.Level,
 			&node.Source,
+			&node.SpecificType,
+			&ontologyAttributesJSON,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan node: %w", err)
@@ -3382,6 +3461,9 @@ func (s *Service) fetchNodesByIDs(nodeIDs []string) ([]*DbNode, error) {
 		}
 		if err := json.Unmarshal(queryAttributesJSON, &node.QueryAttributes); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal query_attributes: %w", err)
+		}
+		if err := json.Unmarshal(ontologyAttributesJSON, &node.OntologyAttributes); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal ontology_attributes: %w", err)
 		}
 
 		nodes = append(nodes, node)
@@ -3673,6 +3755,12 @@ func buildNodeFilterSQL(filters *GraphFilters, nodeIDs []string, startArgCounter
 			sqlParts = append(sqlParts, fmt.Sprintf("(%s)", strings.Join(conds, " OR ")))
 		}
 
+		if len(filters.SpecificTypes) > 0 {
+			sqlParts = append(sqlParts, fmt.Sprintf("specific_type = ANY($%d::text[])", argCounter))
+			args = append(args, pq.Array(filters.SpecificTypes))
+			argCounter++
+		}
+
 		for key, value := range filters.Labels {
 			filterJSON, err := marshalSingleKeyValue(key, value)
 			if err != nil {
@@ -3698,6 +3786,20 @@ func buildNodeFilterSQL(filters *GraphFilters, nodeIDs []string, startArgCounter
 		}
 		for _, key := range filters.AttributeKeys {
 			sqlParts = append(sqlParts, fmt.Sprintf("jsonb_exists(query_attributes, $%d)", argCounter))
+			args = append(args, key)
+			argCounter++
+		}
+		for key, value := range filters.OntologyAttributes {
+			filterJSON, err := marshalSingleKeyValue(key, value)
+			if err != nil {
+				return "", nil, fmt.Errorf("failed to marshal ontology attribute filter %q: %w", key, err)
+			}
+			sqlParts = append(sqlParts, fmt.Sprintf("ontology_attributes @> $%d::jsonb", argCounter))
+			args = append(args, filterJSON)
+			argCounter++
+		}
+		for _, key := range filters.OntologyAttributeKeys {
+			sqlParts = append(sqlParts, fmt.Sprintf("jsonb_exists(ontology_attributes, $%d)", argCounter))
 			args = append(args, key)
 			argCounter++
 		}
@@ -4095,6 +4197,11 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 		args = append(args, pq.Array(nodeTypeStrings))
 		argIdx++
 	}
+	if len(params.SpecificTypes) > 0 {
+		whereClause += fmt.Sprintf(" AND specific_type = ANY($%d::text[])", argIdx)
+		args = append(args, pq.Array(params.SpecificTypes))
+		argIdx++
+	}
 	if params.Source != "" {
 		whereClause += fmt.Sprintf(" AND source = $%d", argIdx)
 		args = append(args, params.Source)
@@ -4121,7 +4228,7 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 		return nil, fmt.Errorf("failed to count search nodes: %w", err)
 	}
 
-	query := "SELECT id, node_type, COALESCE(source, '') AS source, query_attributes, labels, properties, cloud_account_id" +
+	query := "SELECT id, node_type, COALESCE(specific_type, '') AS specific_type, COALESCE(source, '') AS source, query_attributes, labels, properties, cloud_account_id" +
 		" FROM knowledge_graph_node WHERE " + whereClause +
 		" ORDER BY node_type, query_attributes->>'name'" +
 		fmt.Sprintf(" LIMIT $%d", argIdx)
@@ -4139,10 +4246,10 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 
 	var results []SearchNodeResult
 	for rows.Next() {
-		var id, nodeType, source, cloudAccountID string
+		var id, nodeType, specificType, source, cloudAccountID string
 		var queryAttributesJSON, labelsJSON, propertiesJSON []byte
 
-		if err := rows.Scan(&id, &nodeType, &source, &queryAttributesJSON, &labelsJSON, &propertiesJSON, &cloudAccountID); err != nil {
+		if err := rows.Scan(&id, &nodeType, &specificType, &source, &queryAttributesJSON, &labelsJSON, &propertiesJSON, &cloudAccountID); err != nil {
 			return nil, fmt.Errorf("failed to scan search result: %w", err)
 		}
 
@@ -4166,6 +4273,7 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 		results = append(results, SearchNodeResult{
 			ID:             id,
 			NodeType:       NodeType(nodeType),
+			SpecificType:   specificType,
 			Name:           name,
 			Namespace:      namespace,
 			Cluster:        cluster,
@@ -4336,6 +4444,26 @@ func (s *Service) TraverseDirectional(tenantID string, params TraverseParams) (*
 		}
 		dbNodes = filtered
 		// Re-derive discoveredIDs from the filtered node set for edge fetching.
+		discoveredIDs = make([]string, len(dbNodes))
+		for i, n := range dbNodes {
+			discoveredIDs[i] = n.ID
+		}
+	}
+
+	// Apply includeSpecificTypes as a further post-traversal restriction on the
+	// concrete cloud/native type (e.g. EC2Instance).
+	if len(params.SpecificTypes) > 0 {
+		includeSet := make(map[string]struct{}, len(params.SpecificTypes))
+		for _, st := range params.SpecificTypes {
+			includeSet[st] = struct{}{}
+		}
+		filtered := dbNodes[:0]
+		for _, n := range dbNodes {
+			if _, ok := includeSet[n.SpecificType]; ok {
+				filtered = append(filtered, n)
+			}
+		}
+		dbNodes = filtered
 		discoveredIDs = make([]string, len(dbNodes))
 		for i, n := range dbNodes {
 			discoveredIDs[i] = n.ID
@@ -4753,9 +4881,12 @@ func (s *Service) fetchEdgesBetweenNodesFiltered(nodeIDs []string, relationshipT
 		return []*DbEdge{}, nil
 	}
 
+	// source / contributing_sources feed the impact path's coverage grading and
+	// per-dependent provenance — without them every edge reads as single-source.
 	query := `
 		SELECT id, created_at, updated_at, relationship_type, properties,
-			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level
+			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level,
+			   source, contributing_sources
 		FROM knowledge_graph_edge
 		WHERE source_node_id = ANY($1::uuid[])
 		  AND destination_node_id = ANY($1::uuid[])
@@ -4784,20 +4915,28 @@ func (s *Service) fetchEdgesBetweenNodesFiltered(nodeIDs []string, relationshipT
 	var edges []*DbEdge
 	for rows.Next() {
 		edge := &DbEdge{}
-		var propertiesJSON []byte
+		var propertiesJSON, contributingJSON []byte
 		var relationshipType string
+		var source sql.NullString
 
 		err := rows.Scan(
 			&edge.ID, &edge.CreatedAt, &edge.UpdatedAt,
 			&relationshipType, &propertiesJSON,
 			&edge.CloudAccountID, &edge.TenantID,
 			&edge.SourceNodeID, &edge.DestinationNodeID, &edge.Level,
+			&source, &contributingJSON,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan edge: %w", err)
 		}
 		if err := json.Unmarshal(propertiesJSON, &edge.Properties); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal edge properties: %w", err)
+		}
+		edge.Source = source.String
+		if len(contributingJSON) > 0 {
+			if err := json.Unmarshal(contributingJSON, &edge.ContributingSources); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal edge contributing_sources: %w", err)
+			}
 		}
 		edge.RelationshipType = RelationshipType(relationshipType)
 		edges = append(edges, edge)

@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS -> Optimize -> Configuration", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabOptimize).toBeVisible();
-  await locators.AnchorTabOptimize.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.OptimizeConfiguration.click();
+      await locators.navigateToSubTab(locators.AnchorTabOptimize, locators.OptimizeConfiguration, locators.OptimizeConfigurationUrl);
       await page.waitForLoadState("networkidle");
     },
     {

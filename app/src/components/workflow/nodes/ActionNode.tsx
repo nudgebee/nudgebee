@@ -60,8 +60,14 @@ import SafeIcon from '@shared/icons/SafeIcon';
 // exposes a deprecated flag on TaskDefinition.
 const DEPRECATED_TASK_TYPES = new Set(['llm.router']);
 
-// Function to get appropriate icon based on task type (matches nodeCategories.ts exactly)
-const getTaskIcon = (taskType: string) => {
+// Provider logos that keep their brand colors instead of being forced white
+// inside the purple icon container. Exported alongside getTaskIcon for the
+// foreach sub-task editor's matching icon badge.
+export const PROVIDER_COLOR_LOGOS = [newAwsLogo, ouAzure, ouGoogle, RabbitmqIcon, RedisLogoIcon, GithubIcon, GitLabIcon, ArgocdIcon, SlackIcon];
+
+// Function to get appropriate icon based on task type (matches nodeCategories.ts exactly).
+// Exported so the foreach sub-task editor can render the same icon badge in its accordion.
+export const getTaskIcon = (taskType: string) => {
   if (!taskType) {
     return workflowSubWorkflowIcon?.default || workflowSubWorkflowIcon;
   } // Default fallback
@@ -399,11 +405,8 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
       // Render emoji as text
       return <span style={{ fontSize: 'var(--ds-text-body-lg)' }}>{icon}</span>;
     }
-    // Define provider logos that should keep their brand colors
-    const providerLogos = [newAwsLogo, ouAzure, ouGoogle, RabbitmqIcon, RedisLogoIcon, GithubIcon, GitLabIcon, ArgocdIcon, SlackIcon];
-
     // Check if this is a provider logo that should keep its colors
-    const shouldKeepColors = providerLogos.includes(icon);
+    const shouldKeepColors = PROVIDER_COLOR_LOGOS.includes(icon);
 
     // Render as Next.js Image for actual image files
     return (
@@ -492,7 +495,7 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
             gap: 4,
             padding: 'var(--ds-space-1) var(--ds-space-2)',
             borderRadius: 999,
-            background: '#dc2626',
+            background: 'var(--ds-red-600)',
             color: 'white',
             fontSize: 10,
             fontWeight: 'var(--ds-font-weight-semibold)',
@@ -658,6 +661,31 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
                 )}
               </Box>
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mt: -0.5 }}>{data.label}</Typography>
+              {data.executionIterations && (
+                <Box
+                  data-testid='foreach-iterations-badge'
+                  sx={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 'var(--ds-space-1)',
+                    mt: 0.5,
+                    px: 1,
+                    py: 0.125,
+                    borderRadius: 'var(--ds-radius-pill)',
+                    backgroundColor: 'var(--ds-blue-100)',
+                    width: 'fit-content',
+                  }}
+                >
+                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-blue-700)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+                    {data.executionIterations.completed + data.executionIterations.failed}/{data.executionIterations.total} iterations
+                  </Typography>
+                  {data.executionIterations.failed > 0 && (
+                    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-600)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                      · {data.executionIterations.failed} failed
+                    </Typography>
+                  )}
+                </Box>
+              )}
             </Box>
           ),
           description: data?.description || (data.isDeleted ? data.taskConfig?.type : ''),

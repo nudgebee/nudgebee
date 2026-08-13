@@ -101,6 +101,14 @@ func (l *Ledger) ToPromptBlock() string {
 				fmt.Fprintf(&b, " — %s", c.Note)
 			}
 			b.WriteString("\n")
+			// The snippet is the verbatim evidence — exact identifiers,
+			// constants, signatures. Withholding it forces the model to answer
+			// precision questions from paraphrased claims, which measurably
+			// produces confabulated function names once raw observations have
+			// been aged out of the prompt.
+			if s := strings.TrimSpace(c.Snippet); s != "" {
+				fmt.Fprintf(&b, "   > %s\n", truncateRunes(strings.ReplaceAll(s, "\n", "\n   > "), 600))
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -170,6 +178,54 @@ func (l *Ledger) ToExploreSubmitInput(query string) map[string]any {
 // overwrite. Kept as a method (rather than direct field assignment) so future
 // migrations (e.g. keeping a history of supplanted findings) have one place to
 // land.
+// SeedFrom carries PRIOR knowledge into this ledger: findings, citations and
+// still-open questions survive (deduplicated), so a new phase or retry attempt
+// starts from what the previous one established instead of re-investigating
+// from step 1. Answer / Confidence / ReadyToSubmit are deliberately NOT
+// carried — a new attempt must reach its own conclusion, never inherit "done".
+func (l *Ledger) SeedFrom(prior *Ledger) {
+	if l == nil || prior == nil {
+		return
+	}
+	haveClaim := make(map[string]bool, len(l.Findings))
+	for _, f := range l.Findings {
+		haveClaim[f.Claim] = true
+	}
+	for _, f := range prior.Findings {
+		if f.Claim != "" && !haveClaim[f.Claim] {
+			haveClaim[f.Claim] = true
+			l.Findings = append(l.Findings, f)
+		}
+	}
+	haveCit := make(map[string]bool, len(l.Citations))
+	citKey := func(c LedgerCitation) string { return fmt.Sprintf("%s:%d:%s", c.FilePath, c.LineStart, c.Snippet) }
+	for _, c := range l.Citations {
+		haveCit[citKey(c)] = true
+	}
+	for _, c := range prior.Citations {
+		if k := citKey(c); c.FilePath != "" && !haveCit[k] {
+			haveCit[k] = true
+			l.Citations = append(l.Citations, c)
+		}
+	}
+	for _, q := range prior.OpenSubQuestions {
+		l.AddOpenQuestion(q)
+	}
+}
+
+// AddOpenQuestion appends q unless empty or already present.
+func (l *Ledger) AddOpenQuestion(q string) {
+	if l == nil || strings.TrimSpace(q) == "" {
+		return
+	}
+	for _, existing := range l.OpenSubQuestions {
+		if existing == q {
+			return
+		}
+	}
+	l.OpenSubQuestions = append(l.OpenSubQuestions, q)
+}
+
 func (l *Ledger) MergeUpdate(next *Ledger) {
 	if next == nil || l == nil {
 		return

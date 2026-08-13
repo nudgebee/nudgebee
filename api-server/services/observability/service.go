@@ -383,6 +383,44 @@ func getTraceSource(provider, integrationSource string) (TraceSource, error) {
 	}
 }
 
+// isOtelNativeTraceIndex reports whether a resolved ES trace index targets the
+// OTel-native traces-*.otel data streams (mapping.mode: otel) rather than the
+// Data Prepper otel-v1-apm-span-* schema.
+func isOtelNativeTraceIndex(index string) bool {
+	index = strings.TrimSpace(index)
+	if index == "" || strings.Contains(index, "otel-v1-apm-span") {
+		return false
+	}
+	return strings.Contains(index, ".otel") || strings.HasPrefix(index, "traces-")
+}
+
+// resolveTraceSource resolves the trace source for an account and, for ES, upgrades
+// to the OTel-native reader when the effective trace index targets the traces-*.otel
+// data streams. The effective index mirrors esTraceIndexFor's precedence: the
+// per-request index override (Traces-tab picker) wins over the account's stored
+// config — so pointing the picker at an OTel-native data stream selects the OTel
+// reader even when the saved trace index is still Data Prepper's. Non-ES providers
+// and non-OTel ES indices keep the source returned by getTraceSource. A config lookup
+// failure is non-fatal — it just leaves the base (Data Prepper) ES source in place.
+func resolveTraceSource(ctx *security.RequestContext, accountId, provider, integrationSource, indexOverride string) (TraceSource, error) {
+	src, err := getTraceSource(provider, integrationSource)
+	if err != nil {
+		return nil, err
+	}
+	if provider == "ES" {
+		effectiveIndex := indexOverride
+		if effectiveIndex == "" {
+			if cfg, cerr := GetElasticsearchConfig(ctx, accountId); cerr == nil {
+				effectiveIndex = cfg.TraceIndex
+			}
+		}
+		if isOtelNativeTraceIndex(effectiveIndex) {
+			return &ElasticOtelTraceSource{}, nil
+		}
+	}
+	return src, nil
+}
+
 func getMetricsSource(provider, integrationSource string) (MetricSource, error) {
 	switch {
 	case provider == "datadog" && integrationSource == "user":
@@ -549,6 +587,12 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
+	// Always-apply per-account default filters (e.g. a central Pinot scoped to
+	// cluster_id) configured on the log integration. AND them into the where clause
+	// here — after label-mapping and key-strip — so the operator-entered
+	// provider-native columns are used verbatim (not renamed, not stripped).
+	ApplyDefaultLogFilters(ctx, &fetchLogRequest)
+
 	// Auto-convert: if no raw query but where clause exists, generate query from where clause.
 	// Some providers (e.g. Signoz, Datadog) handle where clauses natively in QueryLogs
 	// and don't implement GetQuery, so a GetQuery error is logged but not fatal.
@@ -562,7 +606,62 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
+	// Snapshot the label names AND equality values the caller referenced BEFORE the query
+	// runs, so a time range or other filter the backend injects during execution is not
+	// mistaken for a user-supplied label/value during validation below.
+	var referencedLabels map[string]struct{}
+	var referencedValues map[string][]string
+	if fetchLogRequest.ValidateRequest {
+		referencedLabels = map[string]struct{}{}
+		collectWhereFieldNames(fetchLogRequest.QueryRequest.Where, referencedLabels)
+		referencedValues = map[string][]string{}
+		collectWhereFieldValues(fetchLogRequest.QueryRequest.Where, referencedValues)
+	}
+
 	logs, err := source.QueryLogs(ctx, fetchLogRequest)
+
+	// A query that matched nothing — or that failed with a backend error — is frequently
+	// caused by a mistyped label NAME (e.g. "service_nam") or a mistyped label VALUE (e.g.
+	// namespace="prodd"). Some backends silently return zero rows for an unknown label/value
+	// (Loki); others reject the query (ClickHouse). Either way the caller — notably an LLM
+	// agent — can't tell what to fix. When the caller opts in via ValidateRequest, run an
+	// ordered diagnosis and, on a hit, return a 200 with empty Logs and the actionable message
+	// in Suggestion — (1) unknown label names, then (2) unknown label values with closest-match
+	// suggestions — rather than an error: the diagnosis successfully determined what to fix, it
+	// didn't fail. Best-effort: each check fails open (returns nil) when it can't establish the
+	// provider's label/value set, so a legitimately-empty query falls through unchanged.
+	if fetchLogRequest.ValidateRequest && (err != nil || len(logs) == 0) {
+		// One structured line per diagnosis run, so the trigger rate and hit rate are
+		// queryable in Loki (filter on msg="log_query_empty_result_diagnosis"). "outcome"
+		// distinguishes which check produced the hint the agent then rewrites against
+		// (unknown_label_name / unknown_label_value) from a genuinely-empty result (none).
+		logger := ctx.GetLogger()
+		outcome := "none"
+		defer func() {
+			logger.Info("log_query_empty_result_diagnosis",
+				"account_id", fetchLogRequest.AccountId,
+				"provider", fetchLogRequest.LogProvider,
+				"had_backend_error", err != nil,
+				"referenced_labels", len(referencedLabels),
+				"referenced_value_fields", len(referencedValues),
+				"outcome", outcome)
+		}()
+
+		if verr := validateReferencedLabels(ctx, source, fetchLogRequest, referencedLabels, filteringMap); verr != nil {
+			outcome = "unknown_label_name"
+			return FetchLogsResult{Logs: []OutputLog{}, Provider: fetchLogRequest.LogProvider, Suggestion: verr.Error()}, nil
+		}
+		// Value suggestions only apply to a query that ran cleanly but matched nothing.
+		// On a backend error the empty result isn't a "wrong value" signal — the value-set
+		// fetch would be unreliable and the real error is the more useful thing to surface —
+		// so gate this specifically on an empty (non-errored) result.
+		if err == nil && len(logs) == 0 {
+			if verr := validateReferencedLabelValues(ctx, source, fetchLogRequest, referencedValues); verr != nil {
+				outcome = "unknown_label_value"
+				return FetchLogsResult{Logs: []OutputLog{}, Provider: fetchLogRequest.LogProvider, Suggestion: verr.Error()}, nil
+			}
+		}
+	}
 	if err != nil {
 		return FetchLogsResult{}, err
 	}
@@ -589,6 +688,395 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider}, nil
+}
+
+// lineContentFields are where-clause fields that filter the log message body
+// rather than a label. They are never returned by the backends' label-key APIs,
+// so they must be excluded from label-name validation to avoid false positives.
+var lineContentFields = []string{"content", "log", "message", "body", "line", "_line"}
+
+// collectWhereFieldNames walks a canonical where-clause and records every field
+// name referenced by a binary condition, across nested _and / _or / _not.
+func collectWhereFieldNames(where query.QueryWhereClause, out map[string]struct{}) {
+	for field := range where.Binary {
+		out[field] = struct{}{}
+	}
+	for _, c := range where.And {
+		collectWhereFieldNames(c, out)
+	}
+	for _, c := range where.Or {
+		collectWhereFieldNames(c, out)
+	}
+	if where.Not != nil {
+		collectWhereFieldNames(*where.Not, out)
+	}
+}
+
+// collectWhereFieldValues walks a canonical where-clause and records, per field, the
+// discrete equality values the caller filtered on. Only the equality operators _eq and
+// _in carry a concrete value worth cross-checking against a label's real value set;
+// pattern operators (_regex / _contains / _like / …) match substrings or expressions, so
+// a "value not in the label's value list" check would false-positive on them and they are
+// skipped. Values are coerced to strings, mirroring how the backends render them.
+func collectWhereFieldValues(where query.QueryWhereClause, out map[string][]string) {
+	for field, ops := range where.Binary {
+		for op, val := range ops {
+			switch op {
+			case query.Eq:
+				out[field] = append(out[field], fmt.Sprintf("%v", val))
+			case query.In:
+				if arr, err := toStringArray(val); err == nil {
+					out[field] = append(out[field], arr...)
+				}
+			}
+		}
+	}
+	for _, c := range where.And {
+		collectWhereFieldValues(c, out)
+	}
+	for _, c := range where.Or {
+		collectWhereFieldValues(c, out)
+	}
+	if where.Not != nil {
+		collectWhereFieldValues(*where.Not, out)
+	}
+}
+
+// suggestLabels returns up to a few available labels that look related to an unknown
+// one (case-insensitive substring, either direction), so a typo can be corrected
+// without dumping the provider's full label list — which for trace backends can run to
+// hundreds of attributes and waste caller (LLM) tokens.
+func suggestLabels(unknown, available []string) []string {
+	const maxSuggestions = 5
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, u := range unknown {
+		lu := strings.ToLower(u)
+		for _, a := range available {
+			la := strings.ToLower(a)
+			if !strings.Contains(la, lu) && !strings.Contains(lu, la) {
+				continue
+			}
+			if _, ok := seen[a]; ok {
+				continue
+			}
+			seen[a] = struct{}{}
+			out = append(out, a)
+			if len(out) >= maxSuggestions {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// levenshtein returns the edit distance (insertions, deletions, substitutions) between a
+// and b. Standard two-row dynamic-programming implementation; O(len(a)*len(b)) time,
+// O(len(b)) space. Used to rank "did-you-mean" value suggestions for typos.
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) == 0 {
+		return len(rb)
+	}
+	if len(rb) == 0 {
+		return len(ra)
+	}
+	prev := make([]int, len(rb)+1)
+	curr := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		curr[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			curr[j] = min(prev[j]+1, min(curr[j-1]+1, prev[j-1]+cost))
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(rb)]
+}
+
+// tokenize splits a value on the delimiters common to observability identifiers
+// (ml-k8s-server, k8s_namespace, foo.bar) into its lowercase parts, as a set. Used by
+// closestValues so hyphenated names match on shared segments, not just whole-string distance.
+func tokenize(s string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, tok := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return strings.ContainsRune("-_./: ", r)
+	}) {
+		out[tok] = struct{}{}
+	}
+	return out
+}
+
+// sharedTokenCount returns how many tokens a and b have in common.
+func sharedTokenCount(a, b map[string]struct{}) int {
+	n := 0
+	for t := range a {
+		if _, ok := b[t]; ok {
+			n++
+		}
+	}
+	return n
+}
+
+// closestValues ranks candidates by closeness to target and returns up to maxValueSuggestions
+// of them. A candidate is a plausible suggestion if it shares a delimiter-separated token with
+// the target (e.g. "ml-server" ~ "ml-k8s-server" share "ml"+"server"), OR is within a typo
+// edit-distance threshold (scaled to length, so "prodd"→"prod" matches but unrelated strings
+// don't), OR is a bidirectional substring ("prod" ~ "production"). Ranking is shared-token
+// count DESC, then edit distance ASC — so for a hyphenated-name typo the semantically closest
+// value (most shared segments) wins over strings that merely share the common "-server" suffix.
+// Comparison is case-insensitive. Empty slice when nothing is plausibly close — callers then
+// point at the label-values listing action instead of dumping the full set.
+func closestValues(target string, candidates []string) []string {
+	const maxValueSuggestions = 5
+	lt := strings.ToLower(target)
+	threshold := len(lt) / 3
+	if threshold < 2 {
+		threshold = 2
+	}
+	targetTokens := tokenize(target)
+
+	type scored struct {
+		value  string
+		shared int
+		dist   int
+	}
+	var ranked []scored
+	seen := map[string]struct{}{}
+	for _, c := range candidates {
+		lc := strings.ToLower(c)
+		if _, ok := seen[lc]; ok {
+			continue
+		}
+		seen[lc] = struct{}{}
+		shared := sharedTokenCount(targetTokens, tokenize(lc))
+		dist := levenshtein(lt, lc)
+		substr := strings.Contains(lc, lt) || strings.Contains(lt, lc)
+		if shared == 0 && dist > threshold && !substr {
+			continue // not plausibly close by any signal
+		}
+		ranked = append(ranked, scored{value: c, shared: shared, dist: dist})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].shared != ranked[j].shared {
+			return ranked[i].shared > ranked[j].shared
+		}
+		return ranked[i].dist < ranked[j].dist
+	})
+
+	out := make([]string, 0, maxValueSuggestions)
+	for _, s := range ranked {
+		out = append(out, s.value)
+		if len(out) >= maxValueSuggestions {
+			break
+		}
+	}
+	return out
+}
+
+// unknownLabelError builds the actionable, token-conscious error returned when a query
+// references label names the provider doesn't expose. It names the unknown label(s) and
+// either the closest valid matches or a pointer to the label-listing action — never the
+// full label list. noun is "logs"/"traces", providerNoun is "log"/"trace".
+func unknownLabelError(noun, providerNoun, listAction string, unknown, available []string) error {
+	if suggestions := suggestLabels(unknown, available); len(suggestions) > 0 {
+		return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; closest valid label(s): %v", noun, unknown, providerNoun, suggestions)
+	}
+	return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; call %s for valid names", noun, unknown, providerNoun, listAction)
+}
+
+// unknownReferencedLabels partitions the referenced field names against the set the
+// provider recognizes. A field is "known" if the backend exposes it as a label
+// (availableLabels), it is an alias in the label mapping (either canonical or provider
+// side), or it is a line-content filter. It returns the sorted unknown fields and the
+// sorted available labels. Shared by the log and trace validators.
+func unknownReferencedLabels(referenced map[string]struct{}, availableLabels []string, filteringMap map[string]string) (unknown, available []string) {
+	known := make(map[string]struct{}, len(availableLabels)+len(filteringMap)*2+len(lineContentFields))
+	available = make([]string, 0, len(availableLabels))
+	for _, l := range availableLabels {
+		known[l] = struct{}{}
+		available = append(available, l)
+	}
+	for canonical, providerKey := range filteringMap {
+		known[canonical] = struct{}{}
+		known[providerKey] = struct{}{}
+	}
+	for _, f := range lineContentFields {
+		known[f] = struct{}{}
+	}
+	for f := range referenced {
+		if _, ok := known[f]; !ok {
+			unknown = append(unknown, f)
+		}
+	}
+	sort.Strings(unknown)
+	sort.Strings(available)
+	return unknown, available
+}
+
+// validateReferencedLabels checks, for a query that returned no logs (or failed),
+// whether the caller's where-clause references label names the log provider does not
+// expose. `referenced` is the set of field names snapshotted BEFORE the query ran, so
+// filters the backend injects during execution (e.g. a time range) are excluded. It
+// returns an actionable error naming the unknown label(s) and listing the available
+// ones, or nil when every referenced field is recognized. Best-effort: if the
+// available label set cannot be determined, it returns nil so the original error /
+// empty result is preserved. The referenced fields are in provider label space
+// (mapping was applied upstream in FetchLogs), matching the space QueryLabels returns.
+func validateReferencedLabels(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, referenced map[string]struct{}, filteringMap map[string]string) error {
+	if len(referenced) == 0 {
+		return nil
+	}
+	labels, err := source.QueryLabels(ctx, FetchLogLabelRequest{
+		AccountId:         fetchLogRequest.AccountId,
+		LogProvider:       fetchLogRequest.LogProvider,
+		LogProviderSource: fetchLogRequest.LogProviderSource,
+		StartTime:         fetchLogRequest.StartTime,
+		EndTime:           fetchLogRequest.EndTime,
+	})
+	if err != nil || len(labels) == 0 {
+		// Cannot determine the available label set — don't block the query.
+		return nil
+	}
+	names := make([]string, len(labels))
+	for i, l := range labels {
+		names[i] = l.Label
+	}
+	unknown, available := unknownReferencedLabels(referenced, names, filteringMap)
+	if len(unknown) == 0 {
+		return nil
+	}
+	return unknownLabelError("logs", "log", "logs_list_labels", unknown, available)
+}
+
+// valueValidationLookback bounds how far back the value validator looks when establishing a
+// label's real value set. Label values are time-bounded, so checking them against the
+// request's (possibly narrow) window would mislabel a value that merely has no data in that
+// window as "wrong". A wider window establishes the true value universe; a value absent from
+// it is genuinely unknown, while a value present in it (but not in the narrow request window)
+// is a time-range problem handled separately.
+const valueValidationLookback = 7 * 24 * 60 * 60 // seconds
+
+// maxLabelValuesToScan caps how many values we pull per label before giving up on value
+// suggestion. High-cardinality labels (pod names, request ids) can have thousands of values;
+// scanning them all wastes latency and tokens, and an equality filter on such a label is
+// rarely a typo. Above the cap we fail open (no diagnosis).
+const maxLabelValuesToScan = 2000
+
+// unknownValueError builds the actionable message returned when a query filters a label to a
+// value the provider has never seen. It names the label and offending value plus the closest
+// valid value(s); when nothing is close it gives action-agnostic guidance (verify or drop the
+// filter) rather than naming a listing tool the caller may not have. Never dumps the full value
+// list (token-conscious, mirroring unknownLabelError).
+func unknownValueError(label, value string, candidates []string) error {
+	if suggestions := closestValues(value, candidates); len(suggestions) > 0 {
+		return fmt.Errorf("no logs matched: value %q for label %q not found; closest valid value(s): %v", value, label, suggestions)
+	}
+	return fmt.Errorf("no logs matched: value %q for label %q was not found for this log provider; verify the value is correct or remove this filter", value, label)
+}
+
+// validateReferencedLabelValues checks, for a query that returned no logs, whether an equality
+// filter targets a value the log provider has never emitted for that label — the classic
+// "namespace=prodd" typo. For each referenced field it fetches the label's real values over a
+// widened window (see valueValidationLookback) and, if the filtered value is absent, returns an
+// actionable error naming the closest valid value(s). Best-effort throughout: unknown/high-
+// cardinality labels, discovery errors, and empty value sets all fail open (return nil) so a
+// legitimately-empty query is never blocked. `referencedValues` is in provider label space
+// (mapping was applied upstream in FetchLogs), matching the space QueryLabelValues expects.
+func validateReferencedLabelValues(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, referencedValues map[string][]string) error {
+	if len(referencedValues) == 0 {
+		return nil
+	}
+
+	lineContent := make(map[string]struct{}, len(lineContentFields))
+	for _, f := range lineContentFields {
+		lineContent[f] = struct{}{}
+	}
+
+	// Widen the window so we probe the label's full value universe, not just the request slice.
+	// StartTime/EndTime are millisecond epoch; valueValidationLookback is in seconds, so scale it.
+	startTime, endTime := fetchLogRequest.StartTime, fetchLogRequest.EndTime
+	if endTime > 0 {
+		if wideStart := endTime - valueValidationLookback*1000; wideStart < startTime {
+			startTime = wideStart
+		}
+	}
+
+	labels := make([]string, 0, len(referencedValues))
+	for label := range referencedValues {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+
+	for _, label := range labels {
+		// Line-body filters (content/message/…) aren't labels — never value-check them.
+		if _, ok := lineContent[label]; ok {
+			continue
+		}
+		labelValues, err := source.QueryLabelValues(ctx, FetchLogLabelValuesRequest{
+			LabelName:         label,
+			AccountId:         fetchLogRequest.AccountId,
+			LogProvider:       fetchLogRequest.LogProvider,
+			LogProviderSource: fetchLogRequest.LogProviderSource,
+			StartTime:         startTime,
+			EndTime:           endTime,
+		})
+		// Unknown label, discovery failure, empty or high-cardinality value set → fail open.
+		if err != nil || len(labelValues) == 0 || len(labelValues) > maxLabelValuesToScan {
+			continue
+		}
+		valueSet := make(map[string]struct{}, len(labelValues))
+		candidates := make([]string, len(labelValues))
+		for i, v := range labelValues {
+			valueSet[v.Value] = struct{}{}
+			candidates[i] = v.Value
+		}
+		for _, want := range referencedValues[label] {
+			if _, ok := valueSet[want]; !ok {
+				return unknownValueError(label, want, candidates)
+			}
+		}
+	}
+	return nil
+}
+
+// validateReferencedTraceLabels is the trace counterpart of validateReferencedLabels.
+// It validates against the same authoritative label set FetchTraceLabels exposes — the
+// canonical trace fields unioned with the merged label mapping and any backend-discovered
+// keys — because raw QueryLabels omits the canonical columns (service_name, span_name, …)
+// and would false-positive on them. mergedMapping is the caller's merged trace label
+// mapping. Fails open when live label discovery errors.
+func validateReferencedTraceLabels(ctx *security.RequestContext, source TraceSource, fetchTracesRequest TracesV3Request, referenced map[string]struct{}, mergedMapping map[string]string) error {
+	if len(referenced) == 0 {
+		return nil
+	}
+	discovered, err := source.QueryLabels(ctx, FetchTraceLabelRequest{
+		AccountId:      fetchTracesRequest.AccountId,
+		ProviderType:   fetchTracesRequest.ProviderType,
+		ProviderSource: fetchTracesRequest.ProviderSource,
+		StartTime:      fetchTracesRequest.StartTime,
+		EndTime:        fetchTracesRequest.EndTime,
+	})
+	if err != nil {
+		// Live discovery failed — can't confirm the backend label set; don't block.
+		return nil
+	}
+	authoritative := buildTraceLabels(mergedMapping, discovered)
+	names := make([]string, len(authoritative))
+	for i, l := range authoritative {
+		names[i] = l.Label
+	}
+	unknown, available := unknownReferencedLabels(referenced, names, mergedMapping)
+	if len(unknown) == 0 {
+		return nil
+	}
+	return unknownLabelError("traces", "trace", "traces_list_labels", unknown, available)
 }
 
 // normalizeOutputLogLabels adds canonical label names as aliases for provider-specific
@@ -639,7 +1127,7 @@ func FetchLogLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogL
 }
 
 func FetchLogIndexFields(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabelFields, error) {
-	resp, err := GetDefaultProvider(ctx, fetchLogRequest.AccountId, "logs", fetchLogRequest.LogProviderSource)
+	resp, err := GetDefaultProvider(ctx, fetchLogRequest.AccountId, "logs", fetchLogRequest.LogProviderSource, "")
 	if err != nil {
 		return nil, err
 	}
@@ -668,7 +1156,105 @@ func FetchLogGroup(ctx *security.RequestContext, fetchLogGroupRequest FetchLogGr
 	if err != nil {
 		return LogGroupOutput{}, err
 	}
-	return source.QueryLogGroup(ctx, fetchLogGroupRequest)
+	out, err := source.QueryLogGroup(ctx, fetchLogGroupRequest)
+	if err != nil {
+		return LogGroupOutput{}, err
+	}
+	return mergeLogGroupsByPattern(out), nil
+}
+
+// mergeLogGroupsByPattern collapses groups describing the same pattern in the same
+// place, so that pattern_hash identifies exactly one row.
+//
+// Sources split into two camps. Some group in-process by pattern hash (Loki,
+// SolarWinds, Loggly) and arrive already merged — for them this is a no-op. The
+// rest push aggregation down to the provider and group by the *raw* message
+// (Elasticsearch terms, Dynatrace summarize, Pinot GROUP BY, New Relic FACET), so
+// one pattern arrives split across a row per message variant, every row carrying
+// the same pattern_hash. The UI treats pattern_hash as a ticket reference id and
+// resolves it with a findIndex, so duplicate hashes silently attach a ticket to
+// whichever row happens to come first.
+//
+// Merging centrally lets each source keep the strategy that suits it while the
+// invariant holds for all of them.
+func mergeLogGroupsByPattern(out LogGroupOutput) LogGroupOutput {
+	type mergeKey struct{ hash, namespace, workload, level string }
+
+	type entry struct {
+		group *LogGroup
+		tsIdx map[int64]int // timestamp -> index into Timestamps/Values
+	}
+
+	merged := make(map[mergeKey]*entry, len(out.Groups))
+	order := make([]mergeKey, 0, len(out.Groups))
+
+	for i := range out.Groups {
+		g := out.Groups[i]
+		key := mergeKey{hash: g.PatternHash, namespace: g.Namespace, workload: g.Workload, level: g.Level}
+
+		existing, ok := merged[key]
+		if !ok {
+			cp := g
+			cp.Timestamps = append([]int64(nil), g.Timestamps...)
+			cp.Values = append([]float64(nil), g.Values...)
+
+			tsIdx := make(map[int64]int, len(cp.Timestamps))
+			for j, ts := range cp.Timestamps {
+				tsIdx[ts] = j
+			}
+
+			merged[key] = &entry{group: &cp, tsIdx: tsIdx}
+			order = append(order, key)
+			continue
+		}
+
+		existing.group.Count += g.Count
+
+		// Series are summed per timestamp rather than concatenated: the Prometheus
+		// source returns a real multi-point series, and the rest a single point.
+		for j, ts := range g.Timestamps {
+			var v float64
+			if j < len(g.Values) {
+				v = g.Values[j]
+			}
+			if idx, found := existing.tsIdx[ts]; found {
+				existing.group.Values[idx] += v
+				continue
+			}
+			existing.tsIdx[ts] = len(existing.group.Timestamps)
+			existing.group.Timestamps = append(existing.group.Timestamps, ts)
+			existing.group.Values = append(existing.group.Values, v)
+		}
+	}
+
+	groups := make([]LogGroup, 0, len(order))
+	for _, key := range order {
+		g := merged[key].group
+		sort.Sort(&timestampedValues{timestamps: g.Timestamps, values: g.Values})
+		groups = append(groups, *g)
+	}
+
+	// Merging changes counts, so the by-count ordering the sources applied no
+	// longer holds.
+	sort.SliceStable(groups, func(i, j int) bool { return groups[i].Count > groups[j].Count })
+
+	return LogGroupOutput{Groups: groups}
+}
+
+// timestampedValues keeps a group's Values aligned with its Timestamps while
+// sorting chronologically.
+type timestampedValues struct {
+	timestamps []int64
+	values     []float64
+}
+
+func (t *timestampedValues) Len() int           { return len(t.timestamps) }
+func (t *timestampedValues) Less(i, j int) bool { return t.timestamps[i] < t.timestamps[j] }
+func (t *timestampedValues) Swap(i, j int) {
+	t.timestamps[i], t.timestamps[j] = t.timestamps[j], t.timestamps[i]
+	if i < len(t.values) && j < len(t.values) {
+		t.values[i], t.values[j] = t.values[j], t.values[i]
+	}
 }
 
 // providerStaticCaps holds all statically-declared boolean capabilities for a provider.
@@ -738,8 +1324,9 @@ var allProviderCaps = map[string]providerStaticCaps{
 		SupportsRawQuery:   true,
 	},
 	"ES": {
-		SupportsServiceMap: true,
-		SupportsRawQuery:   true,
+		SupportsServiceMap:    true,
+		SupportsTraceGrouping: true,
+		SupportsRawQuery:      true,
 	},
 	"otel_clickhouse": {
 		SupportsServiceMap:    true,
@@ -820,7 +1407,7 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			slog.Warn("getProviderCapabilities: failed to get log source", "provider", provider, "error", err)
 		}
 	case "traces":
-		source, err := getTraceSource(provider, integrationSource)
+		source, err := resolveTraceSource(ctx, accountId, provider, integrationSource, "")
 		if err == nil {
 			caps.SupportedOperators = source.GetSupportedOperators()
 			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
@@ -849,8 +1436,10 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 	return caps
 }
 
-func GetDefaultProvider(context *security.RequestContext, accountId, providerType string, providerSource string) (*DefaultProviderResponse, error) {
-	defaultProvider, integrationSource, integrationDto, err := getLogsMetricsTracesProviderWithIntegration(context, accountId, "", providerType, providerSource)
+func GetDefaultProvider(context *security.RequestContext, accountId, providerType, providerSource, requestedProvider string) (*DefaultProviderResponse, error) {
+	// requestedProvider (empty for the default-provider case) pins resolution to a
+	// specific provider so the logs tab can seed an overridden provider's index.
+	defaultProvider, integrationSource, integrationDto, err := getLogsMetricsTracesProviderWithIntegration(context, accountId, requestedProvider, providerType, providerSource)
 	if err != nil {
 		return nil, err
 	}
@@ -858,7 +1447,7 @@ func GetDefaultProvider(context *security.RequestContext, accountId, providerTyp
 	return &DefaultProviderResponse{
 		Provider:           defaultProvider,
 		IntegrationSource:  integrationSource,
-		DefaultIndex:       readIndexFromIntegration(context, integrationDto, providerType),
+		DefaultIndex:       readIndexFromIntegration(context, integrationDto, providerType, accountId),
 		Capabilities:       caps,
 		AvailableProviders: listAvailableProviders(context, accountId, providerType),
 	}, nil
@@ -959,9 +1548,11 @@ func agentProviderForType(context *security.RequestContext, accountId, providerT
 }
 
 // readIndexFromIntegration reads the log_index / metrics_index / trace_index
-// config value from the supplied integration. Returns an empty string when
-// no integration was matched or the entry is unset.
-func readIndexFromIntegration(ctx *security.RequestContext, integrationDto *core.IntegrationDto, providerType string) string {
+// config value from the supplied integration. When the integration carries a
+// per-account index_account_mapping (ES "Advanced Settings"), a non-empty
+// override for accountId wins over the top-level value. Returns an empty string
+// when no integration was matched or the entry is unset.
+func readIndexFromIntegration(ctx *security.RequestContext, integrationDto *core.IntegrationDto, providerType string, accountId string) string {
 	if integrationDto == nil {
 		return ""
 	}
@@ -975,6 +1566,13 @@ func readIndexFromIntegration(ctx *security.RequestContext, integrationDto *core
 		configName = "trace_index"
 	default:
 		return ""
+	}
+	// Per-account override (ES Advanced Settings) takes precedence. The value is
+	// absent on non-ES integrations, so this is a no-op there.
+	if mapping, err := core.GetIntegrationConfigValueByName(ctx, integrationDto.Id, ElasticsearchIndexAccountMapping); err == nil {
+		if override := resolveESIndexOverride(mapping, accountId, providerType); override != "" {
+			return override
+		}
 	}
 	value, err := core.GetIntegrationConfigValueByName(ctx, integrationDto.Id, configName)
 	if err != nil {
@@ -991,11 +1589,16 @@ func readIndexFromIntegration(ctx *security.RequestContext, integrationDto *core
 func ListProviderCapabilities(ctx *security.RequestContext, accountId string) ([]ProviderCapabilityEntry, error) {
 	result := []ProviderCapabilityEntry{}
 	for _, providerType := range []string{"logs", "traces", "metrics"} {
-		provider, source, err := GetLogsMetricsTracesProvider(ctx, accountId, "", providerType, "")
+		provider, source, integrationDto, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, "", providerType, "")
 		if err != nil || provider == "" {
 			continue
 		}
 		caps := getProviderCapabilities(ctx, accountId, provider, source, providerType)
+		// Surface the account's resolved default index (per-account ES Advanced Settings
+		// mapping → top-level {trace,log,metrics}_index), matching get_default_provider.
+		// Lets consumers that read the shared capabilities list (e.g. the Cross-Zone /
+		// Group trace subtabs) scope queries to the same index without a second call.
+		caps.DefaultIndex = readIndexFromIntegration(ctx, integrationDto, providerType, accountId)
 		result = append(result, ProviderCapabilityEntry{
 			Provider:     provider,
 			ProviderType: providerType,
@@ -1019,7 +1622,7 @@ func getTraceSourceForAccount(ctx *security.RequestContext, accountId string, tr
 		return nil, fmt.Errorf("observability: trace provider (trace_provider) is required")
 	}
 
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(ctx, accountId, traceProvider, integrationSource, "")
 	return source, err
 }
 
@@ -1036,7 +1639,7 @@ func GetTracesLabelValues(context *security.RequestContext, labelValuesRequest T
 	if traceProvider == "" {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("GetTracesLabelValues: trace provider (trace_provider) is required")
 	}
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, labelValuesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(labelValuesRequest.Request))
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, err
 	}
@@ -1087,7 +1690,7 @@ func FetchTraceLabels(context *security.RequestContext, request FetchTraceLabelR
 	if traceProvider == "" {
 		return TraceLabelsResponse{}, fmt.Errorf("FetchTraceLabels: trace provider (trace_provider) is required")
 	}
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, request.AccountId, traceProvider, integrationSource, "")
 	if err != nil {
 		return TraceLabelsResponse{}, err
 	}
@@ -1157,7 +1760,7 @@ func GetGroupedTraces(context *security.RequestContext, TraceQuery TracesV3Reque
 	if traceProvider == "" {
 		return []TraceGroupingValues{}, fmt.Errorf("GetTracesLabelValues: trace provider (trace_provider) is required")
 	}
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, TraceQuery.AccountId, traceProvider, integrationSource, traceIndexOverride(TraceQuery.Request))
 	if err != nil {
 		return []TraceGroupingValues{}, err
 	}
@@ -1180,7 +1783,7 @@ func GetGroupedTracesCount(context *security.RequestContext, TraceQuery TracesV3
 	if traceProvider == "" {
 		return common.OpenTelemetryTraceGroupCount{}, fmt.Errorf("GetGroupedTracesCount: trace provider (trace_provider) is required")
 	}
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, TraceQuery.AccountId, traceProvider, integrationSource, traceIndexOverride(TraceQuery.Request))
 	if err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, err
 	}
@@ -1203,7 +1806,7 @@ func GetTraceHeatMap(context *security.RequestContext, TracesHeatMapRequest Trac
 	if traceProvider == "" {
 		return []common.OpenTelemetryTraceHeatMap{}, fmt.Errorf("GetGroupedTracesCount: trace provider (trace_provider) is required")
 	}
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, TracesHeatMapRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(TracesHeatMapRequest.Request))
 	if err != nil {
 		return []common.OpenTelemetryTraceHeatMap{}, err
 	}
@@ -1225,7 +1828,7 @@ func CountTraces(context *security.RequestContext, fetchTracesRequest TracesV3Re
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("CountTraces trace provider (trace_provider) is required")
 	}
 
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
@@ -1248,14 +1851,30 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	if traceProvider == "" {
 		return nil, fmt.Errorf("GetTraces trace provider (trace_provider) is required")
 	}
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
 		return nil, err
 	}
 	filteringMap := source.GetLabelMapping()
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
-	return source.QueryTraces(context, fetchTracesRequest)
+	var referencedLabels map[string]struct{}
+	if fetchTracesRequest.ValidateRequest {
+		referencedLabels = map[string]struct{}{}
+		collectWhereFieldNames(fetchTracesRequest.QueryRequest.Where, referencedLabels)
+	}
+
+	traces, err := source.QueryTraces(context, fetchTracesRequest)
+	if fetchTracesRequest.ValidateRequest && (err != nil || len(traces) == 0) {
+		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId, source)
+		if verr := validateReferencedTraceLabels(context, source, fetchTracesRequest, referencedLabels, mergedMap); verr != nil {
+			return nil, verr
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return traces, nil
 }
 
 // GetRootSpansByTrace resolves the trace source and returns one root span per trace for the
@@ -1274,7 +1893,7 @@ func GetRootSpansByTrace(context *security.RequestContext, fetchTracesRequest Tr
 	if traceProvider == "" {
 		return nil, fmt.Errorf("GetRootSpansByTrace trace provider (trace_provider) is required")
 	}
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
 		return nil, err
 	}
@@ -1300,7 +1919,7 @@ func CountTracesByTrace(context *security.RequestContext, fetchTracesRequest Tra
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("CountTracesByTrace trace provider (trace_provider) is required")
 	}
 
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
@@ -1343,7 +1962,19 @@ func GetTracesWithRawResult(context *security.RequestContext, fetchTracesRequest
 	filteringMap := source.GetLabelMapping()
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
+	var referencedLabels map[string]struct{}
+	if fetchTracesRequest.ValidateRequest {
+		referencedLabels = map[string]struct{}{}
+		collectWhereFieldNames(fetchTracesRequest.QueryRequest.Where, referencedLabels)
+	}
+
 	raw, err := clickhouseSource.QueryTracesRaw(context, fetchTracesRequest)
+	if fetchTracesRequest.ValidateRequest && (err != nil || len(raw.Rows) == 0) {
+		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId, source)
+		if verr := validateReferencedTraceLabels(context, source, fetchTracesRequest, referencedLabels, mergedMap); verr != nil {
+			return TracesQueryResult{}, verr
+		}
+	}
 	if err != nil {
 		return TracesQueryResult{}, err
 	}
@@ -1374,7 +2005,7 @@ func GetTracesQuery(context *security.RequestContext, fetchTracesRequest TracesV
 	if traceProvider == "" {
 		return "", fmt.Errorf("GetTraces trace provider (trace_provider) is required")
 	}
-	source, err := getTraceSource(traceProvider, integrationSource)
+	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
 		return "", err
 	}
@@ -1404,6 +2035,11 @@ func GetLogsQuery(ctx *security.RequestContext, fetchLogRequest FetchLogRequest)
 	filteringMap := getMergedLabelMapping(ctx, fetchLogRequest.AccountId, source)
 	fetchLogRequest.SortFields = convertOrderByWithMapping(fetchLogRequest.SortFields, filteringMap)
 	fetchLogRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchLogRequest.QueryRequest.Where, filteringMap)
+	// Also mirror FetchLogs' always-apply default filters: this endpoint generates
+	// the SQL text that seeds the log builder's raw-query editor (Pinot's default
+	// mode), and once that text is submitted as a raw query, FetchLogs has no where
+	// clause left to inject into — so the filter must already be baked in here.
+	ApplyDefaultLogFilters(ctx, &fetchLogRequest)
 	query, err := source.GetQuery(ctx, fetchLogRequest)
 	if err != nil {
 		return OutputLogQuery{}, err

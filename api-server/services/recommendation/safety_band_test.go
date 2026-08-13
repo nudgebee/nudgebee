@@ -43,6 +43,16 @@ func TestDeriveSafetyBand(t *testing.T) {
 			want:   SafetyBandReview,
 		},
 		{
+			name:   "zero dependents with observed coverage is safe (single-source tenant)",
+			impact: &core.ImpactSummary{CoverageConfidence: core.CoverageObserved, DependentCount: 0},
+			want:   SafetyBandSafe,
+		},
+		{
+			name:   "dependents with observed coverage are still review",
+			impact: &core.ImpactSummary{CoverageConfidence: core.CoverageObserved, DependentCount: 2},
+			want:   SafetyBandReview,
+		},
+		{
 			name:   "non-production dependents are review",
 			impact: &core.ImpactSummary{CoverageConfidence: core.CoverageLow, DependentCount: 3, ProductionDependents: 0},
 			want:   SafetyBandReview,

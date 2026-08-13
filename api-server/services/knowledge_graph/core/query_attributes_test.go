@@ -18,7 +18,9 @@ func TestWorkloadKindIsQueryable(t *testing.T) {
 		"subtype": "Deployment",
 	}
 
-	attrs := ExtractQueryAttributes(NodeTypeWorkload, props)
+	// Empty specific_type exercises the per-NodeType fallback path (no schema is
+	// registered in core-only tests, which don't import the source packages).
+	attrs := ExtractQueryAttributes(NodeTypeWorkload, "", props)
 
 	if attrs["kind"] != "Deployment" {
 		t.Errorf("query_attributes[kind] = %v, want %q (kind must be hoisted for filtering)", attrs["kind"], "Deployment")

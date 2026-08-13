@@ -6,7 +6,6 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
-	"sort"
 	"strings"
 )
 
@@ -16,16 +15,31 @@ type ElasticSaasTraceSource struct{}
 
 const esTraceIndex = "otel-v1-apm-span-*"
 
-// esTraceIndexFor resolves the search target for trace queries: the integration's
-// trace_index when set, otherwise Data Prepper's default. The field mappings in
+// esTraceIndexFor resolves the search target for trace queries in priority order:
+// an explicit per-request override (the index picked in the Traces tab) → the
+// integration's per-account trace_index (already resolved into cfg.TraceIndex by
+// GetElasticsearchConfig) → Data Prepper's default. The field mappings in
 // elasticTraceLabelMapping are Data Prepper's, so an override must point at an
 // index carrying that schema (e.g. a renamed otel-v1-apm-span-*); an OTel trace
 // data stream would resolve but match nothing.
-func esTraceIndexFor(cfg *ElasticsearchConfig) string {
+func esTraceIndexFor(cfg *ElasticsearchConfig, override string) string {
+	if override != "" {
+		return override
+	}
 	if cfg.TraceIndex != "" {
 		return cfg.TraceIndex
 	}
 	return esTraceIndex
+}
+
+// traceIndexOverride reads an explicit index from a trace request's free-form
+// Request map (set by the Traces tab index picker). Returns "" when absent.
+func traceIndexOverride(request map[string]any) string {
+	if request == nil {
+		return ""
+	}
+	idx, _ := request["index"].(string)
+	return strings.TrimSpace(idx)
 }
 
 // elasticTraceLabelMapping maps frontend field names to Data Prepper OpenSearch field names.
@@ -504,7 +518,7 @@ func (e *ElasticSaasTraceSource) QueryTraces(ctx *security.RequestContext, req T
 
 	dsl := buildTraceQuery(req, elasticTraceLabelMapping)
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces: %w", err)
 	}
@@ -548,7 +562,7 @@ func (e *ElasticSaasTraceSource) CountTraces(ctx *security.RequestContext, req T
 	delete(dsl, "sort")
 	delete(dsl, "from")
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to count traces: %w", err)
 	}
@@ -612,7 +626,7 @@ func (e *ElasticSaasTraceSource) GetLabelValues(ctx *security.RequestContext, re
 		}
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("failed to query label values: %w", err)
 	}
@@ -654,13 +668,31 @@ func (e *ElasticSaasTraceSource) GetLabelValues(ctx *security.RequestContext, re
 	}, nil
 }
 
+// elasticTraceGroupDims are the group-by dimensions for the Data Prepper
+// otel-v1-apm-span-* schema. Field-path precedence within each dimension mirrors the
+// per-span mapping so a grouped row's identity matches a single span.
+// http_status_code is intentionally excluded (see elasticTraceHTTPStatusFields /
+// esGroupSubAggs) so each row aggregates all statuses and error_count is a real
+// 4xx/5xx subset.
+var elasticTraceGroupDims = []esGroupDim{
+	{Key: "workload_name", Fields: []string{"resource.attributes.k8s@deployment@name", "serviceName"}},
+	{Key: "workload_namespace", Fields: []string{"resource.attributes.k8s@namespace@name"}},
+	{Key: "destination_workload_name", Fields: []string{"span.attributes.net@peer@name"}},
+	{Key: "destination_workload_namespace", Fields: []string{"span.attributes.destination@namespace"}},
+	{Key: "resource", Fields: []string{"span.attributes.http@url", "span.attributes.db@statement"}},
+	{Key: "span_name", Fields: []string{"name"}},
+}
+
+// elasticTraceHTTPStatusFields are the candidate http-status fields used to compute
+// the per-group error_count (4xx/5xx).
+var elasticTraceHTTPStatusFields = []string{"span.attributes.http@status_code"}
+
 func (e *ElasticSaasTraceSource) QueryGroupedTraces(ctx *security.RequestContext, req TracesV3Request) ([]TraceGroupingValues, error) {
 	cfg, err := GetElasticsearchConfig(ctx, req.AccountId)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build base filters
 	boolFilters := []map[string]any{}
 	if req.StartTime > 0 && req.EndTime > 0 {
 		boolFilters = append(boolFilters, map[string]any{
@@ -673,224 +705,28 @@ func (e *ElasticSaasTraceSource) QueryGroupedTraces(ctx *security.RequestContext
 			},
 		})
 	}
-
 	whereBool := buildESBoolQuery(req.QueryRequest.Where, elasticTraceLabelMapping)
 	if whereFilters, ok := whereBool["filter"].([]map[string]any); ok {
 		boolFilters = append(boolFilters, whereFilters...)
 	}
 
-	compositeSize := req.QueryRequest.Limit
-	if compositeSize <= 0 {
-		compositeSize = 100
-	}
-
-	dsl := map[string]any{
-		"size": 0,
-		"query": map[string]any{
-			"bool": map[string]any{"filter": boolFilters},
-		},
-		"aggs": map[string]any{
-			"grouped": map[string]any{
-				"composite": map[string]any{
-					"size": compositeSize,
-					"sources": []map[string]any{
-						{"serviceName": map[string]any{"terms": map[string]any{"field": "serviceName"}}},
-						{"name": map[string]any{"terms": map[string]any{"field": "name"}}},
-						{"http_status_code": map[string]any{"terms": map[string]any{"field": "span.attributes.http@status_code", "missing_bucket": true}}},
-					},
-				},
-				"aggs": map[string]any{
-					"error_count": map[string]any{
-						"filter": map[string]any{
-							"term": map[string]any{"status.code": 2},
-						},
-					},
-					"p99_latency": map[string]any{
-						"percentiles": map[string]any{
-							"field":    "durationInNanos",
-							"percents": []float64{99},
-						},
-					},
-					"p95_latency": map[string]any{
-						"percentiles": map[string]any{
-							"field":    "durationInNanos",
-							"percents": []float64{95},
-						},
-					},
-					"max_latency": map[string]any{
-						"max": map[string]any{"field": "durationInNanos"},
-					},
-					"workload_info": map[string]any{
-						"top_hits": map[string]any{
-							"size": 1,
-							"_source": []string{
-								"resource.attributes.k8s@deployment@name",
-								"resource.attributes.k8s@namespace@name",
-								"span.attributes.http@url",
-								"span.attributes.db@statement",
-								"span.attributes.net@peer@name",
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
-	if err != nil {
-		return nil, fmt.Errorf("failed to query grouped traces: %w", err)
-	}
-
-	bodyBytes, err := readResponse(resp, "grouped traces")
+	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)))
+	buckets, err := fetchAllCompositeTraceBuckets(
+		ctx, cfg, searchURL, boolFilters,
+		esCompositeSources(elasticTraceGroupDims),
+		esGroupSubAggs("durationInNanos", elasticTraceHTTPStatusFields),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	var searchResp esTraceSearchResponse
-	if err := json.Unmarshal(bodyBytes, &searchResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal grouped traces response: %w", err)
+	results := make([]TraceGroupingValues, 0, len(buckets))
+	for _, b := range buckets {
+		if v, ok := parseTraceGroupBucket(b); ok {
+			results = append(results, v)
+		}
 	}
-
-	raw, ok := searchResp.Aggregations["grouped"]
-	if !ok {
-		return []TraceGroupingValues{}, nil
-	}
-
-	var compositeAgg struct {
-		Buckets []json.RawMessage `json:"buckets"`
-	}
-	if err := json.Unmarshal(raw, &compositeAgg); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal composite aggregation: %w", err)
-	}
-
-	var results []TraceGroupingValues
-	for _, bucketRaw := range compositeAgg.Buckets {
-		var bucket struct {
-			Key      map[string]any `json:"key"`
-			DocCount int            `json:"doc_count"`
-
-			ErrorCount struct {
-				DocCount int `json:"doc_count"`
-			} `json:"error_count"`
-
-			P99Latency struct {
-				Values map[string]any `json:"values"`
-			} `json:"p99_latency"`
-
-			P95Latency struct {
-				Values map[string]any `json:"values"`
-			} `json:"p95_latency"`
-
-			MaxLatency struct {
-				Value *float64 `json:"value"`
-			} `json:"max_latency"`
-
-			WorkloadInfo struct {
-				Hits struct {
-					Hits []struct {
-						Source map[string]any `json:"_source"`
-					} `json:"hits"`
-				} `json:"hits"`
-			} `json:"workload_info"`
-		}
-
-		if err := json.Unmarshal(bucketRaw, &bucket); err != nil {
-			continue
-		}
-
-		serviceName := fmt.Sprintf("%v", bucket.Key["serviceName"])
-		spanName := fmt.Sprintf("%v", bucket.Key["name"])
-		httpStatusCode := ""
-		if v, ok := bucket.Key["http_status_code"]; ok && v != nil {
-			httpStatusCode = fmt.Sprintf("%v", v)
-		}
-
-		p99 := int64(0)
-		if v, ok := bucket.P99Latency.Values["99.0"]; ok {
-			if f, ok := v.(float64); ok {
-				p99 = int64(f)
-			}
-		}
-		p95 := int64(0)
-		if v, ok := bucket.P95Latency.Values["95.0"]; ok {
-			if f, ok := v.(float64); ok {
-				p95 = int64(f)
-			}
-		}
-		maxLat := int64(0)
-		if bucket.MaxLatency.Value != nil {
-			maxLat = int64(*bucket.MaxLatency.Value)
-		}
-
-		// Extract workload info from top_hits
-		workloadName := serviceName
-		workloadNamespace := ""
-		resource := ""
-		destWorkloadName := ""
-		if len(bucket.WorkloadInfo.Hits.Hits) > 0 {
-			topSrc := bucket.WorkloadInfo.Hits.Hits[0].Source
-			resAttrs := getNestedMap(topSrc, "resource.attributes")
-			if resAttrs != nil {
-				if v := getStringFromMap(resAttrs, "k8s@deployment@name"); v != "" {
-					workloadName = v
-				}
-				workloadNamespace = getStringFromMap(resAttrs, "k8s@namespace@name")
-			}
-			spanAttrs := getNestedMap(topSrc, "span.attributes")
-			if spanAttrs != nil {
-				resource = getStringFromMap(spanAttrs, "http@url")
-				if resource == "" {
-					resource = getStringFromMap(spanAttrs, "db@statement")
-				}
-				destWorkloadName = getStringFromMap(spanAttrs, "net@peer@name")
-			}
-		}
-
-		results = append(results, TraceGroupingValues{
-			Count:                        bucket.DocCount,
-			ErrorCount:                   bucket.ErrorCount.DocCount,
-			P99Latency:                   p99,
-			P95Latency:                   p95,
-			MaxLatency:                   maxLat,
-			WorkloadName:                 workloadName,
-			WorkloadNamespace:            workloadNamespace,
-			DestinationWorkloadName:      destWorkloadName,
-			DestinationWorkloadNamespace: "",
-			Resource:                     resource,
-			SpanName:                     spanName,
-			HTTPStatusCode:               httpStatusCode,
-		})
-	}
-
-	// Apply sorting if OrderBy is specified
-	if len(req.QueryRequest.OrderBy) > 0 {
-		ob := req.QueryRequest.OrderBy[0]
-		ascending := ob.Order == query.Asc || ob.Order == query.AscNullsFirst || ob.Order == query.AscNullsLast
-		sort.Slice(results, func(i, j int) bool {
-			var less bool
-			switch ob.Column {
-			case "count":
-				less = results[i].Count < results[j].Count
-			case "error_count":
-				less = results[i].ErrorCount < results[j].ErrorCount
-			case "p95_latency":
-				less = results[i].P95Latency < results[j].P95Latency
-			case "p99_latency":
-				less = results[i].P99Latency < results[j].P99Latency
-			case "max_latency":
-				less = results[i].MaxLatency < results[j].MaxLatency
-			default:
-				less = results[i].Count < results[j].Count
-			}
-			if ascending {
-				return less
-			}
-			return !less
-		})
-	}
-
-	return results, nil
+	return sortAndPaginateTraceGroups(results, req), nil
 }
 
 func (e *ElasticSaasTraceSource) QueryGroupedTracesCount(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceGroupCount, error) {
@@ -927,18 +763,17 @@ func (e *ElasticSaasTraceSource) QueryGroupedTracesCount(ctx *security.RequestCo
 			"group_count": map[string]any{
 				"cardinality": map[string]any{
 					"script": map[string]any{
-						"source": "def svc = doc.containsKey('serviceName') && doc['serviceName'].size() > 0 ? doc['serviceName'].value : ''; " +
-							"def name = doc.containsKey('name') && doc['name'].size() > 0 ? doc['name'].value : ''; " +
-							"def http = doc.containsKey('span.attributes.http@status_code') && doc['span.attributes.http@status_code'].size() > 0 ? doc['span.attributes.http@status_code'].value : ''; " +
-							"return svc + '||' + name + '||' + http",
-						"lang": "painless",
+						// Same dimension list as QueryGroupedTraces so the group
+						// count matches the number of grouped rows produced.
+						"source": esGroupKeyCardinalityScript(elasticTraceGroupDims),
+						"lang":   "painless",
 					},
 				},
 			},
 		},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, fmt.Errorf("failed to query grouped traces count: %w", err)
 	}
@@ -984,7 +819,7 @@ func (e *ElasticSaasTraceSource) QueryTracesHeatmap(ctx *security.RequestContext
 		},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces heatmap: %w", err)
 	}

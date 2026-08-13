@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import * as dotenv from "dotenv";
 import * as path from "path";
+import { AUTH_STATE_PATH } from "./tests/utils/paths";
 
 // Load the env file for the selected environment. dotenv never overrides a
 // variable already present in process.env, so anything set by the CI runner
@@ -23,6 +24,9 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 1 : undefined,
 
+  // Log in once, reuse the session across every test (see global-setup.ts).
+  globalSetup: require.resolve("./global-setup"),
+
   metadata: {
     cluster: process.env.CLUSTER || process.env.CLUSTER_NAME || "",
     tenant: process.env.SWITCH_TENANT || "",
@@ -44,6 +48,8 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "retain-on-failure",
     baseURL: process.env.BASE_URL,
+    // Reuse the session captured by global-setup so tests start authenticated.
+    storageState: AUTH_STATE_PATH,
   },
 
   projects: [

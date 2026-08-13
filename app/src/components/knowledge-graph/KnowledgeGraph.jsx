@@ -44,7 +44,7 @@ import { Modal } from '@ui/Modal';
 import ServiceMapLegends from '@components/k8s/details/ServiceMapLegends';
 import Tooltip from '@ui/Tooltip';
 import { Button } from '@ui/Button';
-import LogQueryBuilderAutocomplete from '@components/k8s/common/LogQueryBuilderAutocomplete';
+import LogQueryBuilderAutocomplete, { PropertyFilterHelp } from '@components/k8s/common/LogQueryBuilderAutocomplete';
 import EdgeDetails from '@components/k8s/details/EdgeDetails';
 import Datetime from '@shared/format/Datetime';
 import KGSettings from './KGSettings';
@@ -60,6 +60,51 @@ const HANDLE_STYLE_VISIBLE = { background: 'var(--ds-gray-600)' };
 const HANDLE_STYLE_HIDDEN = { opacity: 0, width: 1, height: 1 };
 const EMPTY_SELECTED_DETAILS = {};
 const REACT_FLOW_PRO_OPTIONS = { hideAttribution: true };
+
+// KG Label/Attribute section header — caption + right-aligned ⓘ (matching the
+// Account / Node Type rows above), plus the AND rule and a Clear button once
+// more than one chip is set. Presentation-only: onClear just resets the draft
+// filter state that the existing Apply flow already consumes.
+const KgFilterSectionHeader = ({ heading, count, onClear, info }) => (
+  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)', minHeight: ds.space[5] }}>
+    <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 500, color: 'var(--ds-gray-600)' }}>{heading} filter</Typography>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+      {count > 1 && (
+        <>
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>all must match · AND</Typography>
+          <Box
+            component='button'
+            type='button'
+            onClick={onClear}
+            sx={{
+              p: 0,
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              fontSize: 'var(--ds-text-caption)',
+              color: 'var(--ds-blue-600)',
+              '&:hover': { textDecoration: 'underline' },
+            }}
+          >
+            Clear {heading === 'Attribute' ? 'attributes' : 'labels'}
+          </Box>
+        </>
+      )}
+      <Tooltip title={info} placement='bottom-end' tooltipStyle={{ maxWidth: ds.space.mul(0, 180), padding: 'var(--ds-space-4)' }}>
+        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', color: 'var(--ds-gray-400)', cursor: 'help', flexShrink: 0 }}>
+          <InfoOutlinedIcon sx={{ fontSize: 18 }} />
+        </Box>
+      </Tooltip>
+    </Box>
+  </Box>
+);
+
+KgFilterSectionHeader.propTypes = {
+  heading: PropTypes.string.isRequired,
+  count: PropTypes.number,
+  onClear: PropTypes.func,
+  info: PropTypes.node,
+};
 
 const levelOptions = [
   { label: '1 - Direct neighbors', value: 1 },
@@ -2156,6 +2201,7 @@ const ServiceMapContent = () => {
                 }
               >
                 <FilterDropdown
+                  id='kg-filter-account'
                   label='Account'
                   options={accountOptions}
                   value={draftAccountIds}
@@ -2173,6 +2219,7 @@ const ServiceMapContent = () => {
                 }
               >
                 <FilterDropdown
+                  id='kg-filter-node-type'
                   label='Node Type'
                   options={mergedNodeTypeOptions}
                   value={draftNodeTypes}
@@ -2207,6 +2254,7 @@ const ServiceMapContent = () => {
                 }
               >
                 <FilterDropdown
+                  id='kg-filter-node'
                   label='Node'
                   options={filterNodeOptions}
                   value={draftNodes}
@@ -2240,6 +2288,7 @@ const ServiceMapContent = () => {
                 }
               >
                 <FilterDropdown
+                  id='kg-filter-level'
                   label='Level'
                   options={levelOptions}
                   value={draftLevel}
@@ -2249,32 +2298,60 @@ const ServiceMapContent = () => {
               </FilterWithInfo>
             </Box>
 
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-              <LogQueryBuilderAutocomplete
-                logProvider='knowledge_graph'
-                accountId={''}
-                onQueryChange={(e) => setDraftLabelFilters(e?.query ?? '')}
-                queryItems={queryItemsLabel}
-                onQueryItemsChange={setQueryItemsLabel}
-                getLabelsFromProps={kgFilterOptions.labelMap}
-                allowMultipleQueries={false}
-                height='auto'
-                width='100%'
-                kgFilters={kgFilters}
-              />
-              <LogQueryBuilderAutocomplete
-                logProvider='knowledge_graph'
-                accountId={''}
-                onQueryChange={(e) => setDraftAttributeFilters(e?.query ?? '')}
-                queryItems={queryItems}
-                onQueryItemsChange={setQueryItems}
-                getLabelsFromProps={kgFilterOptions.attributeMap}
-                allowMultipleQueries={false}
-                heading={'Attribute'}
-                height='auto'
-                width='100%'
-                kgFilters={kgFilters}
-              />
+            {/* Divider separating the node-scoping dropdowns above from the
+                property (label / attribute) filters below. */}
+            <Box sx={{ borderTop: '1px solid var(--ds-gray-200)', my: 'var(--ds-space-1)' }} />
+
+            {/* id anchors the guided tour's label/attribute step; LogQueryBuilderAutocomplete
+                takes no id of its own, so the pair is spotlit via this wrapper. */}
+            <Box id='kg-filter-label-attribute' sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+                <KgFilterSectionHeader
+                  heading='Label'
+                  count={queryItemsLabel?.length ?? 0}
+                  onClear={() => {
+                    setQueryItemsLabel([]);
+                    setDraftLabelFilters('');
+                  }}
+                  info={<PropertyFilterHelp heading='Label' />}
+                />
+                <LogQueryBuilderAutocomplete
+                  logProvider='knowledge_graph'
+                  accountId={''}
+                  onQueryChange={(e) => setDraftLabelFilters(e?.query ?? '')}
+                  queryItems={queryItemsLabel}
+                  onQueryItemsChange={setQueryItemsLabel}
+                  getLabelsFromProps={kgFilterOptions.labelMap}
+                  allowMultipleQueries={false}
+                  height='auto'
+                  width='100%'
+                  kgFilters={kgFilters}
+                />
+              </Box>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+                <KgFilterSectionHeader
+                  heading='Attribute'
+                  count={queryItems?.length ?? 0}
+                  onClear={() => {
+                    setQueryItems([]);
+                    setDraftAttributeFilters('');
+                  }}
+                  info={<PropertyFilterHelp heading='Attribute' />}
+                />
+                <LogQueryBuilderAutocomplete
+                  logProvider='knowledge_graph'
+                  accountId={''}
+                  onQueryChange={(e) => setDraftAttributeFilters(e?.query ?? '')}
+                  queryItems={queryItems}
+                  onQueryItemsChange={setQueryItems}
+                  getLabelsFromProps={kgFilterOptions.attributeMap}
+                  allowMultipleQueries={false}
+                  heading={'Attribute'}
+                  height='auto'
+                  width='100%'
+                  kgFilters={kgFilters}
+                />
+              </Box>
             </Box>
 
             <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', pt: 'var(--ds-space-1)' }}>
@@ -2435,7 +2512,7 @@ const ServiceMapContent = () => {
               </Box>
             )}
             {isGraphLoading ? (
-              <Loader style={{ width: '100%', height: '100%' }} />
+              <Loader style={{ position: 'static', width: '100%', height: '100%' }} />
             ) : isLimitExceeded ? (
               <Box display='flex' flexDirection='column' alignItems='center' justifyContent='center' height='100%' width='100%' p={ds.space[6]}>
                 <Box

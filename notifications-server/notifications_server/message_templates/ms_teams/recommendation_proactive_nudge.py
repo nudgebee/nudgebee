@@ -62,7 +62,6 @@ def get_teams_recommendation_proactive_nudge_template(
         for rec in acc_data.recommendations[:5]:
             rec_text = (
                 f"{counter}. **{rec.resource_name}** — {format_rule_name(rec.rule_name)}\n"
-                f"Score: {rec.finops_score}/100 · "
                 f"Savings: {format_savings(rec.estimated_savings)}/mo · "
                 f"Severity: {rec.severity}"
             )

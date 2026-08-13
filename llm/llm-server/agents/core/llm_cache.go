@@ -45,8 +45,10 @@ type CacheRequest struct {
 	Provider       string
 	Messages       []llms.MessageContent
 	ApiKey         string
+	Endpoint       string // Optional AI Gateway base URL; empty = talk to Google directly. Must match the generation client's endpoint so cache create/reference resolve to the same Google key.
 	Scope          CacheScope
 	Capabilities   toolcore.AgentCapabilities // Optional; used to isolate cache slots when tool set varies per request
+	PromptVariant  string                     // Optional; isolates the lean vs full orchestrator prompt into distinct cache slots (empty = full/default)
 }
 
 // CacheResponse contains the result of cache operation
@@ -209,7 +211,22 @@ func (p *GoogleAICacheProvider) GetProviderName() string {
 	return "googleai"
 }
 
+// googleAICacheOpts builds the googleai client options shared by every cache
+// helper. Passing the same apiKey + endpoint the generation client uses is
+// mandatory: Gemini caches are isolated by credential/project, so a cache
+// created under one key/endpoint and referenced under another would miss or 403.
+func googleAICacheOpts(apiKey, endpoint string) []googleai.Option {
+	opts := []googleai.Option{googleai.WithAPIKey(apiKey)}
+	if endpoint != "" {
+		opts = append(opts, googleai.WithBaseURL(endpoint))
+	}
+	return opts
+}
+
 func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheRequest) *CacheResponse {
+	// Stamp trace_id/span_id from the request context so cache decisions
+	// correlate with the conversation's other log lines in Loki.
+	logger := common.TraceLogger(ctx)
 	// Append a capability fingerprint to agentName so that requests with different
 	// allowed_tools sets get distinct Google AI CachedContent slots. Google AI uses
 	// a single slot per cache key, so alternating tool scopes would otherwise thrash
@@ -217,6 +234,13 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	agentName := req.AgentName
 	if fp := capabilityFingerprint(req.Capabilities); fp != "" {
 		agentName = req.AgentName + ":" + fp
+	}
+	// Isolate the lean vs full orchestrator prompt into distinct slots, for the
+	// same reason as the capability fingerprint: the lean prompt is a different
+	// cacheable prefix and must not overwrite the full-prompt slot. Empty
+	// (full/default) appends nothing, leaving existing slots byte-identical.
+	if req.PromptVariant != "" {
+		agentName = agentName + ":" + req.PromptVariant
 	}
 
 	// Generate cache key based on scope, including a short hash of the api key
@@ -226,7 +250,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	// project and 403 at use time.
 	cacheKey := generateCacheKey(req.Scope, req.AccountId, req.ConversationId, agentName, req.Model, credsFingerprint(req.ApiKey, "", "", "", "", "", ""))
 
-	slog.Info("Google AI cache: Starting cache check",
+	logger.Info("Google AI cache: Starting cache check",
 		"conversationId", req.ConversationId,
 		"agentName", agentName,
 		"model", req.Model,
@@ -241,7 +265,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	// Identify cacheable messages based on the requested scope
 	cacheableMessages, nonCacheableMessages := identifyCacheableMessages(req.Messages, req.Scope)
 	if len(cacheableMessages) == 0 {
-		slog.Info("Google AI cache: Not using cache - No cacheable messages found",
+		logger.Info("Google AI cache: Not using cache - No cacheable messages found",
 			"conversationId", req.ConversationId,
 			"reason", "no_cacheable_messages",
 			"totalMessages", len(req.Messages))
@@ -251,7 +275,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		}
 	}
 
-	slog.Debug("Google AI cache: Identified cacheable messages",
+	logger.Debug("Google AI cache: Identified cacheable messages",
 		"conversationId", req.ConversationId,
 		"cacheableMessages", len(cacheableMessages),
 		"nonCacheableMessages", len(nonCacheableMessages))
@@ -261,7 +285,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	// 1.5 Pro/Flash = 32,768 tokens. Returns 0 if the model does not support caching.
 	minGoogleAITokens := GetLlmMinCacheTokens(req.Model)
 	if minGoogleAITokens == 0 {
-		slog.Info("Google AI cache: Not using cache - Model does not support context caching",
+		logger.Info("Google AI cache: Not using cache - Model does not support context caching",
 			"model", req.Model,
 			"conversationId", req.ConversationId,
 			"reason", "model_no_cache_support")
@@ -293,7 +317,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		// Only skip the CountTokens API call for clearly tiny inputs; threshold is
 		// minGoogleAITokens/10 so even a 10x correction stays below minimum.
 		if localCount < (minGoogleAITokens / 10) {
-			slog.Info("Google AI cache: Not using cache - Local token estimate too low",
+			logger.Info("Google AI cache: Not using cache - Local token estimate too low",
 				"localEstimate", localCount,
 				"minRequired", minGoogleAITokens,
 				"conversationId", req.ConversationId)
@@ -305,9 +329,9 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	}
 
 	// Use Google AI's CountTokens API for accurate token counting
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey))
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...)
 	if err != nil {
-		slog.Warn("Google AI cache: Not using cache - Failed to create caching helper",
+		logger.Warn("Google AI cache: Not using cache - Failed to create caching helper",
 			"error", err,
 			"conversationId", req.ConversationId,
 			"reason", "caching_helper_init_failed")
@@ -321,7 +345,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 
 	tokenCount, err := cachingHelper.CountTokens(ctx, req.Model, cacheableMessages)
 	if err != nil {
-		slog.Warn("Google AI cache: Not using cache - Token counting failed",
+		logger.Warn("Google AI cache: Not using cache - Token counting failed",
 			"error", err,
 			"conversationId", req.ConversationId,
 			"reason", "token_count_failed")
@@ -333,7 +357,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		}
 	}
 
-	slog.Info("Google AI cache: Token count for cacheable messages",
+	logger.Info("Google AI cache: Token count for cacheable messages",
 		"conversationId", req.ConversationId,
 		"tokenCount", tokenCount,
 		"minRequired", minGoogleAITokens,
@@ -369,10 +393,10 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			// Recalculate tokens after padding
 			tokenCount, err = cachingHelper.CountTokens(ctx, req.Model, cacheableMessages)
 			if err != nil {
-				slog.Warn("Google AI cache: Token recount failed after padding", "error", err)
+				logger.Warn("Google AI cache: Token recount failed after padding", "error", err)
 			}
 		} else {
-			slog.Info("Google AI cache: Not using cache - Token count below minimum",
+			logger.Info("Google AI cache: Not using cache - Token count below minimum",
 				"tokenCount", tokenCount,
 				"minRequired", minGoogleAITokens,
 				"deficit", minGoogleAITokens-int(tokenCount),
@@ -388,7 +412,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	// Check if token count exceeds model's context window limit
 	maxTokens := GetLlmMaxTokenLength(req.Model)
 	if tokenCount > int32(maxTokens) {
-		slog.Warn("Google AI cache: Not using cache - Token count exceeds model's context window limit",
+		logger.Warn("Google AI cache: Not using cache - Token count exceeds model's context window limit",
 			"tokenCount", tokenCount,
 			"maxTokens", maxTokens,
 			"model", req.Model,
@@ -410,9 +434,9 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		if err := json.Unmarshal(data, &cacheInfo); err == nil {
 			exists = true
 		} else {
-			slog.Warn("Google AI cache: Failed to unmarshal cache info, clearing bad entry", "error", err, "cacheKey", cacheKey)
+			logger.Warn("Google AI cache: Failed to unmarshal cache info, clearing bad entry", "error", err, "cacheKey", cacheKey)
 			if delErr := common.CacheDelete(p.namespace, cacheKey); delErr != nil {
-				slog.Warn("Google AI cache: Failed to delete corrupt entry", "error", delErr, "cacheKey", cacheKey)
+				logger.Warn("Google AI cache: Failed to delete corrupt entry", "error", delErr, "cacheKey", cacheKey)
 			}
 		}
 	}
@@ -422,9 +446,9 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	// Cache hit path
 	if exists && cacheInfo.ExpiresAt.After(now) && cacheInfo.ContentHash == contentHash {
 		// Verify the cache actually exists in Google AI
-		if p.verifyCacheExists(ctx, cacheInfo.CacheName, req.ApiKey) {
+		if p.verifyCacheExists(ctx, cacheInfo.CacheName, req.ApiKey, req.Endpoint) {
 			timeToExpiry := cacheInfo.ExpiresAt.Sub(now)
-			slog.Info("Google AI cache: CACHE HIT - Using existing cache",
+			logger.Info("Google AI cache: CACHE HIT - Using existing cache",
 				"cacheName", cacheInfo.CacheName,
 				"conversationId", req.ConversationId,
 				"tokenCount", tokenCount,
@@ -450,12 +474,12 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 				CacheHit: true,
 			}
 		} else {
-			slog.Warn("Google AI cache: Cache entry exists in storage but not in Google AI, will recreate",
+			logger.Warn("Google AI cache: Cache entry exists in storage but not in Google AI, will recreate",
 				"cacheName", cacheInfo.CacheName,
 				"conversationId", req.ConversationId,
 				"reason", "cache_verification_failed")
 			if err := common.CacheDelete(p.namespace, cacheKey); err != nil {
-				slog.Error("Google AI cache: Failed to delete stale cache entry", "error", err, "cacheKey", cacheKey)
+				logger.Error("Google AI cache: Failed to delete stale cache entry", "error", err, "cacheKey", cacheKey)
 			}
 			// Not invalidating the lifecycle row here: a failed verify is ambiguous
 			// (cache may be gone, or the probe failed transiently while it's still
@@ -467,13 +491,13 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		var reason string
 		if !cacheInfo.ExpiresAt.After(now) {
 			reason = "cache_expired"
-			slog.Info("Google AI cache: Not using cache - Cache expired",
+			logger.Info("Google AI cache: Not using cache - Cache expired",
 				"conversationId", req.ConversationId,
 				"expiredAt", cacheInfo.ExpiresAt,
 				"reason", reason)
 		} else if cacheInfo.ContentHash != contentHash {
 			reason = "content_changed"
-			slog.Info("Google AI cache: Not using cache - Content has changed, deleting old cache",
+			logger.Info("Google AI cache: Not using cache - Content has changed, deleting old cache",
 				"conversationId", req.ConversationId,
 				"oldCacheName", cacheInfo.CacheName,
 				"reason", reason)
@@ -485,15 +509,15 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			// forces a real recreate. (#387 introduced the early-return; the original
 			// "overwritten by createCache below" assumption no longer always holds.)
 			if delErr := common.CacheDelete(p.namespace, cacheKey); delErr != nil {
-				slog.Warn("Google AI cache: failed to delete stale pointer on content_changed",
+				logger.Warn("Google AI cache: failed to delete stale pointer on content_changed",
 					"error", delErr, "cacheKey", cacheKey, "conversationId", req.ConversationId)
 			}
 			// Explicitly delete the old Google AI cache. Without this delete, it sits
 			// orphaned for the remainder of its TTL paying full storage cost —
 			// historically the dominant cause of Gemini cache spend on this service.
-			if helper, helperErr := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey)); helperErr == nil {
+			if helper, helperErr := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...); helperErr == nil {
 				if delErr := helper.DeleteCachedContent(ctx, cacheInfo.CacheName); delErr != nil {
-					slog.Warn("Google AI cache: failed to delete orphaned content_changed cache",
+					logger.Warn("Google AI cache: failed to delete orphaned content_changed cache",
 						"error", delErr,
 						"cacheName", cacheInfo.CacheName,
 						"conversationId", req.ConversationId)
@@ -508,7 +532,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 					common.MetricsLLMCacheInvalidations(req.Provider, req.Model, invalidationScope(req.Scope), "content_changed")
 				}
 			} else {
-				slog.Warn("Google AI cache: failed to init helper for orphan deletion",
+				logger.Warn("Google AI cache: failed to init helper for orphan deletion",
 					"error", helperErr,
 					"conversationId", req.ConversationId)
 			}
@@ -516,7 +540,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	}
 
 	// Cache miss - create new cache
-	slog.Info("Google AI cache: CACHE MISS - Creating new cache",
+	logger.Info("Google AI cache: CACHE MISS - Creating new cache",
 		"conversationId", req.ConversationId,
 		"tokenCount", tokenCount,
 		"cachedMessages", len(cacheableMessages),
@@ -571,7 +595,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		cacheInfoResult, _ = created.(*CacheInfo)
 	}
 	if errCreate != nil {
-		slog.Error("Google AI cache: Failed to create cache",
+		logger.Error("Google AI cache: Failed to create cache",
 			"error", errCreate,
 			"conversationId", req.ConversationId,
 			"tokenCount", tokenCount,
@@ -584,7 +608,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		}
 	}
 
-	slog.Info("Google AI cache: Successfully created new cache",
+	logger.Info("Google AI cache: Successfully created new cache",
 		"cacheName", cacheInfoResult.CacheName,
 		"conversationId", req.ConversationId,
 		"tokenCount", tokenCount,
@@ -661,7 +685,8 @@ func (p *GoogleAICacheProvider) waitForSharedCacheInfo(cacheKey, contentHash str
 }
 
 func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey))
+	logger := common.TraceLogger(ctx)
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...)
 	if err != nil {
 		return nil, err
 	}
@@ -676,7 +701,7 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 		displayName = fmt.Sprintf("cache_%s", contentHash[:32])
 	}
 
-	slog.Debug("Google AI cache: Calling CreateCachedContent API",
+	logger.Debug("Google AI cache: Calling CreateCachedContent API",
 		"conversationId", req.ConversationId,
 		"model", req.Model,
 		"tokenCount", tokenCount,
@@ -689,7 +714,7 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 		return nil, err
 	}
 
-	slog.Debug("Google AI cache: CreateCachedContent API returned",
+	logger.Debug("Google AI cache: CreateCachedContent API returned",
 		"cacheName", cachedContent.Name,
 		"conversationId", req.ConversationId,
 		"tokenCount", tokenCount,
@@ -716,10 +741,10 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 
 	if data, err := json.Marshal(cacheInfo); err == nil {
 		if err := common.CacheSet(p.namespace, cacheKey, data, common.CacheSetWithExpiration(ttl)); err != nil {
-			slog.Error("Google AI cache: Failed to store cache info", "error", err, "cacheKey", cacheKey)
+			logger.Error("Google AI cache: Failed to store cache info", "error", err, "cacheKey", cacheKey)
 		}
 	} else {
-		slog.Error("Google AI cache: Failed to marshal cache info", "error", err)
+		logger.Error("Google AI cache: Failed to marshal cache info", "error", err)
 	}
 
 	// Record this cache in llm_cache_lifecycle so storage cost can be billed
@@ -734,7 +759,7 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 	// tenant level matches reality. Surface a loud Error if it's missing —
 	// silently writing NULL would peg tenant cache-storage cost at $0.
 	if scopeOverride != string(CacheScopeGlobal) && strings.TrimSpace(req.TenantId) == "" {
-		slog.Error("cache lifecycle: tenant_id missing on non-global cache; tenant rollup will undercount",
+		logger.Error("cache lifecycle: tenant_id missing on non-global cache; tenant rollup will undercount",
 			"scope", scopeOverride,
 			"account_id", req.AccountId,
 			"agent", req.AgentName,
@@ -758,14 +783,15 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 	return cacheInfo, nil
 }
 
-func (p *GoogleAICacheProvider) verifyCacheExists(ctx context.Context, cacheName, apiKey string) bool {
+func (p *GoogleAICacheProvider) verifyCacheExists(ctx context.Context, cacheName, apiKey, endpoint string) bool {
+	logger := common.TraceLogger(ctx)
 	if cacheName == "" {
 		return false
 	}
 
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(apiKey))
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(apiKey, endpoint)...)
 	if err != nil {
-		slog.Warn("Failed to create caching helper for verification", "error", err)
+		logger.Warn("Failed to create caching helper for verification", "error", err)
 		return false
 	}
 
@@ -774,9 +800,17 @@ func (p *GoogleAICacheProvider) verifyCacheExists(ctx context.Context, cacheName
 }
 
 func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheRequest) error {
+	logger := common.TraceLogger(ctx)
 	agentName := req.AgentName
 	if fp := capabilityFingerprint(req.Capabilities); fp != "" {
 		agentName = req.AgentName + ":" + fp
+	}
+	// Isolate the lean vs full orchestrator prompt into distinct slots, for the
+	// same reason as the capability fingerprint: the lean prompt is a different
+	// cacheable prefix and must not overwrite the full-prompt slot. Empty
+	// (full/default) appends nothing, leaving existing slots byte-identical.
+	if req.PromptVariant != "" {
+		agentName = agentName + ":" + req.PromptVariant
 	}
 	cacheKey := generateCacheKey(req.Scope, req.AccountId, req.ConversationId, agentName, req.Model, credsFingerprint(req.ApiKey, "", "", "", "", "", ""))
 
@@ -785,7 +819,7 @@ func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheR
 	if data, ok := common.CacheGet(p.namespace, cacheKey); ok {
 		// Always delete if it exists in shared cache, even if unmarshal fails (to clear corruption)
 		if err := common.CacheDelete(p.namespace, cacheKey); err != nil {
-			slog.Warn("Google AI cache: Failed to delete cache entry from shared storage", "error", err, "cacheKey", cacheKey)
+			logger.Warn("Google AI cache: Failed to delete cache entry from shared storage", "error", err, "cacheKey", cacheKey)
 		}
 		if err := json.Unmarshal(data, &cacheInfo); err == nil {
 			exists = true
@@ -797,7 +831,7 @@ func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheR
 	}
 
 	// Delete from Google AI
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey))
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package webhook_queue
 
 import (
+	"context"
 	"log/slog"
 
 	"nudgebee/services/common"
@@ -22,7 +23,7 @@ func init() {
 	}
 }
 
-func processWebhookMessage(data []byte) error {
+func processWebhookMessage(msgCtx context.Context, data []byte) error {
 	var message WebhookProcessMessage
 	if err := common.UnmarshalJson(data, &message); err != nil {
 		slog.Error("webhook_queue: failed to unmarshal message", "error", err)
@@ -35,10 +36,14 @@ func processWebhookMessage(data []byte) error {
 	}
 
 	logger := slog.Default().With("webhook_row_id", message.WebhookRowID)
-	sc := security.NewRequestContextForSuperAdmin(logger, nil, nil)
+	// Build the request context directly on msgCtx (the trace context extracted
+	// from the message headers) so webhook processing logs / downstream calls
+	// share the publisher's trace_id, without a throwaway allocation.
+	sc := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdmin(), logger, nil, nil)
 
 	if err := core.ProcessStoredWebhook(sc, message.WebhookRowID); err != nil {
-		logger.Error("webhook_queue: failed to process stored webhook", "error", err)
+		// sc's logger carries the trace_id/span_id stamped by NewRequestContext.
+		sc.GetLogger().Error("webhook_queue: failed to process stored webhook", "error", err)
 		return nil // Don't requeue — errors are handled internally
 	}
 

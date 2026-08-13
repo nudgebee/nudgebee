@@ -39,11 +39,34 @@ func init() {
 	})
 }
 
+// traceAgentV2Enabled reports whether the integration-agnostic (canonical) traces
+// agent is enabled for this deploy.
+func traceAgentV2Enabled() bool {
+	return config.Config.TraceAgentV2Enabled
+}
+
 func newTracesAgent(ctx *security.RequestContext, accountId string, primaryAgent services_server.ObservabilityProvider) core.NBAgent {
 	var agentsToTry []core.NBAgent
 
+	provider := strings.ToLower(primaryAgent.Provider)
+	isClickhouse := provider == "clickhouse" || provider == "otel_clickhouse" || provider == "last9"
+	isDatadog := provider == "datadog"
+
+	// Integration-agnostic (v2) routing: when enabled, every where-clause-capable
+	// provider goes through the canonical TracesDefaultAgentV2 (llm-server emits one
+	// canonical query; services-server translates it per provider). ClickHouse (raw-SQL
+	// aggregations) and Datadog (facet syntax) can't be expressed canonically, so they
+	// stay on their dedicated agents. Flag off → the v1 switch below, byte-identical.
+	if traceAgentV2Enabled() && !isClickhouse && !isDatadog {
+		return &fallbackTracesAgent{
+			accountId: accountId,
+			agents:    []core.NBAgent{newTracesDefaultAgentV2(accountId, primaryAgent)},
+			executor:  core.ExecuteAgentToolCall,
+		}
+	}
+
 	// Add primary agent based on configuration
-	switch strings.ToLower(primaryAgent.Provider) {
+	switch provider {
 	case "clickhouse", "otel_clickhouse", "last9":
 		if tracesAgent, ok := core.GetNBAgent(ctx, TracesClickhouseAgentName, accountId, ""); ok {
 			agentsToTry = append(agentsToTry, tracesAgent)

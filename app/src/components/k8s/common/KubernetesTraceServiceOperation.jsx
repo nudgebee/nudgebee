@@ -8,7 +8,7 @@ import { Card } from '@ui/Card';
 import WidgetCard from '@ui/WidgetCard';
 import { Box, Typography } from '@mui/material';
 
-export const KubernetesTraceServiceOperation = ({ accountId, query, traceData }) => {
+export const KubernetesTraceServiceOperation = ({ accountId, query, traceData, esIndex }) => {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -43,7 +43,7 @@ export const KubernetesTraceServiceOperation = ({ accountId, query, traceData })
     setData([]);
     setLoading(true);
     apiTrace
-      .traceServiceAndOperationV2(accountId, query.trace_id)
+      .traceServiceAndOperationV2(accountId, query.trace_id, esIndex)
       .then((res) => {
         if (res) {
           const traceDataRows = res?.traces_get_heatmap ?? [];
@@ -53,7 +53,7 @@ export const KubernetesTraceServiceOperation = ({ accountId, query, traceData })
       .finally(() => {
         setLoading(false);
       });
-  }, [JSON.stringify(query), accountId, JSON.stringify(traceData)]);
+  }, [JSON.stringify(query), accountId, JSON.stringify(traceData), esIndex]);
 
   const getHttpStatus = (item) => {
     let httpStatusText = '';
@@ -168,4 +168,5 @@ KubernetesTraceServiceOperation.propTypes = {
   accountId: PropTypes.string,
   query: PropTypes.object,
   traceData: PropTypes.array,
+  esIndex: PropTypes.string,
 };

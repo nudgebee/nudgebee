@@ -45,10 +45,16 @@ func NewNBLogTool(accountId string) (*NBLogTool, error) {
 		slog.Error("logs: unable to get log provider", "error", err)
 		return nil, err
 	}
+	return NewNBLogToolWithProvider(accountId, logProvider), nil
+}
+
+// NewNBLogToolWithProvider builds against an already-resolved provider, so labels
+// come from the same backend the caller is querying (may be a request override).
+func NewNBLogToolWithProvider(accountId string, logProvider services_server.ObservabilityProvider) *NBLogTool {
 	return &NBLogTool{
 		accountId:   accountId,
 		logProvider: logProvider,
-	}, nil
+	}
 }
 
 type NBLogTool struct {
@@ -77,6 +83,10 @@ func (t *NBLogTool) QueryLabels() []string {
 	}
 	logLabels, err := executeFetchLogLabels(t.accountId, t.logProvider)
 	if err != nil {
+		// Callers degrade to backend defaults on an empty list — without this warn
+		// a bad override (e.g. a backend the account has no integration for) is invisible.
+		slog.Warn("logs: unable to fetch provider labels", "error", err,
+			"provider", t.logProvider.Provider, "account_id", t.accountId)
 		return []string{}
 	}
 	labels := make([]string, 0, len(logLabels.Labels))
@@ -95,6 +105,7 @@ func (t *NBLogTool) QueryLabels() []string {
 	if len(labels) > 0 {
 		t.labels = append(labels, "_body")
 	}
+	slog.Info("logs: QueryLabels complete", "account_id", t.accountId, "provider", t.logProvider.Provider, "raw_labels_count", len(logLabels.Labels), "final_labels_count", len(t.labels), "final_labels", t.labels)
 	return t.labels
 }
 
@@ -245,7 +256,11 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		}, nil
 	}
 
-	nbRequestContext.Ctx.GetLogger().Info("logs: executing getLogs tool call", "query", input.Command)
+	// Local — this instance is shared across requests (30-min tool caches) and
+	// sibling Call goroutines.
+	logProvider := EffectiveLogProvider(t.logProvider, nbRequestContext.QueryConfig.LogProviderOverride)
+
+	nbRequestContext.Ctx.GetLogger().Info("logs: executing getLogs tool call", "query", input.Command, "provider", logProvider.Provider)
 
 	queryBuilder, err := core.BuildLogQueryBuilder(nbRequestContext, input.Command)
 	if err != nil {
@@ -255,7 +270,7 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		queryBuilder.Limit = 1000
 	}
 
-	switch strings.ToLower(t.logProvider.Provider) {
+	switch strings.ToLower(logProvider.Provider) {
 	case "loki":
 		logsQuery, err := t.queryBuilderToLokiQuery(queryBuilder)
 		if err != nil {
@@ -289,7 +304,7 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		// Format as Loki HTTP API query string: query=LOGQL&limit=N&start=NANOS&end=NANOS
 		finalQuery := fmt.Sprintf("query=%s&limit=%d&start=%d&end=%d", logsQuery, limit, start.UnixNano(), end.UnixNano())
 
-		response, err := executeFetchLogs(nbRequestContext, t.logProvider, finalQuery, map[string]any{
+		response, err := executeFetchLogs(nbRequestContext, logProvider, finalQuery, map[string]any{
 			"end_time":   end.UnixMilli(),
 			"start_time": start.UnixMilli(),
 			"limit":      limit,
@@ -367,7 +382,7 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 			fetchConfigs["index"] = queryBuilder.Index
 		}
 
-		response, err := executeFetchLogs(nbRequestContext, t.logProvider, esDSL, fetchConfigs)
+		response, err := executeFetchLogs(nbRequestContext, logProvider, esDSL, fetchConfigs)
 		if err != nil {
 			nbRequestContext.Ctx.GetLogger().Error("logs: unable to execute es query", "query", esDSL, "error", err.Error())
 			return core.NBToolResponse{
@@ -430,7 +445,7 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 			end = t2
 		}
 
-		response, err := executeFetchLogs(nbRequestContext, t.logProvider, string(filtersJSON), map[string]any{
+		response, err := executeFetchLogs(nbRequestContext, logProvider, string(filtersJSON), map[string]any{
 			"end_time":   end.UnixMilli(),
 			"start_time": start.UnixMilli(),
 			"limit":      queryBuilder.Limit,
@@ -472,7 +487,7 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	case "loggly", "observ", "observe":
 		var logQuery string
 		var err error
-		switch strings.ToLower(t.logProvider.Provider) {
+		switch strings.ToLower(logProvider.Provider) {
 		case "loggly":
 			logQuery, err = t.queryBuilderToLogglyQuery(queryBuilder)
 		case "observ", "observe":
@@ -505,7 +520,7 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		if limit == 0 && queryBuilder.StartTime == "" && queryBuilder.EndTime == "" {
 			limit = 1000
 		}
-		response, err := executeFetchLogs(nbRequestContext, t.logProvider, logQuery, map[string]any{
+		response, err := executeFetchLogs(nbRequestContext, logProvider, logQuery, map[string]any{
 			"end_time":   end.UnixMilli(),
 			"start_time": start.UnixMilli(),
 			"limit":      limit,
@@ -513,7 +528,7 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		if err != nil {
 			nbRequestContext.Ctx.GetLogger().Error("logs: unable to execute query", "query", logQuery, "error", err.Error())
 			return core.NBToolResponse{
-				Data:   fmt.Sprintf("Error executing %s query: %s", t.logProvider.Provider, err.Error()),
+				Data:   fmt.Sprintf("Error executing %s query: %s", logProvider.Provider, err.Error()),
 				Status: core.NBToolResponseStatusError,
 			}, errors.Wrap(core.ErrUnableToFetchData, err.Error())
 		}
@@ -522,7 +537,7 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 				"No logs found for %s query (time range: %s to %s, limit: %d). "+
 					"The query executed successfully but returned no results. "+
 					"Suggestions: try broader filters or expand the time range.",
-				t.logProvider.Provider, start.Format(time.RFC3339), end.Format(time.RFC3339), limit,
+				logProvider.Provider, start.Format(time.RFC3339), end.Format(time.RFC3339), limit,
 			)
 			return core.NBToolResponse{
 				Data:   noLogsMsg,
@@ -545,11 +560,11 @@ func (t *NBLogTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		}, nil
 	}
 
-	nbRequestContext.Ctx.GetLogger().Error("logs: unsupported log provider", "provider", t.logProvider.Provider)
+	nbRequestContext.Ctx.GetLogger().Error("logs: unsupported log provider", "provider", logProvider.Provider)
 	return core.NBToolResponse{
-		Data:   fmt.Sprintf("Unsupported log provider: %s", t.logProvider.Provider),
+		Data:   fmt.Sprintf("Unsupported log provider: %s", logProvider.Provider),
 		Status: core.NBToolResponseStatusError,
-	}, fmt.Errorf("unsupported log provider: %s", t.logProvider.Provider)
+	}, fmt.Errorf("unsupported log provider: %s", logProvider.Provider)
 }
 
 // queryBuilderToSignozFilters converts the generic QueryBuilder where clause into

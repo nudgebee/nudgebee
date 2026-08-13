@@ -32,7 +32,7 @@ func PublishAuditEvent(context *security.RequestContext, audit Audit) error {
 	audit = redactAudit(audit)
 	routingKey := strings.ToLower(string(audit.EventType))
 	routingKey = strings.ReplaceAll(routingKey, "_", ".")
-	err := common.MqPublish(nbAuditsExchange, routingKey, audit, common.MqPublishWithExchangeType("topic"))
+	err := common.MqPublish(nbAuditsExchange, routingKey, audit, common.MqPublishWithExchangeType("topic"), common.MqPublishWithContext(context.GetContext()))
 	if err != nil {
 		context.GetLogger().Error("audit: failed to publish audit event", "error", err)
 		return err

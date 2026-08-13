@@ -561,7 +561,7 @@ func (r *podRow) node(cluster string) *DbNode {
 		UniqueKey:       uniqueKey,
 		Properties:      properties,
 		Labels:          r.Labels,
-		QueryAttributes: ExtractQueryAttributes(NodeTypePod, properties),
+		QueryAttributes: ExtractQueryAttributes(NodeTypePod, "KubernetesPod", properties),
 		CloudAccountID:  r.CloudAccountID,
 		TenantID:        r.TenantID,
 		Level:           "Tenant",

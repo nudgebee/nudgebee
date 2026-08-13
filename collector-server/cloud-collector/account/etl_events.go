@@ -75,7 +75,7 @@ func StoreEventsForAllAccounts(ctx *security.RequestContext) {
 			AccountId: accountId,
 			TenantId:  tenantId,
 		}
-		err = common.MqPublish(config.Config.RabbitMqCloudAccountEventsExchange, config.Config.RabbitMqCloudAccountEventsQueue, job)
+		err = common.MqPublish(config.Config.RabbitMqCloudAccountEventsExchange, config.Config.RabbitMqCloudAccountEventsQueue, job, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("events: failed to publish job", "error", err, "accountId", accountId, "job_id", job.JobId)
 			failedCount++
@@ -105,7 +105,7 @@ func ConsumeCloudAccountEventsJobs(ctx *security.RequestContext, concurrency int
 		ctx.GetLogger().Error("events: failed to declare DLQ", "error", err)
 	}
 
-	processor := func(data []byte) error {
+	processor := func(msgCtx context.Context, data []byte) error {
 		var job CloudAccountEventsJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
@@ -119,11 +119,13 @@ func ConsumeCloudAccountEventsJobs(ctx *security.RequestContext, concurrency int
 			return nil // Return nil to ACK and drop the message
 		}
 
-		logger := ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId)
+		// Create a new request context for this specific account. msgCtx carries
+		// the trace context extracted from the consumed message's headers, so the
+		// trace continues from the publisher into event ETL. Build it before any
+		// job-level logging so those lines carry the stamped trace_id too.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId), ctx.GetTracer(), ctx.GetMeter())
+		logger := jobCtx.GetLogger()
 		logger.Info("events: processing events job")
-
-		// Create a new request context for this specific account
-		jobCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Execute StoreEvents logic
 		_, err = StoreEvents(jobCtx, job.AccountId)
@@ -236,6 +238,15 @@ func prepareEventForDB(ctx *security.RequestContext, event providers.Event, orig
 	if event.Description != "" {
 		description = &event.Description
 	}
+	// The events "cluster" field is a generic scoping key; the other cloud
+	// producers (k8s-collector cloud findings, spend anomalies) fill it with
+	// the account NAME, so using the number here made the same account show
+	// up twice in the Cluster facet.
+	cluster := originatingAccount.AccountName
+	if cluster == "" {
+		cluster = originatingAccount.AccountNumber
+	}
+
 	subjectName := event.ResourceId
 	if subjectName == "" {
 		subjectName = event.EventName
@@ -263,7 +274,7 @@ func prepareEventForDB(ctx *security.RequestContext, event providers.Event, orig
 		"ends_at":           eventDateFormatted,
 		"description":       description,
 		"created_at":        currentTime,
-		"cluster":           originatingAccount.AccountNumber,
+		"cluster":           cluster,
 		"cloud_resource_id": nilString,
 		"cloud_account_id":  internalDBAccountID,
 		"account_id":        internalDBAccountID,

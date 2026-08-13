@@ -799,10 +799,14 @@ const InstancesView = (props: {
   }, [props?.accountId, selectedTagKey]);
 
   useEffect(() => {
-    listRDSInstances();
+    let stale = false;
+    listRDSInstances(() => stale);
+    return () => {
+      stale = true;
+    };
   }, [props?.accountId, props?.serviceName, page, rowsPerPage, selectedTagKey, selectedTagValue, selectedState, selectedRegion, appliedInstanceName]);
 
-  const listRDSInstances = () => {
+  const listRDSInstances = (isStale: () => boolean = () => false) => {
     if (!props?.accountId) {
       return;
     }
@@ -823,6 +827,11 @@ const InstancesView = (props: {
         page * rowsPerPage
       )
       .then((res: any) => {
+        // Ignore a response whose request was superseded (deps changed / unmount)
+        // so a stale page/filter can't overwrite the current rows.
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
         const rdsResourceData = res.data?.data?.cloud_resourses?.map((item: any) => {
           const data: ICustomTableRow[] = [];
@@ -882,6 +891,9 @@ const InstancesView = (props: {
         setRdsInstancesCount(rdsResourceCount);
       })
       .catch(() => {
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
       });
   };

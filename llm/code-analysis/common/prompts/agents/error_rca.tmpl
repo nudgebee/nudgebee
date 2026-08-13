@@ -20,6 +20,7 @@ REQUIRED:
   ```json
   {"file_path": "api/foo.go", "line_start": 42, "line_end": 42, "snippet": "uuid.Parse(inputId)", "note": "Crash site"}
   ```
+  EVIDENCE DISCIPLINE: a `rg`/`grep` hit only LOCATES a candidate — it is not evidence (a broad match can be an unrelated substring or a test fixture). Open the file with `file_view` and cite only lines you actually read; a submission whose citations point only at unopened files is rejected. If you cannot confirm the cause in code, do NOT guess — set `confidence_score:"Low"`, list what you couldn't verify in `caveats`, and say so in `answer`. Honest "insufficient evidence" beats a confident wrong root cause.
 
 ENCOURAGED:
 - `confidence_score` — High / Medium / Low.

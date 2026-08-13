@@ -1350,9 +1350,7 @@ func TestValidateToolInput_EmptyCommand(t *testing.T) {
 	// Empty command — simulates what the LLM sends when it hallucinates a blank input.
 	resp := validateToolInput(tool, toolcore.NBToolCallRequest{Command: ""})
 
-	if resp == nil {
-		t.Fatal("expected validation error, got nil")
-	}
+	require.NotNil(t, resp, "expected validation error, got nil")
 	t.Logf("Error returned to LLM: %q", resp.Data)
 	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
 	assert.Contains(t, resp.Data, "kubectl_execute")
@@ -1394,9 +1392,7 @@ func TestValidateToolInput_MissingArgField(t *testing.T) {
 	}
 
 	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
-	if resp == nil {
-		t.Fatal("expected validation error, got nil")
-	}
+	require.NotNil(t, resp, "expected validation error, got nil")
 	t.Logf("Error returned to LLM: %q", resp.Data)
 	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
 	assert.Contains(t, resp.Data, "metrics_series_match")
@@ -1652,4 +1648,37 @@ func TestPlannerToolNoData_IsInformative(t *testing.T) {
 		"sentinel must signal success to the LLM")
 	assert.Contains(t, strings.ToLower(plannerToolNoData), "write",
 		"sentinel must explain the write/mutation case")
+}
+
+// TestDelegationSkillScope pins the skill-scope propagation helper: a sub-agent
+// inherits its delegating parent's chain plus the parent's own name, without the
+// parent's slice being mutated. Empty parent name is a no-op (see callNbTool).
+func TestDelegationSkillScope(t *testing.T) {
+	t.Run("appends parent name to inherited chain", func(t *testing.T) {
+		got := delegationSkillScope([]string{"prometheus"}, "k8s_orchestrator")
+		assert.Equal(t, []string{"prometheus", "k8s_orchestrator"}, got)
+	})
+
+	t.Run("empty parent name is a no-op", func(t *testing.T) {
+		in := []string{"metrics"}
+		assert.Equal(t, in, delegationSkillScope(in, ""))
+	})
+
+	t.Run("nil inherited yields just the parent name", func(t *testing.T) {
+		assert.Equal(t, []string{"k8s_orchestrator"}, delegationSkillScope(nil, "k8s_orchestrator"))
+	})
+
+	t.Run("does not mutate the parent's slice (append path)", func(t *testing.T) {
+		parent := make([]string, 1, 4) // spare capacity → naive append would clobber
+		parent[0] = "metrics"
+		_ = delegationSkillScope(parent, "k8s_orchestrator")
+		assert.Equal(t, []string{"metrics"}, parent, "parent slice must be untouched")
+	})
+
+	t.Run("returns a copy on empty parent name (no aliasing)", func(t *testing.T) {
+		parent := []string{"metrics"}
+		got := delegationSkillScope(parent, "")
+		got[0] = "mutated"
+		assert.Equal(t, []string{"metrics"}, parent, "parent slice must be untouched even on the no-op path")
+	})
 }

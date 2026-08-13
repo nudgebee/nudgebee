@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS ECS -> Summary", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabECS).toBeVisible();
-  await locators.AnchorTabECS.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.ECSSummary.click();
+      await locators.navigateToSubTab(locators.AnchorTabECS, locators.ECSSummary, locators.ECSSummaryUrl);
       await page.waitForLoadState("networkidle");
     },
     {

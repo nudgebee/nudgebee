@@ -131,6 +131,57 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.
 	)
 }
 
+// promptVariantForRequest returns promptVariantLean for a top-level plain-retrieval
+// turn when the query-lean prompt is enabled, else "" (full/default prompt).
+// Classification uses OriginalQuery (the user's verbatim top-level question,
+// falling back to Query) so a delegated sub-agent brief never drives the shape;
+// sub-agents always resolve to "" and keep the full prompt and their cache slots.
+func promptVariantForRequest(request NBAgentRequest) string {
+	if !config.Config.LlmServerReact3QueryLeanPromptEnabled {
+		return ""
+	}
+	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
+	if !isTopLevel {
+		return ""
+	}
+	query := request.OriginalQuery
+	if query == "" {
+		query = request.Query
+	}
+	if query == "" {
+		// Degenerate/malformed request — fall back to the full prompt rather than
+		// stripping the investigation machinery on an unknown query.
+		return ""
+	}
+	if IsInvestigationRequestTask(query) || request.ConversationSource == ConversationSourceInvestigation {
+		return ""
+	}
+	return promptVariantLean
+}
+
+// applyPromptVariant stamps ContextKeyPromptVariant with the turn's prompt shape.
+// It ALWAYS (re)stamps — mirroring applyAgentModelTier — so a sub-agent invoked
+// with the parent's context does not INHERIT the parent's "lean" variant: a
+// top-level plain-retrieval turn resolves to promptVariantLean, and everything
+// else (sub-agents, investigations, feature disabled) resolves to "" (full),
+// which keeps the prompt and cache key byte-identical to the pre-change behavior.
+func applyPromptVariant(ctx *security.RequestContext, request NBAgentRequest) *security.RequestContext {
+	if ctx == nil {
+		return nil
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return security.NewRequestContext(
+		context.WithValue(goCtx, ContextKeyPromptVariant, promptVariantForRequest(request)),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+}
+
 func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) (NBAgentResponse, error) {
 	// --- Metrics: record start time
 	start := time.Now()
@@ -178,16 +229,26 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}, errors.New("conversation terminated")
 	}
 
-	// remove leading @agent mention from the actual query as its causing
-	// confusions to agent. Use the shared helper so cleaning is consistent
-	// with title generation (see common.StripLeadingAgentMention).
-	request.Query = common.StripLeadingAgentMention(request.Query)
+	// Remove the routed-to @agent mention from the query. By default only the FIRST
+	// mention is dropped so a "@a @b q" run keeps "@b q" for the agent; set
+	// DropExtraAgentMentions to strip every leading mention ("q").
+	if config.Config.DropExtraAgentMentions {
+		request.Query = common.StripLeadingAgentMention(request.Query)
+	} else {
+		request.Query = common.StripFirstAgentMention(request.Query)
+	}
 
 	// Stamp the agent's declared model category onto the context so every LLM
 	// call it makes resolves the category-specific model. Sub-operations may
 	// override per call. See applyAgentModelTier for why a category-less agent
 	// must RESET (not inherit) the tier.
 	ctx = applyAgentModelTier(ctx, agent)
+
+	// Stamp the prompt variant (lean vs full) for this turn so the prompt build
+	// (planner) and the cache key read one source of truth and never drift.
+	// No-op unless the query-lean prompt is enabled AND this is a top-level
+	// plain-retrieval turn — sub-agents and investigations keep the full prompt.
+	ctx = applyPromptVariant(ctx, request)
 
 	// get history and use it as context - PARALLELIZED
 	var messageHistoryFomatter []prompts.MessageFormatter
@@ -324,12 +385,19 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// read it via the lazy load_skills tool: the LLM picks which skills
 	// to actually fetch based on the question.
 	//
-	// skillAgentNames is the union of the agent's own name and any inherited
-	// ancestor names. Inherited names are set by custom-planner delegators
-	// (metrics → prometheus, logs → log_default, log_default → query_generator, ...)
-	// so a sub-agent's lazy <skill-lists> can also see KBs the user mapped to its
-	// custom-planner parent.
-	skillAgentNames := append([]string{agent.GetName()}, request.InheritSkillsFromAgents...)
+	// ownSkillNames is the agent's canonical name plus its back-compat aliases.
+	// KB mappings are keyed by the name in effect when the mapping was created, so a
+	// renamed agent (k8s_debug → k8s_orchestrator) must query its aliases too or it
+	// never sees runbooks users mapped under the old name. These are always retained.
+	//
+	// skillAgentNames additionally appends inherited ancestor names, set by
+	// custom-planner delegators (metrics → prometheus, logs → log_default,
+	// log_default → query_generator, ...) so a sub-agent's lazy <skill-lists> can
+	// also see KBs the user mapped to its custom-planner parent.
+	ownSkillNames := append([]string{agent.GetName()}, agent.GetNameAliases()...)
+	skillAgentNames := make([]string, 0, len(ownSkillNames)+len(request.InheritSkillsFromAgents))
+	skillAgentNames = append(skillAgentNames, ownSkillNames...)
+	skillAgentNames = append(skillAgentNames, request.InheritSkillsFromAgents...)
 
 	// Top-level invocation detection: OriginalQuery is empty until the executor
 	// stamps it here. Sub-agents reached via ExecuteAgentToolCall already carry
@@ -385,7 +453,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// agent with KB mappings (so load_skills still works); the eager RAG
 			// retrieval runs only for the top-level invocation — sub-agents keep
 			// the lazy menu + load_skills flow.
-			kbs := fetchAgentKBs(ctx, request.AccountId, skillAgentNames, selected)
+			kbs := fetchAgentKBs(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, selected)
 			if len(kbs) == 0 {
 				kbChan <- kbAssemblyResult{prompt: prompt}
 				return
@@ -402,7 +470,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			return
 		}
 		// Legacy path: skill-lists injected into the cacheable system prompt.
-		kbChan <- kbAssemblyResult{prompt: injectKBContext(ctx, request.AccountId, skillAgentNames, selected, prompt, userQuery)}
+		kbChan <- kbAssemblyResult{prompt: injectKBContext(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, selected, prompt, userQuery)}
 	}(basePrompt, request.SelectedSkillIds)
 
 	// When the Memory Module is enabled for this tenant, it is the sole memory
@@ -471,7 +539,18 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// same way it lists tool references.
 	var skillReferences []toolcore.NBToolResponseReference
 	if agent.GetPlannerType() == AgentPlannerTypeCustom {
-		skillsContext, refs, sErr := toolcore.LoadActiveAgentSkillContents(ctx, request.AccountId, skillAgentNames, request.SelectedSkillIds)
+		// Eager-load inherited skills only when a selection exists to narrow them.
+		// Without a selection (e.g. an account-scoped orchestrator propagating its
+		// skills down — SelectedSkillIds is nil there to keep its prompt cache stable)
+		// LoadActiveAgentSkillContents would force EVERY inherited runbook body into
+		// this mechanical sub-agent (a metrics/logs agent loading unrelated runbooks).
+		// Own skills are always loaded; inherited ones stay lazily available to ReAct
+		// sub-agents via their <skill-lists> menu rather than being force-fed here.
+		eagerSkillNames := ownSkillNames
+		if len(request.SelectedSkillIds) > 0 {
+			eagerSkillNames = skillAgentNames
+		}
+		skillsContext, refs, sErr := toolcore.LoadActiveAgentSkillContents(ctx, request.AccountId, eagerSkillNames, request.SelectedSkillIds)
 		if sErr != nil {
 			ctx.GetLogger().Warn("agentexecutor: failed to load active agent skill contents", "error", sErr, "agent", agent.GetName())
 		} else if skillsContext != "" {
@@ -1234,22 +1313,22 @@ func limitStringLength(s string, maxLength int) string {
 }
 
 // injectKBContext checks if agent has KB mappings and injects a `<skill-lists>` block
-// into the system prompt. agentNames must contain the agent's own name first followed
-// by any inherited ancestor names so a delegated sub-agent can also see KBs the user
-// mapped to its custom-planner parent.
+// into the system prompt. ownNames are the agent's own name and back-compat aliases;
+// inheritedNames are ancestor names a delegated sub-agent inherits so it can also see
+// KBs the user mapped to its custom-planner parent.
 //
 // selectedIds is the question-aware selection produced once at top-level entry. When
 // non-nil it filters KBs inherited from ancestor agents to only those IDs; KBs mapped
-// directly to the sub-agent's own name (agentNames[0]) are ALWAYS retained — they are
-// scoped to that agent's specific job and shouldn't be hidden by an upstream filter.
-func injectKBContext(ctx *security.RequestContext, accountId string, agentNames []string, selectedIds []string, prompt NBAgentPrompt, userQuery string) NBAgentPrompt {
-	if accountId == "" || len(agentNames) == 0 {
+// directly to one of the agent's own names are ALWAYS retained — they are scoped to
+// that agent's specific job and shouldn't be hidden by an upstream filter.
+func injectKBContext(ctx *security.RequestContext, accountId string, ownNames []string, inheritedNames []string, selectedIds []string, prompt NBAgentPrompt, userQuery string) NBAgentPrompt {
+	if accountId == "" || len(ownNames) == 0 {
 		return prompt
 	}
 
-	kbs := fetchAgentKBs(ctx, accountId, agentNames, selectedIds)
+	kbs := fetchAgentKBs(ctx, accountId, ownNames, inheritedNames, selectedIds)
 	// Use the primary (first) name for downstream logging.
-	agentName := agentNames[0]
+	agentName := ownNames[0]
 
 	if len(kbs) == 0 {
 		// No KB mappings for this agent

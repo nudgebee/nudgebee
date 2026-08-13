@@ -27,34 +27,6 @@ type AccountDetails struct {
 	K8sProvider string `db:"k8s_provider" json:"k8s_provider"`
 }
 
-type ClusterHealthCheck struct {
-	ID               string                 `json:"id"`
-	TenantID         string                 `json:"tenant_id"`
-	AccountID        string                 `json:"account_id"`
-	CheckType        ClusterHealthCheckType `json:"check_type"`
-	CheckName        string                 `json:"check_name"`
-	Status           HealthCheckStatus      `json:"status"`
-	Summary          string                 `json:"summary"`
-	Details          map[string]interface{} `json:"details"`
-	Recommendations  []string               `json:"recommendations,omitempty"`
-	CreatedAt        time.Time              `json:"created_at"`
-	CompletedAt      *time.Time             `json:"completed_at,omitempty"`
-	EstimatedSavings *float64               `json:"estimated_savings,omitempty"`
-}
-
-type ClusterHealthSummary struct {
-	TenantID      string                 `json:"tenant_id"`
-	AccountID     string                 `json:"account_id"`
-	CheckType     ClusterHealthCheckType `json:"check_type"`
-	OverallScore  int                    `json:"overall_score"` // 0-100 scale
-	TotalChecks   int                    `json:"total_checks"`
-	HealthyCount  int                    `json:"healthy_count"`
-	WarningCount  int                    `json:"warning_count"`
-	CriticalCount int                    `json:"critical_count"`
-	Checks        []ClusterHealthCheck   `json:"checks"`
-	CreatedAt     time.Time              `json:"created_at"`
-}
-
 type NodeHealthCheck struct {
 	NodeName         string            `json:"node_name"`
 	Ready            bool              `json:"ready"`
@@ -140,23 +112,6 @@ type PreFlightCheckRequest struct {
 type PostFlightCheckRequest struct {
 	AccountID string `json:"account_id" validate:"required"`
 	PlanID    string `json:"plan_id" validate:"required"`
-}
-
-type RecommendationRecord struct {
-	ID                   string    `db:"id"`
-	TenantID             string    `db:"tenant_id"`
-	CloudAccountID       string    `db:"cloud_account_id"`
-	AccountObjectID      *string   `db:"account_object_id"`
-	Category             string    `db:"category"`
-	RuleName             string    `db:"rule_name"`
-	Recommendation       string    `db:"recommendation"`
-	RecommendationAction string    `db:"recommendation_action"`
-	Status               string    `db:"status"`
-	Severity             string    `db:"severity"`
-	EstimatedSavings     *float64  `db:"estimated_savings"`
-	Note                 *string   `db:"note"`
-	CreatedAt            time.Time `db:"created_at"`
-	UpdatedAt            time.Time `db:"updated_at"`
 }
 
 type UpgradePlanTemplate struct {

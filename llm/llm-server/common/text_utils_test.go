@@ -67,12 +67,90 @@ func TestStripLeadingAgentMention(t *testing.T) {
 		{name: "Mention only with trailing space", input: "@aws_debug   ", expected: ""},
 		{name: "At-symbol mid-query is preserved", input: "email user@example.com", expected: "email user@example.com"},
 		{name: "Multiple spaces after mention collapse via trim", input: "@k8s_debug    investigate", expected: "investigate"},
+		{name: "Comma after mention is not part of the name", input: "@k8s_debug, investigate", expected: "investigate"},
+		{name: "Repeated mentions are all removed", input: "@a @b @c investigate", expected: "investigate"},
+		{name: "Repeated mentions without spaces are all removed", input: "@a@b@c investigate", expected: "investigate"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := StripLeadingAgentMention(tt.input)
 			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestStripFirstAgentMention(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "Empty string", input: "", expected: ""},
+		{name: "No mention", input: "check my pods", expected: "check my pods"},
+		{name: "Single mention dropped", input: "@aws_debug check my EC2 instances", expected: "check my EC2 instances"},
+		{name: "Single mention only", input: "@aws_debug", expected: ""},
+		{name: "Comma after mention is not part of the name", input: "@finops, which pvcs", expected: "which pvcs"},
+		{name: "Extra mentions are kept", input: "@a @b @c check my pods", expected: "@b @c check my pods"},
+		{name: "Extra mention kept without space", input: "@a@b query", expected: "@b query"},
+		{name: "At-symbol mid-query is preserved", input: "email user@example.com", expected: "email user@example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripFirstAgentMention(tt.input)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestParseAgentMention(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantAgent string
+		wantRest  string
+	}{
+		// Punctuation after the name must not become part of the name, otherwise
+		// the agent lookup misses and the router falls through to HelpAgent.
+		{name: "Comma after name", input: "@k8s_orchestrator, check my pods", wantAgent: "k8s_orchestrator", wantRest: "check my pods"},
+		{name: "Colon after name", input: "@a: check", wantAgent: "a", wantRest: "check"},
+		{name: "Period after name", input: "@a. check", wantAgent: "a", wantRest: "check"},
+		{name: "Semicolon after name", input: "@a; check", wantAgent: "a", wantRest: "check"},
+		{name: "Exclamation after name", input: "@a! check", wantAgent: "a", wantRest: "check"},
+		{name: "Question mark after name", input: "@a? check", wantAgent: "a", wantRest: "check"},
+
+		// Repeated mentions: the first wins, the rest are dropped from the query
+		// so they don't leak into the agent prompt or the conversation title.
+		{name: "Repeated mentions pick the first", input: "@a @b @c check my pods", wantAgent: "a", wantRest: "check my pods"},
+		{name: "Repeated mentions without spaces", input: "@a@b@c check my pods", wantAgent: "a", wantRest: "check my pods"},
+		{name: "Repeated mentions with separators", input: "@a , @b , check", wantAgent: "a", wantRest: "check"},
+		{name: "Repeated mentions only", input: "@a @b", wantAgent: "a", wantRest: ""},
+
+		// Text that must survive: the separator class excludes "-" and "/".
+		{name: "Double-dash flag preserved", input: "@a --verbose check", wantAgent: "a", wantRest: "--verbose check"},
+		{name: "Single-dash flag preserved", input: "@a -n kube-system", wantAgent: "a", wantRest: "-n kube-system"},
+		{name: "Slash command preserved", input: "@a /call foo", wantAgent: "a", wantRest: "/call foo"},
+		{name: "Email in body preserved", input: "@a check user@example.com", wantAgent: "a", wantRest: "check user@example.com"},
+
+		// No leading mention.
+		{name: "Empty string", input: "", wantAgent: "", wantRest: ""},
+		{name: "Whitespace only", input: "   ", wantAgent: "", wantRest: ""},
+		{name: "No mention", input: "check my pods", wantAgent: "", wantRest: "check my pods"},
+		{name: "Email is not a mention", input: "email user@example.com", wantAgent: "", wantRest: "email user@example.com"},
+
+		// Mention-only queries yield an empty rest, which callers use to return a
+		// clarification prompt instead of invoking the agent with no instruction.
+		{name: "Mention only", input: "@aws_debug", wantAgent: "aws_debug", wantRest: ""},
+		{name: "Mention only with trailing comma", input: "@aws_debug,", wantAgent: "aws_debug", wantRest: ""},
+		{name: "Mention with leading whitespace", input: "  @k8s_debug why is my pod failing", wantAgent: "k8s_debug", wantRest: "why is my pod failing"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotAgent, gotRest := ParseAgentMention(tt.input)
+			assert.Equal(t, tt.wantAgent, gotAgent, "agent")
+			assert.Equal(t, tt.wantRest, gotRest, "rest")
 		})
 	}
 }

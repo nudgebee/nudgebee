@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS RDS -> Summary", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabRDS).toBeVisible();
-  await locators.AnchorTabRDS.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.RDSSummary.click();
+      await locators.navigateToSubTab(locators.AnchorTabRDS, locators.RDSSummary, locators.RDSSummaryUrl);
       await page.waitForLoadState("networkidle");
     },
     {

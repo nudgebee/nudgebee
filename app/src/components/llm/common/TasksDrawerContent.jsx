@@ -40,6 +40,7 @@ const TaskRow = ({ task, accountId, conversationId, isLast, isActive, onOpenTool
       selectedModel={itemProps?.selectedModel}
       conversationStatus={itemProps?.conversationStatus}
       onOpenToolDetails={() => onOpenToolDetails(task)}
+      indentDepth={task.nestingDepth || 0}
     />
   </Box>
 );

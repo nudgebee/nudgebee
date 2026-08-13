@@ -124,6 +124,54 @@ func isRawWorkflowJSON(content string) bool {
 	return hasName && hasDef
 }
 
+// workflowSnapshot returns a deterministic marshal of the working workflow for
+// change detection ("" when uninitialized). It coerces types first — the same
+// idempotent normalization validate/dry_run/finalize apply to the shared state —
+// so a read-only turn whose tools merely coerced the loaded definition compares
+// equal to the pre-loop snapshot instead of registering as a change.
+func (a *WorkflowBuilderAgent) workflowSnapshot() string {
+	if a.state.WorkingWorkflow == nil {
+		return ""
+	}
+	coerceWorkflowTypes(a.state.WorkingWorkflow)
+	b, err := json.Marshal(a.state.WorkingWorkflow)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// resolveToolLoopOutcome decides what an agentic tool loop actually produced.
+// The loop's <final_answer> is only an LLM echo — the source of truth for the
+// definition is a.state.WorkingWorkflow. Returns exactly one of:
+//   - workflowJSON to persist: the echo when it is valid workflow JSON
+//     (unchanged behavior), else the deterministic state marshal when the loop
+//     FINALIZED a mutated definition (protects a legitimate edit from a
+//     truncated or malformed echo);
+//   - prose to surface to the user otherwise — a question answered, a dry-run
+//     report, a "no change needed" reply, or an abort explanation. The edit
+//     prompt explicitly allows this outcome, so it must never be force-parsed
+//     as JSON and turned into "Cannot save automation: parse workflow JSON".
+//
+// The state-marshal branch is gated on loopFinalized: a loop that mutated the
+// working state but bailed out with a prose error (e.g. validation kept
+// failing) must NOT silently persist the half-applied definition — finalize is
+// the loop's declared commit point, and without it the prose (the model's own
+// failure explanation) is the answer.
+//
+// beforeSnapshot is the workflowSnapshot() taken before the loop ran.
+func (a *WorkflowBuilderAgent) resolveToolLoopOutcome(answer, beforeSnapshot string) (workflowJSON string, prose string) {
+	if isRawWorkflowJSON(answer) {
+		return answer, ""
+	}
+	if a.loopFinalized {
+		if after := a.workflowSnapshot(); after != "" && after != beforeSnapshot {
+			return a.toolFinalize(), ""
+		}
+	}
+	return "", answer
+}
+
 // parseAgentId safely parses an agent ID string into a uuid.UUID, returning
 // uuid.Nil on empty or invalid input instead of panicking.
 func parseAgentId(agentId string) uuid.UUID {
@@ -194,6 +242,12 @@ type WorkflowBuilderAgent struct {
 	// of asking which account/cluster to target (#30162).
 	currentCluster   string
 	currentClusterId string
+
+	// loopFinalized records whether the current agentic tool loop called the finalize tool —
+	// the loop's commit point. resolveToolLoopOutcome only persists mutated working state when
+	// this is set, so an aborted edit (mutated then bailed with a prose error) is never saved.
+	// Transient per-loop: reset at the top of runToolLoop, not persisted in state.
+	loopFinalized bool
 
 	// changeSummary is the agent-authored explanation of WHAT it changed and WHY, captured from the
 	// finalize tool call and surfaced in the build/edit summary so the user sees the reasoning/approach
@@ -588,10 +642,10 @@ AVAILABLE TOOLS (use ONLY these; never init_workflow / add_task / modify_task / 
 - get_task — inspect a specific task
 - list_executions — list recent runs (use status="FAILED" for failure questions)
 - get_execution — read a run's task-level errors and outputs
-- dry_run — execute the automation against the engine WITHOUT persisting external side effects, returning per-task status and errors. This is how you verify it works or reproduce a failure.
+- dry_run — execute the automation via the engine's dry-run, returning per-task status and errors. It never modifies the saved definition, but CAUTION: most task types execute for REAL (notifications send, mutating CLI commands apply, scripts run).
 
 INSTRUCTIONS:
-- Dry-run / test requests ("dry run this", "test it", "does this work", "run it safely"): call dry_run, then report the overall result and, for any failing task, its id + error. Do NOT claim the automation "has no dry-run mode" — the engine dry-runs it for you. Dry-run does not modify the saved automation.
+- Dry-run / test requests ("dry run this", "test it", "does this work", "run it safely"): if the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run, then report the overall result and, for any failing task, its id + error. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — explain that a dry-run executes those effects for real and ask the user to confirm. Do NOT claim the automation "has no dry-run mode". Dry-run never modifies the saved automation definition.
 - Failure questions ("why did it fail", "what is this error"): gather evidence first — list_executions(status="FAILED"), then get_execution on the most recent failed run; or dry_run to reproduce. Quote the actual error, name the failing task, and explain the cause. Do NOT propose or apply a fix unless the user explicitly asks to fix it.
 - Explain/summarize questions: describe the trigger, tasks, and flow from the definition above.
 - Capability/greeting questions: briefly say you can build, modify, explain, diagnose, and dry-run automations.
@@ -1283,6 +1337,7 @@ AUTOMATION SCHEMA REFERENCE:
 FIRST, DECIDE THE INTENT:
 - DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT or TARGET EXECUTION ID above.
 - CHANGE signals: "add", "also", "include", "remove", "rename", "change", "update", "instead", "as well", a new capability.
+- VERIFY signals: the user asks to run, test, try, or dry-run the automation without changing it. If the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run and report the overall result and any failing task's id + error in your <final_answer>. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — answer that a dry-run executes those effects for real and ask the user to confirm. Either way make NO modifications, and do NOT claim the automation "has no dry-run mode".
 - If the request is purely a question with no change asked, briefly answer in <final_answer> and make no modifications.
 
 IF DEBUGGING (gather evidence FIRST, then fix):
@@ -1332,9 +1387,18 @@ func (a *WorkflowBuilderAgent) buildAndValidate(ctx *security.RequestContext, re
 	schema := getWorkflowSchema()
 	systemPrompt := getBuildSystemPrompt(intent, plan, schema)
 
-	workflowJSON, err := a.runToolLoop(ctx, request, systemPrompt, fmt.Sprintf("Build the automation now based on the plan. Original request: %s", request.Query))
+	before := a.workflowSnapshot()
+	answer, err := a.runToolLoop(ctx, request, systemPrompt, fmt.Sprintf("Build the automation now based on the plan. Original request: %s", request.Query))
 	if err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("agentic build failed: %w", err)
+	}
+
+	// Persist what the loop built (from state when the echo is not valid workflow JSON);
+	// if the loop built nothing and answered in prose, surface that answer instead of
+	// failing on a JSON parse.
+	workflowJSON, prose := a.resolveToolLoopOutcome(answer, before)
+	if prose != "" {
+		return core.NBAgentResponse{Response: []string{prose}, IsTerminal: true}, nil
 	}
 
 	return a.checkMissingConfigs(ctx, request, workflowJSON)
@@ -2652,6 +2716,11 @@ func getWorkflowToolDescriptions() string {
 			Params:      `{}`,
 		},
 		{
+			Name:        "dry_run",
+			Description: "Execute the current automation via the engine's dry-run; returns per-task status and errors. ONLY call this when the user explicitly asked to run/test/dry-run the automation — never on your own initiative. CAUTION: most task types execute for REAL during dry-run (notifications send, mutating CLI commands apply, scripts run); if the automation contains such side-effect tasks, do NOT call this — instead explain that a dry-run will execute those effects for real and ask the user to confirm first. It never modifies the saved definition.",
+			Params:      `{}`,
+		},
+		{
 			Name:        "finalize",
 			Description: "Finalize and return the complete automation JSON. Call this only after validate returns OK. ALWAYS pass change_summary: 1-3 plain-language sentences explaining WHAT you changed/built and WHY (the approach and reasoning), so the user understands the change instead of only seeing that it happened.",
 			Params:      `{"change_summary": "Added a dedup guard so a repeat event with the same fingerprint, subject name, and namespace reuses the existing incident channel instead of creating a new one."}`,
@@ -3707,6 +3776,9 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 		if cs, ok := args["change_summary"].(string); ok {
 			a.changeSummary = strings.TrimSpace(cs)
 		}
+		// finalize is the loop's commit point: only a finalized loop may persist
+		// mutated working state (see resolveToolLoopOutcome).
+		a.loopFinalized = true
 		return a.toolFinalize()
 	case "list_executions":
 		return a.toolListExecutions(ctx, args)
@@ -3741,7 +3813,7 @@ func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext
 	if err := dao.SaveConversationToolCall(
 		request.ConversationId, request.AccountId, request.UserId, request.MessageId, request.AgentId,
 		uuid.New().String(), toolName, toolInput, thought, "", observation,
-		status, toolcore.NBToolTypeTool, nil, nil, nil,
+		status, toolcore.NBToolTypeTool, nil, nil, nil, nil,
 	); err != nil {
 		ctx.GetLogger().Warn("workflow_builder: failed to persist build tool call", "tool", toolName, "error", err)
 	}
@@ -3750,6 +3822,9 @@ func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext
 // runToolLoop runs an agentic tool-calling loop where the LLM reasons step-by-step
 // and calls workflow manipulation tools. This follows the same XML format as the ReAct planner.
 func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
+	// Fresh commit marker for this loop — set only by a finalize tool call.
+	a.loopFinalized = false
+
 	// Fetch task types once for all get_task_schema calls and schema-driven validation
 	tasksResp, _ := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
 	cachedTaskTypes := string(tasksResp)
@@ -3772,9 +3847,9 @@ When you need to use a tool, respond with:
 </action>
 </thought_action>
 
-When you have the final workflow JSON ready, respond with:
+When you are done, respond with:
 <final_answer>
-<content>The complete workflow JSON here</content>
+<content>The complete workflow JSON here (after building or changing the automation) — or your prose answer when the request needed no change (a question, a dry-run report, etc.)</content>
 </final_answer>
 
 RULES:
@@ -4015,9 +4090,18 @@ func (a *WorkflowBuilderAgent) runEditToolLoop(ctx *security.RequestContext, req
 		userMessage += "\n" + cc
 	}
 
-	workflowJSON, err := a.runToolLoop(ctx, request, systemPrompt, userMessage)
+	before := a.workflowSnapshot()
+	answer, err := a.runToolLoop(ctx, request, systemPrompt, userMessage)
 	if err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("agentic edit failed: %w", err)
+	}
+
+	// The loop legitimately ends two ways (the edit prompt allows a prose answer when no change
+	// is asked — e.g. a question or a dry-run request): persist the definition when it changed,
+	// otherwise return the prose. Never force-parse prose as workflow JSON.
+	workflowJSON, prose := a.resolveToolLoopOutcome(answer, before)
+	if prose != "" {
+		return core.NBAgentResponse{Response: []string{prose}, IsTerminal: true}, nil
 	}
 
 	// Same missing-config detection + cloud-account-id resolution + auto-save as the build path.

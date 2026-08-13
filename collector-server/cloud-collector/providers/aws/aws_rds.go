@@ -732,17 +732,22 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 		svc := rds.NewFromConfig(regionalCfg)
 		reservedInstances, err := svc.DescribeReservedDBInstances(context.TODO(), &rds.DescribeReservedDBInstancesInput{})
 		if err != nil {
-			ctx.GetLogger().Error("failed to fetch rds reserved instances", "error", err, "accountNumber", account.AccountNumber)
+			ctx.GetLogger().Error("failed to fetch rds reserved instances", "error", err, "accountNumber", account.AccountNumber, "region", region)
+			continue
 		}
 
 		// Unused RDS Reserved Instances
 		count := 0
 		reservedInsatanceTypes := []string{}
 		for _, reservedInstance := range reservedInstances.ReservedDBInstances {
-			if *reservedInstance.State == "active" {
-				count = int(*reservedInstance.DBInstanceCount)
+			if reservedInstance.State != nil && *reservedInstance.State == "active" {
+				if reservedInstance.DBInstanceCount != nil {
+					count += int(*reservedInstance.DBInstanceCount)
+				}
+				if reservedInstance.DBInstanceClass != nil {
+					reservedInsatanceTypes = append(reservedInsatanceTypes, *reservedInstance.DBInstanceClass)
+				}
 			}
-			reservedInsatanceTypes = append(reservedInsatanceTypes, *reservedInstance.DBInstanceClass)
 		}
 
 		regionReservedInstances[region] = reservedInsatanceTypes

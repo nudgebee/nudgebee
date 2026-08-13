@@ -1,6 +1,7 @@
 import collections
 import logging
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from typing import List
 
 from notifications_server.configs.settings import (
@@ -13,26 +14,34 @@ from notifications_server.configs.settings import (
 from notifications_server.message_templates.base import BaseBlock
 from notifications_server.message_templates.blocks import (
     MarkdownBlock,
-    CallbackBlock,
     CallbackChoice,
-    DividerBlock,
     FileBlock,
-    ActionListBlock,
-    LinksBlock,
-    LinkProp,
-    ActionElement,
-    ListBlock,
+)
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_CRITICAL,
+    STRIPE_HIGH,
+    STRIPE_SAVINGS,
 )
 from notifications_server.services.actions import AskAIParams
 from notifications_server.services.events import Events
-from notifications_server.utils.transformer import Transformer
+from notifications_server.utils.action_requests import (
+    ActionRequestBody,
+    ExternalActionRequest,
+    sign_action_request,
+)
+from notifications_server.utils.callbacks import ExternalActionRequestBuilder
+from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET, Transformer
 
 LOG = logging.getLogger(__name__)
 
+# callback_id routed by SlackInteractiveActionsService for legacy attachment
+# buttons (Slack sends interactive_message payloads for these, not
+# block_actions; the value contract is identical).
+FINDING_CALLBACK_ID = "nb_finding_actions"
 
-def add_callback(title, action, action_params):
-    callback = CallbackBlock({title: CallbackChoice(action=action, action_params=action_params)})
-    return callback
+SILENCE_ACTION_NAME = "silence_finding"
+SILENCE_THIS_DURATIONS = (("1h", 1), ("4h", 4), ("24h", 24), ("7d", 168))
+SILENCE_ALL_DURATIONS = (("4h", 4), ("24h", 24), ("7d", 168))
 
 
 def add_evidences(blocks, finding, is_cloud):
@@ -140,46 +149,87 @@ def _separate_blocks(blocks: List[BaseBlock]) -> tuple:
     return file_blocks, other_blocks
 
 
-def _create_evidence_attachment(evidence_slack_blocks: List) -> dict:
-    """Create an attachment dict for evidence blocks."""
+def _blocks_to_mrkdwn(slack_blocks: List[dict]) -> str:
+    """Flatten converted evidence blocks into one mrkdwn string. Slack stamps
+    an "Added by {app}" byline under any attachment carrying Block Kit
+    ``blocks``, so evidences ride a legacy text attachment instead. Evidence
+    content only ever converts to section/context/header/divider blocks
+    (Transformer.to_slack drops everything else)."""
+    parts: List[str] = []
+    for block in slack_blocks:
+        block_type = block.get("type")
+        if block_type == "section" and isinstance(block.get("text"), dict):
+            parts.append(block["text"].get("text", ""))
+        elif block_type == "context":
+            parts.extend(el.get("text", "") for el in block.get("elements", []) if isinstance(el, dict))
+        elif block_type == "header":
+            parts.append(f"*{block.get('text', {}).get('text', '')}*")
+    return "\n".join(p for p in parts if p)
+
+
+def _signed_silence_value(action_params):
+    body = ActionRequestBody(
+        timestamp=int(time.time()),
+        action_name=SILENCE_ACTION_NAME,
+        action_params=action_params,
+        origin="callback",
+    )
+    return ExternalActionRequest(body=body, signature=sign_action_request(body, SLACK_SIGNIN_SECRET)).model_dump_json()
+
+
+def _silence_select_action(finding, tenant_id):
+    """Legacy attachment menu offering time-boxed silences. Scope "fingerprint"
+    mutes repeat firings of this exact alert; "alertname" mutes every alert
+    sharing the aggregation key on the account. Each option value is a signed
+    callback payload (same contract as the card buttons)."""
+    fingerprint = str(finding.get("fingerprint") or "").strip()
+    alertname = str(finding.get("aggregation_key") or "").strip()
+    account_id = finding.get("cloud_account_id")
+    if not account_id:
+        return None
+
+    def _options(scope, durations):
+        options = []
+        for label, hours in durations:
+            value = _signed_silence_value(
+                {
+                    "action_name": SILENCE_ACTION_NAME,
+                    "event_id": finding.get("id"),
+                    "fingerprint": fingerprint,
+                    "alertname": alertname,
+                    "account_id": account_id,
+                    "tenant_id": tenant_id,
+                    "scope": scope,
+                    "duration_hours": hours,
+                }
+            )
+            options.append({"text": f"Silence {label}", "value": value})
+        return options
+
+    option_groups = []
+    if fingerprint:
+        option_groups.append({"text": "This alert only", "options": _options("fingerprint", SILENCE_THIS_DURATIONS)})
+    if alertname:
+        shown = alertname if len(alertname) <= 30 else alertname[:27] + "…"
+        option_groups.append({"text": f'All "{shown}" alerts', "options": _options("alertname", SILENCE_ALL_DURATIONS)})
+    if not option_groups:
+        return None
+
     return {
-        "color": "#ff6b6b",
-        "blocks": evidence_slack_blocks,
-        "fallback": "Evidence details",
+        "type": "select",
+        "name": SILENCE_ACTION_NAME,
+        "text": "🔕 Silence…",
+        "option_groups": option_groups,
     }
 
 
-def _to_blocks(slack_app, report_blocks: List[BaseBlock], evidence_blocks: List[BaseBlock], title: str, installation):
-    # Separate main blocks into file and other blocks
-    file_blocks, other_blocks = _separate_blocks(report_blocks)
-
-    # Convert wide tables to file blocks
-    file_blocks.extend(Transformer.tableblock_to_fileblocks(other_blocks, SLACK_TABLE_COLUMNS_LIMIT))
-
-    message = Transformer.prepare_slack_text(slack_app, installation, title, max_file_size_kb=100, files=file_blocks)
-
-    # Convert main blocks to slack format
-    output_blocks = [block for b in other_blocks for block in Transformer.to_slack(b)]
-
-    # Process evidence blocks into attachment
-    attachments = []
-    if evidence_blocks:
-        evidence_file_blocks, evidence_other_blocks = _separate_blocks(evidence_blocks)
-        evidence_slack_blocks = [block for b in evidence_other_blocks for block in Transformer.to_slack(b)]
-
-        if evidence_slack_blocks:
-            attachments.append(_create_evidence_attachment(evidence_slack_blocks))
-
-        file_blocks.extend(evidence_file_blocks)
-
-    LOG.debug(
-        f"--sending to slack--\ntitle:{title}\nblocks: {output_blocks}\nattachments:"
-        f" {attachments}\nmessage:{message}"
-    )
-    return message, output_blocks, attachments
-
-
 def get_slack_finding_message(slack_app, installation, finding):
+    """Hybrid finding card: ONE severity-striped legacy attachment — clickable
+    title (title_link), evidence sentences, compact two-column fields, and all
+    actions inside the card. The top-level message text and blocks stay EMPTY:
+    with no blocks, any text renders as a duplicate heading, and
+    blocks-in-attachments or footer/ts fields make Slack stamp the
+    "Added by {app}" byline."""
     title = finding.get("title")
     finding_id = finding.get("id")
     service_key = finding.get("service_key", "")
@@ -207,44 +257,50 @@ def get_slack_finding_message(slack_app, installation, finding):
     subject_name = finding.get("subject_name")
     subject_namespace = finding.get("subject_namespace") or "default"
     cloud_account_id = finding.get("cloud_account_id")
+    priority = str(finding.get("priority") or "").strip()
 
-    blocks: List[BaseBlock] = [MarkdownBlock(text=f"{title}")]
-
-    meta = [
-        (
-            f"*Reported At:* <!date^{int(created_at)}^{{date_short_pretty}} {{time}}|April 14th, 2024 12:00 PM>"
-            if created_at
-            else ""
-        ),
-        f"*Account:* *{cluster}*" if cluster else "",
-        f"*Namespace:* {subject_namespace}",
-        f"*Workload: {subject_name}*",
-    ]
-
-    # Filter out empty strings in meta
-    blocks.extend([ListBlock(items=[item for item in meta if item]), DividerBlock()])
-
-    # Create separate list for evidence blocks
+    # Evidence content becomes the card body; wide tables upload as files and
+    # get linked from the card.
     evidence_blocks: List[BaseBlock] = []
     add_evidences(evidence_blocks, finding, is_cloud)
+    file_blocks, other_evidence = _separate_blocks(evidence_blocks)
+    evidence_slack_blocks = [block for b in other_evidence for block in Transformer.to_slack(b)]
 
-    tenant_id = str(installation.tenant_id)
-    # Added "Ask nubi" callback
-    ask_ai_callback = add_callback(
-        "Ask Nubi to Analyse!",
-        Events.query_llm_server,
-        AskAIParams(
-            channel_id="",
-            team_id="",
-            message_ts="channel",
-            cluster_id=cloud_account_id,
-            namespace=subject_namespace,
-            event_id=finding_id,
-            action_name="ask_ai",
-            search_term=title,
-            tenant_id=tenant_id,
-        ),
-    )
+    lines = []
+    evidence_text = _blocks_to_mrkdwn(evidence_slack_blocks)
+    if evidence_text:
+        lines.append(evidence_text)
+
+    reported = ""
+    if created_at:
+        try:
+            ts = int(created_at)
+            fallback_time = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d %b %Y %I:%M %p UTC")
+            reported = f"reported <!date^{ts}^{{date_short_pretty}} {{time}}|{fallback_time}>"
+        except (TypeError, ValueError, OSError, OverflowError):
+            reported = ""
+
+    resource = f"{subject_namespace}/{subject_name}" if subject_name else subject_namespace
+    source = str(finding.get("source") or "").strip()
+    fields = [
+        {"title": title_, "value": value, "short": True}
+        for title_, value in (
+            ("Cluster", cluster),
+            ("Resource", resource),
+            ("Priority", priority.title() if priority else ""),
+            ("Source", source.replace("_", " ").title() if source else ""),
+        )
+        if value
+    ]
+    if reported:
+        fields.append({"title": "", "value": reported, "short": False})
+
+    if file_blocks:
+        file_links = Transformer.prepare_slack_text(
+            slack_app, installation, "", max_file_size_kb=100, files=file_blocks
+        )
+        if file_links and file_links != "empty-message":
+            lines.append(file_links.strip())
 
     # Build investigate URL using centralized settings
     investigate_url = settings.urls.investigate_url(
@@ -253,23 +309,107 @@ def get_slack_finding_message(slack_app, installation, finding):
         utm_source=URLRoutes.UTMSource.SLACK,
     )
 
-    # Add action buttons
-    blocks.append(
-        ActionListBlock(
-            elements=[
-                ActionElement(
-                    element=LinksBlock(
-                        links=[
-                            LinkProp(
-                                text="View Details",
-                                url=investigate_url,
-                            )
-                        ]
-                    )
-                ),
-                ActionElement(element=ask_ai_callback),
-            ]
-        )
+    tenant_id = str(installation.tenant_id)
+    ask_nubi_value = ExternalActionRequestBuilder.create_for_func(
+        CallbackChoice(
+            action=Events.query_llm_server,
+            action_params=AskAIParams(
+                channel_id="",
+                team_id="",
+                message_ts="channel",
+                cluster_id=cloud_account_id,
+                namespace=subject_namespace,
+                event_id=finding_id,
+                action_name="ask_ai",
+                search_term=title,
+                tenant_id=tenant_id,
+            ),
+        ),
+        "Ask Nubi to Analyse!",
+        SLACK_SIGNIN_SECRET,
+    ).model_dump_json()
+
+    actions = [
+        {"type": "button", "text": "View Details", "url": investigate_url, "style": "primary"},
+        {"type": "button", "name": "ask_nubi", "text": "Ask Nubi to Analyse!", "value": ask_nubi_value},
+    ]
+    silence_action = _silence_select_action(finding, tenant_id)
+    if silence_action:
+        actions.append(silence_action)
+
+    attachment = {
+        "color": STRIPE_CRITICAL if priority.upper() == "HIGH" else STRIPE_HIGH,
+        "fallback": title,
+        "mrkdwn_in": ["text", "fields"],
+        "title": title,
+        "title_link": investigate_url,
+        "text": "\n".join(lines),
+        "fields": fields,
+        "callback_id": FINDING_CALLBACK_ID,
+        "actions": actions,
+    }
+
+    LOG.debug(f"--sending to slack--\ntitle:{title}\nattachment: {attachment}")
+    return "", [], [attachment]
+
+
+def _to_utc_datetime(value):
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            return None
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _humanize_duration(delta):
+    total_minutes = max(int(delta.total_seconds() // 60), 0)
+    days, remainder = divmod(total_minutes, 1440)
+    hours, minutes = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    return f"{minutes}m"
+
+
+def _slack_time(moment):
+    ts = int(moment.timestamp())
+    fallback = moment.astimezone(timezone.utc).strftime("%I:%M %p UTC")
+    return f"<!date^{ts}^{{time}}|{fallback}>"
+
+
+def get_slack_resolved_finding_reply(finding):
+    """Green closure reply threaded under the original alert message once the
+    finding clears. Same attachment-only shape as the firing card (top-level
+    text/blocks stay empty, no footer/ts — the byline constraints apply)."""
+    title = finding.get("title")
+    investigate_url = settings.urls.investigate_url(
+        account_id=finding.get("cloud_account_id"),
+        finding_id=finding.get("id"),
+        utm_source=URLRoutes.UTMSource.SLACK,
     )
 
-    return _to_blocks(slack_app, blocks, evidence_blocks, title, installation)
+    started = _to_utc_datetime(finding.get("starts_at"))
+    ended = _to_utc_datetime(finding.get("ends_at")) or datetime.now(timezone.utc)
+    if started and ended >= started:
+        line = (
+            f"Cleared after {_humanize_duration(ended - started)}"
+            f" (fired {_slack_time(started)} → resolved {_slack_time(ended)})."
+        )
+    else:
+        line = f"Cleared at {_slack_time(ended)}."
+
+    attachment = {
+        "color": STRIPE_SAVINGS,
+        "fallback": f"Resolved: {title}",
+        "mrkdwn_in": ["text"],
+        "title": f"Resolved: {title}",
+        "title_link": investigate_url,
+        "text": line,
+    }
+    return "", [], [attachment]

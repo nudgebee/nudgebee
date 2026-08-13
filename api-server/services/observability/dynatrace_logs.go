@@ -596,7 +596,10 @@ func (s *DynatraceLogGroupSource) buildLogGroupDQL(req FetchLogGroupRequest, fro
 	// Aggregate: one row per unique (message, namespace, workload, container) combination.
 	// Using k8s.workload.name (not pod name) ensures all replicas of a workload are merged
 	// natively by DQL without any post-processing deduplication.
-	sb.WriteString("\n| summarize value = count(), by: {content, `k8s.namespace.name`, `k8s.workload.name`, `k8s.container.name`}")
+	// last_seen rides along with the count so each group reports when it actually
+	// last occurred; without it every group reports the end of the query window and
+	// the UI shows one time for every row.
+	sb.WriteString("\n| summarize value = count(), last_seen = max(timestamp), by: {content, `k8s.namespace.name`, `k8s.workload.name`, `k8s.container.name`}")
 	sb.WriteString("\n| sort value desc")
 	sb.WriteString("\n| limit 100")
 
@@ -664,7 +667,28 @@ func (s *DynatraceLogGroupSource) convertToLogGroup(record map[string]any, endTi
 		PatternHash: patternHash,
 		Level:       level,
 		Count:       int64(math.Round(count)),
-		Timestamps:  []int64{endTimeSec},
+		Timestamps:  []int64{dynatraceLastSeenUnix(record, endTimeSec)},
 		Values:      []float64{count},
 	}, true
+}
+
+// dynatraceLastSeenUnix reads the last_seen field off a DQL summarize record as
+// unix seconds, falling back to the supplied window end when it is absent (a
+// tenant on an older schema) or unparseable. Grail reports timestamps as epoch
+// milliseconds, or as an ISO-8601 string depending on the field.
+func dynatraceLastSeenUnix(record map[string]any, endTimeSec int64) int64 {
+	switch v := record["last_seen"].(type) {
+	case float64:
+		if v > 0 {
+			return int64(v) / 1000
+		}
+	case string:
+		if ms, err := strconv.ParseFloat(v, 64); err == nil && ms > 0 {
+			return int64(ms) / 1000
+		}
+		if ts := logLastSeenUnix(v); ts > 0 {
+			return ts
+		}
+	}
+	return endTimeSec
 }

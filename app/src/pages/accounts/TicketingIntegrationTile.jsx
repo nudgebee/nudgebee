@@ -53,22 +53,22 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
     const items = [
       {
         label: item.is_active ? 'Disable' : 'Enable',
-        id: 0,
+        id: 'toggle-enabled',
       },
     ];
     if (item.is_active) {
       items.push({
         label: 'Edit',
-        id: 2,
+        id: 'edit',
       });
     }
     return items;
   };
 
   const onMenuClick = (menuItem, item) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'toggle-enabled') {
       setDisableConfig({ id: item.id, active: !item.is_active, name: item.name });
-    } else if (menuItem.id === 2) {
+    } else if (menuItem.id === 'edit') {
       setEditConfig(item);
       setOpenModal(true);
     }

@@ -28,6 +28,12 @@ type FetchLogRequest struct {
 	StepInterval      int                     `json:"step_interval"`
 	Request           map[string]any          `json:"request"`
 	QueryRequest      LogsQueryBuilderRequest `json:"query_request"`
+	// ValidateRequest, when true, makes a query that returns no logs cross-check
+	// the referenced label NAMES against the labels the provider exposes and fail
+	// with an actionable error if any are unknown (e.g. a mistyped label name).
+	// Off by default so existing callers keep the plain empty-result behavior;
+	// opt-in callers (notably the LLM agent) enable it to self-correct.
+	ValidateRequest bool `json:"validate_request"`
 }
 
 type OutputLog struct {
@@ -48,6 +54,11 @@ type FetchLogsResult struct {
 	Logs     []OutputLog `json:"logs"`
 	Query    string      `json:"query"`
 	Provider string      `json:"provider"`
+	// Suggestion carries the actionable message from the ValidateRequest empty-result
+	// diagnosis (unknown label name / unknown label value) when it fires. Populated
+	// alongside an empty Logs and a nil error — a 200, not a 400 — so the diagnosis
+	// reads as "successfully determined what to fix" rather than a request failure.
+	Suggestion string `json:"suggestion,omitempty"`
 }
 
 type SearchResponse struct {
@@ -257,6 +268,11 @@ type DefaultProvider struct {
 	AccountId      string `json:"account_id" mapstructure:"account_id" validate:"required"`
 	ProviderType   string `json:"provider_type" mapstructure:"provider_type" validate:"required"`
 	ProviderSource string `json:"provider_source"`
+	// Provider optionally pins resolution to a specific provider (e.g. "ES") instead
+	// of the account's default for this ProviderType. Used by the logs tab's provider
+	// switcher to resolve an overridden provider's per-account/default index. Empty
+	// keeps the existing default-provider behavior.
+	Provider string `json:"provider" mapstructure:"provider"`
 }
 
 // ProviderCapabilities describes the features supported by a resolved provider.
@@ -283,6 +299,11 @@ type ProviderCapabilities struct {
 	// static+tenant+account+dynamic merge. Traces: provider static map. Metrics:
 	// not populated (metric sources have no label mapping). Omitted when empty.
 	LabelMappings map[string]string `json:"label_mappings,omitempty"`
+	// DefaultIndex is the account's resolved default index for this provider+type
+	// (ES per-account Advanced Settings mapping → top-level {trace,log,metrics}_index),
+	// mirroring DefaultProviderResponse.DefaultIndex. Only populated by the
+	// list_provider_capabilities path; empty for providers without an index concept.
+	DefaultIndex string `json:"default_index,omitempty"`
 }
 
 // AvailableProvider is one active observability provider that can serve the
@@ -340,6 +361,11 @@ type TracesV3Request struct {
 	// coercion in MapRowToOpenTelemetryTrace silently zeroes aggregation / custom-projection
 	// columns (e.g. avg(duration_ns), quantile(...)) — the raw table preserves them.
 	IncludeRawResult bool `json:"include_raw_result" mapstructure:"include_raw_result"`
+	// ValidateRequest mirrors FetchLogRequest.ValidateRequest for traces: when true,
+	// a query that returns no traces cross-checks the referenced label NAMES against
+	// the labels the trace provider exposes and fails with an actionable error if any
+	// are unknown. Off by default; opt-in callers (notably the LLM agent) enable it.
+	ValidateRequest bool `json:"validate_request" mapstructure:"validate_request"`
 }
 
 // RawTraceResult carries an arbitrary ClickHouse result set with column order and types preserved.
@@ -360,12 +386,13 @@ type TracesQueryResult struct {
 }
 
 type TracesHeatMapRequest struct {
-	AccountId      string `json:"account_id" mapstructure:"account_id" validate:"required"`
-	ProviderType   string `json:"provider_type" mapstructure:"provider_type"`
-	ProviderSource string `json:"provider_source"`
-	TraceId        string `json:"trace_id" validate:"required"`
-	StartTime      int64  `json:"start_time" mapstructure:"start_time"`
-	EndTime        int64  `json:"end_time" mapstructure:"end_time"`
+	AccountId      string         `json:"account_id" mapstructure:"account_id" validate:"required"`
+	ProviderType   string         `json:"provider_type" mapstructure:"provider_type"`
+	ProviderSource string         `json:"provider_source"`
+	TraceId        string         `json:"trace_id" validate:"required"`
+	StartTime      int64          `json:"start_time" mapstructure:"start_time"`
+	EndTime        int64          `json:"end_time" mapstructure:"end_time"`
+	Request        map[string]any `json:"request"` // free-form overrides (e.g. ES index picked in the Traces tab)
 }
 
 type TracesV3LabelValuesRequest struct {
@@ -376,6 +403,7 @@ type TracesV3LabelValuesRequest struct {
 	StartTime      int64                     `json:"start_time" mapstructure:"start_time"`
 	EndTime        int64                     `json:"end_time" mapstructure:"end_time"`
 	QueryRequest   TracesQueryBuilderRequest `json:"query_request" mapstructure:"query_request"`
+	Request        map[string]any            `json:"request"` // free-form overrides (e.g. ES index picked in the Traces tab)
 }
 
 // FetchTraceLabelRequest is the input for the traces_list_labels action — it lists the

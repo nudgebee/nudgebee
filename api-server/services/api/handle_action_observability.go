@@ -67,6 +67,7 @@ func handleAccountProviderAction(
 			request.AccountId,
 			request.ProviderType,
 			request.ProviderSource,
+			request.Provider,
 		)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))

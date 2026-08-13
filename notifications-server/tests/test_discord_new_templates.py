@@ -438,7 +438,8 @@ def test_discord_proactive_nudge_shape():
     assert "FinOps Alert" in payload["embeds"][0]["title"]
     account_embed = payload["embeds"][1]
     assert account_embed["title"] == "prod"
-    assert "Score: 88/100" in account_embed["description"]
+    assert "Score" not in account_embed["description"]  # scores removed from all recommendation surfaces
+    assert "Savings: $42/mo" in account_embed["description"]
     # single-account bundle deep-links Nubi scoped to that account
     assert "/ask-nudgebee" in account_embed["description"]
     assert "accountId=acc-1" in account_embed["description"]

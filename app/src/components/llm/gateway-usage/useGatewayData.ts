@@ -16,6 +16,14 @@ export interface GatewayFilters {
   granularity: GatewayGranularity;
 }
 
+/** A Governance-tab drill-in: scopes the Requests tab to the rows behind one
+ * governance count. `label` is what the removable Requests chip shows. */
+export type GovScope =
+  | { kind: 'routing'; value: string; label: string } // one routing_reason
+  | { kind: 'reject'; value: string; label: string } // one derived.reject_reason
+  | { kind: 'status'; value: string; label: string } // 'success' | 'error'
+  | { kind: 'dlp'; label: string }; // requests that tripped the egress filter
+
 export interface GatewayData {
   loading: boolean;
   error: string | null;

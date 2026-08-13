@@ -43,21 +43,40 @@ func NewNode(nodeType NodeType, uniqueKey string, properties map[string]interfac
 		}
 	}
 
-	// Extract queryable properties based on node type to populate QueryAttributes field
-	queryAttributes := ExtractQueryAttributes(nodeType, properties)
+	// Resolve the concrete "specific type" (the cloud/native label, e.g.
+	// EC2Instance). A resource declares it via properties["specific_type"];
+	// default to the ontology NodeType when unset so no node is ever blank.
+	// The value lives only in the dedicated column, not in properties. Resolved
+	// before query_attributes because the per-specific_type concrete schema
+	// drives which properties are hoisted into query_attributes.
+	specificType := string(nodeType)
+	if st, ok := properties["specific_type"].(string); ok && st != "" {
+		specificType = st
+	}
+	delete(properties, "specific_type")
+
+	// Extract queryable properties (per-specific_type schema, falling back to the
+	// per-NodeType allowlist) to populate QueryAttributes field.
+	queryAttributes := ExtractQueryAttributes(nodeType, specificType, properties)
+
+	// Build the cross-cloud-normalized ontology field schema for this node's
+	// concept (every ComputeInstance exposes the same keys regardless of cloud).
+	ontologyAttributes := BuildOntologyAttributes(specificType, nodeType, properties)
 
 	return &DbNode{
-		ID:              GenerateNodeID(uniqueKey + tenantID + cloudAccountID),
-		NodeType:        nodeType,
-		UniqueKey:       uniqueKey,
-		Properties:      properties,
-		Labels:          labels,
-		QueryAttributes: queryAttributes,
-		TenantID:        tenantID,
-		CloudAccountID:  cloudAccountID,
-		Source:          source,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                 GenerateNodeID(uniqueKey + tenantID + cloudAccountID),
+		NodeType:           nodeType,
+		SpecificType:       specificType,
+		UniqueKey:          uniqueKey,
+		Properties:         properties,
+		Labels:             labels,
+		QueryAttributes:    queryAttributes,
+		OntologyAttributes: ontologyAttributes,
+		TenantID:           tenantID,
+		CloudAccountID:     cloudAccountID,
+		Source:             source,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 }
 
@@ -820,20 +839,22 @@ func ConvertDbNodeToKgNode(dbNode *DbNode) KgNode {
 	}
 
 	return KgNode{
-		ID:             dbNode.ID,
-		NodeType:       dbNode.NodeType,
-		Category:       dbNode.NodeType.GetCategory(),
-		UniqueKey:      dbNode.UniqueKey,
-		CloudAccountID: dbNode.CloudAccountID,
-		TenantID:       dbNode.TenantID,
-		Level:          dbNode.Level,
-		Source:         dbNode.Source,
-		CreatedAt:      dbNode.CreatedAt,
-		UpdatedAt:      dbNode.UpdatedAt,
-		Properties:     properties,
-		Labels:         labels,
-		LastUpdated:    dbNode.UpdatedAt,
-		LogoID:         ComputeLogoID(dbNode.NodeType, dbNode.Source, properties),
+		ID:                 dbNode.ID,
+		NodeType:           dbNode.NodeType,
+		SpecificType:       dbNode.SpecificType,
+		Category:           dbNode.NodeType.GetCategory(),
+		OntologyAttributes: dbNode.OntologyAttributes,
+		UniqueKey:          dbNode.UniqueKey,
+		CloudAccountID:     dbNode.CloudAccountID,
+		TenantID:           dbNode.TenantID,
+		Level:              dbNode.Level,
+		Source:             dbNode.Source,
+		CreatedAt:          dbNode.CreatedAt,
+		UpdatedAt:          dbNode.UpdatedAt,
+		Properties:         properties,
+		Labels:             labels,
+		LastUpdated:        dbNode.UpdatedAt,
+		LogoID:             ComputeLogoID(dbNode.NodeType, dbNode.Source, properties),
 	}
 }
 
@@ -915,17 +936,18 @@ func ConvertKgNodeToKgNodeSlim(kgNode KgNode) KgNodeSlim {
 		location = extractNodeLocation(kgNode.Properties)
 	}
 	return KgNodeSlim{
-		ID:        kgNode.ID,
-		Kind:      kgNode.NodeType,
-		Name:      name,
-		Source:    kgNode.Source,
-		AccountID: kgNode.CloudAccountID,
-		TenantID:  kgNode.TenantID,
-		UniqueKey: kgNode.UniqueKey,
-		LogoID:    kgNode.LogoID,
-		Role:      role,
-		Engine:    engine,
-		Location:  location,
+		ID:           kgNode.ID,
+		Kind:         kgNode.NodeType,
+		SpecificType: kgNode.SpecificType,
+		Name:         name,
+		Source:       kgNode.Source,
+		AccountID:    kgNode.CloudAccountID,
+		TenantID:     kgNode.TenantID,
+		UniqueKey:    kgNode.UniqueKey,
+		LogoID:       kgNode.LogoID,
+		Role:         role,
+		Engine:       engine,
+		Location:     location,
 	}
 }
 

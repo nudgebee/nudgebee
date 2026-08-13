@@ -37,10 +37,14 @@ import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { ScanRefreshButton } from './ScanRefreshButton';
 import FilterDropdown from '@ui/FilterDropdown';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
+
+// Leading provider icon for each cloud-provider group header in the Account filter.
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const UNUSED_VOLUME_HEADER = [
   { name: 'Name', width: '30%' },
@@ -456,10 +460,16 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
             <FilterDropdown
               id='uv-filter-account'
               label='Account'
-              options={accounts.map((acc) => ({ label: acc.label || acc.account_name, value: acc.id || acc.value }))}
+              grouped
+              groupIcon={renderAccountGroupIcon}
+              options={accounts.map((acc) => ({
+                label: acc.label || acc.account_name,
+                value: acc.id || acc.value,
+                group: acc.cloud_provider || 'Other',
+              }))}
               value={
                 accounts
-                  .map((acc) => ({ label: acc.label || acc.account_name, value: acc.id || acc.value }))
+                  .map((acc) => ({ label: acc.label || acc.account_name, value: acc.id || acc.value, group: acc.cloud_provider || 'Other' }))
                   .find((o) => o.value === selectedAccountId) ?? null
               }
               onSelect={(_e, item) => onAccountFilterChange({ target: { value: item?.value || '' } })}

@@ -41,7 +41,7 @@ import useCurrencySymbol from '@hooks/useCurrencySymbol';
 import AlarmCreationModal from './AlarmCreationModal';
 import { hasWriteAccess } from '@lib/auth';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
+import { getNubiIconCircleUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import SavingsPlanEvidence from '@components/optimise-new/evidence/SavingsPlanEvidence';
 import CommandExecutionHistory from '@components/cloudaccount/CommandExecutionHistory';
 import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
@@ -541,7 +541,7 @@ const CloudOptimizeRecommendationsTable = (props: {
                 composition='icon-only'
                 aria-label={`Ask ${assistantName}`}
                 id={`cloud-ask-nubi-${item.id}`}
-                icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
+                icon={<SafeIcon src={getNubiIconCircleUrl()} alt='' width={20} height={20} />}
                 onClick={(e: React.MouseEvent) => handleAskNubi(e, item, recommenedationDetails, objectName, serviceName)}
               />
             </span>

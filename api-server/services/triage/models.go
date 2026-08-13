@@ -261,6 +261,10 @@ type ClassifyEventRequest struct {
 	LinkedEventID     *string `json:"linked_event_id,omitempty"`
 	ApplyToExisting   bool    `json:"apply_to_existing"`
 	Confirmed         bool    `json:"confirmed"`
+	// PreserveStatus keeps the event's nb_status untouched. Set by pure priority
+	// corrections (the priority pin control), where the user is overriding severity,
+	// not asserting a triage-state transition.
+	PreserveStatus bool `json:"preserve_status"`
 }
 
 // ClassifyEventResponse is the response after classification
@@ -560,11 +564,12 @@ type FiringAnalysis struct {
 
 // MetricHistory contains the actual metric time series from the source API
 type MetricHistory struct {
-	Timestamps []int64   `json:"timestamps"`
-	Values     []float64 `json:"values"`
-	StartTime  string    `json:"start_time"`
-	EndTime    string    `json:"end_time"`
-	Step       int       `json:"step"`
+	Timestamps []int64           `json:"timestamps"`
+	Values     []float64         `json:"values"`
+	StartTime  string            `json:"start_time"`
+	EndTime    string            `json:"end_time"`
+	Step       int               `json:"step"`
+	Labels     map[string]string `json:"labels,omitempty"` // per-series Prometheus label set, for label-matched selection
 }
 
 // ThresholdSuggestion contains the recommended threshold adjustment
@@ -579,12 +584,31 @@ type ThresholdSuggestion struct {
 	MetricMedian       float64  `json:"metric_median"`
 	MetricMAD          float64  `json:"metric_mad"`
 	EstimatedReduction float64  `json:"estimated_reduction"`
-	Method             string   `json:"method,omitempty"`              // "MAD", "IQR", "P95", "spike"
-	RecommendationType string   `json:"recommendation_type,omitempty"` // "tune_threshold", "increase_duration", "tune_both", "disable", "none"
+	Method             string   `json:"method,omitempty"`              // "MAD", "IQR", "P95", "spike", "MAD-baseline"
+	RecommendationType string   `json:"recommendation_type,omitempty"` // "tune_threshold", "increase_duration", "tune_both", "disable", "none", "review_alert", "insufficient_data", "not_eligible", "investigate_signal"
 	SuggestedDuration  int      `json:"suggested_duration,omitempty"`  // suggested evaluation window in minutes (0 = no change)
 	DurationReason     string   `json:"duration_reason,omitempty"`
 	RiskLevel          string   `json:"risk_level,omitempty"`    // "safe", "review", "dangerous" — operational risk of applying this suggestion
 	RiskWarnings       []string `json:"risk_warnings,omitempty"` // human-readable warnings about why this suggestion needs careful review
+
+	// Baseline-fidelity decomposition (baseline vs firing distributions). Populated when the
+	// history could be segmented against the alert's firing intervals; drives the deterministic
+	// diagnosis below. Persisted into metric_stats JSONB for the eval set — no schema change.
+	Diagnosis        string     `json:"diagnosis,omitempty"`         // "chronic", "mistuned", "excursion", "ambiguous", "" (legacy path)
+	Baseline         *DistStats `json:"baseline,omitempty"`          // metric distribution during off-alert windows
+	Firing           *DistStats `json:"firing,omitempty"`            // metric distribution during firing windows
+	BaselineCoverage float64    `json:"baseline_coverage,omitempty"` // fraction of samples outside firing windows
+}
+
+// DistStats holds robust statistics for one distribution (baseline or firing window).
+type DistStats struct {
+	Count  int     `json:"count"`
+	P50    float64 `json:"p50"`
+	P90    float64 `json:"p90"`
+	P95    float64 `json:"p95"`
+	P99    float64 `json:"p99"`
+	Median float64 `json:"median"`
+	MAD    float64 `json:"mad"`
 }
 
 // MetricQueryMetadata stores the parameters needed to re-query the same metric from the frontend.

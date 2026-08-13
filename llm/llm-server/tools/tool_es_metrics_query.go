@@ -89,6 +89,15 @@ func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core
 		}, fmt.Errorf("es_metrics_query: missing query field")
 	}
 
+	// Ensure queryObj is wrapped in {"query": ...} so api-server receives a valid ES _search body.
+	if qMap, isMap := queryObj.(map[string]any); isMap && qMap != nil {
+		if _, hasQuery := qMap["query"]; !hasQuery {
+			queryObj = map[string]any{
+				"query": qMap,
+			}
+		}
+	}
+
 	// Serialize the query object to a JSON string for the queries map.
 	queryBytes, err := common.MarshalJson(queryObj)
 	if err != nil {

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/ticket"
 	"nudgebee/tickets-server/utils"
+	"sort"
 	"strings"
 	"time"
 
@@ -127,75 +129,12 @@ func CreateJiraIssue(configuration models.TicketConfigurations, ticket models.Ti
 		additionalFields = make(map[string]interface{})
 	}
 
-	labels := []string{"nudgebee", ticket.Source}
-	if existingLabels, ok := additionalFields["labels"].([]interface{}); ok {
-		for _, label := range existingLabels {
-			if strLabel, ok := label.(string); ok {
-				labels = append(labels, strLabel)
-			}
-		}
-	}
-	additionalFields["labels"] = labels
-
-	var assignee *jira.User
-	if len(strings.Split(ticket.Assignee, ":")) == 2 {
-		assignee = &jira.User{
-			AccountID: ticket.Assignee,
-		}
-	} else if ticket.Assignee != "" {
-		accountID := lookupAccountIDByEmail(jiraClient, ticket.Assignee)
-		if accountID != "" && len(strings.Split(accountID, ":")) == 2 {
-			assignee = &jira.User{
-				AccountID: accountID,
-			}
-		} else {
-			assignee = &jira.User{
-				EmailAddress: ticket.Assignee,
-			}
-		}
-	}
-
-	fields := &jira.IssueFields{
-		Assignee:    assignee,
-		Description: ticket.Description,
-		Type: jira.IssueType{
-			Name: ticket.TicketType,
-		},
-		Project: jira.Project{
-			Key: ticket.ProjectKey,
-		},
-		Summary: ticket.Title,
-	}
-
-	if ticket.Severity != "" {
-		// Severity flows in via the basic field as a Jira priority ID (the
-		// create-meta option value). Priority is set in exactly one place — it is
-		// never carried in additionalFields (it's tagged as a basic field, and the
-		// runbook task migrates any legacy additional_fields.priority into severity).
-		fields.Priority = &jira.Priority{
-			ID: ticket.Severity,
-		}
-	}
-
-	fields.Unknowns = make(tcontainer.MarshalMap)
-	for key, value := range additionalFields {
-		switch {
-		case ticket.TicketType == "Subtask" && key == "parent":
-			parentKey, ok := value.(string)
-			if !ok {
-				slog.Error("Invalid parent key value:", "value", slog.AnyValue(value))
-				return ticket, fmt.Errorf("invalid parent key value: expected string, got %T", value)
-			}
-			if err := validateParentIssue(jiraClient, parentKey); err != nil {
-				slog.Error("Error validating parent issue:", "error", slog.AnyValue(err))
-				return ticket, err
-			}
-			fields.Parent = &jira.Parent{
-				Key: parentKey,
-			}
-		default:
-			fields.Unknowns[key] = value
-		}
+	fields, err := buildJiraIssueFields(ticket, additionalFields,
+		func(assignee string) *jira.User { return resolveJiraAssignee(jiraClient, assignee) },
+		func(parentKey string) error { return validateParentIssue(jiraClient, parentKey) })
+	if err != nil {
+		slog.Error("Error building Jira issue fields:", "error", slog.AnyValue(err))
+		return ticket, err
 	}
 
 	issue := jira.Issue{
@@ -205,7 +144,7 @@ func CreateJiraIssue(configuration models.TicketConfigurations, ticket models.Ti
 	issueResp, _, err := jiraClient.Issue.Create(&issue)
 	if err != nil {
 		slog.Error("Error creating Jira issue:", "error", slog.AnyValue(err))
-		return ticket, err
+		return ticket, jiraCreateError(err)
 	}
 	slog.Info("Jira issue created:", "Key", issueResp.Key)
 
@@ -231,6 +170,132 @@ func CreateJiraIssue(configuration models.TicketConfigurations, ticket models.Ti
 	ticket.CreatedAt = &now
 
 	return ticket, nil
+}
+
+// buildJiraIssueFields assembles the field set sent to Jira's create API.
+// Keys that back a typed jira.IssueFields slot must never reach Unknowns:
+// go-jira hoists Unknowns over the typed struct at marshal time, so a raw
+// duplicate silently replaces the typed slot with the wrong wire shape.
+func buildJiraIssueFields(ticket models.Ticket, additionalFields map[string]interface{},
+	resolveAssignee func(string) *jira.User, validateParent func(string) error) (*jira.IssueFields, error) {
+	fields := &jira.IssueFields{
+		Description: ticket.Description,
+		Type: jira.IssueType{
+			Name: ticket.TicketType,
+		},
+		Project: jira.Project{
+			Key: ticket.ProjectKey,
+		},
+		Summary: ticket.Title,
+	}
+
+	fields.Labels = []string{"nudgebee", ticket.Source}
+	switch existing := additionalFields["labels"].(type) {
+	case []interface{}:
+		for _, label := range existing {
+			if strLabel, ok := label.(string); ok {
+				fields.Labels = append(fields.Labels, strLabel)
+			}
+		}
+	case []string:
+		fields.Labels = append(fields.Labels, existing...)
+	}
+
+	if ticket.Severity != "" {
+		// Severity carries the Jira priority ID (the create-meta option value).
+		fields.Priority = &jira.Priority{
+			ID: ticket.Severity,
+		}
+	}
+
+	assignee := ticket.Assignee
+	if assignee == "" {
+		// Workflow payloads can carry assignee inside additional_fields instead.
+		if s, ok := jiraOptionIDString(additionalFields["assignee"]); ok {
+			assignee = s
+		} else if ref, ok := additionalFields["assignee"].(map[string]interface{}); ok {
+			if s, ok := jiraScalarString(ref["accountId"]); ok {
+				assignee = s
+			}
+		}
+	}
+	fields.Assignee = resolveAssignee(assignee)
+
+	fields.Unknowns = make(tcontainer.MarshalMap)
+	for key, value := range additionalFields {
+		switch key {
+		case "labels", "assignee":
+			// consumed into their typed slots above
+		case "parent":
+			parentKey, ok := jiraOptionIDString(value)
+			if !ok {
+				slog.Warn("jira create: skipping empty parent value", "value", slog.AnyValue(value))
+				continue
+			}
+			if err := validateParent(parentKey); err != nil {
+				return nil, err
+			}
+			fields.Parent = &jira.Parent{
+				Key: parentKey,
+			}
+		case "priority":
+			// Severity wins; a raw duplicate here would hoist over the typed slot.
+			if fields.Priority != nil {
+				continue
+			}
+			if id, ok := jiraOptionIDString(value); ok {
+				fields.Priority = &jira.Priority{
+					ID: id,
+				}
+			}
+		default:
+			fields.Unknowns[key] = value
+		}
+	}
+
+	return fields, nil
+}
+
+// resolveJiraAssignee maps an assignee input (accountID or email) to the
+// jira.User shape issue-create accepts. Returns nil for an empty input.
+func resolveJiraAssignee(jiraClient *jira.Client, assignee string) *jira.User {
+	if assignee == "" {
+		return nil
+	}
+	if len(strings.Split(assignee, ":")) == 2 {
+		return &jira.User{
+			AccountID: assignee,
+		}
+	}
+	accountID := lookupAccountIDByEmail(jiraClient, assignee)
+	if accountID != "" && len(strings.Split(accountID, ":")) == 2 {
+		return &jira.User{
+			AccountID: accountID,
+		}
+	}
+	return &jira.User{
+		EmailAddress: assignee,
+	}
+}
+
+// jiraCreateError surfaces Jira's per-field validation detail, which the
+// default jira.Error string flattens to a generic "Status code: 400".
+func jiraCreateError(err error) error {
+	var jerr *jira.Error
+	if !errors.As(err, &jerr) {
+		return err
+	}
+	parts := append([]string{}, jerr.ErrorMessages...)
+	fieldErrors := make([]string, 0, len(jerr.Errors))
+	for field, msg := range jerr.Errors {
+		fieldErrors = append(fieldErrors, field+": "+msg)
+	}
+	sort.Strings(fieldErrors)
+	parts = append(parts, fieldErrors...)
+	if len(parts) == 0 {
+		return err
+	}
+	return fmt.Errorf("jira rejected the create request: %s", strings.Join(parts, "; "))
 }
 
 func lookupAccountIDByEmail(jiraClient *jira.Client, email string) string {
@@ -262,8 +327,10 @@ func validateParentIssue(client *jira.Client, parentKey string) error {
 	if issue == nil || issue.Fields == nil {
 		return fmt.Errorf("parent issue %s returned nil or empty fields", parentKey)
 	}
-	if issue.Fields.Type.Name != "Task" {
-		return fmt.Errorf("parent issue with key %s is not a Task", parentKey)
+	// Jira accepts any standard issue type as a parent (Task, Story, Bug, Epic);
+	// only a sub-task can never parent another issue.
+	if issue.Fields.Type.Subtask {
+		return fmt.Errorf("parent issue %s is a sub-task and cannot be a parent", parentKey)
 	}
 	return nil
 }
@@ -419,16 +486,22 @@ func sanitizeJiraMeta(meta *jira.CreateMetaInfo, priorities []jira.Priority, use
 				// `priority` that Jira marks optional but still ships options for —
 				// without it the Severity dropdown renders empty.
 				if (required || contains(mustFields, fieldName) || hasAllowedValues) && !contains(ignoreFields, fieldName) {
-					type_ := getFieldType(fieldMap["schema"])
-					if type_ == "" {
+					fieldKey := fmt.Sprintf("%v", fieldMap["key"])
+					type_, supported := normalizeJiraFieldType(fieldKey, fieldMap["schema"])
+					if !supported {
+						// Drop rather than emit a type no renderer understands.
+						if required {
+							slog.Error("Jira create-meta: dropping required field with unsupported type — this issue type cannot be created from the UI",
+								"field", fieldName, "issueType", issueType.Name, "schema", slog.AnyValue(fieldMap["schema"]))
+						} else {
+							slog.Warn("Jira create-meta: dropping field with unsupported type",
+								"field", fieldName, "issueType", issueType.Name)
+						}
 						continue
-					}
-					if fieldMap["key"] == "parent" {
-						type_ = "string"
 					}
 					fi := FieldInfo{
 						Name:     fmt.Sprintf("%v", fieldMap["name"]),
-						Key:      fmt.Sprintf("%v", fieldMap["key"]),
+						Key:      fieldKey,
 						Required: required,
 						Type:     type_,
 						Group:    jiraFieldGroup(fieldName),
@@ -512,32 +585,6 @@ func applyJiraAssigneeSeed(fields map[string]FieldInfo, userValues []interface{}
 		fi.AllowedValues = userValues
 	}
 	fields["assignee"] = fi
-}
-
-func getFieldType(schema interface{}) string {
-	schemaMap, ok := schema.(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	inputTypes := []string{"string", "array"}
-	if customValue, ok := schemaMap["custom"].(string); ok {
-		parts := strings.Split(customValue, ":")
-		if len(parts) < 2 {
-			return ""
-		}
-		return parts[1]
-	}
-
-	// Safe comma-ok assertion — bare assertion panics on absent/non-string keys.
-	typeVal, ok := schemaMap["type"].(string)
-	if !ok || typeVal == "" {
-		return ""
-	}
-	if contains(inputTypes, typeVal) {
-		return typeVal
-	}
-	return "select"
 }
 
 func contains(slice []string, str string) bool {

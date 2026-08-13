@@ -28,6 +28,7 @@ import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import SafeIcon from '@shared/icons/SafeIcon';
 import FirstLoginTour from '@components/onboarding/FirstLoginTour';
+import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour';
 import Tooltip from '@ui/Tooltip';
 import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
@@ -376,6 +377,9 @@ const PageLayout = ({ children }) => {
                   {/* Auto-launches the first-login sidebar walkthrough once; renders nothing. */}
                   <FirstLoginTour />
 
+                  {/* Offers a section's guided tour on first visit (Troubleshoot); renders nothing. */}
+                  <SectionFirstVisitTour />
+
                   <Box sx={styles.userMenuContainer}>
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       {getUserSession()?.tenant?.name && (
@@ -395,13 +399,11 @@ const PageLayout = ({ children }) => {
                           </Typography>
                         </Tooltip>
                       )}
-                      <Tooltip title='Account Settings' placement='left'>
-                        <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
-                          <Box>
-                            <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
-                          </Box>
-                        </IconButton>
-                      </Tooltip>
+                      <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
+                        <Box>
+                          <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
+                        </Box>
+                      </IconButton>
                       <Menu
                         id='menu-appbar'
                         sx={{ '.css-1xyun6z-MuiPaper-root-MuiPopover-paper-MuiMenu-paper': { left: '62px !important' } }}
@@ -433,7 +435,7 @@ const PageLayout = ({ children }) => {
                   width: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
                   px: open ? ds.space.mul(1, 16) : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
                   backgroundColor:
-                    pageFlags.isInvestigate || pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
+                    pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
                       ? colors.background.home
                       : pageFlags.isAskNudgebee
                       ? colors.background.askNudgebeePage

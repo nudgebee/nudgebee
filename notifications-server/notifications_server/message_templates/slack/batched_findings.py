@@ -2,7 +2,18 @@ from datetime import datetime
 from typing import List, Dict, Any
 from pydantic import BaseModel
 
+from notifications_server import copy_library
 from notifications_server.configs.settings import settings, URLRoutes
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    MAX_ALERT_ITEMS,
+    STRIPE_CRITICAL,
+    accounts_phrase,
+    accounts_scope,
+    header_block,
+    legacy_attachment,
+    link_button,
+    neutral_footer_attachment,
+)
 
 
 class Account(BaseModel):
@@ -36,6 +47,7 @@ class BatchedFindingsPayload(BaseModel):
     organization_name: str
     accounts: AccountsDataD
     critical_findings: List[BatchedFinding]
+    critical_count: int = 0  # true distinct-critical count; critical_findings is capped
     aggregated_findings: Dict[str, Dict[str, int]]  # account_id -> {aggregation_key -> count}
     total_findings_count: int
     batch_start_time: datetime
@@ -50,6 +62,10 @@ def create_section_block(section_text: str) -> Dict[str, Any]:
     return {"type": "section", "text": {"type": "mrkdwn", "text": section_text.strip()}}
 
 
+def create_context_block(text: str) -> Dict[str, Any]:
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
+
+
 def create_divider_block() -> Dict[str, Any]:
     return {"type": "divider"}
 
@@ -61,149 +77,110 @@ def format_finding_workload(finding: BatchedFinding) -> str:
     return workload_info
 
 
-def add_critical_findings_blocks(blocks: List[Dict[str, Any]], critical_findings: List[BatchedFinding]) -> None:
-    """Add critical findings blocks to the list"""
-    if not critical_findings:
-        return
-
-    blocks.append(create_section_block("*Top 5 Critical Findings:*"))
-
-    # Sort by count in descending order and take top 5
-    top_findings = sorted(critical_findings, key=lambda x: x.count, reverse=True)[:5]
-
-    for finding in top_findings:
-        workload = format_finding_workload(finding)
-        text = f"• *{finding.title}* – {workload} *({finding.count}x)*"
-        blocks.append(create_section_block(text))
+TOP_AGGREGATED = 5
 
 
-def create_fields_block(fields: List[str]) -> Dict[str, Any]:
-    return {"type": "section", "fields": [{"type": "mrkdwn", "text": field} for field in fields]}
-
-
-def add_aggregated_findings_blocks(blocks: List[Dict[str, Any]], aggregated_findings: Dict[str, int]) -> None:
-    """Add aggregated findings blocks to the list"""
-    if not aggregated_findings:
-        return
-
-    blocks.append(create_section_block("*Top 5 Other Findings Summary:*"))
-
-    # Sort by count in descending order and take top 5
-    top_findings = sorted(aggregated_findings.items(), key=lambda x: x[1], reverse=True)[:5]
-
-    # Create fields for multi-column layout (2 columns)
-    fields = []
-    for agg_key, count in top_findings:
-        fields.append(f"• {agg_key} *({count})*")
-
-    # Add fields in chunks of 2 for better column layout
-    for i in range(0, len(fields), 2):
-        chunk = fields[i : i + 2]
-        blocks.append(create_fields_block(chunk))
-
-
-def create_blocks_for_account(
-    account_name: str, account_id: str, critical_findings: List[BatchedFinding], aggregated_findings: Dict[str, int]
-) -> List[Dict[str, Any]]:
-    # Create clickable cluster name that links to events page
-    cluster_url = settings.urls.events_url(account_id=account_id, utm_source=URLRoutes.UTMSource.SLACK)
-    blocks = [create_section_block(f"*<{cluster_url}|Cluster: {account_name}>*")]
-
-    # Filter critical findings for this account
-    account_critical_findings = [f for f in critical_findings if f.account_id == account_id]
-
-    add_critical_findings_blocks(blocks, account_critical_findings)
-    add_aggregated_findings_blocks(blocks, aggregated_findings)
-
-    blocks.append(create_divider_block())
-    return blocks
-
-
-def create_header_blocks(payload: BatchedFindingsPayload) -> List[Dict[str, Any]]:
-    """Create header blocks for the message"""
-    time_range = (
+def _time_range(payload: BatchedFindingsPayload) -> str:
+    return (
         f"<!date^{int(payload.batch_start_time.timestamp())}^{{time}}|{payload.batch_start_time.strftime('%H:%M')}> -"
         f" <!date^{int(payload.batch_end_time.timestamp())}^{{time}}|{payload.batch_end_time.strftime('%H:%M')}>"
     )
 
-    blocks = [
-        create_section_block(f"*Findings Summary - {payload.organization_name}*"),
-        create_section_block(f"*Total Findings: {payload.total_findings_count}* | *Period:* {time_range}"),
-        create_section_block("Here's your findings summary. Review critical issues that need attention."),
-        create_divider_block(),
-    ]
 
-    return blocks
-
-
-def create_account_attachment(
-    account_name: str, account_id: str, critical_findings: List[BatchedFinding], aggregated_findings: Dict[str, int]
-) -> Dict[str, Any]:
-    """Create a collapsible attachment for account findings."""
-    blocks = []
-
-    # Filter critical findings for this account
-    account_critical_findings = [f for f in critical_findings if f.account_id == account_id]
-
-    # Add critical findings section
-    if account_critical_findings:
-        blocks.append(create_section_block("*Top 5 Critical Findings:*"))
-        top_findings = sorted(account_critical_findings, key=lambda x: x.count, reverse=True)[:5]
-        for finding in top_findings:
-            workload = format_finding_workload(finding)
-            text = f"• *{finding.title}* – {workload} *({finding.count}x)*"
-            blocks.append(create_section_block(text))
-
-    # Add aggregated findings section
-    if aggregated_findings:
-        blocks.append(create_section_block("*Top 5 Other Findings Summary:*"))
-        top_agg_findings = sorted(aggregated_findings.items(), key=lambda x: x[1], reverse=True)[:5]
-        fields = []
-        for agg_key, count in top_agg_findings:
-            fields.append(f"• {agg_key} *({count})*")
-        for i in range(0, len(fields), 2):
-            chunk = fields[i : i + 2]
-            blocks.append(create_fields_block(chunk))
-
-    # Calculate fallback text
-    critical_count = len(account_critical_findings)
-    other_count = sum(aggregated_findings.values())
-    fallback = f"{account_name}: {critical_count} critical, {other_count} other findings"
-
-    # Create clickable cluster name that links to events page
-    cluster_url = settings.urls.events_url(account_id=account_id, utm_source=URLRoutes.UTMSource.SLACK)
-
-    return {
-        "color": "#ff6b6b" if critical_count > 0 else "#ffa500",
-        "fallback": fallback,
-        "blocks": [create_section_block(f"*<{cluster_url}|Cluster: {account_name}>*")] + blocks,
-    }
+def _merged_aggregated(payload: BatchedFindingsPayload) -> List:
+    merged: Dict[str, int] = {}
+    for agg_map in payload.aggregated_findings.values():
+        for key, count in agg_map.items():
+            merged[key] = merged.get(key, 0) + count
+    return sorted(merged.items(), key=lambda kv: kv[1], reverse=True)[:TOP_AGGREGATED]
 
 
 def get_batched_findings_message_template(payload: BatchedFindingsPayload):
-    blocks = create_header_blocks(payload)
-
-    # Get accounts map
     accounts_map = {account.id: account.account_name for account in payload.accounts.data.accounts}
-
-    # Get unique account IDs from findings and aggregated data
     unique_account_ids = {f.account_id for f in payload.critical_findings} | set(payload.aggregated_findings.keys())
+    account_count = len(unique_account_ids) or len(accounts_map)
 
-    # Create collapsible attachments for each account
+    criticals = sorted(payload.critical_findings, key=lambda f: f.count, reverse=True)
+
+    scope = (
+        accounts_scope([accounts_map.get(acc_id, acc_id) for acc_id in unique_account_ids])
+        if unique_account_ids
+        else f"across {accounts_phrase(account_count)}"
+    )
+
+    # critical_count is the true distinct-critical total (the list is capped).
+    # Fall back to a count-free headline for payloads predating the field.
+    if payload.critical_count > 0:
+        noun = "critical finding" if payload.critical_count == 1 else "critical findings"
+        headline = f"{payload.critical_count} {noun} {scope}"
+    elif criticals:
+        headline = f"Top critical findings {scope}"
+    else:
+        headline = f"{payload.total_findings_count} findings {scope}"
+
+    blocks: List[Dict[str, Any]] = [
+        header_block(headline),
+        create_context_block(
+            f"{payload.organization_name} findings summary · "
+            f"{payload.total_findings_count} findings between {_time_range(payload)}"
+        ),
+        create_divider_block(),
+    ]
+
     attachments = []
-    for account_id in unique_account_ids:
-        account_name = accounts_map.get(account_id, "Unknown Account")
-        account_aggregated = payload.aggregated_findings.get(account_id, {})
+    shown = criticals[:MAX_ALERT_ITEMS]
+    for finding in shown:
+        account_name = accounts_map.get(finding.account_id, finding.account_id)
+        facts = (
+            f"{finding.severity.title()} priority · {format_finding_workload(finding)} · "
+            f"{finding.cluster} · Acct: {account_name}"
+        )
+        details_url = settings.urls.investigate_url(
+            finding.account_id, finding.id, utm_source=URLRoutes.UTMSource.SLACK
+        )
         attachments.append(
-            create_account_attachment(account_name, account_id, payload.critical_findings, account_aggregated)
+            legacy_attachment(
+                STRIPE_CRITICAL,
+                finding.title,
+                text=f"*{finding.title}*\n*{finding.count}×* in the window\n{facts}",
+                actions=[link_button("Details", details_url, style="primary")],
+            )
         )
 
-    # Add footer
-    blocks.append(create_section_block(f"View more details on {settings.urls.branding_link('slack')}"))
+    footer_lines = []
+    remaining = payload.total_findings_count - sum(f.count for f in shown)
+    if remaining > 0:
+        footer_lines.append(f"_+{remaining} more findings in the window_")
+
+    top_aggregated = _merged_aggregated(payload)
+    if top_aggregated:
+        footer_lines.append(
+            "Also seen: " + " · ".join(f"{copy_library.display_name(key)} ({count})" for key, count in top_aggregated)
+        )
+
+    footer_actions = None
+    if len(unique_account_ids) == 1:
+        only_account = next(iter(unique_account_ids))
+        footer_actions = [
+            link_button(
+                "View all findings",
+                settings.urls.events_url(only_account, utm_source=URLRoutes.UTMSource.SLACK),
+                style="primary",
+            )
+        ]
+    else:
+        footer_lines.append(f"View all findings on {settings.urls.branding_link('slack')}")
+    attachments.append(
+        neutral_footer_attachment(
+            text="\n".join(footer_lines),
+            actions=footer_actions,
+            fallback="View all findings",
+        )
+    )
 
     return {
-        "text": f"Findings Summary - {payload.total_findings_count} findings",
-        "blocks": blocks,
-        "attachments": attachments[:20],  # Slack limit
+        "text": f"{headline} — {payload.total_findings_count} findings",
+        "blocks": blocks[:50],
+        "attachments": attachments[:20],
         "unfurl_links": False,
     }

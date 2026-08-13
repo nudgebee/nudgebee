@@ -2,9 +2,10 @@
  * useGatewayRequests — fetches a page of recent AI Gateway requests.
  *
  * Mirrors `useGatewayData`: it refetches on every change to a request field
- * (date window · optional user scope · limit · offset), owns loading/error/data
- * state, and cleans up in-flight requests with an AbortController so a fast
- * filter change never lands a stale response. Backs the Requests sub-tab.
+ * (date window · optional user/provider/model/status/tool scope · limit ·
+ * offset), owns loading/error/data state, and cleans up in-flight requests with
+ * an AbortController so a fast filter change never lands a stale response.
+ * Backs the Requests sub-tab.
  */
 import * as React from 'react';
 import { listGatewayRequests, type GatewayRequestList } from '@api1/gateway-usage';
@@ -17,7 +18,18 @@ export interface GatewayRequestsData {
 
 export function useGatewayRequests(
   filters: { startDate: string; endDate: string },
-  opts: { userId?: string; limit: number; offset: number }
+  opts: {
+    userId?: string;
+    providers?: string[];
+    models?: string[];
+    status?: string;
+    tool?: string;
+    routingReason?: string;
+    rejectReason?: string;
+    dlp?: boolean;
+    limit: number;
+    offset: number;
+  }
 ): GatewayRequestsData {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -28,6 +40,13 @@ export function useGatewayRequests(
     startDate: filters.startDate,
     endDate: filters.endDate,
     userId: opts.userId ?? '',
+    providers: opts.providers ?? [],
+    models: opts.models ?? [],
+    status: opts.status ?? '',
+    tool: opts.tool ?? '',
+    routingReason: opts.routingReason ?? '',
+    rejectReason: opts.rejectReason ?? '',
+    dlp: opts.dlp ?? false,
     limit: opts.limit,
     offset: opts.offset,
   });
@@ -45,6 +64,13 @@ export function useGatewayRequests(
             startDate: `${filters.startDate}T00:00:00Z`,
             endDate: `${filters.endDate}T23:59:59.999Z`,
             userId: opts.userId,
+            providers: opts.providers,
+            models: opts.models,
+            status: opts.status,
+            tool: opts.tool,
+            routingReason: opts.routingReason,
+            rejectReason: opts.rejectReason,
+            dlp: opts.dlp,
             limit: opts.limit,
             offset: opts.offset,
           },

@@ -60,7 +60,7 @@ func sendToDLQWithConfig(ctx *security.RequestContext, originalMessage []byte, e
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
 	}
 
-	publishErr := common.MqPublish(dlqExchange, dlqQueue, dlqMessage)
+	publishErr := common.MqPublish(dlqExchange, dlqQueue, dlqMessage, common.MqPublishWithContext(ctx.GetContext()))
 	if publishErr != nil {
 		ctx.GetLogger().Error("failed to publish to DLQ", "error", publishErr, "originalError", err)
 	} else {
@@ -110,7 +110,7 @@ func StoreDailyUsageReportForAllAccounts(ctx *security.RequestContext) {
 			Month:     int(t0.Month()),
 			Year:      t0.Year(),
 		}
-		err = common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, currentMonthJob)
+		err = common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, currentMonthJob, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("usagereport: failed to publish current month job", "error", err, "accountId", accountId, "job_id", currentMonthJob.JobId)
 			failedCount++
@@ -129,7 +129,7 @@ func StoreDailyUsageReportForAllAccounts(ctx *security.RequestContext) {
 				Month:     int(previousMonthTime.Month()),
 				Year:      previousMonthTime.Year(),
 			}
-			err = common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, previousMonthJob)
+			err = common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, previousMonthJob, common.MqPublishWithContext(ctx.GetContext()))
 			if err != nil {
 				ctx.GetLogger().Error("usagereport: failed to publish previous month job", "error", err, "accountId", accountId, "job_id", previousMonthJob.JobId)
 				failedCount++
@@ -154,7 +154,7 @@ func ConsumeCloudAccountCostReportJobs(ctx *security.RequestContext, concurrency
 
 	ctx.GetLogger().Info("usagereport: starting cloud account cost report consumer", "concurrency", concurrency, "queue", config.Config.RabbitMqCloudAccountCostReportQueue, "exchange", config.Config.RabbitMqCloudAccountCostReportExchange)
 
-	processor := func(data []byte) error {
+	processor := func(msgCtx context.Context, data []byte) error {
 		var job CloudAccountCostReportJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
@@ -164,11 +164,13 @@ func ConsumeCloudAccountCostReportJobs(ctx *security.RequestContext, concurrency
 			return nil // Return nil to ACK and remove from main queue
 		}
 
-		logger := ctx.GetLogger().With("accountId", job.AccountId, "month", job.Month, "year", job.Year, "job_id", job.JobId)
+		// Create a new request context for this specific account. msgCtx carries
+		// the trace context extracted from the consumed message's headers, so the
+		// trace continues from the publisher into cost-report ETL. Build it before
+		// any job-level logging so those lines carry the stamped trace_id too.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), ctx.GetLogger().With("accountId", job.AccountId, "month", job.Month, "year", job.Year, "job_id", job.JobId), ctx.GetTracer(), ctx.GetMeter())
+		logger := jobCtx.GetLogger()
 		logger.Info("usagereport: processing cost report job")
-
-		// Create a new request context for this specific account
-		jobCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Execute StoreUsage logic
 		_, err = StoreUsage(jobCtx, job.AccountId, time.Month(job.Month), job.Year)
@@ -207,6 +209,14 @@ func ConsumeCloudAccountCostReportJobs(ctx *security.RequestContext, concurrency
 // costBackfillTimeout bounds the in-process historical backfill so a hung
 // downstream S3/DB call can't leak the consumer worker indefinitely.
 const costBackfillTimeout = 30 * time.Minute
+
+// postReportProcessingTimeout bounds a single post-report job safely under the
+// RabbitMQ consumer_timeout (30m default). Staying under it means a slow account
+// returns a retriable error through the normal retry path, instead of running
+// long enough for the broker to force-close the channel and redeliver the
+// message — where the redelivery is indistinguishable from a pod crash and gets
+// misclassified as a poison message and dropped to the DLQ.
+const postReportProcessingTimeout = 25 * time.Minute
 
 // runHistoricalBackfill discovers the historical billing periods available for an
 // account and processes each one in-process, sequentially (skipping the month the
@@ -468,6 +478,7 @@ func publishPostReportJob(ctx *security.RequestContext, accountId string, month 
 		config.Config.RabbitMqCloudAccountPostReportExchange,
 		config.Config.RabbitMqCloudAccountPostReportQueue,
 		postReportJob,
+		common.MqPublishWithContext(ctx.GetContext()),
 	)
 	if publishErr != nil {
 		ctx.GetLogger().Error("usagereport: failed to publish post-report job", "error", publishErr, "accountId", accountId)
@@ -601,7 +612,7 @@ func sendDailySpendNotification(ctx *security.RequestContext, accountId, account
 		},
 	}
 
-	err := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+	err := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 	if err != nil {
 		ctx.GetLogger().Error("usagereport: error publishing message to queue", "error", err)
 		return err
@@ -1163,7 +1174,7 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 
 	ctx.GetLogger().Info("postreport: starting cloud account post-report consumer", "concurrency", concurrency, "queue", config.Config.RabbitMqCloudAccountPostReportQueue, "exchange", config.Config.RabbitMqCloudAccountPostReportExchange)
 
-	processor := func(data []byte) error {
+	processor := func(msgCtx context.Context, data []byte) error {
 		var job CloudAccountPostReportJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
@@ -1171,7 +1182,24 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 			return nil // ACK to prevent poison message loop
 		}
 
-		logger := ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId)
+		// Bound the whole job (lock wait + all steps) safely under the RabbitMQ
+		// consumer_timeout. The steps below are I/O-bound and honour this context, so
+		// a slow account is cut off and the job returns a retriable error instead of
+		// overrunning the broker timeout — see postReportProcessingTimeout.
+		// WithoutCancel detaches from cancellation (so a shutdown mid-job doesn't
+		// abort it) while retaining trace/baggage values; the timeout then bounds
+		// it. Based on msgCtx — the trace context extracted from the consumed
+		// message's headers — so the distributed trace continues into post-report
+		// ETL (and, as before, the job survives consumer shutdown).
+		procCtx, cancel := context.WithTimeout(context.WithoutCancel(msgCtx), postReportProcessingTimeout)
+		defer cancel()
+
+		// procCtx is derived from msgCtx (above), so the trace extracted from the
+		// consumed message's headers continues from the publisher into post-report
+		// ETL. Build the job context before any job-level logging so those lines
+		// carry the stamped trace_id too.
+		jobCtx := security.NewRequestContext(procCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId), ctx.GetTracer(), ctx.GetMeter())
+		logger := jobCtx.GetLogger()
 
 		// Acquire the per-account sync lock before doing any DB writes. This serializes
 		// post-report (cloud_resourses UPSERT) against StoreUsage (spends INSERT, which
@@ -1186,7 +1214,7 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 		// acquire keeps the AMQP delivery in-flight while we wait, which is well
 		// inside the RabbitMQ consumer_timeout. Cap the wait safely under the
 		// 10-minute lock TTL so we never wait on a stale holder.
-		release, lockErr := common.AcquireSyncLockBlocking(context.Background(), job.AccountId, 8*time.Minute)
+		release, lockErr := common.AcquireSyncLockBlocking(procCtx, job.AccountId, 8*time.Minute)
 		if errors.Is(lockErr, common.ErrLockTimeout) {
 			logger.Warn("postreport: gave up waiting for sync lock, will retry via MQ", "timeout", "8m")
 			return lockErr
@@ -1200,8 +1228,6 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 		}
 
 		logger.Info("postreport: processing post-report job")
-
-		jobCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Step 1: Discover and store resources from cloud provider APIs
 		_, err = discoverAndStoreAccountResources(jobCtx, job.AccountId)
@@ -1225,10 +1251,18 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 			logger.Error("postreport: failed to sync event rules", "error", err)
 		}
 
+		// The steps above swallow their own errors to stay best-effort, so an expired
+		// budget would otherwise be ACKed as success with partial work. Detect it and
+		// return a retriable error so the job is retried cleanly rather than dropped.
+		if procCtx.Err() != nil {
+			logger.Warn("postreport: processing exceeded time budget, will retry via MQ", "timeout", postReportProcessingTimeout.String())
+			return fmt.Errorf("postreport: processing exceeded %s budget: %w", postReportProcessingTimeout, procCtx.Err())
+		}
+
 		logger.Info("postreport: successfully processed post-report job")
 
 		// Notify KG system that data has been updated for this tenant
-		publishKGUpdate(job.TenantId)
+		publishKGUpdate(procCtx, job.TenantId)
 
 		return nil
 	}

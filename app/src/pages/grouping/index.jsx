@@ -30,7 +30,7 @@ const KubernetesAppGroupingDashboard = () => {
   const [accountName, setAccountName] = useState('');
 
   const [isDataReady, setIsDataReady] = useState(false);
-  const [renderForApplicationIssue, setRenderForApplicationIssue] = useState(false);
+  const [eventsFilter, setEventsFilter] = useState(null);
 
   const getApplicationsByGroup = () => {
     setIsDataReady(false);
@@ -66,7 +66,7 @@ const KubernetesAppGroupingDashboard = () => {
   };
 
   const handleChangeTab = (_e, value) => {
-    setRenderForApplicationIssue(false);
+    setEventsFilter(null);
     setTab(value);
   };
 
@@ -104,20 +104,12 @@ const KubernetesAppGroupingDashboard = () => {
             accountName={accountName}
             groupId={groupId}
             setTab={setTab}
-            setRenderForApplicationIssue={setRenderForApplicationIssue}
+            setEventsFilter={setEventsFilter}
           />
         ) : (
           <Loader />
         ))}
-      {tab === 1 && (
-        <KubernetesEvents
-          accountId={accountId}
-          resource_ids={resourceIds}
-          defaultQuery={
-            renderForApplicationIssue ? { aggregation_key: ['HighErrorCriticalLogs', 'ApplicationAPIFailures'], finding_type: 'issue' } : {}
-          }
-        />
-      )}
+      {tab === 1 && <KubernetesEvents accountId={accountId} resource_ids={resourceIds} defaultQuery={eventsFilter ?? {}} />}
       {tab === 2 && <KubernetesWorkloadsTable resource_ids={resourceIds} accountId={accountId} />}
     </>
   );

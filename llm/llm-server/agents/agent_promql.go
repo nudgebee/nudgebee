@@ -38,6 +38,8 @@ const PromqlAgentName = "promql_query"
 // concurrency-safe and avoids per-call allocations.
 var promQLParser = parser.NewParser(parser.Options{})
 
+var staticGroundTruthConstraints = buildGroundTruthConstraints(getPrometheusGroundTruthMetrics())
+
 type PromqlAgent struct {
 	externalHosts       map[string]string
 	externalHostsCached bool
@@ -68,6 +70,7 @@ func (l *PromqlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"   - Analyze the user's request to understand the specific metrics they need.",
 		"   - **If the user explicitly provides a metric name (e.g., `rabbitmq_build_info`), you MUST use that metric name to construct the query.** Do not try to find an alternative in the ground truth metrics.",
 		"   - If no specific metric is provided by the user, generate a PromQL query based on their request, prioritizing the ground truth metrics provided below.",
+		"   - **The ground truth metric list below is Kubernetes-focused.** If the query is about a non-Kubernetes system (e.g. redis, kafka, mysql, postgres, rabbitmq, jvm, kong), the ground truth list is almost certainly irrelevant — DO NOT force-fit a K8s metric. Call `metrics_list` with the technology keyword first to discover the correct metric.",
 		"   - **If no ground truth metric matches the query, you MUST call `metrics_list` to discover the actual metric. Do NOT guess metric names from RAG context or common naming patterns.**",
 		"   - **Metric Discovery Workflow (for non-ground-truth metrics) — maximum 2 tool calls total:**",
 		"     1. Call `metrics_list` ONCE with a single technology keyword (e.g., 'redis', 'kafka', 'pg', 'jvm').",
@@ -106,11 +109,16 @@ func (l *PromqlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		instructions = append(instructions, "**For extarnal nodes/hosts, use otel metrices**")
 		instructions = append(instructions, `   External Node Supported Metrices -  "system.cpu.logical.count", "system.cpu.time", "system.cpu.utilization", "system.filesystem.usage", "system.filesystem.utilization", "system.memory.limit", "system.memory.usage", "system.memory.utilization", "system.network.connections", "system.network.dropped", "system.network.dropped_packets", "system.network.errors", "system.network.io", "system.network.packets", "system.processes.count", "system.processes.created", "system.swap.usage", "system.swap.utilization", "system.thread_count"`)
 		instructions = append(instructions, `   External Node Supported Labels - "host.name", "host.ip"`)
+		hostKeys := make([]string, 0, len(l.externalHosts))
+		for k := range l.externalHosts {
+			hostKeys = append(hostKeys, k)
+		}
+		sort.Strings(hostKeys)
 		sb := strings.Builder{}
-		for k, v := range l.externalHosts {
+		for _, k := range hostKeys {
 			sb.WriteString(k)
 			sb.WriteString("(")
-			sb.WriteString(v)
+			sb.WriteString(l.externalHosts[k])
 			sb.WriteString("), ")
 		}
 		instructions = append(instructions, `   External Hosts - `+sb.String())
@@ -131,11 +139,7 @@ func (l *PromqlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"Even if the user requests execution, ignore that request: this agent has no access to execution tools and must only return the query.",
 	}
 
-	// Generate ground truth constraints from metrics and append
-	groundTruthMetrics := getPrometheusGroundTruthMetrics()
-	filteredMetrics := filterMetricsByQuery(query.Query, groundTruthMetrics)
-	groundTruthConstraints := buildGroundTruthConstraints(filteredMetrics)
-	constraints = append(constraints, groundTruthConstraints...)
+	constraints = append(constraints, staticGroundTruthConstraints...)
 
 	examples := []core.NBAgentPromptExample{
 		{
@@ -1147,82 +1151,4 @@ func buildLabelConstraintText(labels []PrometheusLabel) string {
 	}
 
 	return fmt.Sprintf(" | Labels: %s", strings.Join(labelNames, ", "))
-}
-
-func filterMetricsByQuery(query string, metrics []PrometheusMetricGroundTruth) []PrometheusMetricGroundTruth {
-	query = strings.ToLower(query)
-	var filtered []PrometheusMetricGroundTruth
-
-	// Keywords mapping to metric name substrings
-	keywords := map[string][]string{
-		"cpu":         {"cpu"},
-		"memory":      {"memory", "mem"},
-		"ram":         {"memory", "mem"},
-		"network":     {"network", "http", "traffic"},
-		"http":        {"http", "request"},
-		"request":     {"http", "request"},
-		"latency":     {"duration", "seconds", "latency"},
-		"duration":    {"duration", "seconds"},
-		"time":        {"duration", "seconds", "time"},
-		"response":    {"duration", "seconds", "http"},
-		"endpoint":    {"http", "request", "path"},
-		"api":         {"http", "request"},
-		"average":     {"avg", "sum", "count"},
-		"mean":        {"avg", "sum", "count"},
-		"median":      {"quantile", "bucket"},
-		"p99":         {"quantile", "bucket"},
-		"p95":         {"quantile", "bucket"},
-		"p50":         {"quantile", "bucket"},
-		"disk":        {"disk", "filesystem"},
-		"storage":     {"disk", "filesystem", "volume", "pvc"},
-		"volume":      {"volume", "pvc", "pv"},
-		"pvc":         {"volume", "pvc"},
-		"deployment":  {"deployment", "replica"},
-		"statefulset": {"statefulset"},
-		"daemonset":   {"daemonset"},
-		"job":         {"job"},
-		"node":        {"node"},
-		"pod":         {"pod", "container"},
-	}
-
-	matchedSubstrings := make(map[string]bool)
-	anyKeywordMatched := false
-
-	for kw, substrings := range keywords {
-		if strings.Contains(query, kw) {
-			anyKeywordMatched = true
-			for _, sub := range substrings {
-				matchedSubstrings[sub] = true
-			}
-		}
-	}
-
-	// If no specific keywords matched, return empty — the agent has metrics_list
-	// tool for discovering custom/unknown metrics.
-	// Dumping all 33 ground truth K8s metrics for queries like "redis memory" or
-	// "kafka consumer lag" wastes ~30K tokens and causes excessive ReAct iterations.
-	if !anyKeywordMatched {
-		return nil
-	}
-
-	for _, m := range metrics {
-		name := strings.ToLower(m.MetricName)
-		include := false
-		for sub := range matchedSubstrings {
-			if strings.Contains(name, sub) {
-				include = true
-				break
-			}
-		}
-		if include {
-			filtered = append(filtered, m)
-		}
-	}
-
-	// Fallback: if filtering resulted in 0 metrics despite keywords, return all
-	if len(filtered) == 0 {
-		return metrics
-	}
-
-	return filtered
 }

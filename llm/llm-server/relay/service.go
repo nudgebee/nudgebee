@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,7 +11,7 @@ import (
 	"time"
 )
 
-func Execute(body ActionExecuteBody) (map[string]any, error) {
+func Execute(ctx context.Context, body ActionExecuteBody) (map[string]any, error) {
 
 	relayRequest := RelayExecuteRequest{
 		Body:    body,
@@ -35,7 +36,7 @@ func Execute(body ActionExecuteBody) (map[string]any, error) {
 		headers["X-NB-Agent-Type"] = body.AgentType
 	}
 
-	resp, err := common.HttpPost(fmt.Sprintf("%s/request", config.Config.RelayServerEndpoint), common.HttpWithHeaders(headers), common.HttpWithJsonBody(relayRequest), common.HttpWithTimeout(timeout))
+	resp, err := common.HttpPost(fmt.Sprintf("%s/request", config.Config.RelayServerEndpoint), common.HttpWithContext(ctx), common.HttpWithHeaders(headers), common.HttpWithJsonBody(relayRequest), common.HttpWithTimeout(timeout))
 
 	if err != nil {
 		slog.Error("unable to access relay server", "error", err)

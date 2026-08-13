@@ -132,7 +132,7 @@ func (c nbCustomContainerTool) Call(nbRequestContext NbToolContext, input NBTool
 	}
 
 	log.Info("customcontainer: sending request to relay for container execution", "relayRequest", relayActionBody)
-	relayResponse, err := relay.Execute(relayActionBody)
+	relayResponse, err := relay.Execute(nbRequestContext.GoContext(), relayActionBody)
 	if err != nil {
 		log.Error("customcontainer: relay execution failed for container tool", "error", err)
 		return NBToolResponse{Status: NBToolResponseStatusError, Data: "Failed to execute container: " + err.Error()}, err

@@ -8,6 +8,7 @@ import (
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/tasks"
 	"nudgebee/runbook/internal/tasks/types"
+	"nudgebee/runbook/internal/tracing"
 	configSvc "nudgebee/runbook/services/config"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	temporalLog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
@@ -79,6 +81,23 @@ func getUserDisplayName(wf *model.Workflow) string {
 	return ""
 }
 
+// extractEventIDFromInputs returns the triggering event's ID from the "event"
+// workflow input (set by event-triggered runs), checking the same keys as the
+// system search-attribute tagging. Returns "" for manual/scheduled/webhook runs.
+func extractEventIDFromInputs(inputs map[string]any) string {
+	eventMap, ok := inputs["event"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if id, ok := eventMap["id"].(string); ok && id != "" {
+		return id
+	}
+	if id, ok := eventMap["event_id"].(string); ok && id != "" {
+		return id
+	}
+	return ""
+}
+
 const (
 	Internal_UpdateLastExecutionStatusActivity   = "Internal_UpdateLastExecutionStatusActivity"
 	FetchWorkflowDefinitionActivity              = "FetchWorkflowDefinitionActivity"
@@ -91,6 +110,9 @@ const (
 func NewWorkflowExecutor(store model.WorkflowStore, configService *configSvc.Service, c client.Client, dc converter.DataConverter) (*WorkflowExecutor, error) {
 	workerOpts := worker.Options{
 		DisableRegistrationAliasing: true,
+		// Stamp trace_id/span_id (carried by tracing.Propagator) onto every
+		// workflow/activity logger so their lines correlate in Loki.
+		Interceptors: []interceptor.WorkerInterceptor{tracing.NewLogInterceptor()},
 	}
 	// Give the workflow goroutine more headroom before Temporal's deadlock
 	// detector (TMPRL1101) fires. Inline template rendering and matrix expansion
@@ -1201,8 +1223,17 @@ func processTaskLoop(
 				paramMap[tasks.ParamTenantID] = wf.TenantID
 				paramMap[tasks.ParamAccountID] = wf.AccountID
 				paramMap[tasks.ParamWorkflowID] = wf.ID
+				if eventID := extractEventIDFromInputs(tplCtx.Inputs); eventID != "" {
+					paramMap[tasks.ParamEventID] = eventID
+				}
 				paramMap[tasks.ParamUserID] = wf.UpdatedBy
-				paramMap[tasks.ParamVars] = tplCtx.Vars
+				// Intentionally do NOT attach the full template Vars (tplCtx.Vars) to the
+				// activity input. Params are already rendered above via ProcessValue, and
+				// TaskWrapper strips ParamVars before Execute, so no task ever reads it.
+				// Attaching it serialized the entire workflow Inputs (e.g. a ~672KB GitHub
+				// push payload) into EVERY activity input; a matrix/foreach fan-out then
+				// multiplied that past Temporal's 4MB gRPC limit, so RespondWorkflowTaskCompleted
+				// failed with ResourceExhausted and zero activities were ever committed.
 				paramMap[tasks.ParamWorkflowName] = wf.Name
 				if displayName := getUserDisplayName(wf); displayName != "" {
 					paramMap[tasks.ParamUserDisplayName] = displayName
@@ -1854,6 +1885,9 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 		}
 		if v, ok := tplCtx.Inputs[tasks.ParamWorkflowID]; ok {
 			params[tasks.ParamWorkflowID] = v
+		}
+		if eventID := extractEventIDFromInputs(tplCtx.Inputs); eventID != "" {
+			params[tasks.ParamEventID] = eventID
 		}
 
 		future := workflow.ExecuteActivity(ctx, action.Type, params)

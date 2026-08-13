@@ -40,11 +40,15 @@ import CustomTable2 from '@shared/tables/CustomTable2';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import FilterDropdown from '@ui/FilterDropdown';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { Comparison as DsComparison, ComparisonGroup as DsComparisonGroup } from '@ui/Comparison';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
+
+// Leading provider icon for each cloud-provider group header in the Account filter.
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const KubernetesReplicaRightSizingDrilldown = (props) => {
   const loading = !props.data?.recommendation?.recommendation;
@@ -904,10 +908,16 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
                 <FilterDropdown
                   id='rrs-filter-account'
                   label='Account'
-                  options={accounts.map((acc) => ({ label: acc.label || acc.account_name, value: acc.id || acc.value }))}
+                  grouped
+                  groupIcon={renderAccountGroupIcon}
+                  options={accounts.map((acc) => ({
+                    label: acc.label || acc.account_name,
+                    value: acc.id || acc.value,
+                    group: acc.cloud_provider || 'Other',
+                  }))}
                   value={
                     accounts
-                      .map((acc) => ({ label: acc.label || acc.account_name, value: acc.id || acc.value }))
+                      .map((acc) => ({ label: acc.label || acc.account_name, value: acc.id || acc.value, group: acc.cloud_provider || 'Other' }))
                       .find((o) => o.value === selectedAccountId) ?? null
                   }
                   onSelect={(_e, item) => onAccountFilterChange({ target: { value: item?.value || '' } })}

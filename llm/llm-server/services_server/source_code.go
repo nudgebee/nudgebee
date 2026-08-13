@@ -517,7 +517,7 @@ func GetSourceCodeFromArgoCD(ctx *security.RequestContext, accountId, appName st
 	}
 	actionParam.Timeout = time.Second * 60
 
-	response, err := relay.Execute(actionParam)
+	response, err := relay.Execute(ctx.GetContext(), actionParam)
 	if err != nil {
 		ctx.GetLogger().Error("failed to execute argocd command", "error", err)
 		return GetSourceCodeRepoResponse{}, fmt.Errorf("failed to execute argocd command: %w", err)

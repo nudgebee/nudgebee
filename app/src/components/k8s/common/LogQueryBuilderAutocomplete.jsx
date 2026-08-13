@@ -114,6 +114,247 @@ const TruncatedTooltip = memo(({ title, children }) => {
   );
 });
 
+// Knowledge-Graph-only segmented chip: key | operator | value fused into one
+// rounded rect (mono), each segment tinted. Gated to logProvider ===
+// 'knowledge_graph' so logs / service-map keep their DsChip 'tag' rendering.
+// Presentation only — dismissal reuses the caller's handleChipDelete.
+// Each truncating segment is a flex cell (fills chip height, centers content)
+// wrapping a block <span> — text-overflow:ellipsis does NOT apply to a flex
+// element, so the ellipsis must live on an inner block. minWidth:0 lets the cell
+// shrink below its content so the chip caps at maxWidth:100%. Hoisted (static, no
+// props/state) so they aren't re-allocated per chip render.
+const KG_CHIP_CELL_SX = { minWidth: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', px: 'var(--ds-space-2)' };
+const KG_CHIP_ELLIPSIS_SX = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+
+const KgSegmentedChip = ({ chipKey, operator, value, onDismiss }) => {
+  return (
+    <DsTooltip title={`${chipKey} ${operator} ${value}`} placement='top' componentsProps={{ popper: { style: { zIndex: 1600 } } }}>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'stretch',
+          maxWidth: '100%',
+          minWidth: 0,
+          boxSizing: 'border-box',
+          border: '1px solid var(--ds-gray-200)',
+          borderRadius: 'var(--ds-radius-sm)',
+          overflow: 'hidden',
+          fontFamily: 'var(--ds-font-mono)',
+          fontSize: 'var(--ds-text-small)',
+          lineHeight: 1.6,
+          transition: 'box-shadow 120ms var(--ds-motion-ease)',
+          '&:hover': { boxShadow: '0 0 0 2px var(--ds-blue-200)' },
+        }}
+      >
+        <Box sx={{ ...KG_CHIP_CELL_SX, backgroundColor: 'var(--ds-background-100)', color: 'var(--ds-gray-700)' }}>
+          <Box component='span' sx={KG_CHIP_ELLIPSIS_SX}>
+            {chipKey}
+          </Box>
+        </Box>
+        <Box
+          component='span'
+          sx={{
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            px: 'var(--ds-space-2)',
+            backgroundColor: 'var(--ds-blue-100)',
+            color: 'var(--ds-blue-700)',
+            fontSize: 'var(--ds-text-caption)',
+          }}
+        >
+          {operator}
+        </Box>
+        <Box sx={{ ...KG_CHIP_CELL_SX, backgroundColor: 'var(--ds-gray-100)', color: 'var(--ds-gray-700)' }}>
+          <Box component='span' sx={KG_CHIP_ELLIPSIS_SX}>
+            {value}
+          </Box>
+        </Box>
+        <Box
+          component='button'
+          type='button'
+          aria-label='Remove filter'
+          onClick={onDismiss}
+          sx={{
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            px: 'var(--ds-space-1)',
+            border: 'none',
+            background: 'transparent',
+            cursor: 'pointer',
+            color: 'var(--ds-gray-400)',
+            transition: 'color 120ms var(--ds-motion-ease), background-color 120ms var(--ds-motion-ease)',
+            '&:hover': { color: 'var(--ds-red-600)', backgroundColor: 'var(--ds-red-100)' },
+          }}
+        >
+          <CloseIcon sx={{ fontSize: 'var(--ds-text-body)' }} />
+        </Box>
+      </Box>
+    </DsTooltip>
+  );
+};
+
+// Rich "Filter by <heading>" help popover — guided flow + quick input + keyboard
+// shortcuts + tips. Exported so the KG section-header ⓘ renders the same content
+// the in-field ⓘ shows for logs / service-map (kept in sync with the inline copy
+// in the render below).
+export const PropertyFilterHelp = ({ heading }) => (
+  <Box>
+    <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)', mb: 0 }}>
+      Filter by {heading}
+    </Typography>
+    <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mb: ds.space[3] }}>
+      {heading === 'Attribute'
+        ? 'Attributes are resource-level metadata (e.g. cluster, namespace, pod).'
+        : 'Labels classify nodes by type (e.g. service, host, pod).'}
+    </Typography>
+
+    <Typography
+      sx={{
+        fontSize: 'var(--ds-text-caption)',
+        fontWeight: 'var(--ds-font-weight-semibold)',
+        color: 'var(--ds-gray-600)',
+        mb: ds.space[1],
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px',
+      }}
+    >
+      Guided Flow
+    </Typography>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+      {[
+        `Click the selector and pick a ${heading.toLowerCase()} from the dropdown`,
+        'Choose an operator (=, !=, LIKE, etc.)',
+        `Select a value for that ${heading.toLowerCase()}`,
+        'Filter is applied automatically as a chip',
+      ].map((text, i) => (
+        <Box key={text} sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
+          <Typography
+            sx={{
+              fontSize: 'var(--ds-text-caption)',
+              fontWeight: 'var(--ds-font-weight-semibold)',
+              color: 'var(--ds-blue-600)',
+              background: 'var(--ds-blue-100)',
+              padding: 'var(--ds-space-1)',
+              borderRadius: 'var(--ds-radius-pill)',
+              width: ds.space[4],
+              minWidth: ds.space[4],
+              textAlign: 'center',
+            }}
+          >
+            {i + 1}
+          </Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>{text}</Typography>
+        </Box>
+      ))}
+    </Box>
+
+    {/* Free-text shortcut */}
+    <Box sx={{ mt: ds.space[3], pt: ds.space[3], borderTop: '1px solid var(--ds-blue-300)' }}>
+      <Typography
+        sx={{
+          fontSize: 'var(--ds-text-caption)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
+          color: 'var(--ds-gray-600)',
+          mb: ds.space[1],
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px',
+        }}
+      >
+        Quick Input
+      </Typography>
+      <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)', mb: ds.space[1] }}>
+        Type the full filter directly and press <strong>Enter</strong>:
+      </Typography>
+      <Box
+        sx={{
+          backgroundColor: 'var(--ds-blue-100)',
+          borderRadius: 'var(--ds-radius-sm)',
+          padding: 'var(--ds-space-1) var(--ds-space-2)',
+          fontFamily: 'monospace',
+          fontSize: 'var(--ds-text-small)',
+          color: 'var(--ds-gray-700)',
+        }}
+      >
+        service.name = my-api
+      </Box>
+    </Box>
+
+    {/* Keyboard shortcuts */}
+    <Box sx={{ mt: ds.space[3], pt: ds.space[3], borderTop: '1px solid var(--ds-blue-300)' }}>
+      <Typography
+        sx={{
+          fontSize: 'var(--ds-text-caption)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
+          color: 'var(--ds-gray-600)',
+          mb: ds.space[1],
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px',
+        }}
+      >
+        Keyboard Shortcuts
+      </Typography>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+        {[
+          { key: '↑ ↓', desc: 'Navigate suggestions' },
+          { key: 'Tab', desc: 'Select highlighted suggestion' },
+          { key: 'Enter', desc: 'Confirm selection or apply filter' },
+          { key: 'Esc', desc: 'Dismiss suggestions' },
+        ].map(({ key, desc }) => (
+          <Box key={key} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+            <Typography
+              component='span'
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                fontFamily: 'monospace',
+                color: 'var(--ds-gray-700)',
+                backgroundColor: 'var(--ds-blue-100)',
+                border: '1px solid var(--ds-blue-300)',
+                borderRadius: 'var(--ds-radius-sm)',
+                padding: 'var(--ds-space-1) var(--ds-space-1)',
+                minWidth: ds.space[6],
+                textAlign: 'center',
+              }}
+            >
+              {key}
+            </Typography>
+            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>{desc}</Typography>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+
+    {/* Multiple filters tip */}
+    <Box sx={{ mt: ds.space[3], pt: ds.space[3], borderTop: '1px solid var(--ds-blue-300)' }}>
+      <Typography
+        sx={{
+          fontSize: 'var(--ds-text-caption)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
+          color: 'var(--ds-gray-600)',
+          mb: ds.space[1],
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px',
+        }}
+      >
+        Tips
+      </Typography>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>
+            Add multiple filters to narrow results — all filters must match (AND)
+          </Typography>
+        </Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+          <CloseIcon sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', minWidth: ds.space.mul(0, 7) }} />
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>Click × on any chip to remove that filter</Typography>
+        </Box>
+      </Box>
+    </Box>
+  </Box>
+);
+
 const DEFAULT_QUERY_BLOCK = () => ({
   id: 0,
   query_key: uuidv4(),
@@ -201,6 +442,11 @@ const LogQueryBuilderAutocomplete = ({
 
   const [metricsList, setMetricsList] = useState([]);
   const [isMetricsLoading, setIsMetricsLoading] = useState(false);
+
+  // KG filters render as flat fields (like the sibling Account / Node Type
+  // dropdowns) with segmented chips and a neutral lead icon. Everything below is
+  // gated on this so the shared logs / service-map UIs are untouched.
+  const isKg = logProvider === 'knowledge_graph';
 
   // Query block management
   const addQueryBlock = () => {
@@ -304,7 +550,7 @@ const LogQueryBuilderAutocomplete = ({
     setCurrentStep('label');
     setPendingChip({ label: '', operator: '', value: '' });
     setLabels([]);
-    setValues([]);
+    setValues({});
     setLoadingValues(false);
     setLoadingLabels(false);
     setMetricsList([]);
@@ -317,6 +563,27 @@ const LogQueryBuilderAutocomplete = ({
   useEffect(() => {
     resetStates();
   }, [accountId]);
+
+  // Switching the log provider (provider switcher) must not leave the previous
+  // provider's labels/values in the filter. The fetch effects below only
+  // *replace* labels on a non-empty response, so a new provider that returns an
+  // empty/slow/errored label response would otherwise leave the old provider's
+  // labels visible. Clear the provider-specific transient state here (before the
+  // fetch effects run) so the builder always reflects the active provider; the
+  // fetch effects then repopulate it. Query chips are owned by the parent.
+  useEffect(() => {
+    setLabels([]);
+    setValues({});
+    setInputValue('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setIsSuggestionsCapped(false);
+    setSelectedIndex(-1);
+    setCurrentStep('label');
+    setPendingChip({ label: '', operator: '', value: '' });
+    setMetricsList([]);
+    setIsMetricsLoading(false);
+  }, [logProvider]);
 
   // Cleanup debounce timer on unmount
   useEffect(() => {
@@ -1199,7 +1466,7 @@ const LogQueryBuilderAutocomplete = ({
   const getPlaceholder = () => {
     switch (currentStep) {
       case 'label':
-        return 'Type label name or select from suggestions.';
+        return isKg ? `Type ${heading.toLowerCase()} name or select` : 'Type label name or select from suggestions.';
       case 'operator':
         return `Type operator for "${pendingChip.label}" or select from suggestions.`;
       case 'value':
@@ -1256,10 +1523,10 @@ const LogQueryBuilderAutocomplete = ({
               flexDirection: 'column',
               width: width,
               gap: 'var(--ds-space-2)',
-              marginTop: 'var(--ds-space-1)',
-              padding: 'var(--ds-space-3) var(--ds-space-4)',
-              border: '1px solid var(--ds-gray-300)',
-              borderRadius: 'var(--ds-radius-md)',
+              marginTop: isKg ? 0 : 'var(--ds-space-1)',
+              padding: isKg ? 0 : 'var(--ds-space-3) var(--ds-space-4)',
+              border: isKg ? 'none' : '1px solid var(--ds-gray-300)',
+              borderRadius: isKg ? 0 : 'var(--ds-radius-md)',
             }}
             onClick={() => setActiveBlockId(block.id)}
           >
@@ -1325,7 +1592,7 @@ const LogQueryBuilderAutocomplete = ({
                   />
                 )}
 
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], width: '90%' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], width: isKg ? '100%' : '90%' }}>
                   <Box sx={{ position: 'relative', flex: 1 }}>
                     <TextField
                       inputRef={activeBlockId === block.id ? inputRef : null}
@@ -1351,18 +1618,30 @@ const LogQueryBuilderAutocomplete = ({
                       InputProps={{
                         startAdornment: (
                           <InputAdornment position='start'>
-                            <Typography
-                              variant='subtitle2'
-                              sx={{
-                                fontSize: 'var(--ds-text-small)',
-                                mr: 'var(--ds-space-1)',
-                                fontWeight: 'medium',
-                                color: 'var(--ds-gray-700)',
-                              }}
-                            >
-                              {heading}:
-                            </Typography>
-                            {activeBlockId === block.id && getStepIcon()}{' '}
+                            {isKg ? (
+                              activeBlockId === block.id && (loadingLabels || loadingValues) ? (
+                                <CircularProgress size={16} />
+                              ) : heading === 'Attribute' ? (
+                                <FilterIcon sx={{ fontSize: 'var(--ds-text-heading)', color: 'var(--ds-gray-400)' }} />
+                              ) : (
+                                <LabelIcon sx={{ fontSize: 'var(--ds-text-heading)', color: 'var(--ds-gray-400)' }} />
+                              )
+                            ) : (
+                              <>
+                                <Typography
+                                  variant='subtitle2'
+                                  sx={{
+                                    fontSize: 'var(--ds-text-small)',
+                                    mr: 'var(--ds-space-1)',
+                                    fontWeight: 'medium',
+                                    color: 'var(--ds-gray-700)',
+                                  }}
+                                >
+                                  {heading}:
+                                </Typography>
+                                {activeBlockId === block.id && getStepIcon()}{' '}
+                              </>
+                            )}
                           </InputAdornment>
                         ),
                         sx: {
@@ -1507,7 +1786,7 @@ const LogQueryBuilderAutocomplete = ({
                     </Popper>
                   </Box>
 
-                  {activeBlockId === block.id && (
+                  {!isKg && activeBlockId === block.id && (
                     <DsTooltip
                       placement='bottom-start'
                       tooltipStyle={{ maxWidth: ds.space.mul(0, 180), padding: 'var(--ds-space-4)' }}
@@ -1725,63 +2004,90 @@ const LogQueryBuilderAutocomplete = ({
 
             {block.queryItems.length > 0 && (
               <Box sx={{ mt: ds.space[2], width: '100%' }}>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[2], alignItems: 'center' }}>
-                  {block.queryItems.slice(0, CHIP_LIMIT).map((chip) => (
-                    <DsChip
-                      key={chip.id}
-                      variant='tag'
-                      size='md'
-                      tone='neutral'
-                      displayTooltip
-                      tooltipCharLimit={CHIP_CHAR_LIMIT}
-                      onDismiss={() => handleChipDelete(block, chip.id)}
-                    >
-                      {`${chip.label} ${getOperatorDisplayLabel(chip.operator, operatorDescriptors)} ${chip.value}`}
-                    </DsChip>
-                  ))}
-                  {block.queryItems.length > CHIP_LIMIT && (
-                    <DsTooltip
-                      placement='top'
-                      maxWidth={ds.space.mul(0, 180)}
-                      tooltipStyle={{ padding: 'var(--ds-space-2)' }}
-                      title={
-                        <Box
-                          sx={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'flex-start',
-                            gap: 'var(--ds-space-1)',
-                            maxHeight: ds.space.mul(0, 140),
-                            overflowY: 'auto',
-                            '&::-webkit-scrollbar': { width: ds.space[1] },
-                            '&::-webkit-scrollbar-track': { background: 'transparent' },
-                            '&::-webkit-scrollbar-thumb': { background: 'var(--ds-gray-300)', borderRadius: 'var(--ds-radius-sm)' },
-                          }}
-                        >
-                          {block.queryItems.slice(CHIP_LIMIT).map((chip) => (
-                            <DsChip
-                              key={chip.id}
-                              variant='tag'
-                              size='md'
-                              tone='neutral'
-                              displayTooltip
-                              tooltipCharLimit={CHIP_CHAR_LIMIT}
-                              onDismiss={() => handleChipDelete(block, chip.id)}
-                            >
-                              {`${chip.label} ${getOperatorDisplayLabel(chip.operator, operatorDescriptors)} ${chip.value}`}
-                            </DsChip>
-                          ))}
+                {isKg ? (
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexDirection: 'row',
+                      flexWrap: 'wrap',
+                      alignItems: 'flex-start',
+                      gap: 'var(--ds-space-1)',
+                      maxHeight: ds.space.mul(0, 66),
+                      overflowY: 'auto',
+                      '&::-webkit-scrollbar': { width: ds.space[1] },
+                      '&::-webkit-scrollbar-track': { backgroundColor: 'transparent' },
+                      '&::-webkit-scrollbar-thumb': { backgroundColor: 'var(--ds-gray-300)', borderRadius: 'var(--ds-radius-sm)' },
+                    }}
+                  >
+                    {block.queryItems.map((chip) => (
+                      <KgSegmentedChip
+                        key={chip.id}
+                        chipKey={chip.label}
+                        operator={getOperatorDisplayLabel(chip.operator, operatorDescriptors)}
+                        value={chip.value}
+                        onDismiss={() => handleChipDelete(block, chip.id)}
+                      />
+                    ))}
+                  </Box>
+                ) : (
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[2], alignItems: 'center' }}>
+                    {block.queryItems.slice(0, CHIP_LIMIT).map((chip) => (
+                      <DsChip
+                        key={chip.id}
+                        variant='tag'
+                        size='md'
+                        tone='neutral'
+                        displayTooltip
+                        tooltipCharLimit={CHIP_CHAR_LIMIT}
+                        onDismiss={() => handleChipDelete(block, chip.id)}
+                      >
+                        {`${chip.label} ${getOperatorDisplayLabel(chip.operator, operatorDescriptors)} ${chip.value}`}
+                      </DsChip>
+                    ))}
+                    {block.queryItems.length > CHIP_LIMIT && (
+                      <DsTooltip
+                        placement='top'
+                        maxWidth={ds.space.mul(0, 180)}
+                        tooltipStyle={{ padding: 'var(--ds-space-2)' }}
+                        title={
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'flex-start',
+                              gap: 'var(--ds-space-1)',
+                              maxHeight: ds.space.mul(0, 140),
+                              overflowY: 'auto',
+                              '&::-webkit-scrollbar': { width: ds.space[1] },
+                              '&::-webkit-scrollbar-track': { background: 'transparent' },
+                              '&::-webkit-scrollbar-thumb': { background: 'var(--ds-gray-300)', borderRadius: 'var(--ds-radius-sm)' },
+                            }}
+                          >
+                            {block.queryItems.slice(CHIP_LIMIT).map((chip) => (
+                              <DsChip
+                                key={chip.id}
+                                variant='tag'
+                                size='md'
+                                tone='neutral'
+                                displayTooltip
+                                tooltipCharLimit={CHIP_CHAR_LIMIT}
+                                onDismiss={() => handleChipDelete(block, chip.id)}
+                              >
+                                {`${chip.label} ${getOperatorDisplayLabel(chip.operator, operatorDescriptors)} ${chip.value}`}
+                              </DsChip>
+                            ))}
+                          </Box>
+                        }
+                      >
+                        <Box component='span' sx={{ display: 'inline-flex' }}>
+                          <DsChip tone='neutral' size='xs' variant='count' shape='rect'>
+                            {`+${block.queryItems.length - CHIP_LIMIT}`}
+                          </DsChip>
                         </Box>
-                      }
-                    >
-                      <Box component='span' sx={{ display: 'inline-flex' }}>
-                        <DsChip tone='neutral' size='xs' variant='count' shape='rect'>
-                          {`+${block.queryItems.length - CHIP_LIMIT}`}
-                        </DsChip>
-                      </Box>
-                    </DsTooltip>
-                  )}
-                </Box>
+                      </DsTooltip>
+                    )}
+                  </Box>
+                )}
               </Box>
             )}
           </Box>

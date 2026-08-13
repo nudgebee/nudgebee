@@ -18,6 +18,11 @@ func TestNormalizedCandidates(t *testing.T) {
 	// Single-digit version + date must NOT be mangled (the date is not a version).
 	assert.NotContains(t, normalizedCandidates("claude-opus-4-20250514"), "claude-opus-4.20250514")
 
+	// OpenAI's dashed date suffix (-YYYY-MM-DD) is stripped to the undated name, so a
+	// client that pins a dated OpenAI model still prices against the catalog entry.
+	assert.Contains(t, normalizedCandidates("gpt-4o-mini-2024-07-18"), "gpt-4o-mini")
+	assert.Contains(t, normalizedCandidates("gpt-5-2025-08-07"), "gpt-5")
+
 	// Already-canonical name yields no misleading candidates.
 	assert.Empty(t, normalizedCandidates("gpt-4o-mini"))
 }
