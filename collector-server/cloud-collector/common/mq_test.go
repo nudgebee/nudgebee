@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -213,7 +214,7 @@ func TestProcessMessage_ConsumerTimeoutRedeliveryDiscardedWithoutRerun(t *testin
 
 	processorCalled := false
 	d := rabbitmq.Delivery{Delivery: amqp.Delivery{Redelivered: true, Body: body}}
-	action := processMessageAndDetermineAction(d, func(data []byte) error {
+	action := processMessageAndDetermineAction(d, func(_ context.Context, data []byte) error {
 		processorCalled = true
 		return nil
 	}, "test_queue", "test_exchange")
@@ -234,7 +235,7 @@ func TestProcessMessage_CrashRedeliveryKeepsCrashPath(t *testing.T) {
 
 	processorCalled := false
 	d := rabbitmq.Delivery{Delivery: amqp.Delivery{Redelivered: true, Body: body, Headers: amqp.Table{crashCountHeader: int64(1)}}}
-	action := processMessageAndDetermineAction(d, func(data []byte) error {
+	action := processMessageAndDetermineAction(d, func(_ context.Context, data []byte) error {
 		processorCalled = true
 		return nil
 	}, "test_queue", "test_exchange")
