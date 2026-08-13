@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 
@@ -78,6 +79,17 @@ func TestCloudObservabilityAgentPrompts(t *testing.T) {
 			},
 		},
 		{
+			name:  "aws_metrics",
+			agent: aws.NewAwsMetricsAgent("acct-1"),
+			mustContain: []string{
+				"aws cloudwatch get-metric-statistics", // primary read
+				"aws cloudwatch list-metrics",          // discovery
+				"--namespace",                          // bounding
+				"--period",
+				"workspace file", // large-output offload
+			},
+		},
+		{
 			name:  "gcp_logs",
 			agent: GcpLogsAgent{accountId: "acct-1"},
 			mustContain: []string{
@@ -103,6 +115,15 @@ func TestCloudObservabilityAgentPrompts(t *testing.T) {
 			},
 		},
 		{
+			name:  "aws_logs",
+			agent: aws.NewAwsLogsAgent("acct-1"),
+			mustContain: []string{
+				"aws logs filter-log-events",   // primary read
+				"aws logs describe-log-groups", // discovery
+				"workspace file",               // large-output offload
+			},
+		},
+		{
 			name:  "gcp_traces",
 			agent: GcpTracesAgent{accountId: "acct-1"},
 			mustContain: []string{
@@ -122,6 +143,15 @@ func TestCloudObservabilityAgentPrompts(t *testing.T) {
 				"ago(",                                   // bounding (KQL window)
 				"take ",                                  // bounding (KQL rows)
 				"workspace file",                         // large-output offload
+			},
+		},
+		{
+			name:  "aws_traces",
+			agent: aws.NewAwsTracesAgent("acct-1"),
+			mustContain: []string{
+				"aws xray get-trace-summaries", // primary read
+				"aws xray batch-get-traces",    // detail read
+				"workspace file",               // large-output offload
 			},
 		},
 	}

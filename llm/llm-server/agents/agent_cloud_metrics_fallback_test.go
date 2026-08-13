@@ -3,6 +3,7 @@ package agents
 import (
 	"testing"
 
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -12,10 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNewMetricsAgent_CloudFallbackRouting verifies that a GCP/Azure metrics
+// TestNewMetricsAgent_CloudFallbackRouting verifies that a GCP/Azure/AWS metrics
 // provider (resolved from the account's cloud type by cloudFallbackProvider)
 // routes the metrics dispatcher to the dedicated CLI metrics sub-agent, and that
-// AWS / unknown providers keep the existing Prometheus default.
+// unknown providers keep the existing Prometheus default.
 func TestNewMetricsAgent_CloudFallbackRouting(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 
@@ -28,7 +29,8 @@ func TestNewMetricsAgent_CloudFallbackRouting(t *testing.T) {
 		{"gcp mixed case", "GCP", GcpMetricsAgentName},
 		{"azure lowercase", "azure", AzureMetricsAgentName},
 		{"azure mixed case", "Azure", AzureMetricsAgentName},
-		{"aws keeps prometheus", "aws", PrometheusAgentName},
+		{"aws lowercase", "aws", aws.AwsMetricsAgentName},
+		{"aws mixed case", "AWS", aws.AwsMetricsAgentName},
 		{"empty keeps prometheus", "", PrometheusAgentName},
 		{"unknown keeps prometheus", "something-else", PrometheusAgentName},
 	}
@@ -61,4 +63,14 @@ func TestAzureMetricsAgent_Shape(t *testing.T) {
 	names := toolNames(a.GetSupportedTools(security.NewRequestContextForSuperAdmin()))
 	assert.Contains(t, names, "azure_execute", "azure metrics agent must expose the az CLI tool")
 	assert.Contains(t, names, toolcore.ToolExecuteShellCommand, "azure metrics agent needs shell_execute for jq post-processing")
+}
+
+func TestAwsMetricsAgent_Shape(t *testing.T) {
+	a := aws.NewAwsMetricsAgent("acct-1")
+	assert.Equal(t, aws.AwsMetricsAgentName, a.GetName())
+	assert.Equal(t, core.AgentPlannerTypeReAct, a.GetPlannerType())
+
+	names := toolNames(a.GetSupportedTools(security.NewRequestContextForSuperAdmin()))
+	assert.Contains(t, names, "aws_execute", "aws metrics agent must expose the aws CLI tool")
+	assert.Contains(t, names, toolcore.ToolExecuteShellCommand, "aws metrics agent needs shell_execute for jq post-processing")
 }

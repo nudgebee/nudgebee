@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"log/slog"
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -48,13 +49,13 @@ func traceAgentV2Enabled() bool {
 func newTracesAgent(ctx *security.RequestContext, accountId string, primaryAgent services_server.ObservabilityProvider) core.NBAgent {
 	var agentsToTry []core.NBAgent
 
-	provider := strings.ToLower(primaryAgent.Provider)
+	provider := strings.ToLower(strings.TrimSpace(primaryAgent.Provider))
 	isClickhouse := provider == "clickhouse" || provider == "otel_clickhouse" || provider == "last9"
 	isDatadog := provider == "datadog"
-	// Cloud-only GCP/Azure accounts (no first-class trace provider) read traces
+	// Cloud-only GCP/Azure/AWS accounts (no first-class trace provider) read traces
 	// via the cloud CLI/REST API, not the canonical services-server path — so
 	// they stay on their dedicated agents like ClickHouse/Datadog.
-	isCloudCLI := provider == "gcp" || provider == "azure"
+	isCloudCLI := provider == "gcp" || provider == "azure" || provider == "aws"
 
 	// Integration-agnostic (v2) routing: when enabled, every where-clause-capable
 	// provider goes through the canonical TracesDefaultAgentV2 (llm-server emits one
@@ -83,6 +84,9 @@ func newTracesAgent(ctx *security.RequestContext, accountId string, primaryAgent
 		agentsToTry = append(agentsToTry, TracesChronosphereAgent{accountId: accountId})
 	case "datadog":
 		agentsToTry = append(agentsToTry, NewDatadogTracesAgent(accountId))
+	case "aws":
+		// Cloud-only AWS account — read X-Ray traces via AWS CLI.
+		agentsToTry = append(agentsToTry, aws.NewAwsTracesAgent(accountId))
 	case "gcp":
 		// Cloud-only GCP account — read Cloud Trace via the v1 REST API (gcloud
 		// token + curl). GetTraceProvider resolves this from the account's cloud

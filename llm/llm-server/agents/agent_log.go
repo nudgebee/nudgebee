@@ -2,6 +2,7 @@ package agents
 
 import (
 	"fmt"
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -100,6 +101,8 @@ func getLogAgent(ctx *security.RequestContext, accountId string) (core.NBAgent, 
 	// LogAgent's kubectl/Loki path. GetLogProvider resolves these from the
 	// account's cloud type (see cloudFallbackProvider).
 	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
+	case "aws":
+		return aws.NewAwsLogsAgent(accountId), nil
 	case "gcp":
 		return newGcpLogsAgent(accountId), nil
 	case "azure":

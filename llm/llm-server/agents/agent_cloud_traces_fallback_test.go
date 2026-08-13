@@ -3,6 +3,7 @@ package agents
 import (
 	"testing"
 
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -12,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNewTracesAgent_CloudFallbackRouting verifies a GCP/Azure trace provider
+// TestNewTracesAgent_CloudFallbackRouting verifies a GCP/Azure/AWS trace provider
 // routes the trace dispatcher to the dedicated CLI trace sub-agent. The
 // fallbackTracesAgent wraps the primary agent, so we assert on the wrapped
 // agent's name.
@@ -28,6 +29,8 @@ func TestNewTracesAgent_CloudFallbackRouting(t *testing.T) {
 		{"gcp mixed case", "GCP", GcpTracesAgentName},
 		{"azure lowercase", "azure", AzureTracesAgentName},
 		{"azure mixed case", "Azure", AzureTracesAgentName},
+		{"aws lowercase", "aws", aws.AwsTracesAgentName},
+		{"aws mixed case", "AWS", aws.AwsTracesAgentName},
 	}
 
 	for _, c := range cases {
@@ -59,4 +62,14 @@ func TestAzureTracesAgent_Shape(t *testing.T) {
 	names := toolNames(a.GetSupportedTools(security.NewRequestContextForSuperAdmin()))
 	assert.Contains(t, names, "azure_execute", "azure traces agent must expose the az CLI tool")
 	assert.Contains(t, names, toolcore.ToolExecuteShellCommand, "azure traces agent needs shell_execute for jq post-processing")
+}
+
+func TestAwsTracesAgent_Shape(t *testing.T) {
+	a := aws.NewAwsTracesAgent("acct-1")
+	assert.Equal(t, aws.AwsTracesAgentName, a.GetName())
+	assert.Equal(t, core.AgentPlannerTypeReAct, a.GetPlannerType())
+
+	names := toolNames(a.GetSupportedTools(security.NewRequestContextForSuperAdmin()))
+	assert.Contains(t, names, "aws_execute", "aws traces agent must expose the aws CLI tool")
+	assert.Contains(t, names, toolcore.ToolExecuteShellCommand, "aws traces agent needs shell_execute for jq post-processing")
 }

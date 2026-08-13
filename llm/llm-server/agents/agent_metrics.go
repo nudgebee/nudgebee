@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"log/slog"
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -29,7 +30,7 @@ func init() {
 func newMetricsAgent(ctx *security.RequestContext, accountId string, provider services_server.ObservabilityProvider) core.NBAgent {
 	var primaryAgent core.NBAgent
 
-	switch strings.ToLower(provider.Provider) {
+	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
 	case "datadog":
 		if metricsAgent, ok := core.GetNBAgent(ctx, "datadog_metrics", accountId, ""); ok {
 			primaryAgent = metricsAgent
@@ -42,6 +43,10 @@ func newMetricsAgent(ctx *security.RequestContext, accountId string, provider se
 		} else {
 			slog.Warn("metrics: elasticsearch metrics agent not found, falling back to prometheus", "accountId", accountId)
 		}
+	case "aws":
+		// Cloud-only AWS account with no first-class metrics provider — read CloudWatch
+		// metrics via the aws CLI.
+		primaryAgent = aws.NewAwsMetricsAgent(accountId)
 	case "gcp":
 		// Cloud-only GCP account with no first-class metrics provider — read Cloud
 		// Monitoring via the gcloud CLI (GetMetricsProvider resolves this from the
