@@ -33,7 +33,6 @@ import {
   resolveFieldType,
   type SchemaProperty,
 } from './utils/fieldTypeUtils';
-import { getUpstreamSuggestedValues } from './utils/getUpstreamSuggestedValues';
 import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';

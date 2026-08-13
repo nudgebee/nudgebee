@@ -58,6 +58,27 @@ const PriorityPinControl: React.FC<PriorityPinControlProps> = ({
   }
 
   const pin = async (priority: string): Promise<void> => {
+    if (priority === currentPriority) return;
+
+    const previousPriority = currentPriority ?? null;
+    const previousScore = currentScore ?? null;
+    onChanged?.(priority, PRIORITY_MIN_SCORE[priority] ?? null); // optimistic update
+
+    try {
+      const res = await apiTriage.classifyEvent({
+        event_id: eventId,
+        classification: 'true_positive',
+        reason_code: 'correct_severity',
+        corrected_priority: priority,
+        apply_scope: scope,
+        apply_to_existing: scope === 'this_fingerprint',
+        confirmed: true,
+        // A priority override is not a triage-state assertion: keep nb_status as-is
+        // instead of letting the classify pipeline force it to ACTION_REQUIRED.
+        preserve_status: true,
+      });
+      if (!res?.success) {
+        snackbar.error('Failed to set priority');
         onChanged?.(previousPriority, previousScore); // revert
       }
     } catch {
@@ -85,6 +106,7 @@ const PriorityPinControl: React.FC<PriorityPinControlProps> = ({
       items={PRIORITY_OPTIONS.map((p) => ({
         id: p.value,
         label: p.label,
+        active: p.value === currentPriority,
         onSelect: () => pin(p.value),
       }))}
     />
