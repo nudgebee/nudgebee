@@ -23,6 +23,7 @@ var swaggerStubs = []func(){
 	swaggerWebhookGcpMonitoring,
 	swaggerWebhookDynatrace,
 	swaggerWebhookSolarwinds,
+	swaggerWebhookElasticsearch,
 	swaggerWebhookWorkflow,
 	swaggerWebhookAzureEventGrid,
 	swaggerCron,
@@ -202,6 +203,18 @@ func swaggerWebhookDynatrace() {}
 // @Failure      400 {object} ActionError
 // @Router       /api/webhooks/solarwinds [post]
 func swaggerWebhookSolarwinds() {}
+
+// swaggerWebhookElasticsearch godoc
+// @Summary      Elasticsearch / Kibana alerting webhook
+// @Description  Receives alerts from a Kibana Alerting Webhook connector (or an Elasticsearch Watcher webhook action) shaped to the canonical body documented in integrations/elasticsearch_webhook.go.
+// @Tags         webhooks
+// @Accept       json
+// @Produce      json
+// @Param        payload body WebhookPayload true "Kibana alerting payload"
+// @Success      200 {object} SuccessMessage
+// @Failure      400 {object} ActionError
+// @Router       /api/webhooks/elasticsearch [post]
+func swaggerWebhookElasticsearch() {}
 
 // swaggerWebhookWorkflow godoc
 // @Summary      Inbound workflow trigger webhook

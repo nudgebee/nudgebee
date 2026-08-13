@@ -88,6 +88,7 @@ var eventAnalysisSources = map[string]bool{
 	"dynatrace_webhook":               true,
 	"solarwinds_webhook":              true,
 	"splunk_webhook":                  true,
+	"elasticsearch_webhook":           true,
 	"prometheus_alertmanager_webhook": true,
 	"workflow_webhook":                true,
 }
