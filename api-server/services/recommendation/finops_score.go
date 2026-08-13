@@ -2,12 +2,14 @@ package recommendation
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
 
@@ -315,37 +317,6 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		return err
 	}
 
-	// resource_name + namespace are derived from the cloud_resourses join (the same
-	// source the recommendations view uses), NOT the raw recommendation JSONB: that
-	// JSONB's shape varies per rule type and usually omits the namespace entirely
-	// (e.g. pod_right_sizing keys by workload name and carries no namespace at all),
-	// so parsing it resolves nothing.
-	rows, err := dbms.Db.Queryx(`
-		SELECT
-			r.id, r.tenant_id, r.cloud_account_id, r.category, r.rule_name,
-			r.severity, r.estimated_savings, r.created_at,
-			cr.name AS resource_name,
-			CASE
-				WHEN cr.meta ->> 'namespace' IS NOT NULL THEN cr.meta ->> 'namespace'
-				WHEN cr.meta -> 'config' ->> 'namespace' IS NOT NULL THEN cr.meta -> 'config' ->> 'namespace'
-				WHEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace'
-				WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
-				ELSE r.recommendation ->> 'namespace'
-			END AS resource_k8s_namespace,
-			r.resource_id
-		FROM recommendation r
-		LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
-		WHERE r.status = 'Open'`)
-	if err != nil {
-		ctx.GetLogger().Error("error querying recommendations for score recompute", "error", err)
-		return err
-	}
-	defer func() {
-		if cerr := rows.Close(); cerr != nil {
-			ctx.GetLogger().Error("error closing rows", "error", cerr)
-		}
-	}()
-
 	// Collect all computed scores in memory for batch update
 	type scoreRow struct {
 		id        string
@@ -355,8 +326,8 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	}
 	var batch []scoreRow
 
-	// The scan loop below does nothing but read rows, so the SELECT's cursor is
-	// released as soon as the last row lands. Scoring and blast-radius annotation
+	// The scan loop below does nothing but read rows, so each SELECT's cursor is
+	// released as soon as its last row lands. Scoring and blast-radius annotation
 	// run afterwards, in a second pass: annotation issues its own knowledge-graph
 	// queries on this same pool, and doing that from inside `rows.Next()` pinned
 	// the connection for the whole recompute — Postgres bills time blocked on a
@@ -379,21 +350,102 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	var recs []recRow
 
 	errCount := 0
-	for rows.Next() {
-		var r recRow
-		if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &r.createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID); err != nil {
-			ctx.GetLogger().Error("error scanning recommendation row", "error", err)
-			errCount++
-			continue
+	// Read the Open set in bounded keyset pages rather than one unbounded
+	// statement. The cron still scores every Open row, but a single ~180k-row
+	// SELECT ran ~69s — long enough to trip the slow-query alert and to pin one
+	// snapshot open across the whole read, holding back vacuum on a table this
+	// size. Paging on (created_at, id) rides idx_recommendation_open_created_at_id
+	// (migration V749, partial on status='Open'), the same cursor pattern
+	// runbook-server's WorkflowDao.FindNewRecommendations already uses, so each
+	// page is an ordered range scan that short-circuits at LIMIT.
+	//
+	// readUntil pins the upper bound at start: rows created while the walk is in
+	// flight are out of scope for this run (they were scored at insert time) and
+	// pinning it makes termination independent of the insert rate.
+	const readPageSize = 2000
+	readUntil := time.Now()
+	var (
+		cursorCreatedAt time.Time
+		cursorID        string
+		hasCursor       bool
+	)
+
+	// resource_name + namespace are derived from the cloud_resourses join (the same
+	// source the recommendations view uses), NOT the raw recommendation JSONB: that
+	// JSONB's shape varies per rule type and usually omits the namespace entirely
+	// (e.g. pod_right_sizing keys by workload name and carries no namespace at all),
+	// so parsing it resolves nothing.
+	const recomputeSelect = `
+		SELECT
+			r.id, r.tenant_id, r.cloud_account_id, r.category, r.rule_name,
+			r.severity, r.estimated_savings, r.created_at,
+			cr.name AS resource_name,
+			CASE
+				WHEN cr.meta ->> 'namespace' IS NOT NULL THEN cr.meta ->> 'namespace'
+				WHEN cr.meta -> 'config' ->> 'namespace' IS NOT NULL THEN cr.meta -> 'config' ->> 'namespace'
+				WHEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace'
+				WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
+				ELSE r.recommendation ->> 'namespace'
+			END AS resource_k8s_namespace,
+			r.resource_id
+		FROM recommendation r
+		LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
+		WHERE r.status = 'Open' AND r.created_at <= $1`
+
+	for {
+		var (
+			rows *sqlx.Rows
+			qerr error
+		)
+		if hasCursor {
+			rows, qerr = dbms.Db.Queryx(recomputeSelect+`
+			  AND (r.created_at, r.id) > ($2, $3::uuid)
+			ORDER BY r.created_at ASC, r.id ASC
+			LIMIT $4`, readUntil, cursorCreatedAt, cursorID, readPageSize)
+		} else {
+			rows, qerr = dbms.Db.Queryx(recomputeSelect+`
+			ORDER BY r.created_at ASC, r.id ASC
+			LIMIT $2`, readUntil, readPageSize)
 		}
-		recs = append(recs, r)
-	}
-	if err := rows.Err(); err != nil {
-		ctx.GetLogger().Error("error iterating recommendation rows for score recompute", "error", err)
-		return err
-	}
-	if cerr := rows.Close(); cerr != nil {
-		ctx.GetLogger().Error("error closing rows", "error", cerr)
+		if qerr != nil {
+			ctx.GetLogger().Error("error querying recommendations for score recompute", "error", qerr)
+			return qerr
+		}
+
+		pageCount := 0
+		advanced := false
+		for rows.Next() {
+			var r recRow
+			var createdAt time.Time
+			pageCount++
+			if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID); err != nil {
+				ctx.GetLogger().Error("error scanning recommendation row", "error", err)
+				errCount++
+				continue
+			}
+			r.createdAt = &createdAt
+			cursorCreatedAt, cursorID, hasCursor, advanced = createdAt, r.id, true, true
+			recs = append(recs, r)
+		}
+		if err := rows.Err(); err != nil {
+			ctx.GetLogger().Error("error iterating recommendation rows for score recompute", "error", err)
+			if cerr := rows.Close(); cerr != nil {
+				ctx.GetLogger().Error("error closing rows", "error", cerr)
+			}
+			return err
+		}
+		if cerr := rows.Close(); cerr != nil {
+			ctx.GetLogger().Error("error closing rows", "error", cerr)
+		}
+
+		if pageCount < readPageSize {
+			break
+		}
+		if !advanced {
+			// Every row in a full page failed to scan, so the cursor did not move
+			// and the next page would re-read the same rows forever. Bail out.
+			return fmt.Errorf("finops score recompute: no scannable rows in a full page of %d; aborting", readPageSize)
+		}
 	}
 
 	// Blast-radius annotation: resolve each recommendation to its knowledge-graph
