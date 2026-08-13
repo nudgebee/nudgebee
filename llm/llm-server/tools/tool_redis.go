@@ -49,6 +49,26 @@ Use the output of this tool to inform your responses and suggestions to the user
 Be cautious when running commands that may impact performance, such as FLUSHALL, which clears all databases.`
 }
 
+// ToolPrompt implements core.NBToolPromptProvider — carries the redis-specific
+// how-to guidance that today lives in RedisAgent.GetSystemPrompt(). Once the
+// wrapping redis agent is removed in Phase 3c, delegates naming this tool
+// directly still receive the same safe-operation and SCAN-vs-KEYS guidance.
+func (m RedisExecuteTool) ToolPrompt() []string {
+	return []string{
+		"**Redis Interaction:** Use `redis-cli` to interact with Redis instances. Identify the target instance and database.",
+		"**Safe Operations:** Prioritize read-only commands (e.g., `GET`, `INFO`, `SCAN`, `LLEN`, `HGETALL`). Avoid destructive commands unless explicitly requested. `KEYS` is intentionally NOT on this list — it blocks the single-threaded Redis event loop and can cause outages in production; use `SCAN` for iteration instead.",
+		"Always use the `redis_command_executer` tool for Redis interactions.",
+		"Avoid fetching large amounts of data at once; use `SCAN` instead of `KEYS *` when possible.",
+		"Executes Redis commands using `redis-cli`. Input: a valid Redis command. Output: data returned by Redis.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) to process the redis output.",
+		"Example — check if Redis is running: `redis-cli PING`",
+		"Example — get the value of a key: `redis-cli GET mykey`",
+		"Example — set a key with expiration: `redis-cli SET mykey 'value' EX 60`",
+		"Example — list keys incrementally (non-blocking): `redis-cli SCAN 0`",
+		"Example — check memory usage: `redis-cli INFO memory`",
+	}
+}
+
 func (m RedisExecuteTool) InputSchema() core.ToolSchema {
 	// 'command' is the sole carrier (no alias) so it's Required; 'instance' is
 	// read by Call() from the embedded JSON, declared here for the validator.

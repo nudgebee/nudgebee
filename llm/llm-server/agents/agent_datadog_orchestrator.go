@@ -222,12 +222,13 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		WebSearchAgentName,              // For Web Search
 		RecommendationsAgentName,        // For Recommendations
 		EventsAgentName,
-		PostgresAgentName,          // For PostgreSQL
-		MySQLAgentName,             // For MySQL
-		MSSQLAgentName,             // For MSSQL
-		OracleAgentName,            // For Oracle
-		RedisAgentName,             // For Redis
-		RabbitMQAgentName,          // For RabbitMQ
+		PostgresAgentName, // For PostgreSQL
+		MySQLAgentName,    // For MySQL
+		MSSQLAgentName,    // For MSSQL
+		OracleAgentName,   // For Oracle
+		// Redis/RabbitMQ agents removed in Phase 3c (#32503); their capabilities are
+		// reached on-demand via search_tools + delegate_agent, which surfaces
+		// redis_command_executer / rabbit_execute (both carry their own ToolPrompt()).
 		DelegateAgentToolName,      // For dynamic specialist sub-agents
 		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
 	}

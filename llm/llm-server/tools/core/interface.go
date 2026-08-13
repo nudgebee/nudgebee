@@ -48,6 +48,26 @@ type NBToolImplTypeProvider interface {
 	GetImplType() string
 }
 
+// NBToolPromptProvider is an optional interface tools can implement to
+// carry their own "how to use me" guidance — the invocation shape,
+// safety rules, common command patterns, and gotchas — that today lives
+// in the wrapping agent's system prompt. When a tool is named directly
+// in `delegate_agent(tools=[...])`, the delegate folds the returned
+// lines into its brief the same way it folds a Flattenable agent's
+// guidance today.
+//
+// Description() vs ToolPrompt():
+//   - Description() answers "should I pick this tool?" — kept short, shown in every tool-list impression.
+//   - ToolPrompt() answers "how do I use it correctly?" — larger, only paid when the tool is in the caller's toolset.
+//
+// Phase 3 migration path: helm/redis/rabbitmq (and eventually argocd)
+// move their per-agent instructions/examples onto their `*_execute`
+// tools via this interface, so the wrapping agent can be flag-off'd
+// without losing pedagogy.
+type NBToolPromptProvider interface {
+	ToolPrompt() []string
+}
+
 // ImplTypeFor returns the metric label identifying a tool's
 // implementation class. Falls back to ToolImplTypeBuiltin when the tool
 // does not implement NBToolImplTypeProvider, or when nil.

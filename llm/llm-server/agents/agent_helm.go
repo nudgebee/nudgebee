@@ -9,26 +9,19 @@ import (
 
 const HelmAgentName = "helm"
 
-func init() {
-	// This describes the 'helm' agent when it is used as a tool by another agent (e.g., k8s_debug).
-	toolDescription := `Manages Kubernetes applications using Helm. Can list releases, install, upgrade, or uninstall charts based on natural language requests.`
-	toolInput := "Provide question in natural language to interact with kubernetes cluster using helm"
-	toolOutput := "The tool will return the output of the question"
+// Phase 3c (#32503): agent registration removed. The helm agent was a thin
+// single-CLI wrapper (system prompt + HelmExecuteTool); its guidance now lives
+// on the tool itself via HelmExecuteTool.ToolPrompt(), reached directly when a
+// caller names `helm_execute` in delegate_agent(tools=[...]). Callers reaching
+// the old "helm" agent name now fall to search_tools + delegate_agent, which
+// surfaces helm_execute and folds its ToolPrompt into the sub-agent's brief.
+// The type/methods stay for one release so external references to HelmAgentName
+// still compile; delete after the bake period.
 
-	core.RegisterNBAgentFactoryAndTool(HelmAgentName, func(accountId string) (core.NBAgent, error) {
-		return newHelmAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
-}
-
-func newHelmAgent(accountId string) HelmAgent {
-	return HelmAgent{
-		accountId: accountId,
-	}
-}
-
-type HelmAgent struct {
-	accountId string
-}
+// HelmAgent is deprecated (Phase 3c #32503). Its runtime registration is gone;
+// the type is kept only so the Flattenable-path tests (which use `HelmAgent{}`
+// as a concrete example of a static/flattenable agent) still compile.
+type HelmAgent struct{}
 
 func (l HelmAgent) GetName() string {
 	return HelmAgentName

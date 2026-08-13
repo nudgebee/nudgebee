@@ -472,6 +472,13 @@ func flattenAgentGuidance(p core.NBAgentPrompt) []string {
 // that exist in the account's tool registry. When a name resolves to a flattenable
 // agent, its leaf tools are inlined (single hop) and its static instructions are
 // returned in flattenInstructions for injection into the sub-agent's prompt.
+//
+// Tool-declared guidance (Phase 3): when a directly-named tool implements
+// toolcore.NBToolPromptProvider, its ToolPrompt() lines are appended to
+// flattenInstructions too — the tool-side equivalent of the Flattenable agent path.
+// Only fires on direct tool naming; tools reached via a Flattenable agent flatten
+// still get their guidance from the agent's prompt (avoids double-count during the
+// helm/redis/rabbitmq migration when both agent and tool may briefly declare it).
 func resolveToolsForDelegate(ctx *security.RequestContext, accountId string, toolNames []string) (resolved []toolcore.NBTool, flattenInstructions []string, unresolved []string) {
 	seen := map[string]bool{}          // input names already processed
 	resolvedNames := map[string]bool{} // resolved tool names, for dedup across flatten/direct
@@ -496,7 +503,17 @@ func resolveToolsForDelegate(ctx *security.RequestContext, accountId string, too
 		seen[lower] = true
 
 		if tool, ok := toolcore.GetNBTool(accountId, name); ok && tool != nil {
+			// Capture the pre-add state so we know whether this tool was
+			// already contributed by an earlier flatten path in this call —
+			// if it was, its ToolPrompt guidance already went in through that
+			// path's fold and appending it again would double the bullets.
+			alreadyResolved := resolvedNames[strings.ToLower(tool.Name())]
 			add(tool)
+			if !alreadyResolved {
+				if pp, ok := tool.(toolcore.NBToolPromptProvider); ok {
+					flattenInstructions = append(flattenInstructions, pp.ToolPrompt()...)
+				}
+			}
 			continue
 		}
 		// Try resolving as an agent — flatten if it opts in, else nest.

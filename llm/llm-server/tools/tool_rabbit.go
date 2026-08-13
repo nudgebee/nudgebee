@@ -60,6 +60,39 @@ func (m RabbitExecuteTool) Description() string {
 		`
 }
 
+// ToolPrompt implements core.NBToolPromptProvider — carries the rabbitmq
+// how-to guidance that today lives in RabbitMQAgent.GetSystemPrompt(). The tool
+// exposes TWO invocation shapes (rabbitmqadmin CLI + rabbitmq-api HTTP shim);
+// both are covered here so a delegate naming this tool directly (post-3c) knows
+// which to reach for and how to compose the corresponding jq filters.
+func (m RabbitExecuteTool) ToolPrompt() []string {
+	return []string{
+		// Overall shape and constraints
+		"**Two invocation shapes through this tool:** Use `rabbitmqadmin` for list/declare/delete and column-selectable queries. Use `rabbitmq-api METHOD /path [extra curl args]` for the RabbitMQ HTTP Management API (message rates, cluster overview, per-queue consumer detail, health/aliveness, and any mutation the CLI can't express). The `rabbitmq-api` shim targets the configured broker automatically — write just the path (`rabbitmq-api GET /api/overview`), no host or port. Credentials are injected for both; never add them yourself.",
+		"**No Credentials:** Do not include user/password/host/port arguments in any command.",
+		"**rabbitmq-api scope:** The shim is locked to `$RABBITMQ_HOST:${RABBITMQ_MGMT_PORT:-15672}` — you cannot redirect it to another host. Supported methods: GET/POST/PUT/DELETE/PATCH/HEAD. Path must start with `/`. Extra curl flags after the path pass through (`-d '{...}'` for a JSON body, `-H '...'` for headers). A plain `curl http://$RABBITMQ_HOST:$RABBITMQ_PORT/api/...` still works for legacy scripts, but prefer `rabbitmq-api`.",
+		"**Choose the right shape:** rabbitmqadmin for listing/mutating queues/exchanges/bindings/consumers/nodes; rabbitmq-api for /api/overview (message rates), /api/queues/%2F/{name} (per-queue consumer_details), /api/aliveness-test/%2F (health), and PUT/DELETE mutations like policies.",
+		"**jq for processing:** Pipe `rabbitmqadmin -f raw_json ...` or `rabbitmq-api GET ...` output through `jq` to extract only the fields the user needs (group_by, select, sort_by, map).",
+		"**Error Handling:** Handle errors gracefully. If a queue name is not found (HTTP 404), tell the user clearly.",
+		"Use ONLY `rabbitmqadmin` or `rabbitmq-api` (or a plain `curl` against the management API for legacy scripts) — no other tools or commands.",
+		"`rabbitmq-api` path must start with `/` and contain only URL-legal characters — the shim rejects anything that could break out of the scope-locked URL.",
+		// rabbitmqadmin examples
+		"Example (rabbitmqadmin) — list all queues: `{\"args\": \"list queues\"}`",
+		"Example (rabbitmqadmin) — list all connections: `{\"args\": \"list connections\"}`",
+		"Example (rabbitmqadmin) — target a specific pod: `{\"args\": \"list queues\", \"instance\": \"rabbit-0.rabbit.svc.cluster.local\"}`",
+		"Example (rabbitmqadmin) — queue health/backlog: `{\"args\": \"-f raw_json list queues name messages messages_ready messages_unacknowledged consumers state | jq '[.[] | {name: .name, messages: .messages, ready: .messages_ready, unacked: .messages_unacknowledged, consumers: .consumers, state: .state}] | sort_by(-.messages)'\"}`",
+		"Example (rabbitmqadmin) — consumers for one queue with pod IPs: `{\"args\": \"-f raw_json list consumers | jq '[.[] | select(.queue.name == \\\"anomaly_processing\\\") | {consumer_tag: .consumer_tag, pod_ip: .channel_details.peer_host, active: .active}]'\"}`",
+		"Example (rabbitmqadmin) — orphan queues (no consumers): `{\"args\": \"-f raw_json list queues name messages consumers state | jq '[.[] | select(.consumers == 0 and (.name | startswith(\\\"amq.gen-\\\") | not)) | {name: .name, messages: .messages, state: .state}]'\"}`",
+		"Example (rabbitmqadmin) — node health: `{\"args\": \"-f raw_json list nodes name running mem_used mem_limit disk_free fd_used fd_total sockets_used | jq '.[] | {name: .name, mem_used_mb: (.mem_used/1048576|floor), disk_free_gb: (.disk_free/1073741824|floor), fd_used: .fd_used, fd_total: .fd_total}'\"}`",
+		// rabbitmq-api examples
+		"Example (rabbitmq-api) — cluster overview + rates: `{\"args\": \"rabbitmq-api GET /api/overview | jq '{rabbitmq_version: .rabbitmq_version, totals: .object_totals, queue_totals: .queue_totals, message_stats: .message_stats}'\"}`",
+		"Example (rabbitmq-api) — publish/deliver rates: `{\"args\": \"rabbitmq-api GET /api/overview | jq '.message_stats | {publish: .publish_details.rate, deliver: .deliver_details.rate, ack: .ack_details.rate}'\"}`",
+		"Example (rabbitmq-api) — per-queue consumer_details: `{\"args\": \"rabbitmq-api GET /api/queues/%2F/anomaly_processing | jq '.consumer_details[] | {tag: .consumer_tag, pod_ip: .channel_details.peer_host, prefetch: .prefetch_count, active: .active}'\"}`",
+		"Example (rabbitmq-api) — aliveness check: `{\"args\": \"rabbitmq-api GET /api/aliveness-test/%2F\"}` (returns {\"status\":\"ok\"} when healthy)",
+		"Example (rabbitmq-api) — set a max-length policy: `{\"args\": \"rabbitmq-api PUT /api/policies/%2F/events-max-length -d '{\\\"pattern\\\":\\\"events-.*\\\",\\\"definition\\\":{\\\"max-length\\\":10000},\\\"priority\\\":0,\\\"apply-to\\\":\\\"queues\\\"}' -H 'content-type: application/json'\"}`",
+	}
+}
+
 func (m RabbitExecuteTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,

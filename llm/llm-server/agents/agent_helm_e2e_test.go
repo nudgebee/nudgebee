@@ -32,7 +32,7 @@ func TestHelmAgent_Execute(t *testing.T) {
 			},
 		}
 	for _, tc := range testCases {
-		helmAgent := newHelmAgent(tc.AccountId)
+		helmAgent := HelmAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)

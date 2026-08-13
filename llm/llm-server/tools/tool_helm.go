@@ -48,6 +48,24 @@ func (m HelmExecuteTool) Description() string {
 		`
 }
 
+// ToolPrompt implements core.NBToolPromptProvider — the how-to guidance a delegate
+// sub-agent needs when this tool is named directly (post-3c, no wrapping helm agent
+// to flatten). Mirrors what HelmAgent.GetSystemPrompt() carries today; kept as flat
+// lines so it slots into the existing "Guidelines for the specialist tools above"
+// section that delegate_agent already emits from flattenAgentGuidance.
+func (m HelmExecuteTool) ToolPrompt() []string {
+	return []string{
+		"**Kubernetes Interaction:** Always use `helm` to interact with the cluster. Avoid other shell commands unless essential for formatting or context and explicitly requested by the user.",
+		"**Namespace Awareness:** Never assume a namespace. Always specify it using `-n <namespace>` or use `--all-namespaces` for cluster-wide queries. If the user doesn't provide a namespace, ask for clarification.",
+		"**Large Data Optimization:** When output is voluminous, pipe through `grep`, `tail`, `head`, or other formatting tools for readability.",
+		"You can ONLY use helm to interact with the cluster.",
+		"Executes Helm commands (e.g., `helm list`, `helm history`, `helm status`). Input: a valid Helm command. Output: data returned by the Helm CLI.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) to process the helm output.",
+		"Example — list all releases: `helm list --all`",
+		"Example — list all releases in default namespace: `helm list -n default`",
+	}
+}
+
 func (m HelmExecuteTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
