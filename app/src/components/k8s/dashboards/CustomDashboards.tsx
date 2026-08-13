@@ -418,12 +418,24 @@ const CustomDashboards: React.FC = () => {
     {
       value: d.title,
       component: (
-        <Box sx={{ cursor: 'pointer' }} onClick={() => setRouteId(d.id)} data-testid={`open-dashboard-${d.id}`}>
-          <Typography sx={{ fontSize: 13, fontWeight: 600, color: ds.blue[500] }}>{d.title}</Typography>
+        <Box sx={{ cursor: 'pointer', minWidth: 0 }} onClick={() => setRouteId(d.id)} data-testid={`open-dashboard-${d.id}`}>
+          <Typography sx={{ fontSize: 13, fontWeight: 600, color: ds.blue[500], overflowWrap: 'anywhere' }}>{d.title}</Typography>
           {d.description && (
-            <Typography variant='caption' sx={{ color: ds.gray[500] }}>
-              {d.description}
-            </Typography>
+            <Tooltip title={d.description}>
+              <Typography
+                variant='caption'
+                sx={{
+                  color: ds.gray[500],
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {d.description}
+              </Typography>
+            </Tooltip>
           )}
         </Box>
       ),
