@@ -101,7 +101,7 @@ def _parse_conversation(common_service: CommonService, conversation_id: str, pay
 
 def _handle_event_conversation(common_service: CommonService, conversation_id: str, payload: LLMResponse):
     channel_id, thread_ts, team_id, account_id = common_service.get_channel_and_ts_from_sent_notifications(
-        conversation_id
+        conversation_id, tenant_id=payload.tenant_id
     )
 
     if payload.tenant_id:

@@ -1936,16 +1936,30 @@ class CommonService:
         }
         return error_map.get(error_msg, f"Failed to fetch thread: {error_msg}")
 
-    def get_channel_and_ts_from_sent_notifications(self, conversation_id):
+    def get_channel_and_ts_from_sent_notifications(self, conversation_id, tenant_id=None):
         if not conversation_id or not isinstance(conversation_id, str):
             return None, None, None, None
 
         parts = conversation_id.split("-", 1)
         fingerprint = parts[1] if len(parts) > 1 else parts[0]
         try:
+            # A tenant can have Slack, Discord, and MS Teams all enabled at once;
+            # send_finding_notification writes one sent_notifications row per
+            # platform for the same fingerprint, sharing this one table. Without
+            # this filter, "most recent by created_at" can land on the
+            # Discord/Teams row instead of the Slack one (its slack_* columns
+            # all NULL), which this Slack-only caller then can't route with.
+            #
+            # Fingerprints carry no tenant identity (hashed from alert identity
+            # alone), so two tenants can collide on the same fingerprint. Scope
+            # by tenant_id whenever the caller has one so a foreign tenant's
+            # Slack row can never be selected instead of this tenant's own
+            # (non-Slack, or missing) row for the same fingerprint.
+            query = self.session.query(SentNotifications).filter_by(fingerprint=fingerprint)
+            if tenant_id:
+                query = query.filter_by(tenant_id=tenant_id)
             notification = (
-                self.session.query(SentNotifications)
-                .filter_by(fingerprint=fingerprint)
+                query.filter(SentNotifications.slack_thread_id.isnot(None))
                 .order_by(SentNotifications.created_at.desc())
                 .limit(1)
                 .first()
