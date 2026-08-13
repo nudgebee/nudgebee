@@ -76,6 +76,9 @@ type appConfig struct {
 	RabbitMqKGUpdateExchange string `mapstructure:"rabbit_mq_kg_update_exchange"`
 	RabbitMqKGUpdateQueue    string `mapstructure:"rabbit_mq_kg_update_queue"`
 
+	RabbitMqEventPostProcessExchange string `mapstructure:"rabbit_mq_event_post_process_exchange"`
+	RabbitMqEventPostProcessQueue    string `mapstructure:"rabbit_mq_event_post_process_queue"`
+
 	ClickhouseHost     string `mapstructure:"clickhouse_host"`
 	ClickhouseUser     string `mapstructure:"clickhouse_user"`
 	ClickhousePassword string `mapstructure:"clickhouse_password"`
@@ -188,6 +191,9 @@ func init() {
 
 	viper.SetDefault("rabbit_mq_kg_update_exchange", "kg_update_exchange")
 	viper.SetDefault("rabbit_mq_kg_update_queue", "kg_update")
+
+	viper.SetDefault("rabbit_mq_event_post_process_exchange", "event_post_process_exchange")
+	viper.SetDefault("rabbit_mq_event_post_process_queue", "event_post_process")
 
 	viper.SetDefault("clickhouse_host", "http://localhost:8123")
 	viper.SetDefault("clickhouse_user", "default")
