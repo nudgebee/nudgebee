@@ -96,6 +96,11 @@ func TestOpenObserveLogSource_BuildSQLUsesConfiguredStream(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `SELECT * FROM "k8s_logs" ORDER BY _timestamp DESC LIMIT 10`, sql)
 
+	// The stream is a bare SQL identifier; a name that closes the quote must be rejected.
+	_, err = s.buildSQL(req, `default" UNION SELECT * FROM secrets --`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsafe stream name")
+
 	groupSQL := buildOpenObserveLogGroupSQL("k8s_logs",
 		resolveOpenObserveLogGroupCols(openObserveFieldSet("body", "k8s_namespace_name")), "", "", 100)
 	assert.Contains(t, groupSQL, `FROM "k8s_logs"`)
@@ -176,6 +181,26 @@ func TestConvertOpenObserveLogGroups_PrefersRecordedWorkloadOverPodDerivation(t 
 	assert.Equal(t, "llm-gateway", out.Groups[0].Workload)
 	assert.Equal(t, "/k8s/nudgebee/llm-gateway/llm-gateway", out.Groups[0].ContainerID)
 	assert.Equal(t, "postgres-0", out.Groups[1].Workload)
+}
+
+// Label values are round-tripped straight back into a filter (`col = '<value>'`), so the
+// rendered string has to be the literal stored value. JSON decodes OpenObserve's Int64
+// _timestamp to float64, and fmt.Sprintf("%v") renders that in scientific notation —
+// observed live as "1.786612792471605e+15", which matches no record.
+func TestFormatOpenObserveLabelValue(t *testing.T) {
+	assert.Equal(t, "1786612792471605", formatOpenObserveLabelValue(float64(1786612792471605)),
+		"microsecond timestamps must not become scientific notation")
+	assert.Equal(t, "0", formatOpenObserveLabelValue(float64(0)))
+	assert.Equal(t, "200", formatOpenObserveLabelValue(float64(200)))
+	assert.Equal(t, "0.5", formatOpenObserveLabelValue(0.5))
+	assert.Equal(t, "nudgebee", formatOpenObserveLabelValue("nudgebee"))
+	assert.Equal(t, "true", formatOpenObserveLabelValue(true))
+	assert.Equal(t, "", formatOpenObserveLabelValue(nil))
+
+	// No value may carry an exponent — that is the whole failure mode.
+	for _, v := range []any{float64(1786612792471605), float64(1e21), float64(12345678901234567890)} {
+		assert.NotContains(t, formatOpenObserveLabelValue(v), "e+")
+	}
 }
 
 func TestOpenObserveLogSource_BuildSQLWhere(t *testing.T) {
@@ -575,7 +600,7 @@ func TestFetchOpenObserveStreamFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fields, err := fetchOpenObserveStreamFields(server.URL, "test-org", "user", "pass", integrations.OpenObserveDefaultLogStream)
+	fields, err := fetchOpenObserveStreamFields(server.URL, "test-org", "user", "pass", integrations.OpenObserveDefaultLogStream, "logs")
 	require.NoError(t, err)
 
 	// Types are carried through, not just names — column selection depends on them.
@@ -848,7 +873,7 @@ func TestFetchOpenObserveStreamFields_SurfacesHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := fetchOpenObserveStreamFields(server.URL, "test-org", "user", "pass", integrations.OpenObserveDefaultLogStream)
+	_, err := fetchOpenObserveStreamFields(server.URL, "test-org", "user", "pass", integrations.OpenObserveDefaultLogStream, "logs")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "404")
 	assert.Contains(t, err.Error(), "stream not found")
