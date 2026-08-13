@@ -616,13 +616,17 @@ const LogQueryBuilderAutocomplete = ({
             logProvider == 'newrelic' ||
             logProvider == 'dynatrace' ||
             logProvider == 'pinot' ||
-            logProvider == 'hive') &&
+            logProvider == 'hive' ||
+            logProvider == 'openobserve') &&
           providerType == 'logs'
         ) {
           response = await observability.fetchLogLabelValues({
             account_id: accountId,
             label_name: findLabel.label,
             ...(providerOverride ? { log_provider: providerOverride } : {}),
+            // Scope the value lookup to the selected range. Providers that scan raw
+            // records (OpenObserve) return nothing without a window; the rest ignore it.
+            ...(params?.startTime && params?.endTime ? { start_time: params.startTime, end_time: params.endTime } : {}),
             request: {},
           });
         } else if (

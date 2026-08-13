@@ -20,6 +20,10 @@ func init() {
 
 const IntegrationOpenObserve = "openobserve"
 
+// OpenObserveDefaultLogStream is the stream OpenObserve ingests into unless the
+// collector is configured otherwise.
+const OpenObserveDefaultLogStream = "default"
+
 type OpenObserve struct{}
 
 func (m OpenObserve) Name() string {
@@ -61,6 +65,13 @@ func (m OpenObserve) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted: true,
 				Priority:    70,
 				IsTestable:  true,
+			},
+			"openobserve_log_stream": {
+				Type: core.ToolSchemaTypeString,
+				Description: "Name of the OpenObserve stream holding logs. Leave as 'default' unless your " +
+					"collector writes to a differently-named stream (e.g. 'k8s_logs').",
+				Default:  OpenObserveDefaultLogStream,
+				Priority: 65,
 			},
 			core.IntegrationConfigName: {
 				Type:             core.ToolSchemaTypeString,
@@ -205,41 +216,54 @@ func normalizeOpenObserveURL(raw string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-// GetOpenObserveConfigs retrieves and decrypts OpenObserve configuration for an account
-func GetOpenObserveConfigs(sc *security.RequestContext, accountId string) (string, string, string, string, error) {
-	url := ""
-	orgID := ""
-	username := ""
-	password := ""
+// OpenObserveConfig is the resolved per-account OpenObserve connection.
+type OpenObserveConfig struct {
+	URL      string
+	OrgID    string
+	Username string
+	Password string
+	// LogStream is the stream logs are queried from. Always populated
+	// it falls back to OpenObserveDefaultLogStream when unconfigured.
+	LogStream string
+}
+
+// GetOpenObserveConfigs retrieves and decrypts OpenObserve configuration for an account.
+func GetOpenObserveConfigs(sc *security.RequestContext, accountId string) (OpenObserveConfig, error) {
+	cfg := OpenObserveConfig{LogStream: OpenObserveDefaultLogStream}
 
 	openobserveIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationOpenObserve)
 	if err != nil {
-		return url, orgID, username, password, fmt.Errorf("failed to list OpenObserve integration configs: %w", err)
+		return cfg, fmt.Errorf("failed to list OpenObserve integration configs: %w", err)
 	}
 	if len(openobserveIntegrations) == 0 {
-		return url, orgID, username, password, fmt.Errorf("openobserve integration not found for account: %s", accountId)
+		return cfg, fmt.Errorf("openobserve integration not found for account: %s", accountId)
 	}
 	openobserveIntegration := openobserveIntegrations[0]
 	for _, config := range openobserveIntegration.Configs {
 		switch config.Name {
 		case "openobserve_url":
-			url = config.Value
+			cfg.URL = config.Value
 		case "openobserve_org_id":
-			orgID = config.Value
+			cfg.OrgID = config.Value
 		case "openobserve_username":
-			username = config.Value
+			cfg.Username = config.Value
+		case "openobserve_log_stream":
+			// An integration saved before this field existed has no value; keep the default.
+			if stream := strings.TrimSpace(config.Value); stream != "" {
+				cfg.LogStream = stream
+			}
 		case "openobserve_password":
-			password = config.Value
+			cfg.Password = config.Value
 			if config.IsEncrypted {
-				var err error
-				password, err = common.Decrypt(config.Value)
+				decrypted, err := common.Decrypt(config.Value)
 				if err != nil {
-					return url, orgID, username, password, fmt.Errorf("failed to decrypt OpenObserve password: %w", err)
+					return cfg, fmt.Errorf("failed to decrypt OpenObserve password: %w", err)
 				}
+				cfg.Password = decrypted
 			}
 		}
 	}
 
-	url = normalizeOpenObserveURL(url)
-	return url, orgID, username, password, nil
+	cfg.URL = normalizeOpenObserveURL(cfg.URL)
+	return cfg, nil
 }
