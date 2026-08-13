@@ -5392,6 +5392,15 @@ var table_metadata = map[string]TableDefinition{
 			// Strip "resource_" prefix from column names to match actual DB columns
 			resourcesWhereClause = renameWhereColumns(resourcesWhereClause, "resource_")
 
+			// Per-service spend must NOT be gated by the live-resource status filter
+			// (the Services tab defaults resource_status=Active). A service's period cost
+			// includes resources that are now Deleted — churned mid-period, or billing rows
+			// a later discovery reconciliation mislabelled Deleted. So split the status
+			// predicate out: the resource COUNT keeps the full (status) filter, while the
+			// spend rollup uses this status-agnostic clause. All other resource filters
+			// (service/region/tag) still apply to both.
+			_, resourcesWhereClauseNoStatus := splitWhereClause(resourcesWhereClause, []string{"status"})
+
 			// Reject if remaining contains mixed-family _or/_not filters that reference
 			// pushdown-only columns — these can't be evaluated on the outer query
 			if whereReferencesColumns(remaining, pushdownOnlyColumns) {
@@ -5399,7 +5408,7 @@ var table_metadata = map[string]TableDefinition{
 			}
 
 			request.Where = remaining
-			var spendsWhereStr, recommendationWhereStr, resourceWhereStr string
+			var spendsWhereStr, recommendationWhereStr, resourceWhereStr, resourceWhereStrNoStatus string
 			var err error
 			if hasFilters(spendWhereClause) {
 				tempTableDef := TableDefinition{
@@ -5456,53 +5465,63 @@ var table_metadata = map[string]TableDefinition{
 				recommendationWhereStr = "1 = 1"
 			}
 
-			if hasFilters(resourcesWhereClause) {
-				tempTableDef := TableDefinition{
-					Columns: map[string]ColumnDefinition{
-						"id": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"name": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"status": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"type": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"arn": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"region": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"service_name": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"tags": {
-							Type: ColumnDefinitionTypeJson,
-						},
+			resourceTableDef := TableDefinition{
+				Columns: map[string]ColumnDefinition{
+					"id": {
+						Type: ColumnDefinitionTypeString,
 					},
-					Type:   Normal,
-					Def:    "cloud_resourses",
-					Name:   "cloud_resourses",
-					Source: database.Metastore,
-				}
-				resourceWhereStr, err = generateWhereClause(resourcesWhereClause, tempTableDef)
+					"name": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"status": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"type": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"arn": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"region": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"service_name": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"tags": {
+						Type: ColumnDefinitionTypeJson,
+					},
+				},
+				Type:   Normal,
+				Def:    "cloud_resourses",
+				Name:   "cloud_resourses",
+				Source: database.Metastore,
+			}
+			if hasFilters(resourcesWhereClause) {
+				resourceWhereStr, err = generateWhereClause(resourcesWhereClause, resourceTableDef)
 				if err != nil {
 					return "", request, fmt.Errorf("failed to generate resources where clause: %w", err)
 				}
 			} else {
 				resourceWhereStr = "1 = 1"
 			}
+			// Status-agnostic variant for the spend rollup (see the status split above).
+			if hasFilters(resourcesWhereClauseNoStatus) {
+				resourceWhereStrNoStatus, err = generateWhereClause(resourcesWhereClauseNoStatus, resourceTableDef)
+				if err != nil {
+					return "", request, fmt.Errorf("failed to generate status-agnostic resources where clause: %w", err)
+				}
+			} else {
+				resourceWhereStrNoStatus = "1 = 1"
+			}
 
 			// Push account_id and tenant_id into the CTE so the planner can use
 			// the account/tenant index before the full status+type scan.
 			// extractFilterSQL also removes them from request.Where to avoid
 			// redundant re-application on the outer query.
-			resourceWhereStr += extractFilterSQL(&request, "account_id", "account")
-			resourceWhereStr += extractFilterSQL(&request, "tenant_id", "tenant")
+			accountTenantWhereSQL := extractFilterSQL(&request, "account_id", "account") + extractFilterSQL(&request, "tenant_id", "tenant")
+			resourceWhereStr += accountTenantWhereSQL
+			resourceWhereStrNoStatus += accountTenantWhereSQL
 
 			// Skip joins that aren't needed by this request — avoids scanning
 			// spends/recommendation when the caller only wants resource counts.
@@ -5527,8 +5546,13 @@ var table_metadata = map[string]TableDefinition{
 			}
 
 			if isServiceRollup {
+				spendResourceBaseCTE := ""
 				if needsSpend {
-					spendJoin = `left join (select sum(spends1.spend_amount) as spend_amount, cr2.tenant, cr2.service_name, spends1.cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 join resource_base cr2 on cr2.id = spends1.cloud_resource_id and cr2.account = spends1.cloud_account where __spends__where__ group by cr2.tenant, cr2.service_name, spends1.cloud_account) s on s.tenant = cr.tenant and s.service_name = cr.service_name and s.cloud_account = cr.account`
+					// Aggregate spend against the status-agnostic resource set so a service's
+					// cost includes spend on now-Deleted resources. resource_count below still
+					// comes from the status-filtered resource_base.
+					spendResourceBaseCTE = `, spend_resource_base as (select tenant, account, id, service_name from cloud_resourses where __resources_nostatus__where__)`
+					spendJoin = `left join (select sum(spends1.spend_amount) as spend_amount, cr2.tenant, cr2.service_name, spends1.cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 join spend_resource_base cr2 on cr2.id = spends1.cloud_resource_id and cr2.account = spends1.cloud_account where __spends__where__ group by cr2.tenant, cr2.service_name, spends1.cloud_account) s on s.tenant = cr.tenant and s.service_name = cr.service_name and s.cloud_account = cr.account`
 				}
 				if needsRec {
 					recJoin = `left join (select count(*) as recommendation_count, sum(r1.recommendation_estimated_savings) as recommendation_estimated_savings, r1.cloud_account_id, cr3.tenant, cr3.service_name from (select id as recommendation_id, rule_name as recommendation_rule_name, category as recommendation_category, status as recommendation_status, severity as recommendation_severity, estimated_savings as recommendation_estimated_savings, resource_id, cloud_account_id from recommendation) r1 join resource_base cr3 on cr3.id = r1.resource_id and cr3.account = r1.cloud_account_id where __recommendations__where__ group by cr3.tenant, cr3.service_name, r1.cloud_account_id) r on r.tenant = cr.tenant and r.service_name = cr.service_name and r.cloud_account_id = cr.account`
@@ -5536,7 +5560,7 @@ var table_metadata = map[string]TableDefinition{
 				baseQuery = fmt.Sprintf(`(
 					with resource_base as (
 						select tenant, account, id, service_name from cloud_resourses where __resources__where__
-					)
+					)%s
 					select cr.tenant as tenant_id, cr.account as account_id, cr.service_name
 						, resource_count::int
 						, %s
@@ -5544,7 +5568,7 @@ var table_metadata = map[string]TableDefinition{
 					from (select tenant, account, service_name, count(*) as resource_count from resource_base group by tenant, account, service_name) cr
 					%s
 					%s
-				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
+				) as resource_group`, spendResourceBaseCTE, spendSelect, recSelect, spendJoin, recJoin)
 			} else {
 				if needsSpend {
 					spendJoin = `left join (select sum(spend_amount) as spend_amount, cloud_resource_id, cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 where __spends__where__ group by cloud_resource_id, cloud_account) s on s.cloud_resource_id = cr.id and s.cloud_account = cr.account`
@@ -5563,6 +5587,7 @@ var table_metadata = map[string]TableDefinition{
 				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
 			}
 
+			baseQuery = strings.ReplaceAll(baseQuery, "__resources_nostatus__where__", resourceWhereStrNoStatus)
 			baseQuery = strings.ReplaceAll(baseQuery, "__resources__where__", resourceWhereStr)
 			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
 			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations__where__", recommendationWhereStr)
