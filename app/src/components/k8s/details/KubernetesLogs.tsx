@@ -236,6 +236,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
 
   const resetStates = () => {
     setData([]);
+    setExecutedQuery('');
     setErrorMsg('');
     setLlmQueryResponse('');
     setGenerateQuestionText('');
@@ -1157,6 +1158,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           {showQueryTextBox && (
             <Box sx={{ display: 'flex', alignItems: 'flex-start', flexDirection: 'column', paddingTop: 'var(--ds-space-1)' }}>
               <QueryModeSwitcher
+                key={logProvider}
                 accountId={accountId}
                 initialQuery={logQuery}
                 onQueryChange={(e: any) => {
