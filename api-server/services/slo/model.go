@@ -3,19 +3,22 @@ package slo
 import "time"
 
 type DBSLOConfig struct {
-	Id              string     `json:"id" validate:"required" db:"id"`
-	Name            string     `json:"name" validate:"required" db:"name,omitempty"`
-	Description     string     `json:"description,omitempty" db:"description,omitempty"`
-	Window          int        `json:"window,omitempty" db:"window,omitempty"`
-	Goal            float64    `json:"goal,omitempty" db:"goal,omitempty"`
-	Schedule        string     `json:"schedule,omitempty" db:"schedule,omitempty"`
-	CreatedBy       string     `json:"created_by,omitempty" db:"created_by,omitempty"`
-	UpdatedBy       *string    `json:"updated_by,omitempty" db:"updated_by,omitempty"`
-	Method          string     `json:"method,omitempty" db:"method,omitempty"`
-	Expression      *string    `json:"expression,omitempty" db:"histogram_query,omitempty"`
-	FilterGood      string     `json:"filter_good,omitempty" db:"filter_good_query,omitempty"`
-	FilterBad       string     `json:"filter_bad,omitempty" db:"filter_bad_query,omitempty"`
-	ThresholdBucket float64    `json:"error_budget_burn_rate_threshold,omitempty" db:"threshold,omitempty"`
+	Id          string  `json:"id" validate:"required" db:"id"`
+	Name        string  `json:"name" validate:"required" db:"name,omitempty"`
+	Description string  `json:"description,omitempty" db:"description,omitempty"`
+	Window      int     `json:"window,omitempty" db:"window,omitempty"`
+	Goal        float64 `json:"goal,omitempty" db:"goal,omitempty"`
+	Schedule    string  `json:"schedule,omitempty" db:"schedule,omitempty"`
+	CreatedBy   string  `json:"created_by,omitempty" db:"created_by,omitempty"`
+	UpdatedBy   *string `json:"updated_by,omitempty" db:"updated_by,omitempty"`
+	Method      string  `json:"method,omitempty" db:"method,omitempty"`
+	Expression  *string `json:"expression,omitempty" db:"histogram_query,omitempty"`
+	FilterGood  string  `json:"filter_good,omitempty" db:"filter_good_query,omitempty"`
+	FilterBad   string  `json:"filter_bad,omitempty" db:"filter_bad_query,omitempty"`
+	// ThresholdBucket is the latency objective bucket in milliseconds, NOT a
+	// burn-rate threshold — the previous JSON name said otherwise and made the
+	// agent read a burn-rate threshold that was never sent.
+	ThresholdBucket float64    `json:"threshold_bucket,omitempty" db:"threshold,omitempty"`
 	CreatedAt       *time.Time `json:"created_at,omitempty" db:"created_at,omitempty"`
 	UpdatedAt       *time.Time `json:"updated_at,omitempty" db:"updated_at,omitempty"`
 	CloudAccountId  string     `json:"cloud_account_id,omitempty" db:"cloud_account_id,omitempty"`
@@ -39,6 +42,40 @@ type SLOConfig struct {
 	StartTime       string  `json:"start_time,omitempty" db:"start_time,omitempty"`
 	EndTime         string  `json:"end_time,omitempty" db:"end_time,omitempty"`
 	ThresholdBucket float64 `json:"threshold_bucket,omitempty" db:"threshold,omitempty"`
+}
+
+// slo_report.status values. NO_DATA distinguishes "we could not measure this
+// workload" from "we measured it and it is healthy" — writing the latter for
+// an untrafficked workload silently inflates the 30-day attainment aggregate.
+const (
+	SLOStatusOK     = "OK"
+	SLOStatusFiring = "FIRING"
+	SLOStatusNoData = "NO_DATA"
+)
+
+// Burn-rate severities as emitted by the agent (mirrors coroot's model.Status
+// names for the subset the SLO path uses).
+const (
+	SeverityOK       = "OK"
+	SeverityWarning  = "WARNING"
+	SeverityCritical = "CRITICAL"
+)
+
+// BurnRate is one multi-window burn-rate rule evaluation from the agent. Field
+// names mirror coroot's model.BurnRate.
+//
+// A rule fires only when BOTH windows exceed Threshold: the long window
+// establishes the burn is significant, the short window confirms it is still
+// happening rather than already recovered.
+type BurnRate struct {
+	LongWindow            int     `json:"long_window"`
+	ShortWindow           int     `json:"short_window"`
+	Threshold             float64 `json:"threshold"`
+	LongWindowPercentage  float64 `json:"long_window_percentage"`
+	ShortWindowPercentage float64 `json:"short_window_percentage"`
+	LongWindowBurnRate    float64 `json:"long_window_burn_rate"`
+	ShortWindowBurnRate   float64 `json:"short_window_burn_rate"`
+	Severity              string  `json:"severity"`
 }
 
 type SLOReport struct {
@@ -65,6 +102,11 @@ type SLOReport struct {
 	Valid  bool `json:"valid"`
 	Window int  `json:"window"`
 	Alert  bool `json:"alert"`
+
+	// Multi-window burn rates. Absent on agents that predate the multi-window
+	// evaluation — statusForReport falls back to Alert in that case.
+	BurnRates []BurnRate `json:"burn_rates,omitempty"`
+	Severity  string     `json:"severity,omitempty"`
 
 	// SLO
 	ErrorBudgetPolicy string `json:"error_budget_policy"`
@@ -147,6 +189,8 @@ type DBSLOReport struct {
 	CloudAccountId               string     `json:"cloud_account_id" db:"cloud_account_id"`
 	WorkloadName                 string     `json:"workload_name" db:"workload_name"`
 	WorkloadNamespace            string     `json:"workload_namespace" db:"workload_namespace"`
+	Severity                     *string    `json:"severity,omitempty" db:"severity"`
+	BurnRates                    *string    `json:"burn_rates,omitempty" db:"burn_rates"`
 	Timestamp                    *time.Time `json:"timestamp" db:"timestamp"`
 	CreatedAt                    *time.Time `json:"created_at,omitempty" db:"created_at,omitempty"`
 	UpdatedAt                    *time.Time `json:"updated_at,omitempty" db:"updated_at,omitempty"`

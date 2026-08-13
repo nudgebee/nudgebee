@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, field_validator
 
 from notifications_server.configs.settings import public_ip
-from notifications_server.message_templates.base import Emojis
+from notifications_server.message_templates.base import Emojis, format_burn_rate, format_burn_rate_window
 import logging
 
 LOG = logging.getLogger(__name__)
@@ -24,6 +24,10 @@ class SLOAlertParams(BaseModel):
     good_event_count: int
     threshold: Union[str, float, int]
     burn_rate: Optional[Union[str, float, int]] = None
+    # Window (seconds) and threshold of the multi-window burn-rate rule that
+    # fired. Absent on notifications from an api-server that predates them.
+    burn_rate_window: Optional[Union[str, float, int]] = None
+    burn_rate_threshold: Optional[Union[str, float, int]] = None
     error_budget_remaining: Optional[Union[str, float, int]] = None
     end_time: Optional[Union[str, float, int]] = None
 
@@ -50,9 +54,14 @@ def get_gchat_slo_alert_template(params: SLOAlertParams) -> Dict[str, str]:
     lines.append(f"*Threshold*: {params.threshold}")
     lines.append(f"*Good Events*: {params.good_event_count}  *Bad Events*: {params.bad_event_count}")
 
-    # Optional fields
-    if params.burn_rate:
-        lines.append(f"*Burn Rate*: {params.burn_rate}")
+    # Optional fields. Name the window that actually breached — "14× over 1
+    # hour" is actionable in a way a bare multiplier is not.
+    window = format_burn_rate_window(params.burn_rate_window)
+    burn_rate = format_burn_rate(params.burn_rate, params.burn_rate_window)
+    if burn_rate:
+        lines.append(f"*Burn Rate*: {burn_rate}")
+    if params.burn_rate_threshold:
+        lines.append(f"*Burn-rate Threshold*: {params.burn_rate_threshold}×")
     if params.error_budget_remaining:
         lines.append(f"*Error Budget Remaining*: {params.error_budget_remaining}")
     if params.end_time:
@@ -64,7 +73,8 @@ def get_gchat_slo_alert_template(params: SLOAlertParams) -> Dict[str, str]:
     # Alert narrative
     narrative = (
         f"{Emojis.Alert.value} The current value of your SLO has dropped below the target of {params.slo_target}. The"
-        f" error budget is being consumed at a rate of {params.burn_rate or 'N/A'}, leaving only"
+        f" error budget is being consumed at a rate of {params.burn_rate or 'N/A'}"
+        f"{f' over the last {window}' if window else ''}, leaving only"
         f" {params.error_budget_remaining or 'N/A'}. Immediate action is required to address this issue and ensure the"
         " reliability of your service."
     )

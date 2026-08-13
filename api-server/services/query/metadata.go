@@ -7337,6 +7337,8 @@ var table_metadata = map[string]TableDefinition{
 			"bad_events_count":       {Type: ColumnDefinitionTypeString},
 			"sli_measurement":        {Type: ColumnDefinitionTypeString},
 			"slo_config":             {Type: ColumnDefinitionTypeJson},
+			"severity":               {Type: ColumnDefinitionTypeString},
+			"burn_rates":             {Type: ColumnDefinitionTypeJson},
 			"timestamp":              {Type: ColumnDefinitionTypeDatetime},
 		},
 	},

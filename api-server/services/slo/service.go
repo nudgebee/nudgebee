@@ -85,24 +85,55 @@ func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.Datab
 	}
 	defer database.LogRollback(tx)
 
+	// Every measured column is refreshed on conflict. Updating only gap/status/
+	// burn_rate left the counts and error-budget figures frozen at whatever the
+	// first run of the hour saw, and slo_report_observation_v2 aggregates
+	// exactly those columns.
+	//
+	// The WHERE guard keeps a NO_DATA re-run from erasing a measurement already
+	// recorded for that hour: an invalid report carries zeroed counts and SLI,
+	// so without it a single unmeasurable sample would blank the bucket. Only
+	// matters once more than one run lands in an hour — harmless at the current
+	// hourly cadence, load-bearing if SLO Execute ever moves to */5.
 	query = `INSERT INTO slo_report (config_id, gap, error_budget_target, error_budget_measurement, error_budget_burn_rate,
 			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes, error_minutes, error_budget_consumed_ratio,
-			status, bad_events_count, good_events_count, events_count, sli_measurement, tenant_id, cloud_account_id, workload_name, workload_namespace, timestamp)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+			status, bad_events_count, good_events_count, events_count, sli_measurement, tenant_id, cloud_account_id, workload_name, workload_namespace, timestamp,
+			severity, burn_rates)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 			ON CONFLICT (tenant_id, cloud_account_id, config_id, workload_name, workload_namespace, timestamp)
-			DO UPDATE SET gap = EXCLUDED.gap, status = EXCLUDED.status, error_budget_burn_rate = EXCLUDED.error_budget_burn_rate`
+			DO UPDATE SET gap = EXCLUDED.gap,
+				status = EXCLUDED.status,
+				error_budget_target = EXCLUDED.error_budget_target,
+				error_budget_measurement = EXCLUDED.error_budget_measurement,
+				error_budget_burn_rate = EXCLUDED.error_budget_burn_rate,
+				error_budget_burn_rate_threshold = EXCLUDED.error_budget_burn_rate_threshold,
+				error_budget_minutes = EXCLUDED.error_budget_minutes,
+				error_budget_remaining_minutes = EXCLUDED.error_budget_remaining_minutes,
+				error_minutes = EXCLUDED.error_minutes,
+				error_budget_consumed_ratio = EXCLUDED.error_budget_consumed_ratio,
+				bad_events_count = EXCLUDED.bad_events_count,
+				good_events_count = EXCLUDED.good_events_count,
+				events_count = EXCLUDED.events_count,
+				sli_measurement = EXCLUDED.sli_measurement,
+				severity = EXCLUDED.severity,
+				burn_rates = EXCLUDED.burn_rates,
+				updated_at = now()
+			WHERE EXCLUDED.status <> 'NO_DATA' OR slo_report.status = 'NO_DATA'`
 
 	alertingReports := make([]SLOReport, 0)
 	for _, report := range reports {
-		status := "OK"
-		if report.Alert {
-			status = "FIRING"
+		status := statusForReport(report)
+		if status == SLOStatusFiring {
 			alertingReports = append(alertingReports, report)
+		}
+		burnRates, mErr := marshalBurnRates(report.BurnRates)
+		if mErr != nil {
+			slog.Error("slo: error marshalling burn rates", "error", mErr, "configId", config.Id, "workload", report.Workload)
 		}
 		timestamp := timestampToPostgresFormat(report.EndTime)
 		_, err = tx.Exec(query, config.Id, report.Gap, report.ErrorBudgetTarget, report.ErrorBudgetMeasurement, report.ErrorBudgetBurnRate, report.ErrorBudgetBurnRateThreshold,
 			report.ErrorBudgetMinutes, report.ErrorBudgetRemainingMinutes, report.ErrorMinutes, report.ErrorBudgetConsumedRatio, status, report.BadEventsCount, report.GoodEventsCount, report.EventsCount,
-			report.SLIMeasurement, config.TenantId, config.CloudAccountId, report.Workload, report.Namespace, timestamp)
+			report.SLIMeasurement, config.TenantId, config.CloudAccountId, report.Workload, report.Namespace, timestamp, nullableSeverity(report), burnRates)
 		if err != nil {
 			return err
 		}
@@ -167,12 +198,74 @@ func LatencyHistogramQuery(namespace, workload string) string {
 func timestampToPostgresFormat(timestamp float64) string {
 	// Convert timestamp to a time.Time object
 	t := time.Unix(int64(timestamp), int64((timestamp-float64(int64(timestamp)))*1e9))
-	// Round to nearest hour
-	roundedTime := t.Round(time.Hour)
+	// Truncate to the containing hour. Rounding to the NEAREST hour stamped a
+	// run at 10:31 into the 11:00 bucket, so a cron drifting across the
+	// half-hour boundary wrote into the next hour and collided with it.
+	//
+	// UTC first: Truncate is a multiple of the duration since the zero time, so
+	// on a host in a half-hour offset zone (IST) truncating a local-zone time
+	// and then formatting it yields :30 buckets. The agent stamps end_time in
+	// UTC, so the bucket is UTC too.
+	bucket := t.UTC().Truncate(time.Hour)
 	// Format to PostgreSQL datetime format
-	postgresFormat := roundedTime.Format("2006-01-02 15:04:05")
+	postgresFormat := bucket.Format("2006-01-02 15:04:05")
 
 	return postgresFormat
+}
+
+// statusForReport maps an agent report onto a slo_report.status.
+//
+// A report the agent marked invalid — no data, fewer than MIN_VALID_EVENTS, or
+// an SLI outside [0,1] — is NO_DATA, never OK. An untrafficked workload is not
+// a healthy one, and recording it as OK silently inflates the 30-day
+// attainment aggregate that slo_report_observation_v2 feeds.
+//
+// Otherwise the multi-window burn-rate severity decides. Agents that predate
+// burn_rates send only the single-window `alert` flag, so fall back to it —
+// a cluster running an older agent keeps reporting rather than going dark.
+func statusForReport(r SLOReport) string {
+	if !r.Valid {
+		return SLOStatusNoData
+	}
+	if len(r.BurnRates) > 0 {
+		if r.Severity != "" && r.Severity != SeverityOK {
+			return SLOStatusFiring
+		}
+		return SLOStatusOK
+	}
+	if r.Alert {
+		return SLOStatusFiring
+	}
+	return SLOStatusOK
+}
+
+// firingBurnRate returns the burn rate that pushed the report into FIRING, so
+// notifications can name the window that actually breached.
+func firingBurnRate(r SLOReport) (BurnRate, bool) {
+	for _, br := range r.BurnRates {
+		if br.Severity != "" && br.Severity != SeverityOK {
+			return br, true
+		}
+	}
+	return BurnRate{}, false
+}
+
+func marshalBurnRates(rates []BurnRate) (any, error) {
+	if len(rates) == 0 {
+		return nil, nil
+	}
+	b, err := common.MarshalJson(rates)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+func nullableSeverity(r SLOReport) any {
+	if r.Severity == "" {
+		return nil
+	}
+	return r.Severity
 }
 
 func executeSlo(config DBSLOConfig, accountId string) ([]SLOReport, error) {
@@ -425,6 +518,18 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 	}
 
 	currentGap := fmt.Sprintf("%.2f", sloReport.Gap)
+	// Prefer the window that actually breached over the legacy single-window
+	// figure, so the alert says which burn-rate rule fired. The fallbacks are
+	// the figures the legacy path actually judged against — not zero, which
+	// would render as a threshold nobody could breach.
+	burnRate := math.Round(sloReport.ErrorBudgetBurnRate)
+	burnRateWindow := sloConfig.Window
+	burnRateThreshold := sloReport.ErrorBudgetBurnRateThreshold
+	if br, ok := firingBurnRate(sloReport); ok {
+		burnRate = math.Round(br.LongWindowBurnRate)
+		burnRateWindow = br.LongWindow
+		burnRateThreshold = br.Threshold
+	}
 	message := map[string]any{
 		"kind":      "notification",
 		"source":    "slo",
@@ -441,7 +546,9 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 			"slo_target":             sloConfig.Goal,
 			"current_value":          currentGap,
 			"firing_since":           failingSince,
-			"burn_rate":              math.Round(sloReport.ErrorBudgetBurnRate),
+			"burn_rate":              burnRate,
+			"burn_rate_window":       burnRateWindow,
+			"burn_rate_threshold":    burnRateThreshold,
 			"error_budget_remaining": math.Round(sloReport.ErrorBudgetRemainingMinutes),
 			"account_name":           accountName,
 			"threshold":              sloConfig.ThresholdBucket,
@@ -479,7 +586,7 @@ func getPreviousSLOReport(configId string, workload string, namespace string) (D
 			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes,
 			error_minutes, error_budget_consumed_ratio, status, bad_events_count, good_events_count,
 			events_count, sli_measurement, tenant_id, cloud_account_id, workload_name,
-			workload_namespace, timestamp, created_at, updated_at
+			workload_namespace, severity, burn_rates, timestamp, created_at, updated_at
 		FROM slo_report
 		WHERE config_id=$1 AND workload_name=$2 AND workload_namespace=$3 AND status='FIRING'
 		ORDER BY timestamp DESC LIMIT 1`, configId, workload, namespace).StructScan(&report); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -508,7 +615,7 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes,
 			error_minutes, error_budget_consumed_ratio, status, bad_events_count, good_events_count,
 			events_count, sli_measurement, tenant_id, cloud_account_id, workload_name,
-			workload_namespace, timestamp, created_at, updated_at
+			workload_namespace, severity, burn_rates, timestamp, created_at, updated_at
 		FROM slo_report
 		WHERE config_id=$1 AND workload_name=$2 AND workload_namespace=$3 AND status='FIRING'
 		ORDER BY timestamp DESC LIMIT 1`, sloConfig.Id, sloConfig.WorkloadName, sloConfig.Namespace).StructScan(&slo); err != nil {

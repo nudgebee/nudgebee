@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from notifications_server.configs.settings import URLRoutes, settings
+from notifications_server.message_templates.base import format_burn_rate_window
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     STRIPE_CRITICAL,
     header_block,
@@ -64,7 +65,9 @@ def _slo_badge(alert: SLOAlertParams) -> str:
 def _burn_line(alert: SLOAlertParams) -> str:
     parts = []
     if alert.burn_rate not in (None, "", "N/A"):
-        parts.append(f"burning budget *{alert.burn_rate}× too fast*")
+        window = format_burn_rate_window(alert.burn_rate_window)
+        over_window = f" over {window}" if window else ""
+        parts.append(f"burning budget *{alert.burn_rate}× too fast*{over_window}")
     if alert.error_budget_remaining not in (None, "", "N/A"):
         parts.append(f"*{alert.error_budget_remaining}* of budget left")
     return " — ".join(parts)

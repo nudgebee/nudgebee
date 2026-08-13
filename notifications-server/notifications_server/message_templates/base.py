@@ -1,5 +1,6 @@
 import html
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel
 
@@ -98,6 +99,38 @@ class FindingStatus(Enum):
             return "Resolved"
 
         return "Open"
+
+
+def format_burn_rate_window(seconds) -> Optional[str]:
+    """Human label for the burn-rate window an SLO alert breached.
+
+    The api-server sends the LONG window of the multi-window rule that actually
+    fired, in seconds. Agents that predate multi-window evaluation send the
+    SLO's own window instead, which formats the same way.
+    """
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    if total % 3600 == 0:
+        hours = total // 3600
+        return f"{hours} hour" if hours == 1 else f"{hours} hours"
+    minutes = max(1, total // 60)
+    return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+
+
+def format_burn_rate(burn_rate, burn_rate_window) -> Optional[str]:
+    """`14× over 1 hour` — the multiplier together with the window it breached.
+
+    None when the producer sent no burn rate, so callers can drop the field
+    rather than render a placeholder.
+    """
+    if burn_rate in (None, ""):
+        return None
+    window = format_burn_rate_window(burn_rate_window)
+    return f"{burn_rate}× over {window}" if window else f"{burn_rate}×"
 
 
 def render_success_page(tool: str, url: str) -> str:
