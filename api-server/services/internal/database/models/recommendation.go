@@ -29,7 +29,8 @@ type Recommendation struct {
 	// SnoozedUntil set together with status Dismissed means "snoozed": every
 	// Open-filtering consumer suppresses the row, and the expiry sweep returns
 	// it to Open once the timestamp passes. NULL on a plain dismissal.
-	SnoozedUntil *time.Time `json:"snoozed_until" mapstructure:"snoozed_until"  db:"snoozed_until"`
+	SnoozedUntil    *time.Time `json:"snoozed_until" mapstructure:"snoozed_until"  db:"snoozed_until"`
+	VulnerabilityId *string    `json:"vulnerability_id" mapstructure:"vulnerability_id"  db:"vulnerability_id"`
 }
 
 type RecommendationStatus string

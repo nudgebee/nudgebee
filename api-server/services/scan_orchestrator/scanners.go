@@ -1,5 +1,7 @@
 package scan_orchestrator
 
+import "nudgebee/services/internal/database/models"
+
 // Scanner declares one server-orchestrated scanner. BuildSpec returns the
 // JobSpec that gets shipped to the agent (image, args, security context),
 // Parse turns the Job's stdout into recommendation rows, RuleName is the
@@ -52,6 +54,11 @@ type Recommendation struct {
 	AccountObjectID      string  `json:"account_object_id"`
 	ResourceID           string  `json:"resource_id,omitempty"`
 	EstimatedSavings     float64 `json:"estimated_savings,omitempty"`
+	// Vulnerability is set only by image_scanner (the sole Job-based scanner
+	// that produces CVE findings); nil for every other scanner. Persist
+	// upserts it into the shared vulnerabilities table and links this row's
+	// vulnerability_id, without changing the Recommendation JSON above.
+	Vulnerability *models.Vulnerability `json:"-"`
 }
 
 // ScannerCatalog is the source of truth for Job-based scanners.

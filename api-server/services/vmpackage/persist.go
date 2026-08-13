@@ -22,7 +22,7 @@ const (
 	// (rows*columns) under Postgres's 65535 limit. A single real host's
 	// finding set can run into the thousands, so this isn't just a
 	// defensive margin — a busy host hits the unbatched limit outright.
-	findingRowColumns = 15
+	findingRowColumns = 16
 	findingBatchSize  = 65535 / findingRowColumns
 
 	// packageRowColumns/packageBatchSize apply the same bind-parameter cap
@@ -134,7 +134,7 @@ func persistFindings(tenantID, cloudAccountID, cloudResourceID string, findings 
 		return fmt.Errorf("vmpackage: db: %w", err)
 	}
 
-	rows := buildFindingRows(tenantID, cloudAccountID, cloudResourceID, findings, pkgsByKey, time.Now())
+	rows, vulnRows, vulnKeys := buildFindingRows(tenantID, cloudAccountID, cloudResourceID, findings, pkgsByKey, time.Now())
 
 	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
 		if _, err := tx.Exec(
@@ -146,23 +146,34 @@ func persistFindings(tenantID, cloudAccountID, cloudResourceID string, findings 
 			return nil, fmt.Errorf("vmpackage: archive existing findings: %w", err)
 		}
 
+		vulnIDs, err := models.UpsertVulnerabilities(tx, vulnRows)
+		if err != nil {
+			return nil, fmt.Errorf("vmpackage: upsert vulnerabilities: %w", wrapPQError(err))
+		}
+		for i := range rows {
+			if id, ok := vulnIDs[vulnKeys[i]]; ok {
+				rows[i].VulnerabilityId = &id
+			}
+		}
+
 		for start := 0; start < len(rows); start += findingBatchSize {
 			end := min(start+findingBatchSize, len(rows))
 			if _, err := tx.NamedExec(
 				`INSERT INTO recommendation
 				   (status, tenant_id, cloud_account_id, recommendation, severity, category, rule_name,
 				    estimated_savings, recommendation_action, resource_id, account_object_id, updated_at,
-				    finops_score, finops_band, finops_score_breakdown)
+				    finops_score, finops_band, finops_score_breakdown, vulnerability_id)
 				 VALUES
 				   (:status, :tenant_id, :cloud_account_id, :recommendation, :severity, :category, :rule_name,
 				    :estimated_savings, :recommendation_action, :resource_id, :account_object_id, :updated_at,
-				    :finops_score, :finops_band, :finops_score_breakdown)
+				    :finops_score, :finops_band, :finops_score_breakdown, :vulnerability_id)
 				 ON CONFLICT (rule_name, cloud_account_id, resource_id, category, account_object_id)
 				 DO UPDATE SET recommendation = EXCLUDED.recommendation,
 				               status = EXCLUDED.status,
 				               updated_at = EXCLUDED.updated_at,
 				               severity = EXCLUDED.severity,
-				               recommendation_action = EXCLUDED.recommendation_action`,
+				               recommendation_action = EXCLUDED.recommendation_action,
+				               vulnerability_id = EXCLUDED.vulnerability_id`,
 				rows[start:end],
 			); err != nil {
 				return nil, fmt.Errorf("vmpackage: upsert findings: %w", wrapPQError(err))
@@ -181,9 +192,16 @@ func persistFindings(tenantID, cloudAccountID, cloudResourceID string, findings 
 // Key we never sent — shouldn't happen, but defensive), and dedupes by the
 // conflict-key's account_object_id component, since a NamedExec batch
 // upsert fails outright if the same conflict key appears twice in one call.
-func buildFindingRows(tenantID, cloudAccountID, cloudResourceID string, findings []vulnmatcher.Finding, pkgsByKey map[string]Package, now time.Time) []models.Recommendation {
+//
+// Alongside each recommendation row it builds the matching
+// models.Vulnerability row and its VulnerabilityKey, index-aligned with
+// rows, so the caller can upsert vulnerabilities first and then populate
+// each row's VulnerabilityId from the returned id map.
+func buildFindingRows(tenantID, cloudAccountID, cloudResourceID string, findings []vulnmatcher.Finding, pkgsByKey map[string]Package, now time.Time) ([]models.Recommendation, []models.Vulnerability, []string) {
 	seen := make(map[string]struct{}, len(findings))
 	rows := make([]models.Recommendation, 0, len(findings))
+	vulnRows := make([]models.Vulnerability, 0, len(findings))
+	vulnKeys := make([]string, 0, len(findings))
 	for _, f := range findings {
 		pkg, ok := pkgsByKey[f.Key]
 		if !ok {
@@ -202,10 +220,23 @@ func buildFindingRows(tenantID, cloudAccountID, cloudResourceID string, findings
 		finopsBand := ""
 
 		rows = append(rows, models.Recommendation{
-			Status:               models.RecommendationStatusOpen,
-			TenantId:             tenantID,
-			CloudAccountId:       cloudAccountID,
-			Recommendation:       models.NewJsonObject(newFindingPayload(pkg, f)),
+			Status:         models.RecommendationStatusOpen,
+			TenantId:       tenantID,
+			CloudAccountId: cloudAccountID,
+			// Only fixed_version/fix_state/package_version stay here — the
+			// per-finding remediation context (package_version is the version
+			// actually installed on THIS resource, not a property of the
+			// vulnerability itself, so it never belonged on the vulnerabilities
+			// row). Everything else this used to carry (vuln_id, package name,
+			// cvss, epss/kev/risk, description, ...) now lives on the linked
+			// vulnerabilities row via VulnerabilityId below; readers get the
+			// full legacy shape back via the vulnerabilities join at query
+			// time (see metadata.go's recommendations_v2/recommendation_groupings_v2).
+			Recommendation: models.NewJsonObject(map[string]any{
+				"fixed_version":   f.FixedVersion,
+				"fix_state":       f.FixState,
+				"package_version": pkg.Version,
+			}),
 			Severity:             &severity,
 			Category:             recommendationCategory,
 			RuleName:             recommendationRuleName,
@@ -218,64 +249,56 @@ func buildFindingRows(tenantID, cloudAccountID, cloudResourceID string, findings
 			FinOpsBand:           &finopsBand,
 			FinOpsScoreBreakdown: models.NewJsonObject(map[string]any{}),
 		})
+
+		vulnRows = append(vulnRows, buildVulnerabilityRow(pkg, f))
+		vulnKeys = append(vulnKeys, models.VulnerabilityKey(models.VulnerabilitySourceVMPackage, f.VulnID, pkg.Name, nonEmptyPtr(pkg.Arch)))
 	}
-	return rows
+	return rows, vulnRows, vulnKeys
+}
+
+// buildVulnerabilityRow flattens a Finding+Package into the vulnerabilities
+// table's shape, mirroring newFindingPayload's field selection. The fields
+// not promoted to their own column (fix_state, fix_channel, epss, kev, risk,
+// advisory_ids) are kept in Details, same set the migration's backfill puts
+// there for historical rows.
+func buildVulnerabilityRow(pkg Package, f vulnmatcher.Finding) models.Vulnerability {
+	severity := mapSeverity(f.Severity)
+	return models.Vulnerability{
+		Source:       models.VulnerabilitySourceVMPackage,
+		VulnId:       f.VulnID,
+		PackageName:  pkg.Name,
+		PackageArch:  nonEmptyPtr(pkg.Arch),
+		PackageType:  nonEmptyPtr(pkg.Type),
+		FixedVersion: nonEmptyPtr(f.FixedVersion),
+		Severity:     &severity,
+		CVSSScore:    &f.CVSSv3Score,
+		CVSSVector:   nonEmptyPtr(f.CVSSv3Vector),
+		Description:  nonEmptyPtr(f.Description),
+		DataSource:   nonEmptyPtr(f.DataSource),
+		Details: models.NewJsonObject(map[string]any{
+			"fix_state":    f.FixState,
+			"fix_channel":  f.FixChannel,
+			"epss":         f.EPSS,
+			"kev":          f.KEV,
+			"risk":         f.Risk,
+			"advisory_ids": f.AdvisoryIDs,
+		}),
+	}
+}
+
+// nonEmptyPtr returns nil for an empty string, otherwise a pointer to it —
+// used for columns that should stay NULL rather than store "" (package_arch,
+// fixed_version, etc.), matching the migration backfill's NULLIF handling of
+// the same fields.
+func nonEmptyPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func formatVMPackageObjectID(pkg Package, vulnID string) string {
 	return fmt.Sprintf("%s-%s-%s-%s", pkg.Name, pkg.Version, pkg.Arch, vulnID)
-}
-
-// findingPackagePayload is the "package" sub-object inside findingPayload's
-// JSON, built from the local Package type rather than vulnmatcher.Finding.
-type findingPackagePayload struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Arch    string `json:"arch"`
-	Type    string `json:"type"`
-}
-
-// findingPayload is the recommendation table's `recommendation` JSON blob
-// for one vm_package_vulnerability finding — a struct rather than
-// map[string]any so the shape is declared once and typed, instead of a set
-// of string keys that Marshal/Unmarshal can silently drop or mistype.
-type findingPayload struct {
-	VulnID       string                `json:"vuln_id"`
-	Package      findingPackagePayload `json:"package"`
-	FixedVersion string                `json:"fixed_version"`
-	FixState     string                `json:"fix_state"`
-	FixChannel   string                `json:"fix_channel"`
-	CVSSv3Score  float64               `json:"cvss_v3_score"`
-	CVSSv3Vector string                `json:"cvss_v3_vector"`
-	EPSS         *vulnmatcher.EPSS     `json:"epss"`
-	KEV          bool                  `json:"kev"`
-	Risk         float64               `json:"risk"`
-	AdvisoryIDs  []string              `json:"advisory_ids"`
-	DataSource   string                `json:"data_source"`
-	Description  string                `json:"description"`
-}
-
-func newFindingPayload(pkg Package, f vulnmatcher.Finding) findingPayload {
-	return findingPayload{
-		VulnID: f.VulnID,
-		Package: findingPackagePayload{
-			Name:    pkg.Name,
-			Version: pkg.Version,
-			Arch:    pkg.Arch,
-			Type:    pkg.Type,
-		},
-		FixedVersion: f.FixedVersion,
-		FixState:     f.FixState,
-		FixChannel:   f.FixChannel,
-		CVSSv3Score:  f.CVSSv3Score,
-		CVSSv3Vector: f.CVSSv3Vector,
-		EPSS:         f.EPSS,
-		KEV:          f.KEV,
-		Risk:         f.Risk,
-		AdvisoryIDs:  f.AdvisoryIDs,
-		DataSource:   f.DataSource,
-		Description:  f.Description,
-	}
 }
 
 // mapSeverity normalizes vuln-matcher-server's severity string to the

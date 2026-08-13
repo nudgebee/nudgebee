@@ -774,6 +774,85 @@ func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string
 	return sql
 }
 
+// VulnerabilityRecommendationSQL reconstructs the legacy recommendation.recommendation
+// JSON shape (the one every consumer — frontend, LLM security tool, PR-prompt
+// generator — was written against) from the deduplicated vulnerabilities row,
+// for vm_package_vulnerability and image_scan rows. recAlias is the
+// recommendation table's alias in the surrounding query. vulnAccessor is a
+// prefix that reaches the joined vulnerabilities row's fields when
+// concatenated directly with a field name (id, source, vuln_id,
+// package_name, package_arch, package_type, severity, cvss_score,
+// cvss_vector, description, data_source, details) — pass "v." for a real
+// `LEFT JOIN vulnerabilities v ON v.id = recAlias.vulnerability_id` still in
+// scope where this Def is embedded, or "r1.v_" when that join only happens
+// inside an inner subquery/CTE and its columns were re-exposed at the outer
+// level as sibling columns named v_id, v_source, v_vuln_id, etc. (needed
+// wherever the surrounding query does `SELECT r.*, ...` — a bare join alias
+// isn't visible past that subquery's boundary, but `r.*`'s sibling columns
+// are).
+//
+// Falls back to the raw, un-reconstructed recAlias.recommendation whenever
+// the vulnerabilities row's id IS NULL — covers both any row the migration's
+// one-time backfill couldn't match (malformed historical JSON) and any other
+// rule_name, which never gets a vulnerability_id and must pass through
+// completely unchanged. Without this fallback, jsonb_build_object's
+// NULL-valued keys for an unmatched row would silently overwrite real inline
+// data with `null` on ||.
+//
+// package_version/InstalledVersion/fixed_version/FixedVersion/image_name stay
+// out of the reconstructed object: the writers (vmpackage/persist.go,
+// scan_orchestrator/parser_image_scan.go) already keep those directly in
+// recAlias.recommendation — they're per-finding facts (which version is
+// installed, which image), not properties of the CVE+package shared by every
+// resource/image that has it, so they never lived on the vulnerabilities row.
+//
+// package.version falls back to the OLD nested {package:{version:...}} path
+// (COALESCE) for any historical row the migration's JSON-trim step hasn't
+// touched yet — package_version only exists as a flat key from this PR
+// forward.
+//
+// image_scan's reconstructed 'Severity' is the mapped canonical form
+// (Critical/High/.../Info, via trivySeverity) from vulnerabilities.severity,
+// NOT the raw Trivy value (CRITICAL/HIGH/...) the pre-migration inline
+// payload held — deliberate: severity is a property of the CVE+package, so
+// it lives once on the shared row rather than per-finding. Known readers
+// were checked and none hard-break (KubernetesSecurityDetails.jsx lowercases
+// via toDsSeverityLevel for the icon, though it still displays the raw
+// Severity string verbatim in one spot; github.go's formatCVELogs
+// upper-cases), but any future `=== 'HIGH'` case-sensitive comparison
+// against this key will stop matching — mapped form is intentional, not a
+// bug. A rescan self-heals any row whose severity this changes; the
+// migration's one-time backfill can also pick an arbitrary severity among
+// historical duplicates for the same CVE+package.
+func VulnerabilityRecommendationSQL(recAlias, vulnAccessor string) string {
+	r, v := recAlias, vulnAccessor
+	return `CASE WHEN ` + v + `id IS NULL THEN ` + r + `.recommendation
+		WHEN ` + v + `source = 'vm_package_vulnerability' THEN
+			(` + r + `.recommendation - 'package_version') || jsonb_build_object(
+				'vuln_id', ` + v + `vuln_id,
+				'package', jsonb_build_object(
+					'name', ` + v + `package_name,
+					'version', COALESCE(` + r + `.recommendation->>'package_version', ` + r + `.recommendation#>>'{package,version}'),
+					'arch', ` + v + `package_arch, 'type', ` + v + `package_type),
+				'cvss_v3_score', ` + v + `cvss_score, 'cvss_v3_vector', ` + v + `cvss_vector,
+				'kev', ` + v + `details->'kev', 'epss', ` + v + `details->'epss', 'risk', ` + v + `details->'risk',
+				'advisory_ids', ` + v + `details->'advisory_ids', 'data_source', ` + v + `data_source,
+				'fix_channel', ` + v + `details->'fix_channel',
+				'description', ` + v + `description)
+		WHEN ` + v + `source = 'image_scan' THEN
+			` + r + `.recommendation || jsonb_build_object(
+				'VulnerabilityID', ` + v + `vuln_id, 'PkgID', ` + v + `details->'pkg_id', 'PkgName', ` + v + `package_name,
+				'Severity', ` + v + `severity, 'CVSS', ` + v + `details->'cvss', 'Title', ` + v + `details->'title',
+				'Description', ` + v + `description, 'CweIDs', ` + v + `details->'cwe_ids', 'VendorIDs', ` + v + `details->'vendor_ids',
+				'References', ` + v + `details->'references', 'PrimaryURL', ` + v + `details->'primary_url',
+				'DataSource', ` + v + `details->'data_source', 'PublishedDate', ` + v + `details->'published_date',
+				'LastModifiedDate', ` + v + `details->'last_modified_date', 'Status', ` + v + `details->'status',
+				'SeveritySource', ` + v + `details->'severity_source', 'VendorSeverity', ` + v + `details->'vendor_severity',
+				'PkgIdentifier', ` + v + `details->'pkg_identifier', 'Layer', ` + v + `details->'layer')
+		ELSE ` + r + `.recommendation
+		END`
+}
+
 var table_metadata = map[string]TableDefinition{
 	"k8s_cluster_groupings_v2": {
 		Type:   Normal,
@@ -2901,12 +2980,37 @@ var table_metadata = map[string]TableDefinition{
 			needsJoin := references(joinRequiringCols)
 			needsWindow := references(windowRequiringCols)
 
+			// The vulnerabilities join is its own opt-in, separate from needsJoin
+			// above: unlike cloud_resourses/cloud_accounts (needed by many common
+			// columns), it's only relevant to the 3 columns that actually read
+			// from it. Gating it here — rather than joining unconditionally the
+			// way an earlier version of this table did — matters because this
+			// table backs nearly every recommendation type in the product, not
+			// just security ones; an unconditional join here adds cost (plus a
+			// wider CTE tuple) to every single request through it, even ones with
+			// nothing to do with vulnerabilities. Mirrors the existing
+			// needsRecommendation/needsVulnerabilityId/needsPackageId pattern in
+			// recommendation_security_groupings_v2 below.
+			needsVulnJoin := requestReferencesColumns(request, map[string]bool{
+				"recommendation": true, "vuln_id": true, "package_name": true,
+			})
+			vulnJoin, vulnCols := "", ""
+			if needsVulnJoin {
+				vulnJoin = "LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id"
+				vulnCols = `,
+				v.id AS v_id, v.source AS v_source, v.vuln_id AS v_vuln_id, v.package_name AS v_package_name,
+				v.package_arch AS v_package_arch, v.package_type AS v_package_type, v.severity AS v_severity,
+				v.cvss_score AS v_cvss_score, v.cvss_vector AS v_cvss_vector, v.description AS v_description,
+				v.data_source AS v_data_source, v.details AS v_details`
+			}
+
 			if !needsJoin && !needsWindow {
 				def := `(
 		SELECT
-			r.*,
+			r.*,` + vulnCols + `
 			TRUE AS is_primary_recommendation
 		FROM recommendation r
+		` + vulnJoin + `
 		WHERE r.cloud_account_id IN (SELECT id FROM cloud_accounts WHERE status = 'active')` + pushdownFilters + `
 	) as r1`
 				return def, request, nil
@@ -2944,9 +3048,10 @@ var table_metadata = map[string]TableDefinition{
 						END,
 						r.category
 					ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
-				) AS resource_rank
+				) AS resource_rank` + vulnCols + `
 			FROM recommendation r
 			LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+			` + vulnJoin + `
 			WHERE ca.status = 'active'` + pushdownFilters + `
 		)
 		SELECT
@@ -3014,10 +3119,11 @@ var table_metadata = map[string]TableDefinition{
 						END,
 						r.category
 					ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
-				) AS resource_rank
+				) AS resource_rank` + vulnCols + `
 			FROM recommendation r
 			LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
 			LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+			` + vulnJoin + `
 			WHERE ca.status = 'active'` + pushdownFilters + `
 		)
 		SELECT
@@ -3104,7 +3210,7 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"recommendation": {
 				Type: ColumnDefinitionTypeJson,
-				Def:  "recommendation",
+				Def:  VulnerabilityRecommendationSQL("r1", "r1.v_"),
 			},
 			"recommendation_action": {
 				Type: ColumnDefinitionTypeString,
@@ -3133,16 +3239,20 @@ var table_metadata = map[string]TableDefinition{
 				IsAggregated: true,
 			},
 			// VM package-scan findings (rule_name = 'vm_package_vulnerability') keep
-			// the CVE id and the affected package inside the payload. Exposed as
-			// group-by columns so /vm can roll findings up by CVE or by package —
-			// same jsonb-path convention as deleted_version below.
+			// the CVE id and the affected package on the linked vulnerabilities row
+			// (r1.v_vuln_id/r1.v_package_name — see the LEFT JOIN vulnerabilities in
+			// this table's DefGenerator), not inline in the payload anymore. Exposed
+			// as group-by columns so /vm can roll findings up by CVE or by package.
+			// COALESCE falls back to the old inline JSON path for any row the
+			// migration's backfill couldn't link — same safety net
+			// VulnerabilityRecommendationSQL uses for the full payload.
 			"vuln_id": {
 				Type: ColumnDefinitionTypeString,
-				Def:  "r1.recommendation ->> 'vuln_id'",
+				Def:  "COALESCE(r1.v_vuln_id, r1.recommendation ->> 'vuln_id')",
 			},
 			"package_name": {
 				Type: ColumnDefinitionTypeString,
-				Def:  "r1.recommendation -> 'package' ->> 'name'",
+				Def:  "COALESCE(r1.v_package_name, r1.recommendation -> 'package' ->> 'name')",
 			},
 			// The resources behind a group, as one comma-separated string — a VM
 			// grouping's rows name the machines the CVE or package was found on.
@@ -3299,15 +3409,16 @@ var table_metadata = map[string]TableDefinition{
 				END                                     AS severity_weight,
 				rec.status,
 				rec.recommendation->>'image_name'       AS image,
-				rec.recommendation->>'VulnerabilityID'  AS vulnerability_id,
-				rec.recommendation->>'PkgID'            AS package_id,
+				COALESCE(v.vuln_id, rec.recommendation->>'VulnerabilityID')       AS vulnerability_id,
+				COALESCE(v.details->>'pkg_id', rec.recommendation->>'PkgID')     AS package_id,
 				rec.created_at,
 				rec.updated_at,
 				cr.workload_name,
 				cr.workload_type,
 				cr.namespace,
-				rec.recommendation::varchar             AS recommendation
+				(` + VulnerabilityRecommendationSQL("rec", "v.") + `)::varchar    AS recommendation
 			FROM recommendation rec
+			LEFT JOIN vulnerabilities v ON v.id = rec.vulnerability_id
 			` + joinKeyword + ` (
 				SELECT DISTINCT
 					pc.workload_name,
@@ -3483,19 +3594,29 @@ var table_metadata = map[string]TableDefinition{
 			includeCleanImages := !requestReferencesColumns(request, map[string]bool{"vulnerability_id": true}) &&
 				recSeverityFilter == ""
 
+			// v2 joins vulnerabilities against rec2.vulnerability_id — only added
+			// when at least one of the three columns below actually needs it, same
+			// "pay for what you use" rule the conditional columns themselves follow.
+			// COALESCE falls back to the raw JSON-embedded value (pre-migration
+			// shape) for any row the backfill couldn't link — see
+			// VulnerabilityRecommendationSQL's doc comment for why that matters.
+			lateralVulnJoin := ""
 			lateralVulnCol, outerVulnCol := "", ""
 			if needsVulnerabilityId {
-				lateralVulnCol = ",\n\t\t\t\t\trec2.recommendation->>'VulnerabilityID' as vulnerability_id"
+				lateralVulnJoin = "\n\t\t\t\tLEFT JOIN vulnerabilities v2 ON v2.id = rec2.vulnerability_id"
+				lateralVulnCol = ",\n\t\t\t\t\tCOALESCE(v2.vuln_id, rec2.recommendation->>'VulnerabilityID') as vulnerability_id"
 				outerVulnCol = ",\n\t\t\t\t\tr.vulnerability_id as vulnerability_id"
 			}
 			lateralPkgCol, outerPkgCol := "", ""
 			if needsPackageId {
-				lateralPkgCol = ",\n\t\t\t\t\trec2.recommendation->>'PkgID' as package_id"
+				lateralVulnJoin = "\n\t\t\t\tLEFT JOIN vulnerabilities v2 ON v2.id = rec2.vulnerability_id"
+				lateralPkgCol = ",\n\t\t\t\t\tCOALESCE(v2.details->>'pkg_id', rec2.recommendation->>'PkgID') as package_id"
 				outerPkgCol = ",\n\t\t\t\t\tr.package_id as package_id"
 			}
 			lateralRecCol, outerRecCol := "", ""
 			if needsRecommendation {
-				lateralRecCol = ",\n\t\t\t\t\trec2.recommendation::varchar as recommendation"
+				lateralVulnJoin = "\n\t\t\t\tLEFT JOIN vulnerabilities v2 ON v2.id = rec2.vulnerability_id"
+				lateralRecCol = ",\n\t\t\t\t\t(" + VulnerabilityRecommendationSQL("rec2", "v2.") + `)::varchar as recommendation`
 				outerRecCol = ",\n\t\t\t\t\tr.recommendation as recommendation"
 			}
 
@@ -3598,7 +3719,7 @@ var table_metadata = map[string]TableDefinition{
 			FROM pod_container pc,
 			LATERAL (
 				SELECT rec2.id, rec2.severity, rec2.status, rec2.created_at, rec2.updated_at, NULL::text as scan_status` + lateralVulnCol + lateralPkgCol + lateralRecCol + `
-				FROM recommendation rec2
+				FROM recommendation rec2` + lateralVulnJoin + `
 				WHERE rec2.cloud_account_id = pc.cloud_account_id
 					AND rec2.tenant_id      = pc.tenant_id
 					AND rec2.recommendation->>'image_name' = pc.image
@@ -4862,6 +4983,23 @@ var table_metadata = map[string]TableDefinition{
 			if tenantId != "" {
 				pushdownFilters += " AND r.tenant_id = " + (&postgresDialect{}).QuoteLiteral(tenantId)
 			}
+			// Opt-in vulnerabilities join, gated the same way as the sibling
+			// recommendation_groupings_v2 generator above (see its comment): this
+			// table backs nearly every recommendation type in the product, so an
+			// unconditional join here would add cost to every request through it,
+			// not just security ones.
+			needsVulnJoin := requestReferencesColumns(request, map[string]bool{
+				"recommendation": true, "vuln_id": true, "package_name": true,
+			})
+			vulnJoin, vulnCols := "", ""
+			if needsVulnJoin {
+				vulnJoin = "LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id"
+				vulnCols = `,
+							v.id AS v_id, v.source AS v_source, v.vuln_id AS v_vuln_id, v.package_name AS v_package_name,
+							v.package_arch AS v_package_arch, v.package_type AS v_package_type, v.severity AS v_severity,
+							v.cvss_score AS v_cvss_score, v.cvss_vector AS v_cvss_vector, v.description AS v_description,
+							v.data_source AS v_data_source, v.details AS v_details`
+			}
 			def := `(
 					WITH all_recommendations AS (
 						SELECT
@@ -4905,10 +5043,11 @@ var table_metadata = map[string]TableDefinition{
 									END,
 									r.category
 								ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
-							) AS resource_rank
+							) AS resource_rank` + vulnCols + `
 						FROM recommendation r
 						LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
 						LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+						` + vulnJoin + `
 						WHERE ca.status = 'active'` + pushdownFilters + `
 					)
 					SELECT
@@ -4947,6 +5086,7 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"recommendation": {
 				Type: ColumnDefinitionTypeJson,
+				Def:  VulnerabilityRecommendationSQL("r1", "r1.v_"),
 			},
 			"recommendation_action": {
 				Type: ColumnDefinitionTypeString,
@@ -5045,14 +5185,19 @@ var table_metadata = map[string]TableDefinition{
 				Def:  "r1.finops_score_breakdown ->> 'safety_band'",
 			},
 			// CVE id and affected package of a VM package-scan finding — the /vm
-			// grouped views drill down by filtering the list on these.
+			// grouped views drill down by filtering the list on these. Sourced from
+			// the linked vulnerabilities row (r1.v_vuln_id/r1.v_package_name — see
+			// the LEFT JOIN vulnerabilities in this table's DefGenerator), not
+			// inline in the payload anymore. COALESCE falls back to the old inline
+			// JSON path for any row the migration's backfill couldn't link — same
+			// safety net VulnerabilityRecommendationSQL uses for the full payload.
 			"vuln_id": {
 				Type: ColumnDefinitionTypeString,
-				Def:  "r1.recommendation ->> 'vuln_id'",
+				Def:  "COALESCE(r1.v_vuln_id, r1.recommendation ->> 'vuln_id')",
 			},
 			"package_name": {
 				Type: ColumnDefinitionTypeString,
-				Def:  "r1.recommendation -> 'package' ->> 'name'",
+				Def:  "COALESCE(r1.v_package_name, r1.recommendation -> 'package' ->> 'name')",
 			},
 			"deleted_version": {
 				Type: ColumnDefinitionTypeFloat,

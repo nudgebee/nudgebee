@@ -26,10 +26,12 @@ func TestBuildFindingRows(t *testing.T) {
 		{Key: "unknown-key", VulnID: "CVE-2024-0002", Severity: "critical"},
 	}
 
-	rows := buildFindingRows("tenant-1", "account-1", "resource-1", findings, pkgsByKey, now)
+	rows, vulnRows, vulnKeys := buildFindingRows("tenant-1", "account-1", "resource-1", findings, pkgsByKey, now)
 
 	// The unknown-key finding is dropped, and the duplicate collapses to one row.
 	require.Len(t, rows, 1)
+	require.Len(t, vulnRows, 1)
+	require.Len(t, vulnKeys, 1)
 
 	row := rows[0]
 	assert.Equal(t, "tenant-1", row.TenantId)
@@ -44,15 +46,26 @@ func TestBuildFindingRows(t *testing.T) {
 	require.NotNil(t, row.AccountObjectId)
 	assert.Equal(t, "openssl-3.0.7-24.el9-x86_64-CVE-2024-0001", *row.AccountObjectId)
 
+	// recommendation.recommendation carries only fixed_version/fix_state/
+	// package_version for this rule type — every other display field (CVE
+	// id, package name, cvss, ...) now lives only on the linked
+	// vulnerabilities row, asserted below.
 	rec, err := json.Marshal(row.Recommendation)
 	require.NoError(t, err)
-	assert.Contains(t, string(rec), "CVE-2024-0001")
-	assert.Contains(t, string(rec), "openssl")
+	assert.JSONEq(t, `{"fixed_version":"","fix_state":"","package_version":"3.0.7-24.el9"}`, string(rec))
+
+	vulnRow := vulnRows[0]
+	assert.Equal(t, models.VulnerabilitySourceVMPackage, vulnRow.Source)
+	assert.Equal(t, "CVE-2024-0001", vulnRow.VulnId)
+	assert.Equal(t, "openssl", vulnRow.PackageName)
+	assert.Equal(t, models.VulnerabilityKey(models.VulnerabilitySourceVMPackage, "CVE-2024-0001", "openssl", nonEmptyPtr("x86_64")), vulnKeys[0])
 }
 
 func TestBuildFindingRows_Empty(t *testing.T) {
-	rows := buildFindingRows("t", "a", "r", nil, map[string]Package{}, time.Now())
+	rows, vulnRows, vulnKeys := buildFindingRows("t", "a", "r", nil, map[string]Package{}, time.Now())
 	assert.Empty(t, rows)
+	assert.Empty(t, vulnRows)
+	assert.Empty(t, vulnKeys)
 }
 
 func TestMapSeverity(t *testing.T) {
@@ -124,6 +137,9 @@ func TestPersistFindings_ArchivesAndUpserts(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE recommendation SET status = 'Archive'").
 		WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectQuery("INSERT INTO vulnerabilities").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "source", "vuln_id", "package_name", "package_arch"}).
+			AddRow("vuln-1", models.VulnerabilitySourceVMPackage, "CVE-2024-0001", "openssl", "x86_64"))
 	mock.ExpectExec("INSERT INTO recommendation").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

@@ -16,6 +16,7 @@ import (
 	"nudgebee/services/ml"
 	"nudgebee/services/notification"
 	"nudgebee/services/observability"
+	"nudgebee/services/query"
 	"nudgebee/services/recommendation/coordinator"
 	"nudgebee/services/scan_orchestrator"
 	"nudgebee/services/security"
@@ -30,11 +31,20 @@ func GetRecommendation(context *security.RequestContext, id string) (models.Reco
 	if err != nil {
 		return models.Recommendation{}, err
 	}
-	r := databaseManager.Db.QueryRowx(`SELECT id, created_at, updated_at, tenant_id, cloud_account_id, resource_id,
-			recommendation, recommendation_action, severity, estimated_savings, status, category,
-			rule_name, account_object_id, note, dismissed_reason, is_dismissed, updated_by,
-			finops_score, finops_band, finops_score_breakdown, last_nudged_at, dedupe_group, snoozed_until
-		FROM recommendation WHERE id = $1`, id)
+	// recommendation.recommendation is trimmed for vm_package_vulnerability/image_scan
+	// rows (see V867 migration) — the shared CVE+package fields now live on the
+	// linked vulnerabilities row. Rebuild the legacy full payload via the same
+	// reconstruction consumers like the LLM security tool and the security
+	// code-agent PR flow (ApplySecurityRecommendationUsingCodeAgent -> formatCVELogs)
+	// expect, so callers of GetRecommendation keep seeing CVE id/package/severity
+	// instead of the trimmed husk.
+	r := databaseManager.Db.QueryRowx(`SELECT r.id, r.created_at, r.updated_at, r.tenant_id, r.cloud_account_id, r.resource_id,
+			`+query.VulnerabilityRecommendationSQL("r", "v.")+` AS recommendation, r.recommendation_action, r.severity, r.estimated_savings, r.status, r.category,
+			r.rule_name, r.account_object_id, r.note, r.dismissed_reason, r.is_dismissed, r.updated_by,
+			r.finops_score, r.finops_band, r.finops_score_breakdown, r.last_nudged_at, r.dedupe_group, r.snoozed_until
+		FROM recommendation r
+		LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id
+		WHERE r.id = $1`, id)
 	if r.Err() != nil {
 		return models.Recommendation{}, r.Err()
 	}
