@@ -9,8 +9,10 @@ import (
 	"nudgebee/llm/tools/core"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/lithammer/fuzzysearch/fuzzy"
 )
 
@@ -429,33 +431,45 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 		variations = append(variations, strings.Join(searchTerms, ""))
 	}
 
+	// One query for every variation (ILIKE ANY) rather than one round-trip each:
+	// the variations are alternative spellings of the SAME name, so a match on
+	// any of them is the answer. Sequentially probing them multiplied the scan
+	// cost by up to 4x for the common miss.
+	patterns := make([]string, 0, len(variations))
 	for _, v := range variations {
-		found, err := r.queryK8sResourcesByName(accountId, "%"+v+"%")
-		if err != nil {
-			// Soft failure — fall through to the next variation and ultimately
-			// the live-kubectl fallback, but surface the error so DB issues
-			// aren't invisible. Queryx never returns sql.ErrNoRows, so any error
-			// here is unexpected.
-			nbRequestContext.Ctx.GetLogger().Warn("resource_search: cloud_resourses lookup failed", "term", v, "account", accountId, "error", err)
-			continue
-		}
-		nbRequestContext.Ctx.GetLogger().Info("resource_search: cloud_resourses lookup", "term", v, "account", accountId, "count", len(found))
-		if len(found) > 0 {
-			return found
-		}
+		patterns = append(patterns, "%"+v+"%")
 	}
 
-	return nil
+	found, err := r.queryK8sResourcesByName(accountId, patterns)
+	if err != nil {
+		// Soft failure — fall through to the live-kubectl fallback, but surface
+		// the error so DB issues aren't invisible. Queryx never returns
+		// sql.ErrNoRows, so any error here is unexpected.
+		nbRequestContext.Ctx.GetLogger().Warn("resource_search: cloud_resourses lookup failed", "terms", variations, "account", accountId, "error", err)
+		return nil
+	}
+	nbRequestContext.Ctx.GetLogger().Info("resource_search: cloud_resourses lookup", "terms", variations, "account", accountId, "count", len(found))
+	return found
 }
 
 // queryK8sResourcesByName runs the scoped cloud_resourses lookup for a single
 // name pattern. Split from searchDbForResources so the *sqlx.Rows is closed via
 // defer (one query per call, not accumulated across the variations loop).
 //
-// account = the cluster; leading with the indexed account column narrows the
-// scan to this cluster's active rows before the name ILIKE, so it never
-// seq-scans the full inventory.
-func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, pattern string) ([]K8sResourceInfo, error) {
+// `is_active = true` must stay written exactly this way: it is the predicate of
+// the partial trigram indexes (migration V868), and Postgres only uses a partial
+// index when the query's predicate matches. Writing it any other way — including
+// the equivalent `is_active IS NOT FALSE` — stops the indexes applying and plans
+// a parallel seq scan of the whole table, measured at 2876ms against a 1.6M-row
+// account versus 3.6ms with the indexes.
+//
+// Both ILIKE branches must stay indexed: Postgres can only use indexes for an OR
+// when every branch has one, and an unindexed branch forces the full scan
+// regardless of the other index.
+func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId string, patterns []string) ([]K8sResourceInfo, error) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		return nil, err
@@ -470,11 +484,11 @@ func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, pattern string
 		WHERE account = $1
 		  AND cloud_provider = 'K8s'
 		  AND is_active = true
-		  AND (name ILIKE $2 OR resourse_id ILIKE $2)
+		  AND (name ILIKE ANY($2) OR resourse_id ILIKE ANY($2))
 		ORDER BY name
 		LIMIT 20`
 
-	rows, err := dbms.Db.Queryx(query, accountId, pattern)
+	rows, err := dbms.Db.Queryx(query, accountId, pq.Array(patterns))
 	if err != nil {
 		return nil, err
 	}
@@ -662,28 +676,69 @@ func (r K8sResourceSearchTool) enrichWithOwners(resources []K8sResourceInfo, nbR
 		}
 	}
 
+	// One kubectl per namespace, run concurrently. kubectl is namespace-scoped, so
+	// N matched namespaces means N round-trips; sequentially that was the dominant
+	// cost of the whole tool (5 namespaces ≈ 3.1s of a 3.7s call) purely to attach
+	// one field to pods the inventory had already returned. A cluster-wide
+	// `get pods -A` would collapse it to one call but returns every pod in the
+	// cluster, trading a bounded 5× round-trip for an unbounded payload — worse on
+	// exactly the large clusters where the speedup matters most.
+	//
+	// Concurrency is capped so a many-namespace match can't burst the relay: the
+	// caller already bails above 20 resources, so this is at most a handful of
+	// calls in flight.
+	const maxParallelOwnerLookups = 5
+	type ownerLookup struct {
+		indices  []int
+		ownerMap map[string]string
+	}
+	lookups := make(chan ownerLookup, len(resourcesByNs))
+	sem := make(chan struct{}, maxParallelOwnerLookups)
+	var wg sync.WaitGroup
+	ctx := nbRequestContext.GoContext()
+
 	for ns, indices := range resourcesByNs {
-		names := []string{}
-		for _, idx := range indices {
-			names = append(names, resources[idx].Name)
-		}
+		wg.Add(1)
+		go func(ns string, indices []int) {
+			defer wg.Done()
+			// Queued goroutines must abandon on cancellation rather than wait for
+			// a slot: with the cap at 5 the rest sit here, and an unconditional
+			// send would wake them after the investigation is already gone and
+			// fire their relay commands into the cluster anyway.
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			// select picks uniformly among ready cases, so a slot being free can
+			// win over an already-cancelled context. Re-check after acquiring to
+			// make the abandon deterministic rather than a coin flip.
+			if ctx.Err() != nil {
+				return
+			}
 
-		// Use jsonpath to get owner info efficiently
-		// We use jsonpath with [*] to avoid errors if ownerReferences is empty (index out of bounds)
-		// jsonpath="{range .items[*]}{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{'\n'}{end}"
-		// But for individual items, the root is Pod not List, so we handle both cases.
-		var cmd string
-		if len(names) == 1 {
-			cmd = fmt.Sprintf("kubectl get pods %s -n %s -o=jsonpath='{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{\"\\n\"}'", names[0], ns)
-		} else {
-			cmd = fmt.Sprintf("kubectl get pods %s -n %s -o=jsonpath='{range .items[*]}{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{\"\\n\"}{end}'", strings.Join(names, " "), ns)
-		}
+			names := make([]string, len(indices))
+			for i, idx := range indices {
+				names[i] = resources[idx].Name
+			}
 
-		output := r.executeKubectlCommand(cmd, nbRequestContext)
-		if output != "" {
-			lines := strings.Split(output, "\n")
+			// Use jsonpath to get owner info efficiently
+			// We use jsonpath with [*] to avoid errors if ownerReferences is empty (index out of bounds)
+			// But for individual items, the root is Pod not List, so we handle both cases.
+			var cmd string
+			if len(names) == 1 {
+				cmd = fmt.Sprintf("kubectl get pods %s -n %s -o=jsonpath='{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{\"\\n\"}'", names[0], ns)
+			} else {
+				cmd = fmt.Sprintf("kubectl get pods %s -n %s -o=jsonpath='{range .items[*]}{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{\"\\n\"}{end}'", strings.Join(names, " "), ns)
+			}
+
+			output := r.executeKubectlCommand(cmd, nbRequestContext)
+			if output == "" {
+				return
+			}
 			ownerMap := make(map[string]string)
-			for _, line := range lines {
+			for _, line := range strings.Split(output, "\n") {
 				parts := strings.Split(line, ",")
 				if len(parts) >= 2 {
 					podName := parts[0]
@@ -694,12 +749,19 @@ func (r K8sResourceSearchTool) enrichWithOwners(resources []K8sResourceInfo, nbR
 					}
 				}
 			}
+			lookups <- ownerLookup{indices: indices, ownerMap: ownerMap}
+		}(ns, indices)
+	}
 
-			// Update resources
-			for _, idx := range indices {
-				if owner, ok := ownerMap[resources[idx].Name]; ok {
-					resources[idx].OwnerReference = owner
-				}
+	wg.Wait()
+	close(lookups)
+
+	// Apply after the fan-in: each namespace owns a disjoint set of indices, but
+	// collecting first keeps the mutation single-threaded and obviously safe.
+	for l := range lookups {
+		for _, idx := range l.indices {
+			if owner, ok := l.ownerMap[resources[idx].Name]; ok {
+				resources[idx].OwnerReference = owner
 			}
 		}
 	}
