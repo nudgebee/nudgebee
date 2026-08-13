@@ -82,7 +82,7 @@ function previousWindow(startDate: string, endDate: string): { startDate: string
   return { startDate: `${iso(prevStartMs)}T00:00:00Z`, endDate: `${iso(prevEndMs)}T23:59:59Z` };
 }
 
-function toFilterRequest(accountId: string | undefined, f: CostFilters): UsageFilterRequest {
+export function toFilterRequest(accountId: string | undefined, f: CostFilters): UsageFilterRequest {
   return {
     accountIds: accountId ? [accountId] : [],
     startDate: `${f.startDate}T00:00:00Z`,
