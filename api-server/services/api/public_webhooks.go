@@ -526,7 +526,6 @@ func handlePublicWebhooksApis(r *gin.Engine, tracer *trace.Tracer, meter *metric
 	webhookGroup.POST("/gcp-monitoring", genericWebhookHandler("gcp_monitoring_webhook", tracer, meter, logger))
 	webhookGroup.POST("/dynatrace", genericWebhookHandler("dynatrace_webhook", tracer, meter, logger))
 	webhookGroup.POST("/solarwinds", genericWebhookHandler("solarwinds_webhook", tracer, meter, logger))
-	webhookGroup.POST("/openobserve", genericWebhookHandler("openobserve_webhook", tracer, meter, logger))
 	webhookGroup.POST("/elasticsearch", genericWebhookHandler("elasticsearch_webhook", tracer, meter, logger))
 	webhookGroup.POST("/workflow", genericWebhookHandler("workflow_webhook", tracer, meter, logger))
 
