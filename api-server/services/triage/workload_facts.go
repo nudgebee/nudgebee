@@ -213,7 +213,9 @@ func renderWorkloadFacts(b *strings.Builder, f workloadFacts) {
 		fmt.Fprintf(b, "- customer_facing(observed ingress/LB-backed): %t\n", f.customerFacing)
 		fmt.Fprintf(b, "- dependency_fan_in(observed services depending on it): %d\n", f.fanIn)
 	}
-	if f.criticality != "" {
-		fmt.Fprintf(b, "- workload_criticality: %s (source=%s): %s\n", f.criticality, f.criticalitySource, f.criticalityRationale)
-	}
+	// workload_criticality is deliberately NOT rendered. The verdict this prompt produces is cached
+	// per signal class and shared tenant-wide across every workload with the same name, so a
+	// per-workload tier baked in here was served to the wrong workloads and could never be
+	// invalidated when an operator changed it. Criticality is now applied deterministically at score
+	// time (see criticalityAdj in llm_scoring.go); rendering it here too would double-count it.
 }

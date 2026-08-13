@@ -56,7 +56,7 @@ func TestApplyDeterministicGuardrails_LifecycleFloor(t *testing.T) {
 	if out.Intrinsic != "info" || out.Blast != "expected_change" || out.BandFloor != "P3" || out.BandCeiling != "P3" {
 		t.Fatalf("floored verdict wrong: %+v", out)
 	}
-	score, prio, _ := computeVerdictScore(out, "prod", 1)
+	score, prio, _ := computeVerdictScore(out, "prod", 1, workloadTier{})
 	if prio != "P3" {
 		t.Fatalf("lifecycle notification scored %d/%s, want P3", score, prio)
 	}
@@ -112,7 +112,7 @@ func TestComputeVerdictScore_ValidatedCases(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, prio, _ := computeVerdictScore(&tt.verdict, tt.env, tt.recur)
+			got, prio, _ := computeVerdictScore(&tt.verdict, tt.env, tt.recur, workloadTier{})
 			if got != tt.wantScore || prio != tt.wantPrio {
 				t.Fatalf("got score=%d prio=%s, want score=%d prio=%s", got, prio, tt.wantScore, tt.wantPrio)
 			}
@@ -133,7 +133,7 @@ func TestRecurrenceAdjustment_Direction(t *testing.T) {
 	}
 	// escalating with the same count must beat the legacy flat -30 penalty regime
 	if escalating, _, _ := computeVerdictScore(&SignalVerdict{Intrinsic: "high", Blast: "monitoring_backbone",
-		RecurrenceSemantics: "escalating", EnvSensitivity: "partial", BandFloor: "P3", BandCeiling: "P2"}, "non_prod", 22); escalating == 0 {
+		RecurrenceSemantics: "escalating", EnvSensitivity: "partial", BandFloor: "P3", BandCeiling: "P2"}, "non_prod", 22, workloadTier{}); escalating == 0 {
 		t.Fatal("recurring OOM must not score 0 (the legacy bug)")
 	}
 }
@@ -142,7 +142,7 @@ func TestRecurrenceAdjustment_Direction(t *testing.T) {
 func TestEnvAdditive_NonProdHighNotFloored(t *testing.T) {
 	v := SignalVerdict{Intrinsic: "high", Blast: "customer_facing",
 		RecurrenceSemantics: "escalating", EnvSensitivity: "partial", BandFloor: "P3", BandCeiling: "P1"}
-	score, prio, _ := computeVerdictScore(&v, "non_prod", 21)
+	score, prio, _ := computeVerdictScore(&v, "non_prod", 21, workloadTier{})
 	if prio == "P3" {
 		t.Fatalf("non-prod HIGH customer-facing should escape P3 floor, got %d/%s", score, prio)
 	}
