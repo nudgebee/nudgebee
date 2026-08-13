@@ -1958,7 +1958,6 @@ const Investigate = () => {
             isK8s={isK8s}
             isCloud={isCloud}
             onPodClick={handlePodClick}
-            onRowChange={setRow}
             onCreateTicket={(r) => {
               setTicketData(r);
               setIsTicketCreateFormOpen(true);

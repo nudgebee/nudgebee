@@ -11,6 +11,7 @@ import {
   FormControlLabel,
   ToggleButtonGroup,
   ToggleButton,
+  Autocomplete,
 } from '@mui/material';
 import { Add, Delete, DragIndicator, Visibility, VisibilityOff, ExpandMore, ExpandLess, Code, ViewList } from '@mui/icons-material';
 import { Input } from '@ui/Input';
@@ -191,9 +192,20 @@ interface ArrayEditorProps {
   onChange: (value: any[]) => void;
   error?: string;
   itemSchema?: Record<string, ArrayItemSchema>;
+  suggestedValues?: string[];
+  upstreamTaskInfo?: { taskId?: string; taskName?: string };
+  isComplexExpression?: boolean;
 }
 
-export const ArrayEditor: React.FC<ArrayEditorProps> = ({ value, onChange, error, itemSchema }) => {
+export const ArrayEditor: React.FC<ArrayEditorProps> = ({
+  value,
+  onChange,
+  error,
+  itemSchema,
+  suggestedValues,
+  upstreamTaskInfo,
+  isComplexExpression,
+}) => {
   const [expandedItems, setExpandedItems] = useState<Set<number>>(() => new Set(value.map((_, i) => i)));
 
   // For simple arrays (no itemSchema), use string representation
@@ -455,6 +467,75 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({ value, onChange, error
           onChange={(next) => onFieldChange(next === '' ? '' : Number(next))}
           placeholder={fieldSchema.default !== undefined ? `Default: ${fieldSchema.default}` : `Enter ${fieldName}`}
         />
+      );
+    }
+
+    // Special handling for switch case 'value' field when suggestions or complex expression messages are available
+    if (fieldName === 'value' && (suggestedValues || isComplexExpression)) {
+      const currentVal = fieldValue ?? fieldSchema.default ?? '';
+      const stringVal = currentVal === '' ? '' : String(currentVal);
+      const hasSuggestions = Array.isArray(suggestedValues) && suggestedValues.length > 0;
+      const isMismatch = hasSuggestions && stringVal.trim() !== '' && !suggestedValues!.includes(stringVal);
+
+      return (
+        <Box>
+          {hasSuggestions ? (
+            <Autocomplete
+              freeSolo
+              options={suggestedValues!}
+              value={stringVal}
+              onChange={(_, newValue) => onFieldChange(newValue ?? '')}
+              onInputChange={(_, newInputValue) => onFieldChange(newInputValue)}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  size='small'
+                  placeholder='Select or enter value'
+                  sx={{
+                    '& .MuiInputBase-root': {
+                      backgroundColor: 'var(--ds-background-100)',
+                      fontSize: 'var(--ds-text-body)',
+                      borderRadius: 'var(--ds-radius-md)',
+                    },
+                  }}
+                />
+              )}
+            />
+          ) : (
+            <Input
+              size='sm'
+              value={stringVal}
+              onChange={onFieldChange}
+              placeholder={fieldSchema.default !== undefined ? `Default: ${fieldSchema.default}` : `Enter ${fieldName}`}
+            />
+          )}
+
+          {hasSuggestions && upstreamTaskInfo && (
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mt: 0.5, display: 'block' }}>
+              Available values from {upstreamTaskInfo.taskName || upstreamTaskInfo.taskId}: {suggestedValues!.join(', ')}
+            </Typography>
+          )}
+
+          {isComplexExpression && (
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mt: 0.5, display: 'block' }}>
+              Complex expression — suggestions unavailable
+            </Typography>
+          )}
+
+          {isMismatch && (
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                color: 'var(--ds-amber-700)',
+                mt: 0.5,
+                display: 'block',
+                fontWeight: 'var(--ds-font-weight-medium)',
+              }}
+            >
+              ⚠ This value does not match any known output from the upstream action.
+            </Typography>
+          )}
+        </Box>
       );
     }
 
