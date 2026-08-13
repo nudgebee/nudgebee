@@ -314,13 +314,15 @@ const CustomTooltip = React.forwardRef<HTMLDivElement, CustomTooltipProps>(
             enabled: !disableFlip,
             options: {
               fallbackPlacements: ['bottom', 'right', 'left'],
+              boundary: 'clippingParents',
+              padding: 8,
             },
           },
           {
             name: 'preventOverflow',
             enabled: true,
             options: {
-              boundary: 'viewport',
+              boundary: 'clippingParents',
               altAxis: true,
               padding: 8,
             },
