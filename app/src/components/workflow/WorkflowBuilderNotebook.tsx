@@ -696,6 +696,18 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // and the init effect re-runs — without it, setNodes([]) wipes a trigger the user already
   // placed via the inline empty-state card. See #30510.
   const newEmptyWorkflowInitializedRef = useRef(false);
+  // Guards the existing-workflow load from re-firing when `taskDefinitions` resolves and
+  // the init effect re-runs before the in-flight GetWorkflowById response sets isInitialized
+  // (both are state, not synchronous) — without it, the load can double-fire. Stores the
+  // workflowId being/already loaded so navigating to a different workflow still reloads.
+  const existingWorkflowLoadStartedForRef = useRef<string | null>(null);
+  // Reset only on true unmount (empty deps — cleanup here never fires on the load
+  // effect's own dependency changes, so it can't undo the dedup guard above).
+  useEffect(() => {
+    return () => {
+      existingWorkflowLoadStartedForRef.current = null;
+    };
+  }, []);
 
   // JSON Editor sync hook - handles all JSON editor state and synchronization
   const {
@@ -1137,6 +1149,14 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       if (isInitialized && workflowData?.id === workflowId) {
         return;
       }
+
+      // Skip if a load for this workflowId is already in flight (taskDefinitions.length
+      // resolving while GetWorkflowById is still pending would otherwise re-run this
+      // effect and fire a duplicate request before isInitialized/workflowData catch up).
+      if (existingWorkflowLoadStartedForRef.current === workflowId) {
+        return;
+      }
+      existingWorkflowLoadStartedForRef.current = workflowId;
 
       const loadData = async () => {
         setLoading(true);
