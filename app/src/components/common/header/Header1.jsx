@@ -23,7 +23,7 @@ import NotificationOutlineIconDark from '@assets/new/bell-icon-dark.svg';
 import DocumentationIcon from '@assets/header/Documentation.svg';
 import newAwsLogo from '@assets/logo/aws_logo.png';
 import GroupingIcon from '@assets/header/group-icon.svg';
-import VmServerIcon from '@assets/new/vm-server.svg';
+import DashboardIconBlue from '@assets/home/Dashboard_Icon.svg';
 import OuK8sIcon from '@assets/ou-management/kubernetes_icon.icon.svg';
 import JiraIcon from '@assets/jira_icon.icon.svg';
 import GithubIcon from '@assets/github-icon.icon.svg';
@@ -392,22 +392,19 @@ const Header1 = ({ showBorder = false }) => {
         connectAccountButton: false,
       },
       {
-        name: 'Virtual Machines',
-        route: '/vm',
-        icon: VmServerIcon,
-        // Same shape as Cloud/K8s details: the page is scoped to one account and
-        // the global dropdown is how you switch it. handleDropdownChange sends a
-        // SelfHosted pick here and a cloud/K8s pick back to its own page.
-        showActiveCluster: true,
-        connectAccountButton: false,
-      },
-      {
         name: 'Application Group',
         route: '/grouping',
         icon: GroupingIcon,
         connectAccountButton: false,
         showGroupingDropdown: true,
         showBackButton: true,
+      },
+      {
+        name: 'Dashboards',
+        route: '/dashboards',
+        icon: DashboardIconBlue,
+        showActiveCluster: false,
+        connectAccountButton: false,
       },
       {
         name: (
@@ -524,9 +521,10 @@ const Header1 = ({ showBorder = false }) => {
       );
     });
     if (matchedTab) {
+      const isDashboardGroups = router.pathname === '/dashboards' && router.asPath.includes('#groups');
       setAnchorActiveTab({
-        name: matchedTab.name,
-        icon: matchedTab.icon,
+        name: isDashboardGroups ? 'Application Group' : matchedTab.name,
+        icon: isDashboardGroups ? GroupingIcon : matchedTab.icon,
         showActiveCluster: matchedTab.showActiveCluster,
         disableDropdown: matchedTab.disableDropdown ?? false,
         connectClusterButton: matchedTab.connectClusterButton,
@@ -541,7 +539,7 @@ const Header1 = ({ showBorder = false }) => {
     if (['/tickets', '/user-management', '/kubernetes'].some((path) => router.pathname.startsWith(path))) {
       setSnackbarOpen(false);
     }
-  }, [router.pathname, headerItems]);
+  }, [router.pathname, router.asPath, headerItems]);
 
   // Capture the version this tab booted with — once, when the session first
   // resolves (data is null while useSession is loading). We deliberately never
@@ -585,26 +583,6 @@ const Header1 = ({ showBorder = false }) => {
     // Extract the hash (e.g., "auto-runbooks")
     const fragment = currentRouter?.asPath?.split('#')?.[1] || '';
     const hashString = fragment ? `#${fragment}` : '';
-
-    // 0. Handle switching TO / AWAY FROM a self-hosted VM fleet.
-    //
-    // Kept ahead of the cloud/K8s branches because it is the only case keyed on
-    // the *provider* rather than the page: /vm is a single tenant-level route
-    // (no per-account path segment), so picking a self-hosted account from any
-    // account-scoped page lands there, and picking anything else while on /vm
-    // has to leave. Falling through to the branches below would push a
-    // SelfHosted id at /cloud-account/details/, which has no provider to render.
-    if (e.cloud_provider === 'SelfHosted') {
-      updateClusterState(e);
-      // Preserve the tab when already on /vm; enter on Summary otherwise.
-      currentRouter.push(`/vm?accountId=${e.value}${currentRouter.pathname === '/vm' ? hashString || '#summary' : '#summary'}`);
-      return;
-    }
-    if (currentRouter.pathname === '/vm') {
-      updateClusterState(e);
-      currentRouter.push(e.cloud_provider === 'K8s' ? `/kubernetes/details/${e.value}#summary` : `/cloud-account/details/${e.value}#summary`);
-      return;
-    }
 
     // 1. Handle switching TO Kubernetes FROM Cloud Account
     if (currentRouter.pathname.indexOf('/cloud-account/details/') > -1 && e.cloud_provider == 'K8s') {
