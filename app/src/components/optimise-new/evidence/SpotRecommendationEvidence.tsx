@@ -28,7 +28,13 @@ const SpotRecommendationEvidence = ({ recommendation, estimatedSavings }: SpotRe
         {rec.namespace && <MetricRow label='Namespace' value={rec.namespace} />}
         {rec.controller_name && <MetricRow label='Controller' value={rec.controller_name} />}
         {rec.replica_count != null && <MetricRow label='Replicas' value={rec.replica_count} />}
-        {rec.estimated_saving != null && <MetricRow label='Est. Saving' value={`$${rec.estimated_saving}`} highlight />}
+        {rec.estimated_saving != null && (
+          <MetricRow
+            label='Est. Saving'
+            value={'$' + Number(rec.estimated_saving).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            highlight
+          />
+        )}
         {rec.reason && <MetricRow label='Reason' value={rec.reason} />}
       </Box>
 
