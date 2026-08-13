@@ -19,6 +19,23 @@ import { Modal } from '@ui/Modal';
 
 const QUESTION_PREVIEW_LINES = 6;
 
+const getStatusIcon = (status) => {
+  const s = (status || '').toLowerCase();
+  if (s === 'fail' || s === 'error' || s === 'failed') {
+    return { icon: AskNudgebeeErrorIcon, label: 'Error' };
+  }
+  if (s === 'skipped') {
+    return { icon: AskNudgebeeSkipIcon, label: 'Skipped' };
+  }
+  if (s === 'waiting') {
+    return { icon: AskNudgebeeWaitingIcon, label: 'Waiting' };
+  }
+  if (s === 'in_progress') {
+    return { icon: AskNudgebeeInProgressIcon, label: 'In-Progress' };
+  }
+  return { icon: AskNudgebeeSuccessIcon, label: 'Success' };
+};
+
 const getCardTitle = (data, { indented = false } = {}) => {
   // `thought`/`log` are rewritten by the backend on every LLM completion, so reading
   // them mid-run makes the title flicker between intermediate ReAct steps.
@@ -168,6 +185,7 @@ const MessageItem = ({
   };
   const { assistantName } = useTenantBranding();
   const messageType = message.tool ?? message.type;
+  const statusIcon = getStatusIcon(message.response_status);
   const isQuestion = messageType === 'question';
   const isResponse = messageType === 'response';
   const cardTitle = getCardTitle(message, { indented: indentDepth > 0 });
@@ -446,35 +464,9 @@ const MessageItem = ({
                 )}
                 {!['question', 'response', 'followup-question', 'acknowledgment'].includes(messageType) && (
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>
-                    <Tooltip
-                      title={
-                        message.response_status == 'fail'
-                          ? 'Error'
-                          : message.response_status == 'skipped'
-                          ? 'Skipped'
-                          : message.response_status === 'waiting'
-                          ? 'Waiting'
-                          : message.response_status === 'in_progress'
-                          ? 'In-Progress'
-                          : 'Success'
-                      }
-                      placement='top'
-                    >
+                    <Tooltip title={statusIcon.label} placement='top'>
                       <Box component='span' sx={{ display: 'inline-flex', lineHeight: 0 }}>
-                        <SafeIcon
-                          src={
-                            message.response_status == 'fail'
-                              ? AskNudgebeeErrorIcon
-                              : message.response_status == 'skipped'
-                              ? AskNudgebeeSkipIcon
-                              : message.response_status === 'waiting'
-                              ? AskNudgebeeWaitingIcon
-                              : message.response_status === 'in_progress'
-                              ? AskNudgebeeInProgressIcon
-                              : AskNudgebeeSuccessIcon
-                          }
-                          alt='status icon'
-                        />
+                        <SafeIcon src={statusIcon.icon} alt='status icon' />
                       </Box>
                     </Tooltip>
                     <Text
