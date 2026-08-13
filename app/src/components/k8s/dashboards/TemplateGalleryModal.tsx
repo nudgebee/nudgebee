@@ -5,13 +5,14 @@ import { Button } from '@ui/Button';
 import { Card } from '@ui/Card';
 import { Chip } from '@ui/Chip';
 import { ToggleGroup } from '@ui/ToggleGroup';
+import SearchInput from '@ui/SearchInput';
 import { snackbar } from '@ui/Toast';
 import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
 import type { AccountOption, Dashboard } from '@api1/dashboards';
 import { deriveAccountTypes } from './panelAccounts';
 import { defaultWidgetScope, roleLabel, TEMPLATE_ROLES, type TemplateRole } from './panelTemplates';
-import { convertTemplate, DASHBOARD_TEMPLATES, templateWidgets, type DashboardTemplate } from './dashboardTemplates';
+import { convertTemplate, DASHBOARD_TEMPLATES, filterTemplatesBySearch, templateWidgets, type DashboardTemplate } from './dashboardTemplates';
 
 interface Props {
   open: boolean;
@@ -45,10 +46,14 @@ const ALL_ROLES = 'all';
  */
 const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, onDraft }) => {
   const [role, setRole] = useState<TemplateRole | typeof ALL_ROLES>(ALL_ROLES);
+  const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState('');
 
   const selected: DashboardTemplate | undefined = useMemo(() => DASHBOARD_TEMPLATES.find((t) => t.id === selectedId), [selectedId]);
-  const visible = useMemo(() => (role === ALL_ROLES ? DASHBOARD_TEMPLATES : DASHBOARD_TEMPLATES.filter((t) => t.roles.includes(role))), [role]);
+  const visible = useMemo(() => {
+    const byRole = role === ALL_ROLES ? DASHBOARD_TEMPLATES : DASHBOARD_TEMPLATES.filter((t) => t.roles.includes(role));
+    return filterTemplatesBySearch(byRole, query);
+  }, [role, query]);
   const roleOptions = useMemo(() => [{ value: ALL_ROLES, label: 'All' }, ...TEMPLATE_ROLES.map((r) => ({ value: r.value, label: r.label }))], []);
 
   const widgets = selected ? templateWidgets(selected) : [];
@@ -71,6 +76,7 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
 
   const reset = () => {
     setRole(ALL_ROLES);
+    setQuery('');
     setSelectedId('');
   };
 
@@ -150,39 +156,49 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
               onChange={(next) => setRole(next as TemplateRole | typeof ALL_ROLES)}
               id='template-role-toggle'
             />
+            {/* Filters the static gallery live by name and description — no API,
+                so it narrows as you type rather than on Enter, matching the role
+                toggle beside it. */}
+            <SearchInput value={query} onChange={setQuery} label='Search templates' id='template-search' ml='auto' />
           </Stack>
 
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 1.5, mt: 1 }} data-testid='template-gallery'>
-            {visible.map((template) => (
-              <Card
-                key={template.id}
-                variant='outlined'
-                elevation='flat'
-                size='sm'
-                interactive
-                selected={template.id === selectedId}
-                onClick={() => choose(template)}
-                data-testid={`template-card-${template.id}`}
-              >
-                <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 14, fontWeight: 620, color: ds.gray[700] }}>
-                  {template.title}
-                </Typography>
-                <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block', mt: 0.5 }}>
-                  {template.description}
-                </Typography>
-                <Stack direction='row' gap={0.5} flexWrap='wrap' sx={{ mt: 1 }}>
-                  <Chip size='2xs' tone='neutral'>
-                    {template.panels.length} panels
-                  </Chip>
-                  {template.roles.map((r) => (
-                    <Chip key={r} size='2xs' tone='info'>
-                      {roleLabel(r)}
+          {visible.length === 0 ? (
+            <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block', mt: 1.5 }} data-testid='template-empty'>
+              No templates match your search.
+            </Typography>
+          ) : (
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 1.5, mt: 1 }} data-testid='template-gallery'>
+              {visible.map((template) => (
+                <Card
+                  key={template.id}
+                  variant='outlined'
+                  elevation='flat'
+                  size='sm'
+                  interactive
+                  selected={template.id === selectedId}
+                  onClick={() => choose(template)}
+                  data-testid={`template-card-${template.id}`}
+                >
+                  <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 14, fontWeight: 620, color: ds.gray[700] }}>
+                    {template.title}
+                  </Typography>
+                  <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block', mt: 0.5 }}>
+                    {template.description}
+                  </Typography>
+                  <Stack direction='row' gap={0.5} flexWrap='wrap' sx={{ mt: 1 }}>
+                    <Chip size='2xs' tone='neutral'>
+                      {template.panels.length} panels
                     </Chip>
-                  ))}
-                </Stack>
-              </Card>
-            ))}
-          </Box>
+                    {template.roles.map((r) => (
+                      <Chip key={r} size='2xs' tone='info'>
+                        {roleLabel(r)}
+                      </Chip>
+                    ))}
+                  </Stack>
+                </Card>
+              ))}
+            </Box>
+          )}
         </Form.Section>
 
         {selected && (

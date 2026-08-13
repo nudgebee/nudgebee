@@ -287,6 +287,19 @@ export function findDashboardTemplate(id: string): DashboardTemplate | undefined
   return DASHBOARD_TEMPLATES.find((t) => t.id === id);
 }
 
+/**
+ * Templates whose name or description contains `query`, matched case-insensitively
+ * as a substring. The gallery is small and static, so a predictable "contains" is
+ * what a user typing a keyword like "cost" or "capacity" expects — no fuzzy
+ * matching, no minimum length. A blank or whitespace-only query returns the list
+ * unchanged.
+ */
+export function filterTemplatesBySearch(templates: DashboardTemplate[], query: string): DashboardTemplate[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return templates;
+  return templates.filter((t) => t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q));
+}
+
 /** The widgets a template is made of, in order. Unknown ids are dropped. */
 export function templateWidgets(template: DashboardTemplate): PanelTemplate[] {
   return template.panels.map((p) => findPanelTemplate(p.widget)).filter((w): w is PanelTemplate => Boolean(w));

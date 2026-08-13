@@ -1,5 +1,5 @@
 import { defaultWidgetScope, PANEL_TEMPLATES, panelFromTemplate, TEMPLATE_ROLES, WIDGET_CATEGORIES, widgetAccountKind } from '../panelTemplates';
-import { buildTemplateDocument, convertTemplate, DASHBOARD_TEMPLATES, templateWidgets } from '../dashboardTemplates';
+import { buildTemplateDocument, convertTemplate, DASHBOARD_TEMPLATES, filterTemplatesBySearch, templateWidgets } from '../dashboardTemplates';
 import { draftFromQuery, findTable } from '../entityQuery';
 import { referencedVariables } from '../templating';
 
@@ -279,5 +279,24 @@ describe('dashboard templates', () => {
     const template = DASHBOARD_TEMPLATES[0];
     expect(buildTemplateDocument(template, ' Q3 review ').title).toBe('Q3 review');
     expect(buildTemplateDocument(template, '   ').title).toBe(template.title);
+  });
+
+  describe('search', () => {
+    it('matches on name and description, case-insensitively and by substring', () => {
+      // A word only in a title ("FinOps") and a word only in descriptions
+      // ("waste"): both must be found, in any case, from a partial keyword.
+      expect(filterTemplatesBySearch(DASHBOARD_TEMPLATES, 'finops').map((t) => t.id)).toContain('finops-cost-optimisation');
+      expect(filterTemplatesBySearch(DASHBOARD_TEMPLATES, 'CAPAC').some((t) => t.id === 'sre-cluster-capacity')).toBe(true);
+      expect(filterTemplatesBySearch(DASHBOARD_TEMPLATES, 'waste').length).toBeGreaterThan(0);
+    });
+
+    it('returns the list unchanged for a blank or whitespace-only query', () => {
+      expect(filterTemplatesBySearch(DASHBOARD_TEMPLATES, '')).toBe(DASHBOARD_TEMPLATES);
+      expect(filterTemplatesBySearch(DASHBOARD_TEMPLATES, '   ')).toBe(DASHBOARD_TEMPLATES);
+    });
+
+    it('returns an empty list when nothing matches', () => {
+      expect(filterTemplatesBySearch(DASHBOARD_TEMPLATES, 'zzzznomatch')).toEqual([]);
+    });
   });
 });
