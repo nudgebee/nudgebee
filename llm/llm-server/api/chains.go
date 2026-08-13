@@ -1815,6 +1815,524 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		c.JSON(http.StatusOK, buildApiResponse(data, nil))
 	})
 
+	groupV2.POST("/usage-metrics", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_usage_metrics")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.UsageMetricsRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		logger := slog.With("user_id", request.UserId, "group_by", request.GroupBy)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+
+		data, err := core.HandleUsageMetricsApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// usage-filters returns the option-sets that populate the Cost Analyser
+	// filter bar (distinct sources/models/providers/agents/statuses/users in
+	// the window + the caller's accessible accounts).
+	groupV2.POST("/usage-filters", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_usage_filters")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.UsageFiltersRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+
+		data, err := core.HandleUsageFiltersApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// usage-conversations is the Cost Analyser explorer: a filtered, sorted,
+	// paginated list of conversations with per-conversation cost/model/token
+	// rollups plus filter-wide KPI totals for the header.
+	groupV2.POST("/usage-conversations", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_usage_conversations")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.ListConversationCostsRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		logger := slog.With("user_id", request.UserId, "sort_by", request.SortBy)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+
+		data, err := core.HandleListConversationCostsApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// conversation-tree is the Cost Analyser detailed drill-down: the full
+	// recursive tree (messages -> agents -> tool calls + model/API calls) of one
+	// conversation, with cost/tokens/latency on every node.
+	groupV2.POST("/conversation-tree", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_conversation_tree")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.ConversationTreeRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		logger := slog.With("account_id", request.AccountId, "user_id", request.UserId)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		if request.ConversationId == "" || request.AccountId == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: conversation_id and account_id are required"},
+			}))
+			return
+		}
+
+		data, err := core.HandleConversationTreeApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// conversation-agent is the on-click drill-down for ONE agent in the Cost
+	// Analyser tree: its execution content (query/thought/response), every tool
+	// call (params + response + status) and every model call (tokens + cost
+	// breakdown + error/success).
+	groupV2.POST("/conversation-agent", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_conversation_agent")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.ConversationAgentDetailRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		logger := slog.With("account_id", request.AccountId, "user_id", request.UserId)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		if request.ConversationId == "" || request.AccountId == "" || request.AgentId == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: conversation_id, account_id and agent_id are required"},
+			}))
+			return
+		}
+
+		data, err := core.HandleConversationAgentDetailApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// usage-agents is the Cost Analyser "Agents" leaderboard: top agent invocations
+	// across conversations ranked by cost / latency / errors, each linked to its
+	// conversation for cross-navigation.
+	groupV2.POST("/usage-agents", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_usage_agents")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.ListAgentCallsRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		// Reject empty dates with a clean 400 (parity with the sibling handlers);
+		// otherwise time.Parse("") inside the handler surfaces as a 500.
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+
+		logger := slog.With("account_id", request.AccountIds, "user_id", request.UserId)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		data, err := core.HandleListAgentCostsApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// usage-tools is the Cost Analyser "Tools" leaderboard: a per-tool rollup
+	// (calls / reliability / latency / reach) across conversations from
+	// llm_conversation_tool_calls, with downstream LLM cost attributed to
+	// sub-agent-spawn tools.
+	groupV2.POST("/usage-tools", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_usage_tools")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.ListToolUsageRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		// Reject empty dates with a clean 400 (parity with the sibling handlers).
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+
+		logger := slog.With("account_id", request.AccountIds, "user_id", request.UserId)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		data, err := core.HandleListToolUsageApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// tool-calls is the Tools-tab drill-in: the recent invocations of one tool
+	// (optionally restricted to failure / in-progress statuses), each linked to its
+	// conversation for a deep dive.
+	groupV2.POST("/tool-calls", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_tool_calls")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.ListToolCallsRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		if request.StartDate == "" || request.EndDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: start_date and end_date are required"},
+			}))
+			return
+		}
+		if request.ToolName == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: tool_name is required"},
+			}))
+			return
+		}
+
+		logger := slog.With("account_id", request.AccountIds, "user_id", request.UserId)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		data, err := core.HandleListToolCallsApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
 	// Internal cross-tenant Critique Analytics routes. No account scoping —
 	// gated by requireTenantReadAdmin. A tenant_admin sees every tenant's data.
 
