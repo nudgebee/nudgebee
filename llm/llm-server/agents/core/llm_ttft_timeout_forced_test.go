@@ -130,6 +130,7 @@ func TestTTFTTimeout_ForcedStall_CancelsAndRetries(t *testing.T) {
 	origProvider := config.Config.LlmProvider
 	origModel := config.Config.LlmModel
 	origRetries := config.Config.LlmProviderMaxRetries
+	origThinkRate := config.Config.LlmProviderTTFTThinkingTokensPerSec
 	// Scaled-down timeout for a fast CI run; the 30s production default is covered
 	// by config's own default-value test. Enable is per-provider via env — googleai
 	// is the current provider in this test, so we flip the matching env key.
@@ -137,6 +138,12 @@ func TestTTFTTimeout_ForcedStall_CancelsAndRetries(t *testing.T) {
 	t.Setenv("LLM_PROVIDER_TTFT_TIMEOUT_ENABLED_GOOGLEAI", "true")
 	t.Setenv("LLM_PROVIDER_TTFT_TIMEOUT_SECONDS_GOOGLEAI", "")
 	config.Config.LlmProviderTTFTTimeoutSeconds = 1
+	// This test covers watchdog cancel/retry mechanics, not the thinking-budget
+	// deadline adjustment (see TestTTFTDeadlineSeconds). The request below carries a
+	// 16k thinking budget, which would otherwise extend the scaled-down 1s deadline
+	// past the stall and stop the watchdog from ever firing. 0 is the documented
+	// kill switch for the adjustment.
+	config.Config.LlmProviderTTFTThinkingTokensPerSec = 0
 	config.Config.LlmProvider = "googleai"
 	config.Config.LlmModel = "gemini-3-flash-preview"
 	config.Config.LlmProviderMaxRetries = 5
@@ -145,6 +152,7 @@ func TestTTFTTimeout_ForcedStall_CancelsAndRetries(t *testing.T) {
 		config.Config.LlmProvider = origProvider
 		config.Config.LlmModel = origModel
 		config.Config.LlmProviderMaxRetries = origRetries
+		config.Config.LlmProviderTTFTThinkingTokensPerSec = origThinkRate
 	})
 
 	// stallFor needs headroom above the timeout + retry backoff (~1s + jitter,

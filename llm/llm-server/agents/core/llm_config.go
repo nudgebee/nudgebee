@@ -1161,12 +1161,28 @@ func getLLMSessionToken(accountId, provider, agentName string, appendAgentName b
 // is explicitly set. When enabled, the seconds value is the provider-specific
 // override (LLM_PROVIDER_TTFT_TIMEOUT_SECONDS_<PROVIDER>) if set, otherwise the
 // global default (config.Config.LlmProviderTTFTTimeoutSeconds).
+// ttftTimeoutDefaultEnabled reports whether the TTFT watchdog is armed for a provider
+// when no explicit LLM_PROVIDER_TTFT_TIMEOUT_ENABLED_<PROVIDER> is set.
+//
+// Only googleai defaults on, and only because the failure is measured there: Gemini
+// streams were observed accepting a request and then emitting nothing at all, sitting
+// out the full 5-minute per-call ceiling before any recovery began — 30 occurrences in
+// four days on one agent, averaging 269s of dead time each.
+//
+// Every other provider stays opt-in. The same hang may well exist elsewhere, but we have
+// no TTFT measurements for them, and arming a watchdog against an unmeasured latency
+// profile risks abandoning calls that were merely slow. Enable them explicitly once
+// their TTFT distribution is known.
+func ttftTimeoutDefaultEnabled(provider string) bool {
+	return provider == "googleai"
+}
+
 func getLLMTTFTTimeout(provider string) (enabled bool, seconds int) {
 	if provider == "" {
 		return false, 0
 	}
 	p := strings.ToLower(provider)
-	if !config.Config.GetBool(fmt.Sprintf(llmProviderTTFTTimeoutEnabledFormat, p), false) {
+	if !config.Config.GetBool(fmt.Sprintf(llmProviderTTFTTimeoutEnabledFormat, p), ttftTimeoutDefaultEnabled(p)) {
 		return false, 0
 	}
 	seconds = config.Config.LlmProviderTTFTTimeoutSeconds

@@ -240,6 +240,21 @@ type appConfig struct {
 	// retries the same model if no first streamed token arrives within this deadline.
 	LlmProviderTTFTTimeoutSeconds int `mapstructure:"llm_provider_ttft_timeout_seconds"`
 
+	// A thinking model emits nothing on the wire while it reasons, so time-to-first-token
+	// scales with the thinking budget: measured p95 TTFT is ~6s under 1k thinking tokens
+	// but ~264s at 8k+. A flat TTFT deadline would therefore abandon deep-reasoning calls
+	// that were working normally. The watchdog adds budget/LlmProviderTTFTThinkingTokensPerSec
+	// seconds on top of the flat deadline, clamped to LlmProviderTTFTTimeoutMaxSeconds.
+	//
+	// Observed thinking throughput is 250-400 tok/s; the default of 100 is deliberately
+	// conservative, leaving >2.4x headroom over measured p95 at every tier. Set to 0 to
+	// disable the adjustment entirely and use the flat deadline for every call.
+	LlmProviderTTFTThinkingTokensPerSec int `mapstructure:"llm_provider_ttft_thinking_tokens_per_sec"`
+
+	// Upper bound on the thinking-adjusted TTFT deadline. Also used when a call requests
+	// uncapped thinking (budget -1), where there is no budget to derive a deadline from.
+	LlmProviderTTFTTimeoutMaxSeconds int `mapstructure:"llm_provider_ttft_timeout_max_seconds"`
+
 	// LlmServerGlobalRetryBudgetMinutes caps the total time spent on a single agent step,
 	// including the initial call and all subsequent retries/continuations.
 	// This ensures a single step doesn't consume the entire request budget.
@@ -1113,6 +1128,8 @@ func init() {
 	viper.SetDefault("llm_server_max_individual_call_timeout_minutes", 5)
 	viper.SetDefault("llm_server_global_retry_budget_minutes", 10)
 	viper.SetDefault("llm_provider_ttft_timeout_seconds", 30)
+	viper.SetDefault("llm_provider_ttft_thinking_tokens_per_sec", 100) // 0 disables the thinking adjustment
+	viper.SetDefault("llm_provider_ttft_timeout_max_seconds", 240)
 
 	// SLM specific configs for agents
 	viper.SetDefault("llm_provider_promql_query", "")

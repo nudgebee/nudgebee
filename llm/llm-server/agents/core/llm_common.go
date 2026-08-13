@@ -353,6 +353,14 @@ type LLMCallMetadata struct {
 	// (false means TTFTMs / ITL are not meaningful).
 	TTFTMs       *int64
 	WasStreaming bool
+	// ServedModel/ServedProvider are the model and provider that actually produced
+	// the response, which is NOT the caller's resolved model once a fallback ran.
+	// Without these the usage row records the primary, so a response served by a
+	// fallback is attributed to the model that failed — and FallbackFromModel then
+	// equals LLMModel, which reads as a nonsensical same-model fallback.
+	// Empty when the call never left the primary; callers fall back to their own value.
+	ServedModel    string
+	ServedProvider string
 }
 
 type retryContext struct {
@@ -790,14 +798,23 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 				logger.Error("trackTokenUsage: recovered from panic in background token-usage write", "panic", r)
 			}
 		}()
+		// Attribute usage to the model that actually served the response, not the
+		// one we started with — they differ whenever a fallback ran.
+		servedProvider, servedModel := provider, model
+		if callMetadata.ServedModel != "" {
+			servedModel = callMetadata.ServedModel
+		}
+		if callMetadata.ServedProvider != "" {
+			servedProvider = callMetadata.ServedProvider
+		}
 		trackTokenUsage(
 			bgCtx,
 			conversationId,
 			messageId,
 			agentId,
 			agentName,
-			provider,
-			model,
+			servedProvider,
+			servedModel,
 			accountId,
 			userId,
 			totalTokenInfo,
@@ -1096,6 +1113,60 @@ func WithThinkingLevel(level string) llms.CallOption {
 // WithThinkingBudget sets a hard numeric ceiling (in tokens) on thinking/reasoning
 // generation, unlike WithThinkingLevel's qualitative hint. tokens < 0 is the
 // "no override" sentinel and is a no-op; tokens == 0 means "disable thinking".
+// ttftDeadlineSeconds extends the flat TTFT deadline to cover a call's thinking phase.
+//
+// A thinking model emits nothing on the wire while reasoning, so time-to-first-token
+// scales with the thinking budget — measured p95 TTFT is ~6s under 1k thinking tokens
+// but ~264s at 8k+. Applying the flat deadline to every call would abandon legitimate
+// deep-reasoning work; the budget is known before dispatch, so it is converted to time
+// at a conservative rate and added on top.
+//
+// A call with no thinking budget keeps exactly the flat deadline, so this can only ever
+// extend a deadline, never shorten one. Rate 0 disables the adjustment entirely.
+func ttftDeadlineSeconds(flatSeconds int, opts llms.CallOptions) int {
+	rate := config.Config.LlmProviderTTFTThinkingTokensPerSec
+	if rate <= 0 {
+		return flatSeconds
+	}
+	maxSeconds := config.Config.LlmProviderTTFTTimeoutMaxSeconds
+	if maxSeconds <= 0 || maxSeconds < flatSeconds {
+		maxSeconds = flatSeconds
+	}
+
+	budget, ok := thinkingBudgetFromOptions(opts)
+	if !ok {
+		return flatSeconds
+	}
+	if budget < 0 {
+		// Uncapped thinking: no budget to derive an allowance from, so fall back to the
+		// ceiling rather than guessing low and truncating a valid call.
+		return maxSeconds
+	}
+	return min(flatSeconds+budget/rate, maxSeconds)
+}
+
+// thinkingBudgetFromOptions reads the thinking allowance a call was dispatched with.
+// Prefers the numeric budget; falls back to the qualitative level's own ceiling so
+// providers using the string ThinkingLevel API are covered too.
+func thinkingBudgetFromOptions(opts llms.CallOptions) (int, bool) {
+	if opts.Metadata == nil {
+		return 0, false
+	}
+	if v, ok := opts.Metadata["ThinkingBudget"]; ok {
+		if budget, ok := v.(int); ok {
+			return budget, true
+		}
+	}
+	if v, ok := opts.Metadata["ThinkingLevel"]; ok {
+		if level, ok := v.(string); ok {
+			if budget, ok := thinkingLevelBudgets[strings.ToLower(level)]; ok {
+				return budget, true
+			}
+		}
+	}
+	return 0, false
+}
+
 func WithThinkingBudget(tokens int) llms.CallOption {
 	return func(o *llms.CallOptions) {
 		if tokens < 0 {
@@ -1338,16 +1409,28 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	for _, opt := range optionsToSend {
 		opt(&watchdogOpts)
 	}
-	if enabled, s := getLLMTTFTTimeout(rc.currentProvider); enabled && s > 0 && watchdogOpts.StreamingFunc != nil {
-		watchdogSeconds = s
-		watchdogTimer = time.AfterFunc(time.Duration(watchdogSeconds)*time.Second, func() {
-			if !done.Load() && !tracker.wasStreaming() {
-				watchdogFired.Store(true)
-				cancel()
-			}
-		})
-		defer watchdogTimer.Stop()
+	// armTTFTWatchdog starts the deadline. It is called immediately before
+	// GenerateContent rather than here, because everything between this point and the
+	// send — the cache round-trip and, most importantly, waiting for a concurrency
+	// permit — is queue time, not the model failing to respond. Arming early would let
+	// a call that is merely queued behind LLMServerMaxConcurrentLlmCalls be cancelled
+	// as if the model had gone silent.
+	armTTFTWatchdog := func() {
+		if enabled, s := getLLMTTFTTimeout(rc.currentProvider); enabled && s > 0 && watchdogOpts.StreamingFunc != nil {
+			watchdogSeconds = ttftDeadlineSeconds(s, watchdogOpts)
+			watchdogTimer = time.AfterFunc(time.Duration(watchdogSeconds)*time.Second, func() {
+				if !done.Load() && !tracker.wasStreaming() {
+					watchdogFired.Store(true)
+					cancel()
+				}
+			})
+		}
 	}
+	defer func() {
+		if watchdogTimer != nil {
+			watchdogTimer.Stop()
+		}
+	}()
 
 	if rc.conversationId != "" && rc.enableCaching {
 		rc.ctx.GetLogger().Debug("Applying cache for current model",
@@ -1461,12 +1544,27 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		}
 	}
 
+	// Arm the TTFT deadline only now: the request is about to go on the wire, so from
+	// here on silence really is the model failing to respond. tracker.started is
+	// deliberately left at the call start so the persisted ttft_ms keeps its existing
+	// meaning and stays comparable with historical rows; only the watchdog's own clock
+	// starts here. The deadlines are calibrated against that (larger) recorded TTFT,
+	// so measuring from the send point can only leave more headroom, never less.
+	armTTFTWatchdog()
+
 	completion, err := rc.llm.GenerateContent(ctx, messagesToSend, optionsToSend...)
 	// done must be set before Stop(), which doesn't wait for an in-flight callback.
 	done.Store(true)
 	if watchdogTimer != nil {
 		watchdogTimer.Stop()
 	}
+	// Record latency for EVERY outcome, before any error branch returns. The failure
+	// paths below return early, so assigning this only on success would leave
+	// rc.lastLatency holding the previous attempt's value — and a timed-out attempt,
+	// the one case where the elapsed time is the whole point, would be reported with a
+	// stale (small) latency by both the slow-model check and the timeout usage row.
+	generationDuration := time.Since(start)
+	rc.lastLatency = generationDuration.Seconds()
 	if err != nil && watchdogFired.Load() {
 		// Must match isTransientError ("timeout") to trigger a same-model retry, and must
 		// NOT contain "deadline exceeded" or isDeadlineExceededError routes to fallback models instead.
@@ -1532,10 +1630,8 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		rc.errorHistory = append(rc.errorHistory, fmt.Sprintf("[%s] %s", rc.currentModel, err.Error()))
 		return nil, err
 	}
-	generationDuration := time.Since(start)
-	latency := generationDuration.Seconds()
+	latency := rc.lastLatency // recorded immediately after GenerateContent, above
 	rc.ctx.GetLogger().Info("LLM GenerateContent call complete", "duration", generationDuration.String(), "model", rc.currentModel, "provider", rc.currentProvider)
-	rc.lastLatency = latency // Store latency in retry context
 	rc.lastTTFTMs = tracker.ttftMs()
 	rc.lastWasStreaming = tracker.wasStreaming()
 	provider := rc.currentProvider
@@ -1577,6 +1673,46 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	return completion, nil
 }
 
+// requestStatusForError maps a call error to the request_status persisted on the usage
+// row. A hung call is separated from an ordinary failure because it costs the full
+// per-call deadline — the single largest latency contributor measured — and needs to be
+// queryable on its own rather than blending into the general "failure" bucket.
+func requestStatusForError(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "failure"
+}
+
+// recordAbandonedAttempt persists a usage row for a timed-out model we are giving up on.
+//
+// Without this, an attempt that hangs and is then rescued by a fallback leaves NO row
+// at all: only the successful call is recorded, so the time the hung attempt burned is
+// invisible in llm_conversation_token_usage. A hung primary therefore hid a five-minute
+// stall behind an adjacent row that looked entirely healthy — the gap was only
+// recoverable by diffing timestamps between consecutive rows.
+//
+// Deliberately limited to timeouts. Other abandoned attempts (quota, transient) either
+// fail fast or are already captured by the end-of-sequence failure row, so recording
+// them here would double-count the same event against that row.
+func recordAbandonedAttempt(rc *retryContext, model, provider string) {
+	if rc == nil || rc.ctx == nil || rc.lastErr == nil {
+		return
+	}
+	if !errors.Is(rc.lastErr, context.DeadlineExceeded) {
+		return
+	}
+	recordTokenUsageFailure(rc.ctx, rc.conversationId, rc.messageId, rc.agentId, rc.agentName,
+		provider, model, rc.accountId, rc.userId,
+		// Only latency and attempt are carried: recordTokenUsageFailure persists neither
+		// TTFT nor was_streaming, and for a hung stream TTFT is nil by definition — no
+		// chunk ever arrived — so there is nothing to report even if it did.
+		&LLMCallMetadata{
+			LatencySeconds: rc.lastLatency,
+			RetryAttempt:   rc.attemptCount,
+		}, rc.lastErr)
+}
+
 func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.ContentResponse, error) {
 	if rc == nil || rc.ctx == nil {
 		return nil, errors.New("invalid retry context")
@@ -1589,6 +1725,10 @@ func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.Co
 	previousModel := rc.currentModel
 	previousLLM := rc.llm
 	previousProvider := rc.currentProvider
+
+	// The model we are leaving behind failed; record that attempt before its latency
+	// and error are overwritten by the fallback's own result.
+	recordAbandonedAttempt(rc, previousModel, previousProvider)
 
 	rc.triedModels[nextModel] = true
 	rc.ctx.GetLogger().Info("Trying fallback model",
@@ -1727,6 +1867,8 @@ func buildCallMetadata(rc *retryContext, success bool) *LLMCallMetadata {
 		CacheInfo:         rc.lastCacheInfo, // Include cache info from last call
 		TTFTMs:            rc.lastTTFTMs,
 		WasStreaming:      rc.lastWasStreaming,
+		ServedModel:       rc.currentModel,
+		ServedProvider:    rc.currentProvider,
 	}
 
 	if !success && rc.lastErr != nil {
@@ -3006,6 +3148,8 @@ func recordTokenUsageFailure(
 		}
 	}
 
+	requestStatus := requestStatusForError(rawErr)
+
 	cacheTTL := config.Config.LlmCacheTTLMinutes
 	record := &TokenUsageRecord{
 		ConversationID:    conversationId,
@@ -3022,7 +3166,7 @@ func recordTokenUsageFailure(
 		FallbackFromModel: fallbackFromModel,
 		FallbackChain:     fallbackChainJSON,
 		LatencySeconds:    latencyPtr,
-		RequestStatus:     "failure",
+		RequestStatus:     requestStatus,
 		ErrorMessage:      &errMsg,
 		CacheTTLMinutes:   &cacheTTL,
 	}

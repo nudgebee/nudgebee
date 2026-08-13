@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -281,4 +282,21 @@ func TestIsCircuitTrippingError(t *testing.T) {
 	assert.True(t, isCircuitTrippingError(huggingfaceclient.ErrCircuitOpen))
 	assert.True(t, isCircuitTrippingError(
 		fmt.Errorf("%w after 3 attempts: %w", huggingfaceclient.ErrCircuitTripped, errors.New("429 too many requests"))))
+}
+
+// The googleai first-token watchdog abandons a stream that produced nothing and wraps
+// context.DeadlineExceeded. That error must classify as circuit-tripping so the retry
+// router sends it straight to a fallback model: same-model retries are wasted on a
+// stream that never started, and each wasted attempt costs another full deadline.
+func TestFirstTokenTimeoutRoutesToFallback(t *testing.T) {
+	err := fmt.Errorf("first token timeout after %s on %s: %w",
+		35*time.Second, "gemini-3.5-flash", context.DeadlineExceeded)
+
+	assert.True(t, isCircuitTrippingError(err),
+		"first-token timeout must route to the fallback path, not same-model retries")
+
+	// It must NOT be mistaken for an empty-content response: that path burns two
+	// same-model retries first, which is exactly the 5-minute stall we are removing.
+	assert.False(t, isEmptyResponseError(err),
+		"first-token timeout is a hung stream, not an empty response")
 }
