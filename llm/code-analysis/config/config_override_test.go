@@ -55,3 +55,44 @@ func TestCloneWithLLMOverride(t *testing.T) {
 		assert.Equal(t, "us-west-2", got.LLM.Region)
 	})
 }
+
+func TestCloneWithLLMOverride_AWSCredentials(t *testing.T) {
+	t.Run("applies a complete forwarded pair", func(t *testing.T) {
+		base := &Config{}
+		base.LLM.Provider = "bedrock"
+		got := base.CloneWithLLMOverride(LLMOverride{
+			AccessKey:    "AKIAFORWARDED",
+			SecretKey:    "forwarded-secret",
+			SessionToken: "forwarded-token",
+		})
+		assert.Equal(t, "AKIAFORWARDED", got.LLM.AccessKey)
+		assert.Equal(t, "forwarded-secret", got.LLM.SecretKey)
+		assert.Equal(t, "forwarded-token", got.LLM.SessionToken)
+	})
+
+	t.Run("a half-set pair leaves the startup credentials intact", func(t *testing.T) {
+		// Splicing a forwarded access key onto the startup secret key yields a
+		// pair belonging to neither, which the AWS SDK rejects outright rather
+		// than falling through to the node role.
+		base := &Config{}
+		base.LLM.Provider = "bedrock"
+		base.LLM.AccessKey = "AKIASTARTUP"
+		base.LLM.SecretKey = "startup-secret"
+		got := base.CloneWithLLMOverride(LLMOverride{AccessKey: "AKIAFORWARDED"})
+		assert.Equal(t, "AKIASTARTUP", got.LLM.AccessKey)
+		assert.Equal(t, "startup-secret", got.LLM.SecretKey)
+	})
+
+	t.Run("switching provider drops the startup AWS credentials", func(t *testing.T) {
+		// Bedrock creds must not survive under a forwarded googleai config.
+		base := &Config{}
+		base.LLM.Provider = "bedrock"
+		base.LLM.AccessKey = "AKIASTARTUP"
+		base.LLM.SecretKey = "startup-secret"
+		base.LLM.SessionToken = "startup-token"
+		got := base.CloneWithLLMOverride(LLMOverride{Provider: "googleai", ApiKey: "k"})
+		assert.Empty(t, got.LLM.AccessKey)
+		assert.Empty(t, got.LLM.SecretKey)
+		assert.Empty(t, got.LLM.SessionToken)
+	})
+}

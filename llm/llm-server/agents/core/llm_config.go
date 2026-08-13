@@ -260,6 +260,18 @@ type ForwardedLLMConfig struct {
 	ApiVersion  string `json:"api_version,omitempty"`
 	ApiType     string `json:"api_type,omitempty"`
 	Region      string `json:"region,omitempty"`
+	// AccessKey/SecretKey/SessionToken are the AWS static credentials for
+	// Bedrock, whose "API key" is a SigV4 credential triple rather than a single
+	// token. Without them a forwarded provider=bedrock reaches the code-analysis
+	// pod with nothing to authenticate with, so its AWS SDK falls through to the
+	// default credential chain and ends at IMDS — which exists on EKS but not on
+	// GKE, where it dead-ends in a 169.254.169.254 dial timeout. They are
+	// resolved by the same layered config as every other field here, so a
+	// tenant's own Bedrock integration is honored exactly like a keyed provider.
+	// Plaintext, like ApiKey: MUST NOT be logged.
+	AccessKey    string `json:"access_key,omitempty"`
+	SecretKey    string `json:"secret_key,omitempty"`
+	SessionToken string `json:"session_token,omitempty"`
 	// Tiers carries the ModelTier resolution (reasoning/retrieval/summary) for
 	// this account+agent so the workspace can run its internal roles on
 	// category-appropriate models (fixer/router on retrieval, review on
@@ -271,9 +283,18 @@ type ForwardedLLMConfig struct {
 // ResolveLLMConfigForForwarding resolves the full, decrypted LLM config for the
 // given account/agent in one call, reusing the canonical resolvers (which apply
 // the DB-beats-ENV precedence and decrypt secrets). It returns nil (no error)
-// when there is nothing usable to forward — provider or API key unresolved — in
-// which case the caller omits the block and the pod falls back to its global
-// LLM_* secret env. The returned ApiKey is plaintext and MUST NOT be logged.
+// only when no provider resolves at all, in which case the caller omits the
+// block and the pod falls back to its global LLM_* secret env. The returned
+// ApiKey is plaintext and MUST NOT be logged.
+//
+// A missing API key is NOT a reason to skip forwarding. Keyless providers are
+// legitimate — Bedrock authenticates through the AWS credential chain, not an
+// API key — and bailing on an empty key also threw away the provider+model
+// llm-server itself resolved and runs on. The pod then fell back to its
+// startup env, which on a deployment whose secret sets no LLM_* keys leaves
+// code-analysis on its built-in default provider: one nobody selected, with no
+// credentials, failing at client construction. Forward what Nubi resolved and
+// let the pod fail on the real problem instead.
 func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agentName, conversationId string) (*ForwardedLLMConfig, error) {
 	// Fail-safe: without a tenant/account scope there is nothing tenant-specific
 	// to forward (and we must never run an unscoped tenant lookup). Skip
@@ -293,18 +314,31 @@ func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agen
 		return nil, nil
 	}
 	appendAgentName := agentName != ""
-	apiKey := getLLMApiKey(accountId, provider, agentName, appendAgentName, res)
-	if apiKey == "" {
-		return nil, nil
+	// Resolve the AWS static credentials as a unit. Both halves must be present
+	// for the pair to mean anything; a session token is optional and only
+	// meaningful alongside them (it belongs to temporary STS credentials).
+	accessKey := getLLMAccessKey(accountId, provider, agentName, appendAgentName, res)
+	secretKey := getLLMSecretKey(accountId, provider, agentName, appendAgentName, res)
+	sessionToken := getLLMSessionToken(accountId, provider, agentName, appendAgentName, res)
+	if accessKey == "" || secretKey == "" {
+		accessKey, secretKey, sessionToken = "", "", ""
 	}
 	fwd := &ForwardedLLMConfig{
 		Provider:    provider,
 		Model:       res.Model,
-		ApiKey:      apiKey,
+		ApiKey:      getLLMApiKey(accountId, provider, agentName, appendAgentName, res),
 		ApiEndpoint: getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res),
 		ApiVersion:  getLLMApiVersion(accountId, provider, agentName, appendAgentName, res),
 		ApiType:     getLLMApiType(accountId, provider, agentName, appendAgentName, res),
 		Region:      getLLMRegion(accountId, provider, agentName, appendAgentName, res),
+		// The AWS credential triple is the Bedrock equivalent of ApiKey. Only
+		// forwarded as a complete pair: the AWS SDK treats a half-set static
+		// provider as a hard error rather than falling through to the next
+		// source, so a partial forward would break the pod's own credential
+		// chain (node role / IRSA on EKS) instead of merely not helping it.
+		AccessKey:    accessKey,
+		SecretKey:    secretKey,
+		SessionToken: sessionToken,
 	}
 
 	// Resolve the model tiers through the same layered config so the workspace
@@ -1466,12 +1500,7 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 		return nil, err
 	}
 	slog.Info("Using OpenAI LLM", "model", modelName, "agentName", agentName, "apiType", apiType)
-	// Strip llm-server-internal thinking keys (ThinkingBudget/ThinkingLevel) from Metadata so
-	// they never serialize into the outbound OpenAI `metadata` field — the langchaingo openai
-	// client only filters "openai:"-prefixed keys, and strict OpenAI-compatible providers (Vertex
-	// via the NB AI Gateway) reject non-string metadata. Covers `custom` too (getCustomLLM
-	// delegates here). See openai_thinking_metadata.go.
-	return wrapStripInternalThinkingMetadata(llm), nil
+	return llm, nil
 }
 
 // getCustomLLM serves any provider exposing OpenAI's Chat Completions

@@ -154,6 +154,13 @@ type LLMConfigOverride struct {
 	ApiVersion  string `json:"api_version,omitempty"`
 	ApiType     string `json:"api_type,omitempty"`
 	Region      string `json:"region,omitempty"`
+	// AccessKey/SecretKey/SessionToken are the AWS static credentials for
+	// Bedrock, which authenticates with a SigV4 credential triple instead of a
+	// single API key. llm-server sends them only as a complete pair. Like the
+	// API key, they are plaintext and must never be logged.
+	AccessKey    string `json:"access_key,omitempty"`
+	SecretKey    string `json:"secret_key,omitempty"`
+	SessionToken string `json:"session_token,omitempty"`
 	// Tiers carries the model-tier resolution from llm-server's existing layered
 	// config (ENV-tier + tenant DB; ModelTier taxonomy): "reasoning", "retrieval",
 	// "summary". Mapping here: retrieval → router+fixer (mechanical execution),
@@ -168,13 +175,16 @@ func (o *LLMConfigOverride) toConfigOverride() config.LLMOverride {
 		return config.LLMOverride{}
 	}
 	return config.LLMOverride{
-		Provider:    o.Provider,
-		Model:       o.Model,
-		ApiKey:      o.ApiKey,
-		ApiEndpoint: o.ApiEndpoint,
-		ApiVersion:  o.ApiVersion,
-		ApiType:     o.ApiType,
-		Region:      o.Region,
+		Provider:     o.Provider,
+		Model:        o.Model,
+		ApiKey:       o.ApiKey,
+		ApiEndpoint:  o.ApiEndpoint,
+		ApiVersion:   o.ApiVersion,
+		ApiType:      o.ApiType,
+		Region:       o.Region,
+		AccessKey:    o.AccessKey,
+		SecretKey:    o.SecretKey,
+		SessionToken: o.SessionToken,
 	}
 }
 

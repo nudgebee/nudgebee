@@ -151,6 +151,17 @@ func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 	if c.Region != "" {
 		m["region"] = c.Region
 	}
+	// Bedrock's credential triple. Sent as a unit — ResolveLLMConfigForForwarding
+	// already blanks all three unless the access/secret pair is complete, and a
+	// half-set static provider is a hard error in the AWS SDK rather than a
+	// fall-through to the pod's own credential chain.
+	if c.AccessKey != "" && c.SecretKey != "" {
+		m["access_key"] = c.AccessKey
+		m["secret_key"] = c.SecretKey
+		if c.SessionToken != "" {
+			m["session_token"] = c.SessionToken
+		}
+	}
 	// Per-role tier models. Omitting these was why per-role tiering never took
 	// effect on the workspace path: ResolveLLMConfigForForwarding populates
 	// Tiers and the code-analysis handler consumes it, but this hop dropped it,

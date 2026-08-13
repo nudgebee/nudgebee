@@ -78,6 +78,14 @@ type LLMConfig struct {
 	Region         string `mapstructure:"llm_provider_region"`
 	MaxRetries     int    `mapstructure:"llm_provider_max_retries"`
 	EmbeddingModel string `mapstructure:"llm_provider_embedding_model"`
+	// AWS static credentials for Bedrock. Normally supplied per request by
+	// llm-server (which resolves the tenant's integration); the mapstructure
+	// tags also let a local/dev run set them from env. When unset the AWS
+	// default credential chain applies, which is what serves EKS deployments
+	// via the node role or IRSA.
+	AccessKey    string `mapstructure:"llm_provider_access_key"`
+	SecretKey    string `mapstructure:"llm_provider_secret_key"`
+	SessionToken string `mapstructure:"llm_provider_session_token"`
 }
 
 // DefaultAutomationCommentMarkers is the shipped value of
@@ -183,6 +191,11 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("llm_provider_region", "us-west-2")
 	viper.SetDefault("llm_provider_max_retries", 3)
 	viper.SetDefault("llm_provider_embedding_model", "text-embedding-ada-002")
+	// No default credentials: unset means "use the AWS default chain", which is
+	// how EKS deployments authenticate through the node role or IRSA.
+	viper.SetDefault("llm_provider_access_key", "")
+	viper.SetDefault("llm_provider_secret_key", "")
+	viper.SetDefault("llm_provider_session_token", "")
 
 	// Agent specific configs
 	viper.SetDefault("agent.react_max_iterations", 30)
@@ -252,6 +265,9 @@ func LoadConfig() (*Config, error) {
 	_ = viper.BindEnv("llm_provider_region", "LLM_PROVIDER_REGION")
 	_ = viper.BindEnv("llm_provider_max_retries", "LLM_PROVIDER_MAX_RETRIES")
 	_ = viper.BindEnv("llm_provider_embedding_model", "LLM_PROVIDER_EMBEDDING_MODEL")
+	_ = viper.BindEnv("llm_provider_access_key", "LLM_PROVIDER_ACCESS_KEY")
+	_ = viper.BindEnv("llm_provider_secret_key", "LLM_PROVIDER_SECRET_KEY")
+	_ = viper.BindEnv("llm_provider_session_token", "LLM_PROVIDER_SESSION_TOKEN")
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
@@ -271,6 +287,11 @@ type LLMOverride struct {
 	ApiVersion  string
 	ApiType     string
 	Region      string
+	// AWS static credentials for Bedrock, applied as a unit — see
+	// CloneWithLLMOverride.
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
 }
 
 // CloneWithLLMOverride returns a copy of the config with the given LLM fields
@@ -295,6 +316,9 @@ func (c *Config) CloneWithLLMOverride(o LLMOverride) *Config {
 		clone.LLM.ApiVersion = ""
 		clone.LLM.ApiType = ""
 		clone.LLM.Region = ""
+		clone.LLM.AccessKey = ""
+		clone.LLM.SecretKey = ""
+		clone.LLM.SessionToken = ""
 	}
 	if o.Provider != "" {
 		clone.LLM.Provider = o.Provider
@@ -316,6 +340,16 @@ func (c *Config) CloneWithLLMOverride(o LLMOverride) *Config {
 	}
 	if o.Region != "" {
 		clone.LLM.Region = o.Region
+	}
+	// The AWS credential triple is overlaid as a unit rather than field by
+	// field: mixing a forwarded access key with the startup secret key yields a
+	// credential pair that belongs to neither, and the AWS SDK would reject the
+	// half-set static provider outright instead of falling through to the
+	// default chain. The session token rides with the pair it was issued for.
+	if o.AccessKey != "" && o.SecretKey != "" {
+		clone.LLM.AccessKey = o.AccessKey
+		clone.LLM.SecretKey = o.SecretKey
+		clone.LLM.SessionToken = o.SessionToken
 	}
 	return &clone
 }

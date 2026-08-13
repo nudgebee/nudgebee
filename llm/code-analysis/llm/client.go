@@ -13,6 +13,7 @@ import (
 	"nudgebee/code-analysis-agent/config"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/bedrock"
@@ -105,6 +106,25 @@ func huggingFaceBaseURL(endpoint string) string {
 	return base + "/v1"
 }
 
+// regionFromModelARN extracts the region from a Bedrock model identifier when
+// that identifier is a full ARN — inference profiles and imported models are
+// configured as "arn:aws:bedrock:<region>:<account>:inference-profile/<id>",
+// so the region is already stated and need not be configured a second time.
+// Returns "" for bare model ids ("anthropic.claude-3-5-sonnet-...") and for
+// anything that is not a well-formed ARN, leaving the caller on whatever the
+// AWS default chain resolves.
+func regionFromModelARN(model string) string {
+	if !strings.HasPrefix(model, "arn:") {
+		return ""
+	}
+	// arn:partition:service:region:account-id:resource
+	parts := strings.SplitN(model, ":", 6)
+	if len(parts) < 6 {
+		return ""
+	}
+	return parts[3]
+}
+
 func NewClient(cfg *config.Config) (*Client, error) {
 	if cfg == nil {
 		return nil, errors.New("config is required")
@@ -120,14 +140,36 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		// mutating process-global env would be a data race across concurrent
 		// requests (and would also leak the region into child commands).
 		bedrockOpts := []bedrock.Option{bedrock.WithModel(cfg.LLM.Model)}
-		if cfg.LLM.Region != "" {
+		// The region can arrive explicitly or be carried inside an
+		// inference-profile ARN; either is enough to configure the client.
+		region := cfg.LLM.Region
+		if region == "" {
+			region = regionFromModelARN(cfg.LLM.Model)
+		}
+		// Static credentials are the Bedrock analogue of an API key, forwarded
+		// per request by llm-server from the tenant's resolved config. Build an
+		// explicit AWS config whenever we have either a region or credentials —
+		// keying this on region alone used to drop forwarded credentials on the
+		// floor. With neither, fall through to the SDK default chain, which is
+		// what serves EKS deployments through the node role or IRSA.
+		hasStaticCreds := cfg.LLM.AccessKey != "" && cfg.LLM.SecretKey != ""
+		if region != "" || hasStaticCreds {
 			// Bound the AWS config load so a stuck IMDS/STS lookup fails fast
 			// instead of blocking client construction indefinitely.
 			awsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			awsCfg, cerr := awsconfig.LoadDefaultConfig(awsCtx, awsconfig.WithRegion(cfg.LLM.Region))
+			opts := []func(*awsconfig.LoadOptions) error{}
+			if region != "" {
+				opts = append(opts, awsconfig.WithRegion(region))
+			}
+			if hasStaticCreds {
+				opts = append(opts, awsconfig.WithCredentialsProvider(
+					credentials.NewStaticCredentialsProvider(cfg.LLM.AccessKey, cfg.LLM.SecretKey, cfg.LLM.SessionToken),
+				))
+			}
+			awsCfg, cerr := awsconfig.LoadDefaultConfig(awsCtx, opts...)
 			if cerr != nil {
-				return nil, fmt.Errorf("failed to load AWS config for region %q: %w", cfg.LLM.Region, cerr)
+				return nil, fmt.Errorf("failed to load AWS config for region %q: %w", region, cerr)
 			}
 			bedrockOpts = append(bedrockOpts, bedrock.WithClient(bedrockruntime.NewFromConfig(awsCfg)))
 		}
