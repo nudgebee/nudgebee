@@ -56,9 +56,21 @@ const SortablePanel: React.FC<Props> = ({
       ref={setNodeRef}
       data-testid={`sortable-panel-${panel.id}`}
       /*
-       * The whole panel opens the editor.
+       * The whole panel opens the editor — except its own interactive controls.
+       * A table panel renders pagination and a Rows selector inside the body;
+       * clicking one should drive that control, not open the editor. Same guard
+       * CustomTable uses for its row-expand toggle.
        */
-      onClick={onEdit}
+      onClick={(event) => {
+        if (
+          (event.target as HTMLElement).closest(
+            'button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="combobox"]'
+          )
+        ) {
+          return;
+        }
+        onEdit();
+      }}
       style={{
         /*
          * Translate, not Transform: `CSS.Transform` also writes a scale, which stretches a 3/12 panel to the
