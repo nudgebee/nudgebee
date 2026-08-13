@@ -16,7 +16,7 @@ dependencies = [
     # --- Core framework ---
     "aiofiles==25.1.0",
     "fastapi==0.141.1",
-    "uvicorn[standard]==0.52.0",
+    "uvicorn[standard]==0.52.1",
     "python-multipart==0.0.32",
     "python-dotenv==1.2.2",
     "asgiref==3.12.1",
@@ -30,19 +30,19 @@ dependencies = [
     "python-json-logger==4.1.0",
 
     # --- Vector database ---
-    "qdrant-client==1.16.0",
+    "qdrant-client==1.19.0",
 
     # --- Database & storage ---
     "psycopg2-binary==2.9.12",
-    "boto3==1.43.62",
-    "botocore==1.43.62",
+    "boto3==1.43.67",
+    "botocore==1.43.67",
     "s3transfer==0.19.2",
     "sqlalchemy==2.0.51",
     "pymongo==4.17.0",
 
     # --- AI/LLM SDKs (direct, no langchain) ---
-    "openai==2.52.0",
-    "anthropic==0.120.2",
+    "openai==2.53.0",
+    "anthropic==0.121.0",
     "azure-ai-inference>=1.0.0b9",
     "google-genai==1.66.0",
 
@@ -58,22 +58,20 @@ dependencies = [
     "transformers>=5.5.0",
     "onnxruntime>=1.23.2",
     "huggingface-hub>=1.5.0",
-    "hf_xet==1.5.2",
+    "hf_xet==1.6.0",
     "numpy>=1.26.0",
 
     # --- Document processing ---
     "tiktoken==0.13.0",
     "beautifulsoup4==4.15.0",
     "unstructured==0.18.32",
-    "pymupdf==1.28.0",
+    "pymupdf==1.28.2",
     "jq==1.12.0",
 
     # --- Security-forced transitive bumps (CVE fixes; none imported directly) ---
     # Pulled transitively (msal->PyJWT, rsa->pyasn1, sentence-transformers->onnx/
     # transformers, unstructured->pypdf, fastapi->starlette). Pinned here to force
-    # the patched versions. setuptools>=83 clears CVE-2026-59890; the previous
-    # `<81` cap mirrored ml-k8s-server's pkg_resources crash guard, which no
-    # longer applies (nothing in this resolve imports pkg_resources unguarded).
+    # the patched versions. setuptools>=83 clears CVE-2026-59890 (old <81 cap no longer needed).
     "PyJWT>=2.13.0",
     "pyasn1>=0.6.3",
     "onnx>=1.22.0",
@@ -110,9 +108,9 @@ dependencies = [
     "pygments==2.20.0",
     "rsa==4.9.1",
     "simsimd==6.5.16",
-    "soupsieve==2.9.1",
+    "soupsieve==2.9.2",
     "sympy==1.14.0",
-    "typer==0.27.0",
+    "typer==0.27.1",
     "typing-extensions==4.16.0",
     "typing-inspection==0.4.2",
     "watchfiles==1.2.0",
