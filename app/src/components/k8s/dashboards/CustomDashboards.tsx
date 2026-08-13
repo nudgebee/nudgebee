@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import { Box, Stack, Typography } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { DeleteIconRed as deleteIcon, downloadIcon, writeIconLight } from '@assets';
+import { DeleteIconRed as deleteIcon, downloadIcon, K8sIcon, writeIconLight } from '@assets';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Button } from '@ui/Button';
 import { Modal } from '@ui/Modal';
@@ -11,8 +11,9 @@ import { snackbar } from '@ui/Toast';
 import SearchInput from '@ui/SearchInput';
 import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
+import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { useData } from '@context/DataContext';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage, hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
 import { downloadJsonFile, filenameSlug } from '@utils/fileDownload';
 import apiDashboards, { type AccountOption, type Dashboard, type DashboardBinding } from '@api1/dashboards';
@@ -35,6 +36,22 @@ const QUERYABLE_ACCOUNT_TYPES = new Set(['cloud', 'kubernetes']);
  * is hash-routed — `#dashboards` selects the tab, and AnchorComponent matches that fragment whole.
  */
 const DASHBOARD_PARAM = 'dashboard';
+
+/** The three things a dashboard is for, as the empty state's reassurance row. */
+const EMPTY_STATE_HIGHLIGHTS = [
+  {
+    label: 'Metrics, logs & traces',
+    icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z',
+  },
+  {
+    label: 'Ready-made templates',
+    icon: 'M4 6a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm9 0a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2h-3a2 2 0 01-2-2V6zM4 15a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2H6a2 2 0 01-2-2v-3zm9 0a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2h-3a2 2 0 01-2-2v-3z',
+  },
+  {
+    label: 'Shared across the team',
+    icon: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z',
+  },
+];
 
 const CustomDashboards: React.FC = () => {
   const { allCluster } = useData();
@@ -66,6 +83,8 @@ const CustomDashboards: React.FC = () => {
   const [deleting, setDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  /** Connecting the first cluster, from the empty state below. */
+  const [showAddClusterModal, setShowAddClusterModal] = useState(false);
   /** An unsaved dashboard — blank, or built from a template — waiting to be authored. */
   const [draftDashboard, setDraftDashboard] = useState<Dashboard | null>(null);
   /**
@@ -203,13 +222,135 @@ const CustomDashboards: React.FC = () => {
     }
   };
 
+  /*
+   * Nothing to point a panel at. Same treatment the Kubernetes landing page gives its own
+   * first-run state (components/k8s/landing/KubernetesClusterOverview.jsx) — a card that says
+   * what the page is for and carries the one action that unblocks it, rather than a line of
+   * grey text on the page background.
+   */
   if (accountOptions.length === 0) {
     return (
-      <Box sx={{ p: 4, textAlign: 'center' }}>
-        <Typography variant='body2' sx={{ color: ds.gray[500] }}>
-          Connect a cloud account to build dashboards.
-        </Typography>
-      </Box>
+      <>
+        {/* No `handleOnAccountCreate`: the modal already refreshes DataContext's
+            cluster list itself (useUpdateAllClusterOption), which is the same
+            `allCluster` this screen reads — so the new cluster turns the empty
+            state into the listing without a second fetch. */}
+        <K8sAccountModal openModal={showAddClusterModal} handleClose={() => setShowAddClusterModal(false)} />
+        <Box
+          data-testid='dashboards-empty-state'
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 'var(--ds-space-7) var(--ds-space-6)',
+            borderRadius: 'var(--ds-radius-xl)',
+            border: '1px solid var(--ds-gray-300)',
+            background: 'var(--ds-background-100)',
+          }}
+        >
+          <Box
+            sx={{
+              width: ds.space.mul(0, 32),
+              height: ds.space.mul(0, 32),
+              borderRadius: 'var(--ds-radius-xl)',
+              background: `linear-gradient(135deg, var(--ds-blue-100) 0%, ${ds.blue[200]} 100%)`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              mb: ds.space[5],
+              boxShadow: '0px 1px 3px color-mix(in srgb, var(--ds-gray-700) 6%, transparent)',
+              '& svg': { filter: 'none', width: 36, height: 36 },
+            }}
+          >
+            <K8sIcon />
+          </Box>
+
+          <Typography
+            sx={{
+              fontSize: 'var(--ds-text-title)',
+              fontWeight: 'var(--ds-font-weight-semibold)',
+              color: 'var(--ds-foreground)',
+              mb: ds.space[2],
+              fontFamily: 'var(--ds-font-display)',
+            }}
+          >
+            Get started with custom dashboards
+          </Typography>
+          <Typography
+            sx={{
+              fontSize: 'var(--ds-text-body-lg)',
+              color: 'var(--ds-gray-600)',
+              mb: ds.space[6],
+              textAlign: 'center',
+              maxWidth: ds.space.mul(0, 230),
+              lineHeight: 1.6,
+            }}
+          >
+            Connect a cluster to build dashboards. Each panel runs one query against the accounts you scope it to - start from a template or compose
+            your own.
+          </Typography>
+
+          {/* Column below sm: each label is `nowrap`, and three of them side by side
+              overflow a phone-width card. */}
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 2, sm: 4 }} sx={{ mb: ds.space[6] }}>
+            {EMPTY_STATE_HIGHLIGHTS.map((item) => (
+              <Box key={item.label} sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                <Box
+                  sx={{
+                    width: ds.space[6],
+                    height: ds.space[6],
+                    borderRadius: 'var(--ds-radius-lg)',
+                    background: 'var(--ds-blue-100)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg
+                    width='16'
+                    height='16'
+                    viewBox='0 0 24 24'
+                    fill='none'
+                    stroke='var(--ds-blue-600)'
+                    strokeWidth='1.5'
+                    strokeLinecap='round'
+                    strokeLinejoin='round'
+                  >
+                    <path d={item.icon} />
+                  </svg>
+                </Box>
+                <Typography
+                  sx={{
+                    fontSize: 'var(--ds-text-body)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    color: 'var(--ds-brand-500)',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {item.label}
+                </Typography>
+              </Box>
+            ))}
+          </Stack>
+
+          {/* `canWrite` is derived from the accounts, and there are none. Connecting one is
+              `accounts_create` (module `accounts`, class Write), so the gate is CanManage's
+              three ways in: tenant admin, super admin, or an `accounts:Write` custom grant.
+              A bare hasWriteAccess() would deny the last two — it can only answer from the
+              session's `roles` and per-account id lists, and both are empty for them. */}
+          {canManage('accounts', 'Write') ? (
+            <Button tone='primary' size='lg' onClick={() => setShowAddClusterModal(true)} id='dashboards-add-cluster-btn'>
+              Add Cluster
+            </Button>
+          ) : (
+            <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
+              Need admin permission to connect a cluster
+            </Typography>
+          )}
+        </Box>
+      </>
     );
   }
 

@@ -381,6 +381,44 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     </Box>
   );
 
+  /**
+   * One button, two ways to fill it — a blank panel and the library are the same act with a different
+   * starting point, and side by side they read as competing choices.
+   *
+   * Rendered in the toolbar, or inside the empty state instead while the dashboard has nothing on it:
+   * an empty dashboard already puts an Add panel in front of you, and a second one in the bar reads as
+   * a different action.
+   */
+  const addPanelMenu = (options: { align: 'start' | 'end'; tone: 'primary' | 'secondary'; size: 'sm' | 'md' }) => (
+    <DropdownMenu
+      align={options.align}
+      trigger={
+        <Button
+          tone={options.tone}
+          size={options.size}
+          icon={<KeyboardArrowDownIcon sx={{ fontSize: 18 }} />}
+          iconPlacement='end'
+          disabled={saving}
+          id='dashboard-add-panel-btn'
+          data-testid='dashboard-add-panel-btn'
+        >
+          Add panel
+        </Button>
+      }
+      // Library first: picking a ready-made widget is the commoner answer
+      // than authoring a query from nothing, so it leads.
+      items={[
+        {
+          id: 'add-from-library',
+          label: 'From library',
+          icon: <LibraryBooksOutlinedIcon sx={{ fontSize: 17 }} />,
+          onSelect: () => setLibraryOpen(true),
+        },
+        { id: 'add-blank-panel', label: 'Blank panel', icon: <AddOutlinedIcon sx={{ fontSize: 17 }} />, onSelect: openNewPanel },
+      ]}
+    />
+  );
+
   /*
    * Time range sits before the actions: it changes what you are looking at, and what adds to the page
    * goes last. None of the three reading controls appear in edit mode.
@@ -441,35 +479,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       )}
       {canEdit && editing && (
         <>
-          {/* One button, two ways to fill it — a blank panel and the library
-              are the same act with a different starting point, and side by side
-              they read as competing choices. */}
-          <DropdownMenu
-            align='end'
-            trigger={
-              <Button
-                tone='secondary'
-                icon={<KeyboardArrowDownIcon sx={{ fontSize: 18 }} />}
-                iconPlacement='end'
-                disabled={saving}
-                id='dashboard-add-panel-btn'
-                data-testid='dashboard-add-panel-btn'
-              >
-                Add panel
-              </Button>
-            }
-            // Library first: picking a ready-made widget is the commoner answer
-            // than authoring a query from nothing, so it leads.
-            items={[
-              {
-                id: 'add-from-library',
-                label: 'From library',
-                icon: <LibraryBooksOutlinedIcon sx={{ fontSize: 17 }} />,
-                onSelect: () => setLibraryOpen(true),
-              },
-              { id: 'add-blank-panel', label: 'Blank panel', icon: <AddOutlinedIcon sx={{ fontSize: 17 }} />, onSelect: openNewPanel },
-            ]}
-          />
+          {panels.length > 0 && addPanelMenu({ align: 'end', tone: 'secondary', size: 'md' })}
           <Button tone='secondary' onClick={requestExit} disabled={saving} id='dashboard-discard-btn' data-testid='dashboard-discard-btn'>
             Discard
           </Button>
@@ -587,8 +597,12 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
             illustration='first-time'
             title='No panels yet'
             description='Each panel runs one query against the accounts you scope it to.'
-            action={canEdit ? { label: 'Add panel', onClick: openNewPanel } : undefined}
-          />
+          >
+            {/* The menu rather than EmptyState's own `action`: the first panel is the
+                one most likely to come from the library, and a plain button offers
+                only the blank one. Matches the action slot's own top margin. */}
+            {canEdit && <Box sx={{ mt: ds.space[2] }}>{addPanelMenu({ align: 'start', tone: 'primary', size: 'sm' })}</Box>}
+          </EmptyState>
         ) : editing ? (
           <DndContext
             sensors={sensors}
