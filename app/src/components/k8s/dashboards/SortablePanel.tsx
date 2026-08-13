@@ -58,13 +58,21 @@ const SortablePanel: React.FC<Props> = ({
       /*
        * The whole panel opens the editor — except its own interactive controls.
        * A table panel renders pagination and a Rows selector inside the body;
-       * clicking one should drive that control, not open the editor. Same guard
-       * CustomTable uses for its row-expand toggle.
+       * clicking one should drive that control, not open the editor.
+       *
+       * Two ways a click must be ignored: React re-bubbles events from portaled
+       * overlays (the Select menu, Popover, Tooltip) through the component tree
+       * even though they render outside this panel's DOM — so bail when the real
+       * target is not a descendant of the panel; and, for in-panel clicks, skip
+       * the ones that land on an interactive control (same guard CustomTable uses
+       * for its row-expand toggle).
        */
       onClick={(event) => {
+        const target = event.target as HTMLElement;
         if (
-          (event.target as HTMLElement).closest(
-            'button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="combobox"]'
+          !event.currentTarget.contains(target) ||
+          target.closest(
+            'button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="combobox"], [role="tab"], [role="checkbox"], [role="radio"]'
           )
         ) {
           return;
