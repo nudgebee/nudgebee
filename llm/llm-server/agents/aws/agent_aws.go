@@ -59,6 +59,7 @@ func (a AwsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 	constraints := []string{
 		"Syntax: --group-by = Type=DIMENSION,Key=<KEY>; --filters = Name=<filter>,Values=<value>; use plurals (--filters, --group-ids)",
 		"Time formats: Cost Explorer = YYYY-MM-DD, CloudTrail = ISO 8601, CloudWatch Logs CLI → Unix epoch seconds (UTC only)",
+		`Cost Explorer spend questions: exclude credits/refunds with --filter '{"Not":{"Dimensions":{"Key":"RECORD_TYPE","Values":["Credit","Refund"]}}}' — net cost is ~$0 on credit-covered accounts; report gross spend, with credits as a separate figure if relevant`,
 		"BEFORE proposing SG/NACL changes: check EC2 UserData first - config issues look like network issues but are NOT",
 		"CRITICAL: NEVER invent resource IDs, ARNs, IPs - empty CLI results = 'not found'",
 		"Evidence-based: run command → parse output → make statement (never assume)",

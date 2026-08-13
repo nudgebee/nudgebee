@@ -246,7 +246,7 @@ func queryDailySpend(dbManager *common.DatabaseManager, tenantId, accountId stri
 		SELECT date_trunc('day', date)::date AS day,
 		       ROUND(SUM(amount)::numeric, 2)::float AS amount
 		FROM spends
-		WHERE tenant = $1 AND date >= $2 AND date < $3%s
+		WHERE tenant = $1 AND date >= $2 AND date < $3 AND exclude_aggregate = false%s
 		GROUP BY day
 		ORDER BY day`, accountFilter)
 

@@ -261,7 +261,7 @@ func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
 	var spend float64
 	if err := dbManager.Db.Get(&spend,
 		`SELECT COALESCE(SUM(amount), 0) FROM spends
-		 WHERE tenant = $1 AND cloud_account = $2 AND date >= $3 AND date < $4`,
+		 WHERE tenant = $1 AND cloud_account = $2 AND date >= $3 AND date < $4 AND exclude_aggregate = false`,
 		tenantId, a.accountId, windowStart, windowEnd); err != nil {
 		slog.Warn("finops: 30-day spend query failed for account context", "error", err, "account_id", a.accountId)
 	} else {
@@ -275,7 +275,7 @@ func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
 		 FROM spends s
 		 JOIN cloud_resourses cr ON cr.id = s.cloud_resource_id
 		 WHERE s.tenant = $1 AND s.cloud_account = $2 AND s.date >= $3 AND s.date < $4
-		   AND cr.service_name IS NOT NULL AND s.amount > 0
+		   AND s.exclude_aggregate = false AND cr.service_name IS NOT NULL AND s.amount > 0
 		 GROUP BY cr.service_name
 		 ORDER BY SUM(s.amount) DESC
 		 LIMIT 3`,
