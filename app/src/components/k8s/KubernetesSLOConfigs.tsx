@@ -633,7 +633,10 @@ const SLOTraces = ({ drilldownQuery = {} as any, accountId = '', type = '' }) =>
       duration = drilldownQuery.latencyConfig.threshold * 1000 * 1000;
     }
   } else if (type == 'availability') {
-    statusCode = ['500', '400', '404', '501', '503', '401', '429'];
+    // Must match what the availability SLI actually counts as a bad event
+    // (5xx). The old list mixed in 4xx codes, so this tab showed traces that
+    // never consumed any error budget.
+    statusCode = ['500', '501', '502', '503', '504'];
   }
 
   return (

@@ -12,6 +12,7 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,6 +128,42 @@ func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.Datab
 	return nil
 }
 
+// FailedRequestStatusRe matches the statuses that count against an availability
+// SLO, mirroring coroot's model.IsRequestStatusFailed: 5xx, the synthetic
+// "failed" status the agent emits for requests that never got a response, and
+// any non-OK gRPC code.
+//
+// Prometheus regexes are fully anchored, so `grpc:OK` is excluded by requiring
+// the character after `grpc:O` to be something other than `K`.
+const FailedRequestStatusRe = `5..|failed|grpc:[^O].*|grpc:O[^K].*`
+
+// AvailabilityGoodQuery and AvailabilityBadQuery partition every inbound
+// request into good and bad, so good+bad is the true total and the SLI works
+// out to 1 - failed/total.
+//
+// The previous pair matched `status=~"2.."` and `status=~"5.."`, which made the
+// SLI 2xx/(2xx+5xx): 3xx and 4xx were counted in neither the numerator nor the
+// denominator and vanished from the measurement entirely, and gRPC errors and
+// the "failed" status were never counted as bad at all.
+func AvailabilityGoodQuery(namespace, workload string) string {
+	return fmt.Sprintf(`container_http_requests_total{destination_workload_namespace="%s", destination_workload_name="%s", status!~"%s"}`,
+		namespace, workload, FailedRequestStatusRe)
+}
+
+func AvailabilityBadQuery(namespace, workload string) string {
+	return fmt.Sprintf(`container_http_requests_total{destination_workload_namespace="%s", destination_workload_name="%s", status=~"%s"}`,
+		namespace, workload, FailedRequestStatusRe)
+}
+
+// LatencyHistogramQuery drops the old `destination_workload_namespace!="external"`
+// matcher, which was dead — the same label is already pinned to an exact
+// namespace on the preceding matcher — and which made the latency and
+// availability SLIs look like they measured different request populations.
+func LatencyHistogramQuery(namespace, workload string) string {
+	return fmt.Sprintf(`container_http_requests_duration_seconds_total_bucket{destination_workload_namespace="%s", destination_workload_name="%s"}`,
+		namespace, workload)
+}
+
 func timestampToPostgresFormat(timestamp float64) string {
 	// Convert timestamp to a time.Time object
 	t := time.Unix(int64(timestamp), int64((timestamp-float64(int64(timestamp)))*1e9))
@@ -209,11 +246,11 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 		histogramQuery := ""
 		window := 60 * 60
 		if strings.ToLower(config.Name) == "latency" {
-			histogramQuery = fmt.Sprintf("container_http_requests_duration_seconds_total_bucket{destination_workload_namespace=\"%s\", destination_workload_name=\"%s\", destination_workload_namespace!=\"external\"}", sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
+			histogramQuery = LatencyHistogramQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			method = "distribution_cut"
 		} else if strings.ToLower(config.Name) == "availability" {
-			filterGoodQuery = fmt.Sprintf("container_http_requests_total{destination_workload_namespace=\"%s\",destination_workload_name=\"%s\" , status=~\"2..\"}", sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
-			filterBadQuery = fmt.Sprintf("container_http_requests_total{destination_workload_namespace=\"%s\", destination_workload_name=\"%s\", status=~\"5..\"}", sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
+			filterGoodQuery = AvailabilityGoodQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
+			filterBadQuery = AvailabilityBadQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			method = "good_bad_ratio"
 		} else {
 			return data, fmt.Errorf("invalid config provided %s", config.Name)
@@ -733,17 +770,38 @@ func CheckTracesEvidence(evidence map[string]any, sloConfig DBSLOConfig) ([]map[
 	return insights, nil
 }
 
+// traceDurationNs reads a trace's Duration cell. otel_traces.Duration is a
+// ClickHouse Int64 and the relay serves rows as `FORMAT JSON`, which quotes
+// 64-bit integers by default — so the cell arrives as a string on the
+// ClickHouse-backed path and as a float64 only when the agent decoded it
+// natively. A strict float64 assertion silently dropped every row on the
+// former.
+func traceDurationNs(raw any) (float64, bool) {
+	switch v := raw.(type) {
+	case float64:
+		return v, true
+	case string:
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
 func FilterLongTracesByWorkload(traces []map[string]any, threshold float64, workloadName string, workloadNamespace string) []map[string]any {
 	result := make([]map[string]any, 0)
 
 	for _, trace := range traces {
-		// Type assertion for duration_ns
-		duration, ok := trace["Duration"].(float64)
+		duration, ok := traceDurationNs(trace["Duration"])
 		if !ok {
-			continue // skip if duration is not a float64
+			continue // skip if duration is neither a number nor a numeric string
 		}
-		// convert nanoseconds to seconds
-		duration /= 1e+9
+		// Convert nanoseconds to milliseconds. threshold is the configured
+		// latency objective bucket, which slo_config stores in milliseconds —
+		// converting to seconds here compared seconds against milliseconds, so
+		// a 500ms objective only flagged traces slower than 500 SECONDS and the
+		// insight effectively never fired.
+		duration /= 1e+6
 		if trace["workload_name"] == workloadName && trace["workload_namespace"] == workloadNamespace && duration > (threshold) {
 			result = append(result, trace)
 		}
