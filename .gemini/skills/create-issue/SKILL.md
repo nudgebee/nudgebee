@@ -120,28 +120,50 @@ Based on the type, format the issue body in markdown:
 
 ### Bug Report Body
 
+**The web form is the source of truth for this schema.** GitHub renders
+`.github/ISSUE_TEMPLATE/BUG-REPORT.yml` as `###` headings whose text matches each
+field's `label` exactly. Emit the same headings, in the same order, with the same
+capitalisation, so an issue filed by this skill is indistinguishable from one filed
+through the form. Use `###`, not `##`, and do not rename the headings.
+
+Omit any optional heading you have nothing for rather than writing "N/A" — an empty
+section is worse than an absent one.
+
 ```markdown
-## Description
+### Environment
+{Exactly one of: Production | QA / Test | Dev | Local only | Not sure}
+
+### Description
 {description}
 
-## Reproduction URL
-{reproduction_url}
+### Impact
+- **Who is affected**: {all tenants / specific feature users / dev-only / etc.}
+- **Severity**: {what the user can't do, or what they see incorrectly}
+- **Since when**: {date or version, "unknown" if not known}
 
-## Reproduction Steps
+### Link
+{URL to the affected page, dashboard or conversation. Omit the heading if none.}
+
+### Reproduction steps
 {reproduction_steps}
 
-## Screenshots
-{screenshots or "N/A"}
+### Logs
+{logs — omit the heading if none}
 
-## Logs
-```
-{logs or "N/A"}
+### Screenshots
+{screenshots — omit the heading if none}
+
+### Client details
+{Browser / OS, e.g. "Chrome 128 / macOS". UI bugs only — omit for backend bugs.}
 ```
 
-## Environment
-- **Browsers**: {browsers or "N/A"}
-- **OS**: {os or "N/A"}
-```
+`Environment`, `Description`, `Impact` and `Reproduction steps` are required by the
+form: always emit all four, writing "unknown" where you must. `Environment` must be
+one of the five literal dropdown options above, spelled exactly — any other string
+will not match what the form produces.
+
+**If you change the form, change this block in the same PR.** The two drifting apart
+is what made half the bug corpus unparseable in the first place.
 
 ### Spike Request Body
 

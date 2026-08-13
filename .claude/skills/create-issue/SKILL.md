@@ -111,18 +111,20 @@ Ask or infer from context:
 
 Ask or infer from context. **Separate user-facing info from technical info up front** — you will need both, and they go in different sections of the body.
 
-User-facing (top of body):
+Form fields (top of body — these mirror `BUG-REPORT.yml` one for one):
 1. **Title**: Symptom-first, no internal terminology. See "Title" rules above.
-2. **Description** (required): What a user observes, in plain language.
-3. **Impact** (required): Who is affected, how badly, since when.
-4. **Reproduction Steps** (required): As a user would do it. Fall back to "observable via logs/DB only" if no UI surface exists.
-
-Technical (bottom of body, under `## Technical Details`):
-5. **Root cause** (if known): One short paragraph naming code paths, commits, migrations, dependencies.
-6. **Reproduction URL** (required by template): Link to the file/line, commit, or PR that explains the cause.
-7. **Logs / errors** (optional): Raw log lines, stack traces, SQL errors.
+2. **Environment** (required): Production / QA / Test / Dev / Local only / Not sure. Pick the highest environment it reproduces in.
+3. **Description** (required): What a user observes, in plain language.
+4. **Impact** (required): Who is affected, how badly, since when.
+5. **Link** (optional): The affected page, dashboard, or conversation — where a reader should look first.
+6. **Reproduction steps** (required): As a user would do it. Fall back to "observable via logs/DB only" if no UI surface exists.
+7. **Logs** (optional): Raw log lines, stack traces, SQL errors.
 8. **Screenshots** (optional).
-9. **Browsers / OS** (optional): Only if the bug is client-side. Skip for backend bugs.
+9. **Client details** (optional): Browser / OS, only if the bug is client-side. Skip for backend bugs.
+
+Technical (bottom of body, under `## Technical Details` — no counterpart in the form):
+10. **Root cause** (if known): One short paragraph naming code paths, commits, migrations, dependencies.
+11. **Code links**: File/line, commit, or PR that explains the cause. This used to go in the form's URL field; that field is now a user-facing `Link`, so code pointers belong here instead.
 
 ### For Spike Request
 
@@ -159,44 +161,53 @@ Ask or infer:
 
 ### Bug Report Body
 
+**The web form is the source of truth for this schema.** GitHub renders
+`.github/ISSUE_TEMPLATE/BUG-REPORT.yml` as `###` headings whose text matches each
+field's `label` exactly. Emit the same headings, in the same order, with the same
+capitalisation — an issue filed by this skill must be indistinguishable from one
+filed through the form, so that anything parsing the corpus sees one schema rather
+than two. Do **not** use `##` for these, and do not rename them.
+
 ```markdown
-## Description
+### Environment
+{Exactly one of: Production | QA / Test | Dev | Local only | Not sure}
+
+### Description
 {One paragraph, plain language, what the user observes is wrong. No internal symbol names. If you must reference an internal concept, gloss it in plain English first.}
 
-## Impact
+### Impact
 - **Who is affected**: {all tenants / specific feature users / dev-only / etc.}
 - **Severity**: {what the user can't do, or what they see incorrectly}
 - **Since when**: {date or version, "unknown" if not known}
 
-## Reproduction Steps
+### Link
+{URL to the affected page, resource, conversation or dashboard — whatever gets a reader to the problem fastest. Optional; omit the heading entirely if there is nothing useful to link.}
+
+### Reproduction steps
 {Numbered steps a tester or support engineer could follow without reading the codebase. If the bug has no user-visible surface, say so and explain how to detect it — then put the probe in Technical Details.}
 
-## Reproduction URL
-{GitHub link to the most relevant file/line/commit. Required by template.}
+### Logs
+{Raw log lines, stack traces, SQL errors. Omit the heading if none.}
+
+### Screenshots
+{Omit the heading if none.}
+
+### Client details
+{Browser / OS, e.g. "Chrome 128 / macOS". Only for UI bugs where the client is actually relevant — omit the heading for backend bugs.}
 
 ---
 
 ## Technical Details
 
-{Free-form for engineers. Include any of: root-cause analysis, code paths with file:line, commit SHAs, migration IDs, library names and versions, struct/field names, SQL queries used to confirm the bug, stack traces, log lines. Be as deep as helpful — this section has no audience constraint.}
-
-### Logs / Errors
-```
-{logs}
-```
-
-### Screenshots
-{screenshots}
-
-### Environment (client-side bugs only)
-- **Browsers**: {browsers}
-- **OS**: {os}
+{Free-form for engineers, and the one section with no counterpart in the form. It is additive: it sits after every form field, so the form-shaped part of the body still parses cleanly. Include any of: root-cause analysis, code paths with file:line, commit SHAs, migration IDs, library names and versions, struct/field names, SQL queries used to confirm the bug. Be as deep as helpful — this section has no audience constraint.}
 ```
 
 > Notes for the agent generating this:
-> - If there is no useful screenshot, browsers list, or OS list, **omit those subsections entirely** rather than writing "N/A" — keep the issue tight.
-> - If the bug is purely backend, omit the **Environment** subsection.
-> - The `## Technical Details` heading is mandatory whenever you have any internal information to convey. If genuinely none, omit it.
+> - **Omit optional headings entirely** rather than writing "N/A" or "None" — an empty section is worse than an absent one. This applies to `Link`, `Logs`, `Screenshots`, and `Client details`.
+> - `Environment`, `Description`, `Impact`, and `Reproduction steps` are required by the form. Always emit all four, even when you have to write "unknown".
+> - `Environment` must be one of the five literal dropdown options, spelled exactly as above — it is a `dropdown`, and any other string will not match what the form produces.
+> - The `## Technical Details` heading is mandatory whenever you have any internal information to convey. If genuinely none, omit it. Keep it at `##`, not `###` — that is what marks it as the non-form appendix.
+> - **If you change the form, change this block in the same PR.** The two drifting apart is what made half the bug corpus unparseable in the first place.
 
 ### Spike Request Body
 

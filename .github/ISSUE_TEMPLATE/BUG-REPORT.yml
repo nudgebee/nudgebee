@@ -26,6 +26,14 @@ body:
       placeholder: Short and explicit description of your incident...
     validations:
       required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: "Impact"
+      description: Who is affected, how badly, and since when? This is the main input to triage priority.
+      placeholder: ex. All users on tenant X since the 12 Aug deploy; blocks cost reporting, no workaround.
+    validations:
+      required: true
   - type: input
     id: reprod-url
     attributes:
@@ -51,10 +59,7 @@ body:
     id: screenshot
     attributes:
       label: "Screenshots"
-      description: If applicable, add screenshots to help explain your problem.
-      value: |
-        ![DESCRIPTION](LINK.png)
-      render: bash
+      description: If applicable, paste or drag in screenshots to help explain your problem.
     validations:
       required: false
   - type: textarea
@@ -65,29 +70,11 @@ body:
       render: bash
     validations:
       required: false
-  - type: dropdown
-    id: browsers
+  - type: input
+    id: client
     attributes:
-      label: "Browsers"
-      description: What browsers are you seeing the problem on ?
-      multiple: true
-      options:
-        - Firefox
-        - Chrome
-        - Safari
-        - Microsoft Edge
-        - Opera
-    validations:
-      required: false
-  - type: dropdown
-    id: os
-    attributes:
-      label: "OS"
-      description: What is the impacted environment ?
-      multiple: true
-      options:
-        - Windows
-        - Linux
-        - Mac
+      label: "Client details"
+      description: Only for UI bugs where the browser or OS is actually relevant. Leave blank otherwise.
+      placeholder: ex. Chrome 128 / macOS
     validations:
       required: false
