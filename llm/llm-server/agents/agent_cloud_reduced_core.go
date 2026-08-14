@@ -37,6 +37,12 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 		// routing through search_tools + delegate_agent first. Parity with
 		// aws_lean which has had websearch preloaded from day one.
 		WebSearchAgentName,
+		// finops is preloaded rather than reached on-demand: unmentioned cost/
+		// spend questions on cloud accounts default-route to these orchestrators
+		// (the router reaches finops only via @mention), and nothing steers the
+		// planner to search for it — without the mount the model hand-writes
+		// billing CLI calls instead. Same rationale as the k8s reduced core.
+		FinOpsAgentName,
 		DelegateAgentToolName,
 		SearchToolsToolName,
 		// search_skills preload preserved so the model can query knowledge bases
