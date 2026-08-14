@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -126,15 +127,26 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 			// region is shared by Vertex (a GCP region, or 'global') and Bedrock (an AWS region).
 			"region": {
 				Type:         core.ToolSchemaTypeString,
-				Description:  "Provider region — a GCP region for Vertex (e.g. us-central1, or 'global') or an AWS region for Bedrock (e.g. us-east-1).",
+				Description:  "Provider region — a GCP region for Vertex (e.g. us-central1, or 'global') or an AWS region for Bedrock (e.g. us-east-1). For Vertex (OpenAI-compatible) this sets the request path's location; the host is derived from it unless 'endpoint' is set.",
 				Priority:     3,
 				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI, llmGatewayProviderBedrock}},
 				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI, llmGatewayProviderBedrock}},
 			},
+			// endpoint is OPTIONAL for Vertex (OpenAI-compatible). Two uses: (1) shared MaaS —
+			// leave blank to derive the host from region, or set just a host (e.g.
+			// aiplatform.googleapis.com) to override it; (2) a DEDICATED endpoint — paste the full
+			// chat-completions URL Google gives you and it is dialed verbatim. Host must be under
+			// googleapis.com or vertexai.goog.
+			"endpoint": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional — where requests are sent. • Shared MaaS: leave blank to use the region's host, or set just a host to override it (e.g. aiplatform.googleapis.com). • Dedicated endpoint: paste the FULL chat-completions URL (e.g. https://{id}.{region}-{project}.prediction.vertexai.goog/v1beta1/projects/{project}/locations/{region}/endpoints/{id}/chat/completions) — a bare dedicated host won't work (its path can't be derived). Host must be under googleapis.com or vertexai.goog.",
+				Priority:    2,
+				ShowWhen:    map[string]any{"provider": llmGatewayProviderVertexOpenAI},
+			},
 			"service_account_json": {
 				Type:         core.ToolSchemaTypeString,
 				Description:  "Service-account key JSON with Vertex AI access — paste the full JSON.",
-				Priority:     2,
+				Priority:     1,
 				IsEncrypted:  true, // encrypted at rest + redacted from UI reads
 				Multiline:    true, // it's a multi-line JSON blob
 				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI}},
@@ -222,6 +234,12 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 			errs = append(errs, fmt.Errorf("region is required for Vertex (OpenAI-compatible) — a GCP region, e.g. us-central1, or 'global'"))
 		}
 		errs = append(errs, vertexServiceAccountErrors(values)...)
+		// endpoint is OPTIONAL (blank → the gateway derives the host from region); if set it
+		// must be a googleapis.com host — validated here too so a bad value is rejected at save
+		// time, not silently skipped by the gateway resolver at request time.
+		if err := validateVertexEndpoint(cfg["endpoint"]); err != nil {
+			errs = append(errs, fmt.Errorf("endpoint %s", err))
+		}
 		if cfg["models"] == "" {
 			errs = append(errs, fmt.Errorf("models is required for Vertex (OpenAI-compatible) — the MaaS model id(s), comma-separated"))
 		} else {
@@ -251,6 +269,48 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 		errs = append(errs, fmt.Errorf("unsupported provider %q (expected openai, anthropic, gemini, vertex, vertex_openai, bedrock, or custom)", provider))
 	}
 	return errs
+}
+
+// vertexEndpointHostRe matches a Vertex host. The vertex_openai endpoint is dialed by the
+// gateway with a Google OAuth token, so it is constrained to Google's Vertex domains — shared
+// MaaS (*.googleapis.com) and dedicated prediction endpoints (*.vertexai.goog) — as an SSRF
+// guard. Kept in sync with the guards in the gateway resolver + Test-Connection probe.
+var vertexEndpointHostRe = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)*\.(googleapis\.com|vertexai\.goog)$`)
+
+// validateVertexEndpoint validates an OPTIONAL vertex_openai endpoint: blank is fine (the
+// gateway then derives the host from region); otherwise the HOST (a bare host, or the host of a
+// full dedicated-endpoint URL) must be a Vertex domain. Only a leading scheme is stripped, so a
+// host smuggled into a path/query is not extracted. Mirrors parseVertexOpenAIEndpoint in the
+// gateway.
+func validateVertexEndpoint(raw string) error {
+	e := strings.TrimSpace(raw)
+	if e == "" {
+		return nil
+	}
+	if i := strings.Index(e, "://"); i >= 0 && !strings.ContainsAny(e[:i], "/?#") {
+		e = e[i+3:]
+	}
+	host, path := e, ""
+	if i := strings.IndexAny(e, "/?#"); i >= 0 {
+		host, path = e[:i], e[i:]
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if !vertexEndpointHostRe.MatchString(host) {
+		return fmt.Errorf("must be a Vertex AI host under googleapis.com or vertexai.goog (e.g. aiplatform.googleapis.com, or a dedicated {id}.{region}-{project}.prediction.vertexai.goog)")
+	}
+	// Drop any query/fragment BEFORE deciding whether a path is present — so this agrees with
+	// parseVertexOpenAIEndpoint (which strips them first); otherwise a "host?foo=bar" would pass
+	// here but be rejected at request time.
+	if j := strings.IndexAny(path, "?#"); j >= 0 {
+		path = path[:j]
+	}
+	// Match the parser: a lone trailing /v1 (OpenAI habit) counts as no path.
+	path = strings.TrimSuffix(strings.TrimRight(path, "/"), "/v1")
+	// A dedicated prediction host has no derivable path — require the full URL, not a bare host.
+	if path == "" && strings.HasSuffix(host, ".vertexai.goog") {
+		return fmt.Errorf("for a dedicated Vertex endpoint, paste the full chat-completions URL (host + path), not just the host")
+	}
+	return nil
 }
 
 // vertexServiceAccountErrors validates the service_account_json for a Vertex-family provider

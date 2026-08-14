@@ -49,6 +49,10 @@ func TestLLMGateway_ConfigSchema(t *testing.T) {
 	// region is shared by Vertex, vertex_openai, and Bedrock.
 	assert.Equal(t, map[string]any{"provider": []any{"vertex", "vertex_openai", "bedrock"}}, schema.Properties["region"].ShowWhen)
 
+	// endpoint is an optional host override, shown only for vertex_openai (not required).
+	assert.Equal(t, map[string]any{"provider": "vertex_openai"}, schema.Properties["endpoint"].ShowWhen)
+	assert.Nil(t, schema.Properties["endpoint"].RequiredWhen, "endpoint must be optional")
+
 	// Bedrock structured fields — shown only for bedrock; secret + session encrypted.
 	assert.Equal(t, map[string]any{"provider": "bedrock"}, schema.Properties["access_key"].ShowWhen)
 	assert.Equal(t, map[string]any{"provider": "bedrock"}, schema.Properties["secret_key"].ShowWhen)
@@ -111,6 +115,27 @@ func TestLLMGateway_ValidateConfig(t *testing.T) {
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
 		"provider": "vertex_openai", "project_id": "p", "region": "us-central1", "models": "m",
 	}), ""), "vertex_openai without service_account_json must error")
+	// endpoint is optional: a bare googleapis host passes, a full dedicated-endpoint URL
+	// (prediction.vertexai.goog) passes, a non-Vertex host is rejected.
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": validSA, "models": "m", "endpoint": "https://aiplatform.googleapis.com",
+	}), ""), "vertex_openai with a valid host endpoint must pass")
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "us-central1", "service_account_json": validSA, "models": "m",
+		"endpoint": "https://456.us-central1-1234567890.prediction.vertexai.goog/v1beta1/projects/1234567890/locations/us-central1/endpoints/456/chat/completions",
+	}), ""), "vertex_openai with a dedicated-endpoint URL must pass")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": validSA, "models": "m", "endpoint": "internal.evil.com",
+	}), ""), "vertex_openai with a non-Vertex endpoint must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "asia-southeast1", "service_account_json": validSA, "models": "m", "endpoint": "mg-endpoint-abc.asia-southeast1-000000000000.prediction.vertexai.goog",
+	}), ""), "vertex_openai with a bare dedicated host (no path) must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "asia-southeast1", "service_account_json": validSA, "models": "m", "endpoint": "mg-endpoint-abc.asia-southeast1-000000000000.prediction.vertexai.goog?foo=bar",
+	}), ""), "vertex_openai dedicated host with only a query must error (matches request-time parsing)")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "asia-southeast1", "service_account_json": validSA, "models": "m", "endpoint": "mg-endpoint-abc.asia-southeast1-000000000000.prediction.vertexai.goog/v1",
+	}), ""), "vertex_openai dedicated host with only a trailing /v1 must error")
 
 	// Bedrock: static access + secret + region.
 	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "bedrock", "access_key": "AKIA", "secret_key": "sk", "region": "us-east-1"}), ""))

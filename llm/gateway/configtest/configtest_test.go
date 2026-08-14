@@ -59,6 +59,16 @@ func TestProbe_VertexOpenAIStructuralOK(t *testing.T) {
 	if err := probe(context.Background(), cfg); err != nil {
 		t.Fatalf("valid vertex_openai config should pass structural probe, got %v", err)
 	}
+	// A bare-host endpoint override passes.
+	cfg["endpoint"] = "https://aiplatform.googleapis.com"
+	if err := probe(context.Background(), cfg); err != nil {
+		t.Fatalf("valid vertex_openai config with endpoint override should pass, got %v", err)
+	}
+	// A full DEDICATED-endpoint URL (prediction.vertexai.goog host) passes too.
+	cfg["endpoint"] = "https://456.us-central1-1234567890.prediction.vertexai.goog/v1beta1/projects/1234567890/locations/us-central1/endpoints/456/chat/completions"
+	if err := probe(context.Background(), cfg); err != nil {
+		t.Fatalf("valid vertex_openai config with a dedicated-endpoint URL should pass, got %v", err)
+	}
 }
 
 // TestProbe_BedrockStructuralOK: a well-formed Bedrock config passes the (structural) probe
@@ -111,6 +121,10 @@ func TestProbe_ConfigValidation(t *testing.T) {
 		{"vertex_openai invalid region", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "US_CENTRAL1", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m"}, "not a valid Vertex location"},
 		{"vertex_openai missing models", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`}, "models is required"},
 		{"vertex_openai empty model entry", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m1,,m2"}, "no empty entries"},
+		{"vertex_openai non-googleapis endpoint", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m", "endpoint": "internal.evil.com"}, "endpoint must be a Vertex AI host"},
+		{"vertex_openai bare dedicated host", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "asia-southeast1", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m", "endpoint": "mg-endpoint-abc.asia-southeast1-000000000000.prediction.vertexai.goog"}, "full chat-completions URL"},
+		{"vertex_openai dedicated host query only", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "asia-southeast1", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m", "endpoint": "mg-endpoint-abc.asia-southeast1-000000000000.prediction.vertexai.goog?foo=bar"}, "full chat-completions URL"},
+		{"vertex_openai dedicated host trailing v1", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "asia-southeast1", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m", "endpoint": "mg-endpoint-abc.asia-southeast1-000000000000.prediction.vertexai.goog/v1"}, "full chat-completions URL"},
 		{"bedrock missing creds", map[string]string{"provider": "bedrock", "region": "us-east-1"}, "access_key and secret_key"},
 		{"bedrock missing region", map[string]string{"provider": "bedrock", "access_key": "AKIA", "secret_key": "sk"}, "region is required for Bedrock"},
 	}

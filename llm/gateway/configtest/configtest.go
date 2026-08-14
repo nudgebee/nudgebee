@@ -57,6 +57,47 @@ func validVertexRegion(region string) bool {
 	return region == "global" || vertexRegionRe.MatchString(region)
 }
 
+// vertexEndpointHostRe matches a Vertex host. The vertex_openai endpoint is tenant-supplied, so
+// it is constrained to Google's Vertex domains — shared MaaS (*.googleapis.com) and dedicated
+// prediction endpoints (*.vertexai.goog) — while blocking an arbitrary/internal one. (Kept in
+// sync with the identical guard in ee/providers/vertexopenai.go, applied at request time.)
+var vertexEndpointHostRe = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)*\.(googleapis\.com|vertexai\.goog)$`)
+
+// validVertexEndpoint validates an OPTIONAL vertex_openai endpoint: blank is fine (the host is
+// then derived from region); otherwise the HOST (a bare host, or the host of a full
+// dedicated-endpoint URL) must be a Vertex domain. Only a leading scheme is stripped, so a host
+// smuggled into a path/query can't pass. (Mirrors parseVertexOpenAIEndpoint in ee/providers.)
+func validVertexEndpoint(raw string) error {
+	e := strings.TrimSpace(raw)
+	if e == "" {
+		return nil
+	}
+	if i := strings.Index(e, "://"); i >= 0 && !strings.ContainsAny(e[:i], "/?#") { // drop a leading scheme only
+		e = e[i+3:]
+	}
+	host, path := e, ""
+	if i := strings.IndexAny(e, "/?#"); i >= 0 { // split host from any path/query/fragment
+		host, path = e[:i], e[i:]
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if !vertexEndpointHostRe.MatchString(host) {
+		return fmt.Errorf("must be a Vertex AI host under googleapis.com or vertexai.goog (e.g. aiplatform.googleapis.com, or a dedicated {id}.{region}-{project}.prediction.vertexai.goog)")
+	}
+	// Drop any query/fragment BEFORE deciding whether a path is present — so hasPath agrees with
+	// parseVertexOpenAIEndpoint (which strips them first); otherwise a "host?foo=bar" would pass
+	// here but be rejected at request time.
+	if j := strings.IndexAny(path, "?#"); j >= 0 {
+		path = path[:j]
+	}
+	// Match the parser: a lone trailing /v1 (OpenAI habit) counts as no path.
+	path = strings.TrimSuffix(strings.TrimRight(path, "/"), "/v1")
+	// A dedicated prediction host has no derivable path — require the full URL, not a bare host.
+	if path == "" && strings.HasSuffix(host, ".vertexai.goog") {
+		return fmt.Errorf("for a dedicated Vertex endpoint, paste the full chat-completions URL (host + path), not just the host")
+	}
+	return nil
+}
+
 // normalizeBaseURL trims a trailing slash and an optional trailing /v1, so a base URL works
 // whether or not the user included the version path — the vLLM lane appends /v1/... itself.
 // (Kept in sync with the identical helper in ee/providers, which does the same at dial time.)
@@ -139,6 +180,11 @@ func probe(ctx context.Context, cfg map[string]string) error {
 		}
 		if !validVertexRegion(strings.TrimSpace(cfg["region"])) {
 			return fmt.Errorf("region %q is not a valid Vertex location (e.g. us-central1, or global)", strings.TrimSpace(cfg["region"]))
+		}
+		// endpoint is optional (blank → host derived from region); if set, it must be a
+		// googleapis.com host.
+		if err := validVertexEndpoint(cfg["endpoint"]); err != nil {
+			return fmt.Errorf("endpoint %s", err)
 		}
 		sa := strings.TrimSpace(cfg["service_account_json"])
 		if sa == "" {
