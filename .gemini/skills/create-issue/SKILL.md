@@ -61,14 +61,24 @@ What type of issue would you like to create?
 
 ### For Feature Request
 
-Ask or infer from context:
+Ask or infer from context. **The web form is the source of truth for this schema** —
+these mirror `.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml` one for one.
 
 1. **Title**: Short descriptive title for the feature
-2. **Summary** (required): Brief explanation of the feature
-3. **Basic Example** (required): Specific examples of how the feature would work
-4. **Drawbacks** (required): Potential drawbacks or impacts
-5. **Unresolved Questions** (optional): Questions that remain unresolved
-6. **Reference Issues** (optional): Related issue numbers
+2. **Function** (required): Troubleshooting / collectors · AI · Integrations · Notifications / tickets / optimize · UI / API / auth · Platform · Not sure
+3. **Who asked for this** (required): Customer — named account · Prospect — active deal · Sales / field feedback · Support — recurring ticket · Our own judgement · Internal / team need. **Never invent a customer** — "Our own judgement" is valid and common.
+4. **Summary** (required): Brief explanation of the feature
+5. **What this unblocks** (required): The account, deal, renewal or support load behind it — or a stated bet on product direction
+6. **How we will know it worked** (required): The observable change after it ships; a number is best
+7. **What we are not doing instead** (required): The trade-off accepted. "Nothing" is legitimate for small work
+8. **Basic Example** (optional): Specific examples of how the feature would work
+9. **Drawbacks** (optional): Potential drawbacks or impacts
+10. **Unresolved questions** (optional): Questions that remain unresolved
+11. **Parent / epic** (optional): The larger piece of work this slices, as `#<n>`
+12. **Related work** (optional): One link per line, prefixed with the relationship — `Part of #123` · `Blocked by #123` · `Blocks #123` · `Related to #123`
+
+If you cannot answer 5, 6 or 7 from context, **ask** rather than inventing plausible
+text — a fabricated customer or metric survives into prioritisation as if it were evidence.
 
 ### For Bug Report
 
@@ -101,21 +111,43 @@ Based on the type, format the issue body in markdown:
 
 ### Feature Request Body
 
+**The web form is the source of truth for this schema.** GitHub renders
+`.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml` as `###` headings whose text matches each
+field's `label`. Match them exactly so form-filed and skill-filed issues parse the same.
+
 ```markdown
-## Summary
+### Function
+{function}
+
+### Who asked for this
+{source}
+
+### Summary
 {summary}
 
-## Basic Example
-{basic_example}
+### What this unblocks
+{unblocks}
 
-## Drawbacks
-{drawbacks}
+### How we will know it worked
+{success}
 
-## Unresolved Questions
+### What we are not doing instead
+{tradeoff}
+
+### Basic Example
+{basic_example or "None"}
+
+### Drawbacks
+{drawbacks or "None"}
+
+### Unresolved questions
 {unresolved_questions or "None"}
 
-## Reference Issues
-{reference_issues or "None"}
+### Parent / epic
+{parent or "None"}
+
+### Related work
+{related or "None"}
 ```
 
 ### Bug Report Body

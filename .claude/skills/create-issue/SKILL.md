@@ -98,14 +98,25 @@ What type of issue would you like to create?
 
 ### For Feature Request
 
-Ask or infer from context:
+Ask or infer from context. **The web form is the source of truth for this schema** —
+these mirror `.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml` one for one.
 
 1. **Title**: Short descriptive title (user-outcome phrased, not implementation phrased)
-2. **Summary** (required): What capability is missing and who needs it
-3. **Basic Example** (required): How it should look from the user's side (UI flow, API call, etc.)
-4. **Drawbacks** (required): Cost, complexity, who it might disrupt
-5. **Unresolved Questions** (optional)
-6. **Reference Issues** (optional)
+2. **Function** (required): Troubleshooting / collectors · AI · Integrations · Notifications / tickets / optimize · UI / API / auth · Platform · Not sure. Decides who owns the decision.
+3. **Who asked for this** (required): Customer — named account · Prospect — active deal · Sales / field feedback · Support — recurring ticket · Our own judgement · Internal / team need. **Never invent a customer** — "Our own judgement" is a valid and common answer.
+4. **Summary** (required): What capability is missing and who needs it
+5. **What this unblocks** (required): The account, deal, renewal or support load behind it — or state plainly that it is a bet on product direction. Main input to prioritisation.
+6. **How we will know it worked** (required): The observable change after it ships. A number is best; a behaviour is fine. Do not write "users like it".
+7. **What we are not doing instead** (required): The trade-off accepted by building this now. "Nothing" is legitimate for genuinely small work.
+8. **Basic Example** (optional): How it should look from the user's side (UI flow, API call, etc.)
+9. **Drawbacks** (optional): Cost, complexity, who it might disrupt
+10. **Unresolved questions** (optional)
+11. **Parent / epic** (optional): The larger piece of work this slices, as `#<n>`
+12. **Related work** (optional): One link per line, prefixed with the relationship — `Part of #123` · `Blocked by #123` · `Blocks #123` · `Related to #123` · `Duplicates #123` · `Supersedes #123`
+
+If you cannot answer 5, 6 or 7 from context, **ask** rather than filling them with
+plausible-sounding text. An invented customer or a fabricated metric is worse than
+an empty field, because it survives into prioritisation as if it were evidence.
 
 ### For Bug Report
 
@@ -142,21 +153,43 @@ Ask or infer:
 
 ### Feature Request Body
 
+**The web form is the source of truth for this schema.** GitHub renders
+`.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml` as `###` headings whose text matches each
+field's `label`. Match them exactly so form-filed and skill-filed issues parse the same.
+
 ```markdown
-## Summary
+### Function
+{function}
+
+### Who asked for this
+{source}
+
+### Summary
 {summary — what capability is missing, who needs it, plain language}
 
-## Basic Example
-{basic_example — user-side flow, screenshots or pseudo-UI welcome}
+### What this unblocks
+{unblocks — the account, deal, renewal or support load; or the stated bet}
 
-## Drawbacks
-{drawbacks}
+### How we will know it worked
+{success — observable change, ideally a number}
 
-## Unresolved Questions
+### What we are not doing instead
+{tradeoff — or "Nothing" if the work is genuinely small}
+
+### Basic Example
+{basic_example — user-side flow, screenshots or pseudo-UI welcome, or "None"}
+
+### Drawbacks
+{drawbacks or "None"}
+
+### Unresolved questions
 {unresolved_questions or "None"}
 
-## Reference Issues
-{reference_issues or "None"}
+### Parent / epic
+{parent or "None"}
+
+### Related work
+{related — one relationship-prefixed link per line, or "None"}
 ```
 
 ### Bug Report Body
