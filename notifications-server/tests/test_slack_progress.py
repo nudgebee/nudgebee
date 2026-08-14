@@ -102,6 +102,37 @@ class TestBuildChunks:
         assert slack_progress._build_chunks(None, {}) == []
 
 
+class TestHeaderChunk:
+    def test_single_running_tool_becomes_header(self):
+        statuses, titles = {"t1": "in_progress"}, {"t1": "Get pod logs"}
+        chunk, header = slack_progress._header_chunk(statuses, titles, "")
+        assert chunk == {"type": "plan_update", "title": "Get pod logs"}
+        assert header == "Get pod logs"
+
+    def test_parallel_tools_are_comma_joined(self):
+        statuses = {"t1": "in_progress", "t2": "in_progress", "t3": "complete"}
+        titles = {"t1": "Get pod logs", "t2": "Query metrics", "t3": "Load skill"}
+        chunk, _ = slack_progress._header_chunk(statuses, titles, "")
+        assert chunk["title"] == "Get pod logs, Query metrics"
+
+    def test_unchanged_header_is_not_resent(self):
+        statuses, titles = {"t1": "in_progress"}, {"t1": "Get pod logs"}
+        chunk, header = slack_progress._header_chunk(statuses, titles, "Get pod logs")
+        assert chunk is None
+        assert header == "Get pod logs"
+
+    def test_no_active_tools_keeps_last_header(self):
+        chunk, header = slack_progress._header_chunk({"t1": "complete"}, {"t1": "Get pod logs"}, "Get pod logs")
+        assert chunk is None
+        assert header == "Get pod logs"
+
+    def test_duplicate_titles_deduped(self):
+        statuses = {"t1": "in_progress", "t2": "in_progress"}
+        titles = {"t1": "Query metrics", "t2": "Query metrics"}
+        chunk, _ = slack_progress._header_chunk(statuses, titles, "")
+        assert chunk["title"] == "Query metrics"
+
+
 class TestTaskTitle:
     def test_humanizes_snake_case(self):
         assert slack_progress._task_title("get_pod_logs") == "Get pod logs"
@@ -112,37 +143,27 @@ class TestTaskTitle:
 
 
 class TestStartProgressPoller:
-    def test_flag_off_spawns_nothing(self):
-        with patch.object(settings.slack, "thinking_steps_enabled", False):
-            with patch.object(threading, "Thread") as thread_cls:
-                slack_progress.start_progress_poller(MagicMock(), _entry(), "1000.1", "C222-1000.1")
-        thread_cls.assert_not_called()
-
     def test_missing_required_field_spawns_nothing(self):
-        with patch.object(settings.slack, "thinking_steps_enabled", True):
-            with patch.object(threading, "Thread") as thread_cls:
-                slack_progress.start_progress_poller(MagicMock(), _entry(slack_user_id=None), "1000.1", "C222-1000.1")
+        with patch.object(threading, "Thread") as thread_cls:
+            slack_progress.start_progress_poller(MagicMock(), _entry(slack_user_id=None), "1000.1", "C222-1000.1")
         thread_cls.assert_not_called()
 
     def test_spawns_daemon_thread_with_payload_session_id(self):
-        with patch.object(settings.slack, "thinking_steps_enabled", True):
-            with patch.object(threading, "Thread") as thread_cls:
-                slack_progress.start_progress_poller(MagicMock(), _entry(session_id="stale"), "1000.1", "event-abc")
+        with patch.object(threading, "Thread") as thread_cls:
+            slack_progress.start_progress_poller(MagicMock(), _entry(session_id="stale"), "1000.1", "event-abc")
         assert thread_cls.call_args.kwargs["daemon"] is True
         passed_entry = thread_cls.call_args.kwargs["args"][1]
         assert passed_entry["session_id"] == "event-abc"
 
     def test_poller_cap_blocks_new_pollers(self):
-        with patch.object(settings.slack, "thinking_steps_enabled", True):
-            with patch.object(settings.slack, "thinking_steps_max_pollers", 0):
-                with patch.object(threading, "Thread") as thread_cls:
-                    slack_progress.start_progress_poller(MagicMock(), _entry(), "1000.1", "C222-1000.1")
+        with patch.object(settings.slack, "thinking_steps_max_pollers", 0):
+            with patch.object(threading, "Thread") as thread_cls:
+                slack_progress.start_progress_poller(MagicMock(), _entry(), "1000.1", "C222-1000.1")
         thread_cls.assert_not_called()
 
     def test_never_raises(self):
-        with patch.object(settings.slack, "thinking_steps_enabled", True):
-            with patch.object(threading, "Thread", side_effect=RuntimeError("boom")):
-                slack_progress.start_progress_poller(MagicMock(), _entry(), "1000.1", "C222-1000.1")
+        with patch.object(threading, "Thread", side_effect=RuntimeError("boom")):
+            slack_progress.start_progress_poller(MagicMock(), _entry(), "1000.1", "C222-1000.1")
 
 
 class TestStopProgressStream:

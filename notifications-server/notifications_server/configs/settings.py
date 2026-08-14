@@ -423,9 +423,6 @@ class SlackSettings(BaseSettings):
     image_max_size_mb: float = Field(
         1.5, validation_alias=AliasChoices("SLACK_IMAGE_MAX_SIZE_MB", "slack_image_max_size_mb")
     )
-    thinking_steps_enabled: bool = Field(
-        False, validation_alias=AliasChoices("SLACK_THINKING_STEPS_ENABLED", "slack_thinking_steps_enabled")
-    )
     thinking_steps_poll_seconds: float = Field(
         5.0, validation_alias=AliasChoices("SLACK_THINKING_STEPS_POLL_SECONDS", "slack_thinking_steps_poll_seconds")
     )

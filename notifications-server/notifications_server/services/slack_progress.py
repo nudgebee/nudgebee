@@ -72,8 +72,6 @@ def start_progress_poller(common_service, cached_entry, thread_ts, session_id):
     """
     global _active_pollers
     try:
-        if not settings.slack.thinking_steps_enabled:
-            return
         entry = dict(cached_entry or {})
         entry["session_id"] = session_id
         required = ("team_id", "channel_id", "slack_user_id", "session_id", "account_id", "tenant_id", "user_id")
@@ -200,6 +198,8 @@ def _open_stream(common_service, cache, entry, thread_ts, token):
 
 def _stream_updates(common_service, cache, entry, thread_ts, token, stream_ts):
     sent_statuses = {}
+    titles = {}
+    last_header = ""
     failures = 0
     since = (datetime.now(timezone.utc) - timedelta(seconds=_INITIAL_SINCE_SKEW_SECONDS)).isoformat()
     deadline = time.monotonic() + settings.slack.thinking_steps_max_minutes * 60
@@ -229,7 +229,10 @@ def _stream_updates(common_service, cache, entry, thread_ts, token, stream_ts):
         failures = 0
         since = delta.get("cursor") or since
 
-        chunks = _build_chunks(delta.get("tool_calls"), sent_statuses)
+        chunks = _build_chunks(delta.get("tool_calls"), sent_statuses, titles)
+        header, last_header = _header_chunk(sent_statuses, titles, last_header)
+        if header:
+            chunks.append(header)
         if chunks:
             try:
                 common_service.slack_app.client.append_stream(
@@ -275,7 +278,7 @@ def _fetch_delta(entry, since):
         return None
 
 
-def _build_chunks(tool_calls, sent_statuses):
+def _build_chunks(tool_calls, sent_statuses, titles=None):
     chunks = []
     for row in sorted(tool_calls or [], key=lambda r: r.get("updated_at") or ""):
         row_id = row.get("id")
@@ -284,10 +287,11 @@ def _build_chunks(tool_calls, sent_statuses):
         status = _TOOL_STATUS_TO_TASK_STATUS.get((row.get("status") or "").upper(), "in_progress")
         if sent_statuses.get(row_id) == status or sent_statuses.get(row_id) in _SETTLED_TASK_STATUSES:
             continue
+        title = _task_title(row.get("tool_name"))
         task = {
             "type": "task_update",
             "id": row_id,
-            "title": _task_title(row.get("tool_name")),
+            "title": title,
             "status": status,
         }
         thought = (row.get("thought") or "").strip()
@@ -295,7 +299,22 @@ def _build_chunks(tool_calls, sent_statuses):
             task["details"] = thought[:_TASK_FIELD_LIMIT]
         chunks.append(task)
         sent_statuses[row_id] = status
+        if titles is not None:
+            titles[row_id] = title
     return chunks
+
+
+def _header_chunk(sent_statuses, titles, last_header):
+    """The panel's collapsed header: the currently running tool titles, comma-
+    joined. Sent as a plan_update only when the active set changes; between
+    tools the last header is kept rather than flickering to empty."""
+    active = [titles[i] for i, s in sent_statuses.items() if s == "in_progress" and i in titles]
+    if not active:
+        return None, last_header
+    header = ", ".join(dict.fromkeys(active))[:_TASK_FIELD_LIMIT]
+    if header == last_header:
+        return None, last_header
+    return {"type": "plan_update", "title": header}, header
 
 
 def _is_pending(stream_ts):
