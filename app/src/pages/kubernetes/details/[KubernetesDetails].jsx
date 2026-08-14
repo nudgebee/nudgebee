@@ -5,7 +5,14 @@ import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import k8sApi from '@api1/kubernetes';
 import { useData } from '@context/DataContext';
-import { hasReadAccess, isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
+import {
+  hasReadAccess,
+  isGrantsOnlyUser,
+  hasPermission,
+  missingPermissionMessage,
+  fetchFeatureFlagsForTenant,
+  hasFeatureAccessCached,
+} from '@lib/auth';
 import LogsIcon from '@assets/kubernetes/logs-icon.svg';
 import { Box, Typography } from '@mui/material';
 import { ToggleGroup } from '@ui/ToggleGroup';
@@ -384,6 +391,37 @@ const KubernetesDetails = () => {
     },
   ]);
   const [aggregationKeyCount, setAggregationKeyCount] = useState({});
+  const [anomalyEnabled, setAnomalyEnabled] = useState(false);
+
+  // ANOMALY_DETECTION is an opt-in tenant feature and the backend is
+  // fail-closed at every entry point (`tenant.IsFeatureEnabled` in
+  // anomoly/service.go — batch cron, per-account trigger and the queue
+  // consumer all bail), so for a tenant that never enabled it the Anomaly
+  // sub-tab is a permanently empty table whose "Trigger" button only ever
+  // errors. Hide the tab instead.
+  // `hasFeatureAccessCached` is fail-closed too, so warm the cache first
+  // (same warm-then-gate pattern as WatchedChannels.tsx).
+  useEffect(() => {
+    let cancelled = false;
+    fetchFeatureFlagsForTenant().finally(() => {
+      if (cancelled) return;
+      const enabled = hasFeatureAccessCached('ANOMALY_DETECTION');
+      setAnomalyEnabled(enabled);
+      setTabOptions((prevOptions) =>
+        prevOptions.map((option) =>
+          option.name === 'Troubleshoot'
+            ? {
+                ...option,
+                tabOptions: option.tabOptions.map((tab) => (tab.id === 'anomaly' ? { ...tab, hidden: !enabled } : tab)),
+              }
+            : option
+        )
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Dynamic-RBAC: gate tabs on the permission backing each surface. Only
   // grants-only custom-role users (no built-in tenant/account role, no account
@@ -1084,7 +1122,7 @@ const KubernetesDetails = () => {
                   stickyColumnIndex={'7'}
                 />
               )}
-              {selectedSubTab === 6 && <KubernetesAnomaly accountId={kubeId} />}
+              {selectedSubTab === 6 && anomalyEnabled && <KubernetesAnomaly accountId={kubeId} />}
               {selectedSubTab == 7 && <KubernetesGroupedEventsTable accountId={kubeId} groupEventType={'fingerprint'} isTroubleshootPage={false} />}
               {selectedSubTab == 8 && <TriageRulesManager accountId={kubeId} />}
               {selectedSubTab === 10 && <WorkloadCriticalityManager accountId={kubeId} />}
