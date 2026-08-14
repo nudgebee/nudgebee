@@ -171,7 +171,7 @@ jest.mock('@shared/ButtonMenu', () => ({
   ),
 }));
 
-jest.mock('@shared/K8sAccountModal', () => ({
+jest.mock('@components/integrations/modal/K8sAccountModal', () => ({
   __esModule: true,
   default: ({ openModal, handleClose }) => (
     <div data-testid='k8s-account-modal' data-open={openModal}>
@@ -182,7 +182,7 @@ jest.mock('@shared/K8sAccountModal', () => ({
   ),
 }));
 
-jest.mock('@shared/JiraAccountModal', () => ({
+jest.mock('@components/integrations/modal/JiraAccountModal', () => ({
   __esModule: true,
   default: ({ openModal, handleClose }) => (
     <div data-testid='jira-account-modal' data-open={openModal}>
@@ -200,7 +200,7 @@ jest.mock('@components/integrations/modal/GithubAccountModal', () => ({
   ),
 }));
 
-jest.mock('@shared/ServiceNowAccountModal', () => ({
+jest.mock('@components/integrations/modal/ServiceNowAccountModal', () => ({
   __esModule: true,
   default: ({ openModal, handleClose }) => (
     <div data-testid='servicenow-account-modal' data-open={openModal}>

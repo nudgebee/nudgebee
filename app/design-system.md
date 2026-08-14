@@ -2444,13 +2444,13 @@ These modals follow a common pattern: form dialog for adding/editing integration
 
 | Component                   | Path                                                                | Integration                    |
 | --------------------------- | ------------------------------------------------------------------- | ------------------------------ |
-| K8sAccountModal             | `src/components1/common/K8sAccountModal.jsx`                        | Kubernetes (multi-step wizard) |
-| JiraAccountModal            | `src/components1/common/JiraAccountModal.jsx`                       | Jira                           |
+| K8sAccountModal             | `src/components/integrations/modal/K8sAccountModal.jsx`             | Kubernetes (multi-step wizard) |
+| JiraAccountModal            | `src/components/integrations/modal/JiraAccountModal.jsx`            | Jira                           |
 | GithubAccountModal          | `src/components/integrations/modal/GithubAccountModal.jsx`          | GitHub (App OAuth or token)    |
-| ServiceNowAccountModal      | `src/components1/common/ServiceNowAccountModal.js`                  | ServiceNow                     |
+| ServiceNowAccountModal      | `src/components/integrations/modal/ServiceNowAccountModal.js`       | ServiceNow                     |
 | DatadogAccountModal         | `src/components1/common/DatadogAccountModal.jsx`                    | Datadog                        |
 | ArgoCDAccountModal          | `src/components1/common/ArgoCDAccountModal.jsx`                     | ArgoCD                         |
-| PagerDutyAccountModal       | `src/components1/common/PagerDutyAccountModal.jsx`                  | PagerDuty                      |
+| PagerDutyAccountModal       | `src/components/integrations/modal/PagerDutyAccountModal.jsx`       | PagerDuty                      |
 | IntegrationDynamicFormModal | `src/components/integrations/modal/IntegrationDynamicFormModal.jsx` | Generic (schema-driven)        |
 
 **Common props pattern:**

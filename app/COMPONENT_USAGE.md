@@ -494,7 +494,7 @@ footer matches the preset's chrome.
 
 ### 2.3 Recipe — Form layout ⭐ worked example
 
-`Form` ([`ds/Form.tsx`](src/components/common/ds/Form.tsx)) is the layout primitive for **any**
+`Form` ([`ds/Form.tsx`](src/components/common/forms/Form.tsx)) is the layout primitive for **any**
 form-shaped UI — inside a `Modal` body, inside a `Card`, on a settings page, in an `Inspector`,
 or standalone. The container owns outer padding; `Form` owns internal layout (section spacing,
 field spacing, label placement, row layout).
@@ -557,7 +557,7 @@ Form                                  ← OPTIONAL wrapper: only needed for a re
 Use for modal forms, create flows, onboarding, mobile, and any primary form.
 
 ```tsx
-import { Form } from '@ui/Form';
+import { Form } from '@shared/forms/Form';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { Modal } from '@ui/Modal';

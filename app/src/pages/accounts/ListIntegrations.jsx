@@ -13,7 +13,7 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { getDateDiff } from '@lib/datetime';
 import IntegrationDynamicFormModal from '@components/integrations/modal/IntegrationDynamicFormModal';
 import AddLLMConfigModal from '@components/llm/AddLLMConfigModal';
-import VmAgentCredentialsDialog from '@shared/VmAgentCredentialsDialog';
+import VmAgentCredentialsDialog from '@components/integrations/modal/VmAgentCredentialsDialog';
 import { Label } from '@ui/Label';
 import NDialog from '@shared/modal/NDialog';
 import { toast as snackbar } from '@ui/Toast';
