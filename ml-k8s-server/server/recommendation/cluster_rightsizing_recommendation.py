@@ -40,6 +40,16 @@ k8s_memory_factors = {
 }
 
 
+class MissingClusterMetadata(ValueError):
+    """The account has no recorded cloud provider or region.
+
+    A data gap for this account, not a server fault — subclasses ValueError so
+    existing `except ValueError` callers keep working, while letting the
+    controller separate it from genuine failures (e.g. engine creation) that
+    also raise ValueError.
+    """
+
+
 class ClusterProvider(Enum):
     AWS = "eks"
     GCP = "gke"
@@ -403,14 +413,19 @@ class ClusterRightSizingRecommendation:
         return total_cpu_request, total_memory_request
 
     def get_cloud_provider(self) -> Union[str, None]:
+        # An agent that has not reported telemetry yet leaves k8s_provider NULL (and the
+        # collector writes '' when the cluster reports no provider), so skip those rows
+        # rather than handing None to get_provider().
         query = text("""SELECT k8s_provider
                FROM agent
-               WHERE cloud_account_id = :account_id""")
+               WHERE cloud_account_id = :account_id
+               AND k8s_provider IS NOT NULL
+               AND k8s_provider != ''""")
         with self.engine.connect() as conn:
             data = conn.execute(query, {"account_id": self.account_id})
             result_data = data.fetchall()
-            if len(result_data) == 0 or not result_data[0]:
-                raise ValueError("Cloud Provider not found")
+            if len(result_data) == 0:
+                raise MissingClusterMetadata("Cloud Provider not found: the agent has not reported a k8s provider yet")
             provider = result_data[0][0]
         return ClusterProvider.get_provider(provider)
 
@@ -418,19 +433,21 @@ class ClusterRightSizingRecommendation:
         query = text("""SELECT DISTINCT ksn.node_region
                FROM k8s_nodes ksn
                WHERE cloud_account_id = :account_id
-               AND is_active IS NOT FALSE""")
+               AND is_active IS NOT FALSE
+               AND ksn.node_region IS NOT NULL
+               AND ksn.node_region != ''""")
         with self.engine.connect() as conn:
             data = conn.execute(query, {"account_id": self.account_id})
             result_data = data.fetchall()
-            if len(result_data) == 0 or not result_data[0]:
-                raise ValueError("Cloud Region not found")
+            if len(result_data) == 0:
+                raise MissingClusterMetadata("Cloud Region not found")
         return result_data[0][0]
 
     def generate_recommendation(self, request: ClusterRightsizingRequest) -> ClusterRightSizingResponse:
         provider = self.get_cloud_provider()
         node_region = self.get_cloud_region()
         if provider is None:
-            raise ValueError("Cloud Provider not found")
+            raise MissingClusterMetadata("Cloud Provider not found")
         instances = self.load_pricing_data(provider, node_region)
         try:
             max_cpu_request, max_memory_request = self.get_historical_pod_allocation()

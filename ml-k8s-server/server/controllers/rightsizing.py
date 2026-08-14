@@ -5,7 +5,10 @@ from flask import Blueprint, Response, jsonify, abort, request
 
 from server.message import VerticalRightsizingRequest, VolumeRightsizingRequest
 from server.controllers.models.cluster_rightsizing_model import ClusterRightsizingRequest
-from server.recommendation.cluster_rightsizing_recommendation import ClusterRightSizingRecommendation
+from server.recommendation.cluster_rightsizing_recommendation import (
+    ClusterRightSizingRecommendation,
+    MissingClusterMetadata,
+)
 from server.utils.utils import get_trace, DBConfig
 
 from opentelemetry import trace
@@ -43,9 +46,19 @@ def cluster_rightsizing() -> Response:
             )
             recommendation = cluster_rightsizing.generate_recommendation(cluster_rightsizing_request)
             return jsonify(asdict(recommendation))
+        except MissingClusterMetadata as e:
+            # A missing provider/region is a data gap for this account, not a server fault.
+            # Return JSON so the caller surfaces the reason instead of Flask's HTML error
+            # page, which api-server can only report as "500 INTERNAL SERVER ERROR".
+            # Deliberately NOT a bare `except ValueError` — engine creation raises one too,
+            # and that is a genuine 500.
+            logger.warning(f"Cannot generate cluster rightsizing recommendation: {e}")
+            response = jsonify({"message": str(e)})
+            response.status_code = 400
+            return response
         except Exception as e:
             logger.exception(e)
-            abort(500, description=e)
+            abort(500, description=str(e))
 
 
 @app.route("/rightsizing/vertical", methods=["POST"])
