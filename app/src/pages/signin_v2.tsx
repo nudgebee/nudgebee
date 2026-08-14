@@ -1,4 +1,4 @@
-import { getProviders, signIn } from 'next-auth/react';
+import { signIn } from 'next-auth/react';
 import { authOptions } from '@pages/api/auth/[...nextauth]';
 import Box from '@mui/material/Box';
 import TextField from '@mui/material/TextField';
@@ -1028,14 +1028,11 @@ function providersFromAuthOptions(): Record<string, { id: string; name: string; 
 }
 
 export async function getServerSideProps(_context: any) {
-  // Prefer getProviders() (matches the public NextAuth shape); fall back to
-  // a direct read of authOptions when getProviders returns null/empty so a
-  // transient internal /api/auth/providers failure doesn't latch the signin
-  // page into the "no authentication providers" state.
-  let providers = await getProviders();
-  if (!providers || Object.keys(providers).length === 0) {
-    providers = providersFromAuthOptions() as any;
-  }
+  // Build the provider map in-process. Deliberately NOT getProviders(): see
+  // the rationale in signin.tsx — the helper's HTTP self-call to
+  // /api/auth/providers is unreliable during a cold `next dev` boot and
+  // surfaces as next-auth CLIENT_FETCH_ERROR on an HTML 404 body.
+  const providers = providersFromAuthOptions();
   const samlEnabled = process.env.SAML_ENABLED === 'true';
 
   // Pass tier into the SignInBelowTitle slot; see signin.tsx for rationale.

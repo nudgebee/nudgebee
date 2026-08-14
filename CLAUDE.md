@@ -198,7 +198,8 @@ cd app
 npm ci --legacy-peer-deps     # Clean install (use in CI/CD)
 npm install                   # Install locally
 
-npm run dev                   # Dev server (port 3000, turbo)
+npm run dev                   # Dev server (port 3000, webpack)
+npm run dev:turbo             # Dev server (port 3000, Turbopack — faster; breaks /api/auth/* on cold boot, see docs/architecture-decisions.md)
 npm run build                 # Production build
 npm run lint2                 # oxlint + prettier check
 npm run lint2:fix             # Auto-fix linting
