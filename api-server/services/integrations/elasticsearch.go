@@ -44,6 +44,20 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				Priority:    85,
 				IsTestable:  true,
 			},
+			"kibana_url": {
+				Type: core.ToolSchemaTypeString,
+				// Rendered as a caption under the field (DynamicForm renders
+				// `description` below the input), so it explains why the field
+				// exists rather than just restating its name.
+				Description: "Base URL of Kibana, e.g. https://my-kibana:5601. " +
+					"Needed only to import Kibana alerting rules as event rules — Kibana runs on its own host and port, " +
+					"so it cannot be derived from the Elasticsearch URL above. " +
+					"The same credentials are reused (Kibana authenticates through Elasticsearch), but the role must also grant " +
+					"Kibana privileges — e.g. feature_stackAlerts.read on kibana-.kibana — or rule import fails with 403. " +
+					"Leave blank to skip rule import; logs, metrics and traces are unaffected.",
+				Default:  "",
+				Priority: 84,
+			},
 			"auth_type": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Authentication method",

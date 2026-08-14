@@ -437,7 +437,7 @@ func extractAzureMetricConditionFromRules(ctx context.Context, db *sqlx.DB, ev m
 
 	var expr string
 	err := db.QueryRowContext(ctx,
-		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1",
+		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
 		alertName, accountID).Scan(&expr)
 	if err != nil {
 		return nil, fmt.Errorf("no event_rule found for azure alert %q: %w", alertName, err)
@@ -882,7 +882,7 @@ func extractGCPAlertDefinition(ctx context.Context, db *sqlx.DB, ev models.Event
 	// Look up the full alert policy from event_rules
 	var expr string
 	err := db.QueryRowContext(ctx,
-		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1",
+		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
 		policyName, accountID).Scan(&expr)
 	if err != nil {
 		return nil, fmt.Errorf("no event_rule found for GCP policy %q: %w", policyName, err)
@@ -1103,7 +1103,7 @@ func extractPagerDutyAlertDefinition(ctx context.Context, db *sqlx.DB, ev models
 	// Look up PromQL expression from event_rules (same as prometheus)
 	var expr string
 	err := db.QueryRowContext(ctx,
-		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1",
+		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
 		alertName, accountID).Scan(&expr)
 	if err != nil {
 		return nil, fmt.Errorf("no event_rule found for pagerduty alert %q: %w", alertName, err)
@@ -1337,7 +1337,7 @@ func extractPrometheusAlertDefinition(ctx context.Context, db *sqlx.DB, ev model
 	// Look up PromQL expression from event_rules
 	var expr string
 	err := db.QueryRowContext(ctx,
-		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1",
+		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
 		alertName, accountID).Scan(&expr)
 	if err != nil {
 		return nil, fmt.Errorf("no event_rule found for alert %q: %w", alertName, err)

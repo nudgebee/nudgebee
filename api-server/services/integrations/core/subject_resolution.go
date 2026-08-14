@@ -402,7 +402,7 @@ func fetchEventRuleExpr(sc *security.RequestContext, accountId, alert string) st
 	}
 	var expr string
 	err = dbms.Db.Get(&expr,
-		`SELECT expr FROM event_rules WHERE alert = $1 AND tenant_id = $2 AND account_id = $3 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1`,
+		`SELECT expr FROM event_rules WHERE alert = $1 AND tenant_id = $2 AND account_id = $3 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1`,
 		alert, sc.GetSecurityContext().GetTenantId(), accountId)
 	if err != nil {
 		return ""

@@ -1803,6 +1803,18 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: insert alert rule
+  - name: eventrules_sync_provider_rules
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/eventrule'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: poll alert rules from external providers and upsert them into event_rules
   - name: alertmanager_disable_rule
     definition:
       kind: synchronous
