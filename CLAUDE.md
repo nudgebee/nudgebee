@@ -4,7 +4,8 @@
 >
 > - **[Architecture Decisions](docs/architecture-decisions.md)** — the living "why-behind-X" log; reasoning behind structural choices we don't want to re-litigate.
 > - **[RPC action naming convention](docs/rpc-action-naming.md)** — the verb taxonomy every new action in `app/src/lib/actions.yaml` must follow.
-> - **[Database Migrations & RPC Actions](#database-migrations--rpc-actions)** — Atlas engine, the migration scaffolding script, and `CREATE INDEX CONCURRENTLY` via `-- atlas:txmode none`.
+> - **[Database Migrations & RPC Actions](#database-migrations--rpc-actions)** — Atlas engine, the migration scaffolding script, and why `CREATE INDEX CONCURRENTLY` and batched data migrations must be run out-of-band.
+> - **Build commands** — the per-service `make validate` / `npm run lint2` flows.
 > - **[Definition of Done](#2-definition-of-done)** — what "done" means here beyond green unit tests.
 
 ## Module Structure
@@ -123,8 +124,8 @@ Each service has its own CLAUDE.md where one exists — **always read it before 
 - **Use the scaffold script** — `./api-server/migrations/new-migration.sh <snake_case_name>` creates both files with a fresh unix-ms timestamp + next `V<N>` AND regenerates `api-server/migrations/migrations/app/atlas.sum`. Requires `brew install atlas`; the script refuses without it (atlas.sum staleness fails the migration Job at deploy).
 - **Out-of-order arrivals are first-class.** `--exec-order non-linear` (in `atlas.hcl`) applies files with ts < tracker normally. Cherry-picks and HF backmerges no longer silently skip. `validate_migrations.py` warns (not errors) on out-of-order ts.
 - `.down.sql` is optional but recommended. Write idempotent SQL (`IF EXISTS` / `IF NOT EXISTS`).
-- **`CREATE INDEX CONCURRENTLY` etc. work** — put `-- atlas:txmode none` as the first line of the `.up.sql`. `.github/workflows/migrations-lint.yaml` rejects `CONCURRENTLY` in files that lack the directive.
-- **`atlas.sum`** is the integrity manifest, committed. Edits to applied files cause `atlas migrate apply` to refuse with `checksum mismatch` (desired). Regenerated automatically by `new-migration.sh`; the PR-time CI gate (`migrations-validate.yaml`) catches drift.
+- **`CREATE INDEX CONCURRENTLY` does NOT work in a migration file, and `-- atlas:txmode none` does not enable it.** That directive is a paid-tier Atlas feature; the pinned Community **v0.36.0 silently ignores it**, so the statement still runs inside the per-file transaction and dies with `cannot run inside a transaction block`. Proved by the V868 CI failure on commit `d91deefa`, which carried the directive on line 1 and failed anyway. `.github/workflows/migrations-lint.yaml` therefore rejects `CONCURRENTLY` in executable migration SQL **unconditionally** (the directive does not exempt a file). Instead, follow that gate's recipe: build the index out-of-band with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` against each live database *before* merging, and write the migration as plain `CREATE INDEX IF NOT EXISTS` — a no-op where you pre-applied it. The same constraint rules out batched / `COMMIT`-per-chunk data migrations: a data backfill is one transaction, so order its statements to be as cheap as possible (add the column, backfill, *then* build the index — an UPDATE to an indexed column can't be a HOT update) and state the expected lock window in a comment at the top of the file. Note that out-of-band operator scripts are **not** an option for anything on-prem installs need: they run the same migration image via a `post-install,post-upgrade` Helm hook with `backoffLimit: 0` and have none of our context, so whatever must happen everywhere has to be in the migration itself.
+- **`atlas.sum`** is the integrity manifest. Committed. Edits to applied files cause `atlas migrate apply` to refuse with `checksum mismatch` (desired). Regenerated automatically by `new-migration.sh`; PR-time CI gate (`migrations-validate.yaml`) catches drift.
 - Full details on cutover, recovery, and local apply commands: [`api-server/migrations/README.md`](api-server/migrations/README.md).
 
 ### Other migration trees

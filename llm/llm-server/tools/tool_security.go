@@ -54,6 +54,13 @@ const SecurityView = `
 					-- tool's callers (and the LLM) still see full CVE identity; rows the
 					-- migration's backfill couldn't link (v.id IS NULL) fall back to the
 					-- raw, un-reconstructed payload unchanged.
+					-- TODO(vulnerabilities-cleanup): this v.id IS NULL branch must outlive
+					-- V867. That migration is DDL only — it backfills nothing (a bulk
+					-- backfill would hold ACCESS EXCLUSIVE on recommendation for hours at
+					-- production scale), so every pre-existing finding starts unlinked.
+					-- Rescans converge live ones within ~a week; findings whose image or host
+					-- is gone never do, and V867 leaves recommendation.recommendation
+					-- untrimmed precisely so the raw payload stays their source. Do not remove.
 					(CASE WHEN v.id IS NULL THEN r.recommendation
 						ELSE r.recommendation || jsonb_build_object(
 							'VulnerabilityID', v.vuln_id, 'PkgID', v.details->'pkg_id', 'PkgName', v.package_name,

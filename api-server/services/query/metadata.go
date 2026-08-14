@@ -824,6 +824,24 @@ func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string
 // bug. A rescan self-heals any row whose severity this changes; the
 // migration's one-time backfill can also pick an arbitrary severity among
 // historical duplicates for the same CVE+package.
+//
+// TODO(vulnerabilities-cleanup): the `v.id IS NULL` fallback branch — and the
+// nested `{package,version}` arm of the package_version COALESCE below — must
+// outlive V867. Three independent reasons:
+//   - V867 is DDL only: it adds vulnerability_id but backfills nothing, because a
+//     bulk backfill measured 1.2-3.1 ms/row and would hold ACCESS EXCLUSIVE on
+//     recommendation for hours on a production-sized table. Every pre-existing
+//     finding is unlinked the moment the column appears;
+//   - rescans converge live findings within ~a week, but findings whose image or
+//     host no longer exists never get rewritten, so unlinked rows are a permanent
+//     supported state, not a transient window;
+//   - V867 deliberately does not trim recommendation.recommendation, so the raw
+//     payload is still the live source for all of those rows.
+//
+// Removing either arm is only conceivable after the deferred payload trim (see
+// the TODO at the foot of the V867 migration) has run everywhere AND unlinked
+// rows have been dealt with. vulnerability_fallback_test.go pins the contract, so
+// deleting a guard fails a test rather than silently blanking CVE identity.
 func VulnerabilityRecommendationSQL(recAlias, vulnAccessor string) string {
 	r, v := recAlias, vulnAccessor
 	return `CASE WHEN ` + v + `id IS NULL THEN ` + r + `.recommendation
@@ -3246,6 +3264,9 @@ var table_metadata = map[string]TableDefinition{
 			// COALESCE falls back to the old inline JSON path for any row the
 			// migration's backfill couldn't link — same safety net
 			// VulnerabilityRecommendationSQL uses for the full payload.
+			// TODO(vulnerabilities-cleanup): keep the fallback until the
+			// out-of-band backfill has run on every environment — see the TODO on
+			// VulnerabilityRecommendationSQL.
 			"vuln_id": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "COALESCE(r1.v_vuln_id, r1.recommendation ->> 'vuln_id')",
@@ -5191,6 +5212,9 @@ var table_metadata = map[string]TableDefinition{
 			// inline in the payload anymore. COALESCE falls back to the old inline
 			// JSON path for any row the migration's backfill couldn't link — same
 			// safety net VulnerabilityRecommendationSQL uses for the full payload.
+			// TODO(vulnerabilities-cleanup): keep the fallback until the
+			// out-of-band backfill has run on every environment — see the TODO on
+			// VulnerabilityRecommendationSQL.
 			"vuln_id": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "COALESCE(r1.v_vuln_id, r1.recommendation ->> 'vuln_id')",
