@@ -224,6 +224,8 @@ func runMissedOne(ctx *security.RequestContext, account ScanAccount, scanner str
 		err = RunK8sVersionUpgrade(ctx, account)
 	case "unused_pv":
 		err = RunUnusedPVCScan(ctx, account)
+	case "secret_env_exposure":
+		err = RunSecretEnvExposureScan(ctx, account)
 	default:
 		err = errors.New("scan_orchestrator: heartbeat scanner has no run path")
 	}

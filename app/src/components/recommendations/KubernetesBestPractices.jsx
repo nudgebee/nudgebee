@@ -55,6 +55,7 @@ const RULE_LABEL_MAP = {
   services_misconfigurations: 'Service Issues',
   statefulsets_misconfigurations: 'Staefulsets Issues',
   health_check: 'Health Check',
+  secret_env_exposure: 'Secret Exposed as Environment Variable',
 };
 
 const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true, isOptimisePage = false, ...props }) => {
