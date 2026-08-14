@@ -13,7 +13,12 @@ x-app-common: &app-common
   RABBIT_MQ_PORT: '5672'
   RABBIT_MQ_USERNAME: guest
   RABBIT_MQ_PASSWORD: guest
-  # Redis — k8s-collector requires these present even with auth disabled
+  # Redis — used for the shared cache (and k8s-collector distributed locks).
+  # Production runs CACHE_PROVIDER=redis whenever redis is enabled, so match it
+  # here rather than falling back to per-process in-memory cache. Clients are
+  # lazy (no dial until first use) and the compose redis has no auth, so empty
+  # user/pass connect fine.
+  CACHE_PROVIDER: redis
   REDIS_SERVER_HOST: redis
   REDIS_SERVER_PORT: '6379'
   REDIS_USER_NAME: ''
@@ -207,6 +212,7 @@ services:
     depends_on:
       - postgres
       - rabbitmq
+      - redis
 
   cloud-collector:
     profiles: [full]
@@ -241,6 +247,7 @@ services:
     depends_on:
       - postgres
       - rabbitmq
+      - redis
 
   llm-server:
     profiles: [full]
@@ -260,6 +267,7 @@ services:
       - postgres
       - rabbitmq
       - qdrant
+      - redis
 
   # TODO: code-analysis is intentionally NOT a long-running compose service.
   # System tracks per-account code-analysis instances and the design is for
@@ -290,6 +298,7 @@ services:
       - postgres
       - rabbitmq
       - temporal
+      - redis
 
   # ---------- Python services ----------
   k8s-collector-app:
@@ -366,6 +375,7 @@ services:
     depends_on:
       - postgres
       - rabbitmq
+      - redis
 
   # ---------- Frontend ----------
   app:
