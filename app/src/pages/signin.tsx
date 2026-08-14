@@ -1,4 +1,4 @@
-import { getProviders, signIn } from 'next-auth/react';
+import { signIn } from 'next-auth/react';
 import { authOptions } from '@pages/api/auth/[...nextauth]';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -887,14 +887,16 @@ function providersFromAuthOptions(): Record<string, { id: string; name: string; 
 }
 
 export async function getServerSideProps(_context: any) {
-  // Prefer getProviders() (matches the public NextAuth shape); fall back to
-  // a direct read of authOptions when getProviders returns null/empty so a
-  // transient internal /api/auth/providers failure doesn't latch the signin
-  // page into the "no authentication providers" state.
-  let providers = await getProviders();
-  if (!providers || Object.keys(providers).length === 0) {
-    providers = providersFromAuthOptions() as any;
-  }
+  // Build the provider map in-process. Deliberately NOT getProviders(): that
+  // helper issues an HTTP self-call to /api/auth/providers from inside
+  // getServerSideProps, i.e. the page asks its own server for a route that may
+  // not be servable yet. On a cold `next dev` boot the [...nextauth] route is
+  // often still unregistered while this page is being compiled, so the
+  // self-call lands on the HTML 404 page and next-auth logs
+  // CLIENT_FETCH_ERROR ("Unexpected token '<', \"<!DOCTYPE \"...").
+  // authOptions.providers is built synchronously from env at module load, so
+  // reading it directly is both faster and correct regardless of boot order.
+  const providers = providersFromAuthOptions();
   const samlEnabled = process.env.SAML_ENABLED === 'true';
 
   // Pass tier into the SignInBelowTitle slot; see signin.tsx for rationale.

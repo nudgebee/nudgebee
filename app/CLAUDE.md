@@ -8,8 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install dependencies (--legacy-peer-deps required due to peer conflicts)
 npm install --legacy-peer-deps
 
-# Development server (port 3000 with Turbopack)
+# Development server (port 3000, webpack)
 npm run dev
+
+# Development server using Turbopack (faster, but see caveat below)
+npm run dev:turbo
 
 # Production build
 npm run build
@@ -29,6 +32,8 @@ npm test
 # Bundle size analysis
 npm run analyze
 ```
+
+> **Turbopack dev caveat.** `npm run dev` deliberately uses webpack. On Next 16.2.12, Turbopack's dev server intermittently fails to match requests that arrive during the cold-boot compile window against pages-router **dynamic** routes, so `/api/auth/*` (the `[...nextauth]` catch-all) resolves to the HTML `/404` page. That surfaces as `[next-auth][error][CLIENT_FETCH_ERROR] Unexpected token '<', "<!DOCTYPE "...` and makes sign-in impossible. It latches for the process lifetime — restarting doesn't reliably clear it; only a filesystem change under `src/pages/` does. It's most likely when the app boots while services-server is down and a browser is already sitting on `/signin`. Use `npm run dev:turbo` for speed when you aren't touching auth. See [`docs/architecture-decisions.md`](../docs/architecture-decisions.md).
 
 ## Architecture Overview
 
