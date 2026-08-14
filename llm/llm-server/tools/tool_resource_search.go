@@ -576,6 +576,21 @@ func normalizeK8sType(t string) string {
 }
 
 // handleResourceSuggestions finds actual resources using kubectl and returns resource data
+// resourceSearchResultMessage picks the K8s search result message. The no-cluster
+// branch is the observability-only / cloud-only path: with no connected cluster the
+// live fallback is skipped, so an inventory miss is terminal — point the model at the
+// cloud resolver rather than implying more k8s search is possible.
+func resourceSearchResultMessage(count int, clusterConnected bool) string {
+	switch {
+	case count > 0:
+		return fmt.Sprintf("Found %d resources matching your request.", count)
+	case !clusterConnected:
+		return "No resources found in inventory, and no connected Kubernetes cluster to search live. For a cloud/observability-only account, resolve cloud resources via cloud_resource_search_execute."
+	default:
+		return "No resources found matching your request."
+	}
+}
+
 func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSearchRequest, nbRequestContext core.NbToolContext) (string, error) {
 	namespace := request.Namespace
 	if namespace == "" || namespace == "all" || namespace == "all-namespaces" {
@@ -594,7 +609,20 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 		resources = r.filterResourcesByType(resources, request.ResourceType)
 	}
 
+	// The live-cluster fallback below only makes sense when an in-cluster agent is
+	// actually connected — without one, every kubectl strategy just times out (the
+	// ~60s straggler), which is pure waste on cloud-only / observability-only accounts.
+	// cloud_resourses is authoritative for synced resources, so on a DB miss with no
+	// connected cluster we skip the live fan and report the inventory miss fast.
+	// hasConnectedK8sAgent fails closed (a transient DB error reads as "connected"),
+	// so we never wrongly skip when a cluster might be present.
+	// Computed only on a miss — its only consumers are the fallback gate below and the
+	// no-result message — so a DB hit skips this connectivity DB call entirely.
+	clusterConnected := true
 	if len(resources) == 0 {
+		clusterConnected = hasConnectedK8sAgent(nbRequestContext.AccountId)
+	}
+	if len(resources) == 0 && clusterConnected {
 		// 2. Fallback: find actual resources via live kubectl strategies.
 		k8sResources := r.findActualResources(searchName, namespace, request.ResourceType, nbRequestContext)
 		// Filter out any resources whose names don't contain a meaningful term from the query.
@@ -632,10 +660,8 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 	var message string
 	if len(resources) > 0 {
 		resources = r.removeDuplicateResources(resources)
-		message = fmt.Sprintf("Found %d resources matching your request.", len(resources))
-	} else {
-		message = "No resources found matching your request."
 	}
+	message = resourceSearchResultMessage(len(resources), clusterConnected)
 
 	// Enrich resources with owner references (mostly for Pods)
 	resources = r.enrichWithOwners(resources, nbRequestContext)

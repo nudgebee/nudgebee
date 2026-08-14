@@ -1113,3 +1113,23 @@ func TestIsSpecificResourceType(t *testing.T) {
 	assert.False(t, tool.isSpecificResourceType("all"))
 	assert.False(t, tool.isSpecificResourceType("resource"))
 }
+
+// TestResourceSearchResultMessage pins the no-result messaging — in particular the
+// no-connected-cluster branch, which is the observability-only path where the live
+// kubectl fallback is skipped so an inventory miss is terminal and must steer to the
+// cloud resolver rather than implying more k8s search.
+func TestResourceSearchResultMessage(t *testing.T) {
+	// Found something: cluster connectivity is irrelevant.
+	assert.Contains(t, resourceSearchResultMessage(3, true), "Found 3 resources")
+	assert.Contains(t, resourceSearchResultMessage(3, false), "Found 3 resources")
+
+	// Miss WITH a connected cluster: the live fallback ran and found nothing → plain miss.
+	msg := resourceSearchResultMessage(0, true)
+	assert.Contains(t, msg, "No resources found matching your request")
+	assert.NotContains(t, msg, "cloud_resource_search_execute")
+
+	// Miss with NO connected cluster: fallback was skipped → terminal, steer to cloud tool.
+	noCluster := resourceSearchResultMessage(0, false)
+	assert.Contains(t, noCluster, "no connected Kubernetes cluster")
+	assert.Contains(t, noCluster, "cloud_resource_search_execute")
+}
