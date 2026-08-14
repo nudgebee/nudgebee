@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -1749,4 +1750,64 @@ func TestDelegationSkillScope(t *testing.T) {
 		got[0] = "mutated"
 		assert.Equal(t, []string{"metrics"}, parent, "parent slice must be untouched even on the no-op path")
 	})
+}
+
+// TestDoIterationParallel_ConcurrentStatusAccess guards the data race fixed alongside
+// this test: the dispatcher (preResolveToolConfigs / submitReadyNodes) read
+// ActionNode.Status while already-dispatched workers wrote it under mu, so the reads
+// had to take the same lock.
+//
+// The race is scheduling-dependent, so this maximises the window rather than asserting
+// on it directly: many independent nodes mean the dispatcher is still walking the node
+// map while the first workers are already completing and writing Status. Run under
+// -race (as CI does); a regression surfaces as a DATA RACE report, not a failed assert.
+// -count=N makes it near-certain.
+func TestDoIterationParallel_ConcurrentStatusAccess(t *testing.T) {
+	const nodeCount = 16
+
+	nameToTool := map[string]toolcore.NBTool{}
+	supported := make([]toolcore.NBTool, 0, nodeCount)
+	actions := make([]NBAgentPlannerToolAction, 0, nodeCount)
+	for i := range nodeCount {
+		name := fmt.Sprintf("TOOL_%d", i)
+		tool := &MockContextCapturingTool{
+			NameVal:      name,
+			ReturnOutput: fmt.Sprintf(`{"result":%d}`, i),
+			ReturnStatus: toolcore.NBToolResponseStatusSuccess,
+		}
+		nameToTool[name] = tool
+		supported = append(supported, tool)
+		// No Dependency: every node is dispatchable at once, so the dispatcher keeps
+		// iterating while earlier workers are already mutating their Status.
+		actions = append(actions, NBAgentPlannerToolAction{
+			ToolID:     fmt.Sprintf("Plan%d", i),
+			Tool:       name,
+			ToolInput:  fmt.Sprintf("input-%d", i),
+			Dependency: []string{},
+		})
+	}
+
+	ctx := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", []string{"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+	executor := &plannerExecutor{
+		ctx:           ctx,
+		agent:         &MockAgent{SupportedTools: supported},
+		agentRequest:  NBAgentRequest{AccountId: "cccccccc-cccc-cccc-cccc-cccccccccccc", UserId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", ConversationId: "conv_id", MessageId: "msg_id", AgentId: "agent_id"},
+		toolCallCache: turnToolCallCache{cache: make(map[string]NBAgentPlannerToolActionStep)},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		steps, _, err := executor.doIterationParallel(context.Background(), nil, nameToTool, actions)
+		assert.NoError(t, err)
+		assert.Len(t, steps, nodeCount, "every independent node should execute")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		// A timeout here most likely means the added locking deadlocked the dispatcher
+		// against in-flight workers (e.g. mu held across the semaphore acquire).
+		t.Fatal("doIterationParallel did not complete — possible deadlock in status locking")
+	}
 }

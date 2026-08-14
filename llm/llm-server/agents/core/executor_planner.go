@@ -1161,11 +1161,22 @@ func (e *plannerExecutor) doIterationParallel(
 	// BEFORE any goroutines are spawned. This prevents duplicate followup messages when
 	// multiple parallel tool calls need the same tool config (#28127).
 	preResolveToolConfigs := func() *NBAgentPlannerFinishAction {
-		checkedTools := map[string]bool{}
+		// Snapshot the dispatchable set under mu. This runs while earlier workers are
+		// still in flight, and those workers write node.Status under mu — reading it
+		// unlocked is a data race. The snapshot is taken rather than holding the lock
+		// across the loop because the config resolution below can block on IO, and
+		// holding mu through that would stall every in-flight worker.
+		mu.Lock()
+		dispatchable := make([]*ActionNode, 0, len(nodes))
 		for _, node := range nodes {
-			if len(node.Dependencies) != 0 || node.Status != "pending" {
-				continue
+			if len(node.Dependencies) == 0 && node.Status == "pending" {
+				dispatchable = append(dispatchable, node)
 			}
+		}
+		mu.Unlock()
+
+		checkedTools := map[string]bool{}
+		for _, node := range dispatchable {
 			toolName := node.Action.Tool
 			if checkedTools[toolName] {
 				continue
@@ -1210,11 +1221,13 @@ func (e *plannerExecutor) doIterationParallel(
 				// Without this, only the triggering node is saved in currentAction
 				// and siblings are re-planned by the LLM on resume, wasting tokens.
 				var sameToolActions []NBAgentPlannerToolAction
+				mu.Lock()
 				for _, n2 := range nodes {
 					if n2.Status == "pending" && strings.EqualFold(n2.Action.Tool, toolName) {
 						sameToolActions = append(sameToolActions, n2.Action)
 					}
 				}
+				mu.Unlock()
 				if len(sameToolActions) == 0 {
 					sameToolActions = []NBAgentPlannerToolAction{node.Action}
 				}
@@ -1227,8 +1240,23 @@ func (e *plannerExecutor) doIterationParallel(
 
 	// Helper to submit ready nodes
 	submitReadyNodes := func() {
-		for _, node := range nodes {
+		// In-flight workers write node.Status under mu, so read it the same way. The
+		// dispatchable set is resolved in one locked pass rather than locking per node:
+		// those workers are contending for mu to publish their own results, so N
+		// acquisitions here would interleave with theirs for no benefit. Nothing else
+		// moves a node out of "pending" — workers only transition nodes they already
+		// own — so this snapshot cannot go stale in a way that matters.
+		mu.Lock()
+		readyIDs := make(map[string]bool, len(nodes))
+		for id, node := range nodes {
 			if len(node.Dependencies) == 0 && node.Status == "pending" {
+				readyIDs[id] = true
+			}
+		}
+		mu.Unlock()
+
+		for id, node := range nodes {
+			if readyIDs[id] {
 				if err := workCtx.Err(); err != nil {
 					return
 				}
@@ -1240,7 +1268,20 @@ func (e *plannerExecutor) doIterationParallel(
 				case <-workCtx.Done():
 					return
 				}
+				// select chooses pseudo-randomly when both cases are ready, so the
+				// acquire can win against an already-cancelled context. Re-check and
+				// hand the permit back rather than dispatching a worker that would
+				// immediately skip itself.
+				if workCtx.Err() != nil {
+					<-e.semaphore
+					return
+				}
+				// The lock is deliberately not held across the acquire above:
+				// blocking on a permit while holding mu would deadlock, because the
+				// workers holding those permits need mu to finish and release them.
+				mu.Lock()
 				node.Status = "ready"
+				mu.Unlock()
 				n := node
 				e.ctx.GetLogger().Info("plannerexecutor: submitting tool for parallel execution", "tool", n.Action.Tool, "toolId", n.Action.ToolID)
 				// Create a new variable to track whether to release the permit
