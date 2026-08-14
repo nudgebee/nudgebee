@@ -52,13 +52,102 @@ func TestBuildFindingRows(t *testing.T) {
 	// vulnerabilities row, asserted below.
 	rec, err := json.Marshal(row.Recommendation)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"fixed_version":"","fix_state":"","package_version":"3.0.7-24.el9"}`, string(rec))
+	assert.JSONEq(t, `{"fixed_version":"","fix_state":"","package_version":"3.0.7-24.el9","vulnerable_packages":["openssl"]}`, string(rec))
 
 	vulnRow := vulnRows[0]
 	assert.Equal(t, models.VulnerabilitySourceVMPackage, vulnRow.Source)
 	assert.Equal(t, "CVE-2024-0001", vulnRow.VulnId)
 	assert.Equal(t, "openssl", vulnRow.PackageName)
 	assert.Equal(t, models.VulnerabilityKey(models.VulnerabilitySourceVMPackage, "CVE-2024-0001", "openssl", nonEmptyPtr("x86_64")), vulnKeys[0])
+}
+
+func TestBuildFindingRows_GroupsBinaryPackagesBySourceAndCVE(t *testing.T) {
+	now := time.Now()
+	pkgsByKey := map[string]Package{
+		"core": {
+			Type: PkgTypeRPM, Name: "kernel-core", Version: "5.14.0-503.14.1.el9_5", Arch: "x86_64",
+			SourceName: "kernel", SourceVersion: "5.14.0-503.14.1.el9_5",
+		},
+		"modules": {
+			Type: PkgTypeRPM, Name: "kernel-modules", Version: "5.14.0-503.14.1.el9_5", Arch: "x86_64",
+			SourceName: "kernel", SourceVersion: "5.14.0-503.14.1.el9_5",
+		},
+		"tools": {
+			Type: PkgTypeRPM, Name: "kernel-tools", Version: "5.14.0-503.14.1.el9_5", Arch: "x86_64",
+			SourceName: "kernel", SourceVersion: "5.14.0-503.14.1.el9_5",
+		},
+	}
+	findings := []vulnmatcher.Finding{
+		{Key: "core", VulnID: "CVE-2024-46713", Severity: "High", FixState: "not-fixed"},
+		{Key: "modules", VulnID: "CVE-2024-46713", Severity: "High", FixState: "not-fixed"},
+		{Key: "tools", VulnID: "CVE-2024-46713", Severity: "High", FixState: "not-fixed"},
+	}
+
+	rows, vulnRows, vulnKeys := buildFindingRows("tenant-1", "account-1", "resource-1", findings, pkgsByKey, now)
+
+	require.Len(t, rows, 1)
+	require.Len(t, vulnRows, 1)
+	require.Len(t, vulnKeys, 1)
+	require.NotNil(t, rows[0].AccountObjectId)
+	assert.Equal(t, "kernel-5.14.0-503.14.1.el9_5-x86_64-CVE-2024-46713", *rows[0].AccountObjectId)
+
+	rec, err := json.Marshal(rows[0].Recommendation)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"fixed_version":"","fix_state":"not-fixed","package_version":"5.14.0-503.14.1.el9_5","vulnerable_packages":["kernel-core","kernel-modules","kernel-tools"]}`, string(rec))
+	assert.Equal(t, "kernel", vulnRows[0].PackageName)
+}
+
+func TestCanonicalSourceName_NormalizesCloudKernelVariants(t *testing.T) {
+	for _, source := range []string{
+		"linux-aws-6.8",
+		"linux-azure-6.8",
+		"linux-gcp-6.8",
+		"linux-oracle-6.8",
+		"linux-hwe-22.04",
+		"linux-kvm",
+		"linux-lowlatency",
+		"linux-meta-aws-6.8",
+		"linux-raspi",
+		"linux-ibm",
+		"linux-riscv",
+		"linux-nvidia",
+		"linux-realtime",
+		"linux-intel",
+	} {
+		t.Run(source, func(t *testing.T) {
+			assert.Equal(t, "linux", canonicalSourceName(source))
+		})
+	}
+}
+
+func TestCanonicalSourceName_DoesNotMergeNonKernelPackages(t *testing.T) {
+	for _, source := range []string{"linux-atm", "linux-base", "linux-firmware", "kernel-srpm-macros"} {
+		t.Run(source, func(t *testing.T) {
+			assert.Equal(t, source, canonicalSourceName(source))
+		})
+	}
+}
+
+func TestCanonicalVulnerablePackage_FallsBackWithoutSourceVersion(t *testing.T) {
+	pkg := Package{
+		Type: PkgTypeRPM, Name: "nspr", Version: "4.35.0-14.el9_4", Arch: "x86_64", SourceName: "nss",
+	}
+	assert.Equal(t, pkg, canonicalVulnerablePackage(pkg))
+}
+
+func TestBuildFindingRows_SortsVulnerablePackages(t *testing.T) {
+	pkg := func(name string) Package {
+		return Package{Type: PkgTypeRPM, Name: name, Version: "1.0", Arch: "x86_64", SourceName: "demo", SourceVersion: "1.0"}
+	}
+	findings := []vulnmatcher.Finding{
+		{Key: "z", VulnID: "CVE-2024-1"},
+		{Key: "a", VulnID: "CVE-2024-1"},
+	}
+	rows, _, _ := buildFindingRows("t", "a", "r", findings, map[string]Package{"z": pkg("zeta"), "a": pkg("alpha")}, time.Now())
+	require.Len(t, rows, 1)
+	rec, err := json.Marshal(rows[0].Recommendation)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"fixed_version":"","fix_state":"","package_version":"1.0","vulnerable_packages":["alpha","zeta"]}`, string(rec))
 }
 
 func TestBuildFindingRows_Empty(t *testing.T) {

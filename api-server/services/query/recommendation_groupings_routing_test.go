@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"nudgebee/services/security"
 )
@@ -69,4 +70,17 @@ func TestRecommendationGroupingsRouting(t *testing.T) {
 			assert.Equal(t, tc.want, route(t, tc.request))
 		})
 	}
+}
+
+func TestRecommendationGroupings_VMPackageFieldsUseVulnerabilityJoin(t *testing.T) {
+	request := QueryRequest{
+		Table:   "recommendation_groupings_v2",
+		Columns: cols("package_name", "recommendation", "count"),
+		GroupBy: []string{"package_name"},
+	}
+	sql, err := GenerateSqlQuery(security.NewRequestContextForSuperAdmin(nil, nil, nil), "", request, table_metadata["recommendation_groupings_v2"])
+	require.NoError(t, err)
+	assert.Contains(t, sql, "LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id")
+	assert.Contains(t, sql, "r1.v_package_name")
+	assert.Contains(t, sql, "r1.recommendation - 'package_version'")
 }

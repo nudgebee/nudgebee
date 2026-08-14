@@ -2,6 +2,7 @@ package vmpackage
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -206,10 +207,17 @@ func persistFindings(tenantID, cloudAccountID, cloudResourceID string, findings 
 // rows, so the caller can upsert vulnerabilities first and then populate
 // each row's VulnerabilityId from the returned id map.
 func buildFindingRows(tenantID, cloudAccountID, cloudResourceID string, findings []vulnmatcher.Finding, pkgsByKey map[string]Package, now time.Time) ([]models.Recommendation, []models.Vulnerability, []string) {
-	seen := make(map[string]struct{}, len(findings))
-	rows := make([]models.Recommendation, 0, len(findings))
-	vulnRows := make([]models.Vulnerability, 0, len(findings))
-	vulnKeys := make([]string, 0, len(findings))
+	type groupedFinding struct {
+		finding         vulnmatcher.Finding
+		vulnerablePkg   Package
+		vulnerableNames []string
+	}
+	groups := make(map[string]*groupedFinding, len(findings))
+	groupOrder := make([]string, 0, len(findings))
+
+	// Grype reports a match for every installed binary package. Advisories are
+	// normally published for the source/vendor package that built those
+	// binaries, so group at that level while retaining every binary name.
 	for _, f := range findings {
 		pkg, ok := pkgsByKey[f.Key]
 		if !ok {
@@ -217,10 +225,29 @@ func buildFindingRows(tenantID, cloudAccountID, cloudResourceID string, findings
 		}
 
 		objectID := formatVMPackageObjectID(pkg, f.VulnID)
-		if _, dup := seen[objectID]; dup {
+		group, exists := groups[objectID]
+		if !exists {
+			groups[objectID] = &groupedFinding{
+				finding:         f,
+				vulnerablePkg:   canonicalVulnerablePackage(pkg),
+				vulnerableNames: []string{pkg.Name},
+			}
+			groupOrder = append(groupOrder, objectID)
 			continue
 		}
-		seen[objectID] = struct{}{}
+		if !slices.Contains(group.vulnerableNames, pkg.Name) {
+			group.vulnerableNames = append(group.vulnerableNames, pkg.Name)
+			slices.Sort(group.vulnerableNames)
+		}
+	}
+
+	rows := make([]models.Recommendation, 0, len(groups))
+	vulnRows := make([]models.Vulnerability, 0, len(groups))
+	vulnKeys := make([]string, 0, len(groups))
+	for _, objectID := range groupOrder {
+		group := groups[objectID]
+		f := group.finding
+		pkg := group.vulnerablePkg
 
 		severity := mapSeverity(f.Severity)
 		recommendationAction := "Modify"
@@ -241,9 +268,10 @@ func buildFindingRows(tenantID, cloudAccountID, cloudResourceID string, findings
 			// full legacy shape back via the vulnerabilities join at query
 			// time (see metadata.go's recommendations_v2/recommendation_groupings_v2).
 			Recommendation: models.NewJsonObject(map[string]any{
-				"fixed_version":   f.FixedVersion,
-				"fix_state":       f.FixState,
-				"package_version": pkg.Version,
+				"fixed_version":       f.FixedVersion,
+				"fix_state":           f.FixState,
+				"package_version":     pkg.Version,
+				"vulnerable_packages": group.vulnerableNames,
 			}),
 			Severity:             &severity,
 			Category:             recommendationCategory,
@@ -306,7 +334,44 @@ func nonEmptyPtr(s string) *string {
 }
 
 func formatVMPackageObjectID(pkg Package, vulnID string) string {
+	pkg = canonicalVulnerablePackage(pkg)
 	return fmt.Sprintf("%s-%s-%s-%s", pkg.Name, pkg.Version, pkg.Arch, vulnID)
+}
+
+// canonicalVulnerablePackage returns the package the advisory is actually
+// about. Binary packages such as kernel-core and kernel-modules share one
+// source package and must therefore share one recommendation identity.
+func canonicalVulnerablePackage(pkg Package) Package {
+	if pkg.SourceName == "" || pkg.SourceVersion == "" {
+		return pkg
+	}
+
+	pkg.Name = canonicalSourceName(pkg.SourceName)
+	if pkg.SourceVersion != "" {
+		pkg.Version = pkg.SourceVersion
+	}
+	return pkg
+}
+
+func canonicalSourceName(name string) string {
+	name = strings.TrimSpace(name)
+	lower := strings.ToLower(name)
+	if lower == "kernel" {
+		return "kernel"
+	}
+	if lower == "linux" || lower == "linux-kvm" || lower == "linux-raspi" || lower == "linux-ibm" ||
+		lower == "linux-riscv" || lower == "linux-nvidia" || lower == "linux-realtime" || lower == "linux-intel" ||
+		strings.HasPrefix(lower, "linux-aws-") || strings.HasPrefix(lower, "linux-azure-") ||
+		strings.HasPrefix(lower, "linux-gcp-") || strings.HasPrefix(lower, "linux-oracle-") ||
+		strings.HasPrefix(lower, "linux-hwe-") || strings.HasPrefix(lower, "linux-ibm-") ||
+		strings.HasPrefix(lower, "linux-intel-") || strings.HasPrefix(lower, "linux-kvm-") ||
+		strings.HasPrefix(lower, "linux-lowlatency") || strings.HasPrefix(lower, "linux-meta-") ||
+		strings.HasPrefix(lower, "linux-nvidia") || strings.HasPrefix(lower, "linux-realtime-") ||
+		strings.HasPrefix(lower, "linux-riscv-") || strings.HasPrefix(lower, "linux-raspi-") ||
+		strings.HasPrefix(lower, "linux-signed-") || strings.HasPrefix(lower, "linux-restricted-modules-") {
+		return "linux"
+	}
+	return name
 }
 
 // mapSeverity normalizes vuln-matcher-server's severity string to the
