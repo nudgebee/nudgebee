@@ -84,6 +84,18 @@ class SlackClient(WebClient):
         client = WebClient(token=token)
         return client.conversations_open(users=users, **kwargs)
 
+    def start_stream(self, *, token, channel_id=None, thread_ts=None, **kwargs):
+        client = WebClient(token=token)
+        return client.chat_startStream(channel=channel_id, thread_ts=thread_ts, **kwargs)
+
+    def append_stream(self, *, token, channel_id=None, ts=None, **kwargs):
+        client = WebClient(token=token)
+        return client.chat_appendStream(channel=channel_id, ts=ts, **kwargs)
+
+    def stop_stream(self, *, token, channel_id=None, ts=None, **kwargs):
+        client = WebClient(token=token)
+        return client.chat_stopStream(channel=channel_id, ts=ts, **kwargs)
+
     def chat_update(self, *, token, channel_id=None, ts=None, **kwargs):
         client = WebClient(token=token)
         return client.chat_update(channel=channel_id, ts=ts, **kwargs)

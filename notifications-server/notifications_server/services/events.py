@@ -25,6 +25,7 @@ from notifications_server.services.channel_context import ChannelContextService
 from notifications_server.services.common import THREAD_CONTEXT_MARKER
 from notifications_server.services.messaging_installations import load_installation_by_team
 from notifications_server.services.slack_images import collect_slack_images
+from notifications_server.services import slack_progress
 from notifications_server.services.actions import (
     validate_and_get_user_tenants,
     CLUSTER_NOT_FOUND,
@@ -839,6 +840,7 @@ class Events:
         self._attach_images(payload, thread_ts)
 
         self.query_llm_server(payload, headers)
+        slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
 
     def _fetch_and_update_account_details_by_id(self, account_id, channel_id, team_id, thread_ts):
         with Session(self.session.get_bind()) as session:
@@ -939,6 +941,7 @@ class Events:
 
         try:
             self.query_llm_server(payload, headers)
+            slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
         except requests.RequestException as e:
             LOG.debug(f"Query to LLM failed: {e}")
             status = getattr(getattr(e, "response", None), "status_code", None)
@@ -1393,6 +1396,7 @@ class Events:
 
     def handle_final_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         try:
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             response_text = payload.response
             mermaid_segments = split_mermaid_segments(response_text)
             view_url = self._diagram_view_url(cached_entry)
@@ -1506,6 +1510,7 @@ class Events:
 
     def handle_followup_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         try:
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             follow_up = json.loads(payload.response)
             followup_question = f"{follow_up.get('question', '')}"
             followup_options = follow_up.get("followupOptions", [])
@@ -1566,6 +1571,8 @@ class Events:
     def handle_error_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         """Tell the thread the run failed. ``payload.response`` is a raw upstream
         error string, so it is logged by the caller and never posted."""
+        slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
+
         message = get_generic_error_message()
         slack_user_id = cached_entry.get("slack_user_id") if cached_entry else None
         if slack_user_id:
