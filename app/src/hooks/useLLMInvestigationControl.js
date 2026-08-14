@@ -71,15 +71,42 @@ const buildDrawerTasks = (agents, message) => {
       updated_at: agent.updated_at,
     });
 
+    // Sub-step rows (inventory queries, cluster commands) name the tool call that
+    // produced them. They belong *inside* that tool's details — a lookup that
+    // fanned out to twenty kubectl calls is one step you expand, not twenty
+    // siblings burying the rest of the investigation in the task list.
+    const parentToolCallId = (t) => {
+      let meta = t.metadata;
+      if (typeof meta === 'string') {
+        try {
+          meta = JSON.parse(meta);
+        } catch {
+          return null;
+        }
+      }
+      return meta?.parent_tool_call_id || null;
+    };
+    const stepsByParent = new Map();
     toolCalls.forEach((t) => {
-      if (!t.id) {
+      const parent = parentToolCallId(t);
+      if (!parent) {
         return;
+      }
+      const list = stepsByParent.get(parent) || [];
+      list.push(t);
+      stepsByParent.set(parent, list);
+    });
+
+    toolCalls.forEach((t) => {
+      if (!t.id || parentToolCallId(t)) {
+        return; // sub-steps render under their parent, not as their own task
       }
       const toolRefs = parseReferences(t.references);
       tasks.push({
         id: t.id,
         tool_id: t.id,
         parentId: agent.id,
+        childSteps: stepsByParent.get(t.tool_id) || undefined,
         nodeKind: 'tool',
         type: 'tool_call',
         tool: t.tool_name,
@@ -90,6 +117,9 @@ const buildDrawerTasks = (agents, message) => {
         toolParameters: safeJSONParse(t.parameters) || {},
         references: toolRefs.length > 0 ? toolRefs : undefined,
         response: { type: 'tool_call_response', text: t.response },
+        // Execution telemetry (exit status, duration, DB/relay split) — the
+        // details header renders it, and this node is the only object it gets.
+        metadata: t.metadata,
         created_at: t.created_at,
         updated_at: t.updated_at,
       });

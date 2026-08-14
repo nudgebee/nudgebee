@@ -340,7 +340,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 			COALESCE(child_agent_id::text, '') AS child_agent_id,
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_tool_calls
-		WHERE %s`, convScopeCTE)
+		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL`, convScopeCTE)
 	if err := chat.dbManager.Db.Select(&toolScans, toolQuery, args...); err != nil {
 		slog.Error("GetConversationOptimizationProfile: tool_calls query failed", "error", err)
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile tool_calls: %w", err)

@@ -265,7 +265,7 @@ func (s *llmSummarizer) loadAgentActions(ctx context.Context, tenantID, conversa
 		SELECT t.tool_name, COALESCE(t.parameters,'')
 		FROM llm_conversation_tool_calls t
 		JOIN llm_conversations c ON c.id = t.conversation_id
-		WHERE t.conversation_id = $1 AND c.tenant_id = $2
+		WHERE t.conversation_id = $1 AND c.tenant_id = $2 AND t.metadata->>'parent_tool_call_id' IS NULL
 		ORDER BY t.created_at ASC
 	`, conversationID, tenantID)
 	if err != nil {

@@ -235,6 +235,11 @@ func (h *plannerExecutorCallbackHandler) AfterToolCallResponse(tcr NBAgentPlanne
 		h.ctx.GetLogger().Error("toolcallbackhandler: unable to save tool call", "error", err.Error())
 	}
 
+	// Sub-steps the tool recorded (inventory queries, cluster commands) become
+	// their own rows under this one so the UI can show what actually ran.
+	PersistToolCallSteps(h.ctx, h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId,
+		h.request.AgentId, tcr.ToolID, response.Metadata, tool.GetType())
+
 	// Save skill references as agent-level KB references so they appear in the
 	// "Additional Contexts" tab. The Url field carries the KB ID for the join.
 	// Both load_skills (by name) and search_skills (by query) produce skill

@@ -242,6 +242,13 @@ type NbToolContext struct {
 	// selection across delegation. See NBAgentRequest field comments for semantics.
 	OriginalQuery    string
 	SelectedSkillIds []string
+	// Stats accumulates the DB/relay split for the in-flight tool call. A tool
+	// that records sets this on its local copy of the context at the top of
+	// Call(); because NbToolContext is passed by value the pointer — not the
+	// counters — is what propagates, so every helper and fan-out goroutine
+	// downstream increments the same accumulator. Nil for tools that don't
+	// record, and RecordDB/RecordRelay are nil-safe.
+	Stats *ToolCallStats
 }
 
 // GoContext returns the underlying context.Context for outbound trace

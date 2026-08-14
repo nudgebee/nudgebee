@@ -253,7 +253,7 @@ func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, ag
 			created_at, updated_at,
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_tool_calls
-		WHERE %s
+		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL
 		ORDER BY created_at`, agentScopeWhere)
 	if err := chat.dbManager.Db.Select(&toolScans, toolQuery, args...); err != nil {
 		slog.Error("GetConversationAgentDetail: tool_calls query failed", "error", err)

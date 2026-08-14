@@ -176,6 +176,30 @@ type NBToolResponseMetadata struct {
 	// callers can tell the planner how much was dropped.
 	Truncated   bool `json:"truncated,omitempty"`
 	OriginalLen int  `json:"original_len,omitempty"`
+	// DBQueries/DBMs and RelayCalls/RelayMs split a tool's wall-clock time by
+	// where it went. ExecutionDurationMs alone can't answer the question that
+	// actually matters for resource lookups — "did this hit the inventory DB or
+	// fall through to the live kubectl cascade?" — because both look identical
+	// from outside. Populated by tools that call ToolCallStats; absent (omitempty)
+	// for tools that don't, so existing rows and readers are unaffected.
+	// DBMs/RelayMs are ELAPSED time (earliest start to latest end). DBBusyMs and
+	// RelayBusyMs are summed per-call durations. They differ once a tool issues
+	// its calls concurrently, and only the elapsed figure is latency — the summed
+	// one rises when work is parallelised, which reads as a regression when it is
+	// the opposite. Busy ÷ elapsed is the effective concurrency.
+	DBQueries   int   `json:"db_queries,omitempty"`
+	DBMs        int64 `json:"db_ms,omitempty"`
+	DBBusyMs    int64 `json:"db_busy_ms,omitempty"`
+	RelayCalls  int   `json:"relay_calls,omitempty"`
+	RelayMs     int64 `json:"relay_ms,omitempty"`
+	RelayBusyMs int64 `json:"relay_busy_ms,omitempty"`
+	// Steps carries the individual DB/relay operations for persistence as child
+	// tool-call rows. json:"-" on purpose — these are written as their own rows,
+	// and duplicating full command output inside the parent's metadata column
+	// would bloat every row that carries them. StepsDropped is how many the
+	// recorder's cap discarded, so a partial list is never shown as complete.
+	Steps        []ToolCallStep `json:"-"`
+	StepsDropped int            `json:"steps_dropped,omitempty"`
 }
 
 type ToolSchemaType string

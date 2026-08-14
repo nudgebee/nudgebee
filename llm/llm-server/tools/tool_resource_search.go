@@ -51,7 +51,19 @@ type K8sResourceInfo struct {
 	Ready          string `json:"ready,omitempty"`
 	Age            string `json:"age,omitempty"`
 	OwnerReference string `json:"owner_reference,omitempty"`
+	// Source is where this record came from: "inventory" (the cloud_resourses
+	// table the collector maintains) or "cluster" (a live kubectl command). The
+	// two differ in freshness and in cost to obtain, and the merged result set
+	// mixes them freely — without this the caller cannot tell which is which, and
+	// neither can anyone debugging a wrong answer.
+	Source string `json:"source,omitempty"`
 }
+
+// Resource provenance values for K8sResourceInfo.Source.
+const (
+	resourceSourceInventory = "inventory"
+	resourceSourceCluster   = "cluster"
+)
 
 type K8sResourceSearchStrategy struct {
 	Strategy     string `json:"strategy"`
@@ -231,18 +243,27 @@ func (r K8sResourceSearchTool) InputSchema() core.ToolSchema {
 func (r K8sResourceSearchTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext.Ctx.GetLogger().Info("resource-search: executing tool call", "command", input.Command)
 
+	// Attach the accumulator before any downstream work. NbToolContext is copied
+	// by value into every helper and fan-out goroutine, but they all carry this
+	// same pointer — so the DB/relay split covers the whole call tree. Without it
+	// a 16s lookup is indistinguishable from a 0.1s one in the persisted row.
+	stats := &core.ToolCallStats{}
+	nbRequestContext.Stats = stats
+
 	result, err := r.processSearchRequest(input.Command, nbRequestContext)
 	if err != nil {
 		return core.NBToolResponse{
-			Data:   err.Error(),
-			Status: core.NBToolResponseStatusError,
+			Data:     err.Error(),
+			Status:   core.NBToolResponseStatusError,
+			Metadata: stats.ApplyTo(nil),
 		}, err
 	}
 
 	return core.NBToolResponse{
-		Data:   result,
-		Type:   core.NBToolResponseTypeJson,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:     result,
+		Type:     core.NBToolResponseTypeJson,
+		Status:   core.NBToolResponseStatusSuccess,
+		Metadata: stats.ApplyTo(nil),
 	}, nil
 }
 
@@ -440,7 +461,21 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 		patterns = append(patterns, "%"+v+"%")
 	}
 
+	dbStart := time.Now()
 	found, err := r.queryK8sResourcesByName(accountId, patterns)
+	// Render the statement the way a human would re-run it: the SQL text is a
+	// constant, so the patterns are the only informative part.
+	// Record the rows themselves, not a count: the whole point of the step list is
+	// seeing what each operation returned without going to a SQL client. This is
+	// the inventory's answer *before* owner enrichment, so comparing it against
+	// the tool's final response shows exactly what the cluster calls added.
+	dbOutput := fmt.Sprintf("%d row(s)", len(found))
+	if rowsJSON, marshalErr := common.MarshalJson(found); marshalErr == nil {
+		dbOutput = fmt.Sprintf("%d row(s)\n%s", len(found), string(rowsJSON))
+	}
+	nbRequestContext.Stats.RecordDB(
+		fmt.Sprintf("SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v) ORDER BY name LIMIT 20", accountId, patterns, patterns),
+		dbOutput, err, time.Since(dbStart))
 	if err != nil {
 		// Soft failure — fall through to the live-kubectl fallback, but surface
 		// the error so DB issues aren't invisible. Queryx never returns
@@ -452,9 +487,9 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 	return found
 }
 
-// queryK8sResourcesByName runs the scoped cloud_resourses lookup for a single
-// name pattern. Split from searchDbForResources so the *sqlx.Rows is closed via
-// defer (one query per call, not accumulated across the variations loop).
+// queryK8sResourcesByName runs the scoped cloud_resourses lookup for every name
+// pattern in one statement. Split from searchDbForResources so the *sqlx.Rows is
+// closed via defer.
 //
 // `is_active = true` must stay written exactly this way: it is the predicate of
 // the partial trigram indexes (migration V868), and Postgres only uses a partial
@@ -500,6 +535,7 @@ func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId string, pattern
 		if scanErr := rows.Scan(&res.Type, &res.Name, &res.Namespace, &res.Status); scanErr != nil {
 			return nil, scanErr
 		}
+		res.Source = resourceSourceInventory
 		out = append(out, res)
 	}
 	return out, rows.Err()
@@ -1392,8 +1428,9 @@ func (r K8sResourceSearchTool) parseGenericResourceLine(line, resourceType, name
 
 	var fieldOffset = 0
 	resource := &K8sResourceInfo{
-		Name: fields[0],
-		Type: resourceType,
+		Source: resourceSourceCluster,
+		Name:   fields[0],
+		Type:   resourceType,
 	}
 
 	// Handle --all-namespaces output format: NAMESPACE NAME READY STATUS ...
@@ -1431,7 +1468,9 @@ func (r K8sResourceSearchTool) executeKubectlCommand(command string, nbRequestCo
 		command = "kubectl " + command
 	}
 
+	relayStart := time.Now()
 	response, err := ExecuteContainerJob(nbRequestContext, RelayJobKubectl, command, nbRequestContext.AccountId, map[string]any{}, false)
+	nbRequestContext.Stats.RecordRelay(command, fmt.Sprintf("%v", response), err, time.Since(relayStart))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("resource-search: kubectl command failed", "error", err.Error(), "command", command)
 		return ""
@@ -1508,6 +1547,7 @@ func (r K8sResourceSearchTool) parsePodLine(line, namespace string, isAllNamespa
 	}
 
 	return &K8sResourceInfo{
+		Source:    resourceSourceCluster,
 		Name:      fields[fieldOffset],
 		Namespace: actualNamespace,
 		Type:      "pod",
@@ -1540,6 +1580,7 @@ func (r K8sResourceSearchTool) parseDeploymentLine(line, namespace string, isAll
 	}
 
 	return &K8sResourceInfo{
+		Source:    resourceSourceCluster,
 		Name:      fields[fieldOffset],
 		Namespace: actualNamespace,
 		Type:      "deployment",
@@ -1584,6 +1625,7 @@ func (r K8sResourceSearchTool) parseAllResourceLine(line, namespace string, isAl
 	resName := parts[1]
 
 	info := &K8sResourceInfo{
+		Source:    resourceSourceCluster,
 		Name:      resName,
 		Namespace: actualNamespace,
 		Type:      resType,

@@ -42,7 +42,7 @@ func (chat *ConversationDao) ListConversationFileRefs(accountId, conversationId 
 		SELECT t.message_id, t.tool_name, ref->>'url' AS file, COALESCE(ref->>'description', '') AS descr
 		FROM llm_conversation_tool_calls t
 		CROSS JOIN LATERAL jsonb_array_elements(COALESCE(NULLIF(t."references", ''), '[]')::jsonb) ref
-		WHERE t.conversation_id = $1 AND t.account_id = $2
+		WHERE t.conversation_id = $1 AND t.account_id = $2 AND t.metadata->>'parent_tool_call_id' IS NULL
 		  AND ref->>'type' = 'file' AND COALESCE(ref->>'url', '') <> ''
 		ORDER BY t.created_at DESC
 		LIMIT $3`

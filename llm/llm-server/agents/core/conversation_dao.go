@@ -3199,6 +3199,7 @@ func (chat *ConversationDao) GetConversationToolCallAgents(conversationId, accou
 		FROM llm_conversation_tool_calls tc
 		INNER JOIN llm_conversations c ON c.id = tc.conversation_id
 		WHERE c.session_id = $1 AND c.account_id = $2::uuid AND tc.agent_id IS NOT NULL
+		  AND tc.metadata->>'parent_tool_call_id' IS NULL
 		ORDER BY tc.created_at ASC;`
 
 	rows, err := chat.dbManager.Db.Queryx(query, conversationId, accountId)
@@ -3321,7 +3322,7 @@ func (chat *ConversationDao) GetConversationToolCallsStats(conversationId, accou
 			COUNT(*) FILTER (WHERE tc.status = 'in_progress') as in_progress
 		FROM llm_conversation_tool_calls tc
 		INNER JOIN llm_conversations c ON c.id = tc.conversation_id
-		WHERE c.session_id = $1 AND c.account_id = $2::uuid;`
+		WHERE c.session_id = $1 AND c.account_id = $2::uuid AND tc.metadata->>'parent_tool_call_id' IS NULL;`
 
 	var stats struct {
 		Total      int `db:"total"`
@@ -3370,6 +3371,7 @@ func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId, accoun
 				COALESCE(SUM(EXTRACT(EPOCH FROM (updated_at - created_at))), 0) as seconds
 			FROM llm_conversation_tool_calls
 			WHERE conversation_id IN (SELECT id FROM conversation_ids)
+				AND metadata->>'parent_tool_call_id' IS NULL
 				AND tool_type = 'tool'
 				AND updated_at IS NOT NULL
 				AND created_at IS NOT NULL
@@ -3488,6 +3490,7 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 			SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (tc.updated_at - tc.created_at))), 0) AS seconds
 			FROM llm_conversation_tool_calls tc
 			WHERE tc.conversation_id IN (SELECT id FROM completed_conversations)
+				AND tc.metadata->>'parent_tool_call_id' IS NULL
 				AND tc.tool_type = 'tool'
 				AND tc.updated_at IS NOT NULL
 				AND tc.created_at IS NOT NULL
@@ -4091,7 +4094,7 @@ func (chat *ConversationDao) GetSuccessfulToolCallsCountByMessage(messageId stri
 	query := `
 	SELECT count(*) 
 	FROM llm_conversation_tool_calls 
-	WHERE message_id = $1 AND status = 'success';`
+	WHERE message_id = $1 AND status = 'success' AND metadata->>'parent_tool_call_id' IS NULL;`
 	var count int
 	err := chat.dbManager.Db.Get(&count, query, messageId)
 	if err != nil {

@@ -21,6 +21,13 @@ const parseDurationNs = (metadata) => {
     if (typeof ns === 'number' && ns > 0) {
       return ns;
     }
+    // Sub-step rows are written in a single insert, so created_at == updated_at
+    // and the timestamp fallback reads 0ns. The recorded execution time is the
+    // only truthful source for them.
+    const ms = Number(meta?.execution_duration_ms);
+    if (ms > 0) {
+      return ms * 1000000;
+    }
   } catch {
     // Malformed metadata — fall back to the timestamp diff.
   }

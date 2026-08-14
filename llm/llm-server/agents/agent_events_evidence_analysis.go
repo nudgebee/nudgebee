@@ -689,7 +689,7 @@ func (m EvidenceInsightsTool) getEventData(nbRequestContext toolcore.NbToolConte
 	}
 	eventTool := tools.EventsExecuteTool{}
 	toolCtx := toolcore.NewNbToolContext(nbRequestContext.Ctx, eventTool, nbRequestContext.AccountId, nbRequestContext.UserId, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, event_id, []llms.MessageContent{}, "", toolcore.NBQueryConfig{}, "")
-	data, err := eventTool.Call(toolCtx, toolcore.NBToolCallRequest{
+	data, err := core.CallTool(toolCtx, eventTool, toolcore.NBToolCallRequest{
 		Command: fmt.Sprintf(`select * from events where id = '%s' and cloud_account_id = '%s'`, event_id, nbRequestContext.AccountId),
 	})
 	if err != nil {

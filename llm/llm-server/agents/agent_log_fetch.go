@@ -389,7 +389,7 @@ func callTool(ctx *security.RequestContext, accountId string, request core.NBAge
 		request.UserId, request.ConversationId, request.MessageId, request.AgentId,
 		command, nil, request.QueryContext, request.QueryConfig, "",
 	)
-	resp, err := tool.Call(toolCtx, toolcore.NBToolCallRequest{Command: command})
+	resp, err := core.CallTool(toolCtx, tool, toolcore.NBToolCallRequest{Command: command})
 	if err != nil {
 		return "", nil, err
 	}
@@ -635,7 +635,7 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 	toolCtx := toolcore.NewNbToolContext(ctx, bundleTool, accountId,
 		request.UserId, request.ConversationId, request.MessageId, request.AgentId,
 		q, nil, request.QueryContext, request.QueryConfig, "")
-	resp, err := bundleTool.Call(toolCtx, toolcore.NBToolCallRequest{
+	resp, err := core.CallTool(toolCtx, bundleTool, toolcore.NBToolCallRequest{
 		Arguments: map[string]any{
 			"bundle":   "crash",
 			"log_file": fileRef,

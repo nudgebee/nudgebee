@@ -193,7 +193,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 				return
 			}
 			toolCtx := toolcore.NewNbToolContext(ctx, tool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, analysis.DocsQuery, nil, request.QueryContext, request.QueryConfig, "")
-			resp, err := tool.Call(toolCtx, toolcore.NBToolCallRequest{Command: analysis.DocsQuery})
+			resp, err := core.CallTool(toolCtx, tool, toolcore.NBToolCallRequest{Command: analysis.DocsQuery})
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -246,7 +246,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 				crawlTool, ok := toolcore.GetNBTool(request.AccountId, tools.ToolExecuteCrawlCommand)
 				if ok {
 					toolCtx := toolcore.NewNbToolContext(ctx, crawlTool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, analysis.TargetURL, nil, request.QueryContext, request.QueryConfig, "")
-					resp, err := crawlTool.Call(toolCtx, toolcore.NBToolCallRequest{Command: analysis.TargetURL})
+					resp, err := core.CallTool(toolCtx, crawlTool, toolcore.NBToolCallRequest{Command: analysis.TargetURL})
 					if err == nil {
 						mu.Lock()
 						invocations = append(invocations, core.ToolInvocation{
@@ -269,7 +269,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 					searchErr = fmt.Errorf("web search tool not found")
 				} else {
 					toolCtx := toolcore.NewNbToolContext(ctx, tool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, analysis.WebQuery, nil, request.QueryContext, request.QueryConfig, "")
-					resp, err := tool.Call(toolCtx, toolcore.NBToolCallRequest{Command: analysis.WebQuery})
+					resp, err := core.CallTool(toolCtx, tool, toolcore.NBToolCallRequest{Command: analysis.WebQuery})
 					if err != nil {
 						searchErr = err
 					} else {
@@ -291,7 +291,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 							for _, candidateUrl := range rankedUrls {
 								core.GetConversationDao().UpdateConversationMessageAsync(request.MessageId, fmt.Sprintf("Crawling %s...", candidateUrl), core.ConversationStatusInProgress)
 								crawlCtx := toolcore.NewNbToolContext(ctx, crawlTool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, candidateUrl, nil, request.QueryContext, request.QueryConfig, "")
-								crawlResp, crawlErr := crawlTool.Call(crawlCtx, toolcore.NBToolCallRequest{Command: candidateUrl})
+								crawlResp, crawlErr := core.CallTool(crawlCtx, crawlTool, toolcore.NBToolCallRequest{Command: candidateUrl})
 								if crawlErr != nil {
 									ctx.GetLogger().Warn("unified_search: crawl failed, trying next URL", "url", candidateUrl, "error", crawlErr)
 									continue
