@@ -970,9 +970,15 @@ func init() {
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
-	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
-	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")
-	viper.SetDefault("llm_server_aws_orchestrator_mode", "delegating")
+	// k8s/aws orchestrator mode: lean (default) | delegating (v1) | direct (v2).
+	// Lean = reduced tool core + minimal prompt + search_tools reach-back. Run as the
+	// dev/QA default with no regression: caches normally on gemini, same call count as
+	// delegating, critiqued under the standard gate (lean does NOT disable critique —
+	// it is governed by llm_server_react_critique_enabled, same as the heavy agent).
+	// Rollback = set the mode back to delegating + redeploy. An unknown/typo value
+	// falls back to delegating. Deployments that set the env explicitly are unaffected.
+	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
+	viper.SetDefault("llm_server_aws_orchestrator_mode", "lean")
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)

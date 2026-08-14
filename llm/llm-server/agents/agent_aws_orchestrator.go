@@ -26,9 +26,9 @@ const (
 // AwsOrchestratorMode* are the values of config llm_server_aws_orchestrator_mode,
 // the boot-time knob for what the router-selected aws_orchestrator runs.
 const (
-	AwsOrchestratorModeDelegating = "delegating" // v1: delegate AWS resource CLI to the `aws` sub-agent (default)
+	AwsOrchestratorModeDelegating = "delegating" // v1: delegate AWS resource CLI to the `aws` sub-agent (fallback for unknown mode)
 	AwsOrchestratorModeDirect     = "direct"     // v2: hold aws_execute and run the AWS CLI directly
-	AwsOrchestratorModeLean       = "lean"       // EXPERIMENTAL: minimal principle-level prompt + direct aws_execute
+	AwsOrchestratorModeLean       = "lean"       // minimal principle-level prompt + direct aws_execute — the DEFAULT
 )
 
 func init() {

@@ -68,16 +68,18 @@ func init() {
 // K8sOrchestratorMode* are the values of config llm_server_k8s_orchestrator_mode,
 // the single boot-time knob for what the router-selected k8s_orchestrator runs.
 const (
-	K8sOrchestratorModeDelegating = "delegating" // v1: delegate kubectl to the sub-agent (default)
+	K8sOrchestratorModeDelegating = "delegating" // v1: delegate kubectl to the sub-agent (fallback for unknown mode)
 	K8sOrchestratorModeDirect     = "direct"     // v2: hold kubectl_execute, run kubectl directly
-	K8sOrchestratorModeLean       = "lean"       // experimental: minimal prompt + critique off
+	K8sOrchestratorModeLean       = "lean"       // reduced tool core + minimal prompt — the DEFAULT (critique unchanged)
+	K8sOrchestratorModeNative     = "native"     // K8s-native: kubectl-first, no cloud/NL-wrapper sub-agents (see agent_k8s_orchestrator_native.go)
 )
 
 // newK8sOrchestratorAgent is the primary, router-selected agent. Its behavior is
 // chosen by config.K8sOrchestratorMode (boot-time; rollback = change + redeploy).
 // Running lean/direct under the primary name keeps routing, stored history, and
 // the @k8s_debug aliases unchanged — only prompt/critique/kubectl behavior differ.
-// Unknown/empty mode falls back to delegating (v1), the safe default.
+// The configured default is "lean" (llm_server_k8s_orchestrator_mode); an
+// unknown/typo value falls back to delegating (v1).
 func newK8sOrchestratorAgent(accountId string) core.NBAgent {
 	switch strings.ToLower(strings.TrimSpace(config.Config.K8sOrchestratorMode)) {
 	case K8sOrchestratorModeLean:
