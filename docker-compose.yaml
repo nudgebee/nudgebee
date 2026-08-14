@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ---------------------------------------------------------------------------
 # Shared env for the `full` application profile. These are LOCAL-DEV defaults
 # wired to the compose infra service names (postgres/rabbitmq/redis/qdrant).
