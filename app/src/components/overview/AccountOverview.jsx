@@ -1,5 +1,8 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { useRouter } from 'next/router';
 import apiKubernetes from '@api1/kubernetes';
+import apiHome from '@api1/home';
+import apiOverview from '@api1/overview';
 import ClusterViewCard from '@components/k8s/common/ClusterViewCard';
 import KubernetesMemoryCpuOverView, { CpuMemorySkeleton } from '@components/k8s/common/KubernetesMemoryCpuOverView';
 import KubernetesIssuesOverView from '@components/k8s/common/KubernetesIssuesOverView';
@@ -10,14 +13,18 @@ import { K8sIcon } from '@assets';
 import KubernetesDashboardIssues from '@components/k8s/dashboard/KubernetesDashboardIssues';
 import KubernetesDashboardPodExceptions from '@components/k8s/dashboard/KubernetesDashboardPodExceptions';
 import KubernetesDashboardNodeExceptions from '@components/k8s/dashboard/KubernetesDashboardNodeExceptions';
+import CloudAccountOverviewCard from '@components/overview/CloudAccountOverviewCard';
+import VmAccountOverviewCard from '@components/overview/VmAccountOverviewCard';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { Skeleton } from '@ui/Skeleton';
 import { toast as snackbar } from '@ui/Toast';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { Button as DsButton } from '@ui/Button';
 import { TourLauncher } from '@components/common/tour';
+import { useData } from '@context/DataContext';
 import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
+import { CLOUD_PROVIDERS, isCloudProvider, isSelfHostedProvider } from './providers';
 
 const ClusterCardSkeleton = ({ cardStyle }) => (
   <Box sx={cardStyle}>
@@ -54,11 +61,54 @@ const ClusterCardSkeleton = ({ cardStyle }) => (
   </Box>
 );
 
-const KubernetesClusterOverview = () => {
+/**
+ * Section divider between provider groups. Carries the `id` the page's anchor
+ * bar scrolls to, so each group is reachable from the tab strip.
+ */
+const SectionHeading = ({ id, title, count }) => (
+  <Box id={id} sx={{ display: 'flex', alignItems: 'baseline', gap: 'var(--ds-space-2)', mt: ds.space[4], scrollMarginTop: ds.space.mul(0, 60) }}>
+    <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-gray-700)' }}>
+      {title}
+    </Typography>
+    {count > 0 ? <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>({count})</Typography> : null}
+  </Box>
+);
+
+/**
+ * Fleet-wide summary across every connected account, whatever its provider —
+ * the `/overview` page.
+ *
+ * Three sections, each rendered only when the tenant has accounts of that kind:
+ * K8s clusters, provider-API cloud accounts (AWS / Azure / GCP / CloudFoundry)
+ * and self-hosted VM fleets. The K8s fleet tables below them (issues, pod and
+ * node exceptions) stay K8s-only because there is no cross-provider equivalent
+ * of a pod.
+ *
+ * Request shape differs by section on purpose. The K8s cards keep their
+ * existing per-cluster fan-out (each child component fetches its own slice);
+ * the cloud and VM cards are fed by two batched queries in @api1/overview, so
+ * adding providers here costs two requests, not two per account.
+ */
+const AccountOverview = () => {
+  const router = useRouter();
+  const { setSelectedCluster } = useData();
   const [clusterOption, setClusterOption] = useState([]);
   const [allNameSpaces, setAllNameSpaces] = useState([]);
   const [k8sClusters, setK8sClusters] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [cloudAccounts, setCloudAccounts] = useState([]);
+  const [vmAccounts, setVmAccounts] = useState([]);
+  const [cloudSummaries, setCloudSummaries] = useState({});
+  const [vmSummaries, setVmSummaries] = useState({});
+  // All three start true: the zero-account state below is now a full-page
+  // panel, so opening on "nothing is connected" for the one frame before the
+  // fetches start would be a visible flash, not a subtle one.
+  const [loading, setLoading] = useState(true);
+  // Split from the summaries below on purpose — which sections exist is known
+  // as soon as the account list lands, so a tenant with no cloud accounts stops
+  // rendering a Cloud Accounts skeleton then, not when the (empty) rollup
+  // query it never needed comes back.
+  const [loadingAccountList, setLoadingAccountList] = useState(true);
+  const [loadingSummaries, setLoadingSummaries] = useState(true);
   const [showAddClusterModal, setShowAddClusterModal] = useState(false);
 
   const sortedClusters = useMemo(() => {
@@ -88,8 +138,50 @@ const KubernetesClusterOverview = () => {
     });
   }, [k8sClusters]);
 
+  const sortByName = (accounts) =>
+    [...accounts].sort((a, b) => (a.account_name || '').localeCompare(b.account_name || '', undefined, { numeric: true, sensitivity: 'base' }));
+
   useEffect(() => {
     getClustersData();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const getOtherAccountsData = async () => {
+      let cloud = [];
+      let vms = [];
+      try {
+        const accounts = await apiHome.getCloudAccounts();
+        if (cancelled) return;
+        cloud = sortByName(accounts.filter((account) => isCloudProvider(account.cloud_provider)));
+        vms = sortByName(accounts.filter((account) => isSelfHostedProvider(account.cloud_provider)));
+        setCloudAccounts(cloud);
+        setVmAccounts(vms);
+      } catch (error) {
+        console.error(error);
+      } finally {
+        if (!cancelled) setLoadingAccountList(false);
+      }
+
+      try {
+        const [cloudSummary, vmSummary] = await Promise.all([
+          apiOverview.listCloudAccountSummaries(cloud.map((account) => account.id)),
+          apiOverview.listVmAccountSummaries(vms.map((account) => account.id)),
+        ]);
+        if (cancelled) return;
+        setCloudSummaries(cloudSummary);
+        setVmSummaries(vmSummary);
+      } catch (error) {
+        console.error(error);
+      } finally {
+        if (!cancelled) setLoadingSummaries(false);
+      }
+    };
+
+    getOtherAccountsData();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -97,6 +189,24 @@ const KubernetesClusterOverview = () => {
       getDropDownData(clusterOption.map((co) => co.value));
     }
   }, [clusterOption]);
+
+  // /vm is a single tenant-level route with no account path segment, so opening
+  // a fleet has to move the header's selected account as well as navigate —
+  // the same two-step the header's own account dropdown does.
+  const openVmAccount = (accountId) => {
+    const account = vmAccounts.find((entry) => entry.id === accountId);
+    if (account) {
+      setSelectedCluster({
+        label: account.account_name,
+        value: account.id,
+        status: account.status || '',
+        cloud_provider: account.cloud_provider,
+        account_type: account.account_type || '',
+        agent: account.agents?.[0] || {},
+      });
+    }
+    router.push(`/vm?accountId=${accountId}#summary`);
+  };
 
   const getClustersData = async () => {
     try {
@@ -179,7 +289,7 @@ const KubernetesClusterOverview = () => {
   };
 
   const renderClusterOverViewComponents = (allcluster) => {
-    if (loading || !allcluster?.length) {
+    if (loading) {
       return [0, 1].map((i) => <ClusterCardSkeleton key={`skeleton-cluster-${i}`} cardStyle={styles.clusterCard} />);
     }
     return allcluster?.map((cluster) => (
@@ -231,9 +341,17 @@ const KubernetesClusterOverview = () => {
     ));
   };
 
+  const hasK8sClusters = k8sClusters?.length > 0;
+  const hasCloudAccounts = cloudAccounts.length > 0;
+  const hasVmAccounts = vmAccounts.length > 0;
+  // The connect-your-first-account state belongs to the whole page, not to K8s:
+  // a tenant that has only an AWS account must see its card, not an onboarding
+  // panel telling it to install a cluster agent.
+  const hasNoAccounts = !loading && !loadingAccountList && !hasK8sClusters && !hasCloudAccounts && !hasVmAccounts;
+
   return (
     <Box>
-      {!loading && k8sClusters?.length === 0 ? (
+      {hasNoAccounts ? (
         <>
           <K8sAccountModal
             openModal={showAddClusterModal}
@@ -278,7 +396,7 @@ const KubernetesClusterOverview = () => {
                 fontFamily: 'Poppins',
               }}
             >
-              Get started with Kubernetes monitoring
+              Get started with infrastructure monitoring
             </Typography>
             <Typography
               sx={{
@@ -290,7 +408,8 @@ const KubernetesClusterOverview = () => {
                 lineHeight: 1.6,
               }}
             >
-              Connect your cluster to gain full visibility into workloads, nodes, and resource usage - with actionable insights and cost optimization.
+              Connect a Kubernetes cluster, a cloud account ({CLOUD_PROVIDERS.join(', ')}) or a self-hosted VM fleet to gain full visibility into your
+              workloads and resource usage - with actionable insights and cost optimization.
             </Typography>
 
             <Stack direction='row' spacing={4} sx={{ mb: ds.space[6] }}>
@@ -356,23 +475,83 @@ const KubernetesClusterOverview = () => {
                 <DsButton id='add-k8s-account' tone='primary' size='lg' onClick={() => setShowAddClusterModal(true)}>
                   Add Cluster
                 </DsButton>
+                <DsButton
+                  id='connect-cloud-account'
+                  tone='secondary'
+                  size='lg'
+                  onClick={() => router.push('/user-management?integration=account#integrations')}
+                >
+                  Connect Cloud Account
+                </DsButton>
               </Box>
             ) : (
               <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
-                Need admin permission to connect a cluster
+                Need admin permission to connect an account
               </Typography>
             )}
           </Box>
         </>
       ) : (
         <>
-          <Box sx={styles.clusterLayout}>{renderClusterOverViewComponents(sortedClusters)}</Box>
-          {k8sClusters.length > 0 ? (
+          {loading || hasK8sClusters ? (
+            <>
+              <SectionHeading id='clusters' title='Kubernetes Clusters' count={k8sClusters?.length} />
+              <Box sx={styles.clusterLayout}>{renderClusterOverViewComponents(sortedClusters)}</Box>
+            </>
+          ) : null}
+
+          {loadingAccountList || hasCloudAccounts ? (
+            <>
+              <SectionHeading id='cloud-accounts' title='Cloud Accounts' count={cloudAccounts.length} />
+              <Box sx={styles.clusterLayout}>
+                {loadingAccountList && cloudAccounts.length === 0
+                  ? [0, 1].map((i) => <ClusterCardSkeleton key={`skeleton-cloud-${i}`} cardStyle={styles.clusterCard} />)
+                  : cloudAccounts.map((account) => (
+                      <ErrorBoundary key={account.id}>
+                        <Box id={`account_box_${account.account_name}`} sx={styles.clusterCard}>
+                          <CloudAccountOverviewCard
+                            accountId={account.id}
+                            accountName={account.account_name}
+                            cloudProvider={account.cloud_provider}
+                            summary={cloudSummaries[account.id]}
+                            loading={loadingSummaries}
+                          />
+                        </Box>
+                      </ErrorBoundary>
+                    ))}
+              </Box>
+            </>
+          ) : null}
+
+          {loadingAccountList || hasVmAccounts ? (
+            <>
+              <SectionHeading id='vm-fleets' title='Self-hosted VMs' count={vmAccounts.length} />
+              <Box sx={styles.clusterLayout}>
+                {loadingAccountList && vmAccounts.length === 0
+                  ? [0].map((i) => <ClusterCardSkeleton key={`skeleton-vm-${i}`} cardStyle={styles.clusterCard} />)
+                  : vmAccounts.map((account) => (
+                      <ErrorBoundary key={account.id}>
+                        <Box id={`account_box_${account.account_name}`} sx={styles.clusterCard}>
+                          <VmAccountOverviewCard
+                            accountId={account.id}
+                            accountName={account.account_name}
+                            summary={vmSummaries[account.id]}
+                            loading={loadingSummaries}
+                            onOpen={openVmAccount}
+                          />
+                        </Box>
+                      </ErrorBoundary>
+                    ))}
+              </Box>
+            </>
+          ) : null}
+
+          {hasK8sClusters ? (
             <ErrorBoundary>
               <KubernetesDashboardIssues id={'issues'} allClusters={k8sClusters} clusterOption={clusterOption} allNameSpaces={allNameSpaces} />
             </ErrorBoundary>
           ) : null}
-          {k8sClusters.length > 0 ? (
+          {hasK8sClusters ? (
             <ErrorBoundary>
               <KubernetesDashboardPodExceptions
                 id={'pod-exception'}
@@ -382,7 +561,7 @@ const KubernetesClusterOverview = () => {
               />
             </ErrorBoundary>
           ) : null}
-          {k8sClusters.length > 0 ? (
+          {hasK8sClusters ? (
             <ErrorBoundary>
               <KubernetesDashboardNodeExceptions id={'node-exception'} allClusters={k8sClusters} clusterOption={clusterOption} />
             </ErrorBoundary>
@@ -393,4 +572,4 @@ const KubernetesClusterOverview = () => {
   );
 };
 
-export default KubernetesClusterOverview;
+export default AccountOverview;

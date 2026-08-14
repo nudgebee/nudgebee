@@ -1,40 +1,35 @@
-import { useEffect, useMemo, useState } from 'react';
-import AnchorComponent from '@components/common/navigation/AnchorComponent';
-import ErrorBoundary from '@shared/ErrorBoundary';
+import { useEffect } from 'react';
 import { Box, CircularProgress } from '@mui/material';
-import KubernetesClusterOverview from '@components/k8s/landing/KubernetesClusterOverview';
 import { useData } from '@context/DataContext';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
-import { KubernetesClusterIcon } from '@assets';
 
 const isK8sProvider = (provider) => provider?.toUpperCase() === 'K8S';
 
 const Kubernetes = () => {
   const router = useRouter();
-  const { selectedCluster, setSelectedCluster, allCluster, setAllCluster } = useData();
+  const { selectedCluster, setSelectedCluster } = useData();
 
-  // `/kubernetes` with no hash is a redirector to the in-scope cluster's detail
-  // page, mirroring `/cloud-account`. The Cluster Overview below still renders
-  // for an explicit `#overview` deep link, and as the zero-cluster state
-  // (KubernetesClusterOverview owns the connect-cluster CTA).
-  const [mode, setMode] = useState('redirecting');
-
+  // `/kubernetes` is purely a redirector now, mirroring `/cloud-account`: with
+  // no hash it opens the in-scope cluster's detail page, and every other case
+  // lands on a page that owns the content it used to render inline.
   useEffect(() => {
     let cancelled = false;
 
     // window.location.hash, not router.asPath: on an auto-statically-optimized
     // page asPath can still be the server-rendered value on mount, and a dropped
-    // hash here redirects a `#overview` deep link into a cluster instead.
+    // hash here redirects an `#overview` deep link into a cluster instead.
     const hash = window.location.hash.replace('#', '');
     // Application Grouping moved to /dashboards; keep older links working.
     if (hash === 'groups') {
       router.replace('/dashboards#groups');
       return undefined;
     }
+    // The fleet summary is no longer K8s-only — it lists every provider's
+    // accounts and lives at /overview. Keep the old deep link working.
     if (hash) {
-      setMode('landing');
+      router.replace('/overview#overview');
       return undefined;
     }
 
@@ -57,9 +52,11 @@ const Kubernetes = () => {
       } catch (error) {
         console.error(error);
       }
-      // No cluster to open (or the lookup failed) — fall back to the landing page.
+      // No cluster to open (or the lookup failed) — the fleet-wide Account
+      // Overview owns both the multi-account list and the connect-an-account
+      // empty state, so send them there.
       if (!cancelled) {
-        setMode('landing');
+        router.replace('/overview#overview');
       }
     };
 
@@ -69,60 +66,10 @@ const Kubernetes = () => {
     };
   }, []);
 
-  useEffect(() => {
-    if (mode !== 'landing') {
-      return;
-    }
-    setSelectedCluster({});
-    if (!allCluster || allCluster.length === 0) {
-      homeApi.getCloudAccounts().then((res) => {
-        const clusters = transformClusters(res);
-        setAllCluster(clusters);
-      });
-    }
-  }, [mode]);
-
-  const hasClusters = allCluster?.some((c) => c.value !== 'demo' && c.cloud_provider?.toUpperCase() === 'K8S');
-
-  const filterOptions = useMemo(
-    () => [
-      {
-        name: 'Cluster Overview',
-        id: 'cluster-overview',
-        fragment: 'overview',
-        value: 0,
-        disabled: false,
-        icon: KubernetesClusterIcon,
-        ...(hasClusters && {
-          options: [
-            { id: 'clusters', name: 'Clusters' },
-            { id: 'issues', name: 'Issues' },
-            { id: 'pod-exception', name: 'Pod Exception' },
-            { id: 'node-exception', name: 'Node Exception' },
-          ],
-        }),
-      },
-    ],
-    [hasClusters]
-  );
-
-  if (mode === 'redirecting') {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '70vh' }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
-
   return (
-    <>
-      <AnchorComponent manageRoute={true} filterOptions={filterOptions} />
-      <ErrorBoundary>
-        <Box>
-          <KubernetesClusterOverview />
-        </Box>
-      </ErrorBoundary>
-    </>
+    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '70vh' }}>
+      <CircularProgress />
+    </Box>
   );
 };
 

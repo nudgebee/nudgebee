@@ -6,8 +6,8 @@ import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
 
 /**
- * First-run state for /vm, mirroring the "Get started with Kubernetes
- * monitoring" panel in KubernetesClusterOverview — same gradient icon tile,
+ * First-run state for /vm, mirroring the "Get started with infrastructure
+ * monitoring" panel in AccountOverview — same gradient icon tile,
  * heading/description block, feature row and write-gated primary action, so
  * connecting the first fleet reads the same as connecting the first cluster.
  */

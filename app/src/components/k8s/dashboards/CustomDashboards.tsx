@@ -223,8 +223,8 @@ const CustomDashboards: React.FC = () => {
   };
 
   /*
-   * Nothing to point a panel at. Same treatment the Kubernetes landing page gives its own
-   * first-run state (components/k8s/landing/KubernetesClusterOverview.jsx) — a card that says
+   * Nothing to point a panel at. Same treatment the Account Overview page gives its own
+   * first-run state (components/overview/AccountOverview.jsx) — a card that says
    * what the page is for and carries the one action that unblocks it, rather than a line of
    * grey text on the page background.
    */

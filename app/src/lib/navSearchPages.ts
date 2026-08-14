@@ -107,6 +107,11 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Troubleshoot', label: 'Manual Investigated', path: '/troubleshoot#investigations/manual-investigated' },
   { group: 'Troubleshoot', label: 'Knowledge Graph', path: '/troubleshoot#kg' },
 
+  // Fleet-wide summary across every provider's accounts (K8s, AWS, Azure, GCP,
+  // CloudFoundry, self-hosted VMs). Was /kubernetes#overview while it only
+  // listed clusters; that hash now redirects here.
+  { group: 'Overview', label: 'Account Overview', path: '/overview#overview' },
+
   // A real route now, not a /kubernetes tab: a panel may query any connected
   // account, so the page moved out from under Kubernetes to the sidebar.
   { group: 'Dashboards', label: 'Custom Dashboards', path: '/dashboards#list' },
@@ -476,14 +481,10 @@ export const navSearchIgnoredFragments: string[] = [
   'gcp/security',
   'gcp/tools',
 
-  // /kubernetes#overview — the K8s accounts landing page (distinct from a
-  // single cluster's /kubernetes/details/{id}, already covered by
-  // k8sDetailsSearchFragments above). src/pages/kubernetes/index.jsx, which is
-  // now a redirector to the in-scope cluster's detail page: the overview only
-  // renders for this explicit hash or when no cluster is connected, so it has
-  // no sidebar entry to mirror. Its former second tab, Application Grouping,
-  // moved to /dashboards#groups and IS registered above.
-  '/kubernetes#overview',
+  // NOTE: /kubernetes#overview is no longer listed here — the page moved to
+  // /overview (Account Overview) and IS registered above; src/pages/kubernetes/
+  // index.jsx redirects the old hash there. /kubernetes itself is a pure
+  // redirector with no tabs of its own, so it has nothing to register.
 
   // /auto-pilot/task/{taskId} — src/pages/auto-pilot/task/[TaskDetails].jsx.
   // Needs a runtime taskId like the provider detail pages above, so it would

@@ -953,9 +953,16 @@ describe('sub-section hover flyout', () => {
     expect(document.getElementById('sidenav-infra-cloud')).toBeInTheDocument();
   });
 
-  it('opens no flyout for Home', async () => {
+  it('lists Home and Account Overview as the Home sections', async () => {
     await renderAndHover('home-sidenavbutton');
-    expect(document.getElementById('sidenav-flyout')).not.toBeInTheDocument();
+    expect(document.getElementById('sidenav-home-home')).toBeInTheDocument();
+    expect(document.getElementById('sidenav-home-account-overview')).toBeInTheDocument();
+  });
+
+  it('navigates to the Account Overview page from the Home flyout', async () => {
+    await renderAndHover('home-sidenavbutton');
+    fireEvent.click(document.getElementById('sidenav-home-account-overview'));
+    expect(mockPush).toHaveBeenCalledWith('/overview#overview');
   });
 
   it('omits the flag-gated Optimize sections when the feature is off', async () => {

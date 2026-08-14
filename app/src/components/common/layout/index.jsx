@@ -401,7 +401,38 @@ const PageLayout = ({ children }) => {
     ];
 
     const items = [
-      { path: '/home', icon: homeIcon1, text: 'Home', id: 'home-sidenavbutton', module: 'insights' },
+      {
+        path: '/home',
+        // /overview belongs to no other rail item, so Home lights up for it.
+        activePaths: ['/overview'],
+        icon: homeIcon1,
+        text: 'Home',
+        id: 'home-sidenavbutton',
+        // Union of what the section's rows need, same reason Optimize declares
+        // one: gating the parent on `insights` alone greys it out for a holder
+        // of only `k8s:Read` or `cloud:Read`, and a disabled parent gets
+        // pointerEvents:'none' — its flyout never opens, so the row they ARE
+        // entitled to stays unreachable.
+        modules: ['insights', 'k8s', 'cloud'],
+        // Account Overview is the fleet-wide summary at /overview — one card per
+        // connected account across every provider (K8s, AWS, Azure, GCP,
+        // CloudFoundry, self-hosted VMs). It reads as a landing surface rather
+        // than a per-account one, so it hangs off Home; Infra's own rows still
+        // lead to each provider's page. `modules` (union, as Optimize does)
+        // because the page draws on both the k8s and cloud modules — either
+        // grant entitles something on it, and each section only renders the
+        // accounts the backend actually returns.
+        subItems: [
+          { text: 'Home', path: '/home', id: 'sidenav-home-home', module: 'insights', icon: homeIcon1 },
+          {
+            text: 'Account Overview',
+            path: '/overview#overview',
+            id: 'sidenav-home-account-overview',
+            modules: ['k8s', 'cloud'],
+            icon: KubernetesClusterIcon,
+          },
+        ],
+      },
       // No `module`: a dashboard panel may query any connected account, so the
       // page itself gates on nothing — each panel's query is authorised per
       // account by the backend it reads.
