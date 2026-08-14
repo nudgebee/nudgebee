@@ -23,7 +23,7 @@ import ModelPricingTab from '@components/llm/ModelPricingTab';
 import GlobalContextTab from '@components/llm/GlobalContextTab';
 import UserFeedbackTab from '@components/llm/UserFeedbackTab';
 import { BCortexFlagContext, isOSSDeploymentMode, useBCortexEnabled } from '@hooks/useBCortexEnabled';
-import { getSessionAccountIds, hasFeatureAccess, hasPermission, isTenantAdmin, isTenantWideRole } from '@lib/auth';
+import { getSessionAccountIds, hasFeatureAccess, hasPermission, isTenantAdmin, isTenantWideRole, isUiFeatureEnabled } from '@lib/auth';
 import {
   AgentIcon,
   ToolsIcon,
@@ -218,7 +218,10 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
       // isTenantAdmin() alone made the grant unreachable — the holder is not a
       // tenant admin, so the tab was never pushed and the permission an admin had
       // just ticked did nothing.
-      if (isSuperAdmin || isTenantAdminUser || hasPermission('llm', 'Read')) {
+      // Also gate on the llmGateway UI feature flag — the same flag that shows/hides the
+      // sidebar's AI Gateway entry (layout/index.jsx). Without it the Gateway tab appeared in
+      // Settings even when the gateway UI was disabled for the tenant, which was confusing.
+      if (isUiFeatureEnabled('llmGateway') && (isSuperAdmin || isTenantAdminUser || hasPermission('llm', 'Read'))) {
         baseTabsConfig.push({ id: 'gateway-config', icon: HubOutlinedIcon, label: 'Gateway', alt: 'gateway-config', size: 16 });
       }
       // Egress Filter (per-tenant LLM secret-DLP mode) is the same shape, but a
