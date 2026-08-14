@@ -61,6 +61,54 @@ const RANGE_SHORTCUTS = [
   'Last 24 Hours',
 ];
 
+/** Default window for the utilisation cards: the last hour. */
+export const createUtilizationRange = () => ({
+  startDate: getSpecificTime(60),
+  endDate: new Date().getTime(),
+  shortcutClickTime: 1 * 60 * 60 * 1000,
+});
+
+/**
+ * The range picker on its own, so a parent card can place it in its heading row
+ * beside the title rather than letting this component drop it above the gauges.
+ * Pair it with the `dateRange` / `onDateRangeChange` props below — supplying
+ * those makes the range controlled and suppresses the internal picker.
+ */
+export const UtilizationRangePicker = ({ value, onChange, sx = {} }) => (
+  <CustomDateTimeRangePicker
+    // Size to the label instead of the picker's fixed 180px default: this sits
+    // inline next to a card title, and the spare width is what pushed it onto
+    // its own line on narrower cards.
+    width='auto'
+    showAbsoluteRange={false}
+    showOnlyCalenderIcon={false}
+    passedSelectedDateTime={{
+      startTime: value?.startDate,
+      endTime: value?.endDate,
+      shortcutClickTime: value?.shortcutClickTime || 0,
+    }}
+    shortCuts={RANGE_SHORTCUTS}
+    onChange={(dr) =>
+      onChange?.({
+        startDate: dr.selection.startTime,
+        endDate: dr.selection.endTime,
+        shortcutClickTime: dr.selection.shortcutClickTime || 0,
+      })
+    }
+    sx={{
+      border: '1px solid var(--ds-brand-200) !important',
+      borderRadius: 'var(--ds-radius-sm) !important',
+      ...sx,
+    }}
+  />
+);
+
+UtilizationRangePicker.propTypes = {
+  value: PropTypes.object,
+  onChange: PropTypes.func,
+  sx: PropTypes.object,
+};
+
 const formatTrendTs = (ts) => dayjs(ts > 1e12 ? ts : ts * 1000).format('HH:mm');
 
 // Build Chart.Series { labels, dataset } from a metric group's range-query response.
@@ -98,6 +146,11 @@ const KubernetesMemoryCpuOverView = ({
   hideLabels = false,
   sx = {},
   accountId,
+  // Controlled range. When `dateRange` is supplied the parent owns the window and
+  // renders its own <UtilizationRangePicker> (so it can sit beside the card
+  // title); this component then skips its internal picker row entirely.
+  dateRange,
+  onDateRangeChange,
 }) => {
   const [memoryCpuData, setMemoryCpuData] = useState({
     memory: [
@@ -143,11 +196,9 @@ const KubernetesMemoryCpuOverView = ({
   // independently adjustable inside the dialog.
   const [trendRange, setTrendRange] = useState(null);
 
-  const [selectedDateRange, setSelectedDateRange] = useState({
-    startDate: getSpecificTime(60),
-    endDate: new Date().getTime(),
-    shortcutClickTime: 1 * 60 * 60 * 1000,
-  });
+  const [internalDateRange, setInternalDateRange] = useState(createUtilizationRange);
+  const isRangeControlled = !!dateRange;
+  const selectedDateRange = isRangeControlled ? dateRange : internalDateRange;
 
   const formattedDateRange = {
     startTime: selectedDateRange.startDate,
@@ -452,11 +503,16 @@ const KubernetesMemoryCpuOverView = ({
   };
 
   const handleDateRangeChange = (passedSelectedDateTime) => {
-    setSelectedDateRange({
+    const next = {
       startDate: passedSelectedDateTime.startTime,
       endDate: passedSelectedDateTime.endTime,
       shortcutClickTime: passedSelectedDateTime.shortcutClickTime || 0,
-    });
+    };
+    if (isRangeControlled) {
+      onDateRangeChange?.(next);
+    } else {
+      setInternalDateRange(next);
+    }
   };
 
   // Split the executed queries per gauge (keys like cpu_real / mem_total / memory_limit).
@@ -474,24 +530,26 @@ const KubernetesMemoryCpuOverView = ({
     <>
       {updatedOverview ? (
         <Grid container mt={ds.space.mul(0, 5)} spacing={ds.space.mul(0, 10)} sx={{ position: 'relative' }}>
-          {/* Full-width row for the range picker. This used to be
-              `position: absolute; top: -20px; right: 0`, which reserved no layout
-              space and so painted over the card's "Utilization & Health" heading —
-              at every width, not just narrow ones. Giving it a real row removes the
-              overlap without the parent needing to know the picker exists. */}
-          <Grid item xs={12} sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <CustomDateTimeRangePicker
-              showAbsoluteRange={false}
-              showOnlyCalenderIcon={false}
-              passedSelectedDateTime={formattedDateRange}
-              shortCuts={RANGE_SHORTCUTS}
-              onChange={(dr) => handleDateRangeChange(dr.selection)}
-              sx={{
-                border: '1px solid var(--ds-brand-200) !important',
-                borderRadius: 'var(--ds-radius-sm) !important',
-              }}
-            />
-          </Grid>
+          {/* Fallback picker row for callers that don't own the range themselves.
+              It used to be `position: absolute; top: -20px; right: 0`, which
+              reserved no layout space and painted over the card heading. Parents
+              that want the picker beside their title pass `dateRange` /
+              `onDateRangeChange` and render <UtilizationRangePicker> instead. */}
+          {!isRangeControlled && (
+            <Grid item xs={12} sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <CustomDateTimeRangePicker
+                showAbsoluteRange={false}
+                showOnlyCalenderIcon={false}
+                passedSelectedDateTime={formattedDateRange}
+                shortCuts={RANGE_SHORTCUTS}
+                onChange={(dr) => handleDateRangeChange(dr.selection)}
+                sx={{
+                  border: '1px solid var(--ds-brand-200) !important',
+                  borderRadius: 'var(--ds-radius-sm) !important',
+                }}
+              />
+            </Grid>
+          )}
           <Grid item xs={12} sm={6}>
             {!dataLoaded.cpu && loadingStates.cpu ? (
               <Skeleton width={'100%'} height={ds.space.mul(0, 100)} />
@@ -718,4 +776,6 @@ KubernetesMemoryCpuOverView.propTypes = {
   showUsage: PropTypes.bool,
   hideLabels: PropTypes.bool,
   accountId: PropTypes.string,
+  dateRange: PropTypes.object,
+  onDateRangeChange: PropTypes.func,
 };

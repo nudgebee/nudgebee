@@ -4,7 +4,7 @@ import DSModal from '@ui/Modal';
 import ClusterNode from './common/ClusterNode';
 import { formatNumber } from '@lib/formatter';
 import Currency from '@shared/format/Currency';
-import KubernetesMemoryCpuOverView from '@components/k8s/common/KubernetesMemoryCpuOverView';
+import KubernetesMemoryCpuOverView, { UtilizationRangePicker, createUtilizationRange } from '@components/k8s/common/KubernetesMemoryCpuOverView';
 import PropTypes from 'prop-types';
 import DSCard from '@ui/Card';
 import { Stat } from '@ui/Stat';
@@ -590,6 +590,9 @@ HealthBlock.propTypes = {
 const UtilizationAndHealth = ({ clusterSummary = {}, accountId }) => {
   const [isUtilization, setIsUtilization] = useState(false);
   const [utilizationInsights, setUtilizationInsights] = useState([]);
+  // Owned here rather than inside KubernetesMemoryCpuOverView so the picker can
+  // sit in the heading row beside the title instead of above the gauges.
+  const [utilizationRange, setUtilizationRange] = useState(createUtilizationRange);
 
   const events = clusterSummary?.cluster_data?.event ?? [];
   getEvents(events);
@@ -757,18 +760,30 @@ const UtilizationAndHealth = ({ clusterSummary = {}, accountId }) => {
           </Box>
         </DSCard>
         <DSCard variant='accent' tone='success' size='md' sx={{ height: '100%' }}>
+          {/* Title and range picker share this row. `flexWrap` lets the picker drop
+              below the title on a narrow card rather than colliding with it. */}
           <Box
             sx={{
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: 'var(--ds-space-2)',
               marginBottom: 'var(--ds-space-2)',
             }}
           >
             <Heading value='Utilization & Health' borderWidth='md' borderColor='var(--ds-blue-500)' />
+            <UtilizationRangePicker value={utilizationRange} onChange={setUtilizationRange} />
           </Box>
           <Box>
-            <KubernetesMemoryCpuOverView requiredTooltip={true} showUpdatedUi={true} showUsage={true} accountId={accountId} />
+            <KubernetesMemoryCpuOverView
+              requiredTooltip={true}
+              showUpdatedUi={true}
+              showUsage={true}
+              accountId={accountId}
+              dateRange={utilizationRange}
+              onDateRangeChange={setUtilizationRange}
+            />
           </Box>
         </DSCard>
       </Stack>
