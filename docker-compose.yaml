@@ -24,6 +24,10 @@ x-app-common: &app-common
   # NUDGEBEE_ENCRYPTION_KEY must be 64 hex chars and identical everywhere.
   NUDGEBEE_ENCRYPTION_KEY: ${NUDGEBEE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
   RELAY_SERVER_SECRET_KEY: ${RELAY_SERVER_SECRET_KEY:-dev-relay-secret-change-me}
+  # relay's RELAY_WORKSPACE_JWT_SECRET and llm-server's LLM_SERVER_JWT_SECRET
+  # sign/verify the SAME workspace JWTs, so they must be identical (see the
+  # comment at relay-server config.go). Both derive from one value on purpose —
+  # this is not a copy-paste; a mismatch breaks workspace auth.
   RELAY_WORKSPACE_JWT_SECRET: ${RELAY_WORKSPACE_JWT_SECRET:-dev-jwt-secret-change-me}
   LLM_SERVER_JWT_SECRET: ${RELAY_WORKSPACE_JWT_SECRET:-dev-jwt-secret-change-me}
   ACTION_API_SERVER_TOKEN: ${ACTION_API_SERVER_TOKEN:-dev-action-token-change-me}
