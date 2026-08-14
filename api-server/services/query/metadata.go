@@ -652,6 +652,13 @@ var prDependentColumns = map[string]bool{
 	"pr_title": true,
 }
 
+// Columns that depend on the event_correlations same_incident JOINs
+// (same-subject incident grouping, epic #34655).
+var incidentDependentColumns = map[string]bool{
+	"incident_leader_id":    true,
+	"incident_member_count": true,
+}
+
 func whereReferencesColumns(where QueryWhereClause, cols map[string]bool) bool {
 	for col := range where.Binary {
 		if cols[col] {
@@ -1595,37 +1602,47 @@ var table_metadata = map[string]TableDefinition{
 		Type:             Normal,
 		Source:           getSource("events_v2"),
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
-			needsPr := requestReferencesColumns(request, prDependentColumns)
-			needsFingerprint := requestReferencesColumns(request, fingerprintDependentColumns)
-
-			switch {
-			case needsPr && needsFingerprint:
-				return `(SELECT e.*, ela.analysis::jsonb->'automated_fix_pr'->>'url' as pr_url,
-					ela.analysis::jsonb->'automated_fix_pr'->>'title' as pr_title,
-					ed.absolute_first_seen_at as fingerprint_first_seen_at
-					FROM events e LEFT JOIN event_log_analysis ela
+			// Composable optional joins: each requested column family adds its
+			// SELECT extras + JOIN once, so families combine without a
+			// combinatorial switch.
+			var selects, joins []string
+			if requestReferencesColumns(request, prDependentColumns) {
+				selects = append(selects,
+					`ela.analysis::jsonb->'automated_fix_pr'->>'url' as pr_url`,
+					`ela.analysis::jsonb->'automated_fix_pr'->>'title' as pr_title`)
+				joins = append(joins, `LEFT JOIN event_log_analysis ela
 					ON ela.event_id = e.id
 					AND ela.analysis_type = 'log_analysis'
 					AND ela.status = 'COMPLETED'
 					AND ela.analysis LIKE '{%'
-					AND ela.analysis::jsonb->'automated_fix_pr'->>'url' != ''
-					LEFT JOIN event_duplicates ed ON ed.event_id = e.id AND ed.cloud_account_id = e.cloud_account_id) as events`, request, nil
-			case needsPr:
-				return `(SELECT e.*, ela.analysis::jsonb->'automated_fix_pr'->>'url' as pr_url,
-					ela.analysis::jsonb->'automated_fix_pr'->>'title' as pr_title
-					FROM events e LEFT JOIN event_log_analysis ela
-					ON ela.event_id = e.id
-					AND ela.analysis_type = 'log_analysis'
-					AND ela.status = 'COMPLETED'
-					AND ela.analysis LIKE '{%'
-					AND ela.analysis::jsonb->'automated_fix_pr'->>'url' != '') as events`, request, nil
-			case needsFingerprint:
-				return `(SELECT e.*, ed.absolute_first_seen_at as fingerprint_first_seen_at
-					FROM events e
-					LEFT JOIN event_duplicates ed ON ed.event_id = e.id AND ed.cloud_account_id = e.cloud_account_id) as events`, request, nil
-			default:
+					AND ela.analysis::jsonb->'automated_fix_pr'->>'url' != ''`)
+			}
+			if requestReferencesColumns(request, fingerprintDependentColumns) {
+				selects = append(selects, `ed.absolute_first_seen_at as fingerprint_first_seen_at`)
+				joins = append(joins, `LEFT JOIN event_duplicates ed ON ed.event_id = e.id AND ed.cloud_account_id = e.cloud_account_id`)
+			}
+			if requestReferencesColumns(request, incidentDependentColumns) {
+				// Same-subject incident grouping (#34655): a child's leader, and
+				// a leader's member count. DISTINCT ON guards against a child
+				// carrying links to two leaders (concurrent-attach race) fanning
+				// the event row out.
+				selects = append(selects,
+					`ecl.related_event_id as incident_leader_id`,
+					`coalesce(ecc.incident_member_count, 0) as incident_member_count`)
+				joins = append(joins,
+					`LEFT JOIN (SELECT DISTINCT ON (event_id, cloud_account_id) event_id, cloud_account_id, related_event_id
+						FROM event_correlations WHERE correlation_type = 'same_incident') ecl
+						ON ecl.event_id = e.id AND ecl.cloud_account_id = e.cloud_account_id`,
+					`LEFT JOIN (SELECT related_event_id, cloud_account_id, count(*) AS incident_member_count
+						FROM event_correlations WHERE correlation_type = 'same_incident'
+						GROUP BY related_event_id, cloud_account_id) ecc
+						ON ecc.related_event_id = e.id AND ecc.cloud_account_id = e.cloud_account_id`)
+			}
+			if len(joins) == 0 {
 				return "events", request, nil
 			}
+			return `(SELECT e.*, ` + strings.Join(selects, ",\n\t\t\t\t") + `
+				FROM events e ` + strings.Join(joins, "\n\t\t\t\t") + `) as events`, request, nil
 		},
 		Name:                "events_v2",
 		TenantIdColumnName:  "tenant_id",
@@ -1761,6 +1778,12 @@ var table_metadata = map[string]TableDefinition{
 			"is_new_issue": {
 				Type: ColumnDefinitionTypeBoolean,
 				Def:  "CASE WHEN fingerprint_first_seen_at > NOW() - INTERVAL '7 days' THEN true ELSE false END",
+			},
+			"incident_leader_id": {
+				Type: ColumnDefinitionTypeString,
+			},
+			"incident_member_count": {
+				Type: ColumnDefinitionTypeInt,
 			},
 		},
 	},

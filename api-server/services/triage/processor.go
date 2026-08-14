@@ -60,6 +60,16 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 		// Continue processing - don't fail entire triage on correlation error
 	}
 
+	// Step 3b: Same-subject incident grouping (epic #34655 slice 1). Only chain
+	// leaders participate — re-fires stay collapsed inside their dedup chain, so
+	// a group member stands for its whole chain. Additive: a failure here must
+	// never fail triage.
+	if occurrence == 1 && incidentGroupingEnabled() {
+		if err := attachSameSubjectIncident(ctx, db, event); err != nil {
+			slog.ErrorContext(ctx, "Failed same-subject incident attach", "error", err, "event_id", event.Id)
+		}
+	}
+
 	// Step 4: Compute and save score (target: < 50ms)
 	// Apply any score adjustments from rules
 	result, err := ComputeScore(ctx, db, event, occurrence, corrType, corrScore)
@@ -596,7 +606,7 @@ func buildCorrelationInsert(triaged *models.Event, candidates []correlatedCandid
 			correlation_type, correlation_score, correlation_reason,
 			time_offset_minutes, dependency_distance
 		) VALUES ` + strings.Join(valueClauses, ", ") + `
-		ON CONFLICT (related_event_id, event_id, cloud_account_id) DO NOTHING`
+		ON CONFLICT DO NOTHING`
 
 	return query, args
 }

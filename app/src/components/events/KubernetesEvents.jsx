@@ -1119,6 +1119,34 @@ const KubernetesEventsTable = ({
                       </span>
                     </Tooltip>
                   )}
+                  {item.incident_member_count > 0 && (
+                    <Tooltip
+                      title={`${item.incident_member_count} related alert${
+                        item.incident_member_count > 1 ? 's' : ''
+                      } on this subject grouped under this event`}
+                    >
+                      <span>
+                        <Chip variant='tag' tone='warning' size='xs' data-testid='incident-leader-chip'>
+                          +{item.incident_member_count} SAME INCIDENT
+                        </Chip>
+                      </span>
+                    </Tooltip>
+                  )}
+                  {item.incident_leader_id && (
+                    <Tooltip title='Part of an incident on this subject — click to open the leading event'>
+                      <span
+                        style={{ cursor: 'pointer' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.open(`/investigate?id=${item.incident_leader_id}&accountId=${item.account_id}`, '_blank');
+                        }}
+                      >
+                        <Chip variant='tag' tone='neutral' size='xs' data-testid='incident-child-chip'>
+                          GROUPED
+                        </Chip>
+                      </span>
+                    </Tooltip>
+                  )}
                 </Box>
                 {isTroubleshootPage && account && (
                   <Text value={`acc: ${account?.label || account?.account_name || item.account_id}`} secondaryText showAutoEllipsis />

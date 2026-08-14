@@ -385,6 +385,8 @@ query ResolveEventRecord($id:String!) {
       computed_score
       score_factors
       score_confidence
+      incident_leader_id
+      incident_member_count
     }
   }
 }
@@ -823,6 +825,9 @@ function buildEventFilterParams(query: any) {
     } else {
       filterParams['aggregation_key'] = { _eq: query['aggregation_key'] };
     }
+  }
+  if (query?.incident_leader_id) {
+    filterParams['incident_leader_id'] = { _eq: query['incident_leader_id'] };
   }
   if (Array.isArray(query?.aggregation_key_nin) && query['aggregation_key_nin'].length) {
     filterParams['aggregation_key'] = { ...(filterParams['aggregation_key'] || {}), _not_in: query['aggregation_key_nin'] };
@@ -1479,6 +1484,25 @@ const apiKubernetes = {
       return error;
     }
   },
+  // Members of a same-subject incident group (#34655): the events whose
+  // same_incident link points at this leader.
+  async getIncidentGroupMembers(leaderId: string, accountId: string) {
+    const INCIDENT_GROUP_MEMBERS = `
+ query incident_group_members {
+  events: events_list(where: {incident_leader_id: {_eq: "${leaderId}"}, account_id: {_eq: "${accountId}"}}, order_by: [{column: "starts_at", order: asc}], limit: 50) {
+    rows {
+      id
+      title
+      aggregation_key
+      source
+      starts_at
+    }
+  }
+}`;
+    const response = await queryGraphQL(INCIDENT_GROUP_MEMBERS, 'incident_group_members', {});
+    return response?.data?.data?.events?.rows || [];
+  },
+
   async getK8sEvents(
     limit = 10,
     offset = 0,
@@ -1638,7 +1662,9 @@ const apiKubernetes = {
       computed_score
       computed_priority
       score_factors
-      score_confidence${issueTypeFields}
+      score_confidence
+      incident_leader_id
+      incident_member_count${issueTypeFields}
     }
   }
 }`;

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Typography, Tooltip } from '@mui/material';
 import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrowLeft';
 import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
@@ -15,6 +15,7 @@ import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import ScoreDisplay from '@shared/widgets/ScoreDisplay';
 import PriorityPinControl from '@shared/widgets/PriorityPinControl';
 import InvestigateDropdown from '@components/k8s/investigate/InvestigateDropdown';
+import k8sApi from '@api1/kubernetes';
 import { hasWriteAccess } from '@lib/auth';
 import { exitCodeMapping, snakeToTitleCase } from 'src/utils/common';
 import { SUBJECT_TYPE, AGGREGATION_KEY } from '@data/investigateConstants';
@@ -41,6 +42,25 @@ function InvestigateSidebar({
 }) {
   const router = useRouter();
   const [showAll, setShowAll] = useState(false);
+  const [incidentMembers, setIncidentMembers] = useState([]);
+
+  // Members of this event's incident group (#34655) — fetched only when the
+  // event is a group leader.
+  useEffect(() => {
+    let cancelled = false;
+    setIncidentMembers([]);
+    if (row?.id && row?.cloud_account_id && row?.incident_member_count > 0) {
+      k8sApi
+        .getIncidentGroupMembers(row.id, row.cloud_account_id)
+        .then((members) => {
+          if (!cancelled) setIncidentMembers(members);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [row?.id, row?.cloud_account_id, row?.incident_member_count]);
 
   const detailsPathPrefix = isCloud ? '/cloud-account/details' : '/kubernetes/details';
 
@@ -96,6 +116,7 @@ function InvestigateSidebar({
     ));
   };
 
+  const incidentMemberIds = useMemo(() => incidentMembers.map((m) => String(m.id)), [incidentMembers]);
   const labels = useMemo(() => mapLabels(alertLabels), [alertLabels]);
   const visibleLabels = useMemo(() => (showAll ? labels : labels.slice(0, 5)), [labels, showAll]);
   const toggleShow = () => setShowAll((prev) => !prev);
@@ -278,6 +299,21 @@ function InvestigateSidebar({
                     openInNew={true}
                   >
                     <Label text={'View Original Event'} margin='0' />
+                  </Link>
+                </Box>
+              </Box>
+            )}
+
+            {row?.incident_leader_id && (
+              <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
+                <Text value={'Same incident'} secondaryText />
+                <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
+                  <Link
+                    style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
+                    href={`/investigate?id=${row.incident_leader_id}&accountId=${row?.cloud_account_id}`}
+                    openInNew={true}
+                  >
+                    <Label text={'View Leader Event'} margin='0' />
                   </Link>
                 </Box>
               </Box>
@@ -785,12 +821,29 @@ function InvestigateSidebar({
               )}
             </>
           )}
+          {row?.incident_member_count > 0 && incidentMembers.length > 0 && (
+            <InvestigateDropdown
+              query={queryParam}
+              inputMaxWidth='100%'
+              subjectName={row?.subject_name}
+              subjectNamespace={row?.subject_namespace}
+              resetStateWhenItemSelected={onResetState}
+              title={`Same Incident (${row.incident_member_count})`}
+              placeholder='Grouped alerts on this subject'
+              optionsOverride={incidentMembers.map((m) => ({
+                value: String(m.id),
+                label: m.title || m.aggregation_key,
+                subtext: m.starts_at ? new Date(m.starts_at).toLocaleString() : undefined,
+              }))}
+            />
+          )}
           <InvestigateDropdown
             query={queryParam}
             inputMaxWidth='100%'
             subjectName={row?.subject_name}
             subjectNamespace={row?.subject_namespace}
             resetStateWhenItemSelected={onResetState}
+            excludeIds={incidentMemberIds}
           />
         </>
       </Box>
