@@ -48,8 +48,8 @@ const TREND_SERIES = [
   { field: 'limit', label: 'Limit', color: ds.red[500] },
 ];
 
-// Same shortcuts as the card's picker, reused by the popup's own time filter.
-const TREND_SHORTCUTS = [
+// Shared by both card pickers and the Trend popup's own time filter.
+const RANGE_SHORTCUTS = [
   'Last 5 Minutes',
   'Last 10 Minutes',
   'Last 15 Minutes',
@@ -474,7 +474,25 @@ const KubernetesMemoryCpuOverView = ({
     <>
       {updatedOverview ? (
         <Grid container mt={ds.space.mul(0, 5)} spacing={ds.space.mul(0, 10)} sx={{ position: 'relative' }}>
-          <Grid item sm={6}>
+          {/* Full-width row for the range picker. This used to be
+              `position: absolute; top: -20px; right: 0`, which reserved no layout
+              space and so painted over the card's "Utilization & Health" heading —
+              at every width, not just narrow ones. Giving it a real row removes the
+              overlap without the parent needing to know the picker exists. */}
+          <Grid item xs={12} sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <CustomDateTimeRangePicker
+              showAbsoluteRange={false}
+              showOnlyCalenderIcon={false}
+              passedSelectedDateTime={formattedDateRange}
+              shortCuts={RANGE_SHORTCUTS}
+              onChange={(dr) => handleDateRangeChange(dr.selection)}
+              sx={{
+                border: '1px solid var(--ds-brand-200) !important',
+                borderRadius: 'var(--ds-radius-sm) !important',
+              }}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
             {!dataLoaded.cpu && loadingStates.cpu ? (
               <Skeleton width={'100%'} height={ds.space.mul(0, 100)} />
             ) : (
@@ -514,7 +532,7 @@ const KubernetesMemoryCpuOverView = ({
               </>
             )}
           </Grid>
-          <Grid item sm={6}>
+          <Grid item xs={12} sm={6}>
             {!dataLoaded.memory && loadingStates.memory ? (
               <Skeleton width={'100%'} height={ds.space.mul(0, 100)} />
             ) : (
@@ -554,30 +572,6 @@ const KubernetesMemoryCpuOverView = ({
               </>
             )}
           </Grid>
-          <CustomDateTimeRangePicker
-            showAbsoluteRange={false}
-            showOnlyCalenderIcon={false}
-            passedSelectedDateTime={formattedDateRange}
-            shortCuts={[
-              'Last 5 Minutes',
-              'Last 10 Minutes',
-              'Last 15 Minutes',
-              'Last 30 Minutes',
-              'Last 1 Hour',
-              'Last 3 Hours',
-              'Last 6 Hours',
-              'Last 12 Hours',
-              'Last 24 Hours',
-            ]}
-            onChange={(dr) => handleDateRangeChange(dr.selection)}
-            sx={{
-              position: 'absolute !important',
-              top: `${ds.space.mul(0, -20)} !important`,
-              right: '0px !important',
-              border: '1px solid var(--ds-brand-200) !important',
-              borderRadius: 'var(--ds-radius-sm) !important',
-            }}
-          />
         </Grid>
       ) : loading ? (
         <CpuMemorySkeleton sx={{ mt: ds.space.mul(0, 5) }} />
@@ -592,9 +586,10 @@ const KubernetesMemoryCpuOverView = ({
               flexShrink: 0,
               position: 'relative',
               display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--ds-space-5)',
-              justifyContent: 'space-between',
+              flexDirection: 'column',
+              alignItems: 'stretch',
+              justifyContent: 'center',
+              gap: 'var(--ds-space-2)',
               p: clusterSummary
                 ? `${ds.space.mul(0, 7)} ${ds.space[5]} ${ds.space[2]} ${ds.space[5]}`
                 : `${ds.space.mul(0, 5)} ${ds.space[3]} ${ds.space.mul(0, 3)} ${ds.space[3]}`,
@@ -605,58 +600,53 @@ const KubernetesMemoryCpuOverView = ({
               overflowWrap: 'break-word',
             }}
           >
-            <Grid item sm={6}>
-              <K8sMemoryCpuIndicator
-                showUpdatedUi={showUpdatedUi}
-                requiredTooltip={requiredTooltip}
-                clusterSummary={clusterSummary}
-                key='CPU'
-                unit=''
-                title='CPU'
-                queries={cpuQueries}
-                data={memoryCpuData?.cpu ?? []}
-                updatedOverview={updatedOverview}
-                hideLabels={hideLabels}
+            {/* The card is a column: a right-aligned row for the range picker, then
+                the two gauges side by side. The picker used to be
+                `position: absolute; top: 5px; right: 5px`, which reserved no layout
+                space and so painted over the right-hand gauge's "Memory" label. */}
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <CustomDateTimeRangePicker
+                showAbsoluteRange={false}
+                showOnlyCalenderIcon={false}
+                passedSelectedDateTime={formattedDateRange}
+                shortCuts={RANGE_SHORTCUTS}
+                onChange={(dr) => handleDateRangeChange(dr.selection)}
+                sx={{
+                  border: '1px solid var(--ds-gray-200) !important',
+                  borderRadius: 'var(--ds-radius-md) !important',
+                }}
               />
-            </Grid>
-            <Grid item sm={6} sx={{ padding: '0px' }}>
-              <K8sMemoryCpuIndicator
-                showUpdatedUi={showUpdatedUi}
-                requiredTooltip={requiredTooltip}
-                clusterSummary={clusterSummary}
-                key='Memory'
-                unit=''
-                title='Memory'
-                queries={memoryQueries}
-                data={memoryCpuData?.memory ?? []}
-                updatedOverview={updatedOverview}
-                hideLabels={hideLabels}
-              />
-            </Grid>
-            <CustomDateTimeRangePicker
-              showAbsoluteRange={false}
-              showOnlyCalenderIcon={false}
-              passedSelectedDateTime={formattedDateRange}
-              shortCuts={[
-                'Last 5 Minutes',
-                'Last 10 Minutes',
-                'Last 15 Minutes',
-                'Last 30 Minutes',
-                'Last 1 Hour',
-                'Last 3 Hours',
-                'Last 6 Hours',
-                'Last 12 Hours',
-                'Last 24 Hours',
-              ]}
-              onChange={(dr) => handleDateRangeChange(dr.selection)}
-              sx={{
-                position: 'absolute !important',
-                top: `${ds.space.mul(0, 5)} !important`,
-                right: `${ds.space.mul(0, 5)} !important`,
-                border: '1px solid var(--ds-gray-200) !important',
-                borderRadius: 'var(--ds-radius-md) !important',
-              }}
-            />
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-5)', minWidth: 0 }}>
+              <Grid item sm={6} sx={{ minWidth: 0 }}>
+                <K8sMemoryCpuIndicator
+                  showUpdatedUi={showUpdatedUi}
+                  requiredTooltip={requiredTooltip}
+                  clusterSummary={clusterSummary}
+                  key='CPU'
+                  unit=''
+                  title='CPU'
+                  queries={cpuQueries}
+                  data={memoryCpuData?.cpu ?? []}
+                  updatedOverview={updatedOverview}
+                  hideLabels={hideLabels}
+                />
+              </Grid>
+              <Grid item sm={6} sx={{ padding: '0px', minWidth: 0 }}>
+                <K8sMemoryCpuIndicator
+                  showUpdatedUi={showUpdatedUi}
+                  requiredTooltip={requiredTooltip}
+                  clusterSummary={clusterSummary}
+                  key='Memory'
+                  unit=''
+                  title='Memory'
+                  queries={memoryQueries}
+                  data={memoryCpuData?.memory ?? []}
+                  updatedOverview={updatedOverview}
+                  hideLabels={hideLabels}
+                />
+              </Grid>
+            </Box>
           </Grid>
         </>
       )}
@@ -676,7 +666,7 @@ const KubernetesMemoryCpuOverView = ({
                   endTime: trendRange?.endDate,
                   shortcutClickTime: trendRange?.shortcutClickTime || 0,
                 }}
-                shortCuts={TREND_SHORTCUTS}
+                shortCuts={RANGE_SHORTCUTS}
                 onChange={(dr) =>
                   setTrendRange({
                     startDate: dr.selection.startTime,
