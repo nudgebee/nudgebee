@@ -232,6 +232,7 @@ type LogQuery struct {
 	ResourceLabels map[string]string `json:"resource_labels"`
 	MetricType     string            `json:"metric_type"`
 	AlertType      string            `json:"alert_type"`
+	PolicyID       string            `json:"policy_id"`
 }
 
 type QueryLogResponse struct {

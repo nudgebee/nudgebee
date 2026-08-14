@@ -378,12 +378,13 @@ type QueryLogsRequest struct {
 	// GCP generic-scope context. When the per-service / log-metric resolution above
 	// scopes nothing (SLO alerts, unmapped resource types), these let the collector
 	// resolve the query scope from the monitored resource via GCP's own APIs
-	// (services.get / metrics.get) instead of per-service code. Provider-agnostic;
-	// AWS/Azure ignore them.
+	// (services.get / metrics.get / alertPolicies.get) instead of per-service code.
+	// Provider-agnostic; AWS/Azure ignore them.
 	ResourceType   string            `json:"resource_type"`   // gcp_event_resource_type
 	ResourceLabels map[string]string `json:"resource_labels"` // resource.labels (prefix stripped)
 	MetricType     string            `json:"metric_type"`     // gcp_metric_type (SLO expr / log-based metric)
 	AlertType      string            `json:"alert_type"`      // gcp_alert_type: metric | log
+	PolicyID       string            `json:"policy_id"`       // gcp_policy_id (projects/N/alertPolicies/ID)
 }
 
 // LogLabel represents a single field in a log event.

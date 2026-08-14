@@ -94,6 +94,7 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 			ResourceLabels: query.ResourceLabels,
 			MetricType:     query.MetricType,
 			AlertType:      query.AlertType,
+			PolicyID:       query.PolicyID,
 		})
 		if serr != nil {
 			logger.Warn("generic scope resolution failed", "error", serr, "resourceType", query.ResourceType)
