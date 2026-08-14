@@ -46,6 +46,31 @@ func TestApprovalTask_OutputSchema_StatusDocumentsOptionValues(t *testing.T) {
 	assert.False(t, approver.Required, "approver is best-effort and may be empty")
 }
 
+// approval_type carries a default instead of being required. The builder
+// validates a field as `params[name] ?? schema.default`, so without a default
+// every bundled template with an approval step opened with a "missing required
+// fields" banner — no template can name a tenant's Slack channel or approver
+// emails. Required must stay false alongside it: Schema.Validate ignores
+// Default, so requiring the field rejects the save of any workflow whose
+// approval task was never opened (the builder commits defaults into params on
+// task selection only).
+func TestApprovalTask_ApprovalTypeDefaultsToInApp(t *testing.T) {
+	schema := (&ApprovalTask{}).InputSchema()
+	prop, ok := schema.Properties["approval_type"]
+	require.True(t, ok)
+	assert.Equal(t, "in_app", prop.Default,
+		"without a default, every approval task is invalid on load")
+	assert.Contains(t, prop.Options, "in_app",
+		"the default must be selectable in the dropdown")
+	assert.False(t, prop.Required,
+		"Schema.Validate does not honour Default, so required here 400s saves that omit the field")
+
+	// The pairing above is only safe while the backend validator accepts an
+	// absent value: assert it directly rather than trusting the flag.
+	require.NoError(t, schema.Validate(map[string]any{"message": "approve?"}),
+		"a workflow that never set approval_type must still save")
+}
+
 // The default options are what `status` will contain for any workflow that does
 // not override approval_options — the values conditions must be written against.
 func TestApprovalTask_DefaultApprovalOptions(t *testing.T) {

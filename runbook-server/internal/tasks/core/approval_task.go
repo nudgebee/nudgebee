@@ -70,6 +70,9 @@ func (t *ApprovalTask) Execute(taskCtx types.TaskContext, params map[string]any)
 		}
 	}
 
+	// No default case on purpose: "in_app" (and an absent value, for workflows
+	// authored before approval_type existed) sends no notification and simply
+	// waits for the approval signal raised from the execution view.
 	switch params["approval_type"] {
 	case "instant_message":
 		imProvider, ok := params["im_provider"].(string)
@@ -264,10 +267,27 @@ func (t *ApprovalTask) InputSchema() *types.Schema {
 				Order:       1,
 			},
 			"approval_type": {
-				Type:        "string",
-				Description: "The channel to send the approval request to.",
-				Options:     []string{"instant_message", "email"},
-				Required:    true,
+				Type: "string",
+				// "in_app" is the no-notification mode: the run pauses and is
+				// approved from the execution view's approval prompt, which is
+				// available for every pending approval regardless of this field.
+				// It is the default because #32013 made the field required
+				// without one, which left every bundled template carrying an
+				// approval step (21 of them, none able to know a tenant's Slack
+				// channel or approver emails) invalid on load.
+				//
+				// Required stays false deliberately. Schema.Validate treats a
+				// missing value as missing even when the property declares a
+				// Default, so requiring it 400s the save of any workflow whose
+				// approval task the author never opened — the builder only
+				// commits schema defaults into params on task selection. The
+				// default, not the flag, is what stops the blank-and-silent
+				// state #32013 reported: picking instant_message or email still
+				// requires its channel or recipients via RequiredWhen.
+				Description: "Where to send the approval request. \"in_app\" sends nothing and waits for an approval from the execution view.",
+				Options:     []string{"in_app", "instant_message", "email"},
+				Default:     "in_app",
+				Required:    false,
 				Order:       2,
 			},
 			"im_provider": {
