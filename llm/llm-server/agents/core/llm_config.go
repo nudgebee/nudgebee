@@ -323,6 +323,12 @@ func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agen
 	if accessKey == "" || secretKey == "" {
 		accessKey, secretKey, sessionToken = "", "", ""
 	}
+	// With nothing configured explicitly, hand the sandbox the same identity
+	// llm-server itself uses for Bedrock. See ambientBedrockCredentials.
+	if accessKey == "" && strings.EqualFold(provider, "bedrock") {
+		accessKey, secretKey, sessionToken = ambientBedrockCredentials(
+			getLLMRegion(accountId, provider, agentName, appendAgentName, res))
+	}
 	fwd := &ForwardedLLMConfig{
 		Provider:    provider,
 		Model:       res.Model,
