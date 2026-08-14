@@ -309,9 +309,11 @@ services:
       context: ./collector-server/k8s-collector/app
     networks: [nudgebee]
     ports:
-      # Container port is 5000, but macOS AirPlay Receiver squats on host :5000,
-      # so publish on 5055 by default. Override with K8S_COLLECTOR_HOST_PORT.
-      - "${K8S_COLLECTOR_HOST_PORT:-5055}:5000"
+      # Container port is 5000, but publishing on host :5000 collides with macOS
+      # AirPlay Receiver. Publish on host 8003 to both avoid that and stay in the
+      # app-service 800x range (8003 is the free slot after cloud-collector's
+      # 8002). Override with K8S_COLLECTOR_HOST_PORT.
+      - "${K8S_COLLECTOR_HOST_PORT:-8003}:5000"
     environment:
       <<: *app-common
       COLLECTOR_DB_URL: *db-url

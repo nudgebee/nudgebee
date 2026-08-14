@@ -39,9 +39,9 @@ why the settings exist):
   before using this anywhere real. Changing it after credentials are stored makes
   them undecryptable.
 - **macOS host port 5000 is taken by AirPlay Receiver.** The `k8s-collector`
-  container listens on 5000 but is published on host **5055** by default (set
-  `K8S_COLLECTOR_HOST_PORT` to change, or free 5000 in *System Settings →
-  General → AirDrop & Handoff → AirPlay Receiver*).
+  container listens on 5000 but is published on host **8003** by default (in the
+  app-service 800x range; set `K8S_COLLECTOR_HOST_PORT` to change, or free 5000
+  in *System Settings → General → AirDrop & Handoff → AirPlay Receiver*).
 - **Services call the backend at hostname `services-server`.** That's the SaaS
   service name; the compose service is `api-server-services`. A network alias
   maps `services-server` → `api-server-services`, so event ingestion and RPC
