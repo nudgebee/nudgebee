@@ -106,7 +106,7 @@ Read the diff in full and evaluate against these dimensions:
 - **Correctness:** logic errors, off-by-one, nil/null risks, missing error handling, race conditions, incorrect API contracts.
 - **Security:** injection (SQL, command, XSS), hardcoded secrets, missing input validation at system boundaries, insecure deserialization, OWASP Top 10.
 - **Over-engineering:** premature abstractions, unused hooks, speculative flexibility, helper functions with a single caller, scenarios that can't happen being "handled".
-- **Scope creep:** changes outside the stated goal of the PR (per `CLAUDE.md → Doing tasks`: "Don't add features, refactor code, or make 'improvements' beyond what was asked").
+- **Scope creep:** changes outside the stated goal of the PR (per `CLAUDE.md → AI Coding Principles`, surgical changes: every changed line traces directly to the request).
 - **Test coverage:** are new code paths covered? Are edge cases tested?
 - **Cross-service impact:** shared types, API contracts, DB schema, Hasura metadata — anything that affects other services.
 - **Convention compliance:** Go idioms + `slog` + `testify`, Python `black` 120 + flake8 + mypy, TypeScript oxlint + prettier, commit scope correctness.
@@ -306,13 +306,13 @@ Validation: {pass/fail status per service}
 
 Creating the PR is not the finish line. Drive it to a green, review-clean state: poll CI and the review threads, fix everything you can, and surface only what a human must do. **Never fabricate approval, self-approve, or mark a human-only gate as done.**
 
-### 11.1 Poll the checks
+### 11.1 Watch the checks (in the background — never foreground sleep loops)
 
 ```bash
-gh pr checks {pr_number} --repo {owner/repo}
+gh pr checks {pr_number} --repo {owner/repo} --watch    # run as a BACKGROUND task
 ```
 
-Poll on a loop — re-check every ~45–60s while any check is `pending`. Cap the total wait at ~25 min of wall-clock; if checks are still pending past that, report the current matrix and hand back rather than spinning. Treat the pass as "settled" once no check is `pending`.
+Do **not** foreground-poll with `sleep N && gh pr checks` loops — that burns the session doing nothing. Start the watch as a background task (or arm a Monitor on the check status) and continue with other work; when it completes, read the final matrix. Cap the total wait at ~25 min of wall-clock; if checks are still pending past that, report the current matrix and hand back rather than spinning. Treat the pass as "settled" once no check is `pending`.
 
 ### 11.2 Triage each failing check
 
