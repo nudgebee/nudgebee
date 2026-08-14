@@ -150,7 +150,10 @@ func init() {
 	viper.SetDefault("TEMPORAL_GRPC_ENDPOINT", "localhost:7233")
 	viper.SetDefault("RUN_INTEGRATION_TESTS", "false")
 	viper.SetDefault("OTEL_TRACES_EXPORTER", "noop")
-	viper.SetDefault("AUTO_PILOT_DATABASE_URL", "postgres://temporal:temporal@localhost:5432/temporal?sslmode=disable")
+	// runbook/workflow tables (workflows, auto_pilot, users, cloud_accounts, …)
+	// live in the shared app database, NOT Temporal's. Deployments override this
+	// with APP_DATABASE_URL; the default points at the app DB, not temporal.
+	viper.SetDefault("AUTO_PILOT_DATABASE_URL", "postgres://postgres:postgres@localhost:5432/nudgebee?sslmode=disable")
 	viper.SetDefault("runbook_server_optimization_enabled", true)
 	viper.SetDefault("runbook_server_optimization_poll_interval_seconds", 180)
 	viper.SetDefault("webhook_max_body_size_mb", 5)
