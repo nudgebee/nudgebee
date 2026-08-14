@@ -55,6 +55,13 @@ type packageRow struct {
 	UpdatedAt       time.Time `db:"updated_at"`
 }
 
+// source_version is in the DO UPDATE list above even though source_name is part
+// of the conflict key: an existing row keeps whatever source_version it was
+// first written with, so without it every row stored before #36278 would keep
+// its empty value forever — a rescan would refresh last_seen_at and still leave
+// the column blank. Verified against dev: a full rescan updated last_seen_at
+// while source_version stayed "" until this was added.
+//
 // upsertPackages archives packages no longer reported for cloud_resource_id
 // (a scan is a full snapshot: anything missing from this run is gone), then
 // batch-upserts the current package list, all inside one transaction so an
@@ -111,7 +118,8 @@ func upsertPackages(tenantID, cloudAccountID, cloudResourceID, osFamily, osVersi
 				    :arch, :epoch, :source_name, :source_version, :is_active, :last_seen_at, :updated_at)
 				 ON CONFLICT (cloud_resource_id, pkg_type, name, version, arch, epoch_key, source_name)
 				 DO UPDATE SET is_active = true, last_seen_at = EXCLUDED.last_seen_at, updated_at = EXCLUDED.updated_at,
-				               os_family = EXCLUDED.os_family, os_version = EXCLUDED.os_version`,
+				               os_family = EXCLUDED.os_family, os_version = EXCLUDED.os_version,
+				               source_version = EXCLUDED.source_version`,
 				rows[start:end],
 			); err != nil {
 				return nil, fmt.Errorf("vmpackage: upsert packages: %w", wrapPQError(err))

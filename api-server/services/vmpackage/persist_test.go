@@ -120,6 +120,31 @@ func TestUpsertPackages_ArchivesAndUpserts(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUpsertPackages_RefreshesSourceVersionOnConflict pins the second half of
+// #36278. source_name is part of the conflict key but source_version is not, so
+// unless the DO UPDATE list refreshes it, a row first written without one keeps
+// the empty value through every future rescan — last_seen_at moves, the column
+// never fills in. Proved against dev: a full 494-package rescan left all 494
+// rows with source_version = ” until this column was added to the SET list.
+func TestUpsertPackages_RefreshesSourceVersionOnConflict(t *testing.T) {
+	mock := withMockDB(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE vm_package SET is_active = false").
+		WithArgs("resource-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// The upsert must carry source_version through to the conflict branch.
+	mock.ExpectExec("ON CONFLICT .* DO UPDATE SET .*source_version = EXCLUDED.source_version").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := upsertPackages("tenant-1", "account-1", "resource-1", "amazonlinux", "2023", []Package{
+		{Type: PkgTypeRPM, Name: "perl-B", Version: "1.80-477.amzn2023.0.9", Arch: "x86_64",
+			SourceName: "perl", SourceVersion: "5.32.1-477.amzn2023.0.9"},
+	})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUpsertPackages_EmptyPackages_OnlyArchives(t *testing.T) {
 	mock := withMockDB(t)
 	mock.ExpectBegin()
