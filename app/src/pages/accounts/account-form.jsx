@@ -9,7 +9,7 @@ import GoogleChatSpacesPanel from './GoogleChatSpacesPanel';
 import TicketingIntegrationTile from './TicketingIntegrationTile';
 import JiraAccountModal from '@shared/JiraAccountModal';
 import K8sIntegrationTile from './K8sIntegrationTile';
-import GithubAccountModal from '@shared/GithubAccountModal';
+import GithubAccountModal from '@components/integrations/modal/GithubAccountModal';
 import GitlabAccountModal from '@shared/GitlabAccountModal';
 import PagerDutyAccountModal from '@shared/PagerDutyAccountModal';
 import CloudAccountTile from './CloudAccountTile';

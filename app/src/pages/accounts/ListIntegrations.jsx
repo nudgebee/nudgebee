@@ -11,7 +11,7 @@ import { Button as DsButton } from '@ui/Button';
 import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { getDateDiff } from '@lib/datetime';
-import IntegrationDynamicFormModal from '@shared/IntegrationDynamicFormModal';
+import IntegrationDynamicFormModal from '@components/integrations/modal/IntegrationDynamicFormModal';
 import AddLLMConfigModal from '@components/llm/AddLLMConfigModal';
 import VmAgentCredentialsDialog from '@shared/VmAgentCredentialsDialog';
 import { Label } from '@ui/Label';

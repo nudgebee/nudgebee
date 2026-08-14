@@ -191,7 +191,7 @@ jest.mock('@shared/JiraAccountModal', () => ({
   ),
 }));
 
-jest.mock('@shared/GithubAccountModal', () => ({
+jest.mock('@components/integrations/modal/GithubAccountModal', () => ({
   __esModule: true,
   default: ({ openModal, handleClose }) => (
     <div data-testid='github-account-modal' data-open={openModal}>
