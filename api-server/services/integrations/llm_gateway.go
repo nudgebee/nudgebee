@@ -109,7 +109,7 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 			},
 			"models": {
 				Type:         core.ToolSchemaTypeString,
-				Description:  "Comma-separated model ids this endpoint serves (e.g. Qwen/Qwen3.6-35B-A3B-FP8, or google/gemma-3-27b-it-maas for Vertex MaaS). A client addresses the model by one of these names.",
+				Description:  "Comma-separated model ids this endpoint serves (e.g. Qwen/Qwen3.6-35B-A3B-FP8, or google/gemma-3-27b-it-maas for Vertex MaaS). A client addresses the model by one of these names. To give a model a distinct client-facing name — e.g. so two endpoints can serve the same underlying model — use alias=served (e.g. qwen-vertex=Qwen/Qwen3.6-35B-A3B-FP8): clients call the alias, the gateway forwards the served name.",
 				Priority:     5,
 				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderCustom, llmGatewayProviderVertexOpenAI}},
 				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderCustom, llmGatewayProviderVertexOpenAI}},
@@ -207,13 +207,8 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 		}
 		if cfg["models"] == "" {
 			errs = append(errs, fmt.Errorf("models is required for a custom endpoint (comma-separated model ids)"))
-		} else {
-			for _, part := range strings.Split(cfg["models"], ",") {
-				if strings.TrimSpace(part) == "" {
-					errs = append(errs, fmt.Errorf("models must be a comma-separated list with no empty entries"))
-					break
-				}
-			}
+		} else if err := validateModelsEntries(cfg["models"]); err != nil {
+			errs = append(errs, err)
 		}
 	case llmGatewayProviderVertex:
 		// Vertex: project + GCP region + a well-formed service-account JSON.
@@ -242,13 +237,8 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 		}
 		if cfg["models"] == "" {
 			errs = append(errs, fmt.Errorf("models is required for Vertex (OpenAI-compatible) — the MaaS model id(s), comma-separated"))
-		} else {
-			for _, part := range strings.Split(cfg["models"], ",") {
-				if strings.TrimSpace(part) == "" {
-					errs = append(errs, fmt.Errorf("models must be a comma-separated list with no empty entries"))
-					break
-				}
-			}
+		} else if err := validateModelsEntries(cfg["models"]); err != nil {
+			errs = append(errs, err)
 		}
 	case llmGatewayProviderBedrock:
 		// Bedrock: STATIC AWS creds (access + secret together) + an AWS region. secret_key is
@@ -309,6 +299,38 @@ func validateVertexEndpoint(raw string) error {
 	// A dedicated prediction host has no derivable path — require the full URL, not a bare host.
 	if path == "" && strings.HasSuffix(host, ".vertexai.goog") {
 		return fmt.Errorf("for a dedicated Vertex endpoint, paste the full chat-completions URL (host + path), not just the host")
+	}
+	return nil
+}
+
+// validateModelsEntries checks a comma-separated `models` list. Each entry is a bare model id
+// (the client-facing id IS the served name) or an "alias=served" pair — a client-facing alias
+// mapped to the model name the gateway forwards to the upstream. Aliasing lets two upstreams
+// expose the same underlying model under distinct ids. Rejects empty entries and malformed
+// pairs so the save path agrees with the gateway's registerModels.
+func validateModelsEntries(models string) error {
+	seen := map[string]bool{}
+	for _, part := range strings.Split(models, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return fmt.Errorf("models must be a comma-separated list with no empty entries")
+		}
+		if strings.Count(part, "=") > 1 {
+			return fmt.Errorf("models entry %q has more than one '=' (use alias=served)", part)
+		}
+		alias := part
+		if a, served, ok := strings.Cut(part, "="); ok {
+			alias = strings.TrimSpace(a)
+			if alias == "" || strings.TrimSpace(served) == "" {
+				return fmt.Errorf("models entry %q must be alias=served with both sides non-empty", part)
+			}
+		}
+		// The alias is the routing key — duplicates within one config would silently collide
+		// (last wins), so reject them at save time.
+		if seen[alias] {
+			return fmt.Errorf("models has a duplicate id/alias %q", alias)
+		}
+		seen[alias] = true
 	}
 	return nil
 }

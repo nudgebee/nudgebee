@@ -97,6 +97,18 @@ func (h *handler) handleEmbeddings(c *gin.Context) {
 		return
 	}
 
+	// Forward + meter the served name when the tenant aliased this model (models: "alias=served");
+	// ResolveCustom put it on the key's ModelName. Bare entries leave served == alias (no-op).
+	// Read from rc.DirectKey (the key that will actually be dialed), not the pre-pipeline local.
+	// Guard on rc.Provider == VLLM: if a pipeline rule redirected this custom model to a
+	// well-known provider, the stale DirectKey must not overwrite the model with the custom
+	// served name (wrong provider + corrupted metering).
+	if rc.Provider == schemas.VLLM {
+		if k := rc.DirectKey; k != nil && k.VLLMKeyConfig != nil && k.VLLMKeyConfig.ModelName != "" {
+			rc.Model = k.VLLMKeyConfig.ModelName
+		}
+	}
+
 	rm := &reqMeta{
 		reqID:     uuid.NewString(),
 		provider:  rc.Provider,

@@ -69,6 +69,11 @@ func TestProbe_VertexOpenAIStructuralOK(t *testing.T) {
 	if err := probe(context.Background(), cfg); err != nil {
 		t.Fatalf("valid vertex_openai config with a dedicated-endpoint URL should pass, got %v", err)
 	}
+	// An alias=served models entry passes.
+	cfg["models"] = "qwen-vertex=Qwen/Qwen3.6-35B-A3B-FP8, google/gemma-3-27b-it-maas"
+	if err := probe(context.Background(), cfg); err != nil {
+		t.Fatalf("valid vertex_openai config with an alias=served models entry should pass, got %v", err)
+	}
 }
 
 // TestProbe_BedrockStructuralOK: a well-formed Bedrock config passes the (structural) probe
@@ -121,6 +126,9 @@ func TestProbe_ConfigValidation(t *testing.T) {
 		{"vertex_openai invalid region", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "US_CENTRAL1", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m"}, "not a valid Vertex location"},
 		{"vertex_openai missing models", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`}, "models is required"},
 		{"vertex_openai empty model entry", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m1,,m2"}, "no empty entries"},
+		{"vertex_openai models empty alias", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "=served"}, "alias=served"},
+		{"vertex_openai models double equals", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "a=b=c"}, "more than one"},
+		{"vertex_openai duplicate alias", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "qwen=A, qwen=B"}, "duplicate"},
 		{"vertex_openai non-googleapis endpoint", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m", "endpoint": "internal.evil.com"}, "endpoint must be a Vertex AI host"},
 		{"vertex_openai bare dedicated host", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "asia-southeast1", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m", "endpoint": "mg-endpoint-abc.asia-southeast1-000000000000.prediction.vertexai.goog"}, "full chat-completions URL"},
 		{"vertex_openai dedicated host query only", map[string]string{"provider": "vertex_openai", "project_id": "p", "region": "asia-southeast1", "service_account_json": `{"client_email":"a","private_key":"b"}`, "models": "m", "endpoint": "mg-endpoint-abc.asia-southeast1-000000000000.prediction.vertexai.goog?foo=bar"}, "full chat-completions URL"},

@@ -115,6 +115,19 @@ func TestLLMGateway_ValidateConfig(t *testing.T) {
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
 		"provider": "vertex_openai", "project_id": "p", "region": "us-central1", "models": "m",
 	}), ""), "vertex_openai without service_account_json must error")
+	// models supports an alias=served syntax: a valid pair passes; a malformed pair errors.
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": validSA, "models": "qwen-vertex=Qwen/Qwen3.6-35B-A3B-FP8, google/gemma-3-27b-it-maas",
+	}), ""), "vertex_openai with an alias=served models entry must pass")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "vertex_openai", "project_id": "p", "region": "global", "service_account_json": validSA, "models": "=served",
+	}), ""), "vertex_openai with an empty alias must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "custom", "base_url": "https://ep.example/v1", "models": "a=b=c",
+	}), ""), "custom with a double-equals models entry must error")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "custom", "base_url": "https://ep.example/v1", "models": "qwen=A, qwen=B",
+	}), ""), "custom with a duplicate alias must error")
 	// endpoint is optional: a bare googleapis host passes, a full dedicated-endpoint URL
 	// (prediction.vertexai.goog) passes, a non-Vertex host is rejected.
 	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{

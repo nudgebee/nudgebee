@@ -122,6 +122,22 @@ func (h *handler) handleChat(c *gin.Context) {
 			fmt.Sprintf("%s->%s", rc.Decision.RequestedModel, rc.Decision.ResolvedModel))
 	}
 
+	// A custom upstream may serve its model under a name different from the client-facing alias
+	// the tenant configured (models: "alias=served"). ResolveCustom put the SERVED name on the
+	// key's ModelName; forward + meter that (so the upstream receives the id it expects and
+	// pricing hits the catalog), while the decision's RequestedModel keeps the alias — recorded
+	// on the usage row — for attribution. A bare `models` entry leaves served == alias, a no-op.
+	// Read from rc.DirectKey (the key that will actually be dialed) rather than the pre-pipeline
+	// local. Guard on rc.Provider == VLLM: a routing/substitution rule may have redirected a
+	// custom model to a well-known provider (changing rc.Provider) while the DirectKey resolved
+	// before the pipeline stays non-nil — overwriting the model there would send the custom
+	// served name to the wrong provider and corrupt metering.
+	if rc.Provider == schemas.VLLM {
+		if k := rc.DirectKey; k != nil && k.VLLMKeyConfig != nil && k.VLLMKeyConfig.ModelName != "" {
+			rc.Model = k.VLLMKeyConfig.ModelName
+		}
+	}
+
 	fingerprint := prefixFingerprint(rc.Identity, rc.Body)
 	sessionID, sessionSource := resolveSession(c, rc.Body, fingerprint)
 	rm := &reqMeta{

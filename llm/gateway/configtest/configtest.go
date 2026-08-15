@@ -98,6 +98,36 @@ func validVertexEndpoint(raw string) error {
 	return nil
 }
 
+// validateModelsEntries checks a comma-separated `models` list: each entry is a bare model id
+// or an "alias=served" pair (client-facing alias → the model name forwarded upstream). Rejects
+// empty entries and malformed pairs so the probe agrees with the save path + the gateway's
+// registerModels. (Mirrors validateModelsEntries in api-server's llm_gateway.go.)
+func validateModelsEntries(models string) error {
+	seen := map[string]bool{}
+	for _, part := range strings.Split(models, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return fmt.Errorf("models must be a comma-separated list with no empty entries")
+		}
+		if strings.Count(part, "=") > 1 {
+			return fmt.Errorf("models entry %q has more than one '=' (use alias=served)", part)
+		}
+		alias := part
+		if a, served, ok := strings.Cut(part, "="); ok {
+			alias = strings.TrimSpace(a)
+			if alias == "" || strings.TrimSpace(served) == "" {
+				return fmt.Errorf("models entry %q must be alias=served with both sides non-empty", part)
+			}
+		}
+		// The alias is the routing key — a duplicate within one config would silently collide.
+		if seen[alias] {
+			return fmt.Errorf("models has a duplicate id/alias %q", alias)
+		}
+		seen[alias] = true
+	}
+	return nil
+}
+
 // normalizeBaseURL trims a trailing slash and an optional trailing /v1, so a base URL works
 // whether or not the user included the version path — the vLLM lane appends /v1/... itself.
 // (Kept in sync with the identical helper in ee/providers, which does the same at dial time.)
@@ -197,12 +227,8 @@ func probe(ctx context.Context, cfg map[string]string) error {
 		// entries (e.g. "m1,,m2"), so the probe and the save path agree.
 		if models := strings.TrimSpace(cfg["models"]); models == "" {
 			return fmt.Errorf("models is required for Vertex (OpenAI-compatible) — list the MaaS model id(s), comma-separated")
-		} else {
-			for _, part := range strings.Split(models, ",") {
-				if strings.TrimSpace(part) == "" {
-					return fmt.Errorf("models must be a comma-separated list with no empty entries")
-				}
-			}
+		} else if err := validateModelsEntries(models); err != nil {
+			return err
 		}
 		return nil
 	case "bedrock":
