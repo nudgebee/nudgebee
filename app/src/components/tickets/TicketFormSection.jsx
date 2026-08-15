@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box } from '@mui/material';
 import { Input } from '@ui/Input';
-import { Form } from '@ui/Form';
+import { Form } from '@shared/forms/Form';
 import TicketsDescriptionEditor from './TicketsDescriptionEditor';
 import apiTickets from '@api1/tickets';
 import PropTypes from 'prop-types';
