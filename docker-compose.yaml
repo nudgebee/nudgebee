@@ -42,6 +42,9 @@ x-app-common: &app-common
   LLM_SERVER_URL: http://llm-server:8000
   WORKFLOW_SERVER_URL: http://workflow-server:8000
   TICKET_SERVICE_URL: http://ticket-server:8000
+  # llm-server reads TICKET_SERVER_URL (default :8080); ticket-server listens on
+  # 8000 in compose, so point it there too.
+  TICKET_SERVER_URL: http://ticket-server:8000
   NOTIFICATION_SERVICE_URL: http://notifications-server:8080
   ML_SERVICE_URL: http://ml-k8s-server:9999
   # Postgres over the compose network uses no TLS
