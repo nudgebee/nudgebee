@@ -1,12 +1,14 @@
 package integrations
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
 )
@@ -109,15 +111,17 @@ func freshdeskProbe(rawURL, apiKey string) error {
 	}
 	endpoint := base + "/api/v2/tickets?per_page=1"
 
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return fmt.Errorf("freshdesk: build request: %w", err)
-	}
-	req.SetBasicAuth(apiKey, "X")
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: freshdeskHTTPTimeout}
-	resp, err := client.Do(req)
+	// Route through the shared client (SSRF protection + connection reuse), as
+	// other integrations do. Freshdesk basic auth = API key in the username,
+	// literal "X" in the password.
+	resp, err := common.HttpGet(
+		endpoint,
+		common.HttpWithHeaders(map[string]string{
+			"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(apiKey+":X")),
+			"Accept":        "application/json",
+		}),
+		common.HttpWithTimeout(freshdeskHTTPTimeout),
+	)
 	if err != nil {
 		return fmt.Errorf("freshdesk connection failed (URL: %s): %w", base, err)
 	}
