@@ -15,8 +15,10 @@ import (
 const (
 	// AgentAwsOrchestratorName is the name for the AWS orchestrator.
 	AgentAwsOrchestratorName = "aws_orchestrator"
-	// AwsAgentName is the name for the AWS sub-agent (still registered; used
-	// by other orchestrators referencing the sub-agent directly).
+	// AwsAgentName is retained for one release as a compat shim after the
+	// wrapping AWS agent was retired in Phase 3d (#32503). The short handle
+	// `"aws"` now resolves to `aws_execute` via tool alias (see
+	// tools/tool_cloud_aws.go init).
 	AwsAgentName = "aws"
 )
 

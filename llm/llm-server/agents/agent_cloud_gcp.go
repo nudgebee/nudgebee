@@ -10,24 +10,16 @@ import (
 // Tool/Agent Constants
 const GcpAgentName = "gcp"
 
-func init() { // This describes the 'gcp' agent when it is used as a tool by another agent (e.g., gcp_debug).
-	toolDescription := `Interacts with Google Cloud Platform (GCP) services to retrieve information or perform actions using the gcloud CLI. Covers all GCP capabilities: Compute, GKE, Cloud Storage, Cloud SQL, Cloud Run, Cloud Functions, Cloud Logging, Cloud Monitoring, Pub/Sub, IAM, Billing, and more. This tool is "smart" and handles its own project and resource discovery — use it for any GCP investigation without needing separate reconnaissance. Returns gcloud CLI output and summaries.`
-	toolInput := "Natural Language query about GCP resources or operations."
-	toolOutput := "Output of gcloud Cli tool"
-	core.RegisterNBAgentFactoryAndTool(GcpAgentName, func(accountId string) (core.NBAgent, error) {
-		return newGcpAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
-}
+// Phase 3d (#32503): agent registration removed. Guidance now lives on
+// GcpCliTool.ToolPrompt(); the wrapping agent added a ReAct-loop hop with no
+// data-transformation of its own. The short handle "gcp" continues to resolve
+// to gcloud_execute via tool alias (see tool_cloud_gcp.go init). Kept
+// type/methods for one release so external references to GcpAgentName still
+// compile; delete after bake.
 
-func newGcpAgent(accountId string) core.NBAgent {
-	return GcpAgent{
-		accountId: accountId,
-	}
-}
-
-type GcpAgent struct {
-	accountId string
-}
+// GcpAgent is deprecated (Phase 3d #32503). Type kept for compat; runtime
+// registration and guidance live on GcpCliTool now.
+type GcpAgent struct{}
 
 func (a GcpAgent) GetName() string {
 	return GcpAgentName

@@ -7,12 +7,31 @@ import (
 
 var nbSystemTools = map[string]func(accountId string) (NBTool, error){}
 
+// toolAliases maps a deprecated/short name → the canonical tool name that
+// should resolve. Applied inside GetNBTool ONLY (resolution path). Deliberately
+// NOT enumerated by ListRegisteredSystemToolNames or by search_tools — the
+// canonical name is the only one the LLM should see, so aliases are back-compat
+// plumbing for historical delegate calls, stored conversations, and any tool-name
+// resolution the LLM produces from prior-turn cached knowledge.
+var toolAliases = map[string]string{}
+
 func RegisterNBToolFactory(tool string, toolFactory func(accountId string) (NBTool, error)) {
 	slog.Info("registering tool", "tool", tool)
 	if _, ok := nbSystemTools[strings.ToLower(tool)]; ok {
 		slog.Warn("tool already registered", "tool", tool)
 	}
 	nbSystemTools[strings.ToLower(tool)] = toolFactory
+}
+
+// RegisterNBToolAlias adds a deprecated/short name that resolves to the same
+// tool as `canonical`. Applied in GetNBTool only — the alias is NOT enumerated
+// in the tool list, so search_tools / the planner see only the canonical name.
+// Intended for Phase 3 retirement of thin CLI-wrapper agents: e.g.
+// `RegisterNBToolAlias("aws", ToolExecuteAwsCliCommand)` keeps stored history
+// referencing `delegate_agent(tools=["aws"])` resolving after the wrapping
+// agent is unregistered.
+func RegisterNBToolAlias(alias, canonical string) {
+	toolAliases[strings.ToLower(alias)] = strings.ToLower(canonical)
 }
 
 // ListRegisteredSystemToolNames returns every tool name registered via
@@ -100,6 +119,11 @@ func ListAccountSourcedTools(accountId string) []NBTool {
 // already includes the MCP source) would fail validation, return a generic
 // 500, and surface to users as an opaque "internal error".
 func GetNBTool(accountId string, toolName string) (NBTool, bool) {
+	// Resolve alias to canonical before lookup so back-compat names hit the
+	// same factory as the canonical registration.
+	if canonical, isAlias := toolAliases[strings.ToLower(toolName)]; isAlias {
+		toolName = canonical
+	}
 	if toolFactory := nbSystemTools[strings.ToLower(toolName)]; toolFactory != nil {
 		if tool, err := toolFactory(accountId); err == nil {
 			return tool, true

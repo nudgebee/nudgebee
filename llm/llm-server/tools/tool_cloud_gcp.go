@@ -16,6 +16,26 @@ func init() {
 	core.RegisterNBToolFactory(ToolExecuteGcpCliCommand, func(accountId string) (core.NBTool, error) {
 		return GcpCliTool{}, nil
 	})
+	// Phase 3d (#32503): the retired GcpAgent used the short handle "gcp". Any
+	// stored delegate_agent(tools=["gcp"]) input, or LLM turn that saw "gcp" as
+	// a discoverable name before retirement, resolves to this canonical tool.
+	core.RegisterNBToolAlias("gcp", ToolExecuteGcpCliCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the gcp_orchestrator's `gcp_lean.yaml` prompt is NOT loaded.
+// Deliberately slim: safety-critical + easy-to-miss gcloud CLI gotchas only.
+// Orchestrator prompt owns the investigation methodology.
+func (t GcpCliTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs or make assumptions from empty results.",
+		"**IAM safety:** NEVER attempt to modify your own IAM permissions or bindings. `gcloud projects add-iam-policy-binding`, `gcloud projects set-iam-policy`, `gsutil iam set` are OFF LIMITS for granting yourself access. Report missing permissions as a finding.",
+		"**Project already set:** GCP project is pre-configured from account credentials. Do NOT run `gcloud config set project` before commands — pass `--project <project_id>` inline as a flag instead. Config-set slows execution and is unnecessary.",
+		"**--format gotcha:** `--format=json` is the safe default for parseable output. If using `--format=table`, you MUST specify columns in single quotes: `--format='table(name,region,status)'`. Bare `--format=table` fails because gcloud requires the projection.",
+		"**Tool name discipline:** The canonical tool name is `gcloud_execute`. Do NOT emit variants like `gcp_cloud_logging`, `gcp_cloud_monitoring`, `gcp_logging`, or `google_cloud` — those don't exist and the planner will fail to resolve them.",
+		"**High-volume queries:** Always use `--limit`, `resource.type` / label filters, and a bounded time window for logs, events, or lists — unbounded queries saturate context.",
+	}
 }
 
 type GcpCliTool struct{}

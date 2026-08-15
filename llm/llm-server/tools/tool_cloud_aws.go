@@ -11,6 +11,29 @@ import (
 
 const ToolExecuteAwsCliCommand = "aws_execute"
 
+func init() {
+	// Phase 3d (#32503): the retired AwsAgent used the short handle "aws".
+	// Preserve resolvability for stored delegate_agent(tools=["aws"]) calls.
+	core.RegisterNBToolAlias("aws", ToolExecuteAwsCliCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the aws_orchestrator's rich `aws_lean.yaml` prompt is NOT loaded.
+// Deliberately slim: only the safety-critical and easy-to-miss syntax rules
+// that MUST survive delegate context. The orchestrator prompt still owns
+// investigation methodology, decision trees, and rich examples.
+func (t AwsCliTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs, ARNs, or IPs — empty CLI results = 'not found'.",
+		"**IAM safety:** NEVER attempt to modify your own IAM permissions or roles to grant access. `aws iam add-user-policy`, `aws iam attach-role-policy`, and similar are OFF LIMITS. Report missing permissions as a finding.",
+		"**Filter syntax gotcha:** `--filters` is plural. Values follow `Name=<filter>,Values=<value>` — e.g. `--filters Name=vpc-id,Values=vpc-12345`. Common wrong forms: `--filter …` (singular), `vpc-id=vpc-12345` (missing Name=/Values=).",
+		"**Group-by syntax gotcha:** `--group-by` values are `Type=DIMENSION,Key=<KEY>` space-separated between groups — e.g. `--group-by Type=DIMENSION,Key=SERVICE Type=DIMENSION,Key=REGION`. NOT `Type=SERVICE Type=REGION` and NOT comma-separated between groups.",
+		"**Cost Explorer credits:** For gross spend, exclude credits/refunds explicitly — `--filter '{\"Not\":{\"Dimensions\":{\"Key\":\"RECORD_TYPE\",\"Values\":[\"Credit\",\"Refund\"]}}}'`. Net cost is ~$0 on credit-covered accounts and misleads reporting.",
+		"**Config-provenance gate:** BEFORE proposing SG/NACL/routing changes for an app problem, check EC2 UserData / Launch Template / App Settings first — configuration issues look like network issues but aren't.",
+	}
+}
+
 // Pre-compiled regexes for shell syntax detection in aws_execute commands.
 var shellSyntaxRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`\bfor\b.*\bdo\b`),   // for ... do loop

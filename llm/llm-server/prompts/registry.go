@@ -26,7 +26,6 @@ const (
 	PromptTimeHandlingRules                  = "time_handling_rules"
 	PromptVoteSubject                        = "vote_subject"
 	PromptUnifiedContextMemory               = "unified_context_memory"
-	PromptAws                                = "aws"
 	PromptAwsLean                            = "aws_lean"
 	PromptAwsObservability                   = "aws_observability"
 	PromptAzureLean                          = "azure_lean"
@@ -85,7 +84,6 @@ var promptCategories = map[string]PromptCategory{
 	PromptTimeHandlingRules:                  CategoryFragments,
 	PromptVoteSubject:                        CategoryUtilities,
 	PromptUnifiedContextMemory:               CategoryFragments,
-	PromptAws:                                CategoryAgents,
 	PromptAwsLean:                            CategoryAgents,
 	PromptAwsObservability:                   CategoryAgents,
 	PromptAzureLean:                          CategoryAgents,

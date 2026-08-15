@@ -13,6 +13,29 @@ import (
 
 const ToolExecuteKubectlCommand = "kubectl_execute"
 
+func init() {
+	// Phase 3d (#32503): the retired KubectlAgent used the short handle "kubectl".
+	// Preserve resolvability for stored delegate_agent(tools=["kubectl"]) calls.
+	core.RegisterNBToolAlias("kubectl", ToolExecuteKubectlCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the k8s_orchestrator's `k8s_lean.yaml` prompt is NOT loaded. Slim
+// safety + easy-to-miss kubectl output-scale gotchas only; orchestrator
+// prompt owns investigation methodology.
+func (m KubectlExecuteTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Always specify a namespace via `-n <namespace>` (or `--all-namespaces` for cluster-wide reads). Never assume a namespace — if missing on an execute request, resolve via `resource_search_execute` or one concise clarification before running.",
+		"**Read-only investigations first:** Prefer `get`, `describe`, `logs` over mutating commands unless the request is explicitly an action. Reserve `--force` / `--grace-period=0` for the user's explicit ask.",
+		"**RBAC safety:** If a command returns Forbidden / 403, report the missing permission as a finding. NEVER modify RBAC or ServiceAccount bindings to grant yourself access.",
+		"**Output-scale gotchas:** AVOID `-o json` / `-o yaml` on `-A` / `--all-namespaces` without filters — output can saturate context and time out. Prefer default output, `-o wide`, or `-o custom-columns=...` for broad checks. For counting, use `--no-headers` (with `| wc -l`) so the header row isn't counted.",
+		"**Field selectors > client-side filtering:** `--field-selector=status.phase=Running`, `--selector=app=xxx` at the API is faster than piping to grep.",
+		"**Log discipline:** For `kubectl logs`, pipe through `grep`, `tail`, or `head` when volume is large. If a container's logs appear empty, consider `--previous` (last crash) or `-c <container>` for multi-container pods.",
+		"**Quoting:** Always quote complex arguments with special characters — `-o custom-columns=...`, `-o jsonpath=...`, `-l`, `--field-selector`, patterns with `[`, `(`, `?`, `@`, `*`. Example: `kubectl get pods -A -o 'custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace'`.",
+	}
+}
+
 // kubectlStderrNoisePrefixes are kubectl stderr lines that the workspace pod's
 // /execute handler merges into stdout (because cmd.Stdout and cmd.Stderr point at
 // the same buffer). They are informational notices, not actual command output, and

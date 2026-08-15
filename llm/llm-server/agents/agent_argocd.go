@@ -47,8 +47,8 @@ func (l ArgoCDAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.
 
 	// Add core tools for comprehensive ArgoCD debugging
 	supportedToolNames := []string{
-		KubectlAgentName, // For Kubernetes resource debugging
-		GithubAgentName,  // For Git repository analysis
+		tools.ToolExecuteKubectlCommand, // Direct kubectl for K8s resource debugging (Phase 3d: agent wrapper retired)
+		GithubAgentName,                 // For Git repository analysis
 	}
 
 	for _, toolName := range supportedToolNames {
@@ -130,7 +130,7 @@ func (l ArgoCDAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Input: valid argocd command",
 			"Output: ArgoCD application status, sync information, and deployment details",
 		},
-		KubectlAgentName: {
+		tools.ToolExecuteKubectlCommand: {
 			"Use for Kubernetes resource inspection, logs, events, and troubleshooting",
 			"Input: natural language query about Kubernetes resources",
 			"Output: Kubernetes resource details, pod status, logs, events",

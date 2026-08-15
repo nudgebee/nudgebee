@@ -16,6 +16,25 @@ func init() {
 	core.RegisterNBToolFactory(ToolExecuteAzureCliCommand, func(accountId string) (core.NBTool, error) {
 		return AzureCliTool{}, nil
 	})
+	// Phase 3d (#32503): the retired AzureAgent used the short handle "azure".
+	// Preserve resolvability for stored delegate_agent(tools=["azure"]) calls.
+	core.RegisterNBToolAlias("azure", ToolExecuteAzureCliCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the azure_orchestrator's `azure_lean.yaml` prompt is NOT loaded.
+// Deliberately slim: safety-critical + easy-to-confuse `az` subcommand
+// gotchas only. Orchestrator prompt owns investigation methodology.
+func (t AzureCliTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs, IPs, or names — empty CLI results mean 'not found'.",
+		"**RBAC safety:** NEVER attempt to modify your own role assignments or permissions. `az role assignment create`, `az ad app permission grant` for self are OFF LIMITS. Report AuthorizationFailed / 403 as a finding: state which command failed and which role is required on which scope.",
+		"**Monitoring disambiguation:** `az monitor metrics list` = numeric time-series (CPU, DTU, latency). `az monitor activity-log list` = control-plane audit events (who did what). `az monitor metrics alert list` = configured alert rules. Not interchangeable. Never install extensions to list alerts — the built-in works.",
+		"**Subcommand discipline:** When unsure of a subcommand, run `az <service> --help` ONCE. Do NOT fall back to `az resource list` or `az account list` as a substitute for a specific service command.",
+		"**Cost/billing:** Use `az consumption usage list` (built-in, in preview but reliable) with `--query` JMESPath. Do NOT use `az costmanagement` (requires extension). Do NOT attempt `az extension add` — if a command needs an unavailable extension, report and suggest an alternative.",
+		"**OS-aware VM run-command:** Before `az vm run-command invoke`: (1) check power state — do not attempt on a deallocated VM. (2) verify VM agent is Ready. (3) detect OS via `az vm show --query storageProfile.osDisk.osType -o tsv`. Linux → RunShellScript. Windows → RunPowerShellScript. Never add `--query` / `-o` flags to `run-command invoke` — you need the full [stdout] and [stderr] visible.",
+	}
 }
 
 type AzureCliTool struct{}

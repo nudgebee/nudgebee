@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	"strings"
 	"sync"
 	"time"
@@ -133,6 +134,44 @@ func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 // agent runs kubectl directly, so raw log output lands in its own scratchpad).
 func (l *K8sLeanAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
 	return filterKubectlLogResponse(toolRequest, toolResponse)
+}
+
+// ---- shared kubectl log condenser (moved from agent_kubectl.go in Phase 3d) ----
+
+// filterKubectlLogResponse condenses a kubectl_execute response to error-context log
+// lines when the command was a `kubectl logs` invocation. For any other command, or an
+// unparseable payload, the response is returned unchanged. Shared by the k8s
+// orchestrator (lean + native) via UpdateToolResponseForPlanner so log output is
+// condensed identically wherever kubectl_execute lands.
+//
+// Kept here (not in the k8s reduced-core file) so the two orchestrator variants
+// keep a single import site for the helper they both use, and so removing the
+// retired kubectl wrapper agent in Phase 3d didn't need a new "helpers" file.
+func filterKubectlLogResponse(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
+	if !strings.EqualFold(toolRequest.Tool, tools.ToolExecuteKubectlCommand) {
+		return toolResponse
+	}
+	// Only kubectl logs output is condensed; everything else passes through untouched.
+	if !strings.Contains(toolRequest.ToolInput, "kubectl logs") {
+		return toolResponse
+	}
+
+	resultsMap := map[string]any{}
+	if err := common.UnmarshalJson([]byte(toolResponse), &resultsMap); err != nil {
+		return toolResponse
+	}
+
+	stdout := ""
+	stderr := ""
+	if v, isOk := resultsMap["stdout"].(string); isOk {
+		stdout = v
+	}
+	if v, isOk := resultsMap["stderr"].(string); isOk {
+		stderr = v
+	}
+
+	logs := tools.GetErrorLinesFromLogStringOrDefault(stdout+stderr, true)
+	return strings.Join(logs, "\n")
 }
 
 // ---- shared cache + memory-nudge helpers (used by lean + native) ----
