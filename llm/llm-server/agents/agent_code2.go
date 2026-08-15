@@ -762,6 +762,11 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	pollWm := workspace.NewWorkspaceManagerWithTimeout(30 * time.Second)
 	lastProgress := ""
 
+	// Tracks the last status persisted per step (keyed by tool_id) so we only
+	// write a row when a step first appears or transitions to a terminal state —
+	// collapsing per-poll re-writes to ~2 per step regardless of poll count.
+	persistedStepStatus := map[string]string{}
+
 	const maxConsecutiveErrors = 12 // 12 * 5s = 60s of consecutive failures before giving up
 	const maxPollDuration = 30 * time.Minute
 	consecutiveErrors := 0
@@ -805,6 +810,12 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 					agentRequest.MessageId, progress, core.ConversationStatusInProgress,
 				)
 			}
+		}
+
+		// Persist the steps taken so far as tool-call rows so the UI shows them
+		// live, like other agents. Idempotent + terminal-safe via the dedup map.
+		if invs, ok := statusResp["tool_invocations"].([]any); ok {
+			persistCodeAnalysisSteps(ctx, agentRequest, invs, persistedStepStatus)
 		}
 
 		pollStatus, _ := statusResp["status"].(string)
@@ -946,6 +957,211 @@ func extractAgentResponseWithTokenUsage(respBytes []byte) codeAnalysisResult {
 	}
 
 	return codeAnalysisResult{AgentResponse: agentResp, TokenUsage: tu}
+}
+
+// maxCodeStepFieldBytes caps the size of the input/output stored per persisted
+// code-analysis step row, bounding DB row size and UI payload.
+const maxCodeStepFieldBytes = 16384
+
+// minCodeStepValueCap is the floor for the per-value shrink loop in
+// sanitizeCodeStepArgs; below this the map itself is pathological (thousands of
+// keys) and we give up on JSON validity rather than loop forever.
+const minCodeStepValueCap = 256
+
+// sanitizeCodeStepArgs renders a code-analysis step's input for persistence.
+// Two guarantees over a plain TruncateHead(asJSONString(...)):
+//   - planner working-memory keys ("_tool_outputs", "__intention") are dropped —
+//     they are internal plumbing (the thought is persisted separately) and can
+//     arrive from older code-analysis builds that still track them;
+//   - the result stays valid JSON under maxCodeStepFieldBytes by shrinking
+//     individual values instead of slicing the serialized blob, which left an
+//     unparseable fragment the UI could only show as a raw escaped dump.
+func sanitizeCodeStepArgs(v any) string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return core.TruncateHead(asJSONString(v), maxCodeStepFieldBytes)
+	}
+
+	clean := make(map[string]any, len(m))
+	for k, val := range m {
+		if k == "_tool_outputs" || k == "__intention" {
+			continue
+		}
+		clean[k] = val
+	}
+
+	valueCap := maxCodeStepFieldBytes
+	for {
+		b, err := json.Marshal(clean)
+		if err != nil {
+			return core.TruncateHead(fmt.Sprintf("%v", clean), maxCodeStepFieldBytes)
+		}
+		if len(b) <= maxCodeStepFieldBytes {
+			return string(b)
+		}
+		if valueCap < minCodeStepValueCap {
+			return core.TruncateHead(string(b), maxCodeStepFieldBytes)
+		}
+		for k, val := range clean {
+			s, isStr := val.(string)
+			if !isStr {
+				// Oversized non-string values (nested maps/arrays) are replaced by a
+				// truncated string of their JSON — a type change, but the row is for
+				// display and the alternative is dropping the value entirely.
+				if enc := asJSONString(val); len(enc) > valueCap {
+					clean[k] = core.TruncateHead(enc, valueCap) + "… [truncated]"
+				}
+				continue
+			}
+			if len(s) > valueCap {
+				clean[k] = core.TruncateHead(s, valueCap) + "… [truncated]"
+			}
+		}
+		valueCap /= 2
+	}
+}
+
+// mapCodeStepStatus maps a code-analysis tool-invocation status string to the
+// llm-server tool-call status enum. A still-running step is in_progress; an
+// errored/failed step is error; anything terminal-and-successful is success.
+func mapCodeStepStatus(status string) toolcore.NBToolResponseStatus {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running", "in_progress", "pending":
+		return toolcore.NBToolResponseStatusInProgress
+	case "error", "failed", "failure":
+		return toolcore.NBToolResponseStatusError
+	default: // "", "success", "completed", "complete", "ok"
+		return toolcore.NBToolResponseStatusSuccess
+	}
+}
+
+// persistCodeAnalysisSteps upserts the code-analysis service's tool invocations
+// as llm_conversation_tool_calls rows under agent_code_2's agent row, so the UI
+// can render the steps the coding agent took live (like other agents). It is
+// called on every /status poll; the `persisted` map (toolId → last status)
+// de-dupes so a step is only written when it first appears or transitions to a
+// terminal state. Non-fatal: failures are logged and skipped.
+func persistCodeAnalysisSteps(ctx *security.RequestContext, query core.NBAgentRequest, invocations []any, persisted map[string]string) {
+	// Fail-fast on missing tenant/agent scope: AccountId scopes every row to a
+	// tenant (an unscoped write would risk cross-tenant leakage), and AgentId is
+	// the row these steps hang off of.
+	if query.AccountId == "" || query.AgentId == "" || len(invocations) == 0 {
+		return
+	}
+
+	for i, raw := range invocations {
+		inv, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		toolName, _ := inv["tool_name"].(string)
+		if toolName == "" {
+			toolName = "code_analysis_step"
+		}
+
+		// Stable per-step identity across polls: prefer the tracker's step_number,
+		// fall back to slice index (append order is stable within a run).
+		stepNumber := i + 1
+		if sn, ok := inv["step_number"].(float64); ok && sn > 0 {
+			stepNumber = int(sn)
+		}
+		toolId := fmt.Sprintf("code-%03d-%s", stepNumber, toolName)
+
+		status := mapCodeStepStatus(asString(inv["status"]))
+		statusStr := string(status)
+
+		// Skip if we've already persisted this step at this (or a later, terminal)
+		// status. Once terminal, never rewrite — the DAO upsert also guards this.
+		if prev, seen := persisted[toolId]; seen {
+			if prev == statusStr {
+				continue
+			}
+			if prev == string(toolcore.NBToolResponseStatusSuccess) ||
+				prev == string(toolcore.NBToolResponseStatusError) {
+				continue
+			}
+		}
+
+		toolArgs := sanitizeCodeStepArgs(inv["input"])
+		toolResult := core.TruncateHead(asString(inv["output"]), maxCodeStepFieldBytes)
+		thought, _ := inv["thought"].(string)
+		metadataBytes := buildCodeStepMetadata(inv)
+
+		err := core.GetConversationDao().SaveConversationToolCall(
+			query.ConversationId,
+			query.AccountId,
+			query.UserId,
+			query.MessageId,
+			query.AgentId,
+			toolId,
+			toolName,
+			toolArgs,
+			thought,
+			"", // toolArgsSql
+			toolResult,
+			status,
+			toolcore.NBToolTypeTool,
+			nil,           // childAgentId
+			nil,           // references
+			metadataBytes, // metadata (e.g. real per-step duration_ns)
+			nil,           // memoryRefs — code2 analysis steps aren't ReAct-attributed
+		)
+		if err != nil {
+			ctx.GetLogger().Warn("code: failed to persist analysis step",
+				"error", err, "tool_id", toolId, "tool_name", toolName)
+			continue
+		}
+		persisted[toolId] = statusStr
+	}
+}
+
+// buildCodeStepMetadata serializes per-step metadata for the tool-call row —
+// currently the real tool runtime in nanoseconds. The UI prefers this over the
+// row-timestamp diff, which for polled steps reflects poll cadence (or zero when
+// a fast step completes within one poll), not the actual runtime. The duration
+// arrives as a Go duration string (e.g. "2.275206ms"). Returns nil when there is
+// nothing usable to store.
+func buildCodeStepMetadata(inv map[string]any) []byte {
+	durStr, _ := inv["duration"].(string)
+	if durStr == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(durStr)
+	if err != nil || d <= 0 {
+		return nil
+	}
+	b, err := json.Marshal(map[string]any{"duration_ns": d.Nanoseconds()})
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// asString renders a value as a display string: strings pass through; everything
+// else is JSON-encoded (falling back to fmt for unmarshalable values).
+func asString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return asJSONString(v)
+}
+
+// asJSONString JSON-encodes a value, falling back to fmt on error.
+func asJSONString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if b, err := json.Marshal(v); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 // recordCodeAnalysisTokenUsage inserts a token usage record for code-analysis work.
@@ -2748,6 +2964,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	statusEndpoint := fmt.Sprintf("/status/%s", url.PathEscape(analysisID))
 	pollWm := workspace.NewWorkspaceManagerWithTimeout(30 * time.Second)
 	lastProgress := ""
+	persistedStepStatus := map[string]string{}
 	const maxConsecutiveErrors = 12
 	const maxPollDuration = 30 * time.Minute
 	consecutiveErrors := 0
@@ -2791,6 +3008,11 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 					query.MessageId, progress, core.ConversationStatusInProgress,
 				)
 			}
+		}
+
+		// Persist the steps taken so far as tool-call rows (live display).
+		if invs, ok := statusResp["tool_invocations"].([]any); ok {
+			persistCodeAnalysisSteps(ctx, query, invs, persistedStepStatus)
 		}
 
 		pollStatus, _ := statusResp["status"].(string)

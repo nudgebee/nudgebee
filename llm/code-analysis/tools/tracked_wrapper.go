@@ -123,6 +123,14 @@ func (w *TrackedToolWrapper) Execute(ctx context.Context, input map[string]any) 
 func (w *TrackedToolWrapper) sanitizeInput(input map[string]any) map[string]any {
 	inputForTracking := make(map[string]any)
 	for k, v := range input {
+		// Planner-injected working memory: "__intention" is tracked separately as
+		// the invocation's intention, and "_tool_outputs" is a bulky echo of
+		// earlier tool outputs (submit_analysis only). Recording them here bloats
+		// the tracked parameters past downstream persistence caps and shows
+		// internal plumbing in the UI.
+		if k == "_tool_outputs" || k == "__intention" {
+			continue
+		}
 		// Sanitize sensitive fields
 		if k == "credentials" || k == "password" || k == "token" || k == "github_token" {
 			inputForTracking[k] = "***REDACTED***"

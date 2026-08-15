@@ -80,6 +80,30 @@ func TestSanitizeInput_KeepsPathsRedactsSecrets(t *testing.T) {
 	}
 }
 
+// TestSanitizeInput_DropsPlannerWorkingMemory verifies planner-injected keys
+// never reach the tracked record: "__intention" is tracked separately as the
+// invocation intention, and "_tool_outputs" (injected for submit_analysis) is a
+// bulky echo of earlier tool outputs that blows past downstream persistence
+// caps and renders as a raw dump in the UI.
+func TestSanitizeInput_DropsPlannerWorkingMemory(t *testing.T) {
+	w := &TrackedToolWrapper{}
+	in := map[string]any{
+		"__intention":   "resolve conflict markers",
+		"_tool_outputs": map[string]string{"tool_call_file_view_step_10": strings.Repeat("x", 10000)},
+		"answer":        "the conflict is in code_agent_pr.go",
+	}
+	out := w.sanitizeInput(in)
+
+	for _, k := range []string{"__intention", "_tool_outputs"} {
+		if _, present := out[k]; present {
+			t.Errorf("%s should be dropped from tracked input", k)
+		}
+	}
+	if out["answer"] != in["answer"] {
+		t.Errorf("answer should be preserved, got %v", out["answer"])
+	}
+}
+
 // TestTrackedWrapper_TracksExactlyOnce is the regression guard for the dual-write
 // fix: a single Execute must record exactly one invocation on the shared tracker.
 // (The planner's own tracking is suppressed for wrapped tools; see
