@@ -1367,19 +1367,17 @@ func DeleteIntegrationConfig(
 		slog.Error("integrations: failed to begin transaction", "error", err)
 		return err
 	}
+	// The commit is explicit, below, so the audit write and the proxy-config push
+	// do not run while this transaction still holds its delete row locks. This
+	// closure only has to release the transaction on every path that did not
+	// commit. Rollback of an already-committed tx returns sql.ErrTxDone.
+	committed := false
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Rollback()
 			slog.Error("unable to to recover", p)
-		} else if err != nil {
+		} else if !committed {
 			_ = tx.Rollback()
-		} else {
-			if commitErr := tx.Commit(); commitErr != nil {
-				slog.Error("integrations: commit failed", "error", commitErr)
-				err = commitErr
-			} else {
-				InvalidateIntegrationCache()
-			}
 		}
 	}()
 
@@ -1599,6 +1597,20 @@ func DeleteIntegrationConfig(
 		slog.Error("integrations: failed to delete integration", "error", err)
 		return err
 	}
+
+	// Commit before the audit write and the proxy-config push. Neither uses this
+	// tx: audit.CreateAudit acquires its own manager (ClickHouse Warehouse when
+	// enabled — a remote round-trip — else a second Metastore connection), and
+	// TriggerProxyConfigPush -> queryProxyDatasources takes a SECOND connection
+	// from the same bounded Metastore pool. Running them before the commit held
+	// the delete row locks idle-in-transaction and let concurrent deletes contend
+	// with themselves for pool slots.
+	if err = tx.Commit(); err != nil {
+		slog.Error("integrations: commit failed", "error", err)
+		return err
+	}
+	committed = true
+	InvalidateIntegrationCache()
 
 	// Audit
 	auditEvent := audit.Audit{
