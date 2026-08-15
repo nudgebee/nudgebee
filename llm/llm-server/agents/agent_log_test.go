@@ -130,6 +130,35 @@ func TestClassifyLogMode(t *testing.T) {
 			original: "",
 			want:     logModeInvestigation,
 		},
+
+		// Enumeration's noun list must cover symptom words, not just the
+		// "error" family — otherwise a plain listing request that happens to
+		// describe pods as "failing"/"broken"/"crashed" (rather than saying
+		// "errors") falls through to the weak-symptom investigation tier and
+		// gets routed into the heavier mandatory-shell_execute workflow for
+		// what the user framed as "just list them".
+		{"list failing pods", "list the pods that are failing in namespace nudgebee", "", logModeEnumeration},
+		{"show broken services", "show me the broken services in prod", "", logModeEnumeration},
+		{"list crashed pods", "list crashed pods in nudgebee", "", logModeEnumeration},
+
+		// Stem/wildcard forms (fail\w*, crash\w*) and optional plurals catch
+		// variants a literal enumeration would miss: past tense ("failed", not
+		// just "failures"/"failing"), compound crash states that don't end at
+		// a word boundary after "crash" ("crashloopbackoff"), and singular
+		// nouns ("exception"/"issue", not just their plurals). Without these,
+		// "list the pods that failed" fell all the way through to ROUTINE —
+		// worse than the investigation-mode misroute this file's earlier
+		// cases fix, since ROUTINE doesn't even get the weak-symptom fallback.
+		{"list failed pods", "list the pods that failed in namespace nudgebee", "", logModeEnumeration},
+		{"list crashloopbackoff pods", "list crashloopbackoff pods in nudgebee", "", logModeEnumeration},
+		{"list exception singular", "list exception in api-server", "", logModeEnumeration},
+		{"show issue singular", "show issue with pod", "", logModeEnumeration},
+
+		// A strong causal ask must win even when an enumeration verb also
+		// appears in the same query — enumeration checking first (as it did
+		// before this fix) would discard the causal ask entirely.
+		{"causal ask co-occurring with enumeration verb", "show me the errors and explain why it broke", "", logModeInvestigation},
+		{"why are pods failing", "why are the pods failing in cron-scheduler", "", logModeInvestigation},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

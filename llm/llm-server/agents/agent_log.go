@@ -44,21 +44,35 @@ func logModeName(m logMode) string {
 	}
 }
 
-// Classifier patterns. Enumeration takes precedence over investigation
-// because "show / list / summarise errors" is a more specific intent than the
-// generic "what's wrong" investigative wording.
+// Classifier patterns. Investigation has two tiers so precedence against
+// enumeration can differ by strength of signal:
 //
-//   - Enumeration:    "show / list / summarise / enumerate" verb co-occurring
-//     with an error noun within ~30 chars, plus
-//     "what kinds of errors" and "distinct errors" idioms.
-//   - Investigation:  causal verbs (why / diagnose / troubleshoot / debug /
-//     investigate, plus their inflections) or symptom phrases
-//     ("what caused", "were there issues", "broken/failing/
-//     crash"). \w* tails on stem verbs cover the common
-//     inflections.
+//   - Enumeration:        "show / list / summarise / enumerate" verb
+//     co-occurring with an error/symptom noun within
+//     ~30 chars, plus "what kinds of errors" and
+//     "distinct errors" idioms. The noun list includes
+//     symptom words (failing/broken/crash*), not just
+//     "error"-family nouns, so "list the pods that are
+//     failing" matches here rather than falling through
+//     to the weak investigation tier below.
+//   - strongInvestigationRE: causal verbs/phrases (why / root cause /
+//     diagnose / troubleshoot / debug / investigate,
+//     plus inflections; "what caused/happened/went
+//     wrong/broke", "were there"). These checked BEFORE
+//     enumeration — a query naming both a causal ask and
+//     a listing verb ("show me the errors and explain why
+//     it broke") is an investigation that happens to
+//     mention "show", not an enumeration.
+//   - weakSymptomRE:        bare "broken" / "failing" / "crash*" with no
+//     causal verb and no enumeration match — checked
+//     AFTER enumeration, so a plain listing request
+//     ("list failing pods") isn't misrouted into the
+//     heavier investigation workflow just because it
+//     names a symptom instead of the word "error".
 var (
-	enumerationVerbsRE   = regexp.MustCompile(`(?i)\b(show|list|summari[sz]e|categori[sz]e|enumerate)\b.{0,30}\b(error|errors|failures|exceptions|issues)\b|what\s+(kinds?\s+of\s+)?errors|\bdistinct\s+errors?\b`)
-	investigationVerbsRE = regexp.MustCompile(`(?i)\bwhy\b|\broot\s+cause\b|\bdiagnos\w*\b|\btroubleshoot\w*\b|\bdebug\w*\b|\binvestigat\w*\b|\bwhat\s+(caused|happened|went\s+wrong|broke|broken)\b|\bwere\s+there\b|\bbroken\b|\bfailing\b|\bcrash\w*\b`)
+	strongInvestigationRE = regexp.MustCompile(`(?i)\bwhy\b|\broot\s+cause\b|\bdiagnos\w*\b|\btroubleshoot\w*\b|\bdebug\w*\b|\binvestigat\w*\b|\bwhat\s+(caused|happened|went\s+wrong|broke|broken)\b|\bwere\s+there\b`)
+	enumerationVerbsRE    = regexp.MustCompile(`(?i)\b(show|list|summari[sz]e|categori[sz]e|enumerate)\b.{0,30}\b(errors?|fail\w*|exceptions?|issues?|broken|crash\w*)\b|what\s+(kinds?\s+of\s+)?errors|\bdistinct\s+errors?\b`)
+	weakSymptomRE         = regexp.MustCompile(`(?i)\bbroken\b|\bfail\w*\b|\bcrash\w*\b`)
 )
 
 // classifyLogMode buckets the user's intent. The verbatim user question
@@ -70,10 +84,13 @@ func classifyLogMode(query, originalQuery string) logMode {
 	if q == "" {
 		q = strings.TrimSpace(query)
 	}
+	if strongInvestigationRE.MatchString(q) {
+		return logModeInvestigation
+	}
 	if enumerationVerbsRE.MatchString(q) {
 		return logModeEnumeration
 	}
-	if investigationVerbsRE.MatchString(q) {
+	if weakSymptomRE.MatchString(q) {
 		return logModeInvestigation
 	}
 	return logModeRoutine
