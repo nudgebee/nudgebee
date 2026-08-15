@@ -1506,8 +1506,11 @@ const KubernetesEventsTable = ({
                   label='Search by message'
                   value={searchByMessage}
                   onChange={(next) => {
-                    // Clearing the field by hand (not via the X) should drop the applied filter.
-                    if (searchByMessage.trim() !== '' && next.trim() === '') {
+                    // Clearing the field by hand (not via the X) should drop the applied
+                    // filter. Keyed off the *applied* value, not the raw input: emptying a
+                    // draft that was never submitted has nothing to drop, and pushing the
+                    // route + resetting the page for it would be a spurious navigation.
+                    if (appliedSearchByMessage && next.trim() === '') {
                       setAppliedSearchByMessage('');
                       applyFiltersOnRouter(router, { messageSearch: '' });
                       setCurrentPage(0);

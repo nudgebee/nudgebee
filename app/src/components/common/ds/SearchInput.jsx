@@ -9,8 +9,9 @@
  *   - label (used as placeholder)
  *   - value, onChange(newValue)
  *   - onEnterPress() — fires on Enter key
- *   - onClear() — fires when X is clicked. Also re-fires onEnterPress so the
- *     parent's filter re-runs with the empty value (matches the original behavior).
+ *   - onClear() — fires when X is clicked, and is then the ONLY callback fired
+ *     for that click: it owns both resetting `value` and re-running the filter.
+ *     Callsites without an onClear fall back to onChange('').
  *   - disabled, id, sx, ml, mr, minWidth, maxWidth
  */
 import React from 'react';
@@ -45,15 +46,25 @@ const SearchInput = ({
   };
 
   const handleClear = () => {
-    // Notify parent that the value is cleared AND that the user intended to
-    // clear via the X. The parent's onClear handler is responsible for any
-    // filter re-run (most callsites already do this via router.push or a
-    // refetch in onClear). We deliberately do NOT auto-fire onEnterPress
-    // here — the original implementation did, but that races with onClear's
-    // own navigation and causes Next.js "Cancel rendering route" errors when
-    // both update the URL.
+    // The X is a single "clear" intent, so it fires a single callback.
+    //
+    // onClear owns the whole reset (value + applied filter + any refetch or
+    // router update); every callsite that passes it already clears its own
+    // value there. Firing onChange('') alongside it made consumers whose
+    // onChange *also* treats "went from non-empty to empty" as a clear — the
+    // Events message-search filters — run their clear twice, which pushed the
+    // same route twice in one tick. The second push cancels the first, so
+    // Next.js rejects the in-flight navigation ("Cancel rendering route") and
+    // the URL can be left still carrying ?messageSearch.
+    //
+    // Without an onClear we still fall back to onChange('') so value-only
+    // callsites keep clearing. We deliberately do NOT auto-fire onEnterPress
+    // here — it would read the pre-clear value from a stale closure.
+    if (onClear) {
+      onClear();
+      return;
+    }
     if (onChange) onChange('');
-    if (onClear) onClear();
   };
 
   return (

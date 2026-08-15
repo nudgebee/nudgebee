@@ -283,8 +283,10 @@ const CloudAccountEvents = (props: {
 
   const onSearchMessageChange = (next: string) => {
     // Clearing the field by hand (not via the X) should drop the applied filter
-    // and the URL param so it doesn't re-apply on reload.
-    if (searchByMessage.trim() !== '' && next.trim() === '') {
+    // and the URL param so it doesn't re-apply on reload. Keyed off the *applied*
+    // value, not the raw input: emptying a draft that was never submitted has
+    // nothing to drop, and would push the route + reset the page for nothing.
+    if (appliedSearchByMessage && next.trim() === '') {
       setAppliedSearchByMessage('');
       applyFiltersOnRouter(router, { messageSearch: '' });
       setPage(0);
