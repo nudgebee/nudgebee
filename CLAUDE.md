@@ -418,7 +418,7 @@ Before merging to production:
 | `.github/workflows/` | CI/CD automation for all services |
 | `deploy/kubernetes/` | Helm charts & values files for each service |
 | `deploy/containers/` | Base Dockerfiles (clickhouse, rabbitmq) |
-| `api-server/migrations/` | Database migrations — Postgres (`app/`), Clickhouse, RabbitMQ — applied by golang-migrate. See [`api-server/migrations/README.md`](api-server/migrations/README.md). |
+| `api-server/migrations/` | Database migrations — Postgres (`app/`) applied by **Atlas**; RabbitMQ by shell scripts. ClickHouse SQL lives here but is **not** auto-applied in OSS. See [`api-server/migrations/README.md`](api-server/migrations/README.md). |
 | Each service `Dockerfile` | Container image build configuration |
 | Each service `Makefile` | Build automation (if service has one) |
 | Each service `go.mod`/`pyproject.toml`/`package.json` | Dependencies |
@@ -426,15 +426,16 @@ Before merging to production:
 ## Database Migrations & RPC Actions
 
 ### Postgres migrations (`api-server/migrations/migrations/app/`)
+- **Engine: Atlas** (community edition, Apache 2.0). Atlas keeps a per-file ledger in `nudgebee.atlas_schema_revisions` and applies out-of-order arrivals natively (`--exec-order non-linear` in `atlas.hcl`) — replacing golang-migrate's single-row high-water tracker that silently skipped any file numbered below the applied version. On first run against an existing DB, `run-migrations.sh` auto-seeds the Atlas ledger from the legacy `nudgebee.schema_migrations` tracker (one-time cutover); on a fresh DB it applies from scratch.
 - **Flat layout** — files are named `{ts_ms}_V{N}_{snake_case_description}.up.sql` and `.down.sql`, no enclosing directory.
-- **Use the scaffold script** — `./api-server/migrations/new-migration.sh <snake_case_name>` creates both files with a fresh unix-ms timestamp and the next `V<N>`. Never hand-pick timestamps: golang-migrate tracks state via a single-row `nudgebee.schema_migrations` table, and any new file whose leading integer is **lower than** the applied version is **silently skipped**.
-- `.down.sql` is optional but recommended. Write idempotent SQL (`IF EXISTS` / `IF NOT EXISTS`).
-- **NEVER use `CREATE INDEX CONCURRENTLY` or `DROP INDEX CONCURRENTLY`** — golang-migrate wraps each migration in a transaction by default and **ignores the dbmate-style `-- migrate:no-transaction` header**. A `CONCURRENTLY` statement inside the implicit tx fails mid-statement and leaves `nudgebee.schema_migrations` stuck `dirty=true`, blocking every later migration on that environment until an operator manually clears the flag. CI lints for `\bCONCURRENTLY\b` and rejects the PR (`.github/workflows/migrations-lint.yaml`). If you genuinely need to add/drop a large-table index without the brief `ACCESS EXCLUSIVE` lock a plain statement takes, apply the `CONCURRENTLY` form manually via `psql` against the live DB *before* opening the migration PR, then write the migration with plain `CREATE INDEX IF NOT EXISTS` / `DROP INDEX IF EXISTS` so it's a no-op where you pre-applied it and a quick locked statement where you haven't.
-- Full details on tracking, recovery from `dirty=true`, and local apply commands: [`api-server/migrations/README.md`](api-server/migrations/README.md).
+- **Use the scaffold script** — `./api-server/migrations/new-migration.sh <snake_case_name>` creates both files with a fresh unix-ms timestamp and the next `V<N>`, **and regenerates `migrations/app/atlas.sum`** (Atlas's integrity manifest) via `atlas migrate hash`. If you ever add/edit/remove a migration by hand, re-run `(cd api-server/migrations && atlas migrate hash --dir 'file://migrations/app?format=golang-migrate')` or the migration Job will refuse with a `checksum mismatch`. CI (`.github/workflows/migrations-validate.yaml`) fails the PR when `atlas.sum` is stale.
+- `.down.sql` is optional but recommended (Atlas does not use it for apply; it exists for manual rollback). Write idempotent SQL (`IF EXISTS` / `IF NOT EXISTS`).
+- **NEVER use `CREATE INDEX CONCURRENTLY` or `DROP INDEX CONCURRENTLY`** — the apply runs `--tx-mode file`, so each migration executes inside a transaction and a `CONCURRENTLY` statement fails mid-statement. (Atlas *does* support a per-file `-- atlas:txmode none` directive that would allow it, but OSS CI still rejects `\bCONCURRENTLY\b` outright — `.github/workflows/migrations-lint.yaml` — so keep to that rule for now.) If you genuinely need to add/drop a large-table index without the brief `ACCESS EXCLUSIVE` lock a plain statement takes, apply the `CONCURRENTLY` form manually via `psql` against the live DB *before* opening the migration PR, then write the migration with plain `CREATE INDEX IF NOT EXISTS` / `DROP INDEX IF EXISTS` so it's a no-op where you pre-applied it and a quick locked statement where you haven't.
+- Full details on the cutover, recovery flows, and local apply commands: [`api-server/migrations/README.md`](api-server/migrations/README.md).
 
 ### Other migration trees
-- `migrations/clickhouse/` — applied by the same golang-migrate binary when `CLICKHOUSE_ENABLED=true`. Files use a `NN_*.up.sql` numeric prefix.
-- `migrations/rabbitmq/` — shell scripts (`NNN_*.sh`) run sequentially after RabbitMQ is healthy.
+- `migrations/clickhouse/` — **NOT auto-applied by Atlas in OSS.** The `.sql` files (numeric `NN_*.up.sql` prefix) are kept in the tree, but `run-migrations.sh` does not apply them. If you run with `clickhouse.enabled=true`, apply the ClickHouse migrations manually against your ClickHouse instance.
+- `migrations/rabbitmq/` — shell scripts (`NNN_*.sh`) run sequentially by `run-migrations.sh` after RabbitMQ is healthy.
 
 ### RPC action naming convention
 Actions are HTTP RPC handlers registered in [`app/src/lib/actions.yaml`](app/src/lib/actions.yaml) — the routing table the in-app gateway (`@lib/rpcGateway`) uses to dispatch each operation to its upstream handler (mounted under `/rpc/*` on each backend service). When adding a new action, follow this naming pattern:
