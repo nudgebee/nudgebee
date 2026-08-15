@@ -55,6 +55,13 @@ const (
 const (
 	// azureCostManagementWarningMsg is the message shown when Azure credentials lack Cost Management API access
 	azureCostManagementWarningMsg = "Azure account created successfully, but the credentials do not have permission to access the Azure Cost Management API. Please grant the 'Cost Management Reader' role or equivalent to enable cost tracking. You can update the permissions in the Azure Portal and the system will automatically detect the change on the next sync."
+
+	// azureBulkOnboardConcurrency caps how many subscriptions AzureBulkOnboard
+	// creates at once, and so how much of the connection pool (20 per pod) one
+	// caller-sized request can hold. CreateAccount runs several queries and spawns
+	// its own initial-load goroutine, and the subscription count comes straight
+	// from the request body.
+	azureBulkOnboardConcurrency = 4
 )
 
 type GcpOnboardRequest struct {
@@ -2369,10 +2376,13 @@ func AzureBulkOnboard(context *security.RequestContext, query AzureBulkOnboardRe
 	if len(remaining) > 0 {
 		results := make([]AzureBulkOnboardAccountResult, len(remaining))
 		var wg sync.WaitGroup
+		sem := make(chan struct{}, azureBulkOnboardConcurrency)
 		for i, sub := range remaining {
 			wg.Add(1)
 			go func(idx int, sub AzureBulkOnboardSubInput) {
 				defer wg.Done()
+				sem <- struct{}{}        // Acquire token
+				defer func() { <-sem }() // Release token
 				result := AzureBulkOnboardAccountResult{SubscriptionID: sub.SubscriptionID}
 
 				displayName := sub.DisplayName

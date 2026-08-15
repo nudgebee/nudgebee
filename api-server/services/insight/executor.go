@@ -28,6 +28,12 @@ const insightInventoryQueryTimeout = 30 * time.Second
 // accepts for trace queries. Requests beyond this are rejected upstream.
 const maxChronosphereTraceDuration = 120 * time.Minute
 
+// traceAggregationConcurrency caps how many accounts processTraceAggregationRule
+// works on at once, and so how much of the connection pool (20 per pod) one
+// fleet-wide cron sweep can hold via knownWorkloadKeys. Without it the rule
+// spawns one goroutine per connected account across every tenant.
+const traceAggregationConcurrency = 4
+
 // Pre-compiled — called per row in insight processing loops.
 var insightTitlePlaceholderRe = regexp.MustCompile(`\{([a-zA-Z_]+)\}`)
 
@@ -1011,12 +1017,15 @@ func (re *ruleExecutor) processEventAggregationRule(rule InsightRule, accountIds
 func processTraceAggregationRule(ctx *security.RequestContext, rule InsightRule, accountIds []string) ([]Insight, error) {
 	var wg sync.WaitGroup
 	insightCh := make(chan Insight, len(accountIds))
+	sem := make(chan struct{}, traceAggregationConcurrency)
 
 	wg.Add(len(accountIds))
 
 	for _, accountId := range accountIds {
 		go func(accountId string) {
 			defer wg.Done()
+			sem <- struct{}{}        // Acquire token
+			defer func() { <-sem }() // Release token
 			defer func() {
 				if r := recover(); r != nil {
 					ctx.GetLogger().Error("Failed to process trace aggregation rule", "rule", rule.UniqueID, "accountId", accountId, "panic", r)
