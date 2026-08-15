@@ -864,11 +864,16 @@ function buildEventFilterParams(query: any) {
   const endDate = query.end_date || query.endDate || getEndOfMonth(new Date());
   const startDate = query.start_date || query.startDate || getStartOfMonth(new Date());
 
-  and.push({ created_at: { _gte: startDate.toISOString() } });
-  and.push({ created_at: { _lte: endDate.toISOString() } });
-  filterParams['_and'] = and;
-  if (query.timeFilter === false) {
-    delete filterParams['_and'];
+  // `timeFilter: false` means "ignore the date range" (e.g. fetching a fixed set
+  // of event ids). It must drop only the created_at bounds — deleting the whole
+  // `_and` also threw away the message-search and subject-name clauses that live
+  // in the same array, silently unfiltering those callers.
+  if (query.timeFilter !== false) {
+    and.push({ created_at: { _gte: startDate.toISOString() } });
+    and.push({ created_at: { _lte: endDate.toISOString() } });
+  }
+  if (and.length) {
+    filterParams['_and'] = and;
   }
 
   return filterParams;
@@ -948,6 +953,14 @@ function filterDemoEvents(events: any[], query: any): any[] {
     }
     if (query?.finding_type) {
       if (event.finding_type !== query.finding_type) return false;
+    }
+    // Free-text message search — mirrors the `title _ilike '%needle%'` clause
+    // buildEventFilterParams sends for real accounts, so the demo tenant's
+    // "Search by message" filter narrows the list instead of doing nothing.
+    if (typeof query?.messageSearch === 'string' && query.messageSearch.trim()) {
+      const needle = query.messageSearch.trim().toLowerCase();
+      const title = String(event.title ?? '').toLowerCase();
+      if (!title.includes(needle)) return false;
     }
     return true;
   });
@@ -1851,6 +1864,7 @@ query list_k8_issues_count {
       nb_priority?: string;
       nb_status?: string | string[];
       is_new_issue?: boolean;
+      messageSearch?: string;
     } = {
       account_id: 'demo',
       onlyGroupingCount: false,
@@ -2002,6 +2016,12 @@ query list_k8_issues_count {
       }
       if (query.is_new_issue !== undefined) {
         filterParams['is_new_issue'] = { _eq: query.is_new_issue };
+      }
+      // Same free-text message filter the events list applies, so a grouping
+      // (trend chart, per-application/per-event-type counts) stays consistent
+      // with the table it sits above.
+      if (query?.messageSearch?.trim()) {
+        filterParams['title'] = { _ilike: `%${query.messageSearch.trim()}%` };
       }
 
       const endDate = query.end_date;

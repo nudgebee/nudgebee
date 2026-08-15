@@ -9,8 +9,10 @@
  *   - label (used as placeholder)
  *   - value, onChange(newValue)
  *   - onEnterPress() — fires on Enter key
- *   - onClear() — fires when X is clicked. Also re-fires onEnterPress so the
- *     parent's filter re-runs with the empty value (matches the original behavior).
+ *   - onClear() — fires when X is clicked, right after onChange(''). It does NOT
+ *     re-fire onEnterPress (see handleClear below), so the parent's onClear owns
+ *     re-running the filter. Parents that also drop the filter from onChange('')
+ *     must make that path idempotent — both fire for a single X click.
  *   - disabled, id, sx, ml, mr, minWidth, maxWidth
  */
 import React from 'react';

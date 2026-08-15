@@ -179,6 +179,17 @@ const CloudAccountEvents = (props: {
   const initialMessageSearch = getValidParam(Array.isArray(messageSearchParam) ? messageSearchParam[0] : messageSearchParam);
   const [searchByMessage, setSearchByMessage] = useState<string>(initialMessageSearch);
   const [appliedSearchByMessage, setAppliedSearchByMessage] = useState<string>(initialMessageSearch);
+  // Last value we pushed into the URL. SearchInput's X fires onChange('') and
+  // then onClear() in the same tick, and both paths want the param dropped —
+  // without this guard that is two router.push() calls for one click, and the
+  // second cancels the first mid-navigation. React state is still stale inside
+  // that tick, so the ref is the only reliable record of what the URL says.
+  const lastPushedMessageSearchRef = useRef<string>(initialMessageSearch);
+  const syncMessageSearchToUrl = (value: string) => {
+    if (lastPushedMessageSearchRef.current === value) return;
+    lastPushedMessageSearchRef.current = value;
+    applyFiltersOnRouter(router, { messageSearch: value });
+  };
   const [selectedDateRange, setSelectedDateRange] = useState<any>(() => {
     const startParam = Number(router?.query?.start_time);
     const endParam = Number(router?.query?.end_time);
@@ -286,7 +297,7 @@ const CloudAccountEvents = (props: {
     // and the URL param so it doesn't re-apply on reload.
     if (searchByMessage.trim() !== '' && next.trim() === '') {
       setAppliedSearchByMessage('');
-      applyFiltersOnRouter(router, { messageSearch: '' });
+      syncMessageSearchToUrl('');
       setPage(0);
     }
     setSearchByMessage(next);
@@ -294,14 +305,14 @@ const CloudAccountEvents = (props: {
 
   const onSearchMessageEnter = () => {
     setAppliedSearchByMessage(searchByMessage);
-    applyFiltersOnRouter(router, { messageSearch: searchByMessage || '' });
+    syncMessageSearchToUrl(searchByMessage || '');
     setPage(0);
   };
 
   const onSearchMessageClear = () => {
     setSearchByMessage('');
     setAppliedSearchByMessage('');
-    applyFiltersOnRouter(router, { messageSearch: '' });
+    syncMessageSearchToUrl('');
     setPage(0);
   };
 

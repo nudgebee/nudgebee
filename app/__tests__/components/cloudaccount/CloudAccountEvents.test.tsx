@@ -22,8 +22,10 @@ jest.mock('@lib/router', () => ({
 }));
 
 const mockHasWriteAccess = jest.fn();
+const mockHasReadAccess = jest.fn();
 jest.mock('@lib/auth', () => ({
   hasWriteAccess: (...args: any[]) => mockHasWriteAccess(...args),
+  hasReadAccess: (...args: any[]) => mockHasReadAccess(...args),
 }));
 
 jest.mock('@api1/cloud-account', () => ({
@@ -420,6 +422,7 @@ beforeEach(() => {
   pageSizeVal = 10;
   mockRouterQuery = {};
   mockHasWriteAccess.mockReturnValue(true);
+  mockHasReadAccess.mockReturnValue(true);
   mockUseEventCloudFilter.mockReturnValue(cloudFilters);
   apiCloudAccount.listEvents.mockResolvedValue(mockEventsResponse());
   ticketsApi.listTicketsSummary.mockResolvedValue({ data: { tickets: [] } });
@@ -570,7 +573,7 @@ describe('CloudAccountEvents (integration)', () => {
     expect(screen.getByTestId('ticket-desc').textContent).toMatch(/Pod OOM/);
   });
 
-  it('refetches after ticket success', async () => {
+  it('patches the row with the ticket link on ticket success instead of refetching', async () => {
     render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
     await waitFor(() => expect(screen.getByTestId('menu-Create Ticket-evt-1')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('menu-Create Ticket-evt-1'));
@@ -578,7 +581,8 @@ describe('CloudAccountEvents (integration)', () => {
 
     fireEvent.click(screen.getByTestId('ticket-success'));
 
-    await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('ticket-link')).toBeInTheDocument());
+    expect(apiCloudAccount.listEvents).not.toHaveBeenCalled();
   });
 
   it('snackbar error on ticket failure', async () => {
@@ -668,5 +672,57 @@ describe('CloudAccountEvents (integration)', () => {
     render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
 
     await waitFor(() => expect(screen.queryByTestId('loading')).not.toBeInTheDocument());
+  });
+});
+
+describe('CloudAccountEvents — search by event message', () => {
+  const searchInput = () => document.getElementById('cloudaccount-events-filter-search-message') as HTMLInputElement;
+  const lastQuery = () => apiCloudAccount.listEvents.mock.calls.at(-1)[0];
+
+  it('applies the search on Enter and mirrors it into the URL', async () => {
+    render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
+    await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
+
+    fireEvent.change(searchInput(), { target: { value: 'oom' } });
+    fireEvent.keyDown(searchInput(), { key: 'Enter' });
+
+    await waitFor(() => expect(lastQuery().messageSearch).toBe('oom'));
+    expect(applyFiltersOnRouter).toHaveBeenCalledWith(expect.anything(), { messageSearch: 'oom' });
+  });
+
+  it('seeds the applied filter from the URL', async () => {
+    mockRouterQuery = { messageSearch: 'disk' };
+    render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
+
+    await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
+    expect(apiCloudAccount.listEvents.mock.calls[0][0].messageSearch).toBe('disk');
+    expect(searchInput().value).toBe('disk');
+  });
+
+  it('clears with the X in a single navigation', async () => {
+    render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
+    await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
+    fireEvent.change(searchInput(), { target: { value: 'oom' } });
+    fireEvent.keyDown(searchInput(), { key: 'Enter' });
+    await waitFor(() => expect(lastQuery().messageSearch).toBe('oom'));
+
+    (applyFiltersOnRouter as jest.Mock).mockClear();
+    fireEvent.click(screen.getByLabelText('clear search'));
+
+    await waitFor(() => expect(lastQuery().messageSearch).toBeUndefined());
+    expect(applyFiltersOnRouter).toHaveBeenCalledTimes(1);
+    expect(searchInput().value).toBe('');
+  });
+
+  it('drops the filter when the field is emptied by hand', async () => {
+    render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
+    await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
+    fireEvent.change(searchInput(), { target: { value: 'oom' } });
+    fireEvent.keyDown(searchInput(), { key: 'Enter' });
+    await waitFor(() => expect(lastQuery().messageSearch).toBe('oom'));
+
+    fireEvent.change(searchInput(), { target: { value: '' } });
+
+    await waitFor(() => expect(lastQuery().messageSearch).toBeUndefined());
   });
 });

@@ -457,6 +457,18 @@ const KubernetesEventsTable = ({
   })();
   const [searchByMessage, setSearchByMessage] = useState(initialMessageSearch);
   const [appliedSearchByMessage, setAppliedSearchByMessage] = useState(initialMessageSearch);
+  // Last value we pushed into the URL. SearchInput's X fires onChange('') and
+  // then onClear() in the same tick, and both paths want the param dropped —
+  // without this guard that is two router.push() calls for one click, and the
+  // second one cancels the first mid-navigation ("Cancel rendering route").
+  // React state is still stale inside that tick, so the ref is the only
+  // reliable record of what the URL already says.
+  const lastPushedMessageSearchRef = useRef(initialMessageSearch);
+  const syncMessageSearchToUrl = (value) => {
+    if (lastPushedMessageSearchRef.current === value) return;
+    lastPushedMessageSearchRef.current = value;
+    applyFiltersOnRouter(router, { messageSearch: value });
+  };
   const [selectedNbStatus, setSelectedNbStatus] = useState([]);
   const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || persisted?.sortBy || 'created_at');
   const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || persisted?.issueType || 'all');
@@ -1337,6 +1349,12 @@ const KubernetesEventsTable = ({
     if (defaultQuery) {
       query = { ...query, ...defaultQuery };
     }
+    // The trend chart sits directly above the events table in the same card, so
+    // it has to honor the message search too — otherwise it charts every event
+    // while the table below shows only the matching ones.
+    if (appliedSearchByMessage) {
+      query.messageSearch = appliedSearchByMessage;
+    }
     const requestId = ++trendRequestIdRef.current;
     setIsTrendChartLoading(true);
     k8sApi
@@ -1404,6 +1422,7 @@ const KubernetesEventsTable = ({
     isCloudFilterVisible,
     selectedServiceName,
     selectedEventName,
+    appliedSearchByMessage,
   ]);
 
   return (
@@ -1509,20 +1528,20 @@ const KubernetesEventsTable = ({
                     // Clearing the field by hand (not via the X) should drop the applied filter.
                     if (searchByMessage.trim() !== '' && next.trim() === '') {
                       setAppliedSearchByMessage('');
-                      applyFiltersOnRouter(router, { messageSearch: '' });
+                      syncMessageSearchToUrl('');
                       setCurrentPage(0);
                     }
                     setSearchByMessage(next);
                   }}
                   onEnterPress={() => {
                     setAppliedSearchByMessage(searchByMessage);
-                    applyFiltersOnRouter(router, { messageSearch: searchByMessage || '' });
+                    syncMessageSearchToUrl(searchByMessage || '');
                     setCurrentPage(0);
                   }}
                   onClear={() => {
                     setSearchByMessage('');
                     setAppliedSearchByMessage('');
-                    applyFiltersOnRouter(router, { messageSearch: '' });
+                    syncMessageSearchToUrl('');
                     setCurrentPage(0);
                   }}
                 />
