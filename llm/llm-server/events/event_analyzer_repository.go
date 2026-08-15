@@ -656,6 +656,73 @@ func (r *EventAnalysisRepository) UpdateEventAnalysisStatus(ctx *security.Reques
 	return nil
 }
 
+// UpsertEventAnalysisStatus records a terminal status for an analysis stage,
+// creating the row when the stage never produced one.
+//
+// UpdateEventAnalysisStatus cannot do this. It is a bare UPDATE, so when a stage
+// is skipped before it ever inserted a row the statement matches nothing, changes
+// nothing, and still returns nil. The caller believes it marked the stage
+// COMPLETED; the database has no such row. allEventAnalysisTypesCompleted then
+// never sees that stage as complete, the pipeline can never report itself
+// finished, and every later event sharing the fingerprint re-enters it -- writing
+// another detailed_response row each time, now that V850 permits more than one
+// row per identity.
+//
+// Scope is the fingerprint identity, matching UpdateEventAnalysisStatus rather
+// than the per-event mapping. A skip decision is a property of the event's shape
+// (a missing label, no logs), so it holds for every event sharing the
+// fingerprint; resolving through the mapping instead would insert a fresh row for
+// each unmapped event, which is the duplication this exists to stop.
+func (r *EventAnalysisRepository) UpsertEventAnalysisStatus(ctx *security.RequestContext, eventId, eventFingerprint, cloudAccountId, aggregationKey, status, statusReason string, analysisType EventAnalysisType) error {
+	ctx.GetLogger().Info("analyzer: recording event analysis stage status", "event_fingerprint", eventFingerprint, "account_id", cloudAccountId, "event_aggregation_key", aggregationKey, "analysis_type", analysisType, "status", status)
+
+	tx, err := r.dbManager.Db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Empty eventId forces the fingerprint branch of the lookup -- see the scope
+	// note above.
+	existingId, err := findCurrentAnalysisID(tx, "", eventFingerprint, cloudAccountId, aggregationKey, analysisType)
+	if err != nil {
+		return err
+	}
+
+	if existingId != "" {
+		if _, err = tx.Exec(
+			`UPDATE event_log_analysis SET status=$2, status_reason=$3, updated_at=NOW() WHERE id=$1`,
+			existingId, status, statusReason,
+		); err != nil {
+			ctx.GetLogger().Warn("analyzer: failed to update analysis status in database", "error", err, "analysis_id", existingId)
+			return err
+		}
+		return tx.Commit()
+	}
+
+	var dbEventId any = eventId
+	if eventId == "" {
+		dbEventId = nil
+	}
+
+	var analysisId string
+	if err = tx.QueryRowx(
+		`INSERT INTO event_log_analysis (event_id, event_fingerprint, analysis, summary, status, status_reason, cloud_account_id, event_aggregation_key, analysis_type) VALUES ($1, $2, '', '', $3, $4, $5, $6, $7) RETURNING id`,
+		dbEventId, eventFingerprint, status, statusReason, cloudAccountId, aggregationKey, analysisType,
+	).Scan(&analysisId); err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to insert skipped analysis stage", "error", err, "event_fingerprint", eventFingerprint, "analysis_type", analysisType)
+		return err
+	}
+
+	if eventId != "" {
+		if _, err = upsertAnalysisMapping(tx, eventId, analysisId, analysisType, true); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 // UpsertEventAnalysis inserts or updates an analysis entry.
 func (r *EventAnalysisRepository) UpsertEventAnalysis(ctx *security.RequestContext, eventId, analysis, summary, status, fingerprint, accountId, aggKey string, analysisType EventAnalysisType) error {
 	tx, err := r.dbManager.Db.Beginx()

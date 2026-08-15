@@ -2102,10 +2102,14 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 
 	if !debugAnalysisEnabled {
 		ctx.GetLogger().Info("analyzer: debug analysis is disabled, skipping log analysis", "event_id", request.EventId, "reason", debugSkipReason)
-		if err := eventAnalysisRepo.UpdateEventAnalysisStatus(ctx, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusCompleted), debugSkipReason, events.AnalysisTypeInvestigation); err != nil {
+		// Upsert, not update: these stages are being marked COMPLETED without ever
+		// having run, so there is usually no row to update. A plain UPDATE would
+		// match nothing and leave the pipeline permanently unable to report itself
+		// complete.
+		if err := eventAnalysisRepo.UpsertEventAnalysisStatus(ctx, request.EventId, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusCompleted), debugSkipReason, events.AnalysisTypeInvestigation); err != nil {
 			ctx.GetLogger().Warn("failed to update event analysis status on debug skip", "error", err)
 		}
-		if err := eventAnalysisRepo.UpdateEventAnalysisStatus(ctx, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusCompleted), debugSkipReason, events.AnalysisTypeLog); err != nil {
+		if err := eventAnalysisRepo.UpsertEventAnalysisStatus(ctx, request.EventId, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusCompleted), debugSkipReason, events.AnalysisTypeLog); err != nil {
 			ctx.GetLogger().Warn("failed to update event analysis status on debug skip", "error", err)
 		}
 		// DetailedResponse = initial summary when debug is disabled (no deeper analysis to enrich with)
@@ -2245,7 +2249,9 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		}
 
 		if logs == "" {
-			if err := eventAnalysisRepo.UpdateEventAnalysisStatus(ctx, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusCompleted), "skipped - no logs", events.AnalysisTypeLog); err != nil {
+			// Upsert for the same reason as the debug-skip branch above: the log
+			// stage is completing without a row of its own.
+			if err := eventAnalysisRepo.UpsertEventAnalysisStatus(ctx, request.EventId, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusCompleted), "skipped - no logs", events.AnalysisTypeLog); err != nil {
 				ctx.GetLogger().Warn("failed to update event analysis status on empty logs", "error", err)
 			}
 			// No logs — synthesis will run with only summary + investigation
