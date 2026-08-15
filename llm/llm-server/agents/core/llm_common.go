@@ -597,9 +597,13 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 		ctx.GetLogger().Error("unable to generate content", "error", err, "agentName", agentName, "agentId", agentId)
 		// Persist a failure row to llm_conversation_token_usage so the underlying
 		// provider error and the failing agent run are visible from the DB,
-		// not only debug logs.
-		recordTokenUsageFailure(ctx, conversationId, messageId, agentId, agentName,
-			provider, model, accountId, userId, callMetadata, err)
+		// not only debug logs. A TTFT timeout is skipped: tryWithModel already
+		// persisted that attempt when the watchdog fired, and recording it again
+		// here would double-count the same abandoned call.
+		if !alreadyRecordedAtSource(err) {
+			recordTokenUsageFailure(ctx, conversationId, messageId, agentId, agentName,
+				provider, model, accountId, userId, callMetadata, err)
+		}
 		return nil, err
 	}
 
@@ -1568,8 +1572,27 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	if err != nil && watchdogFired.Load() {
 		// Must match isTransientError ("timeout") to trigger a same-model retry, and must
 		// NOT contain "deadline exceeded" or isDeadlineExceededError routes to fallback models instead.
-		err = fmt.Errorf("ttft timeout: model did not emit a first token within %ds, timeout — retrying same model: %w",
-			watchdogSeconds, err)
+		// The message is unchanged by wrapping ErrTTFTTimeout — its text is the "ttft timeout"
+		// prefix this string already carried — but it makes the cause machine-detectable.
+		err = fmt.Errorf("%w: model did not emit a first token within %ds, timeout — retrying same model: %w",
+			ErrTTFTTimeout, watchdogSeconds, err)
+
+		// The cause is passed explicitly rather than staged through rc.lastErr: that
+		// field is shared retry state which later attempts overwrite, so mutating it
+		// here to hand one value to one callee would be a side effect the rest of the
+		// retry machinery has to reason about.
+		//
+		// Record here, not on the retry/fallback paths. A TTFT timeout routes to a
+		// same-model retry (handleTransientError), which persists nothing, so these
+		// attempts were invisible in llm_conversation_token_usage — the watchdog fired
+		// in production without leaving a single row. This is also the only site that
+		// knows the cancel was watchdog-initiated rather than caller-initiated.
+		//
+		// This is the AUTHORITATIVE record for a TTFT timeout. Downstream sites that
+		// would otherwise persist the same attempt — tryFallbackModel and the
+		// end-of-sequence failure row — skip it via alreadyRecordedAtSource, or the
+		// one abandoned attempt is counted two or three times.
+		recordAbandonedAttempt(rc, rc.currentModel, rc.currentProvider, err)
 	}
 	if err == nil && (completion == nil || len(completion.Choices) == 0 || completion.Choices[0].Content == "") {
 		stopReason := ""
@@ -1677,11 +1700,33 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 // row. A hung call is separated from an ordinary failure because it costs the full
 // per-call deadline — the single largest latency contributor measured — and needs to be
 // queryable on its own rather than blending into the general "failure" bucket.
+// ErrTTFTTimeout marks a call the TTFT watchdog abandoned because no first token
+// arrived within the deadline.
+//
+// It exists because the watchdog cancels a context.WithTimeout early, which surfaces
+// as context.Canceled — indistinguishable from a caller-side abort (user navigated
+// away, parent gave up). Those must not be reported as provider timeouts, so the
+// distinction cannot be recovered from the error sentinel alone and has to be stamped
+// at the one site that knows.
+var ErrTTFTTimeout = errors.New("ttft timeout")
+
 func requestStatusForError(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
+	// DeadlineExceeded covers the whole-call ceiling; ErrTTFTTimeout covers the
+	// watchdog abandoning a stream that produced nothing.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTTFTTimeout) {
 		return "timeout"
 	}
 	return "failure"
+}
+
+// alreadyRecordedAtSource reports whether this error was already persisted at the point
+// it occurred, so downstream failure-recording sites must not persist it again.
+//
+// Only TTFT timeouts qualify: they are recorded at the watchdog site in tryWithModel,
+// which is the sole place that knows the cancel was watchdog-initiated rather than
+// caller-initiated. Every other failure is still recorded downstream as before.
+func alreadyRecordedAtSource(err error) bool {
+	return errors.Is(err, ErrTTFTTimeout)
 }
 
 // recordAbandonedAttempt persists a usage row for a timed-out model we are giving up on.
@@ -1695,11 +1740,14 @@ func requestStatusForError(err error) string {
 // Deliberately limited to timeouts. Other abandoned attempts (quota, transient) either
 // fail fast or are already captured by the end-of-sequence failure row, so recording
 // them here would double-count the same event against that row.
-func recordAbandonedAttempt(rc *retryContext, model, provider string) {
-	if rc == nil || rc.ctx == nil || rc.lastErr == nil {
+func recordAbandonedAttempt(rc *retryContext, model, provider string, cause error) {
+	if rc == nil || rc.ctx == nil || cause == nil {
 		return
 	}
-	if !errors.Is(rc.lastErr, context.DeadlineExceeded) {
+	// Single source of truth for "was this a timeout", shared with the row's own
+	// request_status. Covers both the whole-call ceiling (DeadlineExceeded) and the
+	// TTFT watchdog (ErrTTFTTimeout, which surfaces as context.Canceled underneath).
+	if requestStatusForError(cause) != "timeout" {
 		return
 	}
 	recordTokenUsageFailure(rc.ctx, rc.conversationId, rc.messageId, rc.agentId, rc.agentName,
@@ -1710,7 +1758,7 @@ func recordAbandonedAttempt(rc *retryContext, model, provider string) {
 		&LLMCallMetadata{
 			LatencySeconds: rc.lastLatency,
 			RetryAttempt:   rc.attemptCount,
-		}, rc.lastErr)
+		}, cause)
 }
 
 func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.ContentResponse, error) {
@@ -1727,8 +1775,11 @@ func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.Co
 	previousProvider := rc.currentProvider
 
 	// The model we are leaving behind failed; record that attempt before its latency
-	// and error are overwritten by the fallback's own result.
-	recordAbandonedAttempt(rc, previousModel, previousProvider)
+	// and error are overwritten by the fallback's own result. A TTFT timeout is skipped
+	// because tryWithModel already persisted it at the moment the watchdog fired.
+	if !alreadyRecordedAtSource(rc.lastErr) {
+		recordAbandonedAttempt(rc, previousModel, previousProvider, rc.lastErr)
+	}
 
 	rc.triedModels[nextModel] = true
 	rc.ctx.GetLogger().Info("Trying fallback model",
