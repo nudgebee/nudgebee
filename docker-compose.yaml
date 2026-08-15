@@ -1,4 +1,55 @@
-version: '3.8'
+# ---------------------------------------------------------------------------
+# Shared env for the `full` application profile. These are LOCAL-DEV defaults
+# wired to the compose infra service names (postgres/rabbitmq/redis/qdrant).
+#
+# Secrets fall back to insecure dev values but can be overridden from a `.env`
+# file (see .env.example) — most importantly NUDGEBEE_ENCRYPTION_KEY, which
+# encrypts integration credentials at rest and MUST be identical across every
+# service. Change all of these before exposing the stack anywhere real.
+# ---------------------------------------------------------------------------
+x-app-common: &app-common
+  # RabbitMQ (ignored by services that don't use MQ)
+  RABBIT_MQ_HOST: rabbitmq
+  RABBIT_MQ_PORT: '5672'
+  RABBIT_MQ_USERNAME: guest
+  RABBIT_MQ_PASSWORD: guest
+  # Redis — used for the shared cache (and k8s-collector distributed locks).
+  # Production runs CACHE_PROVIDER=redis whenever redis is enabled, so match it
+  # here rather than falling back to per-process in-memory cache. Clients are
+  # lazy (no dial until first use) and the compose redis has no auth, so empty
+  # user/pass connect fine.
+  CACHE_PROVIDER: redis
+  REDIS_SERVER_HOST: redis
+  REDIS_SERVER_PORT: '6379'
+  REDIS_USER_NAME: ''
+  REDIS_USER_PASSWORD: ''
+  # Shared secrets — dev defaults; override via .env for anything real.
+  # NUDGEBEE_ENCRYPTION_KEY must be 64 hex chars and identical everywhere.
+  NUDGEBEE_ENCRYPTION_KEY: ${NUDGEBEE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+  RELAY_SERVER_SECRET_KEY: ${RELAY_SERVER_SECRET_KEY:-dev-relay-secret-change-me}
+  # relay's RELAY_WORKSPACE_JWT_SECRET and llm-server's LLM_SERVER_JWT_SECRET
+  # sign/verify the SAME workspace JWTs, so they must be identical (see the
+  # comment at relay-server config.go). Both derive from one value on purpose —
+  # this is not a copy-paste; a mismatch breaks workspace auth.
+  RELAY_WORKSPACE_JWT_SECRET: ${RELAY_WORKSPACE_JWT_SECRET:-dev-jwt-secret-change-me}
+  LLM_SERVER_JWT_SECRET: ${RELAY_WORKSPACE_JWT_SECRET:-dev-jwt-secret-change-me}
+  ACTION_API_SERVER_TOKEN: ${ACTION_API_SERVER_TOKEN:-dev-action-token-change-me}
+  # Inter-service URLs whose code defaults point at localhost/unknown ports.
+  # SERVICE_API_SERVER_URL is intentionally left at its code default of
+  # http://services-server:8000 and satisfied by a network alias on
+  # api-server-services (see that service below).
+  RELAY_SERVER_ENDPOINT: http://relay-server:8080
+  LLM_SERVER_URL: http://llm-server:8000
+  WORKFLOW_SERVER_URL: http://workflow-server:8000
+  TICKET_SERVICE_URL: http://ticket-server:8000
+  NOTIFICATION_SERVICE_URL: http://notifications-server:8080
+  ML_SERVICE_URL: http://ml-k8s-server:9999
+  # Postgres over the compose network uses no TLS
+  NUDGEBEE_DB_SSL_ENABLED: 'false'
+
+# Full Postgres DSN for the compose Postgres. Each service reads it under a
+# DIFFERENT variable name (see per-service env blocks).
+x-db-url: &db-url postgres://postgres:postgrespassword@postgres:5432/nudgebee?sslmode=disable
 
 networks:
   nudgebee:
@@ -125,9 +176,18 @@ services:
     image: ghcr.io/nudgebee/services-server:edge
     build:
       context: ./api-server/services
-    networks: [nudgebee]
+    # Every service defaults its backend calls to http://services-server:8000
+    # (the SaaS service name). This alias makes that default resolve to this
+    # container, so event ingestion and RPC work without per-service overrides.
+    networks:
+      nudgebee:
+        aliases:
+          - services-server
     ports:
       - "8000:8000"
+    environment:
+      <<: *app-common
+      APP_DATABASE_URL: *db-url
     env_file:
       - path: ./api-server/services/.env
         required: false
@@ -145,9 +205,14 @@ services:
     networks: [nudgebee]
     ports:
       - "8001:8000"
+    environment:
+      <<: *app-common
+      APP_DATABASE_URL: *db-url
+      PORT: '8000'
     depends_on:
       - postgres
       - rabbitmq
+      - redis
 
   cloud-collector:
     profiles: [full]
@@ -158,8 +223,13 @@ services:
     networks: [nudgebee]
     ports:
       - "8002:8000"
+    environment:
+      <<: *app-common
+      CLOUD_COLLECTOR_SERVER_DB_URL: *db-url
     depends_on:
+      - postgres
       - rabbitmq
+      - redis
 
   relay-server:
     profiles: [full]
@@ -170,8 +240,14 @@ services:
     networks: [nudgebee]
     ports:
       - "8004:8080"
+    environment:
+      <<: *app-common
+      COLLECTOR_DB_URL: *db-url
+      RELAY_HTTP_PORT: '8080'
     depends_on:
+      - postgres
       - rabbitmq
+      - redis
 
   llm-server:
     profiles: [full]
@@ -182,9 +258,16 @@ services:
     networks: [nudgebee]
     ports:
       - "8005:8000"
+    environment:
+      <<: *app-common
+      LLM_SERVER_DB_URL: *db-url
+      # Vector search is proxied through the rag-server, not Qdrant directly.
+      RAG_SERVER_URL: http://rag-server:9999
     depends_on:
       - postgres
+      - rabbitmq
       - qdrant
+      - redis
 
   # TODO: code-analysis is intentionally NOT a long-running compose service.
   # System tracks per-account code-analysis instances and the design is for
@@ -206,11 +289,16 @@ services:
     ports:
       - "8007:8000"
     environment:
+      <<: *app-common
+      # runbook/workflow tables live in the shared nudgebee DB
+      AUTO_PILOT_DATABASE_URL: *db-url
       TEMPORAL_GRPC_ENDPOINT: temporal:7233
+      API_PORT: '8000'
     depends_on:
       - postgres
       - rabbitmq
       - temporal
+      - redis
 
   # ---------- Python services ----------
   k8s-collector-app:
@@ -221,9 +309,24 @@ services:
       context: ./collector-server/k8s-collector/app
     networks: [nudgebee]
     ports:
-      - "5000:5000"
+      # Container port is 5000, but publishing on host :5000 collides with macOS
+      # AirPlay Receiver. Publish on host 8003 to both avoid that and stay in the
+      # app-service 800x range (8003 is the free slot after cloud-collector's
+      # 8002). Override with K8S_COLLECTOR_HOST_PORT.
+      - "${K8S_COLLECTOR_HOST_PORT:-8003}:5000"
+    environment:
+      <<: *app-common
+      COLLECTOR_DB_URL: *db-url
+      # ClickHouse is optional (disabled), but the settings class requires the
+      # keys to be present, so provide inert stubs.
+      CLICKHOUSE_ENABLED: 'false'
+      CLICKHOUSE_HOST: ''
+      CLICKHOUSE_USER: ''
+      CLICKHOUSE_PASSWORD: ''
     depends_on:
+      - postgres
       - rabbitmq
+      - redis
 
   rag-server:
     profiles: [full]
@@ -234,6 +337,11 @@ services:
     networks: [nudgebee]
     ports:
       - "9998:9999"
+    environment:
+      <<: *app-common
+      APP_DATABASE_URL: *db-url
+      # Use the standalone Qdrant server instead of embedded on-disk mode
+      QDRANT_URL: http://qdrant:6333
     depends_on:
       - qdrant
       - postgres
@@ -248,6 +356,9 @@ services:
     ports:
       - "9999:9999"
       - "8081:8081"
+    environment:
+      <<: *app-common
+      ML_INFERENCE_DATABASE_URL: *db-url
     depends_on:
       - postgres
 
@@ -260,9 +371,13 @@ services:
     networks: [nudgebee]
     ports:
       - "8090:8080"
+    environment:
+      <<: *app-common
+      NOTIFICATION_DB_URL: *db-url
     depends_on:
       - postgres
       - rabbitmq
+      - redis
 
   # ---------- Frontend ----------
   app:
@@ -282,3 +397,6 @@ services:
     environment:
       SERVICE_API_SERVER_URL: http://api-server-services:8000
       LLM_SERVER_URL: http://llm-server:8000
+      # Server-side API routes decrypt integration creds — must match the key
+      # used by every backend service (see x-app-common above).
+      NUDGEBEE_ENCRYPTION_KEY: ${NUDGEBEE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
