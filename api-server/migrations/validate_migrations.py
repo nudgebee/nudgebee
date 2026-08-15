@@ -158,13 +158,22 @@ def main():
             errors.append(f"[naming] new migration '{p['file']}' must be <ts>_V<N>_<snake_name>")
             continue
         # A: duplicate timestamp with anything else in the tree or on a ref.
+        # Hard error — duplicate ts is a per-file identity collision
+        # regardless of engine (atlas keys revisions by version).
         if len(by_ts[p["ts"]]) > 1 or p["ts"] in base_ts:
             errors.append(f"[A duplicate-timestamp] new migration {tag} reuses version {p['ts']}")
-        # D: must land above the global high-water mark.
+        # D: out-of-order timestamp. Under golang-migrate this would have been
+        # SILENTLY skipped (the V756 incident class), so the gate was a hard
+        # fail. Under atlas with `--exec-order non-linear` (configured in
+        # atlas.hcl) the file IS applied — out-of-order arrivals are
+        # first-class. Downgrade to a warning: still untidy (signals a
+        # cherry-pick / HF promotion collision) but not a correctness issue.
         if p["ts"] <= base_max:
-            errors.append(f"[D out-of-order] new migration {tag} has timestamp <= max on "
-                          f"{refs} ({base_max}); golang-migrate would skip it. Recreate it with "
-                          f"new-migration.sh so it lands above {base_max}.")
+            warnings.append(f"[D out-of-order] new migration {tag} has timestamp <= max on "
+                            f"{refs} ({base_max}). atlas applies this via --exec-order non-linear; "
+                            f"the previous engine would have silently skipped it. Consider recreating "
+                            f"with new-migration.sh for cleaner ordering, unless this is a deliberate "
+                            f"cherry-pick / hotfix backmerge.")
         # B: must not reuse a V<N> from a ref branch or a sibling new file.
         if p["v"] in base_v:
             errors.append(f"[B Vlabel-reuse] new migration {tag} reuses V{p['v']} which already "

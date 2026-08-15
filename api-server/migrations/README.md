@@ -1,18 +1,28 @@
 # Migrations
 
-This directory contains all database migrations for the Nudgebee platform, applied via [golang-migrate](https://github.com/golang-migrate/migrate).
+This directory contains all database migrations for the Nudgebee platform.
+
+**Postgres migrations are applied by [Atlas Community](https://atlasgo.io/) edition.** The previous engine, golang-migrate, was removed in PR #33008 (Fixes #33007) — its single-row tracker kept producing silent-skip, phantom-version, and CONCURRENTLY-in-tx incidents that Atlas's per-file revision model makes structurally impossible.
+
+> **Cutover from golang-migrate is automatic.** The atlas-only migration Job's `run-migrations.sh` detects a legacy `nudgebee.schema_migrations` tracker on first run and seeds `nudgebee.atlas_schema_revisions` from it before applying any pending files. No operator action required beyond deploying the new image. See ["Per-env cutover"](#per-env-cutover) below.
 
 ## Directory structure
 
 ```
 api-server/migrations/
-├── Dockerfile                # Migration job image (golang-migrate + psql)
-├── run-migrations.sh         # Entrypoint: applies all migrations on deploy
-├── new-migration.sh          # Scaffold script for new Postgres migrations
+├── Dockerfile                # Migration job image (atlas + psql)
+├── run-migrations.sh         # Entrypoint: applies migrations on deploy
+├── new-migration.sh          # Scaffold — creates .up/.down + regenerates atlas.sum
+├── atlas.hcl                 # Atlas project config (non-linear exec, nudgebee schema)
+├── atlas-bootstrap.sh        # OPTIONAL standalone bootstrap tool (run-migrations.sh
+│                             #   does the same inline on first run)
+├── validate_migrations.py    # Pre-merge hygiene gate (duplicate ts, V-label reuse)
 └── migrations/
-    ├── app/                  # Postgres migrations (main database) — flat layout
-    ├── clickhouse/           # Clickhouse migrations (analytics DB)
-    └── rabbitmq/             # RabbitMQ setup scripts
+    ├── app/
+    │   ├── *.up.sql / *.down.sql   # Postgres migrations (flat layout)
+    │   └── atlas.sum               # Per-file SHA256 manifest (auto-regenerated)
+    ├── clickhouse/           # Kept in tree; NOT auto-applied — apply manually if clickhouse.enabled=true
+    └── rabbitmq/             # Shell scripts run after RabbitMQ is healthy
 ```
 
 ## Migration types
@@ -30,27 +40,20 @@ Examples:
 ```
 1665080411172_V0.up.sql
 1774614951697_V655_fix_event_duplicates_fk_cascade.up.sql
-1778762877644_V734_pinot_integration_type.up.sql
+1782796952980_V773_llm_watch_tasks.up.sql
 ```
 
 **Filename rules:**
-- `{timestamp_ms}` — current Unix timestamp in **milliseconds**. Used as the version number by golang-migrate (leading integer is parsed as `BIGINT`). Lexicographic sort = time order.
-- `V{N}` — sequential version counter for human readability. Increments by 1.
+- `{timestamp_ms}` — current Unix timestamp in **milliseconds**. Used as the version key. Lexicographic sort = time order.
+- `V{N}` — sequential version counter for human readability. Increments by 1. Reuse fails the PR-time validator.
 - `{description}` — `snake_case`, optional but encouraged.
-- **Never** use `CREATE INDEX CONCURRENTLY` — migrations run inside a transaction by default. If you really need it, put `-- migrate:no-transaction` at the top of the file.
+- **Atlas applies out-of-order arrivals natively.** A file with ts < current tracker (cherry-pick / HF backmerge) is applied via `--exec-order non-linear` — the V756/V758/V760 silent-skip class is structurally impossible.
+- **`CREATE INDEX CONCURRENTLY` / `DROP INDEX CONCURRENTLY` are rejected by CI** (`.github/workflows/migrations-lint.yaml`). Atlas itself supports a per-file `-- atlas:txmode none` directive that would let a `CONCURRENTLY` statement run outside the `--tx-mode file` transaction, but OSS keeps the outright-reject lint for now. If you need a large-table index without the brief `ACCESS EXCLUSIVE` lock a plain statement takes, apply the `CONCURRENTLY` form manually via `psql` against the live DB *before* opening the PR, then write the migration with plain `CREATE INDEX IF NOT EXISTS` / `DROP INDEX IF EXISTS`.
 - Use `IF NOT EXISTS` / `IF EXISTS` where possible for idempotency.
 
 ### Clickhouse (`migrations/clickhouse/`)
 
-Numbered SQL files applied by the same golang-migrate binary:
-
-```
-00_db.up.sql
-01_create_audit_log_shard.up.sql
-...
-```
-
-Only applied when `CLICKHOUSE_ENABLED=true`.
+**Not applied by Atlas in OSS.** The numbered `.sql` files (`NN_*.up.sql`) are kept in the tree, but the ClickHouse apply path was removed from `run-migrations.sh` in the atlas cutover, and Atlas Community does not support ClickHouse (Pro tier only). **If you deploy with `clickhouse.enabled=true`, apply these migrations manually** against your own ClickHouse instance — nothing in the migration Job will do it for you.
 
 ### RabbitMQ (`migrations/rabbitmq/`)
 
@@ -60,98 +63,174 @@ Shell scripts run sequentially after RabbitMQ is healthy:
 001_remove_autopilot_queues.sh
 ```
 
+Skipped when `MIGRATE_SKIP_RABBITMQ=1` (used by local smoke-test flows).
+
 ## How migrations run on deploy
 
 The migration job is a Helm `pre-install,pre-upgrade` hook. On every deploy, the chart creates a Kubernetes Job whose container runs [`run-migrations.sh`](./run-migrations.sh):
 
-1. `psql ... -c "CREATE SCHEMA IF NOT EXISTS nudgebee;"` — golang-migrate doesn't auto-create the schema its tracker lives in.
-2. `migrate -path ./migrations/app -database "${APP_DATABASE_URL}?x-migrations-table=%22nudgebee%22.%22schema_migrations%22&x-migrations-table-quoted=true" up` — applies pending Postgres migrations.
-3. Calls the API server to reload the agent playbook.
-4. If `CLICKHOUSE_ENABLED=true`: `migrate -path ./migrations/clickhouse ... up`.
-5. Waits for RabbitMQ, runs each `migrations/rabbitmq/*.sh`.
+1. `psql ... -c "CREATE SCHEMA IF NOT EXISTS nudgebee;"` — Atlas does not auto-create the schema its revisions table lives in.
+2. **Cutover detection** (stepwise `to_regclass` probes — never a single CASE expression):
+   - Atlas revisions table present → just apply pending (steady state).
+   - Legacy `nudgebee.schema_migrations` present (first run after cutover) → read its version + dirty flag, refuse if `dirty=true` or if version is a phantom, then `atlas migrate set <version>` to seed revisions.
+   - Neither present (fresh DB) → apply from scratch.
+3. `atlas migrate apply -c file://atlas.hcl --env default --url ... --tx-mode file` — applies pending migrations. Out-of-order arrivals are applied via `--exec-order non-linear` (atlas.hcl).
+4. Calls the API server to reload the agent playbook (skipped if `MIGRATE_SKIP_PLAYBOOK=1`).
+5. Waits for RabbitMQ, runs each `migrations/rabbitmq/*.sh` (skipped if `MIGRATE_SKIP_RABBITMQ=1`).
 
-CI in `nudgebee-infra` (private) builds + pushes the migration image and runs `helm upgrade ... --wait --wait-for-jobs`, which blocks until the Job exits 0.
+CI in `nudgebee-infra` builds + pushes the migration image and runs `helm upgrade ... --wait --wait-for-jobs`, which blocks until the Job exits 0.
 
 **Tools in the image:**
-- golang-migrate `v4.17.0`
-- `postgresql-client` (just for `psql` to create the schema)
+- atlas community `v0.36.0` (SHA256-pinned in Dockerfile)
+- `postgresql-client` (for `psql` probes in run-migrations.sh)
+
+`ATLAS_NO_UPDATE_NOTIFIER=1` is set in the Dockerfile — no outbound HTTP from the Job container on every run. Relevant for rackspace and other restricted-egress environments.
 
 ## Migration version tracking
 
-golang-migrate tracks state in a **single-row** table `nudgebee.schema_migrations`:
+Atlas tracks state in `nudgebee.atlas_schema_revisions`:
 
 ```sql
-CREATE TABLE nudgebee.schema_migrations (
-  version BIGINT  NOT NULL PRIMARY KEY,
-  dirty   BOOLEAN NOT NULL
+CREATE TABLE nudgebee.atlas_schema_revisions (
+  version          varchar PRIMARY KEY,
+  description      varchar NOT NULL,
+  type             bigint  NOT NULL DEFAULT 2,
+  applied          bigint  NOT NULL DEFAULT 0,
+  total            bigint  NOT NULL DEFAULT 0,
+  executed_at      timestamptz NOT NULL,
+  execution_time   bigint NOT NULL,
+  error            text,
+  error_stmt       text,
+  hash             varchar NOT NULL,
+  partial_hashes   jsonb,
+  operator_version varchar NOT NULL
 );
 ```
 
 How it works:
+- **One row per applied file** (keyed by `version`, which is the timestamp from the filename).
+- `hash` is the per-file SHA256 from `migrations/app/atlas.sum`. Edits to applied files cause subsequent applies to refuse with `checksum mismatch` (desired — silent edits to applied SQL are a footgun).
+- `applied` / `total` show the statement-level progress within a file (catches mid-file crashes).
+- "Is migration X applied?" = "is there a row with `version = X`?"
 
-- **Always exactly one row.** Records the highest version applied + a `dirty` flag.
-- Applying a migration **updates** the row in place (does not insert a new row per migration).
-- "Is migration X applied?" = `current version >= X`.
-- If a migration fails partway, the row is left `dirty=true` and subsequent runs refuse to proceed until a human investigates.
+The legacy `nudgebee.schema_migrations` table is left in place after cutover as a forensic artifact and a rollback target. Nothing writes to it in the atlas-only path. **Do not drop it for at least 30 days post-cutover.**
 
-**Footgun: out-of-order versions.** If you add a migration with a timestamp lower than the current applied version, golang-migrate will **silently skip it** — its version is already below `current`. Always use [`new-migration.sh`](./new-migration.sh) (or `int(time.time() * 1000)`) to guarantee a fresh timestamp.
+## `atlas.sum` — integrity manifest
+
+`migrations/app/atlas.sum` is a committed, auto-generated file. Each line is `{filename} h1:{base64_sha256}=` for one migration file, plus a top line that is a hash-of-hashes covering the whole directory (a small Merkle tree). Atlas reads it on every `migrate apply` and refuses to run if any file's content disagrees with the manifest.
+
+### Why the file is required
+
+Atlas rejects `migrate apply` without a valid manifest:
+
+```
+Error: sql/migrate: checksum file not found
+```
+
+There is no `--skip-sum` flag. `--allow-dirty` is a different thing (it's about the target database, not the migration directory). The manifest is a load-bearing part of Atlas's directory format.
+
+### What it protects against
+
+**Silent edits to migration files that have already been applied on some environment.** Under golang-migrate, editing an applied `.up.sql` shipped without any noise — the tracker only records the version integer, not any hash of the content. Different environments could quietly diverge on the same version number.
+
+Under Atlas, the moment any tracked file's SHA256 changes, `atlas migrate apply` on every downstream environment refuses with `checksum mismatch`. That includes:
+
+- accidental edits to an old migration on a developer's branch
+- a bad rebase that clobbers an applied migration
+- a hand-fix in production that drifted from the committed source
+
+The manifest turns those into a loud, blocking failure at the next deploy — which is the whole reason we tolerate the operational cost below.
+
+### Operational costs
+
+- **~1000-line file** grows by one line per migration.
+- **Merge conflicts on every parallel migration PR.** The top-line `h1:` header covers all files, so two PRs that each add a migration both rewrite that line. The losing PR runs `atlas migrate hash` after the merge to regenerate. `new-migration.sh` does the regeneration automatically; conflict resolution is `cd api-server/migrations && atlas migrate hash --dir 'file://migrations/app?format=golang-migrate'` and commit.
+- **Developers need `atlas` installed locally** (`brew install atlas`) — `new-migration.sh` refuses without it because a stale manifest fails the migration Job at deploy time.
+- **CI enforces freshness.** `.github/workflows/migrations-validate.yaml` installs the pinned atlas binary and runs `atlas migrate hash` + `git diff --exit-code`, blocking any PR with drift.
+
+### Alternatives considered and rejected
+
+**(A) Don't commit `atlas.sum`; regenerate inside the migration Job.** Adds `atlas migrate hash` at the top of `run-migrations.sh` before the apply. Result: nobody sees hash changes in PR review, drift between developer intent and shipped content is invisible, and the "silent edit" protection is effectively removed. Rejected — it deletes the safety property that justifies the file's existence in the first place.
+
+**(B) `--allow-dirty` or similar bypass.** Not real — that flag is for starting the engine on a non-clean target database, not for skipping manifest validation. Atlas has no supported "skip sum" mode. Rejected.
+
+**(C) Ignore the merge-conflict cost and revisit later.** Chosen. If it becomes a real workflow pain (>1/week), option A becomes viable at the cost of losing edit-detection.
+
+### If you see `checksum mismatch`
+
+```bash
+cd api-server/migrations
+atlas migrate hash --dir 'file://migrations/app?format=golang-migrate'
+git diff api-server/migrations/migrations/app/atlas.sum
+```
+
+If the diff shows only additions for files you actually added (or hash changes for files you actually edited), commit the regenerated manifest. If it shows hash changes for files you did NOT touch — stop and investigate; something in the tree is silently different from what was reviewed.
+
+## Per-env cutover
+
+The atlas-only `run-migrations.sh` is **fully self-bootstrapping**. The cutover procedure per env is:
+
+1. Build + tag the atlas-only image (already done — PR #33008).
+2. Deploy via Helm. The migration Job runs, detects the legacy tracker, seeds `nudgebee.atlas_schema_revisions` via `atlas migrate set`, then applies any pending files.
+3. Sight-verify post-deploy:
+   ```bash
+   kubectl exec -it <any-pod-with-psql> -- psql "$APP_DATABASE_URL" -c "
+     SELECT count(*) AS revs, max(version) AS max_ts FROM nudgebee.atlas_schema_revisions;
+     SELECT version, dirty FROM nudgebee.schema_migrations;  -- frozen at last golang-migrate value
+   "
+   ```
+
+Optional pre-deploy verification (run from a debug pod with the new image, against the env DB):
+
+```bash
+./atlas-bootstrap.sh          # idempotent — no-op if already done; refuses dirty / phantom
+atlas migrate status \
+  -c file://atlas.hcl --env default --url "$APP_DATABASE_URL"
+```
+
+**Rollback:** redeploy the previous image (which still has golang-migrate). The legacy `nudgebee.schema_migrations` table is unchanged, so golang-migrate picks up exactly where it left off. **Caveat:** files applied via atlas AFTER cutover do not appear in `nudgebee.schema_migrations`. golang-migrate, on rollback, will treat them as pending and try to re-run them; most are `IF NOT EXISTS`-guarded and safe, but verify any file applied post-cutover for re-entrancy before rolling back. Cleanest rollback window is within the first run before any post-cutover migrations land.
 
 ## Creating a new migration
-
-### Easy path: scaffold script
 
 ```bash
 ./api-server/migrations/new-migration.sh add_widget_color
 # → creates 1736953412345_V734_add_widget_color.up.sql
 #          1736953412345_V734_add_widget_color.down.sql
+#          regenerates api-server/migrations/migrations/app/atlas.sum
 ```
 
-The script picks the next `V<N>`, generates the unix-ms timestamp, and creates both files in the correct flat layout. Then write your SQL.
+Requires `brew install atlas` (or [other install methods](https://atlasgo.io/docs#installation)) — the script refuses without atlas because stale `atlas.sum` fails the migration Job at deploy.
 
-### Manual path (what the script does)
+Write your SQL in the `.up.sql`. Examples:
 
-1. **Pick the next version number** (highest existing `V<N>` + 1):
-   ```bash
-   ls api-server/migrations/migrations/app/ | grep -oE 'V[0-9]+' | sort -V | tail -1
-   ```
+```sql
+-- Normal migration:
+ALTER TABLE widgets ADD COLUMN color text NOT NULL DEFAULT '#888888';
+CREATE INDEX IF NOT EXISTS idx_widgets_color ON widgets (color);
+```
 
-2. **Generate a unix-ms timestamp**:
-   ```bash
-   python3 -c "import time; print(int(time.time() * 1000))"
-   ```
+```sql
+-- Large-table index without ACCESS EXCLUSIVE lock:
+-- atlas:txmode none
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_huge_table_foo ON huge_table (foo);
+```
 
-3. **Create the two files** (flat layout, no subdirectory):
-   ```bash
-   TS=<from step 2>
-   N=<from step 1>
-   NAME=add_widget_color
-   touch api-server/migrations/migrations/app/${TS}_V${N}_${NAME}.up.sql
-   touch api-server/migrations/migrations/app/${TS}_V${N}_${NAME}.down.sql
-   ```
+Write the matching `.down.sql` for rollback (optional but recommended).
 
-4. **Write SQL** in `.up.sql` (plain Postgres DDL/DML):
-   ```sql
-   ALTER TABLE widgets ADD COLUMN color text NOT NULL DEFAULT '#888888';
-   CREATE INDEX IF NOT EXISTS idx_widgets_color ON widgets (color);
-   ```
+`atlas.sum` is regenerated automatically by `new-migration.sh`. If you hand-edit an existing migration file, regenerate manually:
 
-5. **Write the matching `.down.sql`** for rollback (optional but recommended):
-   ```sql
-   ALTER TABLE widgets DROP COLUMN IF EXISTS color;
-   DROP INDEX IF EXISTS idx_widgets_color;
-   ```
-
-6. **Test locally** (see below).
-
-7. **Commit and open a PR.** The migration job applies whatever is pending on next deploy.
+```bash
+cd api-server/migrations
+atlas migrate hash --dir 'file://migrations/app?format=golang-migrate'
+```
 
 ## Local development
 
 ### Prerequisites
 
 ```bash
-# Install golang-migrate (matches the version used in the migration image)
-brew install golang-migrate   # or download from github.com/golang-migrate/migrate/releases/tag/v4.17.0
+brew install atlas
+brew install libpq    # for psql, if not already present
 ```
 
 ### Apply migrations against local Postgres
@@ -159,109 +238,136 @@ brew install golang-migrate   # or download from github.com/golang-migrate/migra
 ```bash
 cd api-server/migrations
 
-# Create the tracker schema once
-psql "postgres://postgres:postgrespassword@localhost:5432/nudgebee?sslmode=disable" \
-  -c "CREATE SCHEMA IF NOT EXISTS nudgebee;"
-
-# Apply
-migrate -path ./migrations/app \
-  -database "postgres://postgres:postgrespassword@localhost:5432/nudgebee?sslmode=disable&x-migrations-table=%22nudgebee%22.%22schema_migrations%22&x-migrations-table-quoted=true" \
-  up
+atlas migrate apply \
+  -c file://atlas.hcl --env default \
+  --url 'postgres://postgres:postgrespassword@localhost:5432/nudgebee?sslmode=disable' \
+  --tx-mode file
 ```
 
 ### Common operations
 
 ```bash
-# Current applied version
-psql "$LOCAL_DB_URL" -c "SELECT version, dirty FROM nudgebee.schema_migrations;"
+# Status
+atlas migrate status \
+  -c file://atlas.hcl --env default \
+  --url 'postgres://postgres:postgrespassword@localhost:5432/nudgebee?sslmode=disable'
 
 # Apply only N migrations forward
-migrate -path ./migrations/app -database "$DB_URL_WITH_TRACKER" up 1
+atlas migrate apply 1 \
+  -c file://atlas.hcl --env default \
+  --url '...'
 
 # Roll back N migrations (runs .down.sql files in reverse)
-migrate -path ./migrations/app -database "$DB_URL_WITH_TRACKER" down 1
+atlas migrate down 1 \
+  -c file://atlas.hcl --env default \
+  --url '...'
 
-# Force version (e.g. to recover from dirty=true)
-migrate -path ./migrations/app -database "$DB_URL_WITH_TRACKER" force <version>
+# Refresh atlas.sum after editing migration files
+atlas migrate hash --dir 'file://migrations/app?format=golang-migrate'
 ```
 
-### Apply against dev (read-only check)
+### Reproducing the production migration Job locally
+
+Build the image, run it against a local Postgres container, skip the non-Postgres steps:
 
 ```bash
-# Read dev's current version
-psql "$DEV_APP_DATABASE_URL" -c "SELECT version, dirty FROM nudgebee.schema_migrations;"
+cd api-server/migrations
+podman build --build-arg TARGETARCH=arm64 -t nudgebee-migration:local .
+
+podman run --rm \
+  -e APP_DATABASE_URL='postgres://postgres:postgrespassword@host.containers.internal:5432/nudgebee?sslmode=disable' \
+  -e MIGRATE_SKIP_PLAYBOOK=1 \
+  -e MIGRATE_SKIP_RABBITMQ=1 \
+  nudgebee-migration:local
 ```
 
-Don't run `migrate up` against dev manually — the CI job in `nudgebee-infra` (private) does it on merge.
+The full multi-env (dev/test/prod) sprint-promotion + HF-cherry-pick test that exercises the out-of-order path is documented in PR #33008's verification log.
 
 ## CI/CD workflows
 
-> **For external contributors:** Nudgebee's hosted SaaS deploys migrations from a private internal-CD repo (`nudgebee-infra`). You don't need access to it. If you're deploying Nudgebee yourself, the [`deploy/kubernetes/nudgebee/`](../../deploy/kubernetes/nudgebee/) Helm chart in this repo runs migrations as a built-in `pre-install,pre-upgrade` Job (see ["How migrations run on deploy"](#how-migrations-run-on-deploy) above) — no separate CI pipeline required. The internal workflows below are documented for transparency only.
+> **For external contributors:** Nudgebee's hosted SaaS deploys migrations from a private internal-CD repo (`nudgebee-infra`). You don't need access to it. If you're deploying Nudgebee yourself, the [`deploy/kubernetes/nudgebee/`](../../deploy/kubernetes/nudgebee/) Helm chart in this repo runs migrations as a built-in `pre-install,pre-upgrade` Job (see ["How migrations run on deploy"](#how-migrations-run-on-deploy) above) — no separate CI pipeline required.
 
 The migration build + deploy lives in [`nudgebee-infra`](https://github.com/nudgebee/nudgebee-infra), not this repo:
 
-| Workflow                                     | Trigger                | What it does                                                                  |
-| -------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------- |
-| `migrations-dev-gke.yaml` (in nudgebee-infra) | push to `main` (paths: `api-server/migrations/**`) | Builds image, pushes to ECR, `helm upgrade --wait-for-jobs` against dev GKE   |
-| `migrations-test-gke.yaml`                   | push to `test`         | Same against test cluster                                                     |
-| `migrations-prod.yaml`                       | push to `prod`         | Same against prod cluster                                                     |
+| Workflow                          | Trigger        | What it does                                                                  |
+| --------------------------------- | -------------- | ----------------------------------------------------------------------------- |
+| `migrations-dev-gke.yaml`         | push to `main` | Builds image, pushes to ECR, `helm upgrade --wait-for-jobs` against dev GKE   |
+| `migrations-test-gke.yaml`        | push to `test` | Same against test cluster                                                     |
+| `migrations-prod.yaml`            | push to `prod` | Same against prod cluster                                                     |
 
-`--wait-for-jobs` blocks the CI step until the K8s Job completes, so CI failure correctly reflects `migrate up` failure.
+`--wait-for-jobs` blocks the CI step until the K8s Job completes, so CI failure correctly reflects `atlas migrate apply` failure.
+
+In this repo:
+
+| Workflow                          | Purpose                                                                            |
+| --------------------------------- | ---------------------------------------------------------------------------------- |
+| `migrations-validate.yaml`        | Per-PR: filename / V-label / pairing checks (`validate_migrations.py`) + `atlas.sum` drift check + `atlas migrate validate` + fresh-DB apply smoke test |
+| `migrations-lint.yaml`            | Per-PR: rejects `CONCURRENTLY` in executable SQL outright                          |
 
 ## Environment variables
 
-| Variable                 | Description                                                                  |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| `APP_DATABASE_URL`       | Postgres connection URL — runner appends `x-migrations-table` automatically. |
-| `SERVICE_API_SERVER_URL` | API server URL (for the agent-playbook reload step).                         |
-| `ACTION_API_SERVER_TOKEN`| Auth token for the API server reload call.                                   |
-| `CLICKHOUSE_ENABLED`     | Set `true` to apply Clickhouse migrations.                                   |
-| `CLICKHOUSE_HOST`        | Clickhouse host URL.                                                         |
-| `CLICKHOUSE_USER`        | Clickhouse username.                                                         |
-| `CLICKHOUSE_PASSWORD`    | Clickhouse password.                                                         |
-| `RABBIT_MQ_HOST`         | RabbitMQ host.                                                               |
-| `RABBIT_MQ_USERNAME`     | RabbitMQ username.                                                           |
-| `RABBIT_MQ_PASSWORD`     | RabbitMQ password.                                                           |
+| Variable                 | Description                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| `APP_DATABASE_URL`       | Postgres connection URL.                                                             |
+| `SERVICE_API_SERVER_URL` | API server URL (for the agent-playbook reload step).                                 |
+| `ACTION_API_SERVER_TOKEN`| Auth token for the API server reload call.                                           |
+| `MIGRATE_SKIP_PLAYBOOK`  | `1` skips the playbook curl. Unset on prod migration Jobs.                           |
+| `MIGRATE_SKIP_RABBITMQ`  | `1` skips RabbitMQ migrations. Unset on prod migration Jobs.                         |
+| `RABBIT_MQ_HOST`         | RabbitMQ host (unused when `MIGRATE_SKIP_RABBITMQ=1`).                               |
+| `RABBIT_MQ_USERNAME`     | RabbitMQ username.                                                                   |
+| `RABBIT_MQ_PASSWORD`     | RabbitMQ password.                                                                   |
+| `ATLAS_NO_UPDATE_NOTIFIER` | Pinned to `1` in Dockerfile — disables atlas's daily HTTP update check.            |
 
 ## Troubleshooting
 
-**Migration locked (`dirty=true`):**
+### Atlas refuses with `checksum mismatch`
 
-A migration failed partway. The row is left `dirty=true` and subsequent runs refuse to proceed. Recovery:
-
-```bash
-# Identify the version that's stuck
-psql "$APP_DATABASE_URL" -c "SELECT version, dirty FROM nudgebee.schema_migrations;"
-
-# Inspect the .up.sql for that version, find what went wrong, fix the data manually if needed.
-# Then either:
-#   (a) Mark it clean at the previous version, so `up` retries:
-migrate -path ./migrations/app -database "$DB_URL_WITH_TRACKER" force <previous_version>
-migrate -path ./migrations/app -database "$DB_URL_WITH_TRACKER" up
-
-#   (b) Mark it clean at the failing version, accepting it as fully applied:
-migrate -path ./migrations/app -database "$DB_URL_WITH_TRACKER" force <failing_version>
-```
-
-**New migration silently not applied:**
-
-Most likely its timestamp is lower than `nudgebee.schema_migrations.version`. Check:
+`migrations/app/atlas.sum` is stale relative to the on-disk migration files. Regenerate:
 
 ```bash
-ls api-server/migrations/migrations/app/ | sort | tail -5    # latest files
-psql "$APP_DATABASE_URL" -c "SELECT version FROM nudgebee.schema_migrations;"
+cd api-server/migrations
+atlas migrate hash --dir 'file://migrations/app?format=golang-migrate'
+git diff api-server/migrations/migrations/app/atlas.sum   # sanity-check
+git add api-server/migrations/migrations/app/atlas.sum
 ```
 
-If the file's leading integer is below the DB version, regenerate the filename with a current timestamp (the SQL inside is fine):
+`new-migration.sh` does this automatically when creating a new migration. The PR-time CI (`migrations-validate.yaml`) catches drift before merge.
+
+### Migration Job dies with cutover error
+
+Three classes of refusal in `run-migrations.sh`:
+
+1. **`dirty=true` in legacy tracker.** A previous golang-migrate run wedged mid-apply. Resolve:
+   ```bash
+   psql "$APP_DATABASE_URL" -c "SELECT version, dirty FROM nudgebee.schema_migrations"
+   # Inspect ./migrations/app/<version>_*.up.sql vs the actual DB state.
+   # If fully applied:  UPDATE nudgebee.schema_migrations SET dirty=false;
+   ```
+
+2. **Phantom version.** Legacy tracker points at a ts that has no backing file (someone ran `migrate force <bogus_ts>` historically). Reset:
+   ```bash
+   # Find the real highest-applied version (inspect schema or hdb_catalog.hdb_version.cli_state)
+   psql "$APP_DATABASE_URL" -c "UPDATE nudgebee.schema_migrations SET version=<real>, dirty=false"
+   ```
+
+3. **Atlas `pending: out of order`.** Will not happen with `--exec-order non-linear` configured in atlas.hcl (it's the whole point of the engine swap). If you see it, atlas.hcl was overridden or the apply was invoked with explicit `--exec-order linear`.
+
+> **Note:** OSS does not ship the pre-cutover gap-detection tooling. `atlas migrate set <baseline>` marks every file at or below the legacy tracker's version as applied without running it, so on a from-scratch legacy cutover confirm the legacy tracker's high-water version is the true highest-applied migration before deploying.
+
+### Verify applied version on a remote environment
 
 ```bash
-TS=$(python3 -c "import time; print(int(time.time() * 1000))")
-mv 1700000000000_V733_foo.up.sql ${TS}_V733_foo.up.sql
-mv 1700000000000_V733_foo.down.sql ${TS}_V733_foo.down.sql
+# Atlas:
+psql "$REMOTE_APP_DATABASE_URL" -c "
+  SELECT count(*) AS revs, max(version) AS max_ts FROM nudgebee.atlas_schema_revisions
+"
+
+# Legacy tracker (frozen at last golang-migrate value, for forensic comparison):
+psql "$REMOTE_APP_DATABASE_URL" -c "
+  SELECT version, dirty FROM nudgebee.schema_migrations
+"
 ```
 
-**Check applied version on a remote environment:**
+### Rolling back to the previous image
 
-```bash
-psql "$REMOTE_APP_DATABASE_URL" -c "SELECT version, dirty FROM nudgebee.schema_migrations;"
-```
+Redeploy the image tag from before cutover. golang-migrate reads `nudgebee.schema_migrations`, which is unchanged. **Warning:** any files atlas applied post-cutover are not in that tracker; golang-migrate will treat them as pending and try to re-apply them. Most are `IF NOT EXISTS`-guarded and re-run safely; verify before rolling back.
