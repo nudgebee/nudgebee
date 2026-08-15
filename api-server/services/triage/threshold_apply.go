@@ -255,6 +255,35 @@ func LoadSourceRule(ctx context.Context, db *sqlx.DB, accountID, alert string) (
 	return sr, nil
 }
 
+// applyRecommendationType resolves the recommendation type an apply should act on. The
+// engine's own type is the default, but a user-supplied threshold/duration is an explicit
+// manual override and must be written even when the engine did not recommend a retune —
+// "investigate_signal" and "insufficient_data" carry suggested == current, so without this
+// the rewrite is a no-op: the PR path fails with "no expression change to write to the PR"
+// and the direct path writes back an unchanged rule while reporting success.
+// "disable" is left alone: disabling the rule ignores any threshold edit.
+func applyRecommendationType(sug *ApplySuggestionRow, rule *SourceRule, acceptValue *float64, acceptDuration *int) string {
+	recType := sug.RecommendationType
+	if recType == "disable" {
+		return recType
+	}
+	overrideThreshold := acceptValue != nil && math.Abs(*acceptValue-sug.CurrentThreshold) > floatEpsilon
+	overrideDuration := acceptDuration != nil && *acceptDuration > 0 && *acceptDuration != parseDurationMinutes(rule.Duration)
+
+	changeThreshold := recType == "tune_threshold" || recType == "tune_both" || overrideThreshold
+	changeDuration := recType == "increase_duration" || recType == "tune_both" || overrideDuration
+	switch {
+	case changeThreshold && changeDuration:
+		return "tune_both"
+	case changeThreshold:
+		return "tune_threshold"
+	case changeDuration:
+		return "increase_duration"
+	default:
+		return recType
+	}
+}
+
 // BuildRewrittenRule produces the mutated rule definition for a suggestion.
 // newThreshold/newDurationMin are the effective values to apply (after any user override);
 // pass the suggestion's own suggested values for the default path.
@@ -263,6 +292,9 @@ func BuildRewrittenRule(sug *ApplySuggestionRow, rule *SourceRule, newThreshold 
 	changeThreshold := recType == "tune_threshold" || recType == "tune_both"
 	changeDuration := recType == "increase_duration" || recType == "tune_both"
 
+	// ChangedThreshold/ChangedDuration record what the rewrite ACTUALLY changed (not merely
+	// what the recommendation asked for), so callers can tell a real change from a no-op —
+	// e.g. an "investigate_signal" suggestion whose suggested threshold equals the current one.
 	out := &RewrittenRule{
 		Source:            rule.Source,
 		Expr:              rule.Expr,
@@ -270,8 +302,6 @@ func BuildRewrittenRule(sug *ApplySuggestionRow, rule *SourceRule, newThreshold 
 		PreviousThreshold: sug.CurrentThreshold,
 		PreviousDuration:  parseDurationMinutes(rule.Duration),
 		NewThreshold:      newThreshold,
-		ChangedThreshold:  changeThreshold,
-		ChangedDuration:   changeDuration,
 	}
 
 	if recType == "disable" {
@@ -291,6 +321,8 @@ func BuildRewrittenRule(sug *ApplySuggestionRow, rule *SourceRule, newThreshold 
 		if changeDuration && newDurationMin > 0 {
 			out.Duration = fmt.Sprintf("%dm", newDurationMin)
 		}
+		out.ChangedThreshold = out.Expr != rule.Expr
+		out.ChangedDuration = out.Duration != "" && out.Duration != rule.Duration
 
 	case azureSources[sug.Source]:
 		newExpr, err := setAzureCriteriaThreshold(rule.Expr, newThreshold, changeThreshold, newDurationMin, changeDuration)
@@ -333,9 +365,11 @@ func applyCloudProviderConfig(out *RewrittenRule, newThreshold float64, changeTh
 	}
 	if changeThreshold {
 		out.ProviderConfig["threshold"] = newThreshold
+		out.ChangedThreshold = true
 	}
 	if changeDuration && newDurationMin > 0 {
 		out.ProviderConfig["duration_minutes"] = newDurationMin
+		out.ChangedDuration = true
 	}
 }
 
