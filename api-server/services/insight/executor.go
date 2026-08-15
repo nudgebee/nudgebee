@@ -639,6 +639,10 @@ func (re *ruleExecutor) processAdditionRule(rule InsightRule, accountId []string
 			})
 		}
 	}
+	if err = rows.Err(); err != nil {
+		re.ctx.GetLogger().Error("Failed to iterate rows", "error", err)
+		return nil, err
+	}
 
 	return insights, nil
 }
@@ -753,6 +757,10 @@ func (re *ruleExecutor) processDiffRule(rule InsightRule, accountIds []string) (
 			}
 			insights = append(insights, insight)
 		}
+	}
+	if err = rows.Err(); err != nil {
+		re.ctx.GetLogger().Error("Failed to iterate rows", "error", err)
+		return nil, err
 	}
 
 	return insights, nil
@@ -873,6 +881,10 @@ func (re *ruleExecutor) processRatioRule(rule InsightRule, accountId []string) (
 				Rule:       rule,
 			})
 		}
+	}
+	if err = rows.Err(); err != nil {
+		re.ctx.GetLogger().Error("Failed to iterate rows", "error", err)
+		return nil, err
 	}
 	return insights, nil
 }
@@ -1009,6 +1021,10 @@ func (re *ruleExecutor) processEventAggregationRule(rule InsightRule, accountIds
 			Rule:         rule,
 			Applications: applications,
 		})
+	}
+	if err = rows.Err(); err != nil {
+		re.ctx.GetLogger().Error("Failed to iterate rows", "error", err)
+		return nil, err
 	}
 
 	return insights, nil

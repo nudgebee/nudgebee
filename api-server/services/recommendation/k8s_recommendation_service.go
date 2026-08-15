@@ -683,6 +683,12 @@ WHERE ksw.is_active IS TRUE
 		}
 		workloads = append(workloads, d)
 	}
+	// clearRecommendationData already archived this account's health-check
+	// recommendations, so a truncated read here would drop them permanently.
+	if err := rows.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating workloads for health check recommendations", "error", err)
+		return err
+	}
 
 	if len(workloads) == 0 {
 		ctx.GetLogger().Info("No workloads found for health check recommendations")

@@ -228,6 +228,10 @@ func ExecuteSpendAnomaly(ctx *security.RequestContext) error {
 		}
 		accounts = append(accounts, acc)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("spend-anomaly: error iterating cloud accounts", "error", err)
+		return err
+	}
 
 	if err := rows.Err(); err != nil {
 		slog.Error("spend-anomaly: error iterating cloud accounts", "error", err)

@@ -212,6 +212,9 @@ func scanNames(d *sqlx.DB, query string, args []any, ownerType string, out map[s
 		}
 		out[ownerType+"\x00"+id] = name
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -288,6 +291,9 @@ func loadCloudResourceMetas(d *sqlx.DB, tenantId string, ids []string) (map[stri
 		}
 		out[id] = cloudResourceMeta{Account: account, Region: region, Type: rtype, ServiceName: service, Tags: parseLabels(tagsRaw)}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -313,6 +319,9 @@ func loadCloudResourceTagsMatching(d sqlx.Ext, tenantId, key, value, account str
 			return nil, err
 		}
 		out = append(out, parseLabels(raw))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -361,6 +370,9 @@ func loadWorkloadMetas(d *sqlx.DB, tenantId string, ids []string) (map[string]wo
 			return out, err
 		}
 		out[id] = workloadMeta{CloudAccountId: account, Namespace: namespace, Name: name, Labels: parseLabels(labelsRaw)}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -489,6 +501,9 @@ func loadWorkloadLabelsMatching(d sqlx.Ext, tenantId, key, value, account string
 			return nil, err
 		}
 		out = append(out, parseLabels(raw))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

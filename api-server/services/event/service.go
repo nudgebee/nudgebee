@@ -1275,6 +1275,10 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		eventResolutionsToCheck = append(eventResolutionsToCheck, resolution)
 		eventIds = append(eventIds, resolution.EventId)
 	}
+	if err := rows.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating event resolutions", "error", err)
+		return err
+	}
 
 	if len(eventResolutionsToCheck) == 0 {
 		return nil
@@ -1306,6 +1310,13 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			return err
 		}
 		events[event.Id] = event
+	}
+	// A truncated read here is destructive: the reconcile below permanently marks
+	// every resolution whose event is missing from this map as FAILED, so a partial
+	// map would fail resolutions whose events actually exist.
+	if err := rows1.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating events", "error", err)
+		return err
 	}
 
 	ctx.GetLogger().Info("Checking resolutions", "resolutions", len(eventResolutionsToCheck))

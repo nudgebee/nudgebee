@@ -2078,6 +2078,9 @@ func ListAccounts(ctx *security.RequestContext, tenantId string) ([]models.Accou
 		}
 		rowsMap = append(rowsMap, row)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return rowsMap, nil
 }
@@ -2116,6 +2119,9 @@ func ListActiveAccountsWithConnectedAgents(ctx *security.RequestContext, tenantI
 		}
 		rowsMap = append(rowsMap, row)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return rowsMap, nil
 }
@@ -2143,6 +2149,9 @@ func GetActiveK8sNodeCountForAccounts(tenantId string) ([]models.AccountNodeCoun
 			return nil, err
 		}
 		accountNodeCounts = append(accountNodeCounts, accountNodeCount)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return accountNodeCounts, nil
