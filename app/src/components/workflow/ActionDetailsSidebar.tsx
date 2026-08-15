@@ -33,6 +33,7 @@ import {
   resolveFieldType,
   type SchemaProperty,
 } from './utils/fieldTypeUtils';
+import { getUpstreamSuggestedValues } from './utils/getUpstreamSuggestedValues';
 import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';
@@ -474,6 +475,15 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     const { allowed, reason } = getSwitchDryRunEligibility(selectedNode.id, nodes, edges ?? []);
     return { allowed, reason };
   }, [selectedActionType, selectedNode, nodes, edges]);
+
+  const switchUpstreamValues = useMemo(() => {
+    if (selectedActionType !== 'core.switch' || !selectedNode) {
+      return null;
+    }
+    const expression = localData?.expression || '';
+    return getUpstreamSuggestedValues(expression, nodes, edges ?? []);
+  }, [selectedActionType, selectedNode, localData?.expression, nodes, edges]);
+
   const isTaskDisabled = selectedNode?.data?.taskConfig?.disabled === true;
   const supportsDryRun =
     (selectedActionType ? !TASKS_WITHOUT_DRY_RUN.has(selectedActionType) : false) && switchDryRunStatus.allowed && !isTaskDisabled;
@@ -3654,6 +3664,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 value={Array.isArray(fieldValue) ? fieldValue : []}
                 onChange={(value) => handleDataChange(fieldName, value)}
                 error={validationErrors[fieldName]}
+                suggestedValues={isSwitchTask && fieldName === 'cases' ? switchUpstreamValues?.values : undefined}
+                upstreamTaskInfo={
+                  isSwitchTask && fieldName === 'cases'
+                    ? { taskId: switchUpstreamValues?.taskId, taskName: switchUpstreamValues?.taskName }
+                    : undefined
+                }
+                isComplexExpression={isSwitchTask && fieldName === 'cases' ? switchUpstreamValues?.isComplexExpression : undefined}
                 itemSchema={(() => {
                   const raw = (fieldSchema.schema?.properties || fieldSchema.schema) as Record<string, any> | undefined;
                   if (!raw) return undefined;
