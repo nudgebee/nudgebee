@@ -167,7 +167,15 @@ func ownerExistsInTenant(d *sqlx.DB, tenantId, ownerType, ownerId string) (bool,
 // colliding rules. The transaction-scoped advisory lock is held until fn returns and
 // the tx commits/rolls back; the second caller blocks on the lock until the first
 // commits, so it sees the freshly written rule during its own conflict check.
-func withTenantRuleLock(d *sqlx.DB, tenantId string, fn func() error) error {
+//
+// fn receives the locking tx and MUST run all of its work on it. Running the
+// conflict check or the write against the pooled *sqlx.DB instead would leave this
+// connection `idle in transaction` while a second (and third) pooled connection did
+// the work — every caller holding >= 2 connections, which starves the pool once
+// enough tenant-admins upsert concurrently. Keeping it on the tx also makes the
+// write atomic with the lock: it now rolls back if the commit fails, instead of
+// having auto-committed independently.
+func withTenantRuleLock(d *sqlx.DB, tenantId string, fn func(tx *sqlx.Tx) error) error {
 	tx, err := d.Beginx()
 	if err != nil {
 		return err
@@ -181,7 +189,7 @@ func withTenantRuleLock(d *sqlx.DB, tenantId string, fn func() error) error {
 	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, tenantId+":ownership_rules"); err != nil {
 		return err
 	}
-	if err := fn(); err != nil {
+	if err := fn(tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -286,7 +294,7 @@ func loadCloudResourceMetas(d *sqlx.DB, tenantId string, ids []string) (map[stri
 // loadCloudResourceTagsMatching returns the tags of active cloud resources whose
 // tag key=value matches (optionally within one account). Used to detect whether
 // two cloud_tag rules can both match a real resource.
-func loadCloudResourceTagsMatching(d *sqlx.DB, tenantId, key, value, account string) ([]map[string]string, error) {
+func loadCloudResourceTagsMatching(d sqlx.Ext, tenantId, key, value, account string) ([]map[string]string, error) {
 	q := `SELECT tags FROM cloud_resourses WHERE tenant = $1::uuid AND is_active IS NOT FALSE AND tags->>$2 = $3`
 	args := []any{tenantId, key, value}
 	if account != "" {
@@ -462,7 +470,7 @@ func splitNames(csv string) []string {
 // loadWorkloadLabelsMatching returns the labels of active workloads matching the
 // given label key=value (optionally within one account). Used to detect whether
 // two label rules can both match a real workload.
-func loadWorkloadLabelsMatching(d *sqlx.DB, tenantId, key, value, account string) ([]map[string]string, error) {
+func loadWorkloadLabelsMatching(d sqlx.Ext, tenantId, key, value, account string) ([]map[string]string, error) {
 	q := `SELECT labels FROM k8s_workloads WHERE tenant_id = $1::uuid AND is_active AND labels->>$2 = $3`
 	args := []any{tenantId, key, value}
 	if account != "" {
@@ -488,7 +496,7 @@ func loadWorkloadLabelsMatching(d *sqlx.DB, tenantId, key, value, account string
 // findConflictingRule returns an existing rule of the SAME scope that overlaps the
 // requested rule (could own an overlapping set of resources), or nil. excludeId
 // skips the rule being edited.
-func findConflictingRule(d *sqlx.DB, tenantId string, req UpsertRuleRequest, excludeId string) (*OwnershipRuleRow, error) {
+func findConflictingRule(d sqlx.Ext, tenantId string, req UpsertRuleRequest, excludeId string) (*OwnershipRuleRow, error) {
 	all, err := listRuleRows(d, tenantId)
 	if err != nil {
 		return nil, err
@@ -529,7 +537,7 @@ func cloudResourceConflict(candidates []OwnershipRuleRow, req UpsertRuleRequest)
 
 // cloudTagConflict reports a conflict when some active cloud resource matches both
 // the requested cloud_tag rule and an existing one (mirror of labelConflict).
-func cloudTagConflict(d *sqlx.DB, tenantId string, candidates []OwnershipRuleRow, req UpsertRuleRequest) (*OwnershipRuleRow, error) {
+func cloudTagConflict(d sqlx.Ext, tenantId string, candidates []OwnershipRuleRow, req UpsertRuleRequest) (*OwnershipRuleRow, error) {
 	matches, err := loadCloudResourceTagsMatching(d, tenantId, req.MatchKey, req.MatchValue, req.CloudAccountId)
 	if err != nil {
 		return nil, err
@@ -602,7 +610,7 @@ func labelRulesOverlap(candidates []OwnershipRuleRow, matchedLabels []map[string
 
 // labelConflict reports a conflict when some active workload matches both the
 // requested label rule and an existing one.
-func labelConflict(d *sqlx.DB, tenantId string, candidates []OwnershipRuleRow, req UpsertRuleRequest) (*OwnershipRuleRow, error) {
+func labelConflict(d sqlx.Ext, tenantId string, candidates []OwnershipRuleRow, req UpsertRuleRequest) (*OwnershipRuleRow, error) {
 	matches, err := loadWorkloadLabelsMatching(d, tenantId, req.MatchKey, req.MatchValue, req.CloudAccountId)
 	if err != nil {
 		return nil, err
@@ -612,7 +620,7 @@ func labelConflict(d *sqlx.DB, tenantId string, candidates []OwnershipRuleRow, r
 
 // ---- rules CRUD ----
 
-func upsertRuleRow(d *sqlx.DB, tenantId string, r UpsertRuleRequest, actorId string) (string, error) {
+func upsertRuleRow(d sqlx.Ext, tenantId string, r UpsertRuleRequest, actorId string) (string, error) {
 	enabled := true
 	if r.Enabled != nil {
 		enabled = *r.Enabled
@@ -658,9 +666,9 @@ func deleteRuleRow(d *sqlx.DB, tenantId, id string) (int64, error) {
 	return n, nil
 }
 
-func listRuleRows(d *sqlx.DB, tenantId string) ([]OwnershipRuleRow, error) {
+func listRuleRows(d sqlx.Ext, tenantId string) ([]OwnershipRuleRow, error) {
 	var rows []OwnershipRuleRow
-	err := d.Select(&rows, `
+	err := sqlx.Select(d, &rows, `
 		SELECT id, tenant_id, name, resource_domain, match_scope, match_key, match_value, cloud_account_id,
 		       owner_type, owner_id, priority, enabled, created_by, updated_by, created_at, updated_at
 		FROM ownership_rules WHERE tenant_id = $1::uuid
