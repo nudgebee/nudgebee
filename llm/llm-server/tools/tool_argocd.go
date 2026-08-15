@@ -15,6 +15,30 @@ func init() {
 	core.RegisterNBToolFactory(ToolExecuteArgoCDCommand, func(accountId string) (core.NBTool, error) {
 		return ArgoCDExecuteTool{}, nil
 	})
+	// Phase 3f (#32503): the retired ArgoCDAgent used the short handle "argocd".
+	// Preserve resolvability for stored delegate_agent(tools=["argocd"]) calls.
+	core.RegisterNBToolAlias("argocd", ToolExecuteArgoCDCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where no argocd-specific orchestrator prompt is loaded (there isn't one).
+// Slim: safety-critical + argocd command patterns + cross-tool hints so the
+// caller knows to reach for kubectl_execute / github when the argocd trail
+// runs out. The retired agent's full 5-step protocol + 8 remediation
+// examples are NOT ported — zero agent traffic on dev in 30d means the
+// methodology wasn't earning its weight. Add it back with evidence if
+// argocd volume ever justifies.
+func (m ArgoCDExecuteTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Run `argocd` command → parse output → make statement. NEVER invent app names, sync states, or revision hashes — empty results mean 'not found'.",
+		"**Investigation is read-only by default.** Mutating verbs (`app sync`, `app rollback`, `app pause`, `app resume`, `app patch`, `app delete`, `repo add/remove`, `proj create/delete`) require user approval — do not run unsolicited.",
+		"**No credentials in commands:** ArgoCD server URL, username, password, and auth token are injected via workspace env. Do NOT hardcode them; do NOT run `argocd login`.",
+		"**Argocd is GitOps-shaped:** the source of truth is the Git repo, not the cluster. A durable fix belongs at the manifest layer (edit-in-Git + sync), NOT at the ArgoCD/K8s runtime. Direct `kubectl edit`/`patch` on argocd-managed resources reverts on next reconcile — flag that to the user.",
+		"**Sync-status one-liner:** `Failed` → check git repo access + manifest syntax (`app get --show-operation`, look at ArgoCD controller logs). `Synced but Degraded` → check K8s runtime (use `kubectl_execute` for pods/events/logs on the app's namespace). `OutOfSync` → check config drift (`app diff`, then investigate what modified the live resource — `kubectl get <resource> -o yaml` vs Git). `Progressing` → poll `app get`, don't conclude yet.",
+		"**Command families:** listing (`app list`, `proj list`, `cluster list`, `repo list`); inspection (`app get [--show-operation]`, `app diff`, `app history`, `app manifests`); mutation (`app sync`, `app rollback --revision <rev>`, `app pause`, `app resume`, `app patch`); recovery (`app wait --health --timeout <s>` for post-mutation verification).",
+		"**Cross-tool hints (not preloaded — discover if needed):** For K8s state behind a Degraded app, use `kubectl_execute` (already in your toolset if you're an orchestrator). For git commit history behind a SyncFailed / OutOfSync, discover `github` via `search_tools` and delegate. Don't try to derive git state from argocd output alone — the argocd CLI shows sync results, not commit history.",
+	}
 }
 
 type ArgoCDExecuteTool struct {

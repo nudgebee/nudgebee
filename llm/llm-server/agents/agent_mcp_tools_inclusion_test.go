@@ -64,13 +64,6 @@ func TestAllAgents_IncludeMCPIntegrationTools(t *testing.T) {
 				return getDatadogPlannerSupportedTools(sc, testAccountId)
 			},
 		},
-		{
-			name: "argocd",
-			getTools: func() []toolcore.NBTool {
-				agent := ArgoCDAgent{accountId: testAccountId}
-				return agent.GetSupportedTools(sc)
-			},
-		},
 	}
 
 	for _, tc := range tests {
