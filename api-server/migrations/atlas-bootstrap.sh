@@ -71,7 +71,7 @@ psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -q -c "CREATE SCHEMA IF NOT EXISTS n
 # the literal string "nudgebee.atlas-bootstrap" reduced to a signed 32-bit
 # integer; arbitrary but stable. pg_advisory_lock blocks until acquired and
 # is auto-released on session end (psql exit).
-LOCK_KEY=$(python3 -c "import zlib; print(zlib.crc32(b'nudgebee.atlas-bootstrap') - (1 << 31))")
+LOCK_KEY=-46688224  # crc32("nudgebee.atlas-bootstrap") - 2^31, precomputed (no python3 in the alpine image)
 psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -q -c "SELECT pg_advisory_lock(${LOCK_KEY})" >/dev/null
 
 # trap to release lock on early exit; psql session closes automatically but

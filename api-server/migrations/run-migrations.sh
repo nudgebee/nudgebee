@@ -149,43 +149,41 @@ echo "Postgres migrations OK."
 if [ "${MIGRATE_SKIP_PLAYBOOK:-0}" = "1" ]; then
     echo "Skipping Agent Playbook load (MIGRATE_SKIP_PLAYBOOK=1)"
 else
-    echo "Loading Agent Playbook..."
-    max_retries=12
-    retry_delay=5
-    attempt=1
-    while [ $attempt -le $max_retries ]; do
-        # -f is what makes the retry cover HTTP errors too: without it curl exits
-        # 0 on a 5xx and the loop breaks on the first attempt. The handler answers
-        # 200 as soon as it accepts the job (the load itself runs in a goroutine),
-        # so there is no success-shaped non-2xx here for -f to misread.
-        if curl -f -X POST "${SERVICE_API_SERVER_URL}/rpc-cron" -d '{
-                "comment": "Load Agent Playbook",
-                "name": "Load Agent Playbook",
-                "payload": {}
-            }' -v -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN"; then
-            break
+    # This Job runs as a post-install/post-upgrade Helm hook, so it can start
+    # before the services-server pods are Ready. Without a wait, the POST below
+    # hits a TCP connect timeout and (under `set -e`) fails the whole Job,
+    # skipping the ClickHouse + RabbitMQ steps that follow. Poll /health for a
+    # bounded window first. If services-server never becomes ready we log and
+    # continue rather than fail: the playbook cron self-registers on first
+    # services-server boot, so this trigger is best-effort.
+    if [ -z "${SERVICE_API_SERVER_URL:-}" ]; then
+        echo "WARN: SERVICE_API_SERVER_URL is not set; skipping Agent Playbook trigger (cron self-registers on services-server boot)."
+    else
+        max_attempts="${MIGRATE_PLAYBOOK_WAIT_ATTEMPTS:-60}"
+        interval="${MIGRATE_PLAYBOOK_WAIT_INTERVAL:-5}"
+        attempt=0
+        playbook_ready=0
+        while [ "$attempt" -lt "$max_attempts" ]; do
+            if curl -sf -m 5 "$SERVICE_API_SERVER_URL/health" > /dev/null 2>&1; then
+                playbook_ready=1
+                break
+            fi
+            attempt=$((attempt + 1))
+            echo "Waiting for services-server health ($SERVICE_API_SERVER_URL/health), attempt $attempt/$max_attempts..."
+            sleep "$interval"
+        done
+
+        if [ "$playbook_ready" = "1" ]; then
+            echo "Loading Agent Playbook..."
+            curl -X POST "$SERVICE_API_SERVER_URL/rpc-cron" -d '{
+                    "comment": "Load Agent Playbook",
+                    "name": "Load Agent Playbook",
+                    "payload": {}
+                }' -v -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN" \
+                || echo "WARN: Agent Playbook trigger failed; cron self-registers on services-server boot, continuing."
+        else
+            echo "WARN: services-server not healthy after $((max_attempts * interval))s; skipping Agent Playbook trigger (cron self-registers on services-server boot)."
         fi
-        echo "Attempt $attempt of $max_retries failed. Retrying in $retry_delay seconds..."
-        sleep $retry_delay
-        attempt=$((attempt + 1))
-    done
-    if [ $attempt -gt $max_retries ]; then
-        # Non-fatal on purpose. Two deploy shapes reach this line and neither
-        # should lose the DB migration over a best-effort cron registration:
-        #   * on-prem (deploy/kubernetes/nudgebee) — post-install/post-upgrade
-        #     hook, backoffLimit 0. services-server is rolling out alongside the
-        #     Job, so a connection-refused is usually transient and the retries
-        #     above clear it; if they do not, exiting here fails the Helm hook
-        #     over a cron that would have self-registered anyway.
-        #   * SaaS (deploy/kubernetes/migrations) — pre-install/pre-upgrade hook,
-        #     so services-server cannot be Ready until this Job succeeds. On a
-        #     fresh install the retries can never connect (deadlock, not a blip).
-        # Either way the playbook cron self-registers on first services-server
-        # boot, so warn loudly and continue to the migrations below.
-        echo "WARN: Agent Playbook not loaded after $max_retries attempts —" \
-             "services-server did not accept the request at $SERVICE_API_SERVER_URL" \
-             "(unreachable, or answering with an HTTP error)." \
-             "Continuing; the playbook cron self-registers on boot." >&2
     fi
 fi
 
