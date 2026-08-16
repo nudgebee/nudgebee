@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -303,4 +304,26 @@ func TestOpenObserveTracesToHeatmap(t *testing.T) {
 	assert.Equal(t, "demo", h.ResourceAttributes["k8s.namespace.name"])
 	// Attributes with no dedicated column stay available to the span detail panel.
 	assert.Equal(t, "postgresql", h.SpanAttributes["db_system_name"])
+}
+
+// The trace-detail view asks for a heatmap by trace_id alone — traces_get_heatmap sends no
+// window. Falling back to the usual one-hour default returned zero spans for any older
+// trace: verified live, a 2-hour-old trace with 145 spans came back empty.
+func TestOpenObserveHeatmapWindow(t *testing.T) {
+	now := time.Date(2026, time.August, 16, 12, 0, 0, 0, time.UTC)
+
+	// No window: look back far enough that an older trace is still found.
+	start, end := openObserveHeatmapWindow(0, 0, now)
+	assert.Equal(t, now.UnixMicro(), end)
+	assert.Equal(t, now.Add(-30*24*time.Hour).UnixMicro(), start)
+	assert.Greater(t, end-start, (24 * time.Hour).Microseconds(),
+		"a one-hour default silently truncates older traces")
+
+	// A supplied window is honoured, padded so a span starting just before the row's
+	// timestamp is not clipped out of the waterfall.
+	startMs, endMs := int64(1700000000000), int64(1700003600000)
+	start, end = openObserveHeatmapWindow(startMs, endMs, now)
+	pad := (5 * time.Minute).Microseconds()
+	assert.Equal(t, startMs*1000-pad, start)
+	assert.Equal(t, endMs*1000+pad, end)
 }

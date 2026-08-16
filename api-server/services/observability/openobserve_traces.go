@@ -562,11 +562,30 @@ func (s *OpenObserveTraceSource) QueryGroupedTracesCount(ctx *security.RequestCo
 // stalling the request.
 const openObserveHeatmapSpanLimit = 2000
 
-// openObserveHeatmapWindowPadding widens the requested window when fetching a single trace.
-// The caller's window is derived from the row's timestamp, but a trace's earliest span can
+// openObserveHeatmapWindowPadding widens a caller-supplied window when fetching a single
+// trace. The window is derived from the row's timestamp, but a trace's earliest span can
 // begin fractionally before it and its latest can end after — clipping either truncates the
 // waterfall. The trace_id filter keeps the wider scan cheap.
 const openObserveHeatmapWindowPadding = 5 * time.Minute
+
+// openObserveHeatmapDefaultLookback is how far back the heatmap searches when the caller
+// supplies no window at all.
+//
+// The trace-detail view asks by trace_id alone — see the traces_get_heatmap query, which
+// sends only account_id and trace_id. Falling back to the usual one-hour default returned
+// zero spans for any older trace: verified against a live instance, a 2-hour-old trace with
+// 145 spans came back empty. NewRelicTraceSource.QueryTracesHeatmap uses 30 days for the
+// same reason.
+const openObserveHeatmapDefaultLookback = 30 * 24 * time.Hour
+
+// openObserveHeatmapWindow resolves the search window for one trace, in microseconds.
+func openObserveHeatmapWindow(startMs, endMs int64, now time.Time) (int64, int64) {
+	if startMs > 0 && endMs > 0 {
+		pad := openObserveHeatmapWindowPadding.Microseconds()
+		return startMs*1000 - pad, endMs*1000 + pad
+	}
+	return now.Add(-openObserveHeatmapDefaultLookback).UnixMicro(), now.UnixMicro()
+}
 
 // QueryTracesHeatmap returns every span of one trace, which the UI lays out as the trace
 // waterfall. Mirrors NewRelicTraceSource.QueryTracesHeatmap: fetch the whole trace by id,
@@ -587,10 +606,7 @@ func (s *OpenObserveTraceSource) QueryTracesHeatmap(ctx *security.RequestContext
 	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE trace_id = '%s' ORDER BY start_time ASC LIMIT %d`,
 		cfg.TraceStream, escapeOpenObserveString(req.TraceId), openObserveHeatmapSpanLimit)
 
-	startMicros, endMicros := openObserveTimeRangeMicros(req.StartTime, req.EndTime, time.Now())
-	padding := openObserveHeatmapWindowPadding.Microseconds()
-	startMicros -= padding
-	endMicros += padding
+	startMicros, endMicros := openObserveHeatmapWindow(req.StartTime, req.EndTime, time.Now())
 
 	searchReq := openObserveSearchRequest{}
 	searchReq.Query.SQL = sql
