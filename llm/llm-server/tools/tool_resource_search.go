@@ -1662,6 +1662,26 @@ func (r K8sResourceSearchTool) filterResourcesByRelevance(resources []K8sResourc
 	var terms []string
 	add := func(t string) {
 		t = strings.ToLower(strings.TrimSpace(t))
+		// A term containing whitespace can never match anything: K8s names and
+		// namespaces are DNS-1123 labels, which cannot contain spaces. Worse, adding
+		// the raw multi-word query makes `terms` non-empty and so bypasses the
+		// len(terms) == 0 escape hatch below — so a query whose every word is a
+		// type/scope stopword ("deployments namespace") keeps one unmatchable term
+		// and prunes every result to a false empty, which is the exact failure this
+		// filter's stopword list exists to prevent.
+		// A term can only be useful if it could appear in a resource name or namespace.
+		// Those are DNS-1123 (lowercase alphanumeric, '-', and '.' for subdomains), so a
+		// term carrying anything else can never match — but it still counts toward
+		// `terms`, which bypasses the len(terms)==0 escape hatch below and prunes every
+		// result to a false empty.
+		//
+		// Stated as "what can match" rather than a list of separators on purpose: the
+		// separator list was extended three times (space, then '/', then '_') and still
+		// missed ':' and ','. sanitizeInput strips most punctuation today, but it does
+		// permit '_' and '/', and this guard should not depend on that staying true.
+		if !isDNS1123Term(t) {
+			return
+		}
 		// Skip type/scope words ("deployments", "namespace", "nodes", …) — they
 		// describe kind/scope, not a resource identity, so matching resource
 		// names against them over-prunes valid results to a false empty.
@@ -1673,11 +1693,29 @@ func (r K8sResourceSearchTool) filterResourcesByRelevance(resources []K8sResourc
 
 	queryLower := strings.ToLower(query)
 	add(queryLower)
-	// Split on spaces too, not just -/_/. — a multi-word query like "llm server"
+	// Split on whitespace too, not just -/_/. — a multi-word query like "llm server"
 	// must yield the "llm" term (which matches "llm-server-abc"); otherwise the
 	// whole "llm server" string is the only term and matches no hyphenated name.
+	//
+	// unicode.IsSpace rather than a literal ' ': an LLM-authored resource_name can
+	// carry a newline or tab, and splitting on spaces alone would leave "llm\nserver"
+	// as one unmatchable component. The guard above then rejects it for containing
+	// whitespace, so the query would fall back to no filtering at all — correct, but
+	// weaker than simply splitting it into terms that do match.
+	// Split on anything that is not alphanumeric. This is the mirror of the guard above:
+	// if a character cannot appear in a DNS-1123 name, it can only be a separator, so
+	// splitting on it is what turns an otherwise-unusable query into usable terms.
+	// "pods/llm-server", "llm_server", "llm,server" and "llm\nserver" all yield "llm".
+	//
+	// Enumerating separators here was wrong the same way the guard was: the list grew
+	// space -> '/' -> '_' and still missed ':' and ','. Without this, such a query is
+	// merely safe (every term rejected, escape hatch returns everything unfiltered)
+	// rather than useful.
+	//
+	// '-' and '.' are valid name characters AND separators: the unsplit query is added
+	// above, so "llm-server" keeps its exact form while also yielding "llm".
 	for _, part := range strings.FieldsFunc(queryLower, func(c rune) bool {
-		return c == '-' || c == '_' || c == '.' || c == ' '
+		return !isASCIIAlphanumeric(c)
 	}) {
 		add(part)
 	}
@@ -2072,4 +2110,24 @@ func GetCurrentGcpAccountState(accountId string) map[string][]string {
 		slog.Error("tools: error iterating rows", "error", err)
 	}
 	return response
+}
+
+// isDNS1123Term reports whether every character in t could appear in a Kubernetes
+// resource name or namespace. Empty is not a usable term.
+func isDNS1123Term(t string) bool {
+	if t == "" {
+		return false
+	}
+	for _, c := range t {
+		if !isASCIIAlphanumeric(c) && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// isASCIIAlphanumeric is the shared primitive behind both the guard and the splitter,
+// so the two cannot drift: anything that is not a name character is a separator.
+func isASCIIAlphanumeric(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }

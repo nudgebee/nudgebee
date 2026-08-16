@@ -4,6 +4,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -1132,4 +1133,58 @@ func TestResourceSearchResultMessage(t *testing.T) {
 	noCluster := resourceSearchResultMessage(0, false)
 	assert.Contains(t, noCluster, "no connected Kubernetes cluster")
 	assert.Contains(t, noCluster, "cloud_resource_search_execute")
+}
+
+// Term extraction must be closed over a CLASS of input, not a list of separators.
+//
+// This guard was patched four times — " \t", then \n, then '/', then '_' — and each
+// round a review found another character that slipped through (':' and ',' were still
+// broken after the third). The rule is now stated positively: a term is usable only if
+// every character could appear in a DNS-1123 name, and the splitter is its mirror
+// (split on anything non-alphanumeric). Adding a new separator cannot reopen this.
+func TestFilterResourcesByRelevance_SeparatorClasses(t *testing.T) {
+	r := K8sResourceSearchTool{}
+	resources := []K8sResourceInfo{
+		{Name: "relay-server-7c48b7d966-l6hsx", Namespace: "nudgebee"},
+		{Name: "llm-server-5d64db9547-vpnqq", Namespace: "nudgebee"},
+	}
+
+	// Characters that cannot appear in a DNS-1123 name are separators. A query of only
+	// type/scope words joined by one carries no identity, so it must not prune;
+	// a query naming a real resource must still narrow to it.
+	for _, sep := range []string{" ", "\t", "\n", "\r", "/", "_", ":", ",", ";", "=", "|"} {
+		t.Run("stopwords joined by "+strconv.Quote(sep), func(t *testing.T) {
+			got := r.filterResourcesByRelevance(resources, "deployments"+sep+"namespace")
+			assert.Len(t, got, len(resources), "no identifying term — must not prune")
+		})
+		t.Run("real name joined by "+strconv.Quote(sep), func(t *testing.T) {
+			got := r.filterResourcesByRelevance(resources, "llm"+sep+"server")
+			assert.Len(t, got, 1, "the identifying term must survive the separator")
+			assert.Equal(t, "llm-server-5d64db9547-vpnqq", got[0].Name)
+		})
+	}
+
+	// '-' and '.' are the exception: they are VALID name characters, so a hyphenated
+	// query is a plausible resource name. Pruning to empty there is a true negative
+	// ("no resource is called that"), not the false empty this guard prevents — and
+	// returning everything instead would be misleading.
+	t.Run("hyphenated stopwords are a plausible name, not a separator case", func(t *testing.T) {
+		assert.Empty(t, r.filterResourcesByRelevance(resources, "deployments-namespace"))
+	})
+
+	t.Run("identifying terms still filter", func(t *testing.T) {
+		got := r.filterResourcesByRelevance(resources, "relay-server")
+		assert.Len(t, got, 1)
+		assert.Equal(t, "relay-server-7c48b7d966-l6hsx", got[0].Name)
+	})
+
+	// A namespace term legitimately matches everything in that namespace (#36078).
+	t.Run("namespace-scoped query keeps the namespace", func(t *testing.T) {
+		assert.Len(t, r.filterResourcesByRelevance(resources, "nudgebee/llm-server"), 2)
+	})
+
+	t.Run("empty and whitespace-only queries do not prune", func(t *testing.T) {
+		assert.Len(t, r.filterResourcesByRelevance(resources, ""), 2)
+		assert.Len(t, r.filterResourcesByRelevance(resources, "   "), 2)
+	})
 }
