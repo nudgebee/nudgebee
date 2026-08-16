@@ -312,12 +312,18 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 
 		return agent, nil
 	})
+	if err != nil {
+		return AgentDto{}, err
+	}
+	if agentAny == nil {
+		return AgentDto{}, errors.New("agent: transaction failed")
+	}
 
 	if len(rags) > 0 {
 		for _, rag := range rags {
-			_, err = toolcore.CreateAgentRag(context, accountId, agent.Name, rag.Data, rag.Format, rag.Filename)
-			if err != nil {
-				getLogger(context).Error("agent: failed to create agent rag", "error", err)
+			_, ragErr := toolcore.CreateAgentRag(context, accountId, agent.Name, rag.Data, rag.Format, rag.Filename)
+			if ragErr != nil {
+				getLogger(context).Error("agent: failed to create agent rag", "error", ragErr)
 			}
 		}
 	}
@@ -349,7 +355,9 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 		// Don't return the audit error as it shouldn't affect the main operation
 	}
 
-	return agentAny.(AgentDto), err
+	InvalidateCustomAgentToolsCache(accountId, agent.Name)
+
+	return agentAny.(AgentDto), nil
 }
 
 // Define a struct to return both original and updated agent
@@ -649,16 +657,17 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 		return AgentUpdateDto{}, handleAgentError(context, err, "agent: transaction failed")
 	}
 
-	// Evict cached tool list only after the transaction commits so concurrent requests
-	// never see a warm cache backed by the pre-commit (now-stale) state.
-	if agent.Tools != nil {
-		InvalidateCustomAgentToolsCache(accountId, "")
-	}
-
 	// Type assertion to get the result from the transaction
 	result, ok := resultAny.(agentUpdateResult)
 	if !ok {
 		return AgentUpdateDto{}, handleAgentError(context, errors.New("invalid result type"), "agent: failed to cast transaction result")
+	}
+
+	// Evict cached tool list only after the transaction commits so concurrent requests
+	// never see a warm cache backed by the pre-commit (now-stale) state.
+	InvalidateCustomAgentToolsCache(accountId, result.Original.Name)
+	if agent.Name != nil && *agent.Name != "" && *agent.Name != result.Original.Name {
+		InvalidateCustomAgentToolsCache(accountId, *agent.Name)
 	}
 
 	// Create audit entry with both original and updated agent states

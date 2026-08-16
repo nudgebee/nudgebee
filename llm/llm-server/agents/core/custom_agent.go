@@ -31,6 +31,15 @@ var customAgentToolsCacheInst = &customAgentToolsCache{
 	}),
 }
 
+func init() {
+	RegisterAgentCacheInvalidator(func(accountId, agentName string) {
+		customAgentToolsCacheInst.delete(accountId, agentName)
+	})
+	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
+		customAgentToolsCacheInst.delete(accountId, "")
+	})
+}
+
 func (c *customAgentToolsCache) get(accountId, agentName string) ([]toolcore.NBTool, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -69,6 +78,9 @@ func (c *customAgentToolsCache) delete(accountId, agentName string) {
 // Must be called after any Create / Update / Delete that changes the agent's tool list.
 func InvalidateCustomAgentToolsCache(accountId, agentName string) {
 	customAgentToolsCacheInst.delete(accountId, agentName)
+	if err := common.CachePublish(CacheChannelAgentConfigInvalidation, accountId+":"+agentName); err != nil {
+		slog.Error("custom_agent: failed to broadcast agent invalidation", "error", err, "account_id", accountId, "agent", agentName)
+	}
 }
 
 type nbCustomAgent struct {
@@ -131,6 +143,7 @@ func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 		customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
 		return nbTools
 	}
+	allResolved := true
 	for _, tool := range a.agent.Tools {
 		if tool == "" {
 			continue
@@ -142,10 +155,23 @@ func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 			agent, found := GetCustomNbAgent(ctx, a.accountId, tool, AgentStatusEnabled)
 			if found {
 				nbTools = append(nbTools, NewToolFromAgent(agent))
+			} else {
+				allResolved = false
+				if ctx != nil && ctx.GetContext() != nil {
+					slog.WarnContext(ctx.GetContext(), "custom_agent: tool configured for agent not found",
+						"agent", a.agent.Name, "tool", tool, "account_id", a.accountId)
+				} else {
+					slog.Warn("custom_agent: tool configured for agent not found",
+						"agent", a.agent.Name, "tool", tool, "account_id", a.accountId)
+				}
 			}
 		}
 	}
-	customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
+	// Only cache across requests if all configured tools were successfully resolved.
+	// If any tool failed to resolve, avoid poisoning the 30-minute cache with an incomplete list.
+	if allResolved {
+		customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
+	}
 	a.tools = nbTools
 	return a.tools
 }
