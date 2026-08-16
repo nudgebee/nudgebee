@@ -267,6 +267,37 @@ func TestEveryAllowedTableCanBeScopedToAnAccount(t *testing.T) {
 	}
 }
 
+/*
+Every executable panel table must name a PermissionModule.
+
+A custom-role holder with no built-in role reaches the query engine's
+account-restriction block, where a table with no module has no branch that can
+admit it — the read is denied outright and no grant exists to fix it. The panel
+editor greys such a table out and names the grant to ask for
+(app/src/components/k8s/dashboards/panelAccess.ts), so a module-less table would
+put a table in the picker that nobody can be given access to.
+
+Traces are excluded: they are validated here but read through the traces
+service, not the engine (see entityQueryExecutable).
+*/
+func TestEveryExecutableTableNamesAPermissionModule(t *testing.T) {
+	for datasource, tables := range entityQueryTables {
+		if !entityQueryExecutable[datasource] {
+			continue
+		}
+		for table := range tables {
+			def, ok := query.GetTableMetadata(table)
+			if !ok {
+				t.Errorf("%s/%s: not in the query metadata registry", datasource, table)
+				continue
+			}
+			if def.PermissionModule == "" {
+				t.Errorf("%s/%s: no PermissionModule — a custom-role holder can never be granted this table", datasource, table)
+			}
+		}
+	}
+}
+
 // The engine's `_between` takes a MAP of bound operators. A [from, to] list
 // panics its SQL generator on an unchecked type assertion, which reaches the
 // browser as a 500 with an empty body.

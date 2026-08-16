@@ -59,6 +59,37 @@ describe('tablesFor', () => {
     expect(tablesFor('logs')).toEqual([]);
   });
 
+  it('names the permission module of every nudgebee table', () => {
+    // The mirror of `PermissionModule` in api-server/services/query/metadata.go
+    // (pinned there by TestEveryExecutableTableNamesAPermissionModule). It is
+    // what the editor greys a table out on and what the tooltip names, so a
+    // missing entry silently un-gates a table the engine will still refuse, and
+    // a wrong one sends the author to their admin for the wrong grant.
+    expect(Object.fromEntries(tablesFor('nudgebee').map((t) => [t.value, t.permissionModule]))).toEqual({
+      events_v2: 'events',
+      event_groupings_v2: 'events',
+      recommendations_v2: 'recommendations',
+      recommendation_groupings_v2: 'recommendations',
+      spend_groupings_v2: 'spend',
+      k8s_cluster_groupings_v2: 'accounts',
+      k8s_nodes_v2: 'k8s',
+      ticket_groupings_v2: 'tickets',
+      anomaly_grouping_v2: 'anomalies',
+      anomaly_v2: 'anomalies',
+      recommendation_security_cis_groupings_v2: 'recommendations',
+      recommendation_security_v2: 'recommendations',
+      auto_pilot_task_groupings_v2: 'autooptimize',
+      auto_pilot_approvals_v2: 'autooptimize',
+      audits_v2: 'audits',
+      get_agent_health_v2: 'accounts',
+      llm_conversation_groupings_v2: 'ai_conversations',
+    });
+    // Traces are read through the traces service, not the query engine, so the
+    // module is not what authorizes them and declaring one would gate on the
+    // wrong thing.
+    expect(tablesFor('traces').every((t) => t.permissionModule === undefined)).toBe(true);
+  });
+
   it('opens a table with no filterable timestamp with the time range off', () => {
     // Clusters are a current-state snapshot and carry no date column at all;
     // leaving the switch on would filter the panel against nothing.

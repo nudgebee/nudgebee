@@ -26,6 +26,19 @@ export interface EntityTable {
   label: string;
   /** Which panel datasource may query it — the server enforces the same split. */
   datasource: 'nudgebee' | 'traces';
+  /**
+   * The dynamic-RBAC module a custom-role grant must name to read this table —
+   * the mirror of `PermissionModule` on the same table in
+   * `api-server/services/query/metadata.go`, which is what the engine actually
+   * checks. Used to grey the table out and name the grant to ask for; see
+   * panelAccess.ts.
+   *
+   * Required on every `nudgebee` table (a Go test pins the server side, and
+   * entityQuery.test.ts pins this one). Absent on the trace tables: those are
+   * read through the traces service rather than the query engine, so this
+   * module is not what authorizes them.
+   */
+  permissionModule?: string;
   /** One line under the picker — what the table holds. */
   description: string;
   /** What a row IS, and when to reach for this table over the other. */
@@ -370,6 +383,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'events_v2',
     datasource: 'nudgebee',
+    permissionModule: 'events',
     label: 'Events',
     description: 'One row per event occurrence.',
     detail:
@@ -384,6 +398,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'event_groupings_v2',
     datasource: 'nudgebee',
+    permissionModule: 'events',
     label: 'Event groups',
     // events_v2 is a row table — the engine will not take an arbitrary GROUP BY
     // on it, so counts come from this pre-aggregated twin instead.
@@ -400,6 +415,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'recommendations_v2',
     datasource: 'nudgebee',
+    permissionModule: 'recommendations',
     label: 'Recommendations',
     description: 'One row per recommendation.',
     detail:
@@ -414,6 +430,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'recommendation_groupings_v2',
     datasource: 'nudgebee',
+    permissionModule: 'recommendations',
     label: 'Recommendation groups',
     // Same reason as Event groups: recommendations_v2 is a row table and the
     // engine will not take an arbitrary GROUP BY on it.
@@ -429,6 +446,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'spend_groupings_v2',
     datasource: 'nudgebee',
+    permissionModule: 'spend',
     label: 'Cloud spend',
     description: 'One row per spend dimension, with the amount billed.',
     detail:
@@ -443,6 +461,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'k8s_cluster_groupings_v2',
     datasource: 'nudgebee',
+    permissionModule: 'accounts',
     label: 'Clusters',
     description: 'One row per cluster: capacity, workloads and pod states.',
     detail:
@@ -458,6 +477,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'k8s_nodes_v2',
     datasource: 'nudgebee',
+    permissionModule: 'k8s',
     label: 'Nodes',
     description: 'One row per node.',
     detail:
@@ -471,6 +491,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'ticket_groupings_v2',
     datasource: 'nudgebee',
+    permissionModule: 'tickets',
     label: 'Ticket groups',
     description: 'Ticket counts by status, severity or assignee.',
     detail:
@@ -484,6 +505,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'anomaly_grouping_v2',
     datasource: 'nudgebee',
+    permissionModule: 'anomalies',
     label: 'Anomaly groups',
     description: 'Anomaly counts by type, subject or namespace.',
     detail:
@@ -497,6 +519,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'anomaly_v2',
     datasource: 'nudgebee',
+    permissionModule: 'anomalies',
     label: 'Anomalies',
     description: 'One row per detection, with observed vs expected.',
     detail:
@@ -510,6 +533,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'recommendation_security_cis_groupings_v2',
     datasource: 'nudgebee',
+    permissionModule: 'recommendations',
     label: 'CIS compliance',
     description: 'One row per benchmark rule, with how many resources fail it.',
     detail:
@@ -525,6 +549,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'recommendation_security_v2',
     datasource: 'nudgebee',
+    permissionModule: 'recommendations',
     label: 'Vulnerabilities',
     description: 'One row per CVE found in a running image.',
     detail:
@@ -538,6 +563,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'auto_pilot_task_groupings_v2',
     datasource: 'nudgebee',
+    permissionModule: 'autooptimize',
     label: 'Autopilot task groups',
     description: 'Autopilot task counts by state and category.',
     detail:
@@ -551,6 +577,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'auto_pilot_approvals_v2',
     datasource: 'nudgebee',
+    permissionModule: 'autooptimize',
     label: 'Autopilot approvals',
     description: 'One row per action waiting on, or decided by, a human.',
     detail:
@@ -564,6 +591,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'audits_v2',
     datasource: 'nudgebee',
+    permissionModule: 'audits',
     label: 'Audit log',
     description: 'One row per configuration or access change.',
     detail:
@@ -577,6 +605,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'get_agent_health_v2',
     datasource: 'nudgebee',
+    permissionModule: 'accounts',
     label: 'Agent health',
     description: 'One row per collector agent, with when it last checked in.',
     detail:
@@ -590,6 +619,7 @@ export const ENTITY_TABLES: EntityTable[] = [
   {
     value: 'llm_conversation_groupings_v2',
     datasource: 'nudgebee',
+    permissionModule: 'ai_conversations',
     label: 'AI investigations',
     description: 'Investigation counts by source and status.',
     detail:

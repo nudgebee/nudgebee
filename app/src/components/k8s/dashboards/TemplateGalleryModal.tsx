@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import { Card } from '@ui/Card';
 import { Chip } from '@ui/Chip';
+import Tooltip from '@ui/Tooltip';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import SearchInput from '@ui/SearchInput';
 import { snackbar } from '@ui/Toast';
@@ -11,8 +13,9 @@ import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
 import type { AccountOption, Dashboard } from '@api1/dashboards';
 import { deriveAccountTypes } from './panelAccounts';
-import { defaultWidgetScope, roleLabel, TEMPLATE_ROLES, type TemplateRole } from './panelTemplates';
+import { defaultWidgetScope, findPanelTemplate, roleLabel, TEMPLATE_ROLES, type TemplateRole } from './panelTemplates';
 import { convertTemplate, DASHBOARD_TEMPLATES, filterTemplatesBySearch, templateWidgets, type DashboardTemplate } from './dashboardTemplates';
+import { grantTooltip, missingPanelGrant } from './panelAccess';
 
 interface Props {
   open: boolean;
@@ -28,6 +31,26 @@ interface Props {
 
 /** Role filter value meaning "every template". */
 const ALL_ROLES = 'all';
+
+/**
+ * The template minus the panels this viewer cannot read.
+ *
+ * Dropping them is what stops "start from a template" handing someone a
+ * dashboard half full of Access Denied. Unknown widget ids go too, so the
+ * remaining list indexes 1:1 with the scopes built from it — `buildTemplateDocument`
+ * counts RESOLVED panels, and a gap would shift every later scope onto the wrong
+ * panel.
+ */
+function readableTemplate(template: DashboardTemplate): DashboardTemplate {
+  return {
+    ...template,
+    panels: template.panels.filter((entry) => {
+      const widget = findPanelTemplate(entry.widget);
+      if (!widget) return false;
+      return !missingPanelGrant(widget.panel);
+    }),
+  };
+}
 
 /**
  * Picks a template and turns it into a dashboard draft.
@@ -58,6 +81,31 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
 
   const widgets = selected ? templateWidgets(selected) : [];
   const scopes = widgets.map((widget) => defaultWidgetScope(widget, accountOptions));
+
+  /**
+   * Per template: the distinct grants its panels need and how many panels remain
+   * after the unreadable ones are dropped.
+   *
+   * Empty for everyone but a grants-only custom-role holder (see panelAccess.ts),
+   * so every other viewer sees the gallery exactly as before. Derived once — the
+   * catalogue is a module-level constant and the session does not change while
+   * the modal is open.
+   */
+  const access = useMemo(() => {
+    const out: Record<string, { missing: string[]; readable: number; total: number }> = {};
+    for (const template of DASHBOARD_TEMPLATES) {
+      const all = templateWidgets(template);
+      // `missing` is deduped only for the tooltip — the count below must use the
+      // per-panel list, or two panels needing the same grant would count as one.
+      const missing = all.map((w) => missingPanelGrant(w.panel)).filter((p): p is string => Boolean(p));
+      out[template.id] = { missing: [...new Set(missing)], readable: all.length - missing.length, total: all.length };
+    }
+    return out;
+  }, []);
+
+  /** The grant each widget in the SELECTED template needs, by position. */
+  const widgetGrants = widgets.map((widget) => missingPanelGrant(widget.panel));
+  const selectedAccess = selected ? access[selected.id] : undefined;
 
   /**
    * The details below the gallery, scrolled to when a card is picked.
@@ -93,10 +141,15 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
 
   const handleContinue = () => {
     if (!selected) return;
+    // Panels the viewer's role cannot read are dropped here rather than carried
+    // into the draft: the panel would render Access Denied for the person who
+    // just created the dashboard, and they have no way to fix it.
+    const readable = readableTemplate(selected);
+    const readableScopes = templateWidgets(readable).map((widget) => defaultWidgetScope(widget, accountOptions));
     // Through the same converter a pasted export takes, so a template panel is
     // validated by exactly the code that already handles imports rather than by
     // a second path kept correct by hand.
-    const converted = convertTemplate(selected, '', scopes);
+    const converted = convertTemplate(readable, '', readableScopes);
     if (converted.definition.panels.length === 0) {
       snackbar.error('No panel in this template could be created.');
       return;
@@ -121,12 +174,21 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
         // right-aligns its single child.
         <Stack direction='row' gap='12px' alignItems='center' sx={{ width: '100%', button: { minWidth: '140px' } }}>
           <Typography variant='caption' sx={{ color: ds.amber[600], mr: 'auto' }} data-testid='template-blocked-reason'>
-            {selected ? '' : 'Pick a template to start from.'}
+            {!selected
+              ? 'Pick a template to start from.'
+              : selectedAccess && selectedAccess.missing.length > 0
+              ? `${widgets.length - selectedAccess.readable} panel(s) your role cannot read will be left out.`
+              : ''}
           </Typography>
           <Button tone='secondary' onClick={close} id='template-cancel-btn'>
             Cancel
           </Button>
-          <Button onClick={handleContinue} disabled={!selected} id='create-from-template-btn' data-testid='create-from-template-btn'>
+          <Button
+            onClick={handleContinue}
+            disabled={!selected || (selectedAccess !== undefined && selectedAccess.total > 0 && selectedAccess.readable === 0)}
+            id='create-from-template-btn'
+            data-testid='create-from-template-btn'
+          >
             Open in editor
           </Button>
         </Stack>
@@ -168,35 +230,69 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
             </Typography>
           ) : (
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 1.5, mt: 1 }} data-testid='template-gallery'>
-              {visible.map((template) => (
-                <Card
-                  key={template.id}
-                  variant='outlined'
-                  elevation='flat'
-                  size='sm'
-                  interactive
-                  selected={template.id === selectedId}
-                  onClick={() => choose(template)}
-                  data-testid={`template-card-${template.id}`}
-                >
-                  <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 14, fontWeight: 620, color: ds.gray[700] }}>
-                    {template.title}
-                  </Typography>
-                  <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block', mt: 0.5 }}>
-                    {template.description}
-                  </Typography>
-                  <Stack direction='row' gap={0.5} flexWrap='wrap' sx={{ mt: 1 }}>
-                    <Chip size='2xs' tone='neutral'>
-                      {template.panels.length} panels
-                    </Chip>
-                    {template.roles.map((r) => (
-                      <Chip key={r} size='2xs' tone='info'>
-                        {roleLabel(r)}
+              {visible.map((template) => {
+                const { missing, readable, total } = access[template.id];
+                // Nothing in it is readable, so there is no dashboard to build —
+                // the card is inert and names the grants instead. `total > 0`
+                // guards a template whose widget ids all failed to resolve:
+                // readable is 0 there too, but no grant is missing, so the card
+                // would go inert with nothing explaining why. That case stays
+                // clickable and falls through to the existing "No panel in this
+                // template could be created" error.
+                const unusable = total > 0 && readable === 0;
+                const card = (
+                  <Card
+                    variant='outlined'
+                    elevation='flat'
+                    size='sm'
+                    interactive={!unusable}
+                    selected={template.id === selectedId}
+                    onClick={unusable ? undefined : () => choose(template)}
+                    data-testid={`template-card-${template.id}`}
+                    sx={unusable ? { opacity: 0.55, cursor: 'not-allowed', background: ds.background[200] } : undefined}
+                  >
+                    <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 14, fontWeight: 620, color: ds.gray[700] }}>
+                      {template.title}
+                    </Typography>
+                    <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block', mt: 0.5 }}>
+                      {template.description}
+                    </Typography>
+                    <Stack direction='row' gap={0.5} flexWrap='wrap' sx={{ mt: 1 }}>
+                      <Chip size='2xs' tone='neutral'>
+                        {template.panels.length} panels
                       </Chip>
-                    ))}
-                  </Stack>
-                </Card>
-              ))}
+                      {/* What the author loses before they commit to the template,
+                          rather than after opening the editor and counting. */}
+                      {missing.length > 0 && (
+                        <Chip size='2xs' tone='warning' icon={<LockOutlinedIcon />} data-testid={`template-blocked-${template.id}`}>
+                          {unusable ? 'No panel you can read' : `${template.panels.length - readable} panel(s) left out`}
+                        </Chip>
+                      )}
+                      {template.roles.map((r) => (
+                        <Chip key={r} size='2xs' tone='info'>
+                          {roleLabel(r)}
+                        </Chip>
+                      ))}
+                    </Stack>
+                  </Card>
+                );
+                return (
+                  <React.Fragment key={template.id}>
+                    {missing.length > 0 ? (
+                      <Tooltip title={grantTooltip(missing)}>
+                        {/* The card can be inert, so the tooltip hangs off a
+                            wrapper that still receives the hover. The wrapper takes
+                            the card's place as the grid item, so it has to pass the
+                            row's stretch through — otherwise a gated card is short
+                            next to its neighbours. */}
+                        <Box sx={{ display: 'flex', '& > *': { flex: 1, minWidth: 0 } }}>{card}</Box>
+                      </Tooltip>
+                    ) : (
+                      card
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </Box>
           )}
         </Form.Section>
@@ -221,25 +317,56 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
                   // tells the author nothing about which clouds.
                   const providers = deriveAccountTypes(scopes[index], accountOptions);
                   const unscoped = providers.length === 0;
+                  const blocked = widgetGrants[index];
 
-                  return (
-                    <Stack key={`${widget.id}-${index}`} direction='row' alignItems='center' gap={1} sx={{ minWidth: 0 }}>
-                      <Typography sx={{ fontSize: 13, fontWeight: 600, color: ds.gray[700], minWidth: 0, flex: '0 1 auto' }} noWrap>
+                  const row = (
+                    <Stack
+                      direction='row'
+                      alignItems='center'
+                      gap={1}
+                      sx={{ minWidth: 0, ...(blocked ? { opacity: 0.55 } : {}) }}
+                      data-testid={blocked ? `template-panel-blocked-${widget.id}` : undefined}
+                    >
+                      <Typography
+                        sx={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: ds.gray[700],
+                          minWidth: 0,
+                          flex: '0 1 auto',
+                          ...(blocked ? { textDecoration: 'line-through' } : {}),
+                        }}
+                        noWrap
+                      >
                         {widget.panel.title}
                       </Typography>
                       <Chip size='2xs' tone='subtle'>
                         {widget.panel.datasource}
                       </Chip>
-                      {/* An unscoped panel is not a blocker here — the editor
-                          shows the same red chip and the server rejects the save
-                          — but naming it now beats discovering it there. */}
-                      <Chip size='2xs' tone={unscoped ? 'critical' : 'info'}>
-                        {unscoped ? 'No account — pick one in the editor' : `All ${providers.join(' + ')}`}
-                      </Chip>
+                      {/* A blocked panel's account scope is moot — it is not
+                          going into the dashboard — so the grant replaces it. */}
+                      {blocked ? (
+                        <Chip size='2xs' tone='warning' icon={<LockOutlinedIcon />}>
+                          {blocked}
+                        </Chip>
+                      ) : (
+                        /* An unscoped panel is not a blocker here — the editor
+                           shows the same red chip and the server rejects the save
+                           — but naming it now beats discovering it there. */
+                        <Chip size='2xs' tone={unscoped ? 'critical' : 'info'}>
+                          {unscoped ? 'No account — pick one in the editor' : `All ${providers.join(' + ')}`}
+                        </Chip>
+                      )}
                       <Typography variant='caption' sx={{ color: ds.gray[500], minWidth: 0 }} noWrap title={widget.summary}>
                         {widget.summary}
                       </Typography>
                     </Stack>
+                  );
+
+                  return (
+                    <React.Fragment key={`${widget.id}-${index}`}>
+                      {blocked ? <Tooltip title={grantTooltip(blocked)}>{row}</Tooltip> : row}
+                    </React.Fragment>
                   );
                 })}
               </Stack>

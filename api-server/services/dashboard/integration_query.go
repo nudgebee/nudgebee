@@ -193,7 +193,8 @@ func commandVocabulary(datasource string) (map[string][]string, func(string) str
 // ExecuteQuery runs one command-datasource panel against one account.
 //
 // The caller is responsible for the access check — this reaches into the
-// account's cluster, so it must not be called without HasAccountAccess.
+// account's cluster, so it must not be called without an account read check —
+// today CanReadAccountData(accountId, "dashboards") in actions_dashboard.go.
 func ExecuteQuery(ctx *security.RequestContext, req ExecuteQueryRequest) (*QueryResult, error) {
 	if err := ValidatePanelCommand(req.Datasource, req.Command); err != nil {
 		return nil, err

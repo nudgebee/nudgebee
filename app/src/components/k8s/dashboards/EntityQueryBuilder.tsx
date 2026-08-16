@@ -1,12 +1,15 @@
 import React from 'react';
 import { Box, Stack, Typography } from '@mui/material';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { Switch } from '@ui/Switch';
+import Tooltip from '@ui/Tooltip';
 import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
+import { grantTooltip, missingTableGrant } from './panelAccess';
 import {
   buildEntityQuery,
   defaultDraft,
@@ -56,6 +59,29 @@ const EntityQueryBuilder: React.FC<Props> = ({ draft, tables, onChange }) => {
   const patchFilter = (index: number, next: Partial<(typeof draft.filters)[number]>) =>
     patch({ filters: draft.filters.map((f, i) => (i === index ? { ...f, ...next } : f)) });
 
+  // A table the viewer's role cannot read is offered disabled rather than
+  // hidden: the panel would only fail at render, and naming the grant is what
+  // lets the author ask for the right one. Nothing is gated for a tenant admin
+  // or any account user — see panelAccess.ts.
+  const tableOptions = tables.map((t) => {
+    const missing = missingTableGrant(t);
+    if (!missing) return { label: t.label, value: t.value };
+    return {
+      value: t.value,
+      disabled: true,
+      label: (
+        <Tooltip title={grantTooltip(missing)}>
+          {/* A disabled MUI menu item sets `pointer-events: none`, which would
+              swallow the hover the tooltip needs — this span opts back in. */}
+          <Box component='span' sx={{ pointerEvents: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <LockOutlinedIcon sx={{ fontSize: 13, flexShrink: 0 }} />
+            {t.label}
+          </Box>
+        </Tooltip>
+      ),
+    };
+  });
+
   const columnOptions = table.columns.map((c) => ({ label: c.label, value: c.name }));
   // Traces filter through named API parameters, so only some columns can carry
   // a filter — offering the rest would build panels that ignore them.
@@ -66,7 +92,7 @@ const EntityQueryBuilder: React.FC<Props> = ({ draft, tables, onChange }) => {
     <>
       <Form.Row ratio={[1, 1]}>
         <Form.Field label='Table'>
-          <Select value={draft.table} options={tables.map((t) => ({ label: t.label, value: t.value }))} onChange={changeTable} />
+          <Select value={draft.table} options={tableOptions} onChange={changeTable} />
         </Form.Field>
         <Form.Field label='Rows'>
           <Input value={String(draft.limit)} onChange={(v: string) => patch({ limit: Number(v.replace(/\D/g, '')) || 0 })} />

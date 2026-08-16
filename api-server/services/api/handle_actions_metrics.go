@@ -4,13 +4,19 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
-	"nudgebee/services/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
+// Every case below gates its account read with CanReadAccountData(account,
+// "metrics") rather than HasAccountAccess: the latter recognises built-in scoped
+// roles ONLY, so a custom-role holder whose `metrics:Read` grant had already
+// cleared the gateway was then refused here, with no role they could be given
+// short of account_admin. It adds the dynamic-RBAC arm (tenant-global grant +
+// account-in-tenant, or an account-scoped grant) and still starts from
+// HasAccountAccess, so built-in roles are unchanged.
 func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
 	if err != nil {
@@ -38,7 +44,7 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -72,7 +78,7 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -106,7 +112,7 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -139,7 +145,7 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -176,7 +182,7 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -219,7 +225,7 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("workload is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -261,7 +267,7 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}

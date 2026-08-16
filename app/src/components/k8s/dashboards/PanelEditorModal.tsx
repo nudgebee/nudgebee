@@ -7,12 +7,14 @@ import { Select } from '@ui/Select';
 import { Button } from '@ui/Button';
 import { Card } from '@ui/Card';
 import Tooltip from '@ui/Tooltip';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
 import { isCommandDatasource, type AccountOption, type Panel, type PanelDatasource, type PanelType } from '@api1/dashboards';
 import EntityQueryBuilder from './EntityQueryBuilder';
 import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPreview';
 import { buildEntityQuery, defaultDraft, draftFromQuery, tablesFor, type EntityQueryDraft } from './entityQuery';
+import { grantTooltip, missingDatasourceGrant, queryableTables } from './panelAccess';
 import { accountsOfTypes, coversAllOfTypes, deriveAccountTypes, panelScopeFromTypes } from './panelAccounts';
 import { referencedVariables, type VariableValues } from './templating';
 
@@ -120,6 +122,37 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
     setEntityDraft(draftFromQuery(panel?.targets?.[0]?.query));
   }, [panel, accountOptions]);
 
+  /**
+   * Each datasource reaches a different backend read behind a different grant,
+   * so one the viewer's role cannot reach is offered disabled rather than
+   * hidden: a hidden option reads as "this product cannot do that", a disabled
+   * one names the grant to ask for. Nothing is gated for a tenant admin or any
+   * account user — see panelAccess.ts.
+   */
+  const datasourceOptions = useMemo(
+    () =>
+      DATASOURCES.map((option) => {
+        const missing = missingDatasourceGrant(option.value);
+        if (!missing) return option;
+        return {
+          value: option.value,
+          disabled: true,
+          label: (
+            <Tooltip title={grantTooltip(missing)}>
+              {/* A disabled MUI menu item sets `pointer-events: none`, which
+                  would swallow the hover the tooltip needs — this span opts
+                  back in. */}
+              <Box component='span' sx={{ pointerEvents: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                <LockOutlinedIcon sx={{ fontSize: 13, flexShrink: 0 }} />
+                {option.label}
+              </Box>
+            </Tooltip>
+          ),
+        };
+      }),
+    []
+  );
+
   const accountTypeOptions = useMemo(() => {
     const seen = new Set<string>();
     for (const o of accountOptions) {
@@ -169,11 +202,15 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
   /** Changing the data source clears the query. */
   const changeDatasource = (next: string) => {
     const datasource = next as PanelDatasource;
-    const entity = tablesFor(datasource).length > 0;
+    const datasourceTables = tablesFor(datasource);
+    const entity = datasourceTables.length > 0;
     // Logs and entity queries are rows, like the command datasources.
     const tabular = isCommandDatasource(datasource) || entity || datasource === 'logs';
-    // Reset the builder alongside the target.
-    const entityStart = defaultDraft(datasource);
+    // Reset the builder alongside the target. Start on the first table the
+    // viewer may actually read — the datasource's own first table would open the
+    // editor on a greyed-out selection for a custom-role holder without that
+    // grant. Falls back to it when none are readable, which is the honest state.
+    const entityStart = defaultDraft(entity ? (queryableTables(datasourceTables)[0] || datasourceTables[0]).value : datasource);
     if (entity) setEntityDraft(entityStart);
     // Only `nudgebee` reads across providers, so leaving a second one selected
     // on the way out would save a scope the single control cannot show — the
@@ -288,7 +325,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
                 >
                   <Form.Section>
                     <Form.Field label='Data source'>
-                      <Select value={draft.datasource} options={DATASOURCES} onChange={changeDatasource} />
+                      <Select value={draft.datasource} options={datasourceOptions} onChange={changeDatasource} />
                     </Form.Field>
                     <Form.Row ratio={[1, 1]}>
                       <Form.Field label={multiType ? 'Account types' : 'Account type'} required>

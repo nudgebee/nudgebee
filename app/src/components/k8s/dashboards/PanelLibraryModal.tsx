@@ -1,16 +1,19 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import { Card } from '@ui/Card';
 import { Chip } from '@ui/Chip';
 import { EmptyState } from '@ui/EmptyState';
 import SearchInput from '@ui/SearchInput';
+import Tooltip from '@ui/Tooltip';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { ds } from '@utils/colors';
 import type { AccountOption, Panel } from '@api1/dashboards';
 import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPreview';
 import { describePanelScope } from './panelAccounts';
+import { grantTooltip, missingPanelGrant } from './panelAccess';
 import {
   panelFromTemplate,
   PANEL_TEMPLATES,
@@ -60,6 +63,24 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
   const fallbackRange = usePreviewRange(open);
 
   const roleOptions = useMemo(() => [{ value: ALL_ROLES, label: 'All' }, ...TEMPLATE_ROLES.map((r) => ({ value: r.value, label: r.label }))], []);
+
+  /**
+   * Widget id → the `<module>:Read` grant its viewer is missing.
+   *
+   * Empty for everyone but a grants-only custom-role holder, and only ever
+   * covers `nudgebee` widgets — every other datasource is gated by account
+   * access, which the picker already reflects through the panel's scope. Derived
+   * once: the catalogue is a module-level constant and the session does not
+   * change while the modal is open.
+   */
+  const blockedWidgets = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const widget of PANEL_TEMPLATES) {
+      const missing = missingPanelGrant(widget.panel);
+      if (missing) out[widget.id] = missing;
+    }
+    return out;
+  }, []);
 
   const matches = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -180,47 +201,79 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
                     {category}
                   </Typography>
                   <Stack gap={0.75}>
-                    {widgets.map((widget) => (
-                      <Card
-                        key={widget.id}
-                        variant='outlined'
-                        elevation='flat'
-                        size='sm'
-                        interactive
-                        onClick={() => setSelected(widget)}
-                        data-testid={`widget-${widget.id}`}
-                        sx={selected?.id === widget.id ? { borderColor: ds.blue[500], background: ds.blue[100] } : undefined}
-                      >
-                        <Stack direction='row' alignItems='center' gap={1.5}>
-                          <Box sx={{ minWidth: 0, flex: 1 }}>
-                            <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 13.5, fontWeight: 600, color: ds.gray[700] }} noWrap>
-                              {widget.panel.title}
-                            </Typography>
-                            <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block' }}>
-                              {widget.summary}
-                            </Typography>
-                          </Box>
-                          <Stack direction='row' gap={0.5} sx={{ flexShrink: 0 }}>
-                            {addedIds.includes(widget.id) && (
-                              <Chip size='2xs' tone='success' data-testid={`widget-added-${widget.id}`}>
-                                Added
-                              </Chip>
-                            )}
-                            <Chip size='2xs' tone='subtle'>
-                              {widget.panel.type}
-                            </Chip>
-                            <Chip size='2xs' tone='subtle'>
-                              {widget.panel.datasource}
-                            </Chip>
-                            {widget.roles.slice(0, 2).map((r) => (
-                              <Chip key={r} size='2xs' tone='info'>
-                                {roleLabel(r)}
-                              </Chip>
-                            ))}
+                    {widgets.map((widget) => {
+                      const blocked = blockedWidgets[widget.id];
+                      const card = (
+                        <Card
+                          variant='outlined'
+                          elevation='flat'
+                          size='sm'
+                          // A widget the viewer's role cannot read is left in
+                          // place but inert — adding it would put a panel on the
+                          // dashboard that only ever renders Access Denied.
+                          interactive={!blocked}
+                          onClick={blocked ? undefined : () => setSelected(widget)}
+                          data-testid={`widget-${widget.id}`}
+                          sx={{
+                            ...(selected?.id === widget.id ? { borderColor: ds.blue[500], background: ds.blue[100] } : {}),
+                            ...(blocked ? { opacity: 0.55, cursor: 'not-allowed', background: ds.background[200] } : {}),
+                          }}
+                        >
+                          <Stack direction='row' alignItems='center' gap={1.5}>
+                            <Box sx={{ minWidth: 0, flex: 1 }}>
+                              <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 13.5, fontWeight: 600, color: ds.gray[700] }} noWrap>
+                                {widget.panel.title}
+                              </Typography>
+                              <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block' }}>
+                                {widget.summary}
+                              </Typography>
+                            </Box>
+                            <Stack direction='row' gap={0.5} sx={{ flexShrink: 0 }}>
+                              {blocked ? (
+                                // The permission is on the row, not only in the
+                                // tooltip: which grant to ask for is the whole
+                                // answer, and a hover-only answer is not one.
+                                <Chip size='2xs' tone='warning' icon={<LockOutlinedIcon />} data-testid={`widget-blocked-${widget.id}`}>
+                                  {blocked}
+                                </Chip>
+                              ) : (
+                                <>
+                                  {addedIds.includes(widget.id) && (
+                                    <Chip size='2xs' tone='success' data-testid={`widget-added-${widget.id}`}>
+                                      Added
+                                    </Chip>
+                                  )}
+                                  <Chip size='2xs' tone='subtle'>
+                                    {widget.panel.type}
+                                  </Chip>
+                                  <Chip size='2xs' tone='subtle'>
+                                    {widget.panel.datasource}
+                                  </Chip>
+                                  {widget.roles.slice(0, 2).map((r) => (
+                                    <Chip key={r} size='2xs' tone='info'>
+                                      {roleLabel(r)}
+                                    </Chip>
+                                  ))}
+                                </>
+                              )}
+                            </Stack>
                           </Stack>
-                        </Stack>
-                      </Card>
-                    ))}
+                        </Card>
+                      );
+                      return (
+                        <React.Fragment key={widget.id}>
+                          {blocked ? (
+                            <Tooltip title={grantTooltip(blocked)}>
+                              {/* The card is inert, so the tooltip hangs off a
+                                  wrapper that still receives the hover. */}
+                              <Box>{card}</Box>
+                            </Tooltip>
+                          ) : (
+                            card
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
                   </Stack>
                 </Box>
               ))}

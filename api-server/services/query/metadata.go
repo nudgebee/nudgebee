@@ -2258,6 +2258,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"spend_groupings_v2": {
+		// spend:Read — matches classifyAction("spend_groupings_v2") in
+		// permissionCatalog.ts, which is also the gateway gate for the same-named
+		// action. Without it a custom-role holder could pass the gateway and still
+		// be denied by the engine, and the cost dashboards had no grant to ask for.
+		PermissionModule:    "spend",
 		Type:                Aggregate,
 		Source:              getSource("spend_groupings_v2"),
 		Def:                 "spends",
@@ -2671,6 +2676,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"ticket_groupings_v2": {
+		// tickets:Read — the aggregate twin of tickets_v2, which already carries
+		// the same module. Reading the counts without being able to read the rows
+		// was an inconsistency, not a deliberate narrowing.
+		PermissionModule:    "tickets",
 		Type:                Aggregate,
 		Source:              getSource("ticket_groupings_v2"),
 		Def:                 "tickets",
@@ -3410,8 +3419,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_security_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
+		// recommendations:Read — the vulnerability rows are a recommendation
+		// surface (they are driven off `recommendation`), and the same-named action
+		// classifies to `recommendations` at the gateway.
+		PermissionModule: "recommendations",
+		Type:             Normal,
+		Source:           database.Metastore,
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Drive from recommendation using idx_recommendation_security_status_weight
 			// (cloud_account_id, status, severity_weight DESC) so the planner can seek to
@@ -4926,8 +4939,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_security_cis_groupings_v2": {
-		Type:   Aggregate,
-		Source: database.Metastore,
+		// recommendations:Read — same module as recommendation_security_v2.
+		PermissionModule: "recommendations",
+		Type:             Aggregate,
+		Source:           database.Metastore,
 		Def: `(select *
 								, (case when severity = 'Critical' then 10 
 										when severity = 'High' then 8 
@@ -5505,6 +5520,9 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"anomaly_v2": {
+		// anomalies:Read — matches classifyAction on the anomaly_* action family
+		// (anomaly_grouping_v2, anomaly_type_v2, anomaly_template_list).
+		PermissionModule:    "anomalies",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 `anomaly`,
@@ -5557,6 +5575,8 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"anomaly_grouping_v2": {
+		// anomalies:Read — same module as anomaly_v2; this is its grouped twin.
+		PermissionModule:    "anomalies",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 `anomaly`,
@@ -8739,8 +8759,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_task_groupings_v2": {
-		Type:   Aggregate,
-		Source: database.Metastore,
+		// autooptimize:Read — the Autopilot surface is served by the
+		// autooptimize_* action family (autooptimize_list_tasks and friends), so
+		// that is the grant an admin ticks for it.
+		PermissionModule: "autooptimize",
+		Type:             Aggregate,
+		Source:           database.Metastore,
 		Def: `(SELECT apt.*, ap.category as auto_pilot_category, ap.account_id as auto_pilot_account_id
 			FROM auto_pilot_task apt
 			LEFT JOIN auto_pilot ap ON ap.id = apt.auto_pilot_id
@@ -8764,9 +8788,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_approvals_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "auto_pilot_approvals_v2",
+		// autooptimize:Read — same module as auto_pilot_task_groupings_v2
+		// (autooptimize_list_approvals is the action behind the same surface).
+		PermissionModule: "autooptimize",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "auto_pilot_approvals_v2",
 		Def: `(SELECT apa.*,
 			apas.description as approval_status_description,
 			u.display_name as reviewer_display_name

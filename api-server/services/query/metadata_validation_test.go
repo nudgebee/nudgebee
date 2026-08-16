@@ -308,9 +308,17 @@ func TestTableCount(t *testing.T) {
 func TestAccountScopableModulesPinned(t *testing.T) {
 	got := AccountScopableModules()
 	want := map[string]bool{
-		"accounts":           true,
-		"ai_conversations":   true,
-		"ai_functions":       true,
+		"accounts":         true,
+		"ai_conversations": true,
+		"ai_functions":     true,
+		// The dashboard `nudgebee` datasource reaches these three through the panel
+		// allowlist (services/dashboard/entity_query.go); each needs a module so a
+		// custom-role holder has a grant to be given rather than a flat denial.
+		// (`tickets` and `recommendations` are reached the same way but were
+		// already in this set, so they stay in the alphabetical block below.)
+		"anomalies":          true,
+		"autooptimize":       true,
+		"spend":              true,
 		"audits":             true,
 		"cloud":              true,
 		"events":             true,

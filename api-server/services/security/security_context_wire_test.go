@@ -169,6 +169,67 @@ func TestSecurityContextWire_ScopedCustomPermissions(t *testing.T) {
 	}
 }
 
+/*
+TestCanReadAccountDataAdmitsAGrantsOnlyHolder pins the difference the panel read
+paths depend on.
+
+A user whose access comes purely from custom-role grants holds no built-in
+scoped role, so HasAccountAccess is false for EVERY account — its first check
+(tenant membership) passes, then every branch below it wants account_admin /
+account_admin_readonly / k8s_namespace_admin(_readonly) or a tenant-wide role.
+Handlers that gate an account read on it therefore refuse a grant holder whose
+grant already cleared the gateway, with no role short of account_admin that
+would fix it. That is why the metrics, logs and dashboard-panel read gates use
+CanReadAccountData instead (api/handle_actions_metrics.go,
+api/handle_actions_logs.go, api/actions_dashboard.go).
+
+It stays additive: it still starts from HasAccountAccess, so built-in roles are
+unaffected, and it never reaches outside the caller's tenant.
+*/
+func TestCanReadAccountDataAdmitsAGrantsOnlyHolder(t *testing.T) {
+	// Roles empty and AccountIds carrying the tenant's accounts is exactly the
+	// shape NewSecurityContext builds for a grants-only user: accountIds comes
+	// from GetAccountIdsByTenantId (every account of the tenant, for every user),
+	// NOT from the user's roles.
+	wire := []byte(`{
+		"TenantId": "t1",
+		"UserId": "u1",
+		"Roles": [],
+		"AccountIds": ["acct-A", "acct-B"],
+		"CustomPermissions": { "metrics:Read": true, "dashboards:Execute": true },
+		"ScopedCustomPermissions": { "acct-B": { "logs:Read": true } }
+	}`)
+
+	var sc SecurityContext
+	if err := common.UnmarshalJson(wire, &sc); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	// The bug this guards: bare account access is false despite the grants.
+	if sc.HasAccountAccess("acct-A", SecurityAccessTypeRead) {
+		t.Fatal("HasAccountAccess must stay false for a grants-only holder — the rest of this test is meaningless otherwise")
+	}
+
+	// A tenant-global grant reads any account IN THE TENANT...
+	if !sc.CanReadAccountData("acct-A", "metrics") {
+		t.Error("tenant-global metrics:Read should admit an in-tenant account")
+	}
+	// ...and nothing outside it, since the membership check in HasScopedPermission
+	// is what keeps a grant (which carries no account of its own) in-tenant.
+	if sc.CanReadAccountData("acct-outside", "metrics") {
+		t.Error("a grant must not reach an account outside the caller's tenant")
+	}
+	// A module the holder has no grant for stays denied — this gate narrows by
+	// module, it is not a blanket "custom-role users may read accounts".
+	if sc.CanReadAccountData("acct-A", "logs") {
+		t.Error("no logs grant for acct-A, so the read must be refused")
+	}
+	// An account-scoped grant reaches only its own account.
+	if !sc.CanReadAccountData("acct-B", "logs") {
+		t.Error("account-scoped logs:Read should admit acct-B")
+	}
+}
+
 // TestScopedAccountIdsForModule pins the account set the query engine uses to
 // restrict a scoped-grant read (V798 scope-on-grant). Write implies Read;
 // tenant-global grants are NOT returned here (they authorize a tenant-wide read

@@ -64,10 +64,16 @@ func dashboardWriteAllowed(ctx *security.RequestContext) bool {
 // dashboardPanelAccountsAllowed refuses a definition whose panels point at
 // accounts the caller cannot read. Rendering would 403 per panel anyway; failing
 // at save keeps the stored document honest rather than silently broken.
+//
+// CanReadAccountData, not HasAccountAccess: the latter recognises built-in
+// scoped roles ONLY, so a `dashboards:Write` grant holder cleared
+// dashboardWriteAllowed above and was then refused here for every account —
+// i.e. the grant could never save a dashboard. See the same swap at the two
+// execute actions below.
 func dashboardPanelAccountsAllowed(ctx *security.RequestContext, def dashboard.Definition) (string, bool) {
 	sc := ctx.GetSecurityContext()
 	for _, accountId := range dashboard.PanelAccountIds(def) {
-		if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		if !sc.CanReadAccountData(accountId, "dashboards") {
 			return accountId, false
 		}
 	}
@@ -295,7 +301,7 @@ func handleDashboardAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 			c.JSON(403, common.ErrorActionForbidden("access denied for dashboards"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "dashboards") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+req.AccountId))
 			return
 		}
@@ -311,6 +317,13 @@ func handleDashboardAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 	// applies its own tenant / account / namespace scoping per table, and the
 	// account check below is the same one every other account-touching action
 	// makes before it gets there.
+	//
+	// That check is deliberately the COARSE one: it asks "may you read dashboard
+	// data for this account at all", and the engine then narrows per table
+	// against the table's own PermissionModule. So a `dashboards:Execute` holder
+	// still cannot read events without `events:Read` — this gate is not what
+	// authorizes the data, only what stops a caller naming an account outside
+	// their reach.
 	case "dashboards_execute_entity_query":
 		var req dashboard.EntityQueryRequest
 		if err := common.UnmarshalMapToStruct(input, &req); err != nil {
@@ -326,7 +339,7 @@ func handleDashboardAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 			return
 		}
 		for _, accountId := range req.AccountIds {
-			if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+			if !ctx.GetSecurityContext().CanReadAccountData(accountId, "dashboards") {
 				c.JSON(403, common.ErrorActionForbidden("access denied for account: "+accountId))
 				return
 			}
@@ -351,7 +364,7 @@ func handleDashboardAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "dashboards") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+req.AccountId))
 			return
 		}
