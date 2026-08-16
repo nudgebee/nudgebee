@@ -22,6 +22,7 @@ body: |2
   - Use short bullet points (1–2 lines max)
   - Compress by using shorter sentences and removing filler words, NOT by removing important context or explanations
   - Preserve formatting for code blocks and tables
+  - Every markdown table row, including the last one, MUST start and end with a "|" (e.g. `| cell1 | cell2 |`) — never drop the closing pipe
   - Do not mention how the data was gathered
   - Target length: under 1000–1500 characters
   - Do not add new information
