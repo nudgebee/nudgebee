@@ -844,6 +844,13 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 	// log_analysis is preserved. This narrow path is not atomically gated, but it is
 	// the recovery of an already-started analysis, not the fresh-event race that
 	// produced the duplicate-pipeline bug.)
+	// Deliberately not freshness-bounded. The early return above fires whenever
+	// anyStarted && !Regenerate, so this is only reached with no analysis rows at
+	// all (logCompleted false regardless) or on a regenerate (force, where the
+	// bound does not apply). Adding a staleness term here would be dead code, and
+	// adding one to that early return would report IN_PROGRESS with nothing
+	// running. Refresh-on-staleness happens on the MQ path, in
+	// getOrCreateEventAnalysisStatus.
 	logCompleted := dbAnalyses[events.AnalysisTypeLog] != nil &&
 		dbAnalyses[events.AnalysisTypeLog].Status == string(events.AnalysisStatusCompleted)
 	claimedLog := false
@@ -1020,7 +1027,10 @@ func getOrCreateEventAnalysisStatus(ctx *security.RequestContext, request EventA
 		// what's missing. (This narrow path is not atomically gated, but the per-step
 		// caches dedupe it; the fresh-event race below is the one that produced the
 		// observed duplicate-pipeline bug.)
-		if !request.Regenerate && existingAnalysis != nil && existingAnalysis.Status == string(events.AnalysisStatusCompleted) {
+		// Stale rows do not qualify for the carve-out: preserving a COMPLETED
+		// log_analysis is only worth doing while it is still worth reusing.
+		if !request.Regenerate && existingAnalysis != nil && existingAnalysis.Status == string(events.AnalysisStatusCompleted) &&
+			!eventAnalysisRepo.IsAnalysisStale(existingAnalysis.UpdatedAt) {
 			response.Status = string(events.AnalysisStatusCreated)
 			response.RelatedEventId = request.EventId
 			return response, nil
@@ -1042,10 +1052,16 @@ func getOrCreateEventAnalysisStatus(ctx *security.RequestContext, request EventA
 }
 
 // allEventAnalysisTypesCompleted returns true when every analysis type for an
-// event (summary, investigation, log, detailed_response) is in COMPLETED state.
-// A DB read error or any non-COMPLETED row is treated as "not completed" — the
-// safe fallback that lets the pipeline proceed rather than incorrectly skipping.
+// event (summary, investigation, log, detailed_response) is in COMPLETED state
+// and recent enough to reuse. A DB read error, any non-COMPLETED row, or a stage
+// past the freshness bound is treated as "not completed" — the safe fallback that
+// lets the pipeline proceed rather than incorrectly skipping.
 // This mirrors the defense-in-depth check inside analyzeEventUsingAgentsAndUpdateDb.
+//
+// This is the gate that actually decides reuse for the common case: a new event
+// whose fingerprint is already fully analysed. It returns before the claim path,
+// so without the staleness term here the freshness bound is never consulted for
+// exactly the events it exists to protect.
 func allEventAnalysisTypesCompleted(ctx *security.RequestContext, repo *events.EventAnalysisRepository, eventId, fingerprint, aggKey, accountId string) bool {
 	for _, aType := range []events.EventAnalysisType{
 		events.AnalysisTypeSummary,
@@ -1058,7 +1074,8 @@ func allEventAnalysisTypesCompleted(ctx *security.RequestContext, repo *events.E
 			ctx.GetLogger().Warn("analyzer: failed to read analysis type for completion check, treating as incomplete", "error", err, "analysis_type", aType, "event_id", eventId, "fingerprint", fingerprint)
 			return false
 		}
-		if analysis == nil || analysis.Status != string(events.AnalysisStatusCompleted) {
+		if analysis == nil || analysis.Status != string(events.AnalysisStatusCompleted) ||
+			repo.IsAnalysisStale(analysis.UpdatedAt) {
 			return false
 		}
 	}
@@ -1998,7 +2015,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			events.AnalysisTypeDetailedResponse,
 		} {
 			a, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, aType)
-			if a == nil || a.Status != string(events.AnalysisStatusCompleted) {
+			if a == nil || a.Status != string(events.AnalysisStatusCompleted) || eventAnalysisRepo.IsAnalysisStale(a.UpdatedAt) {
 				allCompleted = false
 				break
 			}
@@ -2019,8 +2036,14 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	}
 
 	// Step 1: Summary
+	// Each per-step cache carries the same staleness term as the outer gates. They
+	// have to agree: a gate that rejects a stale stage dispatches this pipeline,
+	// and a cache here that still considers it fresh would skip the regeneration,
+	// write nothing, and leave the timestamp unchanged — so every later event for
+	// the fingerprint would repeat the round forever.
 	existingSummary, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeSummary)
-	if existingSummary != nil && existingSummary.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate {
+	if existingSummary != nil && existingSummary.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate &&
+		!eventAnalysisRepo.IsAnalysisStale(existingSummary.UpdatedAt) {
 		response.Summary = existingSummary.Summary
 		if existingSummary.RelatedEventId != "" {
 			response.RelatedEventId = existingSummary.RelatedEventId
@@ -2124,7 +2147,8 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	// investigationText is captured at function scope so Step 4 (synthesis) can use it.
 	var investigationText string
 	existingInvestigation, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeInvestigation)
-	if existingInvestigation != nil && existingInvestigation.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate {
+	if existingInvestigation != nil && existingInvestigation.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate &&
+		!eventAnalysisRepo.IsAnalysisStale(existingInvestigation.UpdatedAt) {
 		response.Summary = existingInvestigation.Summary
 		investigationText = existingInvestigation.Summary
 		if existingInvestigation.RelatedEventId != "" {
@@ -2203,7 +2227,8 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	var logAnalysisText string
 
 	existingLog, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeLog)
-	if existingLog != nil && existingLog.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate {
+	if existingLog != nil && existingLog.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate &&
+		!eventAnalysisRepo.IsAnalysisStale(existingLog.UpdatedAt) {
 		response.Analysis = existingLog.Analysis
 		if existingLog.RelatedEventId != "" {
 			response.RelatedEventId = existingLog.RelatedEventId
@@ -2213,7 +2238,8 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 
 		// If DetailedResponse is also already done, return immediately.
 		existingDetailed, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeDetailedResponse)
-		if existingDetailed != nil && existingDetailed.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate {
+		if existingDetailed != nil && existingDetailed.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate &&
+			!eventAnalysisRepo.IsAnalysisStale(existingDetailed.UpdatedAt) {
 			response.DetailedResponse = existingDetailed.Summary
 			// Populate Investigation from DB before returning so callers have the full response.
 			if response.Investigation == "" {
@@ -2306,7 +2332,8 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	// Step 4: synthesize. Skip when COMPLETED unless Regenerate — without
 	// this gate every re-dispatch inserts a duplicate user message (#31422).
 	existingDR, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeDetailedResponse)
-	if existingDR != nil && existingDR.Status == string(events.AnalysisStatusCompleted) && existingDR.Summary != "" && !request.Regenerate {
+	if existingDR != nil && existingDR.Status == string(events.AnalysisStatusCompleted) && existingDR.Summary != "" && !request.Regenerate &&
+		!eventAnalysisRepo.IsAnalysisStale(existingDR.UpdatedAt) {
 		ctx.GetLogger().Info("analyzer: detailed response already completed, skipping synth", "event_id", request.EventId)
 		response.DetailedResponse = existingDR.Summary
 		if response.Investigation == "" {

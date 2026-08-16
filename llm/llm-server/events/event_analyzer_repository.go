@@ -209,6 +209,28 @@ func (r *EventAnalysisRepository) GetAnalysisIdFromMapping(ctx *security.Request
 	return analysisId, nil
 }
 
+// IsAnalysisStale reports whether a COMPLETED analysis is too old to be reused
+// for a newly arriving event. Zero freshness disables the bound, which is the
+// previous behaviour; an unknown timestamp is never treated as stale.
+//
+// This is the reuse bound, and it has to be applied at EVERY gate that decides
+// to reuse a stage instead of regenerating it -- the outer gates in
+// getOrCreateEventAnalysisStatus and the per-step caches inside
+// analyzeEventUsingAgentsAndUpdateDb alike. Applying it to only some of them is
+// worse than not applying it at all: an outer gate that rejects a stale analysis
+// dispatches the pipeline, and per-step caches that still consider that stage
+// fresh reuse it, write nothing, and leave updated_at where it was -- so the next
+// event for the fingerprint takes the same path, and every event after it, with
+// no run ever advancing the timestamp that would stop the cycle.
+//
+// The bound deliberately does not live in ClaimEventAnalysis alone. That is a
+// concurrency gate reached only when log_analysis is not already COMPLETED, so a
+// bound placed there never sees the case it was written for: a new event whose
+// fingerprint is fully analysed and days old.
+func (r *EventAnalysisRepository) IsAnalysisStale(writtenAt time.Time) bool {
+	return r.analysisFreshness > 0 && !writtenAt.IsZero() && time.Since(writtenAt) > r.analysisFreshness
+}
+
 // GetEventAnalysis fetches an existing analysis from the database.
 // If eventId is provided, it first checks event_analysis_mapping for a direct match.
 func (r *EventAnalysisRepository) GetEventAnalysis(ctx *security.RequestContext, eventId, fingerprint, aggKey, accountId string, analysisType EventAnalysisType) (*EventAnalysis, error) {
@@ -218,7 +240,11 @@ func (r *EventAnalysisRepository) GetEventAnalysis(ctx *security.RequestContext,
 			return nil, err
 		}
 		if analysisId != "" {
-			sqlQuery := `SELECT id, analysis, status, event_id, summary, status_reason, updated_at FROM event_log_analysis WHERE id = $1 AND cloud_account_id = $2;`
+			// COALESCE, not bare updated_at: the column is nullable with no default
+			// (V443), and callers use this timestamp to decide whether the analysis is
+			// still fresh enough to reuse. A legacy NULL would scan as the zero time
+			// and read as infinitely stale, forcing a regenerate on every event.
+			sqlQuery := `SELECT id, analysis, status, event_id, summary, status_reason, COALESCE(updated_at, recorded_at) AS updated_at FROM event_log_analysis WHERE id = $1 AND cloud_account_id = $2;`
 			var id, analysis, status, relatedEventId, summary, statusReason sql.NullString
 			var updatedAt sql.NullTime
 			err := r.dbManager.Db.QueryRowx(sqlQuery, analysisId, accountId).Scan(&id, &analysis, &status, &relatedEventId, &summary, &statusReason, &updatedAt)
@@ -241,7 +267,9 @@ func (r *EventAnalysisRepository) GetEventAnalysis(ctx *security.RequestContext,
 		}
 	}
 
-	sqlQuery := `SELECT id, analysis, status, event_id, summary, status_reason, updated_at FROM event_log_analysis WHERE event_fingerprint = $1 and cloud_account_id = $2 and event_aggregation_key = $3 and analysis_type = $4 ORDER BY COALESCE(updated_at, recorded_at) DESC LIMIT 1;`
+	// COALESCE for the same reason as the mapped branch above; the ORDER BY
+	// already uses it, so the selected value now matches the sort key.
+	sqlQuery := `SELECT id, analysis, status, event_id, summary, status_reason, COALESCE(updated_at, recorded_at) AS updated_at FROM event_log_analysis WHERE event_fingerprint = $1 and cloud_account_id = $2 and event_aggregation_key = $3 and analysis_type = $4 ORDER BY COALESCE(updated_at, recorded_at) DESC LIMIT 1;`
 	rows, err := r.dbManager.Db.Queryx(sqlQuery, fingerprint, accountId, aggKey, analysisType)
 	if err != nil {
 		ctx.GetLogger().Warn("analyzer: failed to get log_analysis from database", "error", err)

@@ -464,17 +464,28 @@ type appConfig struct {
 	EventAnalysisQueueSize         int `mapstructure:"llm_server_event_analysis_queue_size"`
 	EventAnalysisRecoveryBatchSize int `mapstructure:"llm_server_event_analysis_recovery_batch_size"`
 	// EventAnalysisFreshnessHours bounds how long a COMPLETED analysis may be
-	// reused for a *different* event that shares its fingerprint. Beyond this
-	// age the claim falls through and the new event gets its own run against
-	// current telemetry, instead of being bound to findings from days ago.
+	// reused for a *different* event that shares its fingerprint. Past this age
+	// every reuse gate treats the stage as needing regeneration, so the new event
+	// gets its own run against current telemetry instead of being handed findings
+	// from days ago.
 	//
-	// 0 disables the check and preserves the previous behaviour: a completed
-	// analysis is reused forever regardless of age. Left at 0 by default because
-	// enabling it multiplies analysis volume — one run per fingerprint per
-	// window rather than one per fingerprint ever — which costs LLM spend
-	// (charged to the investigation budget) and grows both event_log_analysis
-	// and the llm_conversation_* tree. Turn it on per environment once that
-	// increase has been sized.
+	// 0 disables the bound and restores the previous behaviour: a completed
+	// analysis is reused forever regardless of age.
+	//
+	// The default is 24h. It shipped as 0 in #35786 because the bound then lived
+	// only inside ClaimEventAnalysis, which is reached only when log_analysis is
+	// not already COMPLETED — so it never saw the case it was written for, and
+	// enabling it would have changed nothing on the mainline. With the bound now
+	// applied at the reuse gates themselves, the setting does what its name says,
+	// and a day-old analysis is the longest anyone should be shown as current.
+	//
+	// Enabling it moves a fingerprint from one analysis ever to one per window.
+	// That is LLM spend (charged to the investigation budget) plus growth in
+	// event_log_analysis and the llm_conversation_* tree. Measured against a live
+	// database: ~97 analysed event identities active in a 7-day window, each
+	// fanning out to ~4 stages, so the ceiling is a few hundred additional runs
+	// per day rather than the tens-of-thousands a naive reading of event volume
+	// suggests. Set to 0 to opt an environment back out.
 	EventAnalysisFreshnessHours int `mapstructure:"llm_server_event_analysis_freshness_hours"`
 	SyncDeadWorkerCount         int `mapstructure:"llm_server_sync_dead_worker_count"`
 	SyncDeadQueueSize           int `mapstructure:"llm_server_sync_dead_queue_size"`
@@ -1197,8 +1208,9 @@ func init() {
 	viper.SetDefault("llm_server_event_analysis_worker_count", 5)
 	viper.SetDefault("llm_server_event_analysis_queue_size", 100)
 	viper.SetDefault("llm_server_event_analysis_recovery_batch_size", 5)
-	// 0 = disabled; see EventAnalysisFreshnessHours for why this is off by default.
-	viper.SetDefault("llm_server_event_analysis_freshness_hours", 0)
+	// 0 = disabled; see EventAnalysisFreshnessHours for what this bounds and what
+	// enabling it costs.
+	viper.SetDefault("llm_server_event_analysis_freshness_hours", 24)
 	viper.SetDefault("llm_server_sync_dead_worker_count", 3)
 	viper.SetDefault("llm_server_sync_dead_queue_size", 50)
 
