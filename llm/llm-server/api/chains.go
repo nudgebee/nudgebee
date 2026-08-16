@@ -1190,7 +1190,21 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.ConversationId == "" {
 			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 				common.Error{
-					Message: "api: messageId is required",
+					Message: "api: conversation_id is required to stop the investigation",
+				},
+			}))
+			return
+		}
+
+		// TerminateConversation writes to a UUID column — a malformed id would
+		// otherwise reach Postgres and surface as an unhandled 500 with a raw
+		// `invalid input syntax for type uuid` message. Validate at the RPC
+		// boundary so the caller gets a 400 with a clean reason, matching the
+		// pattern used elsewhere in this file (e.g. /chat, /chat_suggestions).
+		if _, err := uuid.Parse(request.ConversationId); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{
+					Message: "api: invalid conversation_id",
 				},
 			}))
 			return

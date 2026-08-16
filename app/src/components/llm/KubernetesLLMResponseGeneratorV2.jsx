@@ -2003,7 +2003,16 @@ const KubernetesLLMResponseGenerator = ({
                     // WAITING when a non-followup message is stuck waiting (workflow-
                     // builder leaves a scripting message like this after Approve and Build),
                     // and in that state there's no user-facing action to terminate.
-                    allowStop={allowStop && messages.length > 0 && (!!currentlyProcessingQuestion || conversationStatus === 'IN_PROGRESS')}
+                    // Also require conversationIdAtDb: the backend needs it to identify
+                    // which conversation to terminate, and it lands only after the async
+                    // POST → fetchConversation round-trip completes. Without it a click
+                    // would fire an empty-id mutation and hit the 400 required-check.
+                    allowStop={
+                      allowStop &&
+                      !!conversationIdAtDb &&
+                      messages.length > 0 &&
+                      (!!currentlyProcessingQuestion || conversationStatus === 'IN_PROGRESS')
+                    }
                   />
                 </SummaryBlock>
               )}

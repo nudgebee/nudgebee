@@ -777,6 +777,15 @@ export const useLLMInvestigationControl = (accountId) => {
       if (currentStatus === 'COMPLETED' || currentStatus === 'FAILED' || currentStatus === 'TERMINATED' || !allowStop) {
         return;
       }
+      if (!conversationId) {
+        // Safety net: the Stop button is gated at render time (allowStop also
+        // requires conversationIdAtDb), so this branch is unreachable from the
+        // primary UI. Kept because other callers of this hook could still fire
+        // it, and firing the mutation with an empty id would surface the
+        // backend's "conversation_id is required" 400 as a scary snackbar.
+        snackbar.info('Stop is not available yet — the investigation is still being recorded. Try again in a moment.');
+        return;
+      }
 
       const sessionKey = currentSessionRef.current;
       try {
