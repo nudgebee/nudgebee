@@ -18,6 +18,7 @@ import apiUser from '@api1/user';
 import apiIntegrations from '@api1/integrations';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
+import { computeTierDefaults } from '@utils/tierDefaults';
 
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
@@ -310,6 +311,17 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [testStatus, setTestStatus] = useState('idle');
   const [testMessage, setTestMessage] = useState('');
 
+  // Pricing rows for computing tier auto-fills on provider change (#35174).
+  // Loaded once when the modal opens; empty array is a safe fallback (the
+  // computeTierDefaults helper falls back to PROVIDER_EXAMPLES per provider).
+  const [pricingRows, setPricingRows] = useState([]);
+
+  // Collapse for the "Advanced options" section (per-tenant pricing overrides
+  // + model context window). Both blocks are optional overrides most users
+  // leave blank — surfacing them by default clutters the primary form. Kept
+  // together under one toggle rather than two adjacent collapsibles.
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   // Load the cloud-account list once when the modal opens.
   useEffect(() => {
     if (!open) {
@@ -340,6 +352,40 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       } finally {
         if (!cancelled) {
           setAccountsLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  // Load pricing rows once on modal open. Used by the tier auto-fill on
+  // provider change (#35174) — the sort determines which model becomes each
+  // tier's default. A failed fetch is non-fatal: computeTierDefaults falls
+  // back to the curated PROVIDER_EXAMPLES map for the selected provider.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiAskNudgebee.listModelPricing();
+        if (cancelled) {
+          return;
+        }
+        // Same resolve-with-errors contract as elsewhere in this file
+        // (see the tier/cache carry-forward at handleSave). Missing pricing
+        // is not fatal — the fallback map still populates sensible tiers.
+        if (res?.errors && res.errors.length > 0) {
+          setPricingRows([]);
+          return;
+        }
+        setPricingRows(Array.isArray(res?.data?.prices) ? res.data.prices : []);
+      } catch {
+        if (!cancelled) {
+          setPricingRows([]);
         }
       }
     })();
@@ -457,6 +503,10 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setApiVersion(cfg.llm_provider_api_version || '');
       setRegion(cfg.llm_provider_region || '');
       setContextSize(cfg.llm_model_context_size || '');
+      // Auto-expand Advanced options if a custom context window is already
+      // saved — hiding it inside a collapsed section on edit-mode load would
+      // make the value invisible until the user thinks to click Advanced.
+      setShowAdvanced(!!cfg.llm_model_context_size);
       setAccessKey('');
       setSecretKey('');
       setApiType(cfg.llm_provider_api_type || '');
@@ -631,6 +681,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         summary: emptyConfig(),
       });
       setAgentRows([]);
+      setShowAdvanced(false);
       setTestStatus('idle');
       setTestMessage('');
     }
@@ -677,7 +728,16 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // provider is virtually never valid for another.
   const handleProviderChange = (value) => {
     setProvider(value);
-    setModel('');
+    // Primary + tier auto-fill (#35174): compute per-family defaults from
+    // llm_model_pricing (fallback: curated PROVIDER_EXAMPLES). Primary is
+    // the mid-cost retrieval-tier model — most call sites are untagged
+    // and running the flagship on every one of them was the cost-inflation
+    // pattern this ticket is fixing. Reasoning tier is set explicitly to
+    // the flagship (opt-in for heavy investigation), summary to the
+    // cheapest (opt-in for cheap tasks). Retrieval tier is left blank so
+    // it inherits from primary — no need to name the same model twice.
+    const tierDefaults = computeTierDefaults(value, pricingRows, PROVIDER_EXAMPLES);
+    setModel(tierDefaults.retrieval);
     setFallbacks('');
     setApiKey('');
     setApiEndpoint('');
@@ -703,10 +763,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     // intact — the save-diff against it will then emit empty values for
     // every loaded override key, which the backend interprets as DELETE,
     // cleaning up the stale rows from the old provider.
+    //
+    // reasoning gets the flagship explicitly (opt-in tier for heavy
+    // investigation); summary gets the cheapest. retrieval is left blank
+    // because primary is already the retrieval model — inheriting keeps
+    // the saved config lean.
     setTiers({
-      reasoning: emptyConfig(),
+      reasoning: { ...emptyConfig(), model: tierDefaults.reasoning },
       retrieval: emptyConfig(),
-      summary: emptyConfig(),
+      summary: { ...emptyConfig(), model: tierDefaults.summary },
     });
     setAgentRows([]);
     setTestStatus('idle');
@@ -1471,74 +1536,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               required={['azure', 'sagemaker', 'huggingface', 'anthropic', 'custom'].includes(provider)}
             />
           )}
-          {canPrice && (
-            <>
-              <Input
-                label='Input rate (USD per 1M tokens)'
-                size='sm'
-                type='number'
-                value={priceInput}
-                onChange={setPriceInput}
-                placeholder='e.g. 0.40'
-                help={
-                  provider === 'custom'
-                    ? 'Optional. We ship no rate for custom endpoints, so without this the model reports $0 spend.'
-                    : 'Optional. Overrides the built-in rate for this tenant. Any long-context tier or cache rate you leave blank is preserved — edit it from Settings → Model Pricing.'
-                }
-              />
-              <Input
-                label='Output rate (USD per 1M tokens)'
-                size='sm'
-                type='number'
-                value={priceOutput}
-                onChange={setPriceOutput}
-                placeholder='e.g. 0.60'
-              />
-              <Input
-                label='Cached input rate (USD per 1M tokens)'
-                size='sm'
-                type='number'
-                value={priceCachedInput}
-                onChange={setPriceCachedInput}
-                placeholder='e.g. 0.10'
-                help='Optional. Most providers discount prompt tokens served from cache. Leave blank to bill them at the input rate.'
-              />
-              <Input
-                label='Cache creation rate (USD per 1M tokens)'
-                size='sm'
-                type='number'
-                value={priceCacheCreation}
-                onChange={setPriceCacheCreation}
-                placeholder='e.g. 0.50'
-                help='Optional. Charged when tokens are first written to cache — Anthropic bills 1.25x input; OpenAI-compatible providers do not charge it.'
-              />
-              <Input
-                label='Long-context threshold (prompt tokens)'
-                size='sm'
-                type='number'
-                value={priceThreshold}
-                onChange={setPriceThreshold}
-                placeholder='e.g. 200000'
-                help='Optional. Some providers charge more above a prompt size — Gemini Pro doubles above 200k. Leave blank for flat pricing; fill all three to set a tier.'
-              />
-              <Input
-                label='Input rate above threshold (USD per 1M)'
-                size='sm'
-                type='number'
-                value={priceInputLong}
-                onChange={setPriceInputLong}
-                placeholder='e.g. 0.80'
-              />
-              <Input
-                label='Output rate above threshold (USD per 1M)'
-                size='sm'
-                type='number'
-                value={priceOutputLong}
-                onChange={setPriceOutputLong}
-                placeholder='e.g. 1.20'
-              />
-            </>
-          )}
           {showsApiVersion && (
             <Input
               label='API Version'
@@ -1558,18 +1555,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               onBlur={trimOnBlur(region, setRegion)}
               help='Geographic region (e.g., us-east-1).'
               required
-            />
-          )}
-          {showsContextSize(provider) && (
-            <Input
-              label='Model context window (tokens)'
-              size='sm'
-              type='number'
-              inputMode='numeric'
-              value={contextSize}
-              onChange={setContextSize}
-              onBlur={trimOnBlur(contextSize, setContextSize)}
-              help='Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.'
             />
           )}
           {showsBedrockKeys && (
@@ -1606,6 +1591,141 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 help='Whether an adapter ID is required.'
               />
             </>
+          )}
+          {(canPrice || showsContextSize(provider)) && (
+            <Box>
+              <Box
+                onClick={() => setShowAdvanced((v) => !v)}
+                onKeyDown={(e) => {
+                  if (e.key === ' ' || e.key === 'Enter') {
+                    e.preventDefault();
+                    setShowAdvanced((v) => !v);
+                  }
+                }}
+                tabIndex={0}
+                role='button'
+                aria-expanded={showAdvanced}
+                aria-controls='llm-advanced-options'
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  cursor: 'pointer',
+                  py: 'var(--ds-space-2)',
+                  color: 'var(--ds-text-secondary)',
+                  fontWeight: 'var(--ds-font-weight-semibold)',
+                  fontSize: 'var(--ds-text-small)',
+                  userSelect: 'none',
+                  '&:focus-visible': {
+                    outline: '2px solid var(--ds-text-secondary)',
+                    outlineOffset: '2px',
+                  },
+                }}
+              >
+                {showAdvanced ? <ExpandLessIcon fontSize='small' /> : <ExpandMoreIcon fontSize='small' />}
+                <Box component='span' sx={{ ml: 'var(--ds-space-1)' }}>
+                  Advanced options
+                </Box>
+                <Box
+                  component='span'
+                  sx={{
+                    ml: 'var(--ds-space-2)',
+                    color: 'var(--ds-text-tertiary)',
+                    fontWeight: 'var(--ds-font-weight-regular)',
+                    fontSize: 'var(--ds-text-caption)',
+                  }}
+                >
+                  {canPrice && showsContextSize(provider)
+                    ? 'Override the built-in pricing and set a custom model context window for this tenant.'
+                    : canPrice
+                    ? 'Override the built-in pricing rates for this tenant.'
+                    : "Set a custom context window for your self-hosted deployment (defaults to the model's built-in window if blank)."}
+                </Box>
+              </Box>
+              {showAdvanced && (
+                <Stack id='llm-advanced-options' spacing='var(--ds-space-2)' sx={{ mt: 'var(--ds-space-2)' }}>
+                  {canPrice && (
+                    <>
+                      <Input
+                        label='Input rate (USD per 1M tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceInput}
+                        onChange={setPriceInput}
+                        placeholder='e.g. 0.40'
+                        help={
+                          provider === 'custom'
+                            ? 'Optional. We ship no rate for custom endpoints, so without this the model reports $0 spend.'
+                            : 'Optional. Overrides the built-in rate for this tenant. Any long-context tier or cache rate you leave blank is preserved — edit it from Settings → Model Pricing.'
+                        }
+                      />
+                      <Input
+                        label='Output rate (USD per 1M tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceOutput}
+                        onChange={setPriceOutput}
+                        placeholder='e.g. 0.60'
+                      />
+                      <Input
+                        label='Cached input rate (USD per 1M tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceCachedInput}
+                        onChange={setPriceCachedInput}
+                        placeholder='e.g. 0.10'
+                        help='Optional. Most providers discount prompt tokens served from cache. Leave blank to bill them at the input rate.'
+                      />
+                      <Input
+                        label='Cache creation rate (USD per 1M tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceCacheCreation}
+                        onChange={setPriceCacheCreation}
+                        placeholder='e.g. 0.50'
+                        help='Optional. Charged when tokens are first written to cache — Anthropic bills 1.25x input; OpenAI-compatible providers do not charge it.'
+                      />
+                      <Input
+                        label='Input rate above threshold (USD per 1M)'
+                        size='sm'
+                        type='number'
+                        value={priceInputLong}
+                        onChange={setPriceInputLong}
+                        placeholder='e.g. 0.80'
+                      />
+                      <Input
+                        label='Output rate above threshold (USD per 1M)'
+                        size='sm'
+                        type='number'
+                        value={priceOutputLong}
+                        onChange={setPriceOutputLong}
+                        placeholder='e.g. 1.20'
+                      />
+                      <Input
+                        label='Long-context threshold (prompt tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceThreshold}
+                        onChange={setPriceThreshold}
+                        placeholder='e.g. 200000'
+                        help='Optional. Some providers charge more above a prompt size — Gemini Pro doubles above 200k. Leave blank for flat pricing; fill all three to set a tier.'
+                      />
+                    </>
+                  )}
+                  {showsContextSize(provider) && (
+                    <Input
+                      label='Model context window (tokens)'
+                      size='sm'
+                      type='number'
+                      inputMode='numeric'
+                      value={contextSize}
+                      onChange={setContextSize}
+                      onBlur={trimOnBlur(contextSize, setContextSize)}
+                      help='Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.'
+                    />
+                  )}
+                </Stack>
+              )}
+            </Box>
           )}
         </Stack>
 
