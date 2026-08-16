@@ -23,6 +23,7 @@ from slack_sdk.errors import SlackApiError
 
 from notifications_server.services import events as events_module
 from notifications_server.services.events import Events
+from notifications_server.utils.rich_text_blocks import batch_slack_groups, fallback_slack_block, render_rich_segments
 
 
 class _FakeSlackResponse:
@@ -81,23 +82,23 @@ PROSE_TABLE_PROSE_TABLE_PROSE = (
 class TestBatchSlackGroups:
     def test_merges_small_groups_into_one_message(self):
         groups = [[{"type": "section"}] for _ in range(10)]
-        messages = Events._batch_slack_groups(groups)
+        messages = batch_slack_groups(groups)
         assert len(messages) == 1
         assert len(messages[0]) == 10
 
     def test_splits_only_when_cap_would_be_exceeded(self):
         groups = [[{"type": "section"}] for _ in range(70)]
-        messages = Events._batch_slack_groups(groups)
+        messages = batch_slack_groups(groups)
         assert [len(m) for m in messages] == [32, 32, 6]
 
     def test_empty_input_returns_no_messages(self):
-        assert Events._batch_slack_groups([]) == []
+        assert batch_slack_groups([]) == []
 
     def test_single_empty_group_still_produces_one_message(self):
         # An empty/whitespace-only response still has one group (a
         # MarkdownBlock with no text, which transforms to zero Slack
         # blocks) - the thread must still get exactly one reply, not none.
-        assert Events._batch_slack_groups([[]]) == [[]]
+        assert batch_slack_groups([[]]) == [[]]
 
 
 class TestFallbackSlackBlock:
@@ -107,7 +108,7 @@ class TestFallbackSlackBlock:
             "title": "Cost by Service",
             "chart": {"type": "bar", "series": [{"name": "s", "data": [{"label": "a", "value": 1}]}]},
         }
-        fallback = Events._fallback_slack_block(block)
+        fallback = fallback_slack_block(block)
         assert len(fallback) == 2
         assert fallback[0]["type"] == "section"
         assert "Cost by Service" in fallback[0]["text"]["text"]
@@ -119,14 +120,14 @@ class TestFallbackSlackBlock:
 
     def test_table_block_becomes_a_text_note_with_raw_rows(self):
         block = {"type": "table", "rows": [[{"type": "raw_text", "text": "A"}]]}
-        fallback = Events._fallback_slack_block(block)
+        fallback = fallback_slack_block(block)
         assert len(fallback) == 2
         assert "table" in fallback[0]["text"]["text"].lower()
         assert fallback[1]["text"]["text"].startswith("```")
         assert '"text": "A"' in fallback[1]["text"]["text"]
 
     def test_unrecognized_block_falls_back_to_generic_notice(self):
-        assert Events._fallback_slack_block({"type": "unknown_type"}) == [
+        assert fallback_slack_block({"type": "unknown_type"}) == [
             {"type": "section", "text": {"type": "mrkdwn", "text": "_Part of this response couldn't be displayed._"}}
         ]
 
@@ -235,8 +236,13 @@ class TestRenderPlainTextBlocksNbChartFallback:
         bad_json = '{"type":"bar","labels":[],"series":[]}'
         text = f"before\n```nb-chart\n{bad_json}\n```\nafter"
 
-        groups = events._render_plain_text_blocks(text)
-        fenced_texts = [b.text for group in groups for b in group if hasattr(b, "text") and bad_json in b.text]
+        groups = render_rich_segments(text, events._plain_text_leaf)
+        fenced_texts = [
+            b["text"]["text"]
+            for group in groups
+            for b in group
+            if b.get("type") == "section" and bad_json in b.get("text", {}).get("text", "")
+        ]
 
         assert len(fenced_texts) == 1
         assert fenced_texts[0] == f"```\n{bad_json}\n```"
