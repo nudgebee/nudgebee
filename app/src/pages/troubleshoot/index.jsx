@@ -31,7 +31,7 @@ import { getLast24Hrs } from '@lib/datetime';
 // static import shipped the graph bundle in this page's chunk for every visitor
 // — including the ones who never leave All Events. Load it on demand instead.
 // The chunk is large, so without a fallback the tab paints blank until it lands.
-const KnowledgeGraphServiceMapWrapper = dynamic(() => import('@components/KnowledgeGraph'), {
+const KnowledgeGraphServiceMapWrapper = dynamic(() => import('@components/knowledge-graph/KnowledgeGraph'), {
   ssr: false,
   loading: () => (
     <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 400 }}>

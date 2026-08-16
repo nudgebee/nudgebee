@@ -126,7 +126,8 @@
     "typescript": "^5.9.3"
   },
   "scripts": {
-    "dev": "next dev -p 3000 --turbo",
+    "dev": "next dev -p 3000 --webpack",
+    "dev:turbo": "next dev -p 3000 --turbo",
     "build": "next build",
     "build2": "next build --turbopack",
     "analyze": "ANALYZE=true next build --webpack",

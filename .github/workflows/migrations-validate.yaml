@@ -1,29 +1,50 @@
 name: Migrations-Validate
 
 # Fast, cluster-free guard that runs on every PR touching the migration tree.
-# It fails the PR when a NEW migration would collide or land below the
-# golang-migrate high-water mark (a silently-skipped migration). Legacy naming
-# debt is grandfathered to warnings — see api-server/migrations/validate_migrations.py.
+# Checks:
+#   1. validate_migrations.py — duplicate-timestamp / V-label-reuse hard fail;
+#      out-of-order is a warning under atlas (the engine handles it natively).
+#   2. atlas migrate hash diff — atlas.sum staleness fails the PR at review
+#      time rather than at deploy time (the migration Job would otherwise
+#      refuse with `checksum mismatch` after merge).
+#   3. atlas migrate validate — sum/HCL integrity.
+#   4. Fresh-DB apply smoke test — runs the REAL run-migrations.sh against an
+#      empty Postgres so the from-scratch apply path (new customer env / e2e /
+#      local dev) is exercised on every PR. This is the gate that catches
+#      apply-time dialect breaks such as an explicit BEGIN/COMMIT in a file
+#      (incompatible with atlas --tx-mode file) — `atlas migrate validate`
+#      and `lint` do NOT catch that class; only a real apply does.
+#   5. atlas migrate lint (advisory) — surfaces destructive / data-dependent
+#      changes on new files for reviewer attention. Non-blocking: legitimate
+#      DROP migrations are common here, so lint informs rather than gates.
 
 on:
   pull_request:
     branches: ["main", "test", "prod"]
     paths:
       - "api-server/migrations/migrations/app/**"
+      - "api-server/migrations/atlas.hcl"
+      - "api-server/migrations/run-migrations.sh"
       - "api-server/migrations/validate_migrations.py"
       - ".github/workflows/migrations-validate.yaml"
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    services:
+      # Empty Postgres for the fresh-DB apply smoke test below.
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: appdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +53,75 @@ jobs:
       - name: Fetch reference branches the DBs track
         run: git fetch --no-tags --quiet origin main test prod || true
 
-      - name: Validate migration versions
+      - name: Validate migration versions (filename / Vlabel / ordering)
         run: |
           python3 api-server/migrations/validate_migrations.py \
             --refs origin/main,origin/test,origin/prod
+
+      # Pin matches the Dockerfile (api-server/migrations/Dockerfile:33).
+      - name: Install atlas (community v0.36.0)
+        env:
+          ATLAS_VERSION: v0.36.0
+          ATLAS_SHA256: 31df223059700191b80032906590bb6030f864ba202dfbc57ba90e593292301a
+        run: |
+          curl -fsSL --connect-timeout 30 --max-time 300 --retry 5 \
+            "https://release.ariga.io/atlas/atlas-community-linux-amd64-${ATLAS_VERSION}" \
+            -o /usr/local/bin/atlas
+          echo "${ATLAS_SHA256}  /usr/local/bin/atlas" | sha256sum --check --status
+          chmod +x /usr/local/bin/atlas
+          atlas version
+
+      # atlas.sum is the integrity manifest atlas reads on every apply. If a
+      # PR adds/edits/removes a migration without regenerating the manifest,
+      # the migration Job will refuse with `checksum mismatch` AFTER merge.
+      # Catch the drift here at PR time. new-migration.sh regenerates the
+      # manifest automatically when atlas is installed locally; this gate
+      # backs that up.
+      - name: Check atlas.sum is in sync with migrations/app/
+        run: |
+          atlas migrate hash \
+            --dir 'file://api-server/migrations/migrations/app?format=golang-migrate'
+          if ! git diff --exit-code -- api-server/migrations/migrations/app/atlas.sum; then
+            echo "::error::api-server/migrations/migrations/app/atlas.sum is stale." >&2
+            echo "::error::Run locally: (cd api-server/migrations && atlas migrate hash --dir 'file://migrations/app?format=golang-migrate')" >&2
+            echo "::error::or use ./api-server/migrations/new-migration.sh which regenerates it automatically." >&2
+            exit 1
+          fi
+
+      - name: Validate atlas project config + migration directory
+        run: |
+          cd api-server/migrations
+          atlas migrate validate -c file://atlas.hcl --env default
+
+      # The authoritative fresh-DB gate. Runs the production run-migrations.sh
+      # against the empty Postgres service: it creates the nudgebee schema,
+      # takes the fresh-DB branch (no legacy tracker, no atlas revisions), and
+      # applies the whole corpus via `atlas migrate apply --tx-mode file`. A
+      # file that opens its own transaction (BEGIN/COMMIT), or any other
+      # apply-time dialect break, fails here at PR time instead of on the first
+      # real from-scratch deploy. RabbitMQ + playbook steps are skipped.
+      - name: Fresh-DB apply smoke test (run-migrations.sh on an empty database)
+        env:
+          APP_DATABASE_URL: postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable
+          MIGRATE_SKIP_PLAYBOOK: "1"
+          MIGRATE_SKIP_RABBITMQ: "1"
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          cd api-server/migrations
+          # Invoke via bash to match the image CMD (["/bin/bash","./run-migrations.sh"]);
+          # the script is committed 100644, so `./run-migrations.sh` would EACCES.
+          bash ./run-migrations.sh
+
+      # Advisory only (continue-on-error). Surfaces destructive / data-dependent
+      # / backward-incompatible changes on migrations added in this PR, on a
+      # throwaway dev database atlas spins itself. NOT a hard gate: legitimate
+      # DROP COLUMN / DROP TABLE cleanups are routine here and would otherwise
+      # red every such PR. Reviewers read the annotations; they do not block.
+      - name: Lint new migrations (advisory)
+        continue-on-error: true
+        run: |
+          atlas migrate lint \
+            --dir 'file://api-server/migrations/migrations/app?format=golang-migrate' \
+            --dev-url 'docker://postgres/15/dev' \
+            --git-base "origin/${{ github.base_ref }}" \
+            --git-dir .

@@ -5,12 +5,10 @@ alter table "public"."llm_conversation_saved" drop constraint "llm_conversation_
 
 alter table "public"."llm_conversation_saved" drop constraint "llm_conversation_saved_conversation_id_key";
 
-BEGIN TRANSACTION;
 ALTER TABLE "public"."llm_conversation_saved" DROP CONSTRAINT "llm_conversation_saved_pkey";
 
 ALTER TABLE "public"."llm_conversation_saved"
     ADD CONSTRAINT "llm_conversation_saved_pkey" PRIMARY KEY ("id");
-COMMIT TRANSACTION;
 
 alter table "public"."llm_conversation_saved"
   add constraint "llm_conversation_saved_conversation_id_fkey"

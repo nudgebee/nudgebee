@@ -48,8 +48,8 @@ const TREND_SERIES = [
   { field: 'limit', label: 'Limit', color: ds.red[500] },
 ];
 
-// Same shortcuts as the card's picker, reused by the popup's own time filter.
-const TREND_SHORTCUTS = [
+// Shared by both card pickers and the Trend popup's own time filter.
+const RANGE_SHORTCUTS = [
   'Last 5 Minutes',
   'Last 10 Minutes',
   'Last 15 Minutes',
@@ -60,6 +60,54 @@ const TREND_SHORTCUTS = [
   'Last 12 Hours',
   'Last 24 Hours',
 ];
+
+/** Default window for the utilisation cards: the last hour. */
+export const createUtilizationRange = () => ({
+  startDate: getSpecificTime(60),
+  endDate: new Date().getTime(),
+  shortcutClickTime: 1 * 60 * 60 * 1000,
+});
+
+/**
+ * The range picker on its own, so a parent card can place it in its heading row
+ * beside the title rather than letting this component drop it above the gauges.
+ * Pair it with the `dateRange` / `onDateRangeChange` props below — supplying
+ * those makes the range controlled and suppresses the internal picker.
+ */
+export const UtilizationRangePicker = ({ value, onChange, sx = {} }) => (
+  <CustomDateTimeRangePicker
+    // Size to the label instead of the picker's fixed 180px default: this sits
+    // inline next to a card title, and the spare width is what pushed it onto
+    // its own line on narrower cards.
+    width='auto'
+    showAbsoluteRange={false}
+    showOnlyCalenderIcon={false}
+    passedSelectedDateTime={{
+      startTime: value?.startDate,
+      endTime: value?.endDate,
+      shortcutClickTime: value?.shortcutClickTime || 0,
+    }}
+    shortCuts={RANGE_SHORTCUTS}
+    onChange={(dr) =>
+      onChange?.({
+        startDate: dr.selection.startTime,
+        endDate: dr.selection.endTime,
+        shortcutClickTime: dr.selection.shortcutClickTime || 0,
+      })
+    }
+    sx={{
+      border: '1px solid var(--ds-brand-200) !important',
+      borderRadius: 'var(--ds-radius-sm) !important',
+      ...sx,
+    }}
+  />
+);
+
+UtilizationRangePicker.propTypes = {
+  value: PropTypes.object,
+  onChange: PropTypes.func,
+  sx: PropTypes.object,
+};
 
 const formatTrendTs = (ts) => dayjs(ts > 1e12 ? ts : ts * 1000).format('HH:mm');
 
@@ -98,6 +146,11 @@ const KubernetesMemoryCpuOverView = ({
   hideLabels = false,
   sx = {},
   accountId,
+  // Controlled range. When `dateRange` is supplied the parent owns the window and
+  // renders its own <UtilizationRangePicker> (so it can sit beside the card
+  // title); this component then skips its internal picker row entirely.
+  dateRange,
+  onDateRangeChange,
 }) => {
   const [memoryCpuData, setMemoryCpuData] = useState({
     memory: [
@@ -143,11 +196,9 @@ const KubernetesMemoryCpuOverView = ({
   // independently adjustable inside the dialog.
   const [trendRange, setTrendRange] = useState(null);
 
-  const [selectedDateRange, setSelectedDateRange] = useState({
-    startDate: getSpecificTime(60),
-    endDate: new Date().getTime(),
-    shortcutClickTime: 1 * 60 * 60 * 1000,
-  });
+  const [internalDateRange, setInternalDateRange] = useState(createUtilizationRange);
+  const isRangeControlled = !!dateRange;
+  const selectedDateRange = isRangeControlled ? dateRange : internalDateRange;
 
   const formattedDateRange = {
     startTime: selectedDateRange.startDate,
@@ -452,11 +503,16 @@ const KubernetesMemoryCpuOverView = ({
   };
 
   const handleDateRangeChange = (passedSelectedDateTime) => {
-    setSelectedDateRange({
+    const next = {
       startDate: passedSelectedDateTime.startTime,
       endDate: passedSelectedDateTime.endTime,
       shortcutClickTime: passedSelectedDateTime.shortcutClickTime || 0,
-    });
+    };
+    if (isRangeControlled) {
+      onDateRangeChange?.(next);
+    } else {
+      setInternalDateRange(next);
+    }
   };
 
   // Split the executed queries per gauge (keys like cpu_real / mem_total / memory_limit).
@@ -474,7 +530,27 @@ const KubernetesMemoryCpuOverView = ({
     <>
       {updatedOverview ? (
         <Grid container mt={ds.space.mul(0, 5)} spacing={ds.space.mul(0, 10)} sx={{ position: 'relative' }}>
-          <Grid item sm={6}>
+          {/* Fallback picker row for callers that don't own the range themselves.
+              It used to be `position: absolute; top: -20px; right: 0`, which
+              reserved no layout space and painted over the card heading. Parents
+              that want the picker beside their title pass `dateRange` /
+              `onDateRangeChange` and render <UtilizationRangePicker> instead. */}
+          {!isRangeControlled && (
+            <Grid item xs={12} sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <CustomDateTimeRangePicker
+                showAbsoluteRange={false}
+                showOnlyCalenderIcon={false}
+                passedSelectedDateTime={formattedDateRange}
+                shortCuts={RANGE_SHORTCUTS}
+                onChange={(dr) => handleDateRangeChange(dr.selection)}
+                sx={{
+                  border: '1px solid var(--ds-brand-200) !important',
+                  borderRadius: 'var(--ds-radius-sm) !important',
+                }}
+              />
+            </Grid>
+          )}
+          <Grid item xs={12} sm={6}>
             {!dataLoaded.cpu && loadingStates.cpu ? (
               <Skeleton width={'100%'} height={ds.space.mul(0, 100)} />
             ) : (
@@ -514,7 +590,7 @@ const KubernetesMemoryCpuOverView = ({
               </>
             )}
           </Grid>
-          <Grid item sm={6}>
+          <Grid item xs={12} sm={6}>
             {!dataLoaded.memory && loadingStates.memory ? (
               <Skeleton width={'100%'} height={ds.space.mul(0, 100)} />
             ) : (
@@ -554,30 +630,6 @@ const KubernetesMemoryCpuOverView = ({
               </>
             )}
           </Grid>
-          <CustomDateTimeRangePicker
-            showAbsoluteRange={false}
-            showOnlyCalenderIcon={false}
-            passedSelectedDateTime={formattedDateRange}
-            shortCuts={[
-              'Last 5 Minutes',
-              'Last 10 Minutes',
-              'Last 15 Minutes',
-              'Last 30 Minutes',
-              'Last 1 Hour',
-              'Last 3 Hours',
-              'Last 6 Hours',
-              'Last 12 Hours',
-              'Last 24 Hours',
-            ]}
-            onChange={(dr) => handleDateRangeChange(dr.selection)}
-            sx={{
-              position: 'absolute !important',
-              top: `${ds.space.mul(0, -20)} !important`,
-              right: '0px !important',
-              border: '1px solid var(--ds-brand-200) !important',
-              borderRadius: 'var(--ds-radius-sm) !important',
-            }}
-          />
         </Grid>
       ) : loading ? (
         <CpuMemorySkeleton sx={{ mt: ds.space.mul(0, 5) }} />
@@ -592,9 +644,10 @@ const KubernetesMemoryCpuOverView = ({
               flexShrink: 0,
               position: 'relative',
               display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--ds-space-5)',
-              justifyContent: 'space-between',
+              flexDirection: 'column',
+              alignItems: 'stretch',
+              justifyContent: 'center',
+              gap: 'var(--ds-space-2)',
               p: clusterSummary
                 ? `${ds.space.mul(0, 7)} ${ds.space[5]} ${ds.space[2]} ${ds.space[5]}`
                 : `${ds.space.mul(0, 5)} ${ds.space[3]} ${ds.space.mul(0, 3)} ${ds.space[3]}`,
@@ -605,58 +658,53 @@ const KubernetesMemoryCpuOverView = ({
               overflowWrap: 'break-word',
             }}
           >
-            <Grid item sm={6}>
-              <K8sMemoryCpuIndicator
-                showUpdatedUi={showUpdatedUi}
-                requiredTooltip={requiredTooltip}
-                clusterSummary={clusterSummary}
-                key='CPU'
-                unit=''
-                title='CPU'
-                queries={cpuQueries}
-                data={memoryCpuData?.cpu ?? []}
-                updatedOverview={updatedOverview}
-                hideLabels={hideLabels}
+            {/* The card is a column: a right-aligned row for the range picker, then
+                the two gauges side by side. The picker used to be
+                `position: absolute; top: 5px; right: 5px`, which reserved no layout
+                space and so painted over the right-hand gauge's "Memory" label. */}
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <CustomDateTimeRangePicker
+                showAbsoluteRange={false}
+                showOnlyCalenderIcon={false}
+                passedSelectedDateTime={formattedDateRange}
+                shortCuts={RANGE_SHORTCUTS}
+                onChange={(dr) => handleDateRangeChange(dr.selection)}
+                sx={{
+                  border: '1px solid var(--ds-gray-200) !important',
+                  borderRadius: 'var(--ds-radius-md) !important',
+                }}
               />
-            </Grid>
-            <Grid item sm={6} sx={{ padding: '0px' }}>
-              <K8sMemoryCpuIndicator
-                showUpdatedUi={showUpdatedUi}
-                requiredTooltip={requiredTooltip}
-                clusterSummary={clusterSummary}
-                key='Memory'
-                unit=''
-                title='Memory'
-                queries={memoryQueries}
-                data={memoryCpuData?.memory ?? []}
-                updatedOverview={updatedOverview}
-                hideLabels={hideLabels}
-              />
-            </Grid>
-            <CustomDateTimeRangePicker
-              showAbsoluteRange={false}
-              showOnlyCalenderIcon={false}
-              passedSelectedDateTime={formattedDateRange}
-              shortCuts={[
-                'Last 5 Minutes',
-                'Last 10 Minutes',
-                'Last 15 Minutes',
-                'Last 30 Minutes',
-                'Last 1 Hour',
-                'Last 3 Hours',
-                'Last 6 Hours',
-                'Last 12 Hours',
-                'Last 24 Hours',
-              ]}
-              onChange={(dr) => handleDateRangeChange(dr.selection)}
-              sx={{
-                position: 'absolute !important',
-                top: `${ds.space.mul(0, 5)} !important`,
-                right: `${ds.space.mul(0, 5)} !important`,
-                border: '1px solid var(--ds-gray-200) !important',
-                borderRadius: 'var(--ds-radius-md) !important',
-              }}
-            />
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-5)', minWidth: 0 }}>
+              <Grid item sm={6} sx={{ minWidth: 0 }}>
+                <K8sMemoryCpuIndicator
+                  showUpdatedUi={showUpdatedUi}
+                  requiredTooltip={requiredTooltip}
+                  clusterSummary={clusterSummary}
+                  key='CPU'
+                  unit=''
+                  title='CPU'
+                  queries={cpuQueries}
+                  data={memoryCpuData?.cpu ?? []}
+                  updatedOverview={updatedOverview}
+                  hideLabels={hideLabels}
+                />
+              </Grid>
+              <Grid item sm={6} sx={{ padding: '0px', minWidth: 0 }}>
+                <K8sMemoryCpuIndicator
+                  showUpdatedUi={showUpdatedUi}
+                  requiredTooltip={requiredTooltip}
+                  clusterSummary={clusterSummary}
+                  key='Memory'
+                  unit=''
+                  title='Memory'
+                  queries={memoryQueries}
+                  data={memoryCpuData?.memory ?? []}
+                  updatedOverview={updatedOverview}
+                  hideLabels={hideLabels}
+                />
+              </Grid>
+            </Box>
           </Grid>
         </>
       )}
@@ -676,7 +724,7 @@ const KubernetesMemoryCpuOverView = ({
                   endTime: trendRange?.endDate,
                   shortcutClickTime: trendRange?.shortcutClickTime || 0,
                 }}
-                shortCuts={TREND_SHORTCUTS}
+                shortCuts={RANGE_SHORTCUTS}
                 onChange={(dr) =>
                   setTrendRange({
                     startDate: dr.selection.startTime,
@@ -728,4 +776,6 @@ KubernetesMemoryCpuOverView.propTypes = {
   showUsage: PropTypes.bool,
   hideLabels: PropTypes.bool,
   accountId: PropTypes.string,
+  dateRange: PropTypes.object,
+  onDateRangeChange: PropTypes.func,
 };

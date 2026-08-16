@@ -2442,16 +2442,16 @@ Smoke tests live at `app/__tests__/components1/common/Chip.test.tsx` (44 tests c
 
 These modals follow a common pattern: form dialog for adding/editing integration accounts.
 
-| Component                   | Path                                                     | Integration                    |
-| --------------------------- | -------------------------------------------------------- | ------------------------------ |
-| K8sAccountModal             | `src/components1/common/K8sAccountModal.jsx`             | Kubernetes (multi-step wizard) |
-| JiraAccountModal            | `src/components1/common/JiraAccountModal.jsx`            | Jira                           |
-| GithubAccountModal          | `src/components1/common/GithubAccountModal.jsx`          | GitHub (App OAuth or token)    |
-| ServiceNowAccountModal      | `src/components1/common/ServiceNowAccountModal.js`       | ServiceNow                     |
-| DatadogAccountModal         | `src/components1/common/DatadogAccountModal.jsx`         | Datadog                        |
-| ArgoCDAccountModal          | `src/components1/common/ArgoCDAccountModal.jsx`          | ArgoCD                         |
-| PagerDutyAccountModal       | `src/components1/common/PagerDutyAccountModal.jsx`       | PagerDuty                      |
-| IntegrationDynamicFormModal | `src/components1/common/IntegrationDynamicFormModal.jsx` | Generic (schema-driven)        |
+| Component                   | Path                                                                | Integration                    |
+| --------------------------- | ------------------------------------------------------------------- | ------------------------------ |
+| K8sAccountModal             | `src/components/integrations/modal/K8sAccountModal.jsx`             | Kubernetes (multi-step wizard) |
+| JiraAccountModal            | `src/components/integrations/modal/JiraAccountModal.jsx`            | Jira                           |
+| GithubAccountModal          | `src/components/integrations/modal/GithubAccountModal.jsx`          | GitHub (App OAuth or token)    |
+| ServiceNowAccountModal      | `src/components/integrations/modal/ServiceNowAccountModal.js`       | ServiceNow                     |
+| DatadogAccountModal         | `src/components1/common/DatadogAccountModal.jsx`                    | Datadog                        |
+| ArgoCDAccountModal          | `src/components1/common/ArgoCDAccountModal.jsx`                     | ArgoCD                         |
+| PagerDutyAccountModal       | `src/components/integrations/modal/PagerDutyAccountModal.jsx`       | PagerDuty                      |
+| IntegrationDynamicFormModal | `src/components/integrations/modal/IntegrationDynamicFormModal.jsx` | Generic (schema-driven)        |
 
 **Common props pattern:**
 | Prop | Type | Description |

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# Scaffold a new golang-migrate migration in migrations/app/ with the
-# correct version-number + unix-ms-timestamp + flat filename convention.
+# Scaffold a new Postgres migration in migrations/app/ with the correct
+# version-number + unix-ms-timestamp + flat filename convention, and refresh
+# atlas.sum so the new file is hash-tracked.
 #
 # Usage:
 #   ./new-migration.sh <snake_case_name>
@@ -10,6 +11,10 @@
 #   ./new-migration.sh add_widget_color
 #   # → creates 1736953412345_V734_add_widget_color.up.sql
 #   #          1736953412345_V734_add_widget_color.down.sql
+#
+# Requires atlas to be installed locally (brew install atlas) — atlas.sum
+# staleness fails the migration Job at deploy time, so we refuse to scaffold
+# without it.
 
 set -euo pipefail
 
@@ -44,6 +49,32 @@ fi
 
 touch "$UP" "$DOWN"
 
+# 4. Refresh atlas.sum so atlas accepts the new files. The hash file is a
+# checksum line per migration plus a top-level integrity hash; atlas refuses
+# to apply if the manifest is stale, which is exactly the behavior we want
+# (anyone touching migration files re-hashes). If atlas is missing or
+# `atlas migrate hash` fails, delete the just-scaffolded files and exit
+# loud — atlas.sum drift is otherwise detected only at deploy time, which is
+# too late.
+if ! command -v atlas >/dev/null 2>&1; then
+  rm -f "$UP" "$DOWN"
+  cat <<MSG >&2
+ERROR: atlas binary not on PATH; cannot refresh atlas.sum.
+       Install with:  brew install atlas
+       (atlas is required — atlas.sum staleness fails the migration Job at deploy.)
+MSG
+  exit 1
+fi
+
+MIG_ROOT=$(cd "$(dirname "$0")" && pwd)
+if ! (cd "$MIG_ROOT" && atlas migrate hash \
+        --dir "file://migrations/app?format=golang-migrate"); then
+  rm -f "$UP" "$DOWN"
+  echo "ERROR: atlas migrate hash failed; reverted new files." >&2
+  exit 1
+fi
+
 echo "created:"
 echo "  $UP"
 echo "  $DOWN"
+echo "  ${MIG_DIR}/atlas.sum (refreshed)"

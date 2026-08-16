@@ -116,7 +116,33 @@ const nextConfig = {
       },
     },
   },
-  webpack(config) {
+  webpack(config, { isServer, webpack }) {
+    if (!isServer) {
+      // `@prometheus-io/codemirror-promql` depends on lru-cache v11, whose build
+      // imports `node:diagnostics_channel` for optional instrumentation that
+      // never runs in a browser. Webpack treats `node:` as a URI scheme rather
+      // than a module request, so it fails the client build outright with
+      // `UnhandledSchemeError: Reading from "node:diagnostics_channel" is not
+      // handled by plugins` — taking down every page that reaches the PromQL
+      // editor (optimise, the Nubi chat sidebar, k8s log stash). Turbopack
+      // stubs these silently, which is why this only shows up under webpack.
+      //
+      // Rewrite the scheme away so the request goes through normal resolution,
+      // then stub the module for the browser. Stripping the prefix generally
+      // (rather than special-casing this one specifier) also means any future
+      // `node:*` import fails with a plain "Can't resolve 'x'" instead of the
+      // much more opaque scheme error.
+      config.plugins.push(
+        new webpack.NormalModuleReplacementPlugin(/^node:/, (resource) => {
+          resource.request = resource.request.replace(/^node:/, '');
+        })
+      );
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        diagnostics_channel: false,
+      };
+    }
+
     const fileLoaderRule = config.module.rules.find((rule) => rule.test?.test?.('.svg'));
 
     config.module.rules.push({

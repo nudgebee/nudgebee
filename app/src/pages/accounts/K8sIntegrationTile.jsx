@@ -14,7 +14,7 @@ import { Modal } from '@ui/Modal';
 import TextWithBorder from '@shared/TextWithBorder';
 import { Divider } from '@ui/Divider';
 import NDialog from '@shared/modal/NDialog';
-import K8sAccountModal from '@shared/K8sAccountModal';
+import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomSearch from '@shared/CustomSearch';

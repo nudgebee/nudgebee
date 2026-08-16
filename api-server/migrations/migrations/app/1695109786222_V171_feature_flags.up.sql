@@ -12,12 +12,10 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 alter table "public"."feature_flag" add column "id" uuid
  not null default gen_random_uuid();
 
-BEGIN TRANSACTION;
 ALTER TABLE "public"."feature_flag" DROP CONSTRAINT "feature_flag_pkey";
 
 ALTER TABLE "public"."feature_flag"
     ADD CONSTRAINT "feature_flag_pkey" PRIMARY KEY ("id");
-COMMIT TRANSACTION;
 
 alter table "public"."feature_flag" alter column "feature_module_id" drop not null;
 

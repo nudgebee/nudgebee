@@ -1,4 +1,3 @@
-BEGIN;
 
 ALTER TABLE agent
 DROP CONSTRAINT IF EXISTS agent_cloud_provider_canonical_check;
@@ -10,4 +9,3 @@ CHECK (
   OR type IN ('AWS', 'Azure', 'GCP')
 );
 
-COMMIT;

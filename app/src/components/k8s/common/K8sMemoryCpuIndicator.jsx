@@ -68,8 +68,8 @@ const K8sMemoryCpuIndicator = ({
     <Box sx={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1 }}>
       {/* zIndex keeps the title row (and its query info icon) above the gauge, whose negative
           top/left offsets otherwise paint over this row and swallow the icon's hover events. */}
-      <Box sx={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+      <Box sx={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
           <Text value={title} sx={{ fontWeight: 'var(--ds-font-weight-medium)' }} />
           <MetricQueryInfo queries={queries} />
         </Box>

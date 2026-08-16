@@ -1,4 +1,3 @@
-BEGIN;
 
 -- 1. Delete signoz entries where a loki entry already exists for the same account
 DELETE FROM cloud_account_attrs
@@ -14,4 +13,3 @@ UPDATE cloud_account_attrs
 SET name = 'log_labels'
 WHERE name IN ('loki_labels_values', 'signoz_labels_values');
 
-COMMIT;
