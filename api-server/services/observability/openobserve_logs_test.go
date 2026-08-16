@@ -878,3 +878,30 @@ func TestFetchOpenObserveStreamFields_SurfacesHTTPError(t *testing.T) {
 	assert.Contains(t, err.Error(), "404")
 	assert.Contains(t, err.Error(), "stream not found")
 }
+
+// A 404 from the schema endpoint is wrapped in a sentinel so callers can tell "no such
+// stream" from a real failure without matching on message text. The metrics label path
+// treats it as an empty picker; the log path still surfaces it, since a missing log stream
+// is a misconfiguration.
+func TestFetchOpenObserveStreamFields_StreamNotFoundIsDistinguishable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":404,"message":"stream not found"}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchOpenObserveStreamFields(server.URL, "test-org", "user", "pass", "no_such_metric", "metrics")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errOpenObserveStreamNotFound)
+	assert.Contains(t, err.Error(), "no_such_metric")
+
+	// Other failures must not be mistaken for an absent stream.
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+
+	_, err = fetchOpenObserveStreamFields(bad.URL, "test-org", "user", "pass", "up", "metrics")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errOpenObserveStreamNotFound)
+}

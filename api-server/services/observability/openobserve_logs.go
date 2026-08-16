@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,6 +77,12 @@ type openObserveSearchResponse struct {
 func escapeOpenObserveString(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
 }
+
+// errOpenObserveStreamNotFound reports that a stream does not exist. Callers disagree on
+// whether that is a failure: a missing *log* stream is a misconfiguration worth surfacing,
+// while a missing *metric* stream is routine — the __name__ list contains families (a
+// summary's base name, say) that never received samples and so have no stream of their own.
+var errOpenObserveStreamNotFound = errors.New("openobserve stream not found")
 
 // decodeOpenObserveSearchResponse decodes a /_search response, preserving numbers as their
 // literal text rather than converting to float64.
@@ -639,8 +646,17 @@ func fetchOpenObserveStreamFields(url, orgID, username, password, stream, stream
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		body := strings.TrimSpace(string(bodyBytes))
+
+		// Wrapped so callers can distinguish "no such stream" from a real failure without
+		// matching on message text.
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: stream %q (status %d: %s)",
+				errOpenObserveStreamNotFound, stream, resp.StatusCode, body)
+		}
+
 		return nil, fmt.Errorf("OpenObserve schema request for stream %q failed with status %d: %s",
-			stream, resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+			stream, resp.StatusCode, body)
 	}
 
 	var schema openObserveStreamSchema

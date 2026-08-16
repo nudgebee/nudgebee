@@ -3,6 +3,7 @@ package observability
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -391,6 +392,14 @@ func (s *OpenObserveMetricSource) FetchMetricsLabels(ctx *security.RequestContex
 
 		fields, err := fetchOpenObserveStreamFields(cfg.URL, cfg.OrgID, cfg.Username, cfg.Password, req.MetricName, "metrics")
 		if err != nil {
+			// A metric with no stream has no labels — that is an empty picker, not a
+			// failure worth an error toast. Confirmed against a live instance: the
+			// __name__ list includes families such as a summary's base name whose stream
+			// never received samples (acquire_shards_latency: 0 fields, 0 docs), and the
+			// matching search returns code 20002.
+			if errors.Is(err, errOpenObserveStreamNotFound) || isOpenObserveEmptyResultError(err.Error()) {
+				return nil, nil
+			}
 			return nil, err
 		}
 
