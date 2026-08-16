@@ -18,6 +18,30 @@ body: |2
     even when there is no investigation context. The user has stated intent;
     capture it verbatim. This rule overrides the "quality over quantity" guidance
     below — explicit instructions are always worth one fact each.
+  - **Bare meta-remember commands** — when the user's turn is a pure meta-request
+    ("remember above", "remember above as learning", "note this", "capture that",
+    "remember this", "log this for next time") and contains no substantive
+    content itself, treat the ASSISTANT'S response as the substantive learning:
+    extract the assistant's stated rule / procedure / preference verbatim.
+    The user issued a "remember" imperative and the assistant supplied the
+    content — do not skip because the assistant's text looks like generic
+    knowledge; the user's imperative + assistant's content together constitute
+    an explicit instruction. Emit one fact per distinct rule the assistant
+    states in its response.
+    **CRITICAL: every fact extracted under this rule MUST have
+    `type: "user_preference"`** — never `troubleshooting_guide`, `workflow`,
+    `investigation_result`, or any other type. The user's `remember` command
+    IS an explicit preference statement; the assistant's response is just the
+    payload the preference wraps. Facts emitted with the wrong type here are
+    dropped downstream by a preference-only save gate that runs for turns
+    without an active investigation notebook, so the wrong type silently
+    loses the learning even though extraction succeeded.
+    Schema template (do not copy the placeholders verbatim — derive the
+    subject/content from the assistant's actual response). Emit as a JSON
+    object inside the top-level output array on one line, no wrapping
+    backticks or fences, no literal newlines inside string values (escape
+    as \n if a newline is truly needed):
+      {"subject": "<snake_case_topic_derived_from_assistants_rule>", "type": "user_preference", "content": "<the assistant's rule / procedure / preference, stated verbatim or lightly generalised for reuse>", "is_pattern": false, "is_workflow": false, "is_update": false, "evidence_quote": "<the user's exact meta-remember phrase, e.g. remember this / note this for future reference>"}
   - Actionable routing rules and user preferences (e.g., "Always use the postgres agent for DB schema questions")
   - Generalised resolution paths for non-obvious problems
   - Non-obvious service dependencies discovered during the investigation
