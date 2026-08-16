@@ -496,6 +496,25 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	}
 	options = append(options, llms.WithMaxTokens(maxOutputTokens))
 
+	// nativeLevel reports whether this model's documented thinking control is a LEVEL
+	// rather than a numeric budget. When true we deliberately do NOT attach a
+	// ThinkingBudget: googleai.go suppresses the level whenever a budget is present
+	// (Gemini rejects both on the wire), so attaching one is what has kept every
+	// Gemini 3 call on the legacy parameter Google documents as back-compat only.
+	//
+	// Gated so it can be rolled back by config rather than revert: this changes the
+	// parameter sent on the majority of production calls.
+	// Attach the legacy numeric budget ONLY for models whose native control genuinely IS
+	// a numeric budget (Claude <= 4.5). Everything else — level-native Gemini 3,
+	// effort-native Claude 4.6+/OpenAI, and models we deliberately leave uncontrolled
+	// (gemini < 3) — gets none.
+	//
+	// Gating on "== thinkingGeminiLevel" left gemini-2.5 still receiving a budget,
+	// contradicting this file's own claim to have dropped it, and would have sent
+	// budget_tokens to Claude 4.7+ once that adapter is wired — a 400 there.
+	nativeLevel := config.Config.LlmThinkingLevelNativeEnabled &&
+		thinkingCapabilityFor(model).Format != thinkingAnthropicBudget
+
 	// Auto-apply thinking level for models that support thinking tokens (Gemini 2.5+, Gemini 3),
 	// unless the caller has already set an explicit ThinkingLevel in the options metadata.
 	if !hasThinkingLevelOption(options) {
@@ -503,15 +522,15 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 		if defaultLevel != "" {
 			// Config override takes precedence if set.
 			if config.Config.LlmProviderThinkingLevel != "" {
-				options = append(options, WithThinkingLevel(ClampThinkingLevelForModel(model, config.Config.LlmProviderThinkingLevel)))
+				options = append(options, WithThinkingLevel(clampThinkingLevel(model, config.Config.LlmProviderThinkingLevel)))
 			} else {
-				options = append(options, WithThinkingLevel(defaultLevel))
+				options = append(options, WithThinkingLevel(clampThinkingLevel(model, defaultLevel)))
 			}
 		}
 
 		// Cap thinking-token spend (ThinkingLevel alone is a hint the model can exceed).
 		// Only applies here, not to callers with an explicit level — they already made that choice.
-		if budget := resolveThinkingBudget(res.Tier); budget >= 0 {
+		if budget := resolveThinkingBudget(res.Tier); budget >= 0 && !nativeLevel {
 			options = append(options, WithThinkingBudget(budget))
 		}
 	} else {
@@ -524,7 +543,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 		effectiveLevel := ""
 		if lvl, ok := combined.Metadata["ThinkingLevel"].(string); ok {
 			effectiveLevel = lvl
-			clamped := ClampThinkingLevelForModel(model, lvl)
+			clamped := clampThinkingLevel(model, lvl)
 			if clamped != lvl {
 				options = append(options, WithThinkingLevel(clamped))
 				effectiveLevel = clamped
@@ -535,7 +554,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 		// the level so the caller's intent is preserved AND bounded. Safe to send
 		// alongside the level: googleai forwards only the budget when both are
 		// present (Gemini rejects both reaching the wire), so exactly one applies.
-		if budget := resolveThinkingBudgetForLevel(effectiveLevel, res.Tier); budget >= 0 {
+		if budget := resolveThinkingBudgetForLevel(effectiveLevel, res.Tier); budget >= 0 && !nativeLevel {
 			options = append(options, WithThinkingBudget(budget))
 		}
 	}

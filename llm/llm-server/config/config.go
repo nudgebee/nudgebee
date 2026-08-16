@@ -185,8 +185,31 @@ type appConfig struct {
 	LlmProviderSessionToken   string `mapstructure:"llm_provider_session_token"`
 	LlmProviderEnbeddingModel string `mapstructure:"llm_provider_embedding_model"`
 	LlmProviderMaxRetries     int    `mapstructure:"llm_provider_max_retries"`
-	LlmProviderThinkingLevel  string `mapstructure:"llm_provider_thinking_level"`  // empty (default): use per-model default; "minimal"/"low"/"medium"/"high": explicit level
-	LlmProviderThinkingBudget int    `mapstructure:"llm_provider_thinking_budget"` // -1 (default): use per-model default; 0: disable thinking; >0: explicit token budget — global override, wins over the per-tier budgets below
+	LlmProviderThinkingLevel  string `mapstructure:"llm_provider_thinking_level"` // empty (default): use per-model default; "minimal"/"low"/"medium"/"high": explicit level
+
+	// LlmThinkingLevelNativeEnabled sends a model's NATIVE thinking control instead of
+	// the legacy numeric budget, for models whose documented control is a level.
+	//
+	// Gemini 3 documents thinking_level as the current parameter and thinking_budget as
+	// back-compat only, and treats both as "relative allowances for thinking rather than
+	// strict token guarantees". Because googleai suppresses the level whenever a budget
+	// is also present (Gemini rejects both on the wire), attaching a budget is what has
+	// kept every Gemini 3 call on the legacy parameter. When true, no budget is attached
+	// for level-native models so the level actually reaches the API.
+	//
+	// Flag-gated because it changes the parameter sent on the majority of production
+	// calls; rollback is a config flip, not a revert.
+	//
+	// Defaults ON. The budget it replaces provably does not bind: auto-path agents
+	// (logs, recommendations, prometheus, events, cost_optimizer, gcp) always attached
+	// a tier budget, and still produced 62,915 thinking tokens against an 8,000 budget
+	// — including twice on 2026-08-13, the day after #36172 shipped. That matches
+	// Google's own wording: "relative allowances for thinking rather than strict token
+	// guarantees". The level is at least the parameter Google recommends and documents
+	// as more predictable, and it measurably moves thinking (791 -> 505 at "low";
+	// minimal -> 0 on flash-lite). Flip to false to restore the legacy budget.
+	LlmThinkingLevelNativeEnabled bool `mapstructure:"llm_thinking_level_native_enabled"`
+	LlmProviderThinkingBudget     int  `mapstructure:"llm_provider_thinking_budget"` // -1 (default): use per-model default; 0: disable thinking; >0: explicit token budget — global override, wins over the per-tier budgets below
 	// Per-tier thinking-token ceilings (ModelTier), applied when LlmProviderThinkingBudget is unset (-1). 0 leaves a tier uncapped.
 	LlmThinkingBudgetReasoning int `mapstructure:"llm_thinking_budget_reasoning"`
 	LlmThinkingBudgetRetrieval int `mapstructure:"llm_thinking_budget_retrieval"`
@@ -1127,6 +1150,7 @@ func init() {
 	viper.SetDefault("llm_server_egressfilter_allowlist", "")
 	viper.SetDefault("llm_server_max_individual_call_timeout_minutes", 5)
 	viper.SetDefault("llm_server_global_retry_budget_minutes", 10)
+	viper.SetDefault("llm_thinking_level_native_enabled", true) // ON: the budget provably does not bind (62.9k thinking against an 8k budget, after #36172 shipped)
 	viper.SetDefault("llm_provider_ttft_timeout_seconds", 30)
 	viper.SetDefault("llm_provider_ttft_thinking_tokens_per_sec", 100) // 0 disables the thinking adjustment
 	viper.SetDefault("llm_provider_ttft_timeout_max_seconds", 240)

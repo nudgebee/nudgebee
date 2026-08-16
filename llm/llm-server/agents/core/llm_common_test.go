@@ -529,6 +529,7 @@ func TestThinkingBudget_AppliedForCallerSetExplicitLevel(t *testing.T) {
 	origProvider := config.Config.LlmProvider
 	origModel := config.Config.LlmModel
 	origReasoning := config.Config.LlmThinkingBudgetReasoning
+	origNative := config.Config.LlmThinkingLevelNativeEnabled
 	config.Config.LlmProvider = "googleai"
 	config.Config.LlmModel = "gemini-3-flash-preview"
 	config.Config.LlmThinkingBudgetReasoning = 16000
@@ -536,30 +537,45 @@ func TestThinkingBudget_AppliedForCallerSetExplicitLevel(t *testing.T) {
 		config.Config.LlmProvider = origProvider
 		config.Config.LlmModel = origModel
 		config.Config.LlmThinkingBudgetReasoning = origReasoning
+		config.Config.LlmThinkingLevelNativeEnabled = origNative
 	})
 
 	messages := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "summarize this")}
 
-	t.Run("explicit caller-set level: bounded by a level-derived budget, level preserved", func(t *testing.T) {
+	// Native level ON (the default): Gemini 3 receives its level and NO budget, because
+	// googleai suppresses the level whenever a budget is present. Sending the budget is
+	// what kept every Gemini 3 call on the parameter Google documents as back-compat.
+	t.Run("gemini 3: level reaches the wire, budget withheld", func(t *testing.T) {
+		config.Config.LlmThinkingLevelNativeEnabled = true
 		fake := &optionCapturingLLMModel{}
 		withFakeLLMModel(t, fake)
 		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "summary_agent", false, messages, true, WithThinkingLevel(ThinkingLevelFastTask))
 		assert.NoError(t, err)
-		// ThinkingLevelFastTask ("low") → 2048, well under the 16000 Reasoning
-		// ceiling: a fast task asked to think as little as possible, so it must
-		// not receive the full tier allowance — and must not be unbounded.
-		assert.Equal(t, 2048, fake.lastOptions.Metadata["ThinkingBudget"],
-			"an explicit level must still carry a ceiling — a level alone is a hint the model can exceed")
+		assert.Nil(t, fake.lastOptions.Metadata["ThinkingBudget"],
+			"a budget would suppress the level in googleai, which is the whole defect")
 		assert.Equal(t, ThinkingLevelFastTask, fake.lastOptions.Metadata["ThinkingLevel"],
-			"the caller's level stays in metadata; googleai drops it in favour of the budget")
+			"the caller's level must survive to the wire")
 	})
 
-	t.Run("no explicit level: budget auto-applied (this fix's actual target)", func(t *testing.T) {
+	t.Run("gemini 3 auto path: level applied, no budget", func(t *testing.T) {
+		config.Config.LlmThinkingLevelNativeEnabled = true
 		fake := &optionCapturingLLMModel{}
 		withFakeLLMModel(t, fake)
 		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "logs", false, messages, true)
 		assert.NoError(t, err)
-		assert.Equal(t, 16000, fake.lastOptions.Metadata["ThinkingBudget"])
+		assert.Nil(t, fake.lastOptions.Metadata["ThinkingBudget"])
+		assert.NotEmpty(t, fake.lastOptions.Metadata["ThinkingLevel"])
+	})
+
+	// Flag off restores the legacy pairing exactly, so rollback is a config flip.
+	t.Run("flag off: legacy budget pairing restored", func(t *testing.T) {
+		config.Config.LlmThinkingLevelNativeEnabled = false
+		fake := &optionCapturingLLMModel{}
+		withFakeLLMModel(t, fake)
+		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "summary_agent", false, messages, true, WithThinkingLevel(ThinkingLevelFastTask))
+		assert.NoError(t, err)
+		assert.Equal(t, 2048, fake.lastOptions.Metadata["ThinkingBudget"],
+			"disabling the flag must reproduce the pre-change behaviour byte for byte")
 	})
 }
 
