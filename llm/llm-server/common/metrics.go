@@ -24,6 +24,7 @@ var (
 	metricsLLMTokensTotal             metric.Int64Counter
 	metricsLLMLatencySeconds          metric.Float64Histogram
 	metricsLLMCacheTotal              metric.Int64Counter
+	metricsLLMCacheSkipTotal          metric.Int64Counter
 	metricsLLMCachedTokensTotal       metric.Int64Counter
 	metricsLLMCacheInvalidationsTotal metric.Int64Counter
 	metricsLLMCircuitBreakerTripped   metric.Int64Counter
@@ -222,6 +223,15 @@ func InitMetrics() {
 		)
 		if err != nil {
 			slog.Error("metrics: failed to create nb_llm_cache metric", "error", err)
+		}
+
+		// LLM cache skips
+		metricsLLMCacheSkipTotal, err = meter.Int64Counter(
+			"nb_llm_cache_skip",
+			metric.WithDescription("Total LLM cache skips by reason (no_support, insufficient_tokens, disabled)"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_cache_skip metric", "error", err)
 		}
 
 		// LLM cached tokens saved
@@ -570,7 +580,7 @@ func MetricsLLMLatencySeconds(provider, model, accountID string, latencySeconds 
 
 // MetricsLLMCacheTotal increments the LLM cache counter.
 // status should be one of: "hit", "miss", "error"
-func MetricsLLMCacheTotal(provider, model, status, accountID string) {
+func MetricsLLMCacheTotal(provider, model, status, accountID, agent, scope string) {
 	InitMetrics()
 	if metricsLLMCacheTotal == nil {
 		slog.Warn("metrics: metricsLLMCacheTotal is not initialized")
@@ -581,6 +591,26 @@ func MetricsLLMCacheTotal(provider, model, status, accountID string) {
 		attribute.String("model", model),
 		attribute.String("status", status),
 		attribute.String("account_id", accountID),
+		attribute.String("agent", agent),
+		attribute.String("scope", scope),
+	))
+}
+
+// MetricsLLMCacheSkip increments the LLM cache skip counter.
+// reason should be one of: "no_cacheable_messages", "model_no_cache_support", "insufficient_tokens", "exceeds_context_window", "disabled"
+func MetricsLLMCacheSkip(provider, model, reason, accountID, agent, scope string) {
+	InitMetrics()
+	if metricsLLMCacheSkipTotal == nil {
+		slog.Warn("metrics: metricsLLMCacheSkipTotal is not initialized")
+		return
+	}
+	metricsLLMCacheSkipTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("provider", provider),
+		attribute.String("model", model),
+		attribute.String("reason", reason),
+		attribute.String("account_id", accountID),
+		attribute.String("agent", agent),
+		attribute.String("scope", scope),
 	))
 }
 

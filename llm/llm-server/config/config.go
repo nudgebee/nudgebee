@@ -217,6 +217,12 @@ type appConfig struct {
 	// LlmCacheTTLMinutes defines the lifespan of LLM request/response pairs in the cache.
 	LlmCacheTTLMinutes int  `mapstructure:"llm_cache_ttl_minutes"`
 	LlmEnableCaching   bool `mapstructure:"llm_enable_caching"`
+	// LlmServerAsyncCacheCreation enables non-blocking background cache creation on Google AI cache misses.
+	LlmServerAsyncCacheCreation bool `mapstructure:"llm_server_async_cache_creation"`
+	// LlmServerCacheFlashTTLMinutes defines TTL for Flash models under Conversation scope (default 30m).
+	LlmServerCacheFlashTTLMinutes int `mapstructure:"llm_server_cache_flash_ttl_minutes"`
+	// LlmServerCacheProTTLMinutes defines TTL for Pro models under Conversation scope (default 10m).
+	LlmServerCacheProTTLMinutes int `mapstructure:"llm_server_cache_pro_ttl_minutes"`
 
 	// Observability log provider override escape hatch
 	LLMServerLogProviderOverride string `mapstructure:"llm_server_log_provider_override"`
@@ -1141,6 +1147,9 @@ func init() {
 	viper.SetDefault("llm_thinking_budget_summary", 4000)
 	viper.SetDefault("llm_cache_ttl_minutes", 10)
 	viper.SetDefault("llm_enable_caching", true)
+	viper.SetDefault("llm_server_async_cache_creation", true)
+	viper.SetDefault("llm_server_cache_flash_ttl_minutes", 30)
+	viper.SetDefault("llm_server_cache_pro_ttl_minutes", 10)
 
 	// Outbound egressfilter — wrapper installed and secrets detector on by
 	// default, so `metadata.egressfilter` is populated, the UI chip appears,

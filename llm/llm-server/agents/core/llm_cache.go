@@ -269,6 +269,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			"conversationId", req.ConversationId,
 			"reason", "no_cacheable_messages",
 			"totalMessages", len(req.Messages))
+		common.MetricsLLMCacheSkip(req.Provider, req.Model, "no_cacheable_messages", req.AccountId, req.AgentName, string(req.Scope))
 		return &CacheResponse{
 			Messages: req.Messages,
 			CacheHit: false,
@@ -278,7 +279,60 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	logger.Debug("Google AI cache: Identified cacheable messages",
 		"conversationId", req.ConversationId,
 		"cacheableMessages", len(cacheableMessages),
-		"nonCacheableMessages", len(nonCacheableMessages))
+		"nonCachedMessages", len(nonCacheableMessages))
+
+	// For Global and Account scopes, apply deterministic padding so system prompts meet minimum threshold
+	if req.Scope == CacheScopeGlobal || req.Scope == CacheScopeAccount {
+		cacheableMessages = padMessagesIfRequired(cacheableMessages, req.Scope)
+	}
+
+	// Calculate content hash
+	contentHash := hashContent(cacheableMessages)
+
+	// Check if cache exists and is valid (shared cache)
+	var cacheInfo CacheInfo
+	exists := false
+	if data, ok := common.CacheGet(p.namespace, cacheKey); ok {
+		if err := json.Unmarshal(data, &cacheInfo); err == nil {
+			exists = true
+		} else {
+			logger.Warn("Google AI cache: Failed to unmarshal cache info, clearing bad entry", "error", err, "cacheKey", cacheKey)
+			if delErr := common.CacheDelete(p.namespace, cacheKey); delErr != nil {
+				logger.Warn("Google AI cache: Failed to delete corrupt entry", "error", delErr, "cacheKey", cacheKey)
+			}
+		}
+	}
+
+	now := time.Now()
+
+	// Cache hit path (zero-latency: trust Redis TTL and let GenerateContent execute immediately)
+	if exists && cacheInfo.ExpiresAt.After(now) && cacheInfo.ContentHash == contentHash {
+		timeToExpiry := cacheInfo.ExpiresAt.Sub(now)
+		logger.Info("Google AI cache: CACHE HIT - Using existing cache",
+			"cacheName", cacheInfo.CacheName,
+			"conversationId", req.ConversationId,
+			"cacheAge", now.Sub(cacheInfo.CreatedAt).String(),
+			"timeToExpiry", timeToExpiry.String(),
+			"cachedMessages", len(cacheableMessages),
+			"nonCachedMessages", len(nonCacheableMessages),
+			"status", "hit")
+		common.MetricsLLMCacheTotal(req.Provider, req.Model, "hit", req.AccountId, req.AgentName, string(req.Scope))
+
+		// IMPORTANT: Return only non-cacheable messages
+		// The cached content is automatically prepended by Google AI when using CachedContentName
+		return &CacheResponse{
+			Messages: nonCacheableMessages,
+			Options: []llms.CallOption{
+				func(o *llms.CallOptions) {
+					if o.Metadata == nil {
+						o.Metadata = make(map[string]any)
+					}
+					o.Metadata["CachedContentName"] = cacheInfo.CacheName
+				},
+			},
+			CacheHit: true,
+		}
+	}
 
 	// Check if cacheable messages meet Google AI's minimum token requirement.
 	// Minimum varies by model: 2.5 Pro = 4,096 tokens; 2.5 Flash = 1,024 tokens;
@@ -289,6 +343,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			"model", req.Model,
 			"conversationId", req.ConversationId,
 			"reason", "model_no_cache_support")
+		common.MetricsLLMCacheSkip(req.Provider, req.Model, "model_no_cache_support", req.AccountId, req.AgentName, string(req.Scope))
 		return &CacheResponse{
 			Messages: req.Messages,
 			CacheHit: false,
@@ -300,7 +355,6 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	if err := InitTokenizers(); err == nil {
 		localCount := 0
 		for _, msg := range cacheableMessages {
-			// Extract actual text content from parts to avoid fmt.Sprintf overhead/inaccuracy
 			contentStr := ""
 			for _, part := range msg.Parts {
 				if textPart, ok := part.(llms.TextContent); ok {
@@ -321,6 +375,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 				"localEstimate", localCount,
 				"minRequired", minGoogleAITokens,
 				"conversationId", req.ConversationId)
+			common.MetricsLLMCacheSkip(req.Provider, req.Model, "insufficient_tokens", req.AccountId, req.AgentName, string(req.Scope))
 			return &CacheResponse{
 				Messages: req.Messages,
 				CacheHit: false,
@@ -364,48 +419,16 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		"meetsRequirement", int(tokenCount) >= minGoogleAITokens)
 
 	if int(tokenCount) < minGoogleAITokens {
-		// Auto-pad Global/Account scope system prompts if they fall short of the cache threshold.
-		// Flash models require 1024 tokens. Small internal system prompts (e.g. title_generation)
-		// are around 200 tokens. Without this padding, they are rejected by Google AI caching.
-		if (req.Scope == CacheScopeGlobal || req.Scope == CacheScopeAccount) && len(cacheableMessages) > 0 {
-			padText := "\n\n--- CACHE STABILITY PADDING ---\n" +
-				"The following is standard operating procedure text appended to ensure the system prompt meets minimum cache size requirements for the LLM provider. " +
-				"You are Nubi, an AI assistant. Always be helpful, concise, and accurate. " +
-				"Follow all instructions precisely. Do not hallucinate. Respect user privacy. " +
-				"Maintain a professional tone. Respond in the requested format. " +
-				"Analyze context carefully. Be reliable and efficient. "
-			// Repeat to ensure it exceeds ~1100 tokens (each repeat is ~20 words / ~25 tokens. We need ~1000 tokens = ~40 repeats)
-			padText += strings.Repeat("Focus on the primary task. Ignore this padding text during your actual reasoning process. Ensure output is syntactically valid. Provide high-quality insights. ", 40)
-
-			// Append to the last message in the cacheable block (which will be a System message)
-			// CRITICAL: Deep copy the Parts slice to prevent mutating the original request (which could affect fallback models)
-			lastIdx := len(cacheableMessages) - 1
-			newParts := make([]llms.ContentPart, len(cacheableMessages[lastIdx].Parts))
-			copy(newParts, cacheableMessages[lastIdx].Parts)
-			newParts = append(newParts, llms.TextContent{Text: padText})
-
-			// Create a new slice for cacheableMessages so we don't mutate the backing array of req.Messages
-			newCacheable := make([]llms.MessageContent, len(cacheableMessages))
-			copy(newCacheable, cacheableMessages)
-			newCacheable[lastIdx].Parts = newParts
-			cacheableMessages = newCacheable
-
-			// Recalculate tokens after padding
-			tokenCount, err = cachingHelper.CountTokens(ctx, req.Model, cacheableMessages)
-			if err != nil {
-				logger.Warn("Google AI cache: Token recount failed after padding", "error", err)
-			}
-		} else {
-			logger.Info("Google AI cache: Not using cache - Token count below minimum",
-				"tokenCount", tokenCount,
-				"minRequired", minGoogleAITokens,
-				"deficit", minGoogleAITokens-int(tokenCount),
-				"conversationId", req.ConversationId,
-				"reason", "insufficient_tokens")
-			return &CacheResponse{
-				Messages: req.Messages,
-				CacheHit: false,
-			}
+		logger.Info("Google AI cache: Not using cache - Token count below minimum",
+			"tokenCount", tokenCount,
+			"minRequired", minGoogleAITokens,
+			"deficit", minGoogleAITokens-int(tokenCount),
+			"conversationId", req.ConversationId,
+			"reason", "insufficient_tokens")
+		common.MetricsLLMCacheSkip(req.Provider, req.Model, "insufficient_tokens", req.AccountId, req.AgentName, string(req.Scope))
+		return &CacheResponse{
+			Messages: req.Messages,
+			CacheHit: false,
 		}
 	}
 
@@ -418,75 +441,14 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			"model", req.Model,
 			"conversationId", req.ConversationId,
 			"reason", "exceeds_context_window")
+		common.MetricsLLMCacheSkip(req.Provider, req.Model, "exceeds_context_window", req.AccountId, req.AgentName, string(req.Scope))
 		return &CacheResponse{
 			Messages: req.Messages,
 			CacheHit: false,
 		}
 	}
 
-	// Calculate content hash
-	contentHash := hashContent(cacheableMessages)
-
-	// Check if cache exists and is valid (shared cache)
-	var cacheInfo CacheInfo
-	exists := false
-	if data, ok := common.CacheGet(p.namespace, cacheKey); ok {
-		if err := json.Unmarshal(data, &cacheInfo); err == nil {
-			exists = true
-		} else {
-			logger.Warn("Google AI cache: Failed to unmarshal cache info, clearing bad entry", "error", err, "cacheKey", cacheKey)
-			if delErr := common.CacheDelete(p.namespace, cacheKey); delErr != nil {
-				logger.Warn("Google AI cache: Failed to delete corrupt entry", "error", delErr, "cacheKey", cacheKey)
-			}
-		}
-	}
-
-	now := time.Now()
-
-	// Cache hit path
-	if exists && cacheInfo.ExpiresAt.After(now) && cacheInfo.ContentHash == contentHash {
-		// Verify the cache actually exists in Google AI
-		if p.verifyCacheExists(ctx, cacheInfo.CacheName, req.ApiKey, req.Endpoint) {
-			timeToExpiry := cacheInfo.ExpiresAt.Sub(now)
-			logger.Info("Google AI cache: CACHE HIT - Using existing cache",
-				"cacheName", cacheInfo.CacheName,
-				"conversationId", req.ConversationId,
-				"tokenCount", tokenCount,
-				"cacheAge", now.Sub(cacheInfo.CreatedAt).String(),
-				"timeToExpiry", timeToExpiry.String(),
-				"cachedMessages", len(cacheableMessages),
-				"nonCachedMessages", len(nonCacheableMessages),
-				"status", "hit")
-			common.MetricsLLMCacheTotal(req.Provider, req.Model, "hit", req.AccountId)
-
-			// IMPORTANT: Return only non-cacheable messages
-			// The cached content is automatically prepended by Google AI when using CachedContentName
-			return &CacheResponse{
-				Messages: nonCacheableMessages,
-				Options: []llms.CallOption{
-					func(o *llms.CallOptions) {
-						if o.Metadata == nil {
-							o.Metadata = make(map[string]any)
-						}
-						o.Metadata["CachedContentName"] = cacheInfo.CacheName
-					},
-				},
-				CacheHit: true,
-			}
-		} else {
-			logger.Warn("Google AI cache: Cache entry exists in storage but not in Google AI, will recreate",
-				"cacheName", cacheInfo.CacheName,
-				"conversationId", req.ConversationId,
-				"reason", "cache_verification_failed")
-			if err := common.CacheDelete(p.namespace, cacheKey); err != nil {
-				logger.Error("Google AI cache: Failed to delete stale cache entry", "error", err, "cacheKey", cacheKey)
-			}
-			// Not invalidating the lifecycle row here: a failed verify is ambiguous
-			// (cache may be gone, or the probe failed transiently while it's still
-			// alive). Bill to TTL (conservative) rather than risk under-counting; only
-			// a confirmed delete (content_changed below) invalidates.
-		}
-	} else if exists {
+	if exists {
 		// Log why cache was not used and handle stale cache deletion
 		var reason string
 		if !cacheInfo.ExpiresAt.After(now) {
@@ -501,20 +463,12 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 				"conversationId", req.ConversationId,
 				"oldCacheName", cacheInfo.CacheName,
 				"reason", reason)
-			// Drop the stale shared pointer immediately. createCache below normally
-			// overwrites it, but the singleflight early-return (readSharedCacheInfo)
-			// can short-circuit before createCache runs and hand this just-deleted
-			// cacheName back to the caller → 403 "CachedContent not found" on the
-			// next GenerateContent. Deleting here makes readSharedCacheInfo miss and
-			// forces a real recreate. (#387 introduced the early-return; the original
-			// "overwritten by createCache below" assumption no longer always holds.)
+			// Drop the stale shared pointer immediately.
 			if delErr := common.CacheDelete(p.namespace, cacheKey); delErr != nil {
 				logger.Warn("Google AI cache: failed to delete stale pointer on content_changed",
 					"error", delErr, "cacheKey", cacheKey, "conversationId", req.ConversationId)
 			}
-			// Explicitly delete the old Google AI cache. Without this delete, it sits
-			// orphaned for the remainder of its TTL paying full storage cost —
-			// historically the dominant cause of Gemini cache spend on this service.
+			// Explicitly delete the old Google AI cache.
 			if helper, helperErr := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...); helperErr == nil {
 				if delErr := helper.DeleteCachedContent(ctx, cacheInfo.CacheName); delErr != nil {
 					logger.Warn("Google AI cache: failed to delete orphaned content_changed cache",
@@ -522,12 +476,6 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 						"cacheName", cacheInfo.CacheName,
 						"conversationId", req.ConversationId)
 				} else {
-					// Provider cache is gone, so invalidate the lifecycle row too —
-					// otherwise it bills storage for its full planned TTL, overlapping
-					// the replacement below (double-counting in the Cost Analyser).
-					// Only on a successful delete: a failed delete leaves the cache
-					// alive to TTL, so billing to expires_at still matches reality.
-					// Synchronous by design (see cacheLifecycleWriteTimeout).
 					recordCacheLifecycleInvalidation(cacheInfo.CacheName)
 					common.MetricsLLMCacheInvalidations(req.Provider, req.Model, invalidationScope(req.Scope), "content_changed")
 				}
@@ -539,54 +487,97 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		}
 	}
 
-	// Cache miss - create new cache
-	logger.Info("Google AI cache: CACHE MISS - Creating new cache",
+	// Cache miss - record miss metric
+	logger.Info("Google AI cache: CACHE MISS",
 		"conversationId", req.ConversationId,
 		"tokenCount", tokenCount,
 		"cachedMessages", len(cacheableMessages),
 		"nonCachedMessages", len(nonCacheableMessages),
 		"status", "miss")
-	common.MetricsLLMCacheTotal(req.Provider, req.Model, "miss", req.AccountId)
+	common.MetricsLLMCacheTotal(req.Provider, req.Model, "miss", req.AccountId, req.AgentName, string(req.Scope))
 
-	// Collapse concurrent creations for the same cacheKey into one createCache
-	// call. Without this, parallel conversations that miss on the same
-	// account:agent:model key each create a distinct Google AI CachedContent —
-	// duplicate storage cost and orphaned resources under concurrent load (#302).
-	//
-	// singleflight runs the shared function under the *first* caller's context,
-	// so if that caller disconnects/times out, its cancellation would propagate
-	// to every concurrent waiter sharing this cacheKey and fail their cache
-	// creation too. Detach from the initiating request's cancellation and apply
-	// our own bounded timeout — cache creation is worth completing regardless of
-	// which caller triggered it, and the result is shared by all waiters.
+	// Async Cache Creation:
+	// On cache miss, don't block the caller for 1-5s. Send full un-cached messages immediately,
+	// while creating the Google AI CachedContent resource in a background goroutine for subsequent calls.
+	if config.Config.LlmServerAsyncCacheCreation {
+		// Shallow copy req and deep copy cacheableMessages to prevent data races
+		// with the caller modifying them concurrently in the main request thread.
+		reqCopy := *req
+		copiedMessages := make([]llms.MessageContent, len(cacheableMessages))
+		for i, msg := range cacheableMessages {
+			copiedMessages[i] = llms.MessageContent{
+				Role:  msg.Role,
+				Parts: make([]llms.ContentPart, len(msg.Parts)),
+			}
+			copy(copiedMessages[i].Parts, msg.Parts)
+		}
+		reqCopy.Messages = copiedMessages
+
+		go func() {
+			detachedCtx := context.WithoutCancel(ctx)
+			detachedCtx, cancelCreate := context.WithTimeout(detachedCtx, 5*time.Minute)
+			defer cancelCreate()
+
+			var logger *slog.Logger
+			if detachedCtx != nil {
+				logger = common.TraceLogger(detachedCtx)
+			}
+
+			defer func() {
+				if r := recover(); r != nil {
+					log := logger
+					if log == nil {
+						log = slog.Default()
+					}
+					log.Error("Google AI cache: Panic recovered in async cache creation", "panic", r, "cacheKey", cacheKey)
+				}
+			}()
+
+			_, err, _ := p.createGroup.Do(cacheKey, func() (interface{}, error) {
+				if info := p.readSharedCacheInfo(cacheKey); cacheInfoUsable(info, contentHash) {
+					return info, nil
+				}
+				token, acquired := common.CacheTryLock(detachedCtx, cacheKey, googleAICacheCreateLockTTL)
+				if acquired {
+					defer common.CacheUnlock(detachedCtx, cacheKey, token)
+				} else {
+					if info := p.waitForSharedCacheInfo(cacheKey, contentHash, googleAICacheCreateLockWait); info != nil {
+						return info, nil
+					}
+				}
+				return p.createCache(detachedCtx, &reqCopy, copiedMessages, contentHash, cacheKey, tokenCount)
+			})
+			if err != nil {
+				log := logger
+				if log == nil {
+					log = slog.Default()
+				}
+				log.Error("Google AI cache: Async cache creation failed", "error", err, "cacheKey", cacheKey, "conversationId", reqCopy.ConversationId)
+				common.MetricsLLMCacheTotal(reqCopy.Provider, reqCopy.Model, "error", reqCopy.AccountId, reqCopy.AgentName, string(reqCopy.Scope))
+			}
+		}()
+
+		return &CacheResponse{
+			Messages: req.Messages,
+			CacheHit: false,
+		}
+	}
+
+	// Synchronous blocking creation path (if async creation is explicitly disabled via config)
 	detachedCtx := context.WithoutCancel(ctx)
 	detachedCtx, cancelCreate := context.WithTimeout(detachedCtx, 5*time.Minute)
 	defer cancelCreate()
 	created, errCreate, _ := p.createGroup.Do(cacheKey, func() (interface{}, error) {
-		// Re-check the shared cache first: another goroutine (Tier 1) or replica
-		// (Tier 2) may have published the entry between our miss and this flight.
-		// Only reuse a pointer that is actually usable for THIS request: same
-		// content and not expired. A pointer left over from a content_changed /
-		// expired path (or published by a sibling caching different content) would
-		// otherwise be returned verbatim and 403 at GenerateContent time.
 		if info := p.readSharedCacheInfo(cacheKey); cacheInfoUsable(info, contentHash) {
 			return info, nil
 		}
-		// Tier 2 (cross-replica): singleflight only collapses creations within one
-		// process, so with >1 llm-server replica each still creates a duplicate
-		// Google AI cache. A Redis SETNX lock on cacheKey ensures only one replica
-		// creates it; the others wait for the entry to be published and reuse it.
-		// Single-replica/bigcache deployments always acquire (no peers).
 		token, acquired := common.CacheTryLock(detachedCtx, cacheKey, googleAICacheCreateLockTTL)
 		if acquired {
 			defer common.CacheUnlock(detachedCtx, cacheKey, token)
 		} else {
-			// Another replica owns creation; wait briefly for it to publish, then reuse.
 			if info := p.waitForSharedCacheInfo(cacheKey, contentHash, googleAICacheCreateLockWait); info != nil {
 				return info, nil
 			}
-			// Holder didn't publish in time — fall through and create (best-effort,
-			// avoids a deadlock if the holder died mid-create).
 		}
 		return p.createCache(detachedCtx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
 	})
@@ -600,7 +591,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			"conversationId", req.ConversationId,
 			"tokenCount", tokenCount,
 			"reason", "cache_creation_failed")
-		common.MetricsLLMCacheTotal(req.Provider, req.Model, "error", req.AccountId)
+		common.MetricsLLMCacheTotal(req.Provider, req.Model, "error", req.AccountId, req.AgentName, string(req.Scope))
 		return &CacheResponse{
 			Messages: req.Messages,
 			CacheHit: false,
@@ -614,7 +605,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		"tokenCount", tokenCount,
 		"cachedMessages", len(cacheableMessages),
 		"nonCachedMessages", len(nonCacheableMessages),
-		"ttl", getCacheTTL(req.Scope).String())
+		"ttl", getCacheTTL(req.Scope, req.Model).String())
 
 	// IMPORTANT: Return only non-cacheable messages
 	// The cached content is automatically prepended by Google AI when using CachedContentName
@@ -691,7 +682,7 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 		return nil, err
 	}
 
-	ttl := getCacheTTL(req.Scope)
+	ttl := getCacheTTL(req.Scope, req.Model)
 
 	// Create a display name that fits within Google AI's 128 character limit
 	// Use conversation ID (meaningful for debugging) + hash of full cache key
@@ -783,22 +774,6 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 	return cacheInfo, nil
 }
 
-func (p *GoogleAICacheProvider) verifyCacheExists(ctx context.Context, cacheName, apiKey, endpoint string) bool {
-	logger := common.TraceLogger(ctx)
-	if cacheName == "" {
-		return false
-	}
-
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(apiKey, endpoint)...)
-	if err != nil {
-		logger.Warn("Failed to create caching helper for verification", "error", err)
-		return false
-	}
-
-	_, err = cachingHelper.GetCachedContent(ctx, cacheName)
-	return err == nil
-}
-
 func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheRequest) error {
 	logger := common.TraceLogger(ctx)
 	agentName := req.AgentName
@@ -873,15 +848,11 @@ func (p *AnthropicCacheProvider) GetProviderName() string {
 	return "anthropic"
 }
 
-// ApplyCache modifies the message list to include Anthropic's inline cache control directive.
+// ApplyCache modifies the message list to include Anthropic's inline cache control directives.
 //
-// Anthropic's caching mechanism works by adding a `CacheControl` directive to one of the messages.
-// This directive acts as a marker, signaling to the API that all messages in the request *up to and including*
-// the marked message should be considered for caching as a single, contiguous block.
-//
-// Therefore, this function identifies the cacheable portion of the conversation and attaches the
-// `CacheControl` directive only to the very last message of that cacheable block. This is the
-// correct and most efficient way to implement their caching strategy.
+// Anthropic supports up to 4 cache breakpoints. Placing cache_control at multiple strategic points
+// (e.g. system instructions, tools block, and the last stable turn) allows partial cache hits
+// even when conversation history evolves.
 func (p *AnthropicCacheProvider) ApplyCache(ctx context.Context, req *CacheRequest) *CacheResponse {
 	// Anthropic uses inline cache control - modify messages directly
 	cacheableMessages, nonCacheableMessages := identifyCacheableMessages(req.Messages, req.Scope)
@@ -894,8 +865,6 @@ func (p *AnthropicCacheProvider) ApplyCache(ctx context.Context, req *CacheReque
 		}
 	}
 
-	// Find the last TextContent/BinaryContent part in a Human or System message.
-	//
 	// Constraints:
 	//  1. Only TextContent/BinaryContent can be wrapped — ToolCall/ToolCallResponse crash
 	//     the Anthropic handler with "unsupported cached content part type".
@@ -904,45 +873,80 @@ func (p *AnthropicCacheProvider) ApplyCache(ctx context.Context, req *CacheReque
 	//     ErrInvalidContentType.
 	//  3. Parts already wrapped in CachedContent are skipped to prevent double-wrapping
 	//     (which causes "unsupported cached content part type: llms.CachedContent").
-	//
-	// The cache_control marker tells Anthropic to cache everything from the beginning
-	// up to and including that block.
-	targetMsg, targetPart := -1, -1
-FindTarget:
+	const maxBreakpoints = 3
+	type targetLocation struct {
+		msgIdx  int
+		partIdx int
+	}
+	var targets []targetLocation
+	seenMsgs := make(map[int]bool)
+
+	// Target 1: Last part of the last System message (so static prompt/tools are cached independently)
 	for i := len(cacheableMessages) - 1; i >= 0; i-- {
+		if cacheableMessages[i].Role == llms.ChatMessageTypeSystem {
+			found := false
+			for j := len(cacheableMessages[i].Parts) - 1; j >= 0; j-- {
+				if isAnthropicCacheablePart(cacheableMessages[i].Parts[j]) {
+					targets = append(targets, targetLocation{msgIdx: i, partIdx: j})
+					seenMsgs[i] = true
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+	}
+
+	// Target 2 & 3: Walk remaining cacheableMessages in reverse to find other eligible Human/System messages
+	for i := len(cacheableMessages) - 1; i >= 0 && len(targets) < maxBreakpoints; i-- {
+		if seenMsgs[i] {
+			continue
+		}
 		role := cacheableMessages[i].Role
 		if role != llms.ChatMessageTypeHuman && role != llms.ChatMessageTypeSystem {
 			continue
 		}
 		for j := len(cacheableMessages[i].Parts) - 1; j >= 0; j-- {
-			switch cacheableMessages[i].Parts[j].(type) {
-			case llms.TextContent, llms.BinaryContent:
-				targetMsg, targetPart = i, j
-				break FindTarget
+			if isAnthropicCacheablePart(cacheableMessages[i].Parts[j]) {
+				targets = append(targets, targetLocation{msgIdx: i, partIdx: j})
+				seenMsgs[i] = true
+				break
 			}
 		}
+	}
+
+	// Build lookup map for fast checking
+	targetMap := make(map[int]map[int]bool)
+	for _, t := range targets {
+		if targetMap[t.msgIdx] == nil {
+			targetMap[t.msgIdx] = make(map[int]bool)
+		}
+		targetMap[t.msgIdx][t.partIdx] = true
 	}
 
 	modifiedMessages := make([]llms.MessageContent, 0, len(req.Messages))
 
 	for i, msg := range cacheableMessages {
-		if i == targetMsg {
-			// This message contains the cache boundary — wrap only the target text/binary part
+		if partsMap, hasTarget := targetMap[i]; hasTarget {
 			cachedParts := make([]llms.ContentPart, 0, len(msg.Parts))
 			for j, part := range msg.Parts {
-				if j == targetPart {
-					cachedParts = append(cachedParts, llms.WithCacheControl(part, &llms.CacheControl{
-						Type: "ephemeral",
-					}))
-				} else {
-					cachedParts = append(cachedParts, part)
+				if partsMap[j] {
+					if _, isAlreadyCached := part.(llms.CachedContent); !isAlreadyCached {
+						cachedParts = append(cachedParts, llms.WithCacheControl(part, &llms.CacheControl{
+							Type: "ephemeral",
+						}))
+						slog.Debug("Added Anthropic cache control", "messageIndex", i, "partIndex", j, "conversationId", req.ConversationId)
+						continue
+					}
 				}
+				cachedParts = append(cachedParts, part)
 			}
 			modifiedMessages = append(modifiedMessages, llms.MessageContent{
 				Role:  msg.Role,
 				Parts: cachedParts,
 			})
-			slog.Debug("Added Anthropic cache control", "messageIndex", i, "partIndex", targetPart, "conversationId", req.ConversationId)
 		} else {
 			modifiedMessages = append(modifiedMessages, msg)
 		}
@@ -956,6 +960,17 @@ FindTarget:
 		Options:   nil,
 		CacheHit:  false, // Anthropic doesn't tell us about cache hits upfront
 		CacheInfo: nil,
+	}
+}
+
+func isAnthropicCacheablePart(part llms.ContentPart) bool {
+	switch p := part.(type) {
+	case llms.TextContent:
+		return strings.TrimSpace(p.Text) != ""
+	case llms.BinaryContent:
+		return len(p.Data) > 0
+	default:
+		return false
 	}
 }
 
@@ -1005,6 +1020,29 @@ func capabilityFingerprint(capabilities toolcore.AgentCapabilities) string {
 	return hex.EncodeToString(h[:4]) // 8 hex chars from first 4 bytes
 }
 
+func padMessagesIfRequired(messages []llms.MessageContent, scope CacheScope) []llms.MessageContent {
+	if (scope != CacheScopeGlobal && scope != CacheScopeAccount) || len(messages) == 0 {
+		return messages
+	}
+	padText := "\n\n--- CACHE STABILITY PADDING ---\n" +
+		"The following is standard operating procedure text appended to ensure the system prompt meets minimum cache size requirements for the LLM provider. " +
+		"You are Nubi, an AI assistant. Always be helpful, concise, and accurate. " +
+		"Follow all instructions precisely. Do not hallucinate. Respect user privacy. " +
+		"Maintain a professional tone. Respond in the requested format. " +
+		"Analyze context carefully. Be reliable and efficient. "
+	padText += strings.Repeat("Focus on the primary task. Ignore this padding text during your actual reasoning process. Ensure output is syntactically valid. Provide high-quality insights. ", 40)
+
+	lastIdx := len(messages) - 1
+	newParts := make([]llms.ContentPart, len(messages[lastIdx].Parts))
+	copy(newParts, messages[lastIdx].Parts)
+	newParts = append(newParts, llms.TextContent{Text: padText})
+
+	newMessages := make([]llms.MessageContent, len(messages))
+	copy(newMessages, messages)
+	newMessages[lastIdx].Parts = newParts
+	return newMessages
+}
+
 func hashContent(messages []llms.MessageContent) string {
 	hasher := sha256.New()
 	for _, msg := range messages {
@@ -1013,14 +1051,24 @@ func hashContent(messages []llms.MessageContent) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func getCacheTTL(scope CacheScope) time.Duration {
+func getCacheTTL(scope CacheScope, model string) time.Duration {
 	// For global and account scopes (static instructions), use a long TTL to maximize hit rates
 	// across different user sessions throughout the day.
 	if scope == CacheScopeGlobal || scope == CacheScopeAccount {
 		return defaultStaticCacheTTL
 	}
 
-	// For conversation scope (dynamic history), use the shorter configured TTL
+	// For conversation scope (dynamic history), optimize TTL based on model cost profile:
+	// Flash models have low storage costs; longer TTL (default 30m) increases break-even hit probability.
+	// Pro models have high storage costs; shorter TTL (default 10m) prevents unnecessary storage spend.
+	m := strings.ToLower(model)
+	if strings.Contains(m, "flash") && config.Config.LlmServerCacheFlashTTLMinutes > 0 {
+		return time.Duration(config.Config.LlmServerCacheFlashTTLMinutes) * time.Minute
+	}
+	if strings.Contains(m, "pro") && config.Config.LlmServerCacheProTTLMinutes > 0 {
+		return time.Duration(config.Config.LlmServerCacheProTTLMinutes) * time.Minute
+	}
+
 	if config.Config.LlmCacheTTLMinutes > 0 {
 		return time.Duration(config.Config.LlmCacheTTLMinutes) * time.Minute
 	}

@@ -2838,10 +2838,49 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 		return handleTransientError(rc, maxAttempts)
 
 	} else if isCacheError(rc.lastErr) {
-		// Cache Error → Return to caller to retry without cache
-		ctx.GetLogger().Info("Cache error detected, returning to caller for non-cached retry",
-			"error", safeError(rc.lastErr))
-		return nil, buildCallMetadata(rc, false), rc.lastErr
+		// Cache Error (403/404 CachedContent not found, model mismatch, or expired cache)
+		// Invalidate stale cache pointer, disable caching for this call, and retry in-place with full messages.
+		goCtx := context.Background()
+		tenantId := ""
+		if ctx != nil {
+			goCtx = context.WithoutCancel(ctx.GetContext())
+			if sc := ctx.GetSecurityContext(); sc != nil {
+				tenantId = sc.GetTenantId()
+			}
+			ctx.GetLogger().Warn("Cache error detected, invalidating cache and retrying in-place with full messages",
+				"error", safeError(rc.lastErr), "model", rc.currentModel, "agentId", agentId)
+		}
+
+		appendAgentName := rc.agentName != ""
+		apiKey := getLLMApiKey(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
+		endpoint := getLLMApiEndpoint(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
+		cacheReq := &CacheRequest{
+			TenantId:       tenantId,
+			AccountId:      rc.accountId,
+			ConversationId: rc.conversationId,
+			AgentName:      rc.agentName,
+			Model:          rc.currentModel,
+			Provider:       rc.currentProvider,
+			ApiKey:         apiKey,
+			Endpoint:       endpoint,
+			Scope:          rc.cacheScope,
+			Capabilities:   rc.capabilities,
+			PromptVariant:  rc.promptVariant,
+		}
+		if cm := GetCacheManager(); cm != nil {
+			_ = cm.InvalidateCache(goCtx, cacheReq)
+		}
+
+		rc.enableCaching = false
+		rc.attemptCount = 1
+		completion, retryErr := tryWithModel(rc)
+		if retryErr == nil {
+			return completion, buildCallMetadata(rc, true), nil
+		}
+		if ctx != nil {
+			ctx.GetLogger().Error("In-place retry without cache failed", "error", safeError(retryErr), "model", rc.currentModel)
+		}
+		return nil, buildCallMetadata(rc, false), ErrLlmUnableToGenerate(retryErr)
 
 	} else if isProgramError(rc.lastErr) {
 		// Program error (nil pointer, etc.) — retry once in case of race condition
