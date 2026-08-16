@@ -427,6 +427,13 @@ func isClusterScopedAlert(sc *security.RequestContext, accountId string, labels 
 //
 // It returns the matched service name, or "" when the agent declines ("Not Found"),
 // and records the nb_llm_match label (and a default service label) on labels.
+//
+// Every exit records nb_llm_match, so an absent label means only one thing: the
+// agent was never asked. The values are the matched service name, "not_found"
+// (agent declined), "skipped_cluster_scoped" (alert names no object), "error"
+// (the call failed) and "empty" (the call returned nothing). They are diagnostic
+// — nothing parses them; the sole reader is the presence check in
+// enrichEventsWithSubjectResolution.
 func ResolveSubjectNameViaAgent(sc *security.RequestContext, accountId, title, description, sourceURL string, labels map[string]string) string {
 	if labels == nil {
 		labels = map[string]string{}
@@ -459,13 +466,22 @@ func ResolveSubjectNameViaAgent(sc *security.RequestContext, accountId, title, d
 		Source:    webhookSubjectAgentSource,
 	}
 
+	// Both failure exits record the attempt. Without a label an extraction that
+	// blew up is indistinguishable from one that never ran (absent = deterministic
+	// resolution won), and the alreadyTried guard in enrichEventsWithSubjectResolution
+	// — a presence check — would let a failed call be retried immediately by the
+	// next stage, doubling the retry cost ChatCompletion has already paid. The error
+	// text itself stays out of the label: event labels are rendered in the UI's
+	// Alert-labels table, and #35130 was exactly that leak.
 	response, err := llm.ChatCompletion(sc, chatRequest)
 	if err != nil {
 		sc.GetLogger().Error("subject_resolution: webhook_subject_name_extractor call failed", "error", err)
+		labels["nb_llm_match"] = "error"
 		return ""
 	}
 	if response == nil || len(response.Response) == 0 {
 		sc.GetLogger().Warn("subject_resolution: webhook_subject_name_extractor returned empty response")
+		labels["nb_llm_match"] = "empty"
 		return ""
 	}
 
