@@ -4,7 +4,8 @@ import PropTypes from 'prop-types';
 import Text from '@shared/format/Text';
 import Tooltip from '@ui/Tooltip';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { ErrorIcon, RunningIcon, SuccessIcon, ShareIconBlue, DeleteIconRed, SaveIconOutlinelight, SaveIconOutlineselect } from '@assets';
+import { ShareIconBlue, DeleteIconRed, SaveIconOutlinelight, SaveIconOutlineselect } from '@assets';
+import { resolveStatusLabel, getStatusIcon } from '@utils/conversationStatus';
 import { Skeleton } from '@ui/Skeleton';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
@@ -252,13 +253,7 @@ const ConversationListDrawer = ({
         }
       }
 
-      const statusMap = {
-        IN_PROGRESS: 'Running',
-        COMPLETED: 'Completed',
-        FAILED: 'Failed',
-        WAITING: 'Waiting for Approval',
-      };
-      const status = statusMap[item.status] || statusMap[item.for_status?.[0]?.status] || 'Failed';
+      const status = resolveStatusLabel(item.status, item.for_status);
 
       return {
         id: item.id,
@@ -283,25 +278,6 @@ const ConversationListDrawer = ({
       }
     }
   }, [conversations, persistedSelectedId]);
-
-  const statusIconMap = {
-    Running: RunningIcon,
-    Completed: SuccessIcon,
-    Failed: ErrorIcon,
-    'Waiting for Approval': RunningIcon,
-  };
-
-  const getStatusIcon = (status) => statusIconMap[status] || ErrorIcon;
-
-  const getStatusColor = (status) => {
-    const colorMap = {
-      Running: 'var(--ds-brand-400)',
-      Completed: 'var(--ds-green-500)',
-      Failed: 'var(--ds-red-500)',
-      'Waiting for Approval': 'var(--ds-yellow-500)',
-    };
-    return colorMap[status] || 'var(--ds-gray-400)';
-  };
 
   const getMenuItems = (username, conversationId) => {
     let items = [
@@ -424,13 +400,7 @@ const ConversationListDrawer = ({
                     <Box display='flex' alignItems='flex-start' gap={ds.space.mul(0, 3)} position='relative'>
                       <Tooltip title={conversation.status}>
                         <Box sx={{ display: 'flex', alignItems: 'center', marginTop: ds.space[0], flexShrink: 0 }}>
-                          <SafeIcon
-                            src={getStatusIcon(conversation.status)}
-                            alt={conversation.status}
-                            height={14}
-                            width={14}
-                            style={{ color: getStatusColor(conversation.status) }}
-                          />
+                          <SafeIcon src={getStatusIcon(conversation.status)} alt={conversation.status} height={14} width={14} />
                         </Box>
                       </Tooltip>
                       <Text

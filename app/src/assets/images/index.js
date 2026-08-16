@@ -580,6 +580,18 @@ export const HideShowIcon = require('@assets/hide-show-icon.svg');
 export const SuccessIcon = require('@assets/success-icon.svg');
 export const ErrorIcon = require('@assets/error-icon.svg');
 export const RunningIcon = require('@assets/running-icon.svg');
+// Conversation status neutral-terminal icons (#36205). StoppedIcon = grey stop
+// square for user-initiated TERMINATED. InterruptedIcon = amber dash for
+// supervisor-reap KILLED (cut short, may need review — deliberately distinct
+// from ErrorIcon so users don't confuse it with a failure). QueuedIcon =
+// lighter-blue dashed circle for PENDING (queued, not yet running — visually
+// distinct from RunningIcon which is the active-in-progress state).
+export const StoppedIcon = require('@assets/stopped-icon.svg');
+export const InterruptedIcon = require('@assets/interrupted-icon.svg');
+export const QueuedIcon = require('@assets/queued-icon.svg');
+// Neutral gray dot for unmapped backend statuses — SafeIcon renders <img src>
+// so a wrapper CSS color is a no-op; the fallback icon itself must be gray.
+export const UnknownIcon = require('@assets/unknown-icon.svg');
 export const ThumbsUpOutlineIcon = require('@assets/thumbs-up-outline.svg');
 export const ThumbsDownOutlineIcon = require('@assets/thumbs-down-outline.svg');
 export const ExpandIcon = require('@assets/expand-icon.svg');
