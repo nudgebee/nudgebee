@@ -48,7 +48,7 @@ func buildWorkloadLookupQuery(predicate string, namespaceScoped bool) string {
 // pod name rarely matches k8s_workloads directly since that table stores
 // owning workloads, not individual pod instances.
 //
-// When labels["nb_workload_candidates"] is set (comma-separated list, e.g. the
+// When labels[WorkloadCandidatesLabel] is set (comma-separated list, e.g. the
 // dynatrace impacted-entity list), each entry is also tried after the above
 // fail — first match wins. The label is consumed before persistence.
 //
@@ -57,12 +57,12 @@ func buildWorkloadLookupQuery(predicate string, namespaceScoped bool) string {
 // function returns without querying the workloads table. The opt-out label is
 // consumed on its way out so it doesn't leak into the persisted event.
 func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook, accountId string) {
-	if e.EventSubjectName == "" && e.Investigation.Labels[workloadCandidatesLabel] == "" {
+	if e.EventSubjectName == "" && e.Investigation.Labels[WorkloadCandidatesLabel] == "" {
 		return
 	}
 	if e.Investigation.Labels[SkipWorkloadMatchLabel] == "true" {
 		delete(e.Investigation.Labels, SkipWorkloadMatchLabel)
-		delete(e.Investigation.Labels, workloadCandidatesLabel)
+		delete(e.Investigation.Labels, WorkloadCandidatesLabel)
 		return
 	}
 
@@ -72,7 +72,7 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 		seen[e.EventSubjectOwner] = true
 		candidates = append(candidates, e.EventSubjectOwner)
 	}
-	if extra := e.Investigation.Labels[workloadCandidatesLabel]; extra != "" {
+	if extra := e.Investigation.Labels[WorkloadCandidatesLabel]; extra != "" {
 		for _, c := range strings.Split(extra, ",") {
 			c = strings.TrimSpace(c)
 			if c == "" || seen[c] {
@@ -82,7 +82,7 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 			candidates = append(candidates, c)
 		}
 	}
-	delete(e.Investigation.Labels, workloadCandidatesLabel)
+	delete(e.Investigation.Labels, WorkloadCandidatesLabel)
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -229,10 +229,10 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 // event payload.
 const SkipWorkloadMatchLabel = "nb_skip_workload_match"
 
-// workloadCandidatesLabel carries a comma-separated list of additional workload
+// WorkloadCandidatesLabel carries a comma-separated list of additional workload
 // names a webhook would like MatchWorkloadAndEnrich to try after EventSubjectName
 // (e.g. dynatrace's impacted-entity list). The label is consumed during matching.
-const workloadCandidatesLabel = "nb_workload_candidates"
+const WorkloadCandidatesLabel = "nb_workload_candidates"
 
 const (
 	// webhookSubjectAgentMention pins the dedicated single-shot classifier agent in
@@ -524,6 +524,17 @@ func ResolveSubjectViaLLM(sc *security.RequestContext, e *EventIncomingWebhook, 
 	MatchWorkloadAndEnrich(sc, e, accountId)
 }
 
+// hasWorkloadValidationInput reports whether an event carries anything the
+// k8s_workloads inventory can be asked about: a subject the webhook resolved
+// itself, or candidate names it offered via nb_workload_candidates (e.g. the
+// elasticsearch container name, the dynatrace impacted-entity list). A
+// candidate-only event is a legitimate input — MatchWorkloadAndEnrich promotes
+// a candidate to the subject only on an exact match, which is what makes it
+// safe for a name that may or may not be a workload.
+func hasWorkloadValidationInput(e *EventIncomingWebhook) bool {
+	return e.EventSubjectName != "" || e.Investigation.Labels[WorkloadCandidatesLabel] != ""
+}
+
 // enrichEventsWithSubjectResolution runs on every webhook event after account
 // mapping. When a subject is already identified, it validates against the
 // workloads inventory. When one isn't, it falls back to the LLM extractor if
@@ -543,9 +554,13 @@ func enrichEventsWithSubjectResolution(sc *security.RequestContext, events []Eve
 		if events[i].Investigation.Labels == nil {
 			events[i].Investigation.Labels = map[string]string{}
 		}
-		if events[i].EventSubjectName != "" {
+		if hasWorkloadValidationInput(&events[i]) {
 			MatchWorkloadAndEnrich(sc, &events[i], accountId)
-			continue
+			// Candidate-only events whose candidates matched nothing still have no
+			// subject; fall through to the remaining resolvers instead of giving up.
+			if events[i].EventSubjectName != "" {
+				continue
+			}
 		}
 		// An integration-specific resolver (datadog/pagerduty/zenduty) already ran
 		// the extractor agent when it set nb_llm_match. Don't fire a second, redundant

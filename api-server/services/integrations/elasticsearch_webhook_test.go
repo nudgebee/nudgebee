@@ -197,3 +197,54 @@ func TestExtractElasticsearchSubject_ECSDottedKeys(t *testing.T) {
 	assert.Equal(t, "", kind)
 	assert.Equal(t, "", name)
 }
+
+// A rule grouped by container carries no workload label, so the container name
+// is offered to core.MatchWorkloadAndEnrich as a candidate rather than being
+// assigned to the subject outright.
+func TestMapElasticsearchAlertToEvent_ContainerBecomesWorkloadCandidate(t *testing.T) {
+	payload := canonicalKibanaPayload()
+	payload["alert"] = map[string]any{"id": "ecr-proxy-server", "action_group": "query matched"}
+	payload["labels"] = map[string]any{
+		"container": "ecr-proxy-server",
+		"cluster":   "dev",
+	}
+
+	got, err := mapElasticsearchAlertToEvent("acct-1", payload)
+	require.NoError(t, err)
+
+	// The subject stays empty — only an exact k8s_workloads match may set it.
+	assert.Equal(t, "", got.EventSubjectKind)
+	assert.Equal(t, "", got.EventSubjectName)
+	assert.Equal(t, "ecr-proxy-server", got.Investigation.Labels["nb_workload_candidates"])
+}
+
+// A workload label identifies the subject directly, so no candidate list is
+// produced — the candidate path is a fallback, not an addition.
+func TestMapElasticsearchAlertToEvent_NoCandidatesWhenSubjectKnown(t *testing.T) {
+	got, err := mapElasticsearchAlertToEvent("acct-1", canonicalKibanaPayload())
+	require.NoError(t, err)
+
+	assert.Equal(t, "kubewatch-6d9f7c5b8-x2kqp", got.EventSubjectName)
+	assert.Equal(t, "", got.Investigation.Labels["nb_workload_candidates"])
+}
+
+func TestElasticsearchWorkloadCandidates(t *testing.T) {
+	// ECS dotted key, as Elastic Agent writes it on container_logs documents.
+	assert.Equal(t, []string{"ecr-proxy-server"}, elasticsearchWorkloadCandidates(map[string]string{
+		"container.name": "ecr-proxy-server",
+	}))
+
+	// Same value under several keys collapses to one candidate.
+	assert.Equal(t, []string{"app"}, elasticsearchWorkloadCandidates(map[string]string{
+		"container":                 "app",
+		"kubernetes.container.name": "app",
+	}))
+
+	// Short key wins the ordering when the values genuinely differ.
+	assert.Equal(t, []string{"app", "istio-proxy"}, elasticsearchWorkloadCandidates(map[string]string{
+		"container":      "app",
+		"container.name": "istio-proxy",
+	}))
+
+	assert.Empty(t, elasticsearchWorkloadCandidates(map[string]string{"cluster": "dev"}))
+}

@@ -261,6 +261,19 @@ func mapElasticsearchAlertToEvent(accountId string, payload map[string]any) (*co
 
 	subjectKind, subjectName := extractElasticsearchSubject(labels)
 	namespace := firstNonEmpty(labels["namespace"], labels["kubernetes.namespace"])
+	// A rule grouped by container (the common shape for a log-spike rule over
+	// logs-kubernetes.container_logs-*) carries no workload label at all, so the
+	// container name is the only identity in the payload. It is offered as a
+	// *candidate* rather than assigned to the subject: container name equals the
+	// workload name for the app container but not for sidecars (istio-proxy,
+	// filebeat, …), and core.MatchWorkloadAndEnrich only promotes a candidate
+	// that exactly matches a k8s_workloads row — so an unmatched sidecar leaves
+	// the subject empty instead of persisting a wrong one.
+	if subjectName == "" {
+		if candidates := elasticsearchWorkloadCandidates(labels); len(candidates) > 0 {
+			labels[core.WorkloadCandidatesLabel] = strings.Join(candidates, ",")
+		}
+	}
 
 	eventCreatedAt := parseElasticsearchTime(firstNonEmpty(
 		stringValue(payload["timestamp"]),
@@ -319,6 +332,26 @@ func extractElasticsearchSubject(labels map[string]string) (kind, name string) {
 		return "pod", v
 	}
 	return "", ""
+}
+
+// elasticsearchWorkloadCandidates returns the container names an alert carries,
+// deduplicated and in label-key priority order. They are handed to
+// core.MatchWorkloadAndEnrich via the nb_workload_candidates label, which
+// promotes one to the subject only on an exact k8s_workloads match. Accepts the
+// short key an operator would hand-write plus the ECS dotted key Elastic Agent
+// puts on container_logs documents.
+func elasticsearchWorkloadCandidates(labels map[string]string) []string {
+	candidates := []string{}
+	seen := map[string]bool{}
+	for _, k := range []string{"container", "container.name", "kubernetes.container", "kubernetes.container.name"} {
+		v := labels[k]
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		candidates = append(candidates, v)
+	}
+	return candidates
 }
 
 // elasticsearchAlertType maps a Kibana rule type onto event_rules.alert_type,
