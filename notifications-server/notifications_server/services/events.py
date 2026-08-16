@@ -90,6 +90,12 @@ GCHAT_CONNECT = "connect"
 GCHAT_SERVE = "serve"
 _SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s+")
 _DELIMITER_PATTERN = re.compile(r"([,;:])\s+")
+# Matches llm-server's events.SessionIdPrefixEvent — the prefix its
+# event-investigation pipeline uses to key a conversation by event fingerprint
+# (parentConversationId = SessionIdPrefixEvent + eventFingerprint). Reusing the
+# same prefix+key here lets an @mention in a bound incident channel append to
+# that same conversation instead of starting an unrelated one.
+EVENT_CONVERSATION_SESSION_PREFIX = "event-"
 
 
 def _parse_iso(iso_str):
@@ -462,7 +468,7 @@ class Events:
                 user_id=user_id,
                 is_thread=is_thread,
                 slack_user_id=slack_user_id,
-                session_id=f"event-{session_id}",
+                session_id=f"{EVENT_CONVERSATION_SESSION_PREFIX}{session_id}",
                 app_id=self.common_service.app_id,
             )
 
@@ -475,7 +481,7 @@ class Events:
             if existing_entry.get("account_id") and existing_entry.get("tenant_id"):
                 url = (
                     f"{settings.base_url}/ask-nudgebee?accountId={existing_entry['account_id']}"
-                    f"&session_id=event-{session_id}"
+                    f"&session_id={EVENT_CONVERSATION_SESSION_PREFIX}{session_id}"
                 )
                 self.common_service.slack_reply_in_thread_with_context(
                     channel_id,
@@ -552,6 +558,18 @@ class Events:
         except Exception as e:
             LOG.error("Failed to request cluster confirmation: %s", e, exc_info=True)
 
+    @staticmethod
+    def _bound_session_id(mapping):
+        """Extract the event-investigation session id (e.g. event.fingerprint)
+        a channel-account mapping was bound with, if any. Stored in
+        channel_metadata rather than a column — see
+        CommonService._persist_channel_account_mapping."""
+        try:
+            return json.loads(mapping.channel_metadata or "{}").get("session_id")
+        except Exception:
+            LOG.warning(f"Failed to parse channel_metadata for mapping {mapping.id}")
+            return None
+
     def _resolve_mapped_account(self, platform, channel_id, user_id, tenants):
         for tenant_id in tenants:
             mapping = self._get_channel_account_mapping(tenant_id, platform, channel_id)
@@ -560,7 +578,7 @@ class Events:
 
             if self._validate_user_access_to_account(user_id, tenant_id, str(mapping.account_id)):
                 LOG.debug(f"Using channel mapping: channel={channel_id} -> account={mapping.account_id}")
-                return {"id": str(mapping.account_id)}
+                return {"id": str(mapping.account_id), "bound_session_id": self._bound_session_id(mapping)}
 
             LOG.warning(f"User {user_id} does not have access to mapped account {mapping.account_id}")
 
@@ -640,7 +658,18 @@ class Events:
             )
             return
 
-        url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={channel_id}-{thread_ts}"
+        session_id = f"{channel_id}-{thread_ts}"
+        bound_session_id = account.get("bound_session_id")
+        if bound_session_id:
+            # This channel is bound to a specific investigation conversation
+            # (see CommonService._persist_channel_account_mapping) — route this
+            # and every future @mention in the channel to it instead of a fresh,
+            # unrelated chat session.
+            session_id = f"{EVENT_CONVERSATION_SESSION_PREFIX}{bound_session_id}"
+            self.cache.update_event_entry(thread_ts, session_id=session_id)
+            cached_entry["session_id"] = session_id
+
+        url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
         confirmation_message = (
             f"{get_account_selected_confirmation(account_name)}\n<{url}|View in {settings.urls.branding_name}>"
         )

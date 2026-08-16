@@ -3,11 +3,13 @@ import json
 import logging
 import os
 import re
+import uuid
 from datetime import datetime, timedelta
 
 import aiohttp
 import nh3
 from slack_sdk.errors import SlackApiError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.sql.functions import func
 
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
@@ -19,6 +21,7 @@ from notifications_server.exceptions.exceptions import Err
 from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
 from notifications_server.models.db_base import BaseDB
 from notifications_server.models.models import (
+    ChannelAccountMapping,
     MessagingPlatform,
     SentNotifications,
     ConfigurationStore,
@@ -348,7 +351,18 @@ class CommonService:
             return {"status": "needs_authorization"}
         return {"status": "unknown"}
 
-    def join_channel(self, platform, account_id, tenant_id, channel_id, session_id=None, team_id=None, text=None):
+    def join_channel(
+        self,
+        platform,
+        account_id,
+        tenant_id,
+        channel_id,
+        session_id=None,
+        bind_session_id=None,
+        team_id=None,
+        text=None,
+        bind_account=False,
+    ):
         try:
             if platform == "google_chat":
                 return self._join_google_chat_space(account_id, tenant_id, channel_id, session_id, text)
@@ -402,6 +416,16 @@ class CommonService:
                     f"session_id={session_id}, account_id={account_id}, tenant_id={tenant_id}"
                 )
 
+                # Durable counterpart to the Redis mapping above (that entry expires;
+                # this row doesn't) — checked by events.py:_resolve_mapped_account.
+                # Opt-in via bind_account. Uses bind_session_id, not session_id:
+                # session_id always has a value (generated fallback), which would
+                # durably bind future @mentions to a conversation that never existed.
+                if bind_account:
+                    self._persist_channel_account_mapping(
+                        platform, channel_team_id, channel_id, account_id, tenant_id, bind_session_id
+                    )
+
             return {
                 "success": True,
                 "message": "Successfully joined channel",
@@ -416,6 +440,67 @@ class CommonService:
             # traceback via LOG.exception for debugging.
             LOG.exception("Error joining channel")
             return {"error": {"message": "Unexpected error while joining channel"}}
+
+    def _persist_channel_account_mapping(
+        self, platform, team_id, channel_id, account_id, tenant_id, bind_session_id=None
+    ):
+        """Upsert the permanent channel->account binding used by
+        events.py:_resolve_mapped_account to skip the account picker.
+
+        channel_metadata (plain text, so json.dumps()) always carries
+        "system_managed": true — every row here is automation-created, and the
+        admin CRUD never sets it, so the settings UI can tell them apart — plus
+        "session_id" when given, which events.py reuses to keep future
+        @mentions in the same investigation conversation.
+
+        Atomic INSERT ... ON CONFLICT DO UPDATE, scoped to this tenant (see
+        `where=` below): the (platform, team_id, channel_id) unique constraint
+        doesn't include tenant_id, and one workspace can be connected to more
+        than one tenant, so an unscoped update could adopt another tenant's row.
+
+        Errors are logged, not raised: the Redis mapping the caller already
+        wrote still lets the channel work for the TTL window either way.
+        """
+        try:
+            metadata_payload = {"system_managed": True}
+            if bind_session_id:
+                metadata_payload["session_id"] = bind_session_id
+            channel_metadata = json.dumps(metadata_payload)
+            now = utc_now()
+            stmt = pg_insert(ChannelAccountMapping).values(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                platform=platform,
+                team_id=team_id,
+                channel_id=channel_id,
+                account_id=account_id,
+                channel_metadata=channel_metadata,
+                created_at=now,
+                updated_at=now,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["platform", "team_id", "channel_id"],
+                set_={
+                    "account_id": account_id,
+                    "channel_metadata": channel_metadata,
+                    "updated_at": now,
+                },
+                where=(ChannelAccountMapping.tenant_id == tenant_id),
+            )
+            result = self.session.execute(stmt)
+            self.session.commit()
+            if result.rowcount == 0:
+                LOG.warning(
+                    f"Skipped channel-account mapping for {channel_id} ({team_id}): "
+                    f"already bound to a different tenant than {tenant_id}"
+                )
+            else:
+                LOG.info(
+                    f"Persisted permanent channel-account mapping: {channel_id} ({team_id}) -> account_id={account_id}"
+                )
+        except Exception:
+            self.session.rollback()
+            LOG.exception(f"Failed to persist channel-account mapping for channel {channel_id}")
 
     def _join_google_chat_space(self, account_id, tenant_id, channel_id, session_id=None, text=None):
         """Self-join a Google Chat space and bind its incident thread to a session.
