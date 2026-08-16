@@ -65,6 +65,17 @@ func UpsertDiscoveryTarget(ctx *security.RequestContext, req DiscoveryTargetRequ
 	}
 
 	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		// Capture the account we are about to stop targeting, before the
+		// DELETE below drops the only record of it.
+		var priorAccountIDs []string
+		if err := tx.Select(&priorAccountIDs,
+			`SELECT cloud_account_id::text FROM integrations_cloud_accounts
+			 WHERE integration_id = $1 AND tenant_id = $2 AND link_role = 'discovery_target'`,
+			req.IntegrationId, tenantID,
+		); err != nil {
+			return nil, fmt.Errorf("read prior discovery target: %w", err)
+		}
+
 		if _, err := tx.Exec(
 			`DELETE FROM integrations_cloud_accounts WHERE integration_id = $1 AND tenant_id = $2 AND link_role = 'discovery_target'`,
 			req.IntegrationId, tenantID,
@@ -77,10 +88,89 @@ func UpsertDiscoveryTarget(ctx *security.RequestContext, req DiscoveryTargetRequ
 		); err != nil {
 			return nil, fmt.Errorf("set discovery target: %w", err)
 		}
+
+		for _, prior := range priorAccountIDs {
+			if prior == req.CloudAccountId {
+				continue // re-asserting the same target: nothing was orphaned
+			}
+			if err := retireOrphanedVMScanArtifacts(tx, tenantID, prior); err != nil {
+				return nil, err
+			}
+		}
 		return nil, nil
 	})
 	if err != nil {
 		return fmt.Errorf("vmpackage: upsert discovery target: %w", err)
 	}
+	return nil
+}
+
+// retireOrphanedVMScanArtifacts retires the VM-scan output left behind under
+// priorAccountID once no discovery datasource targets it any more.
+//
+// Re-pointing a datasource used to strand everything the previous target had
+// accumulated: nothing scans that account again, so its findings and package
+// inventory sit at whatever the last scan wrote, forever, in the same tenant as
+// the correct rows. Observed live — an EC2 instance under a Kubernetes account
+// still served 140 findings (105 of them false positives from #36278) three
+// days after the same instance had been rescanned and corrected under the
+// datasource's new target.
+//
+// Deliberately narrow, because "this account is no longer a discovery target"
+// does not mean "this account is dead":
+//
+//   - recommendation rows are archived, never deleted, and only for
+//     rule_name = 'vm_package_vulnerability' — the one rule this pipeline
+//     writes. Every other rule's findings on those resources are untouched.
+//   - vm_package rows are marked inactive rather than removed, matching how
+//     upsertPackages already archives a package that has gone away.
+//   - cloud_resourses is touched only for "vm-<ip>" placeholders, which this
+//     package provably creates itself (see findOrCreateVMResource). Rows
+//     created by resolveByIdentity carry a real cloud instance id and are
+//     indistinguishable from cloud-collector's own, so retiring them could
+//     deactivate live infrastructure in an account that is still perfectly
+//     real — it just is not a scan target any more.
+//
+// Skipped entirely when another datasource still targets the account, since
+// one target account may serve several datasources; only the last one to leave
+// orphans anything.
+func retireOrphanedVMScanArtifacts(tx *sqlx.Tx, tenantID, priorAccountID string) error {
+	var stillTargeted int
+	if err := tx.Get(&stillTargeted,
+		`SELECT count(*) FROM integrations_cloud_accounts
+		 WHERE cloud_account_id = $1 AND tenant_id = $2 AND link_role = 'discovery_target'`,
+		priorAccountID, tenantID,
+	); err != nil {
+		return fmt.Errorf("check remaining discovery targets for %s: %w", priorAccountID, err)
+	}
+	if stillTargeted > 0 {
+		return nil
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE recommendation SET status = 'Archive', updated_at = NOW()
+		 WHERE tenant_id = $1 AND cloud_account_id = $2
+		   AND rule_name = $3 AND category = $4 AND status != 'Archive'`,
+		tenantID, priorAccountID, recommendationRuleName, recommendationCategory,
+	); err != nil {
+		return fmt.Errorf("archive orphaned findings for %s: %w", priorAccountID, err)
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE vm_package SET is_active = false, updated_at = NOW()
+		 WHERE tenant_id = $1 AND cloud_account_id = $2 AND is_active`,
+		tenantID, priorAccountID,
+	); err != nil {
+		return fmt.Errorf("archive orphaned packages for %s: %w", priorAccountID, err)
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE cloud_resourses SET is_active = false, updated_at = NOW()
+		 WHERE tenant = $1 AND account = $2 AND resourse_id LIKE $3 AND is_active IS NOT FALSE`,
+		tenantID, priorAccountID, vmResourceIDPrefix+"%",
+	); err != nil {
+		return fmt.Errorf("retire orphaned placeholders for %s: %w", priorAccountID, err)
+	}
+
 	return nil
 }
