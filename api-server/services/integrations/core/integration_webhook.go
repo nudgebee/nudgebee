@@ -751,6 +751,23 @@ func convertSliceAnyToSliceInterface(evidences []eventtypes.EventEvidence) []any
 	return s
 }
 
+// resolveEventQuery closes the event a resolve delivery refers to.
+//
+// It matches finding_id as well as fingerprint. convertWebhookEventToEvent writes
+// FindingId from EventId, so the triggering delivery always leaves the event
+// findable by the id its own resolve delivery carries — whereas fingerprint is
+// whatever the producing integration chose. PagerDuty overwrites
+// Investigation.Fingerprint with the CEF dedup_key, which is stable across every
+// incident for the same alert and so never equals the incident id a resolve
+// carries: the fingerprint predicate alone matched nothing and PagerDuty resolves
+// closed no events at all. That went unnoticed because the k8s-collector's
+// resource reconciliation bulk-closes events later, so they did eventually clear.
+//
+// Tenant-scoped so the finding_id predicate can use events_cloudaccount_findingid,
+// whose leading column is tenant. Verified on a real dataset: both predicates
+// resolve through a BitmapOr of index scans, no sequential scan.
+const resolveEventQuery = `update events set status = $4 where tenant = $1 and cloud_account_id = $2 and (fingerprint = $3 or finding_id = $3) and status != $4 returning id`
+
 func resolveEvent(sc *security.RequestContext, tenantId, accountId string, source string, event EventIncomingWebhook) error {
 	if accountId == "" || accountId == uuid.Nil.String() {
 		sc.GetLogger().Info("integrations: skipping event resolution — no cloud account linked", "source", source, "event_id", event.EventId)
@@ -765,11 +782,9 @@ func resolveEvent(sc *security.RequestContext, tenantId, accountId string, sourc
 	if source == "datadog_webhook" || source == "gcp_monitoring_webhook" {
 		fingerPrint = event.Investigation.Fingerprint
 	}
-	// Guarding on status makes repeated resolve webhooks no-ops, so only a
-	// genuine open→closed transition publishes the resolved notification.
-	rows, err := dbms.Query(`update events set status = $3 where fingerprint = $2 and cloud_account_id = $1 and status != $3 returning id`,
-		accountId, fingerPrint, "CLOSED",
-	)
+	// The status guard in resolveEventQuery makes repeated resolve webhooks no-ops,
+	// so only a genuine open→closed transition publishes the resolved notification.
+	rows, err := dbms.Query(resolveEventQuery, tenantId, accountId, fingerPrint, "CLOSED")
 	if err != nil {
 		return err
 	}
