@@ -227,6 +227,12 @@ type appConfig struct {
 	// Observability log provider override escape hatch
 	LLMServerLogProviderOverride string `mapstructure:"llm_server_log_provider_override"`
 
+	// LlmServerLogValidateRequestEnabled opts the canonical (where-clause) log fetch
+	// into services-server's label validation: an empty or failed query returns a
+	// message naming the mistyped label instead of a silent empty result. Default
+	// true; false restores the plain behavior.
+	LlmServerLogValidateRequestEnabled bool `mapstructure:"llm_server_log_validate_request_enabled"`
+
 	// Outbound egressfilter master switch. When false, the LLM factory does NOT
 	// install the egressfilter decorator at all — GetLLMModel returns the raw
 	// provider unchanged, no payload serialization, no metric emission. Per-
@@ -1273,6 +1279,7 @@ func init() {
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
 	viper.SetDefault("llm_server_fs_evidence_recall_enabled", true)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
+	viper.SetDefault("llm_server_log_validate_request_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: lean (default) | native. Cloud orchestrators are

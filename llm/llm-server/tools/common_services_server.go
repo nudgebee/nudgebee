@@ -218,7 +218,9 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		Request:           p.request,
 		Index:             idx,
 		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
-		ValidateRequest:   false,
+		// On an empty/failed result, name the mistyped label so the agent can
+		// self-correct. Only meaningful on this where-clause path.
+		ValidateRequest: config.Config.LlmServerLogValidateRequestEnabled,
 	}
 
 	// Escape hatch: a pinned provider (env var or per-request override) may have no
