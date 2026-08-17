@@ -3057,7 +3057,7 @@ var table_metadata = map[string]TableDefinition{
 			if !needsJoin && !needsWindow {
 				def := `(
 		SELECT
-			r.*,` + vulnCols + `
+			r.*` + vulnCols + `,
 			TRUE AS is_primary_recommendation
 		FROM recommendation r
 		` + vulnJoin + `
