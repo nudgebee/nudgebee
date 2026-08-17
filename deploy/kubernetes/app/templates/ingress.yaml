@@ -139,6 +139,13 @@ spec:
                 name: services-server
                 port:
                   number: 8000
+            path: /api/webhooks/openobserve
+            pathType: ImplementationSpecific
+          - backend:
+              service:
+                name: services-server
+                port:
+                  number: 8000
             path: /api/webhooks/azure-eventgrid
             pathType: ImplementationSpecific
           - backend:
