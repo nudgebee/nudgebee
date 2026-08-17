@@ -10,7 +10,6 @@ import type { ICustomTableRow } from './types';
 import { CustomText } from '@components/cloudaccount/common';
 import Text from '@shared/format/Text';
 import Chart from '@ui/Chart';
-import { formatMetricName } from '@utils/common';
 import { getLast7Days } from '@lib/datetime';
 import TotalCostChart from '@components/cloudaccount/CostChart';
 import { ListingLayout } from '@ui/ListingLayout';
@@ -21,6 +20,9 @@ import Chip from '@ui/Chip';
 import { ds, resolveColors } from '@utils/colors';
 import { CloudCostSummary } from '@components/cloudaccount/CloudCostSummary';
 import { CloudRecentEvents } from '@components/cloudaccount/CloudRecentEvents';
+import { useLiveResourceMetrics } from '@components/cloudaccount/cloud-metrics/useLiveResourceMetrics';
+import { useServiceResources } from '@components/cloudaccount/cloud-metrics/useServiceResources';
+import { LiveMetricCharts } from '@components/cloudaccount/cloud-metrics/LiveMetricCharts';
 
 const _INSTANCE_TABLE_ID = 'INSTANCE_TABLE_ID';
 
@@ -495,10 +497,16 @@ const EC2UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }
   );
 };
 
-export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId = '', showSummary = false }) => {
-  const [loadingTrend, setLoadingTrend] = useState(false);
+export const OptimizeSummary = ({
+  accountId = '',
+  serviceName = '',
+  resourceId = '',
+  region = '',
+  resourceType = '',
+  resourceName = '',
+  showSummary = false,
+}) => {
   const [loadingSummary, setLoadingSummary] = useState(false);
-  const [renderMetricsData, setRenderMetricsData] = useState<any>({});
   const [summary, setSummary] = useState<any>({});
   const currencySymbol = useCurrencySymbol(accountId);
   const [selectedDateRange, setSelectedDateRange] = useState({
@@ -506,38 +514,21 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
     endDate: new Date().getTime(),
   });
 
-  useEffect(() => {
-    if (!accountId) return;
-    const fetchMetrics = async () => {
-      setLoadingTrend(true);
-      try {
-        const res = await apiCloudAccount.getCloudResourceMetricsDirect({
-          account_id: accountId,
-          serviceName: serviceName || undefined,
-          resourceId: resourceId || undefined,
-          startDate: new Date(selectedDateRange.startDate),
-          endDate: new Date(selectedDateRange.endDate),
-        });
-        const metricsData = res?.data?.data?.cloud_metric_groupings_v2?.rows || [];
-        if (metricsData.length > 0) {
-          const groupedByMetrics = metricsData.reduce((acc: any, curr: any) => {
-            if (!acc[curr.metric]) acc[curr.metric] = [];
-            acc[curr.metric].push(curr);
-            return acc;
-          }, {});
-          setRenderMetricsData(groupedByMetrics);
-        }
-      } catch (error) {
-        console.error(error);
-      } finally {
-        setLoadingTrend(false);
-      }
-    };
-    fetchMetrics();
-  }, [accountId, selectedDateRange, serviceName, resourceId]);
+  // Both the drilldown (single resource) and the account summary (all Active
+  // resources of the service) read metrics live from the provider — fresh for the
+  // exact selected range, so no collector lag / stale window.
+  const { resources: summaryResources, loading: resourcesLoading } = useServiceResources(accountId, resourceId ? '' : serviceName);
+  const resources = resourceId ? [{ resourse_id: resourceId, region, type: resourceType, name: resourceName }] : summaryResources;
+  const { dataByMetric: liveMetrics, loading: liveLoading } = useLiveResourceMetrics({
+    accountId,
+    serviceName,
+    resources,
+    startDate: selectedDateRange.startDate,
+    endDate: selectedDateRange.endDate,
+  });
 
   useEffect(() => {
-    if (!accountId) return;
+    if (!accountId || !showSummary) return; // summary cards only render in showSummary mode
     setLoadingSummary(true);
     apiCloudAccount
       .cloudAccountEC2Summary(accountId, { serviceName })
@@ -549,7 +540,7 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
         console.error(error);
         setLoadingSummary(false);
       });
-  }, [accountId, serviceName]);
+  }, [accountId, serviceName, showSummary]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
     setSelectedDateRange({
@@ -558,47 +549,7 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
     });
   };
 
-  const buildMetricChartData = (metricName: string, metricRows: any[]) => {
-    const isCpu = metricName.replace(/[_\s]/g, '').toLowerCase() === 'cpuutilization';
-    const byResource: Record<string, any[]> = {};
-    metricRows.forEach((row: any) => {
-      const resourceKey = row.resource_name || row.resource_id || 'Unknown';
-      if (!byResource[resourceKey]) byResource[resourceKey] = [];
-      byResource[resourceKey].push(row);
-    });
-    const resourceKeys = Object.keys(byResource);
-    const allTimestamps = new Set<string>();
-    metricRows.forEach((row: any) => allTimestamps.add(row.timestamp));
-    const sortedTimestamps = Array.from(allTimestamps).sort((a, b) => a.localeCompare(b));
-    const labels = sortedTimestamps.map((ts: string) => new Date(ts).toLocaleString());
-    const datasets = resourceKeys.map((resourceKey) => {
-      const tsMap: Record<string, number> = {};
-      byResource[resourceKey].forEach((row: any) => {
-        tsMap[row.timestamp] = row.avg_value;
-      });
-      const data = sortedTimestamps.map((ts) => {
-        const val = tsMap[ts];
-        if (val === undefined) return null;
-        return isCpu ? val : formatMemory(val, 'bytes', 'gb', false);
-      });
-      return { label: resourceKeys.length === 1 ? 'Utilization' : resourceKey, data };
-    });
-    return { labels, datasets };
-  };
-
-  const renderMetricsSummary = () => {
-    if (renderMetricsData && Object.keys(renderMetricsData).length > 0) {
-      return Object.keys(renderMetricsData).map((g: string) => {
-        const { labels, datasets } = buildMetricChartData(g, renderMetricsData[g]);
-        return (
-          <DSCard size='md' elevation='flat' key={g} sx={{ mb: ds.space[4], padding: ds.space[5] }}>
-            <Chart.Line chartTitle={formatMetricName(g)} dataset={datasets} labels={labels} data={[]} loading={loadingTrend} />
-          </DSCard>
-        );
-      });
-    }
-    return <Chart.Line dataset={[]} labels={[]} data={[]} loading={loadingTrend} />;
-  };
+  const renderMetricsSummary = () => <LiveMetricCharts dataByMetric={liveMetrics} loading={liveLoading || resourcesLoading} />;
 
   return (
     <>

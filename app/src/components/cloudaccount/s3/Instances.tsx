@@ -294,7 +294,16 @@ const InstancesView = (props: {
                 value: 1,
                 key: 's3-monitoring',
                 componentFn: function (opt: any, drilldownQuery: any, _row: any) {
-                  return <OptimizeSummary accountId={props?.accountId} resourceId={drilldownQuery.resourse_id} serviceName={props.serviceName} />;
+                  return (
+                    <OptimizeSummary
+                      accountId={props?.accountId}
+                      resourceId={drilldownQuery.resourse_id}
+                      region={drilldownQuery.region}
+                      resourceType={drilldownQuery.type}
+                      resourceName={drilldownQuery.name}
+                      serviceName={props.serviceName}
+                    />
+                  );
                 },
               },
               {
