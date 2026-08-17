@@ -33,6 +33,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
 import { hasPermission, hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
+import { trackProductEvent } from '@lib/productAnalytics';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
 import apiAskNudgebee from '@api1/ask-nudgebee';
@@ -1488,11 +1489,23 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   // per-provider result rows on first open (see hasOpenedSearch above),
   // re-reads the tenant's dashboards, and refreshes the recent-searches list
   // (a pick made in another tab should show up here too).
+  // Read the current route through a ref so openSearch keeps a stable
+  // identity — it is a dependency of the Ctrl/Cmd+K listener effect below,
+  // which would otherwise re-attach on every navigation.
+  const pagePathRef = useRef(router.pathname);
+  useEffect(() => {
+    pagePathRef.current = router.pathname;
+  }, [router.pathname]);
+
+  // `source` distinguishes the trigger button from the Ctrl/Cmd+K shortcut
+  // below — a shortcut open produces no DOM click, so a Pendo click-tagged
+  // Feature on #auto-complete-global-page-search cannot see it at all.
   const openSearch = useCallback(
-    (target) => {
+    (target, source = 'click') => {
       setSearchOpenSeq((seq) => seq + 1);
       setRecentSearchValues(apiUser.getRecentPageSearches(data?.tenant?.id));
       setAnchorEl(target);
+      trackProductEvent('global_search_opened', { source, page: pagePathRef.current });
     },
     [data?.tenant?.id]
   );
@@ -1526,7 +1539,7 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
         if (anchorEl) {
           setAnchorEl(null);
         } else {
-          openSearch(triggerRef.current);
+          openSearch(triggerRef.current, 'shortcut');
         }
       }
     };

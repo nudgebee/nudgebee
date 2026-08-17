@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { useRouter } from 'next/router';
 import { useData } from '@context/DataContext';
 import { getUserSession } from '@lib/auth';
+import { trackProductEvent } from '@lib/productAnalytics';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 
 const WIP_POLL_MS = 5000;
@@ -77,9 +78,25 @@ export const NubiGlobalChatProvider: React.FC<{ children: React.ReactNode }> = (
   // A chat-local account wins while it lasts; otherwise the chat follows the page.
   const accountId = chatContext?.accountId || pageAccountId;
 
+  // Every path into the chat emits one `nubi_chat_opened`, tagged with how it
+  // was reached. Only the first of the three produces a DOM click, so a Pendo
+  // click-tagged Feature on the launcher would see the launcher alone and miss
+  // both the Cmd/Ctrl+J shortcut and the ~15 in-app entry points that call
+  // openWithContext (recommendation rows, logs, traces, optimise summary, …).
+  // Read through a ref so the open callbacks below keep a stable identity —
+  // `toggle` in particular is a dependency of the keydown-listener effect.
+  // `page` carries the analytics weight for in-app opens: only 3 of the ~15
+  // openWithContext callers pass their own `source`, so without it most of
+  // them would collapse into an undifferentiated 'in_app' bucket.
+  const pagePathRef = useRef(router.pathname);
+  useEffect(() => {
+    pagePathRef.current = router.pathname;
+  }, [router.pathname]);
+
   const open = useCallback(() => {
     setHasInteracted(true);
     setIsOpen(true);
+    trackProductEvent('nubi_chat_opened', { source: 'launcher', page: pagePathRef.current });
   }, []);
   const close = useCallback(() => setIsOpen(false), []);
 
@@ -87,6 +104,12 @@ export const NubiGlobalChatProvider: React.FC<{ children: React.ReactNode }> = (
     setChatContext(context);
     setHasInteracted(true);
     setIsOpen(true);
+    // Callers already label themselves for the backend via context.source.
+    trackProductEvent('nubi_chat_opened', {
+      source: context.source || 'in_app',
+      categorySource: context.categorySource,
+      page: pagePathRef.current,
+    });
   }, []);
 
   // "New chat" drops the conversation, not the account — falling back to the page's
@@ -103,6 +126,11 @@ export const NubiGlobalChatProvider: React.FC<{ children: React.ReactNode }> = (
 
   const toggle = useCallback(() => {
     setHasInteracted(true);
+    // isOpenRef (declared below, read only after mount) rather than `isOpen`:
+    // toggle must keep a stable identity for the keydown listener effect.
+    if (!isOpenRef.current) {
+      trackProductEvent('nubi_chat_opened', { source: 'shortcut', page: pagePathRef.current });
+    }
     setIsOpen((prev) => !prev);
   }, []);
 
