@@ -42,6 +42,7 @@ const TOOL_DISPLAY_NAMES = {
   pagerduty: 'PagerDuty',
   zenduty: 'ZenDuty',
   freshdesk: 'Freshdesk',
+  incidentio: 'incident.io',
 };
 
 const customPriorityOrder = ['Highest', 'High', 'Medium', 'Low', 'Lowest', 'NA', 'Critical'];

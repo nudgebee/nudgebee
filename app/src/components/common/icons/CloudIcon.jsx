@@ -20,6 +20,7 @@ import {
   DiscordIcon,
   ServiceNowIcon,
   FreshdeskIcon,
+  IncidentIOIcon,
   PagerDutyIcon,
   ZenDutyIcon,
   RabbitmqIcon,
@@ -100,6 +101,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = ServiceNowIcon;
   } else if (cloud_provider.toUpperCase() === 'FRESHDESK') {
     Icon = FreshdeskIcon;
+  } else if (cloud_provider.toUpperCase() === 'INCIDENTIO') {
+    Icon = IncidentIOIcon;
   } else if (cloud_provider.toUpperCase() === 'PAGERDUTY' || cloud_provider.toUpperCase() === 'PAGERDUTY_WEBHOOK') {
     Icon = PagerDutyIcon;
   } else if (cloud_provider.toUpperCase() === 'ZENDUTY' || cloud_provider.toUpperCase() === 'ZENDUTY_WEBHOOK') {

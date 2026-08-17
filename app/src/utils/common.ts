@@ -151,6 +151,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'FRESHDESK':
       label = 'Freshdesk';
       break;
+    case 'INCIDENTIO':
+      label = 'incident.io';
+      break;
     case 'POSTGRES':
       label = 'PostgreSQL';
       break;

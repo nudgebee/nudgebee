@@ -13,13 +13,13 @@ import (
 // incidentPlatforms is the set of integration types accepted by incident-only
 // tasks (acknowledge / escalate / resolve). Mirrors the gate in
 // validateIncidentPlatform.
-var incidentPlatforms = []string{"pagerduty", "zenduty"}
+var incidentPlatforms = []string{"pagerduty", "zenduty", "incidentio"}
 
 // ticketPlatforms is the union of all integration types that ticket-flavored
 // tasks (create / update / transition / comment / assign / get / get_comments)
 // can target — the registered ticket and incident managers in
 // ticket-server/services/tools.
-var ticketPlatforms = []string{"jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"}
+var ticketPlatforms = []string{"jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk", "incidentio"}
 
 // resolveTicketIntegrationID converts a frontend-supplied integration_id (which
 // may be a UUID or a name produced by template substitution like

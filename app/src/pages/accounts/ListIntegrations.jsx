@@ -60,6 +60,7 @@ const integrationConnectionKey = {
   pagerduty: 'url',
   zenduty: 'url',
   freshdesk: 'url',
+  incidentio: 'url',
   github: 'url',
   gitlab: 'url',
   confluence: 'host',

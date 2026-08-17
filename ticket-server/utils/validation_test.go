@@ -160,6 +160,31 @@ func TestValidateZenDutyIncidentID(t *testing.T) {
 	}
 }
 
+func TestValidateIncidentIOIncidentID(t *testing.T) {
+	tests := []struct {
+		name     string
+		ticketID string
+		wantErr  bool
+	}{
+		{name: "valid ULID", ticketID: "01FDAG4SAP5TYPT98WGR2N7W91", wantErr: false},
+		{name: "valid ULID lowercase", ticketID: "01fdag4sap5typt98wgr2n7w91", wantErr: false},
+		{name: "too short", ticketID: "01FDAG4SAP", wantErr: true},
+		{name: "too long", ticketID: "01FDAG4SAP5TYPT98WGR2N7W91X", wantErr: true},
+		{name: "dash not allowed", ticketID: "01FDAG4SAP5TYPT98WGR2N7W9-", wantErr: true},
+		{name: "empty", ticketID: "", wantErr: true},
+		{name: "path traversal", ticketID: "../../etc/passwd", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateIncidentIOIncidentID(tt.ticketID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateIncidentIOIncidentID(%q) error = %v, wantErr %v", tt.ticketID, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateProjectKey(t *testing.T) {
 	tests := []struct {
 		name       string

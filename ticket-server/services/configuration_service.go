@@ -54,12 +54,13 @@ func ValidateAndGetMetadataWithContext(ctx context.Context, configuration models
 		"pagerduty":  validatePagerDutyConfigurationAndReturnMetadata,
 		"zenduty":    validateZenDutyConfigurationAndReturnMetadata,
 		"freshdesk":  validateFreshdeskConfigurationAndReturnMetadata,
+		"incidentio": validateIncidentIOConfigurationAndReturnMetadata,
 	}
 
 	if validateFunc, exists := validationFunctions[configuration.Tool]; exists {
 		return validateFunc(ctx, configuration)
 	}
-	return nil, fmt.Errorf("invalid tool: %s (supported tools: jira, github, gitlab, servicenow, pagerduty, zenduty, freshdesk)", configuration.Tool)
+	return nil, fmt.Errorf("invalid tool: %s (supported tools: jira, github, gitlab, servicenow, pagerduty, zenduty, freshdesk, incidentio)", configuration.Tool)
 }
 
 // ExistingConfig holds the stored fields of an integration that the edit/test
@@ -179,8 +180,10 @@ func QuickValidateCredentials(ctx context.Context, configuration models.TicketCo
 		return quickValidateZenDuty(ctx, configuration)
 	case "freshdesk":
 		return quickValidateFreshdesk(ctx, configuration)
+	case "incidentio":
+		return quickValidateIncidentIO(ctx, configuration)
 	default:
-		return fmt.Errorf("invalid tool: %s (supported tools: jira, github, gitlab, servicenow, pagerduty, zenduty, freshdesk)", configuration.Tool)
+		return fmt.Errorf("invalid tool: %s (supported tools: jira, github, gitlab, servicenow, pagerduty, zenduty, freshdesk, incidentio)", configuration.Tool)
 	}
 }
 
@@ -371,6 +374,10 @@ func quickValidateZenDuty(ctx context.Context, configuration models.TicketConfig
 
 func quickValidateFreshdesk(ctx context.Context, configuration models.TicketConfigurations) error {
 	return tools.QuickValidateFreshdesk(ctx, configuration)
+}
+
+func quickValidateIncidentIO(ctx context.Context, configuration models.TicketConfigurations) error {
+	return tools.QuickValidateIncidentIO(ctx, configuration)
 }
 
 // PopulateMetadataAsync fetches full metadata in the background and updates the DB.
@@ -765,6 +772,30 @@ func validateFreshdeskConfigurationAndReturnMetadata(ctx context.Context, config
 		{ID: "2", Name: "Medium"},
 		{ID: "3", Name: "High"},
 		{ID: "4", Name: "Urgent"},
+	}
+
+	return []map[string]interface{}{
+		{"projects": projects},
+		{"priorities": priorities},
+	}, nil
+}
+
+// validateIncidentIOConfigurationAndReturnMetadata validates incident.io
+// credentials and returns incident types as projects (Project.Key is the type
+// ULID) plus the account's configured severities as priorities. Unlike
+// PagerDuty's fixed high/low, incident.io severities are org-defined, so they
+// are read from the account rather than hardcoded.
+func validateIncidentIOConfigurationAndReturnMetadata(ctx context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
+	projects, err := tools.FetchIncidentIOIncidentTypes(ctx, configuration)
+	if err != nil {
+		slog.Error("Failed to fetch incident.io incident types", "error", err)
+		return nil, err
+	}
+
+	priorities, err := tools.FetchIncidentIOSeverities(ctx, configuration)
+	if err != nil {
+		slog.Error("Failed to fetch incident.io severities", "error", err)
+		return nil, err
 	}
 
 	return []map[string]interface{}{

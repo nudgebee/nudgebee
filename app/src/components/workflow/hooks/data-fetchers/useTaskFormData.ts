@@ -9,6 +9,7 @@ import {
   JiraIcon,
   ServiceNowIcon,
   FreshdeskIcon,
+  IncidentIOIcon,
   PagerDutyIcon,
   GithubIcon,
   GitLabIcon,
@@ -47,6 +48,7 @@ const TICKET_TOOL_ICONS: Record<string, any> = {
   gitlab: GitLabIcon,
   zenduty: ZenDutyIcon,
   freshdesk: FreshdeskIcon,
+  incidentio: IncidentIOIcon,
 };
 
 const INTEGRATION_TYPE_ICONS: Record<string, any> = {

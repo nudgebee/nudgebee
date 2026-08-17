@@ -260,7 +260,7 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 		  ON cv.integration_id = i.id AND cv.name = 'projects'
 		WHERE i.tenant_id = $1
 		  AND i.status = 'enabled'
-		  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk')
+		  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk', 'incidentio')
 		ORDER BY i.name ASC`,
 		tenantId)
 	if err != nil {

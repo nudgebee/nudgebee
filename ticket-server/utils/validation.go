@@ -15,6 +15,7 @@ var (
 	alphanumPattern    = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 	safeSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	zdIncidentPattern  = regexp.MustCompile(`^[A-Za-z0-9\-]+$`)
+	ulidPattern        = regexp.MustCompile(`^[A-Za-z0-9]{26}$`)
 )
 
 // TicketIDValidationError represents a ticket ID validation failure
@@ -136,6 +137,28 @@ func ValidatePagerDutyIncidentID(ticketID string) error {
 		return &TicketIDValidationError{
 			TicketID: ticketID,
 			Reason:   "invalid PagerDuty incident ID format (expected alphanumeric)",
+		}
+	}
+
+	return nil
+}
+
+// ValidateIncidentIOIncidentID validates an incident.io incident ID.
+//
+// incident.io identifiers are ULIDs — exactly 26 characters, no separators
+// (e.g. "01FDAG4SAP5TYPT98WGR2N7W91"). The length check is what makes this
+// stricter than the PagerDuty/ZenDuty patterns: an unbounded alphanumeric
+// match would accept a truncated or concatenated ID and only surface later as
+// an opaque 404 from the incident.io API.
+func ValidateIncidentIOIncidentID(ticketID string) error {
+	if err := ValidateTicketID(ticketID); err != nil {
+		return err
+	}
+
+	if !ulidPattern.MatchString(ticketID) {
+		return &TicketIDValidationError{
+			TicketID: ticketID,
+			Reason:   "invalid incident.io incident ID format (expected a 26-character ULID)",
 		}
 	}
 

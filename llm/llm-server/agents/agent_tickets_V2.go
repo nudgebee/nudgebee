@@ -34,7 +34,7 @@ func (a TicketMasterV2Agent) GetNameAliases() []string {
 }
 
 func (a TicketMasterV2Agent) GetDescription() string {
-	return `Creates and manages tickets across multiple platforms (Jira, GitHub, GitLab, ServiceNow, PagerDuty, ZenDuty, Freshdesk).
+	return `Creates and manages tickets across multiple platforms (Jira, GitHub, GitLab, ServiceNow, PagerDuty, ZenDuty, Freshdesk, incident.io).
 
 	Capabilities:
 	* Creates tickets on any configured platform.
