@@ -1218,7 +1218,7 @@ const CustomTable = ({
                             handleRequestSort(head, idx);
                           }
                         }}
-                        sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none', mr: 'var(--ds-space-1)' }}
+                        sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
                       >
                         {head.component ? head.component : capitalize(typeof head === 'string' ? head : head.name)}{' '}
                         <span style={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>

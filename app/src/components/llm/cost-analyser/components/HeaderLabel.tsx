@@ -10,7 +10,7 @@ import Tooltip from '@ui/Tooltip';
 
 export function HeaderLabel({ label, info, secondary }: { label: string; info: string; secondary?: string }) {
   return (
-    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
       {label}
       {secondary && (
         <Box component='span' sx={{ color: 'var(--ds-gray-500)', fontWeight: 'var(--ds-font-weight-regular)', fontSize: 'var(--ds-text-small)' }}>

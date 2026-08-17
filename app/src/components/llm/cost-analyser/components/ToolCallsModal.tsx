@@ -17,7 +17,7 @@ import { Banner } from '@ui/Banner';
 import { Label } from '@ui/Label';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { EmptyState } from '@ui/EmptyState';
-import { listToolCalls, toolStatusesFor, type ToolCallRow, type ToolStatusGroup } from '@api1/ai-cost';
+import { listToolCalls, toolStatusesFor, TOOL_TYPE_LABEL, type ToolCallRow, type ToolStatusGroup } from '@api1/ai-cost';
 import type { CostFilters } from '../types';
 
 interface ToolCallsModalProps {
@@ -217,7 +217,7 @@ export function ToolCallsModal({
       width='lg'
       maxHeight='85vh'
       title={toolName || 'Tool'}
-      subtitle={toolType ? `tool_type: ${toolType}` : undefined}
+      subtitle={toolType ? TOOL_TYPE_LABEL[toolType] : undefined}
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>

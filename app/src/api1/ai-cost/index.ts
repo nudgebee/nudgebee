@@ -730,6 +730,15 @@ export interface ToolUsageList {
   rows: ToolUsageRow[];
 }
 
+/**
+ * Human labels for `llm_conversation_tool_calls.tool_type`. A type with no entry
+ * here (e.g. the default 'tool' backfill value) renders nothing — the raw DB
+ * value is never shown to users.
+ */
+export const TOOL_TYPE_LABEL: Partial<Record<string, string>> = {
+  agent: 'Spawns sub-agent',
+};
+
 export interface ListToolUsageRequest {
   accountIds?: string[];
   startDate: string; // RFC3339 UTC
