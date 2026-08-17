@@ -750,6 +750,23 @@ func convertSliceAnyToSliceInterface(evidences []eventtypes.EventEvidence) []any
 	return s
 }
 
+// resolveEventQuery closes the event a resolve delivery refers to.
+//
+// It matches finding_id as well as fingerprint. convertWebhookEventToEvent writes
+// FindingId from EventId, so the triggering delivery always leaves the event
+// findable by the id its own resolve delivery carries — whereas fingerprint is
+// whatever the producing integration chose. PagerDuty overwrites
+// Investigation.Fingerprint with the CEF dedup_key, which is stable across every
+// incident for the same alert and so never equals the incident id a resolve
+// carries: the fingerprint predicate alone matched nothing and PagerDuty resolves
+// closed no events at all. That went unnoticed because the k8s-collector's
+// resource reconciliation bulk-closes events later, so they did eventually clear.
+//
+// Tenant-scoped so the finding_id predicate can use events_cloudaccount_findingid,
+// whose leading column is tenant. Verified on a real dataset: both predicates
+// resolve through a BitmapOr of index scans, no sequential scan.
+const resolveEventQuery = `update events set status = $4 where tenant = $1 and cloud_account_id = $2 and (fingerprint = $3 or finding_id = $3) and status != $4 returning id`
+
 func resolveEvent(sc *security.RequestContext, tenantId, accountId string, source string, event EventIncomingWebhook) error {
 	if accountId == "" || accountId == uuid.Nil.String() {
 		sc.GetLogger().Info("integrations: skipping event resolution — no cloud account linked", "source", source, "event_id", event.EventId)
@@ -764,9 +781,11 @@ func resolveEvent(sc *security.RequestContext, tenantId, accountId string, sourc
 	if source == "datadog_webhook" || source == "gcp_monitoring_webhook" {
 		fingerPrint = event.Investigation.Fingerprint
 	}
-	_, err = dbms.Exec(`update events set status = $3 where fingerprint = $2 and cloud_account_id = $1`,
-		accountId, fingerPrint, "CLOSED",
-	)
+	// Prod's resolveEvent does not publish resolved notifications (that machinery
+	// arrived in a later commit not on this branch), so only the lookup changes
+	// here: resolveEventQuery matches finding_id as well as fingerprint, which is
+	// what makes a PagerDuty resolve close its event at all.
+	_, err = dbms.Exec(resolveEventQuery, tenantId, accountId, fingerPrint, "CLOSED")
 	return err
 }
 
