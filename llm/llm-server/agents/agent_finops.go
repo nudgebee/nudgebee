@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -20,13 +21,26 @@ import (
 const FinOpsAgentName = "finops"
 
 // finOpsAccountContextCacheNS caches the rendered <account_context> block per
-// account. Spend and recommendation figures change on billing-ingest / scan
-// cycles (hours), so a 5-minute TTL keeps the prompt fresh without re-querying
-// on every conversation turn.
+// account.
 const finOpsAccountContextCacheNS = "llm_finops_account_ctx"
 
+const (
+	// Freshness decides when a rebuild is triggered; retention keeps the previous
+	// render servable while that rebuild runs. Retention has to outlive freshness
+	// by a lot — FinOps turns are sparse, so a short one would put the build back
+	// in front of a user on the first turn of every session.
+	finOpsContextFreshFor  = 30 * time.Minute
+	finOpsContextRetainFor = 24 * time.Hour
+
+	// Ceilings: how long a first build may block a turn, how long a background
+	// build may run, and how long its aggregates get.
+	finOpsContextFirstBuildBudget = 1500 * time.Millisecond
+	finOpsContextBuildTimeout     = 30 * time.Second
+	finOpsSpendQueryTimeout       = 10 * time.Second
+)
+
 func init() {
-	common.CacheCreateNamespace(finOpsAccountContextCacheNS, common.CacheNamespaceWithExpiration(5*time.Minute))
+	common.CacheCreateNamespace(finOpsAccountContextCacheNS, common.CacheNamespaceWithExpiration(finOpsContextRetainFor))
 
 	toolDescription := `Answers questions about cloud cost, spend, savings, budgets, optimization opportunities, ` +
 		`rightsizing financial impact, idle/unattached resources, cost anomalies, and commitment coverage. ` +
@@ -175,21 +189,105 @@ type topServiceRow struct {
 	Amount      float64 `db:"amount"`
 }
 
-// fetchFinOpsAccountContext builds the live <account_context> block injected into
-// the system prompt. It gives the LLM the account's cloud footprint and spend
+// fetchFinOpsAccountContext returns the <account_context> block injected into the
+// system prompt. It gives the LLM the account's cloud footprint and spend
 // baseline up front so it can skip orientation tool calls and lead answers with
-// the right figures. The rendered block is cached per account (5-min TTL).
+// the right figures.
+//
+// Building it runs three metastore aggregates, and this is called while the
+// system prompt is assembled — on the user's critical path. So a build never
+// blocks a turn that has anything cached: a stale block is served immediately
+// and refreshed behind the turn, and only an account's first build is awaited.
 //
 // It degrades gracefully: the cloud-footprint section (from the already-cached
 // AccountConfigSummary) is always present, while the spend / recommendation
 // sections are omitted silently if their queries fail — a partial context is
 // more useful to the agent than none.
 func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) string {
-	cacheKey := "finops_ctx:" + a.accountId
+	cacheKey := finOpsContextKey(a.accountId)
+
 	if cached, found := common.CacheGet(finOpsAccountContextCacheNS, cacheKey); found {
+		if _, fresh := common.CacheGet(finOpsAccountContextCacheNS, finOpsContextFreshKey(a.accountId)); !fresh {
+			a.refreshAccountContext(ctx, nil)
+		}
 		return string(cached)
 	}
 
+	// Nothing cached yet. A first build already in flight (marker claimed, content
+	// not written) means waiting would land on the footprint-only block anyway.
+	if _, building := common.CacheGet(finOpsAccountContextCacheNS, finOpsContextFreshKey(a.accountId)); building {
+		return a.renderAccountContext(ctx, false)
+	}
+
+	// The build continues in the background whichever branch wins, so the next
+	// turn gets the full block regardless.
+	built := make(chan string, 1)
+	a.refreshAccountContext(ctx, built)
+	select {
+	case rendered := <-built:
+		return rendered
+	case <-ctx.GetContext().Done():
+		return a.renderAccountContext(ctx, false)
+	case <-time.After(finOpsContextFirstBuildBudget):
+		ctx.GetLogger().Info("finops: account context build exceeded its budget, using footprint-only context for this turn",
+			"account_id", a.accountId, "budget", finOpsContextFirstBuildBudget.String())
+		return a.renderAccountContext(ctx, false)
+	}
+}
+
+func finOpsContextKey(accountId string) string      { return "finops_ctx:" + accountId }
+func finOpsContextFreshKey(accountId string) string { return "finops_ctx_fresh:" + accountId }
+
+// releaseAccountContextMarker drops the freshness marker after a build that
+// cached nothing, so the next turn retries rather than honouring a guard for
+// work that never landed.
+func (a *FinOpsAgent) releaseAccountContextMarker(reason string) {
+	if err := common.CacheDelete(finOpsAccountContextCacheNS, finOpsContextFreshKey(a.accountId)); err != nil {
+		slog.Warn("finops: failed to clear account context marker", "error", err, "reason", reason, "account_id", a.accountId)
+	}
+}
+
+// refreshAccountContext rebuilds and caches the block on a goroutine detached
+// from the request, which returns long before it finishes. built, when non-nil,
+// receives the render — buffered, so a caller that stopped waiting can't block it.
+//
+// The freshness marker is claimed up front rather than on completion so it also
+// guards against concurrent turns each starting their own rebuild.
+func (a *FinOpsAgent) refreshAccountContext(ctx *security.RequestContext, built chan<- string) {
+	if err := common.CacheSet(finOpsAccountContextCacheNS, finOpsContextFreshKey(a.accountId), []byte("1"),
+		common.CacheSetWithExpiration(finOpsContextFreshFor)); err != nil {
+		slog.Warn("finops: failed to mark account context fresh", "error", err, "account_id", a.accountId)
+	}
+
+	// WithoutCancel keeps the request's values while dropping its cancellation.
+	goCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), finOpsContextBuildTimeout)
+	bgCtx := security.NewRequestContext(goCtx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+
+	go func() {
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("finops: panic while building account context", "panic", r, "account_id", a.accountId)
+				a.releaseAccountContextMarker("panic")
+			}
+		}()
+
+		rendered := a.renderAccountContext(bgCtx, true)
+		if err := common.CacheSet(finOpsAccountContextCacheNS, finOpsContextKey(a.accountId), []byte(rendered),
+			common.CacheSetWithExpiration(finOpsContextRetainFor)); err != nil {
+			slog.Warn("finops: failed to cache account context", "error", err, "account_id", a.accountId)
+			a.releaseAccountContextMarker("cache write failure")
+		}
+		if built != nil {
+			built <- rendered
+		}
+	}()
+}
+
+// renderAccountContext renders the block. withSpend gates the metastore
+// aggregates; the footprint-only form is cheap because AccountConfigSummary is
+// already cached, and is what a turn falls back to when a first build overruns.
+func (a *FinOpsAgent) renderAccountContext(ctx *security.RequestContext, withSpend bool) string {
 	var b strings.Builder
 	b.WriteString("<account_context>\n")
 
@@ -214,7 +312,9 @@ func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) st
 
 	// Spend baseline + recommendation summary — best-effort. Any failure leaves
 	// the cloud-footprint section intact and is logged, not surfaced.
-	a.appendSpendContext(&b)
+	if withSpend {
+		a.appendSpendContext(ctx, &b)
+	}
 
 	// Optimize-page deep-link base. Surfaced so the agent can render per-row
 	// "Action" links that jump the user straight to the optimise recommendations
@@ -231,17 +331,13 @@ func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) st
 	b.WriteString("As of: " + time.Now().UTC().Format("2006-01-02") + "\n")
 	b.WriteString("</account_context>")
 
-	rendered := b.String()
-	if err := common.CacheSet(finOpsAccountContextCacheNS, cacheKey, []byte(rendered), common.CacheSetWithExpiration(5*time.Minute)); err != nil {
-		slog.Warn("finops: failed to cache account context", "error", err, "account_id", a.accountId)
-	}
-	return rendered
+	return b.String()
 }
 
 // appendSpendContext writes the 30-day spend, top services, and open
 // recommendation lines. Each query is independent and best-effort: a failure
 // logs and skips only its own line.
-func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
+func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *strings.Builder) {
 	tenantId, err := security.GetTenantIdFromAccountId(a.accountId)
 	if err != nil || tenantId == "" {
 		slog.Warn("finops: cannot resolve tenant for account context", "error", err, "account_id", a.accountId)
@@ -253,13 +349,18 @@ func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
 		return
 	}
 
+	// Shared deadline: each aggregate is best-effort per line already, so a slow
+	// metastore drops what it cannot produce in time.
+	queryCtx, cancel := context.WithTimeout(ctx.GetContext(), finOpsSpendQueryTimeout)
+	defer cancel()
+
 	now := time.Now().UTC()
 	windowEnd := now.Truncate(24 * time.Hour)
 	windowStart := windowEnd.AddDate(0, 0, -30)
 
 	// 30-day spend.
 	var spend float64
-	if err := dbManager.Db.Get(&spend,
+	if err := dbManager.Db.GetContext(queryCtx, &spend,
 		`SELECT COALESCE(SUM(amount), 0) FROM spends
 		 WHERE tenant = $1 AND cloud_account = $2 AND date >= $3 AND date < $4 AND exclude_aggregate = false`,
 		tenantId, a.accountId, windowStart, windowEnd); err != nil {
@@ -270,7 +371,7 @@ func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
 
 	// Top 3 services by 30-day spend.
 	topServices := []topServiceRow{}
-	if err := dbManager.Db.Select(&topServices,
+	if err := dbManager.Db.SelectContext(queryCtx, &topServices,
 		`SELECT cr.service_name AS service_name, ROUND(SUM(s.amount)::numeric, 2)::float AS amount
 		 FROM spends s
 		 JOIN cloud_resourses cr ON cr.id = s.cloud_resource_id
@@ -295,7 +396,7 @@ func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
 		Quantified   int     `db:"quantified"`
 		TotalSavings float64 `db:"total_savings"`
 	}
-	if err := dbManager.Db.Get(&rec,
+	if err := dbManager.Db.GetContext(queryCtx, &rec,
 		`SELECT COUNT(*) AS cnt,
 		        COUNT(*) FILTER (WHERE estimated_savings > 0) AS quantified,
 		        COALESCE(SUM(estimated_savings) FILTER (WHERE estimated_savings > 0), 0) AS total_savings
