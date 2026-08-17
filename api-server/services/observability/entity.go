@@ -251,6 +251,18 @@ type QueryResult struct {
 	Payload  []Result `json:"payload"`         // Array of metric/log data points
 	Query    string   `json:"query"`           // The actual query executed (PromQL or NRQL)
 	Error    *string  `json:"error,omitempty"` // Error message if query failed
+
+	// DocsMatched is how many documents the query matched, independent of how many
+	// series could be extracted from them. An empty Payload has two very different
+	// causes — nothing matched, or things matched but carried no numeric value path the
+	// extractor recognised (typically a `_source` projection that kept only label
+	// fields) — and they are indistinguishable from Payload alone. Nil when the backend
+	// does not report it.
+	DocsMatched *int64 `json:"docs_matched,omitempty"`
+
+	// Note explains an empty Payload when the cause is known. Set only when it adds
+	// something the caller cannot infer, so its presence is itself a signal.
+	Note string `json:"note,omitempty"`
 }
 
 // Result represents a single metric or log group data point with labels, timestamps, and values.

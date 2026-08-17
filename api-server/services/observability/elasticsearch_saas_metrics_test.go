@@ -775,3 +775,119 @@ func TestESFetchLabelValues_IsTimeBounded(t *testing.T) {
 	assert.Contains(t, body, esLabelValuesWindow)
 	assert.Contains(t, body, `"range"`)
 }
+
+// TestParseESMetricsHitsWithStats_SeparatesMatchedFromExtracted pins the distinction the
+// caller could not previously make. An empty payload has two causes, and they need
+// different responses from the agent: a wrong filter should be reformulated, a wrong
+// projection should be re-run unchanged without `_source`.
+func TestParseESMetricsHitsWithStats_SeparatesMatchedFromExtracted(t *testing.T) {
+	t.Run("nothing matched", func(t *testing.T) {
+		body := `{"hits":{"total":{"value":0,"relation":"eq"},"hits":[]}}`
+		payload, stats, err := parseESMetricsHitsWithStats([]byte(body))
+		require.NoError(t, err)
+		assert.Empty(t, payload)
+		assert.Zero(t, stats.DocsMatched, "no documents matched the filter")
+		assert.Zero(t, stats.SeriesParsed)
+	})
+
+	t.Run("documents matched but the projection dropped the numeric paths", func(t *testing.T) {
+		// What a `_source: ["__name__","kubernetes.pod.name"]` projection returns: the
+		// label fields survive, every numeric value path is gone, so nothing is
+		// extractable. Reported identically to "nothing matched" before this change.
+		body := `{"hits":{"total":{"value":1432,"relation":"eq"},"hits":[
+		  {"_source":{"@timestamp":"2026-08-17T10:00:00.000Z","kubernetes":{"pod":{"name":"api-1"}}}}
+		]}}`
+		payload, stats, err := parseESMetricsHitsWithStats([]byte(body))
+		require.NoError(t, err)
+		assert.Empty(t, payload, "no series are extractable")
+		assert.EqualValues(t, 1432, stats.DocsMatched, "but the query itself was correct")
+		assert.Equal(t, 1, stats.HitsReturned)
+		assert.Zero(t, stats.SeriesParsed)
+	})
+
+	t.Run("normal extraction reports both", func(t *testing.T) {
+		body := `{"hits":{"total":{"value":120,"relation":"eq"},"hits":[
+		  {"_source":{"@timestamp":"2026-08-17T10:00:00.000Z","kubernetes":{"pod":{"name":"api-1",
+		     "cpu":{"usage":{"nanocores":5611970}}}}}}
+		]}}`
+		payload, stats, err := parseESMetricsHitsWithStats([]byte(body))
+		require.NoError(t, err)
+		assert.NotEmpty(t, payload)
+		assert.EqualValues(t, 120, stats.DocsMatched)
+		assert.Equal(t, len(payload), stats.SeriesParsed)
+	})
+}
+
+// TestESQueryFieldNames_FindsFieldsAtAnyDepth covers the clause shapes a generated query
+// actually uses, including inside must_not — the position where an absent field is most
+// dangerous, because it silently excludes nothing.
+func TestESQueryFieldNames_FindsFieldsAtAnyDepth(t *testing.T) {
+	dsl := `{"query":{"bool":{"filter":[
+	   {"exists":{"field":"kubernetes.pod.cpu.usage.nanocores"}},
+	   {"term":{"kubernetes.namespace":"default"}},
+	   {"range":{"@timestamp":{"gte":"now-2h"}}}],
+	  "must_not":[
+	   {"wildcard":{"__name__":{"value":"kubernetes.proxy*"}}},
+	   {"prefix":{"kubernetes.node.name":"ip-"}}]}}}`
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(dsl), &body))
+
+	got := map[string]bool{}
+	esQueryFieldNames(body, got)
+
+	for _, f := range []string{
+		"kubernetes.pod.cpu.usage.nanocores", "kubernetes.namespace", "@timestamp",
+		"__name__", "kubernetes.node.name",
+	} {
+		assert.True(t, got[f], "should have found %s", f)
+	}
+	assert.False(t, got["value"], "clause internals are not field names")
+}
+
+// TestESUnknownQueryFields_FlagsTheSilentNoOp pins the must_not case from the traced
+// investigation: excluding on `__name__`, which does not exist, excluded nothing, and the
+// query returned 224 series filtered by time alone while looking correctly filtered.
+func TestESUnknownQueryFields_FlagsTheSilentNoOp(t *testing.T) {
+	fields := []OutputMetricLabels{
+		{Label: "@timestamp", Attributes: map[string]any{"type": "date"}},
+		{Label: "kubernetes.namespace", Attributes: map[string]any{"type": "keyword"}},
+		{Label: "kubernetes.pod.cpu.usage.nanocores", Attributes: map[string]any{"type": "long"}},
+		{Label: "message", Attributes: map[string]any{"type": "text"}},
+		{Label: "message.keyword", Attributes: map[string]any{"type": "keyword"}},
+	}
+
+	t.Run("absent field inside must_not is reported", func(t *testing.T) {
+		dsl := `{"query":{"bool":{"filter":[{"range":{"@timestamp":{"gte":"now-2h"}}}],
+		  "must_not":[{"wildcard":{"__name__":{"value":"kubernetes.proxy*"}}}]}}}`
+		assert.Equal(t, []string{"__name__"}, esUnknownQueryFields(fields, dsl))
+	})
+
+	t.Run("fields that exist are not reported", func(t *testing.T) {
+		dsl := `{"query":{"bool":{"filter":[
+		   {"exists":{"field":"kubernetes.pod.cpu.usage.nanocores"}},
+		   {"term":{"kubernetes.namespace":"default"}},
+		   {"range":{"@timestamp":{"gte":"now-2h"}}}]}}}`
+		assert.Empty(t, esUnknownQueryFields(fields, dsl))
+	})
+
+	t.Run("`.keyword` on an already-keyword field is reported", func(t *testing.T) {
+		// ECS maps these as plain keyword, so the subfield does not exist and the clause
+		// matches nothing — the same silent miss #36408 fixed on the read path.
+		dsl := `{"query":{"bool":{"filter":[{"term":{"kubernetes.namespace.keyword":"default"}}]}}}`
+		assert.Equal(t, []string{"kubernetes.namespace.keyword"}, esUnknownQueryFields(fields, dsl))
+	})
+
+	t.Run("`.keyword` on a text field is valid and not reported", func(t *testing.T) {
+		dsl := `{"query":{"bool":{"filter":[{"term":{"message.keyword":"boom"}}]}}}`
+		assert.Empty(t, esUnknownQueryFields(fields, dsl))
+	})
+
+	t.Run("unparseable query says nothing rather than warning wrongly", func(t *testing.T) {
+		assert.Empty(t, esUnknownQueryFields(fields, "not json"))
+	})
+
+	t.Run("unresolvable mapping says nothing rather than warning wrongly", func(t *testing.T) {
+		dsl := `{"query":{"bool":{"filter":[{"term":{"whatever":"x"}}]}}}`
+		assert.Empty(t, esUnknownQueryFields(nil, dsl))
+	})
+}

@@ -120,6 +120,14 @@ type ObservabilityMetricsQueryResult struct {
 	Payload  []ObservabilityMetricsQuerySeries `json:"payload"`
 	Query    string                            `json:"query"`
 	Error    *string                           `json:"error,omitempty"`
+
+	// DocsMatched is how many documents the query matched, independent of how many
+	// series were extracted. An empty Payload with DocsMatched > 0 means the query was
+	// correct and the projection was not — a different problem from "nothing matched",
+	// and previously indistinguishable.
+	DocsMatched *int64 `json:"docs_matched,omitempty"`
+	// Note explains an empty Payload when the backend knows why.
+	Note string `json:"note,omitempty"`
 }
 
 type ObservabilityMetricsQuerySeries struct {
