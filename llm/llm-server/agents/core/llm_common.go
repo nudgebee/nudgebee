@@ -2315,9 +2315,31 @@ func largestTextMessageIndex(messages []llms.MessageContent, tokens []int) (int,
 	return bestIdx, bestTokens
 }
 
+// fallbackCause records why the fallback path was entered. Quota exhaustion and
+// endpoint-unavailable share this path, so the terminal "no fallbacks" error has
+// to name the real failure rather than assume quota — an operator told a 503 is a
+// quota problem goes and checks billing.
+type fallbackCause int
+
+const (
+	fallbackCauseQuota fallbackCause = iota
+	fallbackCauseUnavailable
+)
+
+func (c fallbackCause) reason() string {
+	switch c {
+	case fallbackCauseUnavailable:
+		return "Endpoint unavailable"
+	case fallbackCauseQuota:
+		return "Quota/rate limit error detected"
+	default:
+		return "Unknown fallback cause"
+	}
+}
+
 // handleQuotaError handles quota/rate limit errors by trying fallback models
 // STRATEGY 2: Try each configured fallback model until one succeeds
-func handleQuotaError(rc *retryContext, fallbackModels []string, recordPrimaryHit bool) (*llms.ContentResponse, *LLMCallMetadata, error) {
+func handleQuotaError(rc *retryContext, fallbackModels []string, recordPrimaryHit bool, cause fallbackCause) (*llms.ContentResponse, *LLMCallMetadata, error) {
 	ctx := rc.ctx
 
 	// Record rate limit hit to open circuit breaker for the primary model.
@@ -2329,16 +2351,28 @@ func handleQuotaError(rc *retryContext, fallbackModels []string, recordPrimaryHi
 		common.MetricsLLMRateLimitHitsTotal(rc.currentProvider, rc.currentModel, rc.accountId)
 	}
 
-	ctx.GetLogger().Info("STRATEGY 2: Quota/rate limit error detected, trying fallback models",
+	ctx.GetLogger().Info("STRATEGY 2: trying fallback models",
+		"reason", cause.reason(),
 		"agentId", rc.agentId,
 		"primaryModel", rc.currentModel,
 		"fallbackCount", len(fallbackModels))
 
-	// Validate fallback models exist
+	// Validate fallback models exist. Having none is a deliberate configuration
+	// choice — the tier is meant to surface the failure rather than silently
+	// answer from a different model — so the error is the user-facing contract
+	// and must state the real cause and that no fallback is configured.
 	if len(fallbackModels) == 0 {
-		ctx.GetLogger().Warn("No fallback models configured for quota handling")
+		ctx.GetLogger().Warn("No fallback models configured for this tier",
+			"model", rc.currentModel, "provider", rc.currentProvider, "cause", cause.reason())
+		wrapped := ensureLastErr(rc)
+		if cause == fallbackCauseUnavailable {
+			return nil, buildCallMetadata(rc, false),
+				fmt.Errorf("model %s (%s) is currently unavailable and no fallback model is configured for this tier: %w",
+					rc.currentModel, rc.currentProvider, wrapped)
+		}
 		return nil, buildCallMetadata(rc, false),
-			fmt.Errorf("quota exceeded on model %s and no fallback models available", rc.currentModel)
+			fmt.Errorf("quota exceeded on model %s and no fallback model is configured for this tier: %w",
+				rc.currentModel, wrapped)
 	}
 
 	// Try each fallback model
@@ -2407,14 +2441,49 @@ func handleQuotaError(rc *retryContext, fallbackModels []string, recordPrimaryHi
 			"error", safeError(err))
 	}
 
-	// All fallbacks exhausted
+	// All fallbacks exhausted. Preserve the original cause — the operator needs
+	// to know we entered fallback because the primary was unavailable (not because
+	// of quota) even if the last fallback failed for a different reason. Without
+	// this branch a 503 that also exhausts fallbacks still reads as "quota".
 	ctx.GetLogger().Error("STRATEGY 2 FAILED: All fallback models exhausted",
 		"triedModels", len(rc.triedModels),
 		"fallbackCount", len(fallbackModels),
-		"primaryModel", rc.currentModel)
+		"primaryModel", rc.currentModel,
+		"cause", cause.reason())
 
+	// rc.triedModels is seeded with the primary at line 2664, so its length is
+	// (1 + fallback attempts) — reporting fallback count uses len(fallbackModels).
+	wrapped := ensureLastErr(rc)
+	if cause == fallbackCauseUnavailable {
+		return nil, buildCallMetadata(rc, false),
+			fmt.Errorf("model %s (%s) and all %d fallback model(s) are currently unavailable: %w",
+				rc.currentModel, rc.currentProvider, len(fallbackModels), wrapped)
+	}
 	return nil, buildCallMetadata(rc, false),
-		fmt.Errorf("quota exceeded on all available models (tried %d models)", len(rc.triedModels))
+		fmt.Errorf("quota exceeded on primary model %s and all %d fallback model(s) also failed: %w",
+			rc.currentModel, len(fallbackModels), wrapped)
+}
+
+// ensureLastErr returns a non-nil error for wrapping in the terminal message
+// (rc.lastErr if set, otherwise the ErrLLMServiceUnavailable sentinel) AND
+// assigns it back to rc.lastErr when it started nil. Two failure modes solved
+// together:
+//
+//  1. On entry paths that dispatch to handleQuotaError without a captured
+//     upstream error (notably the circuit-open shortcut, which classifies the
+//     endpoint as down before any call was attempted), %w on nil would render
+//     as `%!w(<nil>)` and hide the real cause.
+//  2. buildCallMetadata gates failure recording on `!success && rc.lastErr != nil`
+//     (see line 1908), so a nil lastErr on a terminal failure would incorrectly
+//     record RequestStatus:"success" in metrics and token-usage rows.
+//
+// Only assigns when nil so an already-captured, more-descriptive error from an
+// earlier fallback attempt is preserved.
+func ensureLastErr(rc *retryContext) error {
+	if rc.lastErr == nil {
+		rc.lastErr = ErrLLMServiceUnavailable
+	}
+	return rc.lastErr
 }
 
 // handleTransientError handles temporary errors (timeouts, 500s) with exponential backoff retry
@@ -2520,7 +2589,7 @@ func handleTransientError(rc *retryContext, maxAttempts int) (*llms.ContentRespo
 					}
 				}
 			}
-			return handleQuotaError(rc, fallbackModels, true) // actual quota error mid-retry
+			return handleQuotaError(rc, fallbackModels, true, fallbackCauseQuota) // actual quota error mid-retry
 		}
 
 		if !isRetryableError(err) {
@@ -2566,7 +2635,7 @@ tryFallbacks:
 			// When invoked from this transient-error path that label is semantically imprecise
 			// (timeouts ≠ rate limits), but the circuit-breaker backpressure it introduces is
 			// still a useful safety net while the model is in a degraded state.
-			return handleQuotaError(rc, fallbackModels, false) // transient exhaustion — do not trip circuit
+			return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable) // transient exhaustion (timeouts, not quota) — do not trip circuit
 		}
 	}
 
@@ -2706,7 +2775,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 			"provider", rc.currentProvider, "model", rc.currentModel)
 
 		if len(fallbackModels) > 0 {
-			return handleQuotaError(rc, fallbackModels, false) // circuit already open — do not extend cooldown
+			return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable) // circuit already open — do not extend cooldown
 		}
 		// No fallback: fail fast rather than hammer a known-down endpoint. Cooldown is
 		// still active here — IsModelCircuitOpen half-opens once it expires, so a later
@@ -2749,7 +2818,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 
 		if len(fallbackModels) > 0 {
 			ctx.GetLogger().Info("Routing to STRATEGY 2 (Fallback) due to slow primary model")
-			return handleQuotaError(rc, fallbackModels, false)
+			return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable)
 		}
 	}
 
@@ -2779,7 +2848,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 	} else if isQuotaError(rc.lastErr) {
 		// STRATEGY 2: Quota/Rate Limit → Fallback Models
 		ctx.GetLogger().Info("Routing to STRATEGY 2: Quota/Rate Limit Handling")
-		return handleQuotaError(rc, fallbackModels, true) // genuine quota error — trip circuit
+		return handleQuotaError(rc, fallbackModels, true, fallbackCauseQuota) // genuine quota error — trip circuit
 
 	} else if isEmptyResponseError(rc.lastErr) {
 		// STRATEGY 3a: Empty LLM Response → immediate retry first, then bounded backoff.
@@ -2861,7 +2930,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 		if !errors.Is(rc.lastErr, huggingfaceclient.ErrCircuitOpen) && !errors.Is(rc.lastErr, huggingfaceclient.ErrCircuitTripped) {
 			RecordModelFailure(rc.currentProvider, rc.currentModel)
 		}
-		return handleQuotaError(rc, fallbackModels, false)
+		return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable)
 
 	} else if isTransientError(rc.lastErr) {
 		// STRATEGY 3: Transient Error → Retry with Exponential Backoff
