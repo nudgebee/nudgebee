@@ -501,6 +501,7 @@ const apiAccount = {
         'solarwinds',
         'solarwinds_webhook',
         'elasticsearch_webhook',
+        'openobserve_webhook',
         'workflow_webhook',
         'google_chat_space',
         'slack',
