@@ -1,0 +1,33 @@
+{
+  "$comment": "Inputs only — what the test types into the Task Runner. Expected outputs are never stored here; cryptoExpected.ts computes them from these inputs at run time, the way 2+2 is entered and 4 is worked out rather than written down.",
+  "plaintext": "nudgebee-task-runner",
+  "unicodePlaintext": "nudgebee ☑ task-runner / 100% & <ok>",
+  "keyText": "nudgebee-task-runner-e2e-key",
+  "aesKeyBase64": "N18EVJkExAyqUyERhRRYKt5t8VKhZZbsaF7x0lx8NUE=",
+  "knownVectorNonceHex": "0102030405060708090a0b0c",
+  "hashAlgorithms": ["md5", "sha1", "sha256", "sha512"],
+  "encodeAlgorithms": ["base64", "hex"],
+  "negative": {
+    "decodeMalformedBase64": {
+      "data": "not-valid-base64!!!",
+      "algorithm": "base64",
+      "errorPattern": "failed to decode|illegal base64|invalid"
+    },
+    "decryptWrongKey": {
+      "key": "nudgebee-task-runner-wrong-key",
+      "errorPattern": "failed to decrypt|authentication|message authentication failed"
+    },
+    "decryptTruncatedCiphertext": {
+      "data": "YWJj",
+      "errorPattern": "ciphertext too short|failed to decrypt|failed to decode"
+    },
+    "encryptUndersizedKey": {
+      "key": "YWJj",
+      "keyEncoding": "base64",
+      "errorPattern": "invalid key length|expected 32 bytes"
+    }
+  },
+  "statusPatterns": {
+    "failed": "FAILED|ERROR"
+  }
+}
