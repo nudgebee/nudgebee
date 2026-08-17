@@ -21,13 +21,15 @@ import (
 // survives the enabled-filter.
 
 // cloudLeanCoreToolNames is the lean preloaded set for a cloud orchestrator. cliToolName is
-// the cloud's direct CLI tool (gcloud_execute / azure_execute) — its observability surface
-// (Cloud Logging/Monitoring, Azure Monitor) is the CLI itself, so no separate logs/metrics
-// sub-agents are preloaded. The conditional tail (memory/followup) mirrors the k8s
-// reduced core, so the ONLY difference from the direct orchestrator is the removed specialists.
+// the cloud's direct CLI tool (gcloud_execute / azure_execute / aws_execute). Observability
+// queries route to the provider-specific sub-agents (aws_logs/metrics/traces, gcp_logs/metrics/traces,
+// azure_logs/metrics/traces) via the mounted logs, metrics, and traces dispatchers.
 func cloudLeanCoreToolNames(cliToolName string) []string {
 	names := []string{
 		cliToolName,
+		LogsAgentName,
+		MetricsAgentName,
+		TracesAgentName,
 		ServiceDependencyGraph,
 		EventsAgentName,
 		RecommendationsAgentName,
