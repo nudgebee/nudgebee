@@ -12,7 +12,7 @@
 
 15 interconnected services deployed on Kubernetes. Three-tier environment: main (dev) → test → prod.
 
-**Go (9):** `api-server/services/` (core backend, Gin) · `ticket-server/` · `collector-server/cloud-collector/` · `collector-server/k8s-collector/relay-server/` (K8s relay gateway) · `collector-server/cost-server/` (OpenCost-based) · `llm/code-analysis/` · `llm/llm-server/` · `app-e2e-tests/` · `api-server/test_servicemap/`
+**Go (10):** `api-server/services/` (core backend, Gin) · `ticket-server/` · `collector-server/cloud-collector/` · `collector-server/k8s-collector/relay-server/` (K8s relay gateway) · `collector-server/cost-server/` (OpenCost-based) · `llm/gateway/` (AI Gateway) · `llm/code-analysis/` · `llm/llm-server/` · `app-e2e-tests/` · `api-server/test_servicemap/`
 
 **Python (5+):** `ml-k8s-server/` · `llm/rag-server/` · `collector-server/k8s-collector/app/` · `auto-pilot/` (+ `auto-pilot/sidecar/`) · `notifications-server/` · `llm/benchmark/`
 
@@ -76,7 +76,7 @@ Each service's Makefile / package.json is the source of truth — read it for th
 
 | Service type | Services | Validate with |
 |---|---|---|
-| Go with Makefile | api-server/services, ticket-server, cloud-collector, relay-server, cost-server, llm-server, code-analysis | `make validate` (fmt + lint + test); `make fmt` to auto-format |
+| Go with Makefile | api-server/services, ticket-server, cloud-collector, relay-server, cost-server, llm-server, llm/gateway, code-analysis | `make validate` (fmt + lint + test); `make fmt` to auto-format |
 | Python with Makefile | ml-k8s-server, rag-server, k8s-collector/app | `make lint && make test`; `make fmt` to auto-format (black, line-length 120) |
 | Python without Makefile | auto-pilot (+sidecar), notifications-server, llm/benchmark | `poetry install`, then `poetry run black --check . && poetry run flake8 . && poetry run pytest` |
 | Go without Makefile | app-e2e-tests, api-server/test_servicemap | `go test ./...` |

@@ -22,6 +22,7 @@ deploy/kubernetes/
 ├── notifications/                  # Notification delivery
 ├── workflow-server/                # Runbook / workflow orchestration
 ├── llm-server/                     # LLM session state + routing
+├── llm-gateway/                    # AI Gateway — LLM passthrough, metering, auth & rate limits
 ├── rag-server/                     # RAG retrieval against Qdrant
 ├── ml-k8s-server/                  # ML pipelines for rightsizing + anomaly
 ├── cloud-collector-server/         # Cloud-scan collector
