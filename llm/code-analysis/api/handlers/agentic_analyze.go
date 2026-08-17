@@ -771,6 +771,20 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 		// minutes and 133k output tokens this way and reported success, so the
 		// failure was invisible to anything reading status.
 		//
+		// When the run ends on a control message rather than a submission, that
+		// message IS the diagnosis and the parse failure is noise on top of it:
+		// the agent hands back prose, so JSON parsing fails on its first
+		// character and reports "invalid character 'T'" — burying, say, a
+		// contract-validation failure or "BLOCKED: identical submit_analysis
+		// call executed 3 times" behind a parser complaint, and costing whoever
+		// reads it a trip through the logs to recover a message we already had.
+		//
+		// Detected by the absence of any JSON object rather than by matching
+		// known prefixes: the set of control messages grows, and each new one
+		// would otherwise silently fall back to the misleading parser error.
+		if text := strings.TrimSpace(agentResponseStr); text != "" && !strings.Contains(text, "{") {
+			return nil, fmt.Errorf("agent ended without a structured submission: %s", text)
+		}
 		// The preview goes in the error because it is the only surviving evidence
 		// of what the model actually produced.
 		return nil, fmt.Errorf("agent response could not be parsed as a structured analysis: %w (response preview: %s)", err, responsePreview)

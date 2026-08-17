@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"nudgebee/code-analysis-agent/common"
 	"nudgebee/code-analysis-agent/tools/core"
 )
 
@@ -402,6 +403,76 @@ func WithMode(ctx context.Context, mode string) context.Context {
 	return context.WithValue(ctx, modeContextKey{}, mode)
 }
 
+// EvidenceSource exposes the run's evidence trail — the files the tools
+// actually read — so explore-mode submission can back an answer whose citations
+// the model failed to declare. Narrow by design, and satisfied by
+// common.ToolInvocationTracker.
+type EvidenceSource interface {
+	ReadFileEvidence() []common.FileEvidence
+}
+
+// evidenceContextKey is the context.Value key used to thread the run's evidence
+// trail from the orchestrator into submit_analysis, mirroring modeContextKey.
+type evidenceContextKey struct{}
+
+// WithEvidence returns a context carrying the run's evidence trail. The
+// orchestrator wraps the planner's context with this alongside WithMode.
+func WithEvidence(ctx context.Context, src EvidenceSource) context.Context {
+	return context.WithValue(ctx, evidenceContextKey{}, src)
+}
+
+// evidenceFromContext returns the evidence source set by WithEvidence, or nil.
+func evidenceFromContext(ctx context.Context) EvidenceSource {
+	if ctx == nil {
+		return nil
+	}
+	src, _ := ctx.Value(evidenceContextKey{}).(EvidenceSource)
+	return src
+}
+
+// maxSynthesizedCitations bounds how many files a synthesized citation list may
+// name. An answer supported by every file the run happened to open is not
+// evidence, it is a directory listing; the first few reads are the ones the
+// investigation actually turned on.
+const maxSynthesizedCitations = 5
+
+// citationsFromEvidence builds explore-mode citations from the files the run
+// actually read.
+//
+// Weaker models reliably produce a sound `answer` and then omit `citations`
+// entirely, or inline them as markdown. Rejecting that submission asks the model
+// to solve a formatting problem it has already shown it cannot solve — observed
+// here failing twice in a row against the same corrective prompt, and once
+// before that, which is why the line_start requirement was already relaxed. The
+// evidence exists either way, recorded by the tools rather than reported by the
+// model, so derive the citations from it instead of failing the run.
+//
+// LineStart is left at 0, which the contract already accepts as file-level
+// evidence, and Note says plainly where the citation came from so a reader is
+// never misled into thinking the model pointed at these lines itself.
+func citationsFromEvidence(evidence []common.FileEvidence) []Citation {
+	var citations []Citation
+	for _, e := range evidence {
+		if len(citations) >= maxSynthesizedCitations {
+			break
+		}
+		snippet := strings.TrimSpace(e.Snippet)
+		if snippet == "" {
+			// The contract requires a snippet, and an empty one would trade a
+			// missing-citations rejection for an empty-snippet rejection. Say
+			// what is true instead: the file was read, its content is not
+			// reproduced here.
+			snippet = "(file read during this investigation; content not captured)"
+		}
+		citations = append(citations, Citation{
+			FilePath: e.Path,
+			Snippet:  snippet,
+			Note:     "Read during this investigation; citation derived from the run's evidence trail.",
+		})
+	}
+	return citations
+}
+
 // ModeFromContext returns the mode set by WithMode, or "" if none. Exported so
 // the planner can build a mode-aware goal/system prompt without coupling to the
 // submit_analysis tool implementation.
@@ -523,6 +594,14 @@ func (t *SubmitAnalysisTool) Execute(ctx context.Context, input map[string]any) 
 		// Explore mode owns its own contract: a structured `answer` and at
 		// least one `citation`. Failures return a tool error so the ReAct
 		// planner can retry the specialist with actionable feedback.
+		// Back an otherwise-sound answer with the run's own evidence before
+		// judging it. Only fills a gap — a model that declared its citations
+		// keeps them exactly as given.
+		if len(params.Citations) == 0 && strings.TrimSpace(params.Answer) != "" {
+			if src := evidenceFromContext(ctx); src != nil {
+				params.Citations = citationsFromEvidence(src.ReadFileEvidence())
+			}
+		}
 		if errs := validateExploreContract(params); len(errs) > 0 {
 			return core.CreateErrorResponse(
 				"Explore-mode submission failed contract validation:\n  - "+strings.Join(errs, "\n  - "),

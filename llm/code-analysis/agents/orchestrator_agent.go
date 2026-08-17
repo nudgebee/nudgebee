@@ -267,6 +267,13 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 	// LLM a chance to correct a malformed submission.
 	ctx = tools.WithMode(ctx, request.EffectiveMode())
 
+	// Thread the run's evidence trail alongside the mode so explore-mode
+	// submission can back an answer whose citations the model omitted with the
+	// files the tools actually read.
+	if a.toolTracker != nil {
+		ctx = tools.WithEvidence(ctx, a.toolTracker)
+	}
+
 	// 2. Call RouterAgent
 	routeName, err := a.routerAgent.Execute(ctx, sessionCtx)
 	if err != nil {
