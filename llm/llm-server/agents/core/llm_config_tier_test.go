@@ -1295,3 +1295,49 @@ func TestConversationTierOverrides_GetSkipsHalfSet(t *testing.T) {
 		t.Fatalf("missing tier key must not be returned")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// detachedRequestContext — background writes keep attribution
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The token-usage write runs in the background, so its context must outlive the
+// request. Detaching it with context.Background() also dropped every value, which
+// is why every successful row was persisted with model_tier NULL while only the
+// failure path (which reads attribution before detaching) carried a tier.
+func TestDetachedRequestContext_KeepsAttributionDropsCancellation(t *testing.T) {
+	goCtx, cancel := context.WithCancel(context.Background())
+	goCtx = context.WithValue(goCtx, ContextKeyModelTier, ModelTierReasoning)
+	goCtx = context.WithValue(goCtx, ContextKeyTaskType, taskTypeInvestigation)
+	parent := security.NewRequestContext(goCtx, nil, slog.Default(), nil, nil)
+
+	detached := detachedRequestContext(parent)
+
+	// Cancelling the request must not cancel the background write.
+	cancel()
+	assert.Error(t, parent.GetContext().Err(), "parent should be cancelled")
+	assert.NoError(t, detached.GetContext().Err(), "detached context must survive request cancellation")
+
+	// ...but the attribution the record is built from must survive.
+	tier, taskType := tierAttributionForRecord(detached)
+	if assert.NotNil(t, tier, "model_tier must survive detachment — NULL here is the bug this guards") {
+		assert.Equal(t, string(ModelTierReasoning), *tier)
+	}
+	if assert.NotNil(t, taskType) {
+		assert.Equal(t, taskTypeInvestigation, *taskType)
+	}
+}
+
+// Guards the nil-parent paths: a nil RequestContext and a zero-value one (whose
+// internal context.Context is nil) must not panic — context.WithoutCancel panics
+// on a nil parent.
+func TestDetachedRequestContext_NilSafe(t *testing.T) {
+	assert.Nil(t, detachedRequestContext(nil))
+
+	zero := detachedRequestContext(&security.RequestContext{})
+	if assert.NotNil(t, zero) {
+		assert.NotNil(t, zero.GetContext())
+		tier, taskType := tierAttributionForRecord(zero)
+		assert.Nil(t, tier)
+		assert.Nil(t, taskType)
+	}
+}

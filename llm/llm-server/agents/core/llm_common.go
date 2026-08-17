@@ -288,6 +288,36 @@ func tierAttributionForRecord(ctx *security.RequestContext) (modelTier *string, 
 	return
 }
 
+// detachedRequestContext returns a copy of ctx whose cancellation is severed from
+// the request but whose VALUES are kept. It is the correct parent for a best-effort
+// background write that must outlive the turn (token-usage tracking) yet still read
+// per-turn attribution — ContextKeyModelTier / ContextKeyTaskType — off the context.
+//
+// context.Background() is the trap this exists to prevent: it detaches cancellation
+// AND drops every value, so a record built from it silently loses its attribution.
+// That is exactly how every successful token-usage row came to be written with
+// model_tier NULL, while the failure path — which reads attribution before
+// detaching — carried a tier.
+func detachedRequestContext(ctx *security.RequestContext) *security.RequestContext {
+	if ctx == nil {
+		return nil
+	}
+	// A zero-value security.RequestContext has a nil internal context.Context
+	// (e.g., tests that build planner stubs with `&security.RequestContext{}`).
+	// Guard so WithoutCancel never gets a nil parent — it panics on one.
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return security.NewRequestContext(
+		context.WithoutCancel(goCtx),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+}
+
 // TierAttributionForRecord is the exported form of tierAttributionForRecord, for
 // callers outside package core that build TokenUsageRecords themselves — the
 // code-analysis path in package agents inserts its own per-call rows rather than
@@ -802,8 +832,9 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 
 	// Track token usage for the agent including cache breakdown
 	// Use metadata from the LLM call for accurate tracking
-	// RUN ASYNCHRONOUSLY to prevent DB latency from blocking the response
-	bgCtx := security.NewRequestContext(context.Background(), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+	// RUN ASYNCHRONOUSLY to prevent DB latency from blocking the response.
+	//
+	bgCtx := detachedRequestContext(ctx)
 	trackFn := func() {
 		// Best-effort background metrics write — never let a panic crash the
 		// process. Guards against a typed-nil DAO (non-nil interface wrapping a
