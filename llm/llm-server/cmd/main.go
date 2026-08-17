@@ -78,13 +78,17 @@ func authHandlerMiddleware() gin.HandlerFunc {
 		// — this token only authenticates service-to-service callers
 		// (frontend gateway, notifications-server, etc.) when the operator
 		// chose to enforce it.
-		if config.Config.LlmServerToken != "" {
-			authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
-			if authHeader != config.Config.LlmServerToken {
-				logger.Error("main: invalid service token", "path", c.Request.URL.Path, "method", c.Request.Method)
-				c.AbortWithStatusJSON(401, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
-				return
-			}
+		if config.Config.LlmServerToken == "" {
+			logger.Error("main: service token is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatusJSON(503, gin.H{"message": "service token is not configured"})
+			return
+		}
+
+		authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
+		if authHeader != config.Config.LlmServerToken {
+			logger.Error("main: invalid service token", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatusJSON(401, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
+			return
 		}
 		c.Set(CTX_IS_PUBLIC, false)
 		c.Next()
@@ -134,6 +138,9 @@ func main() {
 	}()
 
 	slog.SetDefault(logger)
+	if config.Config.LlmServerToken == "" {
+		slog.Warn("LLM_SERVER_TOKEN is empty — protected llm-server routes will reject requests until a shared token is configured.")
+	}
 	config.LogSecurityWarnings()
 	tp, mp, err := initOtel()
 	if err != nil {
