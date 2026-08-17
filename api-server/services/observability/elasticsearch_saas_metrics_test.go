@@ -2,9 +2,16 @@ package observability
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"nudgebee/services/query"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNormalizeESMetricsWhere_EqAppendsKeyword(t *testing.T) {
@@ -584,4 +591,187 @@ func TestParseESMetricsHits_LegacyFlatShape(t *testing.T) {
 	if s.Metric["pod"] != "p" || len(s.Values) != 1 || s.Values[0] != 5 {
 		t.Fatalf("legacy flat parse wrong: metric=%v values=%v", s.Metric, s.Values)
 	}
+}
+
+// TestESFetchLabelValues_KeywordSuffixFallback pins the fallback that unblocks ECS
+// indices. Aggregating a non-existent field is not an error in Elasticsearch — it returns
+// zero buckets — so a `.keyword` suffix guessed onto a field that is already a plain
+// keyword silently produced "no values". Elastic Agent / Metricbeat map
+// `kubernetes.namespace`, `metricset.name`, `host.name` as plain keyword, so every
+// label-values lookup on such an index came back empty while the unsuffixed field
+// aggregated fine. Verified against the dev cluster:
+//
+//	kubernetes.namespace         -> 3 buckets
+//	kubernetes.namespace.keyword -> 0 buckets, no error
+func TestESFetchLabelValues_KeywordSuffixFallback(t *testing.T) {
+	buckets := func(keys ...string) string {
+		items := make([]string, 0, len(keys))
+		for _, k := range keys {
+			items = append(items, fmt.Sprintf(`{"key":%q,"doc_count":1}`, k))
+		}
+		return `{"aggregations":{"label_values":{"buckets":[` + strings.Join(items, ",") + `]}}}`
+	}
+
+	tests := []struct {
+		name        string
+		field       string
+		respFor     map[string]string // aggregated field -> response body
+		wantValues  []string
+		wantQueried []string
+	}{
+		{
+			// ECS: plain keyword field. The suffixed lookup returns zero buckets with a
+			// 200, which must trigger the unsuffixed retry.
+			name:  "plain keyword field falls back after an empty suffixed lookup",
+			field: "kubernetes.namespace",
+			respFor: map[string]string{
+				"kubernetes.namespace.keyword": buckets(),
+				"kubernetes.namespace":         buckets("payments", "payments-staging"),
+			},
+			wantValues:  []string{"payments", "payments-staging"},
+			wantQueried: []string{"kubernetes.namespace.keyword", "kubernetes.namespace"},
+		},
+		{
+			// OTel: `name` is text and errors unsuffixed, so the suffix must be tried
+			// first and must not be retried away when it succeeds.
+			name:  "text field with a keyword subfield is served by the suffixed lookup",
+			field: "name",
+			respFor: map[string]string{
+				"name.keyword": buckets("container.cpu.usage"),
+			},
+			wantValues:  []string{"container.cpu.usage"},
+			wantQueried: []string{"name.keyword"},
+		},
+		{
+			name:  "genuinely absent label yields no values under either spelling",
+			field: "granicus.application",
+			respFor: map[string]string{
+				"granicus.application.keyword": buckets(),
+				"granicus.application":         buckets(),
+			},
+			wantValues:  nil,
+			wantQueried: []string{"granicus.application.keyword", "granicus.application"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var queried []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var parsed struct {
+					Aggs struct {
+						LabelValues struct {
+							Terms struct {
+								Field string `json:"field"`
+							} `json:"terms"`
+						} `json:"label_values"`
+					} `json:"aggs"`
+				}
+				_ = json.Unmarshal(body, &parsed)
+				field := parsed.Aggs.LabelValues.Terms.Field
+				queried = append(queried, field)
+				resp, ok := tt.respFor[field]
+				if !ok {
+					// Mirror ES: aggregating a text field without .keyword is an error.
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":{"type":"search_phase_execution_exception"}}`))
+					return
+				}
+				_, _ = w.Write([]byte(resp))
+			}))
+			defer srv.Close()
+
+			out, err := esFetchLabelValues(&ElasticsearchConfig{Url: srv.URL}, "metricbeat-8.19.11", tt.field)
+			require.NoError(t, err)
+
+			got := make([]string, 0, len(out))
+			for _, v := range out {
+				got = append(got, v.Value)
+			}
+			assert.Equal(t, tt.wantValues, nilIfEmpty(got))
+			assert.Equal(t, tt.wantQueried, queried, "field spellings attempted, in order")
+		})
+	}
+}
+
+func nilIfEmpty(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
+}
+
+// TestESFetchMetricFields_MergesAllIndicesAndKeepsTypes pins the fix for the defect that
+// cost one customer a 41-minute investigation. The mapping call used to `break` after the
+// first index in the response, so a pattern spanning per-dataset data streams was
+// characterised by whichever index Elasticsearch happened to list first — arbitrary, and
+// sometimes an index with zero documents. It also discarded each field's type, leaving
+// the caller to guess which fields are metric values and which are dimensions.
+func TestESFetchMetricFields_MergesAllIndicesAndKeepsTypes(t *testing.T) {
+	// Two datasets under one pattern, as a real estate looks: the non-Kubernetes one
+	// listed first, exactly the case that hid pod CPU from the agent.
+	mapping := `{
+      ".ds-metrics-system.socket_summary-prod-000001": {"mappings":{"properties":{
+         "@timestamp":{"type":"date"},
+         "metricset":{"properties":{"name":{"type":"keyword"}}},
+         "system":{"properties":{"socket":{"properties":{"summary":{"properties":{
+            "all":{"properties":{"count":{"type":"long"}}}}}}}}}
+      }}},
+      ".ds-metrics-kubernetes.pod-prod-000001": {"mappings":{"properties":{
+         "@timestamp":{"type":"date"},
+         "kubernetes":{"properties":{
+            "namespace":{"type":"keyword"},
+            "pod":{"properties":{"cpu":{"properties":{"usage":{"properties":{
+               "nanocores":{"type":"long"}}}}}}}}}
+      }}}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(mapping))
+	}))
+	defer srv.Close()
+
+	out, err := esFetchMetricFields(&ElasticsearchConfig{Url: srv.URL}, "metrics-*-prod")
+	require.NoError(t, err)
+
+	types := map[string]any{}
+	for _, f := range out {
+		types[f.Label] = f.Attributes["type"]
+	}
+
+	// The whole point: a field from the SECOND index must be present.
+	assert.Contains(t, types, "kubernetes.pod.cpu.usage.nanocores",
+		"fields from later indices must not be dropped — this is what hid pod CPU")
+	assert.Contains(t, types, "system.socket.summary.all.count")
+
+	// Types must survive, so callers can tell metric values from dimensions.
+	assert.Equal(t, "long", types["kubernetes.pod.cpu.usage.nanocores"], "numeric = metric value path")
+	assert.Equal(t, "keyword", types["kubernetes.namespace"], "keyword = dimension")
+
+	// Output must be deterministic, not a function of index enumeration order.
+	labels := make([]string, 0, len(out))
+	for _, f := range out {
+		labels = append(labels, f.Label)
+	}
+	assert.IsIncreasing(t, labels, "field list must be stably ordered")
+}
+
+// TestESFetchLabelValues_IsTimeBounded pins that label enumeration does not scan history.
+// Unbounded, this terms agg runs over every index the pattern matches — on one estate 276
+// indices, 211 of them searchable snapshots on object storage.
+func TestESFetchLabelValues_IsTimeBounded(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		_, _ = w.Write([]byte(`{"aggregations":{"label_values":{"buckets":[{"key":"default","doc_count":1}]}}}`))
+	}))
+	defer srv.Close()
+
+	_, err := esFetchLabelValues(&ElasticsearchConfig{Url: srv.URL}, "metrics-*-prod", "kubernetes.namespace")
+	require.NoError(t, err)
+
+	assert.Contains(t, body, esLabelValuesTimeField, "aggregation must carry a time filter")
+	assert.Contains(t, body, esLabelValuesWindow)
+	assert.Contains(t, body, `"range"`)
 }
