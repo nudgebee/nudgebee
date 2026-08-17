@@ -50,6 +50,31 @@ type EventIncomingWebhookInvestigationSeverity string
 
 var ErrEventNotSupported = errors.New("event not supported")
 
+// processing_status values written to event_incoming_webhooks after a delivery is
+// handled. "skipped" distinguishes a delivery the integration does not model (an
+// event type it ignores) from one that genuinely failed to process.
+const (
+	webhookProcessingStatusProcessed = "processed"
+	webhookProcessingStatusFailed    = "failed"
+	webhookProcessingStatusSkipped   = "skipped"
+)
+
+// webhookProcessingStatusForError maps a ProcessEventWebook error onto the
+// processing_status recorded for that delivery.
+//
+// A delivery for an event type the integration does not model is a no-op, not a
+// failure. PagerDuty alone fans out incident.acknowledged, incident.annotated and
+// incident.custom_field_values.updated to every subscription, and each landed in
+// the table as `failed` — making ingestion read as broken and burying the
+// deliveries that genuinely did fail. These were already silent in the log for the
+// same reason; the stored status now agrees with that.
+func webhookProcessingStatusForError(err error) string {
+	if errors.Is(err, ErrEventNotSupported) {
+		return webhookProcessingStatusSkipped
+	}
+	return webhookProcessingStatusFailed
+}
+
 // eventAnalysisSources defines webhook sources that trigger LLM event analysis
 var eventAnalysisSources = map[string]bool{
 	"datadog_webhook":                 true,
@@ -398,7 +423,7 @@ func ProcessStoredWebhook(sc *security.RequestContext, webhookRowID string) erro
 	var row StoredWebhookEventData
 	err = dbms.Db.Get(&row, `SELECT id, tenant_id, COALESCE(account_id::text, '') as account_id, integration_id, integration_type, raw, COALESCE(request_url, '') as request_url FROM event_incoming_webhooks WHERE id = $1`, webhookRowID)
 	if err != nil {
-		updateWebhookStatus(dbms, webhookRowID, "failed")
+		updateWebhookStatus(dbms, webhookRowID, webhookProcessingStatusFailed)
 		return fmt.Errorf("integrations: webhook row not found: %w", err)
 	}
 
@@ -406,13 +431,13 @@ func ProcessStoredWebhook(sc *security.RequestContext, webhookRowID string) erro
 
 	integration, found := GetIntegration(row.IntegrationType)
 	if !found {
-		updateWebhookStatus(dbms, webhookRowID, "failed")
+		updateWebhookStatus(dbms, webhookRowID, webhookProcessingStatusFailed)
 		return fmt.Errorf("integrations: integration type %s not found", row.IntegrationType)
 	}
 
 	webhookIntegration, ok := integration.(EventIncomingTroubleshootWebhookIntegration)
 	if !ok {
-		updateWebhookStatus(dbms, webhookRowID, "failed")
+		updateWebhookStatus(dbms, webhookRowID, webhookProcessingStatusFailed)
 		return fmt.Errorf("integrations: integration type %s does not support webhook events", row.IntegrationType)
 	}
 
@@ -423,8 +448,9 @@ func ProcessStoredWebhook(sc *security.RequestContext, webhookRowID string) erro
 
 	webhookEvents, err := webhookIntegration.ProcessEventWebook(sc, webhookSettings, row.AccountID, row.Raw)
 	if err != nil {
-		updateWebhookStatus(dbms, webhookRowID, "failed")
-		if !errors.Is(err, ErrEventNotSupported) {
+		status := webhookProcessingStatusForError(err)
+		updateWebhookStatus(dbms, webhookRowID, status)
+		if status != webhookProcessingStatusSkipped {
 			sc.GetLogger().Error("integrations: unable to process webhook payload", "error", err)
 		}
 		return nil
@@ -477,7 +503,7 @@ func ProcessStoredWebhook(sc *security.RequestContext, webhookRowID string) erro
 	}
 
 	if len(webhookEvents) == 0 {
-		updateWebhookStatus(dbms, webhookRowID, "processed")
+		updateWebhookStatus(dbms, webhookRowID, webhookProcessingStatusProcessed)
 	}
 
 	return nil
