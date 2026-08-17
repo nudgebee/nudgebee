@@ -1875,7 +1875,28 @@ func (o *NBReActPlanner3) Plan(
 
 		summaryResult, summaryErr := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, summaryMessages, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
 		if summaryErr != nil || len(summaryResult.Choices) == 0 {
-			return nil, &NBAgentPlannerFinishAction{Data: scratchpad}, nil
+			// The summarization retry also failed — often deterministically, since
+			// it re-embeds the same scratchpad (and thus the same offending
+			// content, e.g. an egressfilter-blocked secret) that caused the
+			// original failure. Surface a clear, user-safe message instead of the
+			// raw scratchpad: XmlExtractCDATA (executor_planner.go) only extracts
+			// the FIRST <thought><![CDATA[...]]></thought> block in a multi-step
+			// scratchpad, which silently returns intermediateSteps[0]'s reasoning
+			// as if it were the final answer — indistinguishable from a real one.
+			errToClassify := summaryErr
+			if errToClassify == nil {
+				errToClassify = lastErr
+			}
+			if msg, blocked := egressBlockedMessage(errToClassify); blocked {
+				return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
+			}
+			if classified := classifyUserFacingLLMError(errToClassify); classified != nil {
+				return nil, nil, classified
+			}
+			return nil, &NBAgentPlannerFinishAction{
+				Data:   "I gathered some evidence but was unable to synthesize a final answer. Please try again or rephrase your question.",
+				Status: ConversationStatusFailed,
+			}, nil
 		}
 		return nil, &NBAgentPlannerFinishAction{Data: summaryResult.Choices[0].Content}, nil
 	}
@@ -1926,7 +1947,19 @@ func (o *NBReActPlanner3) Plan(
 		if summaryErr == nil && len(summaryResult.Choices) > 0 {
 			return nil, &NBAgentPlannerFinishAction{Data: summaryResult.Choices[0].Content}, nil
 		}
-		return nil, &NBAgentPlannerFinishAction{Data: scratchpad}, nil
+		// Same rationale as the lastErr!=nil branch above: never fall back to the
+		// raw scratchpad (XmlExtractCDATA silently mis-extracts intermediateSteps[0]'s
+		// reasoning from it as if it were the final answer).
+		if msg, blocked := egressBlockedMessage(summaryErr); blocked {
+			return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
+		}
+		if classified := classifyUserFacingLLMError(summaryErr); classified != nil {
+			return nil, nil, classified
+		}
+		return nil, &NBAgentPlannerFinishAction{
+			Data:   "I ran out of reasoning steps before reaching a confident final answer. Please try again, possibly with a narrower question.",
+			Status: ConversationStatusFailed,
+		}, nil
 	}
 
 	return nil, nil, lastErr
