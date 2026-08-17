@@ -16,7 +16,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/bedrock"
 	"github.com/tmc/langchaingo/llms/googleai"
 	"github.com/tmc/langchaingo/llms/openai"
 	"google.golang.org/genai"
@@ -125,6 +124,47 @@ func regionFromModelARN(model string) string {
 	return parts[3]
 }
 
+// defaultMaxOutputTokens is the per-response ceiling requested when a model
+// imposes none lower. Gemini CLI sets no per-response limit at all — the model
+// generates as much as it needs — but langchaingo requires a number, so this is
+// a generous one sized for the largest things this service asks for: ReAct steps
+// carrying Thought + Action + a large ActionInput of code, submit_analysis with
+// detailed implementation_instructions, and the code fixer emitting multi-line
+// replacements. An earlier version content-sniffed between 8192/12000/16000,
+// which was fragile and still truncated; one high limit is simpler.
+const defaultMaxOutputTokens = 16384
+
+// bedrockLlamaMaxGenLen is the ceiling Bedrock's Llama schema puts on
+// max_gen_len. Unlike providers that silently clamp an over-large request, this
+// one rejects it outright — "Malformed input request: #/max_gen_len: 16384 is
+// not less or equal to 8192" — so every call fails rather than merely returning
+// a shorter answer. The default above therefore cannot be sent to these models.
+const bedrockLlamaMaxGenLen = 8192
+
+// resolveMaxOutputTokens returns the per-response token ceiling to request for
+// the configured provider/model.
+//
+// Precedence: an explicitly configured value wins, then the built-in default;
+// either is then clamped down to a limit the model is known to enforce. The
+// clamp is a floor-of-last-resort rather than the primary mechanism — it exists
+// because sending too high a value here is fatal, not merely lossy — while the
+// config knob lets a newly discovered ceiling be corrected without a release.
+func resolveMaxOutputTokens(cfg *config.Config) int {
+	maxTokens := defaultMaxOutputTokens
+	if cfg != nil && cfg.LLM.MaxOutputTokens > 0 {
+		maxTokens = cfg.LLM.MaxOutputTokens
+	}
+	if cfg == nil {
+		return maxTokens
+	}
+	if strings.EqualFold(cfg.LLM.Provider, string(ProviderBedrock)) &&
+		strings.Contains(strings.ToLower(cfg.LLM.Model), "llama") &&
+		maxTokens > bedrockLlamaMaxGenLen {
+		return bedrockLlamaMaxGenLen
+	}
+	return maxTokens
+}
+
 func NewClient(cfg *config.Config) (*Client, error) {
 	if cfg == nil {
 		return nil, errors.New("config is required")
@@ -139,7 +179,6 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		// os.Setenv("AWS_REGION", ...). NewClient is built per request, so
 		// mutating process-global env would be a data race across concurrent
 		// requests (and would also leak the region into child commands).
-		bedrockOpts := []bedrock.Option{bedrock.WithModel(cfg.LLM.Model)}
 		// The region can arrive explicitly or be carried inside an
 		// inference-profile ARN; either is enough to configure the client.
 		region := cfg.LLM.Region
@@ -153,27 +192,27 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		// floor. With neither, fall through to the SDK default chain, which is
 		// what serves EKS deployments through the node role or IRSA.
 		hasStaticCreds := cfg.LLM.AccessKey != "" && cfg.LLM.SecretKey != ""
-		if region != "" || hasStaticCreds {
-			// Bound the AWS config load so a stuck IMDS/STS lookup fails fast
-			// instead of blocking client construction indefinitely.
-			awsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			opts := []func(*awsconfig.LoadOptions) error{}
-			if region != "" {
-				opts = append(opts, awsconfig.WithRegion(region))
-			}
-			if hasStaticCreds {
-				opts = append(opts, awsconfig.WithCredentialsProvider(
-					credentials.NewStaticCredentialsProvider(cfg.LLM.AccessKey, cfg.LLM.SecretKey, cfg.LLM.SessionToken),
-				))
-			}
-			awsCfg, cerr := awsconfig.LoadDefaultConfig(awsCtx, opts...)
-			if cerr != nil {
-				return nil, fmt.Errorf("failed to load AWS config for region %q: %w", region, cerr)
-			}
-			bedrockOpts = append(bedrockOpts, bedrock.WithClient(bedrockruntime.NewFromConfig(awsCfg)))
+		// Bound the AWS config load so a stuck IMDS/STS lookup fails fast
+		// instead of blocking client construction indefinitely.
+		awsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		opts := []func(*awsconfig.LoadOptions) error{}
+		if region != "" {
+			opts = append(opts, awsconfig.WithRegion(region))
 		}
-		llm, err = bedrock.New(bedrockOpts...)
+		if hasStaticCreds {
+			opts = append(opts, awsconfig.WithCredentialsProvider(
+				credentials.NewStaticCredentialsProvider(cfg.LLM.AccessKey, cfg.LLM.SecretKey, cfg.LLM.SessionToken),
+			))
+		}
+		awsCfg, cerr := awsconfig.LoadDefaultConfig(awsCtx, opts...)
+		if cerr != nil {
+			return nil, fmt.Errorf("failed to load AWS config for region %q: %w", region, cerr)
+		}
+		// Converse rather than langchaingo's bedrock package: the latter supports
+		// no tool calling on any model family, which leaves this agent unable to
+		// read a single file. See bedrock_converse.go.
+		llm = newBedrockConverseLLM(bedrockruntime.NewFromConfig(awsCfg), cfg.LLM.Model)
 	case ProviderOpenAI, ProviderHuggingFace:
 		opts := []openai.Option{
 			openai.WithModel(cfg.LLM.Model),
@@ -353,7 +392,7 @@ func (c *Client) GenerateContentNoRetry(ctx context.Context, messages []llms.Mes
 		messages = splitToolMessages(messages)
 	}
 	opts := []llms.CallOption{
-		llms.WithMaxTokens(16384),
+		llms.WithMaxTokens(resolveMaxOutputTokens(c.config)),
 		llms.WithTemperature(0.1),
 	}
 	opts = append(opts, options...)
@@ -383,15 +422,7 @@ func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageCon
 		messages = splitToolMessages(messages)
 	}
 
-	// Use a generous default token limit for all responses.
-	// Gemini CLI sets no per-response limit at all — the model generates as much as needed.
-	// We can't go unlimited with langchaingo, so use 16384 as a generous default that handles:
-	// - ReAct steps with Thought + Action + large ActionInput (code blocks)
-	// - submit_analysis with detailed implementation_instructions
-	// - Code fixer generating multi-line replacements
-	// Previous approach used content-sniffing heuristics (8192/12000/16000) which was fragile
-	// and still caused truncation. A single high limit is simpler and more reliable.
-	maxTokens := 16384
+	maxTokens := resolveMaxOutputTokens(c.config)
 
 	opts := []llms.CallOption{
 		llms.WithMaxTokens(maxTokens),

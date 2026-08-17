@@ -86,6 +86,12 @@ type LLMConfig struct {
 	AccessKey    string `mapstructure:"llm_provider_access_key"`
 	SecretKey    string `mapstructure:"llm_provider_secret_key"`
 	SessionToken string `mapstructure:"llm_provider_session_token"`
+	// MaxOutputTokens is the per-response token ceiling requested from the
+	// provider. It exists so a model whose ceiling is lower than our default can
+	// be corrected by configuration instead of a release; see
+	// resolveMaxOutputTokens, which additionally clamps families known to reject
+	// anything higher.
+	MaxOutputTokens int `mapstructure:"llm_provider_max_output_tokens"`
 }
 
 // DefaultAutomationCommentMarkers is the shipped value of
@@ -191,6 +197,7 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("llm_provider_region", "us-west-2")
 	viper.SetDefault("llm_provider_max_retries", 3)
 	viper.SetDefault("llm_provider_embedding_model", "text-embedding-ada-002")
+	viper.SetDefault("llm_provider_max_output_tokens", 0) // 0 ⇒ use the built-in default
 	// No default credentials: unset means "use the AWS default chain", which is
 	// how EKS deployments authenticate through the node role or IRSA.
 	viper.SetDefault("llm_provider_access_key", "")
@@ -265,6 +272,7 @@ func LoadConfig() (*Config, error) {
 	_ = viper.BindEnv("llm_provider_region", "LLM_PROVIDER_REGION")
 	_ = viper.BindEnv("llm_provider_max_retries", "LLM_PROVIDER_MAX_RETRIES")
 	_ = viper.BindEnv("llm_provider_embedding_model", "LLM_PROVIDER_EMBEDDING_MODEL")
+	_ = viper.BindEnv("llm_provider_max_output_tokens", "LLM_PROVIDER_MAX_OUTPUT_TOKENS")
 	_ = viper.BindEnv("llm_provider_access_key", "LLM_PROVIDER_ACCESS_KEY")
 	_ = viper.BindEnv("llm_provider_secret_key", "LLM_PROVIDER_SECRET_KEY")
 	_ = viper.BindEnv("llm_provider_session_token", "LLM_PROVIDER_SESSION_TOKEN")
