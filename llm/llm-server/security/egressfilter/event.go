@@ -175,13 +175,18 @@ type reportScopeKey struct{}
 // when the turn ends). Reporting only — block / redact still evaluate the full
 // outbound payload, so a secret re-sent in history is still blocked/redacted.
 type reportScope struct {
-	mu      sync.Mutex
-	history string
-	seen    map[string]struct{}
+	mu            sync.Mutex
+	history       string
+	seen          map[string]struct{}
+	historyCounts map[string]int
 }
 
 func newReportScope(history string) *reportScope {
-	return &reportScope{history: history, seen: make(map[string]struct{})}
+	return &reportScope{
+		history:       history,
+		seen:          make(map[string]struct{}),
+		historyCounts: make(map[string]int),
+	}
 }
 
 // filter returns the subset of hits that are new to this message (see
@@ -194,6 +199,9 @@ func (s *reportScope) filter(hits []Hit, payload string) ([]Hit, []bool) {
 	kept := make([]Hit, 0, len(hits))
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	occurrencesThisTurn := make(map[string]int)
+
 	for i, h := range hits {
 		if h.Start < 0 || h.End > len(payload) || h.Start >= h.End {
 			mask[i] = true
@@ -201,12 +209,28 @@ func (s *reportScope) filter(hits []Hit, payload string) ([]Hit, []bool) {
 			continue
 		}
 		secret := payload[h.Start:h.End]
+		occurrencesThisTurn[secret]++
+		occurrenceIndex := occurrencesThisTurn[secret]
+
+		// If this occurrence is accounted for by history alone, it is a
+		// pure carry-over from prior turns — drop it.
+		if s.history != "" {
+			count, cached := s.historyCounts[secret]
+			if !cached {
+				count = strings.Count(s.history, secret)
+				s.historyCounts[strings.Clone(secret)] = count
+			}
+			if occurrenceIndex <= count {
+				continue
+			}
+		}
+
+		// Deduplicate within the current turn: if we already reported a new
+		// sighting of this secret earlier in this turn, mask subsequent occurrences.
 		if _, dup := s.seen[secret]; dup {
 			continue
 		}
-		if s.history != "" && strings.Contains(s.history, secret) {
-			continue
-		}
+
 		// Clone before retaining: payload[a:b] shares the (large) payload
 		// backing array, and seen lives for the whole turn — storing the
 		// slice header would pin the entire payload in memory until the turn
