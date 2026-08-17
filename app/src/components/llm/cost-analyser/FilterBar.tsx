@@ -9,17 +9,16 @@
  */
 import * as React from 'react';
 import { Box, Collapse } from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import CloseIcon from '@mui/icons-material/Close';
 import RestartAltOutlinedIcon from '@mui/icons-material/RestartAltOutlined';
+import dayjs from 'dayjs';
 import FilterDropdown from '@ui/FilterDropdown';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
-import Tooltip from '@ui/Tooltip';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
 import { Chip } from '@ui/Chip';
+import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { ALL_ASSISTANTS, ALL_TEMPLATES } from './mockData';
 import { triggerLabel } from './format';
 import type { UsageFilters } from '@api1/ai-cost';
@@ -35,22 +34,29 @@ interface FilterBarProps {
   accountId?: string;
   /** Change the account scope. */
   onAccountChange?: (accountId: string) => void;
-  /** "Today" anchor for the date presets (real today for live; fixture date for demo). */
-  anchorDate?: string;
+  /**
+   * Bumped when the date range is set programmatically (e.g. a cost-over-time bar
+   * click). Keys the date picker so it re-seeds its trigger label from the new
+   * range — the picker only reads props on mount, so without this it would keep
+   * showing a stale shortcut label ("Current Week") after an external change.
+   */
+  dateResetNonce?: number;
   /** Show the shared Agent filter (hidden on the Agents tab, which has its own). */
   showAgents?: boolean;
+  /** Show the User filter (hidden on the Users tab, which IS the per-user breakdown). */
+  showUser?: boolean;
+  /** Show the Day/Week/Month toggle (hidden on tabs with no over-time chart to drive it). */
+  showGranularity?: boolean;
 }
 
-const DAY = 86_400_000;
-const FIXTURE_ANCHOR = '2026-06-01'; // demo fixtures' "today"
 const TRIGGER_OPTIONS = (['user_chat', 'user_manual', 'auto_event', 'auto_schedule'] as const).map((v) => ({ label: triggerLabel[v], value: v }));
 
 type FDOption = string | { value?: string };
 const toValues = (sel: FDOption[] | undefined): string[] => (sel ?? []).map((o) => (typeof o === 'string' ? o : String(o?.value ?? '')));
 
-// Date presets (modern toolbar pattern). Today is the default. 'Custom' is the
-// label shown when the start/end pickers hold an arbitrary range.
-const RANGE_PRESETS = ['Today', 'Yesterday', 'Last 7 days', 'Last 14 days', 'Last 30 days', 'Last 90 days', 'Custom'];
+// Shortcuts surfaced in the date-range picker — limited to the day/week/month
+// windows that suit a daily cost view (the picker computes these natively).
+const COST_RANGE_SHORTCUTS = ['Last 24 Hours', 'Current Week', 'Current Month', 'Last Month'];
 
 // Time-bucket granularity for the over-time charts (drives `time_series`).
 const GRANULARITY_OPTIONS: { value: Granularity; label: string }[] = [
@@ -58,62 +64,6 @@ const GRANULARITY_OPTIONS: { value: Granularity; label: string }[] = [
   { value: 'week', label: 'Week' },
   { value: 'month', label: 'Month' },
 ];
-
-function presetToRange(label: string, anchorEnd: string): { startDate: string; endDate: string } {
-  const anchor = Date.parse(anchorEnd);
-  const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-  if (label === 'Today') return { startDate: anchorEnd, endDate: anchorEnd };
-  if (label === 'Yesterday') return { startDate: iso(anchor - DAY), endDate: iso(anchor - DAY) };
-  const days = Number(label.replace(/\D/g, '')) || 7;
-  return { startDate: iso(anchor - (days - 1) * DAY), endDate: anchorEnd };
-}
-
-function rangeLabelFromFilters(f: CostFilters, anchorEnd: string): string {
-  const anchor = Date.parse(anchorEnd);
-  const startMs = Date.parse(f.startDate);
-  const endMs = Date.parse(f.endDate);
-  if (startMs === anchor && endMs === anchor) return 'Today';
-  if (startMs === anchor - DAY && endMs === anchor - DAY) return 'Yesterday';
-  // A range counts as a preset only if it ends today and spans a preset length;
-  // anything else (incl. an end date in the past) is Custom — the pickers own it.
-  if (endMs === anchor) {
-    const span = Math.round((endMs - startMs) / DAY) + 1;
-    const preset = RANGE_PRESETS.find((p) => p === `Last ${span} days`);
-    if (preset) return preset;
-  }
-  return 'Custom';
-}
-
-/** Native date field, styled to sit alongside the DS dropdowns in the filter row. */
-function DateField({ id, value, min, max, onChange }: { id: string; value: string; min?: string; max?: string; onChange: (d: string) => void }) {
-  return (
-    <Box
-      component='input'
-      type='date'
-      id={id}
-      value={value}
-      min={min}
-      max={max}
-      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.value) onChange(e.target.value);
-      }}
-      sx={{
-        fontSize: 'var(--ds-text-small)',
-        color: 'var(--ds-gray-700)',
-        fontFamily: 'inherit',
-        border: '1px solid var(--ds-gray-200)',
-        borderRadius: 'var(--ds-radius-md)',
-        backgroundColor: 'var(--ds-background-100)',
-        padding: '4px 8px',
-        height: 30,
-        cursor: 'pointer',
-        colorScheme: 'light',
-        '&:focus': { outline: 'none', borderColor: 'var(--ds-blue-400, #5b9bd5)' },
-        '&::-webkit-calendar-picker-indicator': { cursor: 'pointer', opacity: 0.6 },
-      }}
-    />
-  );
-}
 
 /** Label + control cell so each advanced field lines up in the grid. */
 function Field({ label, sample, children }: { label: string; sample?: boolean; children: React.ReactNode }) {
@@ -142,9 +92,44 @@ function Field({ label, sample, children }: { label: string; sample?: boolean; c
   );
 }
 
-export function FilterBar({ filters, onChange, onReset, options, accountId = '', onAccountChange, anchorDate, showAgents = true }: FilterBarProps) {
+export function FilterBar({
+  filters,
+  onChange,
+  onReset,
+  options,
+  accountId = '',
+  onAccountChange,
+  dateResetNonce = 0,
+  showAgents = true,
+  showUser = true,
+  showGranularity = true,
+}: FilterBarProps) {
   const [open, setOpen] = React.useState(false);
-  const anchorEnd = anchorDate || FIXTURE_ANCHOR;
+
+  // Bridge the CostFilters 'YYYY-MM-DD' strings to the picker's epoch-ms model
+  // (start-of-day → end-of-day) and back. shortcutClickTime stays 0 — the active
+  // shortcut highlight is the picker's own transient state, not persisted here.
+  //
+  // Clamp end-of-day to "now": when endDate is today, endOf('day') is 23:59 —
+  // a future instant that exceeds the picker's maxDateTime (now), rendering the
+  // "To" field in an error (red) state. The applied value is unaffected —
+  // handleDateRangeChange re-formats to date-granular 'YYYY-MM-DD'.
+  const dateTimeValue = React.useMemo(
+    () => ({
+      startTime: dayjs(filters.startDate).startOf('day').valueOf(),
+      endTime: Math.min(dayjs(filters.endDate).endOf('day').valueOf(), dayjs().valueOf()),
+      shortcutClickTime: 0,
+    }),
+    [filters.startDate, filters.endDate]
+  );
+
+  const handleDateRangeChange = ({ selection }: { selection: { startTime: number; endTime: number; shortcutClickTime?: number } }) => {
+    if (!selection) return;
+    onChange({
+      startDate: dayjs(selection.startTime).format('YYYY-MM-DD'),
+      endDate: dayjs(selection.endTime).format('YYYY-MM-DD'),
+    });
+  };
 
   // Accounts group by cloud provider (with its logo on the header and on each
   // row) — same shape every other account picker in the app uses. The backend
@@ -169,14 +154,6 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
   // to "all users". Keyed on user_id (the value the API filters on).
   const userOptions = (options?.users ?? []).map((u) => ({ label: u.name, value: u.id }));
 
-  const advancedCount =
-    filters.statuses.length +
-    filters.triggerTypes.length +
-    filters.assistants.length +
-    filters.templates.length +
-    (filters.minCost != null ? 1 : 0) +
-    (filters.maxCost != null ? 1 : 0);
-
   return (
     <Box
       id='cost-filter-bar'
@@ -200,41 +177,9 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
           value={accountId}
           onSelect={(e: { target: { value: string | null } }) => onAccountChange?.(e?.target?.value ?? '')}
         />
-        <FilterDropdown
-          id='cost-filter-range'
-          label='Date range'
-          options={RANGE_PRESETS}
-          value={rangeLabelFromFilters(filters, anchorEnd)}
-          onSelect={(e: { target: { value: string } }) => {
-            // 'Custom' is owned by the date pickers — selecting it keeps the current range.
-            if (e?.target?.value === 'Custom') return;
-            onChange(presetToRange(e?.target?.value, anchorEnd));
-          }}
-        />
-        {/* Explicit start/end pickers — pick any range; end can't precede start
-            and can't run past the anchor (today). Editing these flips the preset
-            label to 'Custom'. */}
-        <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-          <DateField id='cost-filter-start' value={filters.startDate} max={filters.endDate} onChange={(d) => onChange({ startDate: d })} />
-          <Box component='span' sx={{ color: 'var(--ds-gray-400)', fontSize: 'var(--ds-text-small)' }}>
-            →
-          </Box>
-          <DateField
-            id='cost-filter-end'
-            value={filters.endDate}
-            min={filters.startDate}
-            max={anchorEnd}
-            onChange={(d) => onChange({ endDate: d })}
-          />
-        </Box>
-        <ToggleGroup
-          selection='single'
-          size='sm'
-          ariaLabel='Chart granularity'
-          value={filters.granularity}
-          onChange={(g) => onChange({ granularity: g as Granularity })}
-          options={GRANULARITY_OPTIONS}
-        />
+        {/* App-standard range picker (absolute From/To + day/week/month shortcuts).
+            Speaks epoch-ms; bridged to the CostFilters date strings above. */}
+
         <FilterDropdown
           id='cost-filter-model'
           label='Model'
@@ -269,20 +214,36 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
           value={filters.sources}
           onSelect={(_e: unknown, sel: FDOption[]) => onChange({ sources: toValues(sel) })}
         />
-        <Tooltip title='User filter applies to Conversations, Agents, and Tools — not to the Users leaderboard' placement='top'>
-          <span>
-            <FilterDropdown
-              id='cost-filter-user'
-              label='User'
-              options={userOptions}
-              value={filters.userId}
-              onSelect={(e: { target: { value: string | null } }) => onChange({ userId: e?.target?.value ?? '' })}
-            />
-          </span>
-        </Tooltip>
+        {showUser && (
+          <FilterDropdown
+            id='cost-filter-user'
+            label='User'
+            options={userOptions}
+            value={filters.userId}
+            onSelect={(e: { target: { value: string | null } }) => onChange({ userId: e?.target?.value ?? '' })}
+          />
+        )}
 
         <Box sx={{ flex: 1 }} />
-
+        {showGranularity && (
+          <ToggleGroup
+            selection='single'
+            size='sm'
+            ariaLabel='Chart granularity'
+            value={filters.granularity}
+            onChange={(g) => onChange({ granularity: g as Granularity })}
+            options={GRANULARITY_OPTIONS}
+          />
+        )}
+        <CustomDateTimeRangePicker
+          key={`cost-date-picker-${dateResetNonce}`}
+          passedSelectedDateTime={dateTimeValue}
+          onChange={handleDateRangeChange}
+          minDate={dayjs().subtract(1, 'year')}
+          shortCuts={COST_RANGE_SHORTCUTS}
+        />
+        {/*
+        Commented as of now. will be added back once the advanced filters are implemented and we want to hide them under a toggle.
         <Button
           tone='secondary'
           size='sm'
@@ -293,6 +254,7 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
           {open ? 'Collapse filters' : 'More filters'}
           {!open && advancedCount > 0 && <Chip size='2xs' tone='info' variant='count' count={advancedCount} sx={{ ml: 'var(--ds-space-1)' }} />}
         </Button>
+        */}
         <Button tone='ghost' size='sm' icon={<RestartAltOutlinedIcon sx={{ fontSize: 16 }} />} onClick={onReset} id='cost-filter-reset'>
           Reset
         </Button>

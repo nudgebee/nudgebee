@@ -188,6 +188,14 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
           // default exclude), so the shared Agent filter would be a redundant, no-op
           // third control there — hide it and let that tab's own filters stand.
           showAgents={tab !== 'agents'}
+          // The Users tab IS the per-user breakdown — filtering it down to one user
+          // would collapse the leaderboard to a single row. Hide it rather than leave
+          // it visibly inert (#35797).
+          showUser={tab !== 'users'}
+          // Only Overview and Models read `metrics` (METRICS_TABS in useCostData.ts),
+          // whose time_series is what the granularity toggle drives — it's a dead
+          // control everywhere else (Conversations, Agents, Tools, Users).
+          showGranularity={tab === 'overview' || tab === 'models'}
         />
       )}
 
