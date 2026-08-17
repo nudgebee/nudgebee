@@ -1844,11 +1844,16 @@ func confirmationKeyForAction(tool toolcore.NBTool, action NBAgentPlannerToolAct
 // the per-action confirmation key when the tool is available, so resume paths
 // agree with the doAction gate about which entry an approval lives under.
 func confirmationApprovedForAction(confirmations map[string]string, nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction) bool {
-	key := action.Tool
+	return isToolConfirmationApproved(confirmations, resumeConfirmationKey(nameToTool, action))
+}
+
+// resumeConfirmationKey is the key a resume looks an approval up under: the
+// per-action key when the tool scopes its confirmations, else the tool name.
+func resumeConfirmationKey(nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction) string {
 	if tool, ok := nameToTool[strings.ToUpper(strings.TrimSpace(action.Tool))]; ok && tool != nil {
-		key = confirmationKeyForAction(tool, action)
+		return confirmationKeyForAction(tool, action)
 	}
-	return isToolConfirmationApproved(confirmations, key)
+	return action.Tool
 }
 
 // writeConfirmationRequired reports whether a write (create/update/delete) tool needs user confirmation.
@@ -3859,8 +3864,14 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					// empty/wrong credentials and silently produce "No Data". Fail fast instead.
 					// Note: only the "no row" case is treated as a config failure; transient DB errors
 					// fall through to the next branch so they remain retriable.
+					// The confirmation key is logged alongside the keys actually
+					// present: when this fires on a tool the user DID approve, the
+					// cause is a key mismatch, not a missing config, and the
+					// message above sends triage down the wrong path.
 					ctx.GetLogger().Error("plannerexecutor: no tool record found in DB and config not resolved, failing fast to avoid running with wrong credentials",
-						"tool", action.Tool, "toolId", toolId, "error", err)
+						"tool", action.Tool, "toolId", toolId, "error", err,
+						"expectedConfirmationKey", resumeConfirmationKey(resumeNameToTool, action),
+						"presentConfirmationKeys", slices.Sorted(maps.Keys(executor.agentRequest.QueryConfig.ToolConfirmations)))
 					step := NBAgentPlannerToolActionStep{
 						Action:      action,
 						Observation: fmt.Sprintf("Error: tool %q could not be executed because its configuration was not resolved. Please select a valid configuration and retry.", action.Tool),

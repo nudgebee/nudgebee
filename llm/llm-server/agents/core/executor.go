@@ -974,47 +974,12 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 
 	// Handle response if it has followup with a question
 	if response.Followup.Question != "" && (agentStatus == AgentExecutionStatusWaiting || strings.EqualFold(string(agentStatus), string(AgentExecutionStatusWaiting))) {
-		dao := GetConversationDao()
-
 		// CRITICAL: Ensure the followup request points to THIS agent (the parent)
 		// so that the next user turn correctly resumes this agent instead of jumping to the child.
 		response.Followup.AgentId = agentId
 		response.Followup.AgentName = agent.GetName()
 
-		followUpRequest := response.Followup
-		// Check if the agent already has a followup message
-		followUpExists := false
-		agents, err := dao.ListConversationAgents("", followUpRequest.AgentId.String())
-		if err == nil && len(agents) > 0 {
-			existingAgent := agents[0]
-			if existingAgent.FollowupMessageID != uuid.Nil {
-				// Agent already has a followup message - check if it's currently waiting
-				fmsg, fErr := dao.GetConversationMessage(existingAgent.FollowupMessageID.String(), request.AccountId, request.ConversationId)
-				if fErr == nil && fmsg.Status != ConversationStatusCompleted {
-					ctx.GetLogger().Info("followup: agent already has an active followup message, updating config",
-						"agentId", followUpRequest.AgentId.String(),
-						"followupMessageId", existingAgent.FollowupMessageID)
-					newConfig := map[string]any{
-						"question":        followUpRequest.Question,
-						"followupType":    followUpRequest.FollowupType,
-						"followupOptions": followUpRequest.FollowupOptions,
-						"toolName":        followUpRequest.ToolName,
-						"toolId":          followUpRequest.ToolId,
-					}
-					if updateErr := dao.UpdateConversationMessageFollowupConfig(existingAgent.FollowupMessageID.String(), newConfig); updateErr != nil {
-						ctx.GetLogger().Error("followup: failed to update followup config", "error", updateErr)
-					}
-					followUpExists = true
-				}
-			}
-		}
-		if !followUpExists {
-			ctx.GetLogger().Info("agentexecutor: generating new followup message", "agent", agent.GetName(), "type", followUpRequest.FollowupType)
-			_, err := GenerateFollowup(ctx, request, followUpRequest)
-			if err != nil {
-				ctx.GetLogger().Error("agentexecutor: unable to generate followup", "error", err)
-			}
-		}
+		syncAgentFollowupMessage(ctx, GetConversationDao(), request, agent.GetName(), response.Followup)
 	}
 
 	var conversationStatus ConversationStatus
@@ -1107,6 +1072,46 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	}
 
 	return agentResponse, err
+}
+
+// syncAgentFollowupMessage persists followUpRequest for the agent: it updates
+// the agent's still-active followup message in place when one exists, and
+// otherwise creates a new followup message.
+//
+// The update branch overwrites a config the planner already wrote, so it must
+// pass the whole FollowupRequest and let the DAO serialize it. A hand-rolled
+// partial map here dropped confirmationKey: the user's approval was then
+// recorded under the bare tool name, which a per-action-scoped tool
+// (toolcore.ToolConfirmationScope — the recommendation write tools) can never
+// match on resume, so every approved apply died on the "config not resolved"
+// fail-fast gate in executeAgentPlanner.
+// The dao is a parameter rather than a GetConversationDao() call inside: tests
+// covering this would otherwise have to swap the package-global, which races
+// with the fire-and-forget goroutines other tests leave running (caught by
+// -race in CI).
+func syncAgentFollowupMessage(ctx *security.RequestContext, dao IConversationDao, request NBAgentRequest, agentName string, followUpRequest FollowupRequest) {
+	agents, err := dao.ListConversationAgents("", followUpRequest.AgentId.String())
+	if err == nil && len(agents) > 0 {
+		existingAgent := agents[0]
+		if existingAgent.FollowupMessageID != uuid.Nil {
+			// Agent already has a followup message - check if it's currently waiting
+			fmsg, fErr := dao.GetConversationMessage(existingAgent.FollowupMessageID.String(), request.AccountId, request.ConversationId)
+			if fErr == nil && fmsg.Status != ConversationStatusCompleted {
+				ctx.GetLogger().Info("followup: agent already has an active followup message, updating config",
+					"agentId", followUpRequest.AgentId.String(),
+					"followupMessageId", existingAgent.FollowupMessageID)
+				if updateErr := dao.UpdateConversationMessageFollowupConfig(existingAgent.FollowupMessageID.String(), followUpRequest); updateErr != nil {
+					ctx.GetLogger().Error("followup: failed to update followup config", "error", updateErr)
+				}
+				return
+			}
+		}
+	}
+
+	ctx.GetLogger().Info("agentexecutor: generating new followup message", "agent", agentName, "type", followUpRequest.FollowupType)
+	if _, err := GenerateFollowup(ctx, request, followUpRequest); err != nil {
+		ctx.GetLogger().Error("agentexecutor: unable to generate followup", "error", err)
+	}
 }
 
 func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, history string, agentId uuid.UUID) (NBAgentRequest, NBAgentResponse, error) {

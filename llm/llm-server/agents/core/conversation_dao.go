@@ -258,7 +258,7 @@ type IConversationDao interface {
 	SaveConversationMessageSuggestion(messageId string, accountId string, conversationId string, messages []ConversationSuggestionMessageResponse) error
 	GetConversationAgentParentAgentIdAndPreviousState(agenId string) (string, string)
 	UpdateConversationMessageConfig(id string, config toolcore.NBQueryConfig) error
-	UpdateConversationMessageFollowupConfig(id string, followupConfig map[string]any) error
+	UpdateConversationMessageFollowupConfig(id string, followupRequest FollowupRequest) error
 	LoadConversationMessages(accountID, conversationID, userID string, requestType MessageType, k int) ([]map[string]string, error)
 	ListConversationFileRefs(accountId, conversationId string, limit int) ([]FileEvidenceRef, error)
 	GetConversationAgentOutput(agentId, accountId string) (string, error)
@@ -1917,14 +1917,22 @@ func (chat *ConversationDao) UpdateConversationMessageConfig(id string, config t
 }
 
 // UpdateConversationMessageFollowupConfig updates only the followup-specific fields in message_config.
-func (chat *ConversationDao) UpdateConversationMessageFollowupConfig(id string, followupConfig map[string]any) error {
+//
+// Takes the FollowupRequest rather than an already-built map on purpose: this
+// overwrites a config the create path already wrote, so any field the caller
+// omits is erased from the stored message. Callers hand-rolling a partial map
+// is how confirmationKey went missing (silently breaking every per-action write
+// confirmation) — serializing here, through the same followupMessageConfig the
+// create path uses, makes that a compile error instead.
+func (chat *ConversationDao) UpdateConversationMessageFollowupConfig(id string, followupRequest FollowupRequest) error {
+	followupConfig := followupMessageConfig(followupRequest)
 	configJson, err := common.MarshalJson(followupConfig)
 	if err != nil {
 		return fmt.Errorf("history: failed to marshal followup config: %w", err)
 	}
 
 	// Also update the message column with the new question text so chat history shows the correct question.
-	question, _ := followupConfig["question"].(string)
+	question := followupRequest.Question
 	query := `UPDATE llm_conversation_messages SET message_config = $2, message = $3, updated_at = now() WHERE id = $1`
 	_, err = chat.dbManager.Db.Exec(query, id, string(configJson), question)
 	if err != nil {

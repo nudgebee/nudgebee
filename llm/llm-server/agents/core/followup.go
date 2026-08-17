@@ -500,7 +500,7 @@ func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, follow
 				ctx.GetLogger().Info("followup: agent already has an active followup message, updating config",
 					"agentId", followupRequest.AgentId.String(),
 					"followupMessageId", existingAgent.FollowupMessageID)
-				if updateErr := dao.UpdateConversationMessageFollowupConfig(existingAgent.FollowupMessageID.String(), followupMessageConfig(followupRequest)); updateErr != nil {
+				if updateErr := dao.UpdateConversationMessageFollowupConfig(existingAgent.FollowupMessageID.String(), followupRequest); updateErr != nil {
 					ctx.GetLogger().Error("followup: failed to update followup config", "error", updateErr)
 				}
 				return existingAgent.FollowupMessageID, nil
