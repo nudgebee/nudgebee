@@ -50,6 +50,8 @@ _SETTLED_TASK_STATUSES = ("complete", "error")
 
 # Slack caps task_update fields at 256 chars.
 _TASK_FIELD_LIMIT = 250
+# Header shown from panel creation until the first tool title arrives.
+_INITIAL_HEADER = "Thinking"
 # Placeholder stream key written before chat.startStream returns a real ts, so
 # a settle racing the stream's creation always finds a key to clear. Each claim
 # carries a unique suffix so overlapping turns can't mistake each other's claim
@@ -175,6 +177,7 @@ def _open_stream(common_service, cache, entry, thread_ts, token):
             recipient_team_id=entry["team_id"],
             recipient_user_id=entry["slack_user_id"],
             task_display_mode="timeline",
+            chunks=[{"type": "plan_update", "title": _INITIAL_HEADER}],
         )
         stream_ts = response["ts"]
     except SlackApiError as e:
@@ -199,14 +202,14 @@ def _open_stream(common_service, cache, entry, thread_ts, token):
 def _stream_updates(common_service, cache, entry, thread_ts, token, stream_ts):
     sent_statuses = {}
     titles = {}
-    last_header = ""
+    last_header = _INITIAL_HEADER
     failures = 0
     since = (datetime.now(timezone.utc) - timedelta(seconds=_INITIAL_SINCE_SKEW_SECONDS)).isoformat()
     deadline = time.monotonic() + settings.slack.thinking_steps_max_minutes * 60
 
+    # Fetch-first (sleep at the bottom): the panel opens before the LLM request
+    # is even sent, so the first delta should land as soon as rows exist.
     while True:
-        time.sleep(settings.slack.thinking_steps_poll_seconds)
-
         current = cache.get_event_entry(thread_ts)
         if current is None:
             # Entry expired mid-run: nothing can ever settle the panel, so
@@ -225,6 +228,7 @@ def _stream_updates(common_service, cache, entry, thread_ts, token, stream_ts):
             failures += 1
             if failures >= _MAX_POLL_FAILURES:
                 return
+            time.sleep(settings.slack.thinking_steps_poll_seconds)
             continue
         failures = 0
         since = delta.get("cursor") or since
@@ -248,6 +252,8 @@ def _stream_updates(common_service, cache, entry, thread_ts, token, stream_ts):
             # the stop lands in answer order; fall through if it never came.
             time.sleep(2)
             return
+
+        time.sleep(settings.slack.thinking_steps_poll_seconds)
 
 
 def _fetch_delta(entry, since):
@@ -288,16 +294,14 @@ def _build_chunks(tool_calls, sent_statuses, titles=None):
         if sent_statuses.get(row_id) == status or sent_statuses.get(row_id) in _SETTLED_TASK_STATUSES:
             continue
         title = _task_title(row.get("tool_name"))
-        task = {
-            "type": "task_update",
-            "id": row_id,
-            "title": title,
-            "status": status,
-        }
-        thought = (row.get("thought") or "").strip()
-        if thought:
-            task["details"] = thought[:_TASK_FIELD_LIMIT]
-        chunks.append(task)
+        chunks.append(
+            {
+                "type": "task_update",
+                "id": row_id,
+                "title": title,
+                "status": status,
+            }
+        )
         sent_statuses[row_id] = status
         if titles is not None:
             titles[row_id] = title

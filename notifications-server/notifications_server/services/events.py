@@ -863,8 +863,24 @@ class Events:
 
         self._attach_images(payload, thread_ts)
 
-        self.query_llm_server(payload, headers)
         slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
+        # Errors are replied to here rather than re-raised: the @mention caller
+        # (execute_event) only logs exceptions, which would leave the thread
+        # silent after the panel vanished.
+        try:
+            self.query_llm_server(payload, headers)
+        except requests.RequestException as e:
+            LOG.debug(f"Query to LLM failed: {e}")
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            error_response = self._safe_error_response(e)
+            self.common_service.slack_reply_in_thread(
+                channel_id, team_id, thread_ts, self._llm_error_reply(status, error_response)
+            )
+        except Exception as e:
+            LOG.debug(f"Query to LLM failed: {e}")
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
+            self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, get_llm_offline_message())
 
     def _fetch_and_update_account_details_by_id(self, account_id, channel_id, team_id, thread_ts):
         with Session(self.session.get_bind()) as session:
@@ -963,11 +979,14 @@ class Events:
 
         self._attach_images(payload, thread_ts)
 
+        # Panel opens before the LLM request goes out: agent inference runs
+        # before the 202, and the user should see "thinking" during it.
+        slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
         try:
             self.query_llm_server(payload, headers)
-            slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
         except requests.RequestException as e:
             LOG.debug(f"Query to LLM failed: {e}")
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             status = getattr(getattr(e, "response", None), "status_code", None)
             error_response = self._safe_error_response(e)
             self.common_service.slack_reply_in_thread(
@@ -975,6 +994,7 @@ class Events:
             )
         except Exception as e:
             LOG.debug(f"Query to LLM failed: {e}")
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, get_llm_offline_message())
 
     @staticmethod

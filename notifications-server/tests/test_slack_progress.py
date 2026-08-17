@@ -33,7 +33,7 @@ def _tool_row(row_id, status, tool_name="get_pod_logs", thought="checking logs",
 
 
 class TestBuildChunks:
-    def test_new_in_progress_tool_emits_task_with_details(self):
+    def test_new_in_progress_tool_emits_bare_task(self):
         sent = {}
         chunks = slack_progress._build_chunks([_tool_row("t1", "IN_PROGRESS")], sent)
         assert chunks == [
@@ -42,7 +42,6 @@ class TestBuildChunks:
                 "id": "t1",
                 "title": "Get pod logs",
                 "status": "in_progress",
-                "details": "checking logs",
             }
         ]
         assert sent == {"t1": "in_progress"}
@@ -80,20 +79,20 @@ class TestBuildChunks:
             "g": "in_progress",
         }
 
-    def test_rows_sorted_by_updated_at_and_fields_truncated(self):
+    def test_rows_sorted_by_updated_at_and_title_truncated(self):
         sent = {}
         rows = [
             _tool_row("later", "IN_PROGRESS", updated_at="2026-08-14T10:00:02Z"),
-            _tool_row("earlier", "IN_PROGRESS", thought="x" * 500, updated_at="2026-08-14T10:00:01Z"),
+            _tool_row("earlier", "IN_PROGRESS", tool_name="x" * 500, updated_at="2026-08-14T10:00:01Z"),
         ]
         chunks = slack_progress._build_chunks(rows, sent)
         assert [c["id"] for c in chunks] == ["earlier", "later"]
-        assert len(chunks[0]["details"]) == slack_progress._TASK_FIELD_LIMIT
+        assert len(chunks[0]["title"]) == slack_progress._TASK_FIELD_LIMIT
 
-    def test_rows_without_id_or_thought_are_tolerated(self):
+    def test_rows_without_id_are_skipped_and_thought_never_rendered(self):
         sent = {}
         chunks = slack_progress._build_chunks(
-            [{"status": "IN_PROGRESS"}, _tool_row("t1", "IN_PROGRESS", thought="")], sent
+            [{"status": "IN_PROGRESS"}, _tool_row("t1", "IN_PROGRESS", thought="internal reasoning")], sent
         )
         assert len(chunks) == 1
         assert "details" not in chunks[0]
@@ -281,6 +280,8 @@ class TestPollLifecycle:
         self._run(common, cache, deltas=[delta])
         common.slack_app.client.stop_stream.assert_called_once()
         cache.remove_event_keys.assert_called_with("1000.1", ["stream_ts"])
+        start_chunks = common.slack_app.client.start_stream.call_args.kwargs["chunks"]
+        assert start_chunks == [{"type": "plan_update", "title": "Thinking"}]
 
     def test_appends_tool_chunks_from_delta(self):
         common = self._common()
