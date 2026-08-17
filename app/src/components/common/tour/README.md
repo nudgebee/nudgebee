@@ -162,16 +162,18 @@ Two more traps:
   `fetchFeatureFlagsForTenant()` resolves. `GuidesMenu`, `SectionFirstVisitTour`
   and the product-updates drawer warm it and re-render; **a bare `TourLauncher`
   does not** — so don't put `requiresFeature` on a guide launched only from one.
-- **Env vars are not feature flags.** `UI_ENABLE_LLM_ANALYSER` /
-  `UI_ENABLE_LLM_GATEWAY` are per-**deployment** `process.env` values, not tenant
-  `feature_id`s, so they never reach `featureflags_list` and `requiresFeature`
-  cannot gate on them. Use `requiresUiFeature` instead.
+- **Env vars are not feature flags.** `UI_ENABLE_LLM_GATEWAY` is a
+  per-**deployment** `process.env` value, not a tenant `feature_id`, so it never
+  reaches `featureflags_list` and `requiresFeature` cannot gate on it. Use
+  `requiresUiFeature` instead.
 
 ### `requiresUiFeature` — deployment-level toggles
 
-`requiresUiFeature: 'llmAnalyser' | 'llmGateway'` hides the guide unless the
-deployment has that `UI_ENABLE_*` env var on. Use it when a surface is gated on a
-`UI_ENABLE_*` var — the LLM Analyser and AI Gateway tabs are the current cases.
+`requiresUiFeature: 'llmGateway'` hides the guide unless the deployment has that
+`UI_ENABLE_*` env var on. Use it when a surface is gated on a `UI_ENABLE_*` var —
+the AI Gateway tab is the current case. (The LLM Analyser tab used to be one too,
+but is now gated on the tenant `LLM_ANALYSER` feature flag via `requiresFeature`
+instead — see `llmAnalyserTour` in `tours.ts`.)
 
 The values reach the client on the **session** (`uiFeatures` in `[...nextauth].ts`),
 read from `process.env` in the session callback — which runs server-side on every

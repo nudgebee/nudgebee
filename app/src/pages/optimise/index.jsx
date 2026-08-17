@@ -17,7 +17,7 @@ import {
   AutomateBlue,
   BetaIcon,
 } from '@assets';
-import { hasReadAccess, hasWriteAccess } from '@lib/auth';
+import { hasFeatureAccess, hasReadAccess, hasWriteAccess } from '@lib/auth';
 import { useData } from '@context/DataContext';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
@@ -28,7 +28,6 @@ import { ds } from '@utils/colors';
 export async function getServerSideProps() {
   return {
     props: {
-      enableLlmAnalyser: process.env.UI_ENABLE_LLM_ANALYSER === 'true',
       enableLlmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
       // Public base URL of the AI Gateway, surfaced to the Connect tab's setup
       // snippets. Empty when unset — the Connect tab shows a "not configured" state.
@@ -37,7 +36,7 @@ export async function getServerSideProps() {
   };
 }
 
-const Optimise = ({ enableLlmAnalyser, enableLlmGateway, llmGatewayUrl }) => {
+const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
   const [activeTab, setActiveTab] = useState(null);
@@ -48,16 +47,26 @@ const Optimise = ({ enableLlmAnalyser, enableLlmGateway, llmGatewayUrl }) => {
   // server HTML (hasReadAccess reads a client-populated session) — avoids any
   // hydration mismatch; the tab resolves on the next tick.
   const [isMounted, setIsMounted] = useState(false);
+  // LLM_ANALYSER is a per-tenant feature flag (not a deployment env var), so it
+  // can only be resolved client-side via hasFeatureAccess — same pattern as
+  // WORKFLOWS/UPGRADE_PLANNER.
+  const [llmAnalyserEnabled, setLlmAnalyserEnabled] = useState(false);
 
   useEffect(() => {
     setIsMounted(true);
+  }, []);
+
+  useEffect(() => {
+    hasFeatureAccess('LLM_ANALYSER')
+      .then(setLlmAnalyserEnabled)
+      .catch(() => setLlmAnalyserEnabled(false));
   }, []);
 
   // Show the LLM Analyser to anyone with read access to the account in scope —
   // tenant admins (read/write), account admins, and namespace admins all pass,
   // matching the backend authorization on the `ai_*` cost actions. `isTenantAdmin`
   // was too strict and hid the tab from account admins (#33341). Still gated by
-  // the UI_ENABLE_LLM_ANALYSER feature flag.
+  // the LLM_ANALYSER tenant feature flag.
   const filterOptions = useMemo(
     () =>
       [
@@ -80,7 +89,7 @@ const Optimise = ({ enableLlmAnalyser, enableLlmGateway, llmGatewayUrl }) => {
         // filterOptions[activeDropdownTab] (index === value), so a tab with
         // tabOptions must keep value === array index regardless of the flag.
         isMounted &&
-          enableLlmAnalyser &&
+          llmAnalyserEnabled &&
           hasReadAccess(selectedCluster?.value) && {
             name: 'LLM Analyser',
             id: 'llm-analyser',
@@ -104,7 +113,7 @@ const Optimise = ({ enableLlmAnalyser, enableLlmGateway, llmGatewayUrl }) => {
             iconSize: 18,
           },
       ].filter(Boolean),
-    [isMounted, enableLlmAnalyser, enableLlmGateway, selectedCluster?.value]
+    [isMounted, llmAnalyserEnabled, enableLlmGateway, selectedCluster?.value]
   );
 
   useEffect(() => {

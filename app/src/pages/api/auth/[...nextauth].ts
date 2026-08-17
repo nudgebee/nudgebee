@@ -74,8 +74,8 @@ export interface NudgebeeSession extends Session {
   // isn't a page can gate on them. The pages that own these surfaces read the
   // same env vars in their own getServerSideProps; this carries the values to
   // components mounted elsewhere — the guided-tour catalog in the header has to
-  // know whether /optimise will render the LLM Analyser / AI Gateway tabs before
-  // offering their guides.
+  // know whether /optimise will render the AI Gateway tab before offering its
+  // guide.
   //
   // Deliberately NOT promoted via next.config.js `env:` (which inlines at BUILD
   // time and would freeze the value into the image): these arrive at runtime
@@ -86,7 +86,6 @@ export interface NudgebeeSession extends Session {
 
 /** Deployment-level UI toggles read from the pod environment at request time. */
 export interface UiFeatureFlags {
-  llmAnalyser: boolean;
   llmGateway: boolean;
 }
 
@@ -1373,9 +1372,8 @@ export const authOptions: NextAuthOptions = {
         nudgeBeeSession.appVersion = process.env.NEXT_PUBLIC_APP_VERSION;
         // Read per request (this callback runs server-side on every session
         // fetch), so flipping the pod's env takes effect without a rebuild or a
-        // re-login. Mirrors how /optimise reads the same two vars.
+        // re-login. Mirrors how /optimise reads the same var.
         nudgeBeeSession.uiFeatures = {
-          llmAnalyser: process.env.UI_ENABLE_LLM_ANALYSER === 'true',
           llmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
         };
         nudgeBeeSession.isSuperAdmin = !!token.isSuperAdmin;
