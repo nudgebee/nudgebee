@@ -38,6 +38,7 @@ import {
 import { Banner } from '@ui/Banner';
 import DsTooltip from '@ui/Tooltip';
 import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
+import OwnershipSection from './OwnershipSection';
 import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
 import { buildInterpretation } from './interpretation/buildInterpretation';
@@ -435,6 +436,13 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           recommendations: details?.recommendations,
         })}
       />
+
+      {/* Ownership — who is accountable for this resource, and how that was
+          derived. Keyed like Blast Radius below (the drawer is reused, not
+          remounted), but the key MUST stay distinct from its sibling's: two
+          siblings sharing one key makes React strand the old subtree instead of
+          replacing it, so a card accumulates on every recommendation switch. */}
+      <OwnershipSection key={`ownership-${rec?.id}`} rec={rec} />
 
       {/* Blast Radius & Safety — knowledge-graph impact + safety band. Keyed by
           rec id so the "Show all" toggle state resets when the persistent detail

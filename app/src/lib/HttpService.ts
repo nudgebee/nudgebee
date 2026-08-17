@@ -193,6 +193,14 @@ export const queryGraphQL = async (
   } catch (error) {
     const e = error as any;
     const status = e?.response?.status;
+    // A caller-initiated cancellation (the `signal` argument) is not a failure —
+    // the consumer navigated away or superseded the request. Reporting it would
+    // file a fake api-failure on every such navigation, and the fall-through
+    // below would hand back a bare XHR as if it were a response. Rethrow so the
+    // caller's own catch can ignore it.
+    if (axios.isCancel(e)) {
+      throw e;
+    }
     console.error('error on api call', status ?? e?.code ?? 'unknown', e?.message);
     // Report genuine breaks (network failures, 4xx, 5xx) to Loki — 4xx like 403/422
     // are strong signals in real sessions (permission gaps, schema mismatches).
