@@ -50,6 +50,9 @@ const (
 	IncidentAbsorptionCap = 90 * time.Minute
 
 	incidentGroupingEnvFlag = "INCIDENT_GROUPING_ENABLED"
+	// topologyGroupingEnvFlag kills only the cross-service (stored-map) attach
+	// path; same-subject grouping keeps its own switch above.
+	topologyGroupingEnvFlag = "INCIDENT_TOPOLOGY_GROUPING"
 	// incidentCandidateLimit bounds the window fetch; one subject+namespace
 	// rarely has more than a handful of distinct fingerprints in 90 minutes.
 	incidentCandidateLimit = 200
@@ -327,10 +330,38 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		})
 		memberStarts[r.ID] = r.StartsAt
 	}
+	seed := groupCandidate{ID: event.Id, AggregationKey: *event.AggregationKey, StartsAt: start}
 	if len(members) == 0 {
-		return nil // first alert on this subject — implicit group of one
+		// First alert on this subject — implicit group of one. It may still
+		// join a neighbor subject's group by topology (slice 2).
+		return tryTopologyAttach(ctx, db, event, seed, seedKey, start)
 	}
 
+	leaderID, offset, ok, err := resolveOpenGroupLeader(ctx, db, event, seed, members, memberStarts, chronicPairs)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return insertGroupLink(ctx, db, event, leaderID, offset, 0,
+			fmt.Sprintf("same subject (%s) within incident attach window", seedKey))
+	}
+	// The subject's own group is closed (window/cap) — a neighbor subject's
+	// group may still be the story (slice 2).
+	return tryTopologyAttach(ctx, db, event, seed, seedKey, start)
+}
+
+// resolveOpenGroupLeader loads the members' existing group links, resolves
+// leader start times, and runs the attach decision. Shared by the same-subject
+// path and the topology path — both attach into a subject-keyed star.
+func resolveOpenGroupLeader(
+	ctx context.Context,
+	db sqlx.ExtContext,
+	event *models.Event,
+	seed groupCandidate,
+	members []groupCandidate,
+	memberStarts map[string]time.Time,
+	chronicPairs map[string]bool,
+) (string, time.Duration, bool, error) {
 	memberIDs := make([]string, len(members))
 	for i, m := range members {
 		memberIDs[i] = m.ID
@@ -340,7 +371,7 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		RelatedEventID string `db:"related_event_id"`
 	}
 	var edgeRows []edgeRow
-	err = sqlx.SelectContext(ctx, db, &edgeRows, `
+	err := sqlx.SelectContext(ctx, db, &edgeRows, `
 		SELECT event_id, related_event_id
 		FROM event_correlations
 		WHERE correlation_type = $1
@@ -349,7 +380,7 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		SameIncidentCorrelationType, *event.CloudAccountId, pq.Array(memberIDs),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to load existing group links: %w", err)
+		return "", 0, false, fmt.Errorf("failed to load existing group links: %w", err)
 	}
 	edges := make(map[string]string, len(edgeRows))
 	leaderStarts := make(map[string]time.Time)
@@ -377,40 +408,230 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 			pq.Array(missingLeaders),
 		)
 		if err != nil {
-			return fmt.Errorf("failed to load group leader starts: %w", err)
+			return "", 0, false, fmt.Errorf("failed to load group leader starts: %w", err)
 		}
 		for _, lr := range lrs {
 			leaderStarts[lr.ID] = lr.StartsAt
 		}
 	}
 
-	seed := groupCandidate{ID: event.Id, AggregationKey: *event.AggregationKey, StartsAt: start}
 	leaderID, offset, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, chronicPairs)
-	if !ok {
-		return nil
-	}
+	return leaderID, offset, ok, nil
+}
 
-	_, err = db.ExecContext(ctx, `
+// insertGroupLink writes one child -> leader star edge.
+func insertGroupLink(ctx context.Context, db sqlx.ExtContext, event *models.Event, leaderID string, offset time.Duration, depDistance int, reason string) error {
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO event_correlations (
 			event_id, related_event_id, cloud_account_id, tenant_id,
 			correlation_type, correlation_score, correlation_reason,
 			time_offset_minutes, dependency_distance
-		) VALUES ($1, $2, $3, $4, $5, 1.0, $6, $7, 0)
+		) VALUES ($1, $2, $3, $4, $5, 1.0, $6, $7, $8)
 		ON CONFLICT DO NOTHING`,
 		event.Id, leaderID, *event.CloudAccountId, event.Tenant,
-		SameIncidentCorrelationType,
-		fmt.Sprintf("same subject (%s) within incident attach window", seedKey),
-		int(offset.Minutes()),
+		SameIncidentCorrelationType, reason, int(offset.Minutes()), depDistance,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert same_incident link: %w", err)
 	}
-
-	slog.InfoContext(ctx, "Attached event to same-subject incident group",
+	slog.InfoContext(ctx, "Attached event to incident group",
 		"event_id", event.Id,
 		"leader_event_id", leaderID,
-		"subject_key", seedKey,
+		"reason", reason,
 		"offset_minutes", int(offset.Minutes()),
 	)
 	return nil
+}
+
+// topologyGroupingEnabled defaults to true; only an explicit "false"/"0"
+// disables — the cross-service kill switch, independent of the same-subject
+// one so either evidence family can be turned off alone.
+func topologyGroupingEnabled() bool {
+	v := strings.TrimSpace(os.Getenv(topologyGroupingEnvFlag))
+	return !strings.EqualFold(v, "false") && v != "0"
+}
+
+// tryTopologyAttach is slice 2 (#34655): join a NEIGHBOR subject's open group
+// when the seed's own stored service map places the two subjects one CALLS hop
+// apart. Evidence is stored-only (the map embedded in the event at enrichment
+// time — topology as it was when the alert fired); precision rests on three
+// gates: direct edge only (d=1), the seed's own chronic gate (already applied
+// by the caller), and the neighbor group's members' chronic gate inside the
+// shared attach decision. Events without a stored map (cloud alerts, plain
+// webhooks) never topology-attach — correct, not a bug.
+func tryTopologyAttach(
+	ctx context.Context,
+	db sqlx.ExtContext,
+	event *models.Event,
+	seed groupCandidate,
+	seedKey string,
+	start time.Time,
+) error {
+	if !topologyGroupingEnabled() {
+		return nil
+	}
+	graph, err := parseServiceMapFromEvent(event)
+	if err != nil || graph == nil {
+		return nil // no stored topology — nothing to reason with
+	}
+	seedSvcKey := getServiceKeyFromEvent(event)
+	if seedSvcKey == "" {
+		return nil
+	}
+
+	// Account-wide chain-leader candidates in the absorption window, any
+	// namespace (cross-service stories cross namespaces).
+	type candidateRow struct {
+		ID               string    `db:"id"`
+		SubjectType      *string   `db:"subject_type"`
+		SubjectName      *string   `db:"subject_name"`
+		SubjectNamespace *string   `db:"subject_namespace"`
+		SubjectOwner     *string   `db:"subject_owner"`
+		SubjectOwnerKind *string   `db:"subject_owner_kind"`
+		ServiceKey       *string   `db:"service_key"`
+		AggregationKey   *string   `db:"aggregation_key"`
+		StartsAt         time.Time `db:"starts_at"`
+		LastSeen         time.Time `db:"last_seen"`
+	}
+	var rows []candidateRow
+	err = sqlx.SelectContext(ctx, db, &rows, `
+		SELECT DISTINCT ON (fingerprint)
+		       id, subject_type, subject_name, subject_namespace, subject_owner, subject_owner_kind,
+		       service_key, aggregation_key, starts_at,
+		       max(starts_at) OVER (PARTITION BY fingerprint) AS last_seen
+		FROM events
+		WHERE tenant = $1
+		  AND cloud_account_id = $2
+		  AND starts_at >= $3 AND starts_at < $4
+		  AND id != $5
+		  AND fingerprint IS DISTINCT FROM $6
+		  AND lower(coalesce(finding_type, '')) NOT IN ('slo', 'anomaly')
+		ORDER BY fingerprint, starts_at ASC
+		LIMIT `+fmt.Sprint(incidentCandidateLimit),
+		*event.Tenant, *event.CloudAccountId,
+		start.Add(-IncidentAbsorptionCap), start, event.Id, event.Fingerprint,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load topology candidates: %w", err)
+	}
+
+	deref := func(p *string) string {
+		if p != nil {
+			return *p
+		}
+		return ""
+	}
+	// Bucket candidates by subject, keeping only subjects one CALLS hop from
+	// the seed in its stored map (either direction — caller or callee).
+	type neighborGroup struct {
+		members      []groupCandidate
+		memberStarts map[string]time.Time
+		newest       time.Time
+		ns, subj     string
+	}
+	neighbors := map[string]*neighborGroup{}
+	for _, r := range rows {
+		candIdentity := AlertIdentity{
+			ID:               r.ID,
+			SubjectType:      deref(r.SubjectType),
+			SubjectName:      deref(r.SubjectName),
+			SubjectNamespace: deref(r.SubjectNamespace),
+			SubjectOwner:     deref(r.SubjectOwner),
+		}
+		candKey := SubjectKey(candIdentity)
+		if candKey == seedKey || strings.HasSuffix(candKey, "|") {
+			continue
+		}
+		candSvcKey := getServiceKeyFromEvent(&models.Event{
+			ServiceKey:       r.ServiceKey,
+			SubjectName:      r.SubjectName,
+			SubjectNamespace: r.SubjectNamespace,
+			SubjectOwner:     r.SubjectOwner,
+			SubjectOwnerKind: r.SubjectOwnerKind,
+			SubjectType:      r.SubjectType,
+		})
+		if candSvcKey == "" {
+			continue
+		}
+		d1 := graph.getDependencyDistance(seedSvcKey, candSvcKey)
+		d2 := graph.getDependencyDistance(candSvcKey, seedSvcKey)
+		if d1 != 1 && d2 != 1 {
+			continue
+		}
+		ng := neighbors[candKey]
+		if ng == nil {
+			ng = &neighborGroup{memberStarts: map[string]time.Time{}}
+			subjNs := strings.ToLower(strings.TrimSpace(deref(r.SubjectNamespace)))
+			subj := strings.ToLower(strings.TrimSpace(deref(r.SubjectOwner)))
+			if subj == "" && r.SubjectName != nil {
+				subj = strings.ToLower(strings.TrimSpace(*r.SubjectName))
+			}
+			ng.ns, ng.subj = subjNs, subj
+			neighbors[candKey] = ng
+		}
+		ng.members = append(ng.members, groupCandidate{
+			ID:             r.ID,
+			AggregationKey: deref(r.AggregationKey),
+			StartsAt:       r.StartsAt,
+			LastSeen:       r.LastSeen,
+		})
+		ng.memberStarts[r.ID] = r.StartsAt
+		if r.LastSeen.After(ng.newest) {
+			ng.newest = r.LastSeen
+		}
+	}
+	if len(neighbors) == 0 {
+		return nil
+	}
+
+	// Most recently active neighbor subject is the story we join; determinism
+	// on ties via key order.
+	var bestKey string
+	for k, ng := range neighbors {
+		if bestKey == "" || ng.newest.After(neighbors[bestKey].newest) ||
+			(ng.newest.Equal(neighbors[bestKey].newest) && k < bestKey) {
+			bestKey = k
+		}
+	}
+	best := neighbors[bestKey]
+
+	// Chronic gate for the neighbor subject's pairs (same rates the
+	// same-subject path uses, scoped to the neighbor).
+	type pairRate struct {
+		AggregationKey string `db:"aggregation_key"`
+		Weekly         int    `db:"weekly"`
+	}
+	var rates []pairRate
+	err = sqlx.SelectContext(ctx, db, &rates, `
+		SELECT aggregation_key, count(*) AS weekly
+		FROM events
+		WHERE tenant = $1
+		  AND cloud_account_id = $2
+		  AND lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name))) = $3
+		  AND lower(coalesce(btrim(subject_namespace), '')) = $4
+		  AND starts_at >= $5 AND starts_at < $6
+		  AND aggregation_key IS NOT NULL
+		GROUP BY aggregation_key`,
+		*event.Tenant, *event.CloudAccountId, best.subj, best.ns,
+		start.Add(-ChronicLookback), start,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load neighbor pair rates: %w", err)
+	}
+	neighborChronic := make(map[string]bool, len(rates))
+	for _, r := range rates {
+		if (ChronicStats{WeeklyCount: r.Weekly}).Chronic() {
+			neighborChronic[r.AggregationKey] = true
+		}
+	}
+
+	leaderID, offset, ok, err := resolveOpenGroupLeader(ctx, db, event, seed, best.members, best.memberStarts, neighborChronic)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	return insertGroupLink(ctx, db, event, leaderID, offset, 1,
+		fmt.Sprintf("calls edge between %s and %s within incident attach window", seedKey, bestKey))
 }

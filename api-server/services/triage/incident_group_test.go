@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/internal/testenv"
+
+	"github.com/jmoiron/sqlx"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -193,21 +194,25 @@ func TestEventAlertIdentity_NilSafe(t *testing.T) {
 // asserts the star shape: both later alerts link straight to the OOM leader.
 func TestAttachSameSubjectIncident_E2E(t *testing.T) {
 	if os.Getenv("TEST_LIVE_CORRELATION") != "1" {
-		t.Skip("set TEST_LIVE_CORRELATION=1 to run (requires local Metastore connection)")
+		t.Skip("set TEST_LIVE_CORRELATION=1 to run (requires APP_DATABASE_URL + TEST_ACCOUNT_ID)")
 	}
 
 	env := testenv.RequireEnv(t, "TEST_ACCOUNT_ID")
 	account := env["TEST_ACCOUNT_ID"]
-
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	require.NoError(t, err, "failed to connect to Metastore — check .env")
+	dbURL := os.Getenv("APP_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("set APP_DATABASE_URL to run")
+	}
+	dbConn, err := sqlx.Connect("postgres", dbURL)
+	require.NoError(t, err)
+	defer func() { _ = dbConn.Close() }()
 	ctx := context.Background()
 
 	var tenant string
-	require.NoError(t, dbms.Db.GetContext(ctx, &tenant,
+	require.NoError(t, dbConn.GetContext(ctx, &tenant,
 		`SELECT tenant::text FROM cloud_accounts WHERE id = $1`, account))
 
-	tx, err := dbms.Db.BeginTxx(ctx, nil)
+	tx, err := dbConn.BeginTxx(ctx, nil)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
 
@@ -218,10 +223,10 @@ func TestAttachSameSubjectIncident_E2E(t *testing.T) {
 		id := uuid.NewString()
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO events (id, tenant, cloud_account_id, aggregation_key,
-				subject_namespace, subject_name, subject_owner, fingerprint,
-				starts_at, created_at, source, title)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'e2e-test', $4)`,
-			id, tenant, account, aggKey, ns, "checkout-7d9f8b6c5d-x2vk4", "checkout", "fp-"+id, startsAt)
+				subject_namespace, subject_name, subject_owner, fingerprint, finding_id,
+				finding_type, priority, cluster, starts_at, created_at, source, title, evidences)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, 'issue', 'HIGH', 'e2e-cluster', $9, $9, 'kubernetes_api_server', $4, '[]'::jsonb)`,
+			id, tenant, account, aggKey, ns, "checkout-7d9f8b6c5d-x2vk4", "checkout", "fp-"+id, startsAt, "fid-"+id)
 		require.NoError(t, err)
 		return &models.Event{
 			Id:               id,
@@ -269,4 +274,109 @@ func TestAttachSameSubjectIncident_E2E(t *testing.T) {
 	require.NoError(t, attachSameSubjectIncident(ctx, tx, late))
 	_, linked = leaderLinkOf(late.Id)
 	assert.False(t, linked, "quiet gap past the attach window ends the group")
+}
+
+// TestAttachTopologyIncident_E2E replays the cross-service story through the
+// real SQL inside an always-rolled-back transaction: checkout's alert opens a
+// group; payments' alert carries a stored service map with a CALLS edge to
+// checkout and must join checkout's group with a topology reason.
+func TestAttachTopologyIncident_E2E(t *testing.T) {
+	if os.Getenv("TEST_LIVE_CORRELATION") != "1" {
+		t.Skip("set TEST_LIVE_CORRELATION=1 to run (requires APP_DATABASE_URL + TEST_ACCOUNT_ID)")
+	}
+
+	env := testenv.RequireEnv(t, "TEST_ACCOUNT_ID")
+	account := env["TEST_ACCOUNT_ID"]
+	dbURL := os.Getenv("APP_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("set APP_DATABASE_URL to run")
+	}
+	dbConn, err := sqlx.Connect("postgres", dbURL)
+	require.NoError(t, err)
+	defer func() { _ = dbConn.Close() }()
+	ctx := context.Background()
+
+	var tenant string
+	require.NoError(t, dbConn.GetContext(ctx, &tenant,
+		`SELECT tenant::text FROM cloud_accounts WHERE id = $1`, account))
+
+	tx, err := dbConn.BeginTxx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+
+	const ns = "ns-e2e-topology"
+	anchor := time.Date(2020, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	kgEvidence := `[{"type": "knowledge_graph", "nodes": [
+	  {"id": "n1", "node_type": "Workload", "properties": {"kind": "Deployment", "name": "checkout", "namespace": "` + ns + `"}},
+	  {"id": "n2", "node_type": "Workload", "properties": {"kind": "Deployment", "name": "payments", "namespace": "` + ns + `"}}
+	], "edges": [
+	  {"relationship_type": "CALLS", "source_node_id": "n2", "dest_node_id": "n1"}
+	]}]`
+
+	mkEvent := func(owner, aggKey string, startsAt time.Time, evidenceJSON string) *models.Event {
+		id := uuid.NewString()
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO events (id, tenant, cloud_account_id, aggregation_key,
+				subject_namespace, subject_name, subject_owner, fingerprint, finding_id,
+				finding_type, priority, cluster, starts_at, created_at, source, title, evidences)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $11, 'issue', 'HIGH', 'e2e-cluster', $9, $9, 'kubernetes_api_server', $4, coalesce(nullif($10,'')::jsonb, '[]'::jsonb))`,
+			id, tenant, account, aggKey, ns, owner+"-abc12", owner, "fp-"+id, startsAt, evidenceJSON, "fid-"+id)
+		require.NoError(t, err)
+		ev := &models.Event{
+			Id:               id,
+			Tenant:           &tenant,
+			CloudAccountId:   &account,
+			AggregationKey:   strPtr(aggKey),
+			SubjectNamespace: strPtr(ns),
+			SubjectName:      strPtr(owner + "-abc12"),
+			SubjectOwner:     strPtr(owner),
+			Fingerprint:      strPtr("fp-" + id),
+			StartsAt:         &startsAt,
+		}
+		if evidenceJSON != "" {
+			var j models.Json
+			require.NoError(t, j.Scan([]uint8(evidenceJSON)))
+			ev.Evidences = &j
+		}
+		return ev
+	}
+
+	// checkout opens its group (lone leader — no link row yet).
+	checkoutErr := mkEvent("checkout", "HighErrorRate", anchor, "")
+	require.NoError(t, attachSameSubjectIncident(ctx, tx, checkoutErr))
+
+	// payments alerts 4 minutes later; its stored map says payments CALLS
+	// checkout — it must join checkout's group via topology.
+	paymentsErr := mkEvent("payments", "HighLatency", anchor.Add(4*time.Minute), kgEvidence)
+	require.NoError(t, attachSameSubjectIncident(ctx, tx, paymentsErr))
+
+	var leader, reason string
+	err = tx.QueryRowContext(ctx, `
+		SELECT related_event_id, correlation_reason FROM event_correlations
+		WHERE event_id = $1 AND correlation_type = $2`, paymentsErr.Id, SameIncidentCorrelationType).
+		Scan(&leader, &reason)
+	require.NoError(t, err, "payments must have topology-attached")
+	assert.Equal(t, checkoutErr.Id, leader)
+	assert.Contains(t, reason, "calls edge")
+
+	// A later checkout alert still resolves the same star (transitivity via
+	// the edge-following leader resolution).
+	checkoutCrash := mkEvent("checkout", "CrashLoopBackOff", anchor.Add(6*time.Minute), "")
+	require.NoError(t, attachSameSubjectIncident(ctx, tx, checkoutCrash))
+	err = tx.QueryRowContext(ctx, `
+		SELECT related_event_id FROM event_correlations
+		WHERE event_id = $1 AND correlation_type = $2`, checkoutCrash.Id, SameIncidentCorrelationType).
+		Scan(&leader)
+	require.NoError(t, err)
+	assert.Equal(t, checkoutErr.Id, leader, "same-subject attach joins the existing cross-service star")
+
+	// No stored map on the seed and no same-subject group: no attach.
+	lonely := mkEvent("inventory", "DiskPressure", anchor.Add(5*time.Minute), "")
+	require.NoError(t, attachSameSubjectIncident(ctx, tx, lonely))
+	var n int
+	require.NoError(t, tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM event_correlations
+		WHERE event_id = $1 AND correlation_type = $2`, lonely.Id, SameIncidentCorrelationType).Scan(&n))
+	assert.Equal(t, 0, n, "no map, no same-subject members — stays lone")
 }

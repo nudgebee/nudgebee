@@ -554,21 +554,24 @@ func extractNodeKeyFromLink(linkID interface{}) string {
 // KG evidence has nodes (with properties.name, properties.namespace, node_type) and
 // edges (with source_node_id, dest_node_id, relationship_type).
 func parseKnowledgeGraphEvidence(evidence map[string]interface{}) *DependencyGraph {
-	dataRaw := evidence["data"]
-	if dataRaw == nil {
-		return nil
+	// Two payload shapes exist. The current KG evidence writer puts nodes/edges
+	// at the evidence TOP LEVEL; an older shape nested them under "data" (as a
+	// map or a JSON string). This parser only knowing the old shape meant every
+	// current event failed to parse, which silently killed the correlation
+	// engine's cross-service (ServiceMap) scoring — events scored at time-only
+	// (0.30) and fell below the 0.50 threshold, the "cross-service path is
+	// dead" symptom noted in actions_triage_impact.go.
+	var dataMap map[string]interface{}
+	switch dataRaw := evidence["data"].(type) {
+	case map[string]interface{}:
+		dataMap = dataRaw
+	case string:
+		if err := json.Unmarshal([]byte(dataRaw), &dataMap); err != nil {
+			return nil
+		}
 	}
-
-	dataMap, ok := dataRaw.(map[string]interface{})
-	if !ok {
-		// Try as JSON string
-		dataStr, ok := dataRaw.(string)
-		if !ok {
-			return nil
-		}
-		if err := json.Unmarshal([]byte(dataStr), &dataMap); err != nil {
-			return nil
-		}
+	if dataMap == nil {
+		dataMap = evidence // current shape: nodes/edges at the top level
 	}
 
 	nodesRaw, _ := dataMap["nodes"].([]interface{})
