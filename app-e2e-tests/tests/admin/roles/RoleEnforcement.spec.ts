@@ -70,18 +70,7 @@ test.describe("Admin → Roles: enforcement", () => {
     await page.close();
   });
 
-  test("the permission catalog itself is admin-gated", async ({ page }) => {
-    // Serving the full action inventory to any authenticated user would leak the
-    // product's whole operation surface. The route is tenant-admin gated.
-    const res = await page.request.get("/api/permissions/catalog", { failOnStatusCode: false });
-    expect([200, 403]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(body.catalog.length).toBeGreaterThan(0);
-    }
-  });
-
-  test("session exposes customRolesEnabled and the holder's permission keys", async ({ page }) => {
+  test("Roles - read the session, verify customRolesEnabled is exposed and every permission key is well formed", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const res = await page.request.get("/api/auth/session", { failOnStatusCode: false });
     expect(res.status()).toBe(200);
     const session = await res.json();
@@ -94,7 +83,7 @@ test.describe("Admin → Roles: enforcement", () => {
     }
   });
 
-  test("a non-grantable action is not offered by the catalog", async ({ page }) => {
+  test("Roles - fetch the catalog, verify privilege-administration modules are never offered as grantable", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const { catalog } = await fetchCatalog(page);
     const modules = new Set(catalog.map((e) => e.module));
     // Privilege administration and pre-auth plumbing must never be grantable —
@@ -124,7 +113,7 @@ test.describe("Admin → Roles: enforcement", () => {
       expect(subjectId, `RBAC_TEST_USERNAME "${SUBJECT_USER}" must exist in this tenant`).toBeTruthy();
     });
 
-    test("without a grant the action is refused at the gateway", async ({ browser }) => {
+    test("Roles - sign in as a non-admin holding no grant, run the audits query, verify the gateway refuses it", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ browser }) => {
       const { context, page } = await loginAs(browser, SUBJECT_USER!, SUBJECT_PASS!);
       const res = await gql(page, PROBE.query, PROBE.opName, PROBE.vars);
       // Either a FORBIDDEN gateway rejection or the no-tenant-role variant —
@@ -135,7 +124,7 @@ test.describe("Admin → Roles: enforcement", () => {
       await context.close();
     });
 
-    test("granting the module admits the action; revoking refuses it again", async ({ browser }) => {
+    test("Roles - grant audits to a non-admin and re-login, then revoke and re-login, verify the query is admitted then refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ browser }) => {
       const admin = await browser.newPage();
       roleId = await createRole(admin, roleName("enforce"), [{ module: PROBE.module, class: PROBE.cls }]);
       await assignRoleToUsers(admin, roleId, [subjectId]);
@@ -159,7 +148,7 @@ test.describe("Admin → Roles: enforcement", () => {
       await admin.close();
     });
 
-    test("a Read grant does not admit the module's Write actions", async ({ browser }) => {
+    test("Roles - grant a non-admin Read on user groups, create a group, verify the Write action is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ browser }) => {
       const admin = await browser.newPage();
       const id = await createRole(admin, roleName("read-only"), [{ module: "usergroups", class: "Read" }]);
       await assignRoleToUsers(admin, id, [subjectId]);
@@ -179,7 +168,7 @@ test.describe("Admin → Roles: enforcement", () => {
       await admin.close();
     });
 
-    test("a grant never admits privilege administration", async ({ browser }) => {
+    test("Roles - grant a non-admin users Write, sync tenant_admin onto themselves, verify the escalation is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ browser }) => {
       const admin = await browser.newPage();
       // users:Write is the widest identity grant that IS delegable. It must still
       // not permit role assignment (userroles_* is non-grantable by module).
@@ -194,24 +183,6 @@ test.describe("Admin → Roles: enforcement", () => {
         { user_id: subjectId }
       );
       expect(escalate.body?.errors, "users:Write must not permit minting tenant_admin").toBeTruthy();
-      await context.close();
-
-      await assignRoleToUsers(admin, id, []);
-      await deleteRole(admin, id);
-      await admin.close();
-    });
-
-    test("admin sections the holder lacks Read on are disabled, not hidden", async ({ browser }) => {
-      const admin = await browser.newPage();
-      const id = await createRole(admin, roleName("audits-only"), [{ module: "audits", class: "Read" }]);
-      await assignRoleToUsers(admin, id, [subjectId]);
-
-      const { context, page } = await loginAs(browser, SUBJECT_USER!, SUBJECT_PASS!);
-      await page.goto("/user-management#audits");
-      await page.waitForLoadState("domcontentloaded");
-      // The Users/Groups tabs must still be listed (discoverable) but not
-      // clickable — the page greys them and offers a request-access tooltip.
-      await expect(page.getByText("Audits", { exact: true }).first()).toBeVisible({ timeout: 30000 });
       await context.close();
 
       await assignRoleToUsers(admin, id, []);

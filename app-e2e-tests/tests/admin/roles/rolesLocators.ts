@@ -35,6 +35,7 @@ export class RolesLocators {
   readonly cancelBtn: Locator;
   readonly tenantScopeTab: Locator;
   readonly accountScopeTab: Locator;
+  readonly moduleSearch: Locator;
 
   // Delete confirm
   readonly deleteConfirmBtn: Locator;
@@ -47,13 +48,20 @@ export class RolesLocators {
     this.builtInRolesTable = page.locator("#built-in-roles");
 
     // Scoped to the dialog so the listing behind the modal can't match, and
-    // located by label rather than data-testid — see the locator policy above.
+    // located by accessible name rather than data-testid — see the locator policy
+    // above. Not getByLabel: the field is `required`, so ds/Input appends an
+    // aria-hidden "*" INSIDE the <label>, making the label's text "Name*". The
+    // accessible name stays "Name" because the asterisk is aria-hidden.
     this.roleEditorDialog = page.getByRole("dialog");
-    this.roleNameInput = this.roleEditorDialog.getByLabel("Name", { exact: true });
+    this.roleNameInput = this.roleEditorDialog.getByRole("textbox", { name: "Name", exact: true });
     this.saveRoleBtn = page.locator('[data-testid="save-role-btn"]');
     this.cancelBtn = page.getByRole("button", { name: "Cancel" }).last();
     this.tenantScopeTab = page.locator("#role-scope-tab-tenant");
     this.accountScopeTab = page.locator("#role-scope-tab-account");
+    this.moduleSearch = this.roleEditorDialog
+      .getByRole("textbox", { name: "Search modules" })
+      .or(this.roleEditorDialog.locator("#role-module-search"))
+      .first();
 
     this.deleteConfirmBtn = page.getByRole("button", { name: "Delete", exact: true }).last();
   }
@@ -65,8 +73,10 @@ export class RolesLocators {
     // registered on this page — and its overlay would intercept clicks on the
     // listing. Registration is idempotent per page.
     await registerWelcomeTourAutoDismiss(this.page);
-    await this.page.goto("/user-management#roles");
-    await this.page.waitForLoadState("domcontentloaded");
+    // waitUntil domcontentloaded: the default "load" waits on every dashboard
+    // subresource and times out on a slow dev env. The New role button is the
+    // real readiness signal, so wait on that instead.
+    await this.page.goto("/user-management#roles", { waitUntil: "domcontentloaded" });
     await this.newRoleBtn.waitFor({ state: "visible", timeout: 30000 });
   }
 
@@ -109,8 +119,11 @@ export class RolesLocators {
   async selectScope(scope: "tenant" | "account"): Promise<void> {
     const tab = scope === "tenant" ? this.tenantScopeTab : this.accountScopeTab;
     await tab.click();
-    // The matrix re-renders; wait for at least one cell of the new scope.
-    await this.page.waitForTimeout(200);
+    // The matrix re-renders with the tab selection, so the selected state is
+    // the signal - a fixed sleep here is either too short or pure dead time.
+    await this.page
+      .locator(`#role-scope-tab-${scope}[aria-selected="true"]`)
+      .waitFor({ state: "visible", timeout: 15000 });
   }
 }
 
@@ -120,6 +133,8 @@ export class AssignmentLocators {
 
   readonly usersTab: Locator;
   readonly groupsTab: Locator;
+  readonly editUserBtn: Locator;
+  readonly editGroupBtn: Locator;
 
   // User modal
   readonly userTenantRolePicker: Locator;
@@ -140,6 +155,12 @@ export class AssignmentLocators {
     this.usersTab = page.getByText("Users", { exact: true }).first();
     this.groupsTab = page.getByText("Groups", { exact: true }).first();
 
+    // AllUsers.jsx and UserGroup.jsx render zero data-testid, so the accessible
+    // name is the highest rung available for these row actions.
+    this.editUserBtn = page.getByRole("button", { name: "Edit user" }).or(page.locator("#edit-user-button")).first();
+    // No id and no testid on the group row action, so the name stands alone.
+    this.editGroupBtn = page.getByRole("button", { name: "Edit group" }).first();
+
     this.userTenantRolePicker = page.locator("#user-modal-tenant-role");
     this.userSubmitBtn = page.locator("#user-modal-submit-button");
 
@@ -158,5 +179,15 @@ export class AssignmentLocators {
    */
   rbacTab(kind: "tenant" | "account"): Locator {
     return this.page.getByRole("tab", { name: new RegExp(`^${kind}$`, "i") });
+  }
+
+  // One row of an open ds/Select popup, matched by the role name it offers.
+  roleOption(name: string): Locator {
+    // Not getByRole("option"): ds/Select renders its popup with disablePortal
+    // INSIDE the modal, and MUI's ModalManager then marks that whole container
+    // aria-hidden while the popup is open — so the accessibility tree holds no
+    // options at all and getByRole matches zero. Same trap as the MUI menuitem
+    // rows elsewhere in this suite. The CSS role attribute is still there.
+    return this.page.locator('[role="listbox"] [role="option"]:visible', { hasText: name }).first();
   }
 }

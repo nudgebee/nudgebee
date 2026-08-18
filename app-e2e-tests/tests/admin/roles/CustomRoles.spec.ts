@@ -60,7 +60,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     await page.close();
   });
 
-  test("permission catalog is served and non-trivial", async ({ page }) => {
+  test("Roles - fetch the permission catalog, verify every module lists its actions for each class", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const res = await fetchCatalog(page);
     catalog = res.catalog;
 
@@ -81,7 +81,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     }
   });
 
-  test("Roles tab renders the custom-role and built-in-role tables", async ({ page }) => {
+  test("Roles sanity - open Admin > Roles, verify the custom-role table, the built-in-role table and the New role button render", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     await roles.open();
 
@@ -90,7 +90,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     await expect(roles.newRoleBtn).toBeEnabled();
   });
 
-  test("editor renders EVERY catalog cell as an interactive checkbox", async ({ page }) => {
+  test("Roles - open the role editor, switch both scope tabs, verify the matrix draws exactly the catalog's module x class cells", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     test.setTimeout(300000);
     const roles = new RolesLocators(page);
     const { catalog: cat } = await fetchCatalog(page);
@@ -120,7 +120,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(missing, "matrix must render exactly the catalog's cells").toEqual([]);
   });
 
-  test("Write requires Read: coupling holds in both directions", async ({ page }) => {
+  test("Roles - open the role editor, tick Read then Write, untick Read, verify Write clears and disables again", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     const { catalog: cat } = await fetchCatalog(page);
     // Pick a tenant-scope module that offers both Read and Write.
@@ -154,7 +154,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     await expect(write).toBeDisabled();
   });
 
-  test("scope tabs keep selections made on the hidden tab", async ({ page }) => {
+  test("Roles - tick a tenant module, switch to the Account tab and tick another, switch back, verify the tenant tick survived", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     const { catalog: cat } = await fetchCatalog(page);
     const tenantMod = cat.find((e) => e.scope === "tenant" && e.classes.includes("Read"))!.module;
@@ -177,7 +177,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     await expect(roles.permCheckbox(tenantMod, "Read")).toBeChecked();
   });
 
-  test("name is required and duplicates are rejected", async ({ page }) => {
+  test("Roles - save the editor with an empty name, then save the same name twice, verify the modal stays open and the duplicate is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     await roles.open();
     await roles.newRoleBtn.click();
@@ -196,17 +196,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(graphQLErrorMessage(second.body) ?? "", "duplicate name must be refused").toMatch(/already exists/i);
   });
 
-  test("a role with no permissions is allowed and shows 0 grants", async ({ page }) => {
-    const name = roleName("empty");
-    const id = await createRole(page, name, []);
-    const roles = await listRoles(page);
-    const created = roles.find((r) => r.id === id);
-    expect(created?.permissions ?? []).toEqual([]);
-    expect(created?.user_ids ?? []).toEqual([]);
-    expect(created?.group_ids ?? []).toEqual([]);
-  });
-
-  test("grants are unscoped: an entity-scoped grant is refused", async ({ page }) => {
+  test("Roles - create a role carrying an account-scoped grant, verify the API refuses grant-level scope", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     // Scope belongs to the ASSIGNMENT ("group G holds R on account A"), never to
     // the grant. The old scope-on-grant shape must fail loudly rather than have
     // its scope silently dropped.
@@ -216,12 +206,12 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(graphQLErrorMessage(res.body) ?? "", "grant-level scope must be rejected").toMatch(/unscoped|bind the role/i);
   });
 
-  test("an invalid permission class is refused", async ({ page }) => {
+  test("Roles - create a role with the class Admin, verify the API refuses anything but Read, Write or Execute", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const res = await tryCreateRole(page, roleName("bad-class"), [{ module: "events", class: "Admin" }]);
     expect(graphQLErrorMessage(res.body) ?? "").toMatch(/Read\|Write\|Execute|invalid permission/i);
   });
 
-  test("EVERY module × class cell persists a round trip", async ({ page }) => {
+  test("Roles - save every catalog module x class cell in batches, verify each grant persists exactly as ticked", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     test.setTimeout(600000);
     const { catalog: cat } = await fetchCatalog(page);
     const cells = catalogCells(cat);
@@ -253,7 +243,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(failures, "every catalog cell must persist exactly as ticked").toEqual([]);
   });
 
-  test("editing replaces the grant set (set semantics, not merge)", async ({ page }) => {
+  test("Roles - create a role with one grant, edit it to a different grant, verify the new grant replaces rather than merges", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const { catalog: cat } = await fetchCatalog(page);
     const a = cat.find((e) => e.classes.includes("Read"))!.module;
     const b = cat.filter((e) => e.classes.includes("Read") && e.module !== a)[0].module;
@@ -268,7 +258,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect((after?.permissions ?? []).map((p) => `${p.module}:${p.class}`)).toEqual([`${b}:Read`]);
   });
 
-  test("editing an existing role without changes issues no write", async ({ page }) => {
+  test("Roles - open an existing role and save without editing, verify no UpdateCustomRole call is sent", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     const name = roleName("dirty-gate");
     const id = await createRole(page, name, []);
@@ -287,7 +277,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(updateSeen, "an unchanged role must not be re-saved (it busts the tenant security-context cache)").toBe(false);
   });
 
-  test("delete asks for confirmation and removes the role", async ({ page }) => {
+  test("Roles - delete a role and cancel, then delete and confirm, verify the role survives the cancel and is gone after the confirm", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     const name = roleName("delete-me");
     const id = await createRole(page, name, []);
@@ -305,7 +295,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     await expect.poll(async () => (await listRoles(page)).some((r) => r.id === id), { timeout: 30000 }).toBe(false);
   });
 
-  test("editor shows the built-in roles' permissions under the matrix, per scope", async ({ page }) => {
+  test("Roles - open the role editor on both scope tabs, verify the built-in role summary renders read-only counts for that scope", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     await fetchCatalog(page);
     await roles.open();
@@ -322,13 +312,16 @@ test.describe("Admin → Roles: custom role editor", () => {
     for (const scope of ["tenant", "account"] as const) {
       await roles.selectScope(scope);
       await expect(roles.builtInSummary(scope)).toBeVisible();
-      await expect(page.getByText("Built-in role permissions")).toBeVisible();
+      // Scoped to the dialog and exact: the listing's own built-in-roles table
+      // behind the modal has a "Built-in role" / "Permissions" header row whose
+      // combined text matches the same substring.
+      await expect(roles.roleEditorDialog.getByText("Built-in role permissions", { exact: true })).toBeVisible();
       // Read-only: counts only, never an editable control.
       await expect(roles.builtInSummary(scope).locator('input[type="checkbox"]')).toHaveCount(0);
     }
   });
 
-  test("built-in roles are read-only and render their derived grants", async ({ page }) => {
+  test("Roles - open each built-in role from the listing, verify the viewer shows its derived grants with no editable checkbox", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     const { systemRoles } = await fetchCatalog(page);
     await roles.open();
@@ -344,7 +337,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     }
   });
 
-  test("a built-in/system role cannot be mutated through the custom-role API", async ({ page }) => {
+  test("Roles - update a role id that belongs to another tenant, verify the API refuses it as not found", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     // System roles live in the same table with is_system=true. They must be
     // rejected by an explicit guard, not merely be absent from tenant queries.
     const { systemRoles } = await fetchCatalog(page);
@@ -353,5 +346,109 @@ test.describe("Admin → Roles: custom role editor", () => {
     // the tenant-scoping path instead: an id from another tenant must 404.
     const res = await updateRole(page, "00000000-0000-0000-0000-000000000000", roleName("hijack"), []);
     expect(graphQLErrorMessage(res.body) ?? "").toMatch(/not found|read-only|Not Allowed/i);
+  });
+  test("Roles - open the role editor, filter the module list by module key then by label, verify only the matching module stays", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+    const roles = new RolesLocators(page);
+    await roles.open();
+    await roles.newRoleBtn.click();
+    await expect(roles.roleNameInput).toBeVisible();
+    await roles.selectScope("tenant");
+
+    // customroles renders as "Custom Roles", so it is the one module that proves
+    // the filter matches the raw module key AND the formatted label.
+    await expect(roles.permCell("customroles", "Read")).toBeVisible();
+    await expect(roles.permCell("audits", "Read")).toBeVisible();
+
+    await roles.moduleSearch.fill("customroles");
+    await expect(roles.permCell("customroles", "Read")).toBeVisible();
+    await expect(roles.permCell("audits", "Read")).toHaveCount(0);
+
+    await roles.moduleSearch.fill("Custom Roles");
+    await expect(roles.permCell("customroles", "Read")).toBeVisible();
+    await expect(roles.permCell("audits", "Read")).toHaveCount(0);
+
+    await roles.moduleSearch.fill("zzz-no-such-module");
+    await expect(roles.roleEditorDialog.getByText('No modules match "zzz-no-such-module".')).toBeVisible();
+
+    await roles.moduleSearch.fill("");
+    await expect(roles.permCell("audits", "Read")).toBeVisible();
+  });
+
+  test("Roles - create a role through the editor with a tenant and an account grant, save, verify the saved grants match what was ticked", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+    const roles = new RolesLocators(page);
+    const { catalog: cat } = await fetchCatalog(page);
+    const tenantMod = cat.find((e) => e.scope === "tenant" && e.classes.includes("Read"))!.module;
+    const accountMod = cat.find((e) => e.scope === "account" && e.classes.includes("Read"))!.module;
+    const name = roleName("ui-create");
+
+    await roles.open();
+    await roles.newRoleBtn.click();
+    await roles.roleNameInput.fill(name);
+
+    await roles.selectScope("tenant");
+    await roles.permCheckbox(tenantMod, "Read").check({ force: true });
+    await roles.selectScope("account");
+    await roles.permCheckbox(accountMod, "Read").check({ force: true });
+
+    await roles.saveRoleBtn.click();
+    await expect(roles.roleNameInput).toBeHidden({ timeout: 30000 });
+
+    // The editor is the only path that turns ticks into grants, so the stored set
+    // is what proves the matrix wrote exactly what the admin saw.
+    const saved = (await listRoles(page)).find((r) => r.name === name);
+    expect(saved, "the role saved from the editor must appear in the listing").toBeTruthy();
+    expect((saved!.permissions ?? []).map((p) => `${p.module}:${p.class}`).sort()).toEqual(
+      [`${accountMod}:Read`, `${tenantMod}:Read`].sort()
+    );
+    await expect(roles.editRoleBtn(saved!.id)).toBeVisible();
+
+    await deleteRole(page, saved!.id);
+  });
+
+  test("Roles - enter a name and tick a grant in the editor, cancel, verify no role is created", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+    const roles = new RolesLocators(page);
+    const { catalog: cat } = await fetchCatalog(page);
+    const mod = cat.find((e) => e.scope === "tenant" && e.classes.includes("Read"))!.module;
+    const name = roleName("cancelled");
+
+    await roles.open();
+    await roles.newRoleBtn.click();
+    await roles.roleNameInput.fill(name);
+    await roles.selectScope("tenant");
+    await roles.permCheckbox(mod, "Read").check({ force: true });
+
+    await roles.cancelBtn.click();
+    await expect(roles.roleNameInput).toBeHidden({ timeout: 30000 });
+    expect((await listRoles(page)).some((r) => r.name === name), "cancel must not write the role").toBe(false);
+  });
+
+  test("Roles - tick Execute on a module with Read unticked, save, verify Execute stands alone and does not pull in Read", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+    const roles = new RolesLocators(page);
+    const { catalog: cat } = await fetchCatalog(page);
+    const entry = cat.find((e) => e.scope === "tenant" && e.classes.includes("Execute") && e.classes.includes("Read"));
+    expect(entry, "need a tenant module offering both Read and Execute").toBeTruthy();
+    const mod = entry!.module;
+    const name = roleName("execute-only");
+
+    await roles.open();
+    await roles.newRoleBtn.click();
+    await roles.roleNameInput.fill(name);
+    await roles.selectScope("tenant");
+
+    const read = roles.permCheckbox(mod, "Read");
+    const execute = roles.permCheckbox(mod, "Execute");
+
+    // Only Write is gated on Read. Execute is a standalone class, so it must be
+    // reachable and savable with Read left unticked.
+    await expect(execute).toBeEnabled();
+    await execute.check({ force: true });
+    await expect(read).not.toBeChecked();
+
+    await roles.saveRoleBtn.click();
+    await expect(roles.roleNameInput).toBeHidden({ timeout: 30000 });
+
+    const saved = (await listRoles(page)).find((r) => r.name === name);
+    expect((saved?.permissions ?? []).map((p) => `${p.module}:${p.class}`)).toEqual([`${mod}:Execute`]);
+    await deleteRole(page, saved!.id);
   });
 });

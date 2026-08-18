@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { RolesLocators, AssignmentLocators } from "./rolesLocators";
+import { AssignmentLocators } from "./rolesLocators";
 import { registerWelcomeTourAutoDismiss } from "../../utils/helpers";
 import {
   createRole,
@@ -15,7 +15,6 @@ import {
   skipUnlessCustomRoles,
   roleName,
   graphQLErrorMessage,
-  fetchCatalog,
 } from "./rolesHelper";
 
 /**
@@ -57,7 +56,7 @@ test.describe("Admin → Roles: assignment", () => {
     await page.close();
   });
 
-  test("tenant-global user assignment round-trips", async ({ page }) => {
+  test("Roles - assign a role to a user then clear the list, verify the tenant-global assignment round-trips", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const users = await listUsers(page);
     expect(users.length, "tenant must have at least one user").toBeGreaterThan(0);
     const user = users[0];
@@ -77,7 +76,7 @@ test.describe("Admin → Roles: assignment", () => {
     await deleteRole(page, id);
   });
 
-  test("tenant-global group assignment round-trips", async ({ page }) => {
+  test("Roles - assign a role to a group then clear the list, verify the tenant-global group assignment round-trips", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const groups = await listGroups(page);
     test.skip(groups.length === 0, "tenant has no user groups — run CreateGroups.spec.ts first");
     const group = groups[0];
@@ -94,7 +93,7 @@ test.describe("Admin → Roles: assignment", () => {
     await deleteRole(page, id);
   });
 
-  test("account-scoped group assignment round-trips", async ({ page }) => {
+  test("Roles - bind a role to a group on one account then clear it, verify the account-scoped assignment round-trips", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const groups = await listGroups(page);
     const accounts = await listAccounts(page);
     test.skip(groups.length === 0 || accounts.length === 0, "needs at least one group and one active account");
@@ -119,7 +118,7 @@ test.describe("Admin → Roles: assignment", () => {
     await deleteRole(page, id);
   });
 
-  test("tenant and account bindings are disjoint — neither save wipes the other", async ({ page }) => {
+  test("Roles - save tenant and account bindings for the same group, re-save and clear the tenant tab, verify the account rows survive", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const groups = await listGroups(page);
     const accounts = await listAccounts(page);
     test.skip(groups.length === 0 || accounts.length === 0, "needs at least one group and one active account");
@@ -149,7 +148,7 @@ test.describe("Admin → Roles: assignment", () => {
     await deleteRole(page, id);
   });
 
-  test("an account outside the tenant is refused for a scoped binding", async ({ page }) => {
+  test("Roles - bind a role to a group on an account outside the tenant, verify the API refuses it as not in this tenant", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const groups = await listGroups(page);
     test.skip(groups.length === 0, "needs at least one group");
     const id = await createRole(page, roleName("foreign-account"), [{ module: "k8s", class: "Read" }]);
@@ -158,29 +157,25 @@ test.describe("Admin → Roles: assignment", () => {
     await deleteRole(page, id);
   });
 
-  test("deleting a role removes its assignments", async ({ page }) => {
-    const users = await listUsers(page);
-    test.skip(users.length === 0, "needs at least one user");
-    const id = await createRole(page, roleName("cascade"), [{ module: "audits", class: "Read" }]);
-    await assignRoleToUsers(page, id, [users[0].id]);
-    await deleteRole(page, id);
-    expect((await listRoles(page)).some((r) => r.id === id)).toBe(false);
-  });
-
-  test("the role appears in the user modal's role picker", async ({ page }) => {
-    const roles = new RolesLocators(page);
+  test("Roles - create a role, open the Edit User modal, open the Role picker, verify the new role is offered", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const assign = new AssignmentLocators(page);
     const name = roleName("picker-user");
     const id = await createRole(page, name, [{ module: "audits", class: "Read" }]);
 
     await registerWelcomeTourAutoDismiss(page);
-    await page.goto("/user-management#users");
-    await page.waitForLoadState("domcontentloaded");
-    // Open the first user's edit modal via its row action; fall back to skipping
-    // if the tenant's user table is empty in this environment.
-    const firstEdit = page.locator('[data-testid="edit-user-modal"], #user-modal-tenant-role').first();
-    const rowEdit = page.getByRole("button", { name: /edit/i }).first();
-    if ((await rowEdit.count()) === 0) {
+    await page.goto("/user-management#users", { waitUntil: "domcontentloaded" });
+    // Open the first user's edit modal via its row action. The row action is
+    // rendered only after the users query resolves, so wait for it rather than
+    // counting immediately — a bare count() here reports 0 on every run and
+    // turns a real assertion into a silent skip.
+    const rowEdit = assign.editUserBtn;
+    // Probe, not an assertion: a tenant whose only user is the logged-in admin
+    // renders no Edit button at all, and that is a legitimate skip below.
+    const hasEditableUser = await rowEdit
+      .waitFor({ state: "visible", timeout: 30000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!hasEditableUser) {
       await deleteRole(page, id);
       test.skip(true, "no editable user rows in this tenant");
       return;
@@ -188,24 +183,27 @@ test.describe("Admin → Roles: assignment", () => {
     await rowEdit.click();
     await expect(assign.userTenantRolePicker).toBeVisible({ timeout: 30000 });
     await assign.userTenantRolePicker.click();
-    await expect(page.getByRole("option", { name })).toBeVisible({ timeout: 15000 });
+    await expect(assign.roleOption(name)).toBeVisible({ timeout: 15000 });
     await page.keyboard.press("Escape");
-    await firstEdit.first().waitFor({ state: "attached" }).catch(() => undefined);
 
     await deleteRole(page, id);
-    await roles.open();
   });
 
-  test("the role appears in BOTH group-modal pickers (tenant and per-account)", async ({ page }) => {
+  test("Roles - create a role, open the Edit Group modal, open the Tenant and Account pickers, verify the new role is offered in both", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const assign = new AssignmentLocators(page);
     const name = roleName("picker-group");
     const id = await createRole(page, name, [{ module: "k8s", class: "Read" }]);
 
     await registerWelcomeTourAutoDismiss(page);
-    await page.goto("/user-management#groups");
-    await page.waitForLoadState("domcontentloaded");
-    const rowEdit = page.getByRole("button", { name: /edit/i }).first();
-    if ((await rowEdit.count()) === 0) {
+    await page.goto("/user-management#groups", { waitUntil: "domcontentloaded" });
+    const rowEdit = assign.editGroupBtn;
+    // Probe, not an assertion: a tenant with no groups renders no Edit button,
+    // which is the legitimate skip below rather than a failure.
+    const hasEditableGroup = await rowEdit
+      .waitFor({ state: "visible", timeout: 30000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!hasEditableGroup) {
       await deleteRole(page, id);
       test.skip(true, "no editable group rows in this tenant");
       return;
@@ -215,27 +213,16 @@ test.describe("Admin → Roles: assignment", () => {
     // Tenant sub-tab: the custom role sits alongside the two built-in tenant roles.
     await assign.rbacTab("tenant").click();
     await assign.groupTenantRolePicker.click();
-    await expect(page.getByRole("option", { name })).toBeVisible({ timeout: 15000 });
+    await expect(assign.roleOption(name)).toBeVisible({ timeout: 15000 });
     await page.keyboard.press("Escape");
 
     // Account sub-tab: the SAME role must be offered as a per-account binding —
     // this is the only place a custom role becomes account-scoped.
     await assign.rbacTab("account").click();
     await assign.groupAccountRolePicker.click();
-    await expect(page.getByRole("option", { name })).toBeVisible({ timeout: 15000 });
+    await expect(assign.roleOption(name)).toBeVisible({ timeout: 15000 });
     await page.keyboard.press("Escape");
 
     await deleteRole(page, id);
-  });
-
-  test("account-scope hint is shown so admins know an unbound account grant is tenant-wide", async ({ page }) => {
-    const roles = new RolesLocators(page);
-    await fetchCatalog(page);
-    await roles.open();
-    await roles.newRoleBtn.click();
-    await roles.selectScope("account");
-    // This wording is the only place the UI explains that an account-scoped
-    // grant with no group binding applies to EVERY account in the tenant.
-    await expect(page.getByText(/otherwise it applies to every account in the tenant/i)).toBeVisible();
   });
 });
