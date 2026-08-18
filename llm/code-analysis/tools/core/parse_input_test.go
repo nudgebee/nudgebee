@@ -80,3 +80,30 @@ func TestParseInputHandlesNonStructTarget(t *testing.T) {
 		t.Errorf("a map target should receive the raw value, got %v", got["shallow"])
 	}
 }
+
+type taggedArgs struct {
+	Kept    bool `json:"kept"`
+	Ignored bool `json:"-"`
+	hidden  bool //nolint:unused // exercises the unexported-field skip
+}
+
+// encoding/json never populates unexported fields or ones tagged `json:"-"`.
+// Coercing an input key that shares such a field's Go name would rewrite a value
+// json is about to ignore, so those fields are skipped rather than name-matched.
+func TestParseInputSkipsFieldsJSONIgnores(t *testing.T) {
+	got := taggedArgs{}
+	in := map[string]any{"kept": "true", "Ignored": "true", "hidden": "true"}
+	if err := ParseInput(in, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Kept {
+		t.Error("a normally tagged field should still coerce")
+	}
+	if got.Ignored || got.hidden {
+		t.Error(`json:"-" and unexported fields must stay untouched`)
+	}
+	// The caller's map must not be rewritten for fields json will ignore.
+	if in["Ignored"] != "true" || in["hidden"] != "true" {
+		t.Errorf("input map should be left alone for ignored fields, got %v", in)
+	}
+}

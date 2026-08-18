@@ -126,8 +126,18 @@ func coerceScalarStrings(input map[string]any, target any) map[string]any {
 	cloned := false
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
+		// Mirror encoding/json's own rules: it never populates unexported
+		// fields or ones tagged `json:"-"`, so coercing an input key that
+		// happens to share such a field's Go name would rewrite a value json
+		// is about to ignore.
+		if field.PkgPath != "" {
+			continue
+		}
 		name := strings.Split(field.Tag.Get("json"), ",")[0]
-		if name == "" || name == "-" {
+		if name == "-" {
+			continue
+		}
+		if name == "" {
 			name = field.Name
 		}
 		raw, ok := input[name].(string)
