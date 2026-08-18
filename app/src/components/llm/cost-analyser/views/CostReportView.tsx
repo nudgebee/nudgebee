@@ -1,5 +1,5 @@
 /**
- * Screen — Accounts (consolidated cost report).
+ * Screen — Cost Report (consolidated per-account AI cost report).
  *
  * One row per account: daily cost, month-to-date cost, previous-month cost,
  * average daily spend this month vs last month, the % change between those
@@ -35,7 +35,7 @@ import {
   type UsageFilterOption,
 } from '@api1/ai-cost';
 
-interface AccountsViewProps {
+interface CostReportViewProps {
   /** Selected account id ('' = every account the tenant can read). */
   accountId?: string;
   /** Change the account scope — the shared FilterBar is hidden on this tab, so this is its only account picker. */
@@ -229,7 +229,7 @@ function toTopSourceRow(s: AiCostTopSourceRow) {
   ];
 }
 
-export function AccountsView({ accountId, onAccountChange, accountOptions, referenceDate, onReferenceDateChange }: AccountsViewProps) {
+export function CostReportView({ accountId, onAccountChange, accountOptions, referenceDate, onReferenceDateChange }: CostReportViewProps) {
   const [sort, setSort] = React.useState<{ name: string; order: 'asc' | 'desc' }>({ name: '', order: 'asc' });
   const [state, setState] = React.useState<{
     loading: boolean;
@@ -376,4 +376,4 @@ export function AccountsView({ accountId, onAccountChange, accountOptions, refer
   );
 }
 
-export default AccountsView;
+export default CostReportView;

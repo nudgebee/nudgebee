@@ -31,8 +31,8 @@ import ModelsView from './views/ModelsView';
 import AgentsView from './views/AgentsView';
 import ToolsView from './views/ToolsView';
 import UsersView from './views/UsersView';
-import AccountsView from './views/AccountsView';
-import AccountsTabDisabled from './views/AccountsTabDisabled';
+import CostReportView from './views/CostReportView';
+import CostReportTabDisabled from './views/CostReportTabDisabled';
 import { hasFeatureAccess, isTenantWideRole } from '@lib/auth';
 import CritiqueAnalyser from '@components/llm/critique-analyser/CritiqueAnalyser';
 import { rowToRun } from './adapt';
@@ -74,9 +74,9 @@ function defaultFilters(): CostFilters {
   };
 }
 
-type TabId = 'overview' | 'conversations' | 'models' | 'agents' | 'tools' | 'users' | 'accounts' | 'critiques';
+type TabId = 'overview' | 'conversations' | 'models' | 'agents' | 'tools' | 'users' | 'cost-report' | 'critiques';
 
-const VALID_TAB_IDS: TabId[] = ['overview', 'conversations', 'models', 'agents', 'tools', 'users', 'accounts', 'critiques'];
+const VALID_TAB_IDS: TabId[] = ['overview', 'conversations', 'models', 'agents', 'tools', 'users', 'cost-report', 'critiques'];
 
 export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const router = useRouter();
@@ -102,9 +102,9 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const [dateResetNonce, setDateResetNonce] = React.useState(0);
   // hasAiCostReportAccess mirrors the same AI_COST_REPORT flag the daily Slack
   // digest cron checks per tenant (llm-server's RunAiCostDailyDigest) — it
-  // gates the *data* (the real AccountsView), not the tab's visibility. The
+  // gates the *data* (the real CostReportView), not the tab's visibility. The
   // tab itself stays visible to every tenant-wide-role user regardless of the
-  // flag (see showAccountsTab below) so an admin who hasn't enabled the
+  // flag (see showCostReportTab below) so an admin who hasn't enabled the
   // feature yet can discover it and learn how, instead of it silently not
   // existing.
   const [hasAiCostReportAccess, setHasAiCostReportAccess] = React.useState(false);
@@ -119,27 +119,27 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   }, []);
 
   // Same audience as before the flag existed on this tab: even with
-  // AI_COST_REPORT on, only tenant-wide roles can see the Accounts tab, so
+  // AI_COST_REPORT on, only tenant-wide roles can see the Cost Report tab, so
   // showing the "how to enable" teaser to anyone else would advertise a tab
   // they could never actually use.
-  const showAccountsTab = isTenantWideRole();
-  const canViewAccountsTab = hasAiCostReportAccess && showAccountsTab;
+  const showCostReportTab = isTenantWideRole();
+  const canViewCostReportTab = hasAiCostReportAccess && showCostReportTab;
 
-  // The Accounts tab's "as of" date is deliberately its own state, not part of
-  // the shared `filters` — that object also drives every other tab's date
-  // range via FilterBar, and routing the Accounts date picker through it
+  // The Cost Report tab's "as of" date is deliberately its own state, not part
+  // of the shared `filters` — that object also drives every other tab's date
+  // range via FilterBar, and routing the Cost Report date picker through it
   // would silently move Overview/Conversations/etc.'s range whenever someone
-  // picked a date on the Accounts tab.
-  const [accountsReferenceDate, setAccountsReferenceDate] = React.useState<string>(() => anchorToday());
+  // picked a date on the Cost Report tab.
+  const [costReportReferenceDate, setCostReportReferenceDate] = React.useState<string>(() => anchorToday());
 
-  // Deep-link support: a URL like #cost-analyser/accounts (e.g. the Slack
+  // Deep-link support: a URL like #cost-analyser/cost-report (e.g. the Slack
   // digest's "View in Cost Analyser" link) should land directly on that
   // sub-tab instead of always defaulting to Overview. Consumed once the
   // router is ready; after that, tab switches are driven by clicking
   // CustomTabs, not the URL — mirrors the outer Optimise page's own
-  // fragment/subFragment handling for its "Auto Optimize" sub-tabs. The
-  // Accounts tab is itself role gated (see showAccountsTab), so a deep link to
-  // it must not bypass that — showAccountsTab is a dependency here so that
+  // fragment/subFragment handling for its "Auto Optimize" sub-tabs. The Cost
+  // Report tab is itself role gated (see showCostReportTab), so a deep link to
+  // it must not bypass that — showCostReportTab is a dependency here so that
   // once the async role check resolves true, this effect re-runs and honors
   // a link that arrived before it did. Landing here with the flag still off
   // is fine — the tab renders the "how to enable" teaser rather than data.
@@ -149,23 +149,23 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
     if (!hash) return;
     const [, subFragment] = hash.split('/');
     if (!subFragment || !VALID_TAB_IDS.includes(subFragment as TabId)) return;
-    if (subFragment === 'accounts' && !showAccountsTab) return;
+    if (subFragment === 'cost-report' && !showCostReportTab) return;
     setTab(subFragment as TabId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.isReady, showAccountsTab]);
+  }, [router.isReady, showCostReportTab]);
 
   // Pin the report to an exact date via ?asOf=YYYY-MM-DD (e.g. the Slack
   // digest's "View in Cost Analyser" link) instead of defaulting to today.
-  // Without this, the Accounts tab shows live/partial-day numbers that can
+  // Without this, the Cost Report tab shows live/partial-day numbers that can
   // differ from what the digest just reported — the digest always reports
   // on the last fully-completed day, never today's still-in-progress total.
-  // Scoped to accountsReferenceDate only — see the note above on why this
+  // Scoped to costReportReferenceDate only — see the note above on why this
   // must not touch the shared `filters`.
   React.useEffect(() => {
     if (!router.isReady) return;
     const asOf = router.query.asOf;
     if (typeof asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
-      setAccountsReferenceDate(asOf);
+      setCostReportReferenceDate(asOf);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady]);
@@ -240,10 +240,10 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
     { value: 'agents', fragment: 'agents', text: 'Agents', icon: SmartToyOutlinedIcon, iconSize: 16 },
     { value: 'tools', fragment: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
     { value: 'users', fragment: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
-    showAccountsTab && {
-      value: 'accounts',
-      fragment: 'accounts',
-      text: 'Accounts',
+    showCostReportTab && {
+      value: 'cost-report',
+      fragment: 'cost-report',
+      text: 'Cost Report',
       icon: AccountBalanceWalletOutlinedIcon,
       iconSize: 16,
     },
@@ -263,9 +263,9 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
       </Box>
 
       {/* Hidden for Critiques (own cross-tenant filter bar, no account concept) and
-          Accounts (an account-level daily/MTD/prev-month rollup with no per-dimension
+          Cost Report (an account-level daily/MTD/prev-month rollup with no per-dimension
           breakdown — every filter here would silently no-op). */}
-      {tab !== 'critiques' && tab !== 'accounts' && (
+      {tab !== 'critiques' && tab !== 'cost-report' && (
         <FilterBar
           filters={filters}
           onChange={patch}
@@ -298,17 +298,17 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
         <ToolsView accountId={effectiveAccountId} filters={filters} onSelectRun={openRunDirect} />
       ) : tab === 'users' ? (
         <UsersView accountId={effectiveAccountId} filters={filters} userOptions={usageFilters?.users ?? []} onSelectUser={openUser} />
-      ) : tab === 'accounts' ? (
-        canViewAccountsTab ? (
-          <AccountsView
+      ) : tab === 'cost-report' ? (
+        canViewCostReportTab ? (
+          <CostReportView
             accountId={effectiveAccountId}
             onAccountChange={setSelectedAccountId}
             accountOptions={usageFilters?.accounts ?? []}
-            referenceDate={accountsReferenceDate}
-            onReferenceDateChange={setAccountsReferenceDate}
+            referenceDate={costReportReferenceDate}
+            onReferenceDateChange={setCostReportReferenceDate}
           />
         ) : (
-          <AccountsTabDisabled />
+          <CostReportTabDisabled />
         )
       ) : (
         <>

@@ -175,7 +175,7 @@ def test_footer_shows_remaining_count_beyond_cap():
 
 
 def test_footer_link_pins_dashboard_to_this_digests_reference_date():
-    # Without asOf, the dashboard's Accounts tab defaults to "today" (live) and
+    # Without asOf, the dashboard's Cost Report tab defaults to "today" (live) and
     # can show different numbers than what the digest just reported (today's
     # cost is still partial). The link must carry the exact date so clicking
     # through shows the same numbers regardless of when it's clicked.
@@ -185,7 +185,7 @@ def test_footer_link_pins_dashboard_to_this_digests_reference_date():
     msg = get_ai_cost_account_report_message_template(params)
     footer_url = _action_button_url(msg)
     assert "asOf=2026-08-07" in footer_url
-    assert footer_url.endswith("#cost-analyser/accounts")
+    assert footer_url.endswith("#cost-analyser/cost-report")
 
 
 def test_action_buttons_follow_accounts_table_view_link_first():
@@ -212,7 +212,7 @@ def test_empty_accounts_still_renders_a_valid_message():
     assert msg["blocks"]
     assert not _table_blocks(msg), "no accounts means no table at all, not an empty one"
     # The "View in Cost Analyser" button still renders even with no accounts.
-    assert _action_button_url(msg).endswith("#cost-analyser/accounts")
+    assert _action_button_url(msg).endswith("#cost-analyser/cost-report")
     assert "unfurl_links" in msg and msg["unfurl_links"] is False
 
 

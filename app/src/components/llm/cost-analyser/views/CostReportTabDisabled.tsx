@@ -1,13 +1,13 @@
 /**
- * AccountsTabDisabled — placeholder rendered in the Accounts tab when the
- * tenant does not have AI_COST_REPORT enabled.
+ * CostReportTabDisabled — placeholder rendered in the Cost Report tab when
+ * the tenant does not have AI_COST_REPORT enabled.
  *
  * The tab itself is now always visible to tenant-wide-role users (see
  * CostAnalyser.tsx) rather than disappearing entirely, so an admin can
  * discover the feature and learn how to turn it on instead of never knowing
  * it exists. Only ever rendered for isTenantWideRole() === true — that's
- * the same audience CostAnalyser gates the real Accounts tab behind once the
- * flag is on, so a plain member never sees this either.
+ * the same audience CostAnalyser gates the real Cost Report tab behind once
+ * the flag is on, so a plain member never sees this either.
  *
  * Also reports whether the tenant already has a Slack default channel mapped
  * — the digest (notifications-server's message.py) only ever posts to that
@@ -111,19 +111,19 @@ function WhereItGoes({ status }: { status: ChannelStatus }) {
   if (status.state === 'not_installed') {
     return (
       <Typography variant='body2' sx={BODY_SX}>
-        {intro} Slack isn’t connected for this tenant yet, so the digest has nowhere to post. Connect it and map a default channel under Accounts →
+        {intro} Slack isn’t connected for this tenant yet, so the digest has nowhere to post. Connect it and map a default channel under Admin →
         Integrations.
       </Typography>
     );
   }
   return (
     <Typography variant='body2' sx={BODY_SX}>
-      {intro} No default channel is mapped yet, so the digest has nowhere to post. Set one under Accounts → Integrations → Slack → Map Channel.
+      {intro} No default channel is mapped yet, so the digest has nowhere to post. Set one under Admin → Integrations → Slack → Map Channel.
     </Typography>
   );
 }
 
-export function AccountsTabDisabled() {
+export function CostReportTabDisabled() {
   const canEnable = canEditTenantSettings();
   const channelStatus = useSlackDefaultChannel();
 
@@ -152,7 +152,7 @@ export function AccountsTabDisabled() {
             surface='section'
             tone='info'
             title='How to enable it'
-            message='Open your profile menu → Tenant Settings → Features, enable “AI/LLM cost report”, then Save. Make sure a default Slack channel is mapped under Accounts → Integrations so the daily digest has somewhere to post.'
+            message='Open your profile menu → Tenant Settings → Features, enable “AI/LLM cost report”, then Save. Make sure a default Slack channel is mapped under Admin → Integrations so the daily digest has somewhere to post.'
           />
         ) : (
           <Banner
@@ -167,4 +167,4 @@ export function AccountsTabDisabled() {
   );
 }
 
-export default AccountsTabDisabled;
+export default CostReportTabDisabled;

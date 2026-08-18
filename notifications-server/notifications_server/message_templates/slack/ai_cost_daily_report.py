@@ -309,14 +309,14 @@ def get_ai_cost_account_report_message_template(params: AiCostAccountReportParam
                 "elements": [{"type": "mrkdwn", "text": f"_+{remaining} more account(s) in the dashboard_"}],
             }
         )
-    # The /accounts sub-fragment lands directly on the Accounts tab (CostAnalyser.tsx
+    # The /cost-report sub-fragment lands directly on the Cost Report tab (CostAnalyser.tsx
     # reads it as a deep link) instead of the LLM Analyser's default Overview tab.
     # asOf pins the dashboard to this digest's exact reference date — without it,
-    # the Accounts tab defaults to "today" (live), which can show different numbers
+    # the Cost Report tab defaults to "today" (live), which can show different numbers
     # than what the digest just reported (today's cost is still partial; the digest
     # always reports on the last fully-completed day). This keeps the two consistent
     # regardless of when the link is actually clicked.
-    footer_url = f"{base_url}/optimise?utm=slack-digest&asOf={params.reference_date}#cost-analyser/accounts"
+    footer_url = f"{base_url}/optimise?utm=slack-digest&asOf={params.reference_date}#cost-analyser/cost-report"
     action_elements: List[Dict[str, Any]] = [
         {
             "type": "button",
