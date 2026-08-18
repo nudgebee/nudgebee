@@ -821,11 +821,37 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		return nil, fmt.Errorf("failed to unmarshal mapping response: %w", err)
 	}
 
-	var result []OutputLogLabelFields
+	// Merge every index the pattern matched.
+	//
+	// This used to return after the FIRST index in the response. A log index pattern
+	// fans out over one backing index per data stream — commonly one per namespace,
+	// plus rollovers — and those mappings genuinely differ, because a field only
+	// appears where a document carried it. Measured on the dev cluster, the pattern
+	// `logs-kubernetes.container_logs-*` matches 5 indices holding 77-84 fields each:
+	// 86 distinct fields in the union, but only 70 common to all. So 16 fields —
+	// `kubernetes.labels.component`, `kubernetes.job.name`, `kubernetes.statefulset.name`
+	// and similar — were visible or invisible depending on which index was picked.
+	//
+	// And the pick was a coin flip: this ranges over a Go map, whose iteration order is
+	// deliberately randomized, so the same account could get a different field list on
+	// consecutive calls. The result feeds applyLabelDataTypes, which skips any field it
+	// cannot type (`if !known { continue }`) — so a missing field silently disables the
+	// operator guard and the value coercion for it, and a query the type check would
+	// have rejected reaches Elasticsearch to fail there as a raw error or an empty
+	// result. That is "we asked wrongly" arriving disguised as "there is no data".
+	//
+	// Indices are visited in sorted order so that a field mapped with conflicting types
+	// across indices resolves the same way every time.
+	indices := make([]string, 0, len(mappingResp))
+	for index := range mappingResp {
+		indices = append(indices, index)
+	}
+	sort.Strings(indices)
 
-	// The mapping response has the structure: {index_name: {mappings: {properties: {field: {type: ...}}}}}
-	for _, indexData := range mappingResp {
-		indexMap, ok := indexData.(map[string]any)
+	seen := make(map[string]bool)
+	output := make([]OutputLogLabelFields, 0)
+	for _, index := range indices {
+		indexMap, ok := mappingResp[index].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -837,11 +863,23 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		if !ok {
 			continue
 		}
-		result = extractFieldsFromProperties(properties, "")
-		break // only process the first index mapping
+		for _, f := range extractFieldsFromProperties(properties, "") {
+			if seen[f.Field] {
+				continue
+			}
+			seen[f.Field] = true
+			output = append(output, f)
+		}
 	}
 
-	return result, nil
+	if len(output) == 0 {
+		return nil, nil
+	}
+
+	// Stable order, so the same estate always yields the same field list.
+	sort.Slice(output, func(i, j int) bool { return output[i].Field < output[j].Field })
+
+	return output, nil
 }
 
 func extractFieldsFromProperties(properties map[string]any, prefix string) []OutputLogLabelFields {
