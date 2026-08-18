@@ -21,11 +21,10 @@ const defaultDelegateMaxIterations = 5
 // maxDelegateMaxIterations caps the iteration budget to prevent runaway sub-agents.
 const maxDelegateMaxIterations = 15
 
-// minDelegateMaxIterations rejects degenerate single-iteration delegations.
-// A sub-agent that only gets one tool call doesn't need a ReAct loop — the parent should
-// either call the tool directly or skip delegation entirely. Empirically (audit 2026-05-03),
-// every max_iterations=1 call we observed was misuse: pre-finish narration or text formatting
-// that should have been a plain LLM call.
+// minDelegateMaxIterations rejects degenerate single-iteration delegations when no tools are provided.
+// A sub-agent without tools doesn't need a ReAct loop — the parent should use the LLM tool directly.
+// When tools are provided, max_iterations < 2 is auto-clamped to 2 so single-tool delegations from lean
+// orchestrators execute seamlessly.
 const minDelegateMaxIterations = 2
 
 // notebookMisusePromptRe rejects prompts that ask the sub-agent to update
@@ -385,9 +384,15 @@ func parseDelegateInput(input toolcore.NBToolCallRequest) (prompt string, toolNa
 		return "", nil, 0, fmt.Errorf("delegate_agent rejected: prompt starts with 'update the notebook' — the sub-agent's job is to investigate a focused sub-question, not to record findings on your behalf. Write to your own notebook with the <update_notebook> XML tag in your next thought; do not delegate the notebook update")
 	}
 
-	// Reject degenerate single-iteration delegations (see minDelegateMaxIterations).
+	// Reject degenerate single-iteration delegations when no tools are provided.
+	// When tools are provided, auto-clamp max_iterations to minDelegateMaxIterations (2)
+	// so single-tool delegations from lean orchestrators succeed seamlessly.
 	if maxIter < minDelegateMaxIterations {
-		return "", nil, 0, fmt.Errorf("'max_iterations' must be at least %d — single-iteration delegation is degenerate. If you don't need iteration, call the tool directly or use the LLM tool; do not delegate", minDelegateMaxIterations)
+		if len(toolNames) > 0 {
+			maxIter = minDelegateMaxIterations
+		} else {
+			return "", nil, 0, fmt.Errorf("'max_iterations' must be at least %d for LLM-only delegations — single-iteration delegation without tools is degenerate. If you don't need iteration, use the LLM tool directly; do not delegate", minDelegateMaxIterations)
+		}
 	}
 
 	// Cap max_iterations

@@ -184,7 +184,7 @@ func TestParseDelegateInput_LegitimateInvestigationPromptsPass(t *testing.T) {
 }
 
 func TestParseDelegateInput_MaxIterationsBelowMinRejected(t *testing.T) {
-	// max_iterations=1 is the empirical tell for misuse: pre-finish narration or
+	// max_iterations=1 without tools is the empirical tell for misuse: pre-finish narration or
 	// text-formatting work that should have been a plain LLM call. The parser must
 	// reject it with a clear error so the caller revisits whether to delegate at all.
 	input := toolcore.NBToolCallRequest{
@@ -197,7 +197,26 @@ func TestParseDelegateInput_MaxIterationsBelowMinRejected(t *testing.T) {
 	_, _, _, err := parseDelegateInput(input)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "max_iterations")
-	assert.Contains(t, err.Error(), "single-iteration delegation")
+	assert.Contains(t, err.Error(), "single-iteration delegation without tools")
+}
+
+func TestParseDelegateInput_MaxIterationsBelowMinWithToolsAutoClamped(t *testing.T) {
+	// When tools are specified, a parent specifying max_iterations=1 (e.g. lean orchestrator
+	// delegating a single leaf tool) should be auto-clamped to minDelegateMaxIterations (2)
+	// so the tool executes and findings are synthesized seamlessly.
+	input := toolcore.NBToolCallRequest{
+		Arguments: map[string]any{
+			"prompt":         "Call get_incident_assembly with event_id=4ede665d-2330-469e-b078-40c99c4a4899",
+			"tools":          []any{"get_incident_assembly"},
+			"max_iterations": float64(1),
+		},
+	}
+
+	prompt, toolNames, maxIter, err := parseDelegateInput(input)
+	assert.NoError(t, err)
+	assert.Equal(t, "Call get_incident_assembly with event_id=4ede665d-2330-469e-b078-40c99c4a4899", prompt)
+	assert.Equal(t, []string{"get_incident_assembly"}, toolNames)
+	assert.Equal(t, minDelegateMaxIterations, maxIter)
 }
 
 func TestParseDelegateInput_MaxIterationsAtMinAccepted(t *testing.T) {
