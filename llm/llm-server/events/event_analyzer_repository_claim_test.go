@@ -182,9 +182,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WithArgs(eventID, AnalysisTypeLog).
 			WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}).AddRow("analysis-old"))
 
-		mock.ExpectQuery("SELECT status FROM event_log_analysis").
+		mock.ExpectQuery("SELECT status, COALESCE\\(updated_at, recorded_at\\) FROM event_log_analysis").
 			WithArgs("analysis-old").
-			WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(string(AnalysisStatusCompleted)))
+			WillReturnRows(sqlmock.NewRows([]string{"status", "written_at"}).AddRow(string(AnalysisStatusCompleted), time.Now()))
 
 		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
@@ -219,9 +219,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WithArgs(eventID, AnalysisTypeLog).
 			WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}).AddRow("analysis-old"))
 
-		mock.ExpectQuery("SELECT status FROM event_log_analysis").
+		mock.ExpectQuery("SELECT status, COALESCE\\(updated_at, recorded_at\\) FROM event_log_analysis").
 			WithArgs("analysis-old").
-			WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(string(AnalysisStatusCompleted)))
+			WillReturnRows(sqlmock.NewRows([]string{"status", "written_at"}).AddRow(string(AnalysisStatusCompleted), time.Now()))
 
 		mock.ExpectQuery("SELECT id, status.* FROM event_log_analysis WHERE id = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
@@ -257,9 +257,9 @@ func TestClaimEventAnalysis(t *testing.T) {
 			WithArgs(eventID, AnalysisTypeLog).
 			WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}).AddRow("analysis-1"))
 
-		mock.ExpectQuery("SELECT status FROM event_log_analysis").
+		mock.ExpectQuery("SELECT status, COALESCE\\(updated_at, recorded_at\\) FROM event_log_analysis").
 			WithArgs("analysis-1").
-			WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(string(AnalysisStatusInProgress)))
+			WillReturnRows(sqlmock.NewRows([]string{"status", "written_at"}).AddRow(string(AnalysisStatusInProgress), time.Now()))
 
 		mock.ExpectRollback()
 

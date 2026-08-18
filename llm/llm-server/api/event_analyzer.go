@@ -596,11 +596,13 @@ func executeEventAnalysis(ctx *security.RequestContext, c *gin.Context, request 
 	}
 
 	if strings.EqualFold(response.Status, string(events.AnalysisStatusCompleted)) && !regenerate {
-		if response.Status == "" {
-			response.Status = string(events.AnalysisStatusCompleted)
+		if existingAnalysis != nil && !eventAnalysisRepo.IsAnalysisStale(existingAnalysis.UpdatedAt) {
+			if response.Status == "" {
+				response.Status = string(events.AnalysisStatusCompleted)
+			}
+			c.JSON(200, buildApiResponse(response, nil))
+			return
 		}
-		c.JSON(200, buildApiResponse(response, nil))
-		return
 	}
 
 	if (strings.EqualFold(response.Status, "FAILED") && response.Analysis != "" && response.Summary != "") && !regenerate {
@@ -659,6 +661,24 @@ func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnaly
 	executeEventAnalysis(ctx, c, request, events.AnalysisTypeRCA, func(ctx *security.RequestContext, request any) (any, error) {
 		return analyzeEventRCAUsingAgentsAndUpdateDb(ctx, request.(EventRCAAnalysisRequest))
 	})
+}
+
+// isLiveFailure reports whether an existing analysis is a FAILED verdict still
+// inside the freshness bound, and therefore worth serving to the caller as-is.
+//
+// Freshness-gated for the same reason the COMPLETED check is. A FAILED row past
+// the bound is a verdict nobody should still be shown: ungated, the `anyFailed`
+// early return in executeEventInvestigation fires on every subsequent request
+// forever, and the only way to clear a stale failure is an explicit regenerate.
+//
+// The retry this enables cannot run hot. Every writer that records a failure
+// sets updated_at=NOW() (event_analyzer_repository.go:676, :689, :733), so a
+// re-failed run immediately reads as fresh and the attempt after it has to wait
+// out the whole window.
+func isLiveFailure(repo *events.EventAnalysisRepository, analysis *events.EventAnalysis) bool {
+	return analysis != nil &&
+		analysis.Status == string(events.AnalysisStatusFailed) &&
+		!repo.IsAnalysisStale(analysis.UpdatedAt)
 }
 
 func executeEventInvestigation(ctx *security.RequestContext, request EventAnalysisRequest, c *gin.Context) {
@@ -751,10 +771,10 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 				finalResponse.RelatedEventId = existingAnalysis.RelatedEventId
 			}
 			finalResponse.TaskStatuses[string(aType)] = existingAnalysis.Status
-			if existingAnalysis.Status != string(events.AnalysisStatusCompleted) {
+			if existingAnalysis.Status != string(events.AnalysisStatusCompleted) || eventAnalysisRepo.IsAnalysisStale(existingAnalysis.UpdatedAt) {
 				allCompleted = false
 			}
-			if existingAnalysis.Status == string(events.AnalysisStatusFailed) {
+			if isLiveFailure(eventAnalysisRepo, existingAnalysis) {
 				anyFailed = true
 				// Surface the first non-empty failure reason to the UI. If
 				// multiple analysis types fail with different reasons, the
@@ -810,15 +830,17 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 	if anyStarted && !request.Regenerate {
 		if allCompleted {
 			finalResponse.Status = string(events.AnalysisStatusCompleted)
+			c.JSON(200, buildApiResponse(finalResponse, nil))
+			return
 		} else if anyInProgress {
 			finalResponse.Status = string(events.AnalysisStatusInProgress)
+			c.JSON(200, buildApiResponse(finalResponse, nil))
+			return
 		} else if anyFailed {
 			finalResponse.Status = string(events.AnalysisStatusFailed)
-		} else {
-			finalResponse.Status = string(events.AnalysisStatusInProgress)
+			c.JSON(200, buildApiResponse(finalResponse, nil))
+			return
 		}
-		c.JSON(200, buildApiResponse(finalResponse, nil))
-		return
 	}
 
 	// Check budget limits
@@ -834,25 +856,17 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 	// the caller doesn't run a duplicate summary → investigation → log →
 	// detailed-response cycle (the observed duplicate-task bug).
 	//
-	// Partial-completion carve-out: when log_analysis is already COMPLETED but the
-	// pipeline is partial (reached here because some other type is not COMPLETED,
-	// and not regenerating), skip the claim gate and dispatch. Leaving log_analysis
+	// Partial-completion carve-out: when log_analysis is already COMPLETED and fresh
+	// but the pipeline is partial (reached here because some other type is not COMPLETED,
+	// and not regenerating), skip the claim gate and dispatch. Leaving fresh log_analysis
 	// COMPLETED lets Step 3's cache skip it and avoids the redundant log + synthesis
 	// re-run that resetting it would force. (The mark-remaining loop below still
 	// resets the other types to IN_PROGRESS, matching the pre-existing HTTP behavior
 	// of re-running summary/investigation/detailed_response on a partial state; only
-	// log_analysis is preserved. This narrow path is not atomically gated, but it is
-	// the recovery of an already-started analysis, not the fresh-event race that
-	// produced the duplicate-pipeline bug.)
-	// Deliberately not freshness-bounded. The early return above fires whenever
-	// anyStarted && !Regenerate, so this is only reached with no analysis rows at
-	// all (logCompleted false regardless) or on a regenerate (force, where the
-	// bound does not apply). Adding a staleness term here would be dead code, and
-	// adding one to that early return would report IN_PROGRESS with nothing
-	// running. Refresh-on-staleness happens on the MQ path, in
-	// getOrCreateEventAnalysisStatus.
+	// log_analysis is preserved.)
 	logCompleted := dbAnalyses[events.AnalysisTypeLog] != nil &&
-		dbAnalyses[events.AnalysisTypeLog].Status == string(events.AnalysisStatusCompleted)
+		dbAnalyses[events.AnalysisTypeLog].Status == string(events.AnalysisStatusCompleted) &&
+		!eventAnalysisRepo.IsAnalysisStale(dbAnalyses[events.AnalysisTypeLog].UpdatedAt)
 	claimedLog := false
 	if request.Regenerate || !logCompleted {
 		claimed, claimErr := eventAnalysisRepo.ClaimEventAnalysis(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeLog, request.Regenerate)
@@ -1197,9 +1211,9 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 	}
 	eventAggregationKey := eventData.AggregationKey
 
-	// First ensure analysis is done or in progress
+	// First ensure analysis is done or in progress and fresh
 	existingLogAnalysis, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeLog)
-	if existingLogAnalysis == nil || (existingLogAnalysis.Status != string(events.AnalysisStatusCompleted) && existingLogAnalysis.Status != string(events.AnalysisStatusInProgress)) {
+	if existingLogAnalysis == nil || eventAnalysisRepo.IsAnalysisStale(existingLogAnalysis.UpdatedAt) || (existingLogAnalysis.Status != string(events.AnalysisStatusCompleted) && existingLogAnalysis.Status != string(events.AnalysisStatusInProgress)) {
 		ctx.GetLogger().Info("analyzer: log analysis not done or started, triggering it before RCA", "event_id", request.EventId)
 
 		// Mark analysis tasks as IN_PROGRESS to prevent concurrent executions
@@ -1228,9 +1242,9 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 		return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress)}, nil
 	}
 
-	// Check if RCA is already completed
+	// Check if RCA is already completed and fresh
 	existingRCA, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeRCA)
-	if existingRCA != nil && existingRCA.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate {
+	if existingRCA != nil && existingRCA.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate && !eventAnalysisRepo.IsAnalysisStale(existingRCA.UpdatedAt) {
 		return EventAnalysisResponse{
 			RelatedEventId:   existingRCA.RelatedEventId,
 			EventId:          request.EventId,

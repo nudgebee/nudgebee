@@ -99,6 +99,11 @@ func NewEventAnalysisRepository(dbManager *common.DatabaseManager) *EventAnalysi
 	}
 }
 
+// SetAnalysisFreshness overrides the freshness duration (for tests).
+func (r *EventAnalysisRepository) SetAnalysisFreshness(d time.Duration) {
+	r.analysisFreshness = d
+}
+
 // EventAnalysisType defines the type of analysis being performed.
 type EventAnalysisType string
 
@@ -408,17 +413,23 @@ func (r *EventAnalysisRepository) ClaimEventAnalysis(ctx *security.RequestContex
 		if existingId != "" {
 			hadMapping = true
 			var currentStatus string
-			err := tx.QueryRowx(`SELECT status FROM event_log_analysis WHERE id = $1`, existingId).Scan(&currentStatus)
+			var currentWrittenAt sql.NullTime
+			err := tx.QueryRowx(`SELECT status, COALESCE(updated_at, recorded_at) FROM event_log_analysis WHERE id = $1`, existingId).Scan(&currentStatus, &currentWrittenAt)
 			if err != nil {
 				return false, err
 			}
 			if currentStatus == string(AnalysisStatusInProgress) {
 				return false, nil
 			}
-			if currentStatus == string(AnalysisStatusCompleted) && !force {
+			// Routed through IsAnalysisStale rather than re-deriving the comparison:
+			// the inline copy this replaces omitted the zero-time guard, so a row
+			// whose COALESCE(updated_at, recorded_at) scanned as 0001-01-01 read as
+			// ~2000 years stale and was reclaimed on every event forever.
+			staleMapping := currentWrittenAt.Valid && r.IsAnalysisStale(currentWrittenAt.Time)
+			if currentStatus == string(AnalysisStatusCompleted) && !force && !staleMapping {
 				return false, nil
 			}
-			if !force {
+			if !force && !staleMapping {
 				res, err := tx.Exec(`UPDATE event_log_analysis SET status = $2, status_reason = NULL, updated_at = NOW() WHERE id = $1 AND status <> $3`, existingId, AnalysisStatusInProgress, AnalysisStatusInProgress)
 				if err != nil {
 					return false, err
