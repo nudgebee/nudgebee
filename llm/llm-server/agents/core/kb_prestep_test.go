@@ -98,16 +98,40 @@ func TestBuildKBSearchQueryCappedLength(t *testing.T) {
 }
 
 func TestBuildSkillListsMenu(t *testing.T) {
-	t.Run("active KBs render with names and descriptions", func(t *testing.T) {
+	t.Run("active KBs render with names and descriptions when hasRetrievedKnowledge is true", func(t *testing.T) {
 		kbs := []toolcore.Knowledgebase{
 			{Name: "Pod Restart Runbook", Description: "Steps to safely restart a crashlooping pod", Status: "active"},
 			{Name: "Database Troubleshooting", Description: "Common database connection issues", Status: "active"},
 		}
-		got := BuildSkillListsMenu(kbs)
+		got := BuildSkillListsMenu(kbs, true)
 		assert.Contains(t, got, "<skill-lists>")
 		assert.Contains(t, got, "</skill-lists>")
+		assert.Contains(t, got, "Additional knowledge bases available for this account. Relevant knowledge has already been retrieved for you above; use the load_skills tool to load one of these by name ONLY if you need expert guidance the retrieved knowledge does not cover.")
 		assert.Contains(t, got, "name: Pod Restart Runbook - description: Steps to safely restart a crashlooping pod")
 		assert.Contains(t, got, "name: Database Troubleshooting - description: Common database connection issues")
+	})
+
+	t.Run("sub-agent / no retrieved knowledge renders proactive lazy load instructions", func(t *testing.T) {
+		kbs := []toolcore.Knowledgebase{
+			{Name: "es_metrics_discovery", Description: "Elasticsearch metrics discovery runbook", Status: "active"},
+		}
+		got := BuildSkillListsMenu(kbs, false)
+		assert.Contains(t, got, "<skill-lists>")
+		assert.Contains(t, got, "</skill-lists>")
+		assert.Contains(t, got, "The following skills are available. If any skill is relevant to the current task, load it using the load_skills tool BEFORE running other tools — skills contain expert guidance that improves your analysis.")
+		assert.NotContains(t, got, "already been retrieved for you above")
+		assert.Contains(t, got, "name: es_metrics_discovery - description: Elasticsearch metrics discovery runbook")
+	})
+
+	t.Run("empty description does not emit dangling description suffix", func(t *testing.T) {
+		kbs := []toolcore.Knowledgebase{
+			{Name: "unannotated_skill", Description: "", Status: "active"},
+			{Name: "whitespace_desc_skill", Description: "   ", Status: "active"},
+		}
+		got := BuildSkillListsMenu(kbs, false)
+		assert.Contains(t, got, "name: unannotated_skill\n")
+		assert.Contains(t, got, "name: whitespace_desc_skill\n")
+		assert.NotContains(t, got, "description:")
 	})
 
 	t.Run("inactive KBs are excluded", func(t *testing.T) {
@@ -115,18 +139,20 @@ func TestBuildSkillListsMenu(t *testing.T) {
 			{Name: "Active KB", Description: "d", Status: "active"},
 			{Name: "Processing KB", Description: "d", Status: "processing"},
 		}
-		got := BuildSkillListsMenu(kbs)
+		got := BuildSkillListsMenu(kbs, false)
 		assert.Contains(t, got, "Active KB")
 		assert.NotContains(t, got, "Processing KB")
 	})
 
 	t.Run("no active KBs returns empty string", func(t *testing.T) {
 		kbs := []toolcore.Knowledgebase{{Name: "x", Status: "processing"}}
-		assert.Equal(t, "", BuildSkillListsMenu(kbs))
+		assert.Equal(t, "", BuildSkillListsMenu(kbs, true))
+		assert.Equal(t, "", BuildSkillListsMenu(kbs, false))
 	})
 
 	t.Run("empty slice returns empty string", func(t *testing.T) {
-		assert.Equal(t, "", BuildSkillListsMenu(nil))
+		assert.Equal(t, "", BuildSkillListsMenu(nil, true))
+		assert.Equal(t, "", BuildSkillListsMenu(nil, false))
 	})
 }
 

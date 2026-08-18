@@ -697,7 +697,7 @@ func (a *dynamicReActAgent) accountSkillListsMenu(ctx *security.RequestContext) 
 		ctx.GetLogger().Warn("delegate: unable to list account KBs for skill menu", "error", err, "account_id", a.accountId)
 		return ""
 	}
-	return core.BuildSkillListsMenu(kbs)
+	return core.BuildSkillListsMenu(kbs, false)
 }
 
 func (a *dynamicReActAgent) GetPlannerType() core.AgentPlannerType {

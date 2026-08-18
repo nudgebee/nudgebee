@@ -122,21 +122,39 @@ func fetchAgentKBs(ctx *security.RequestContext, accountId string, ownNames []st
 // placed in the planner's human message (not the cacheable system prefix) when
 // the KB pre-step is enabled. Returns "" when no active KB exists.
 //
+// When hasRetrievedKnowledge is true (e.g. top-level invocation where RAG
+// retrieval retrieved relevant knowledge into the human message above), the
+// header directs the model to load skills only if the retrieved knowledge is
+// insufficient.
+//
+// When hasRetrievedKnowledge is false (e.g. sub-agent invocations where eager
+// RAG retrieval is skipped, or when no knowledge was retrieved), the header
+// directs the model to load any relevant skill before running other tools.
+//
 // Exported so agents in the `agents` package (notably the dynamic delegate)
 // can render a menu from an account-wide KB pool without duplicating the
 // escape / format rules.
-func BuildSkillListsMenu(kbs []toolcore.Knowledgebase) string {
+func BuildSkillListsMenu(kbs []toolcore.Knowledgebase, hasRetrievedKnowledge bool) string {
 	var sb strings.Builder
 	sb.WriteString("<skill-lists>\n")
-	sb.WriteString("Additional knowledge bases available for this account. Relevant knowledge has already been retrieved for you above; use the load_skills tool to load one of these by name ONLY if you need expert guidance the retrieved knowledge does not cover.\n")
+	if hasRetrievedKnowledge {
+		sb.WriteString("Additional knowledge bases available for this account. Relevant knowledge has already been retrieved for you above; use the load_skills tool to load one of these by name ONLY if you need expert guidance the retrieved knowledge does not cover.\n")
+	} else {
+		sb.WriteString("The following skills are available. If any skill is relevant to the current task, load it using the load_skills tool BEFORE running other tools — skills contain expert guidance that improves your analysis.\n")
+	}
 	active := 0
 	for _, kb := range kbs {
 		if kb.Status != "active" {
 			continue
 		}
 		active++
-		fmt.Fprintf(&sb, "name: %s - description: %s\n",
-			escapeTemplateSyntax(kb.Name), escapeTemplateSyntax(kb.Description))
+		escapedName := escapeTemplateSyntax(kb.Name)
+		escapedDesc := escapeTemplateSyntax(kb.Description)
+		if strings.TrimSpace(escapedDesc) != "" {
+			fmt.Fprintf(&sb, "name: %s - description: %s\n", escapedName, escapedDesc)
+		} else {
+			fmt.Fprintf(&sb, "name: %s\n", escapedName)
+		}
 	}
 	sb.WriteString("</skill-lists>")
 	if active == 0 {

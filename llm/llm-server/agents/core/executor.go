@@ -615,7 +615,6 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// still surface account knowledge (e.g. a synced Confluence runbook
 			// for the alert under investigation, #34779). Only the menu is
 			// mapping-dependent; BuildSkillListsMenu returns "" for empty kbs.
-			menu := BuildSkillListsMenu(kbs)
 			block := ""
 			var kbRefs []AgentReference
 			if isTopLevelInvocation {
@@ -623,6 +622,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 				// content actually matched, not every mapped KB.
 				block, kbRefs = retrieveRelevantKB(ctx, request, kbs)
 			}
+			menu := BuildSkillListsMenu(kbs, block != "")
 			kbChan <- kbAssemblyResult{prompt: prompt, menu: menu, prestepBlock: block, kbRefs: kbRefs}
 			return
 		}
@@ -1637,7 +1637,11 @@ func injectKBContext(ctx *security.RequestContext, accountId string, ownNames []
 		activeCount++
 		escapedName := escapeTemplateSyntax(kb.Name)
 		escapedDesc := escapeTemplateSyntax(kb.Description)
-		skillList = append(skillList, fmt.Sprintf("name: %s - description: %s", escapedName, escapedDesc))
+		if strings.TrimSpace(escapedDesc) != "" {
+			skillList = append(skillList, fmt.Sprintf("name: %s - description: %s", escapedName, escapedDesc))
+		} else {
+			skillList = append(skillList, fmt.Sprintf("name: %s", escapedName))
+		}
 	}
 
 	// Wait for RAG previews and append integration skill entries.
