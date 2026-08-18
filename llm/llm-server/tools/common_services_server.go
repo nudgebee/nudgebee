@@ -524,11 +524,12 @@ func cloudFallbackProvider(accountId string) string {
 
 // cloudProviderToObservabilityFallback maps a cloud_accounts.cloud_provider value
 // to the observability fallback provider name, or "" when the cloud has no
-// CLI-based fallback wired here. Pure (no DB) so the mapping — including the
-// case/whitespace normalization and the deliberate AWS/unknown exclusion — is
-// unit-testable in isolation from GetCloudAccountCredentials.
+// fallback provider wired here. Pure (no DB) so the mapping — including the
+// case/whitespace normalization — is unit-testable in isolation from GetCloudAccountCredentials.
 func cloudProviderToObservabilityFallback(cloudProvider string) string {
 	switch strings.ToLower(strings.TrimSpace(cloudProvider)) {
+	case "aws":
+		return "aws"
 	case "gcp":
 		return "gcp"
 	case "azure":
