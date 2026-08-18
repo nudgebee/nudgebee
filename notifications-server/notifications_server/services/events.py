@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import logging
 import re
@@ -130,8 +131,13 @@ class Events:
 
     @staticmethod
     def clean_slack_text(text: str) -> str:
+        # Slack wraps mentions, channel refs and URLs alike in <...>. Mentions carry
+        # nothing the LLM needs (_stash_thread_mentions captures them first), but a
+        # pasted URL is often the subject of the question, so it has to survive.
         return re.sub(
-            r"<mailto:([^|>]+)\|[^>]+>|<[^>]+>", lambda m: m.group(1) if m.group(1) else "", text or ""
+            r"<mailto:(?P<mailto>[^|<>]+)\|[^>]+>|<(?P<url>(?i:https?)://[^|<>]+)(?:\|[^>]*)?>|<[^>]+>",
+            lambda m: m.group("mailto") or html.unescape(m.group("url") or "") or "",
+            text or "",
         ).strip()
 
     def safe_add_reaction(self, channel_id, team_id, ts, reaction="mag"):
@@ -205,9 +211,10 @@ class Events:
     def _stash_thread_mentions(self, event, thread_ts):
         """Remember who this turn pointed at, before the text is cleaned.
 
-        clean_slack_text strips every <…> token, so by the time retrieval sees
-        the question the user ids are gone. Written on every turn — including an
-        empty list — so a later turn does not inherit a prior one's targets.
+        clean_slack_text strips <@…> mention tokens (though not URLs), so by
+        the time retrieval sees the question the user ids are gone. Written on
+        every turn — including an empty list — so a later turn does not
+        inherit a prior one's targets.
         """
         self.cache.cache_thread_mentions(thread_ts, channel_analysis.extract_people(event.get("text", "")))
 
