@@ -25,7 +25,7 @@ import { EmptyState } from '@ui/EmptyState';
 import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
-import { ds } from '@utils/colors';
+import { ds } from 'src/utils/colors';
 import { canEditTenantSettings } from '@lib/auth';
 import apiAccount from '@api1/account';
 import { safeJSONParse } from 'src/utils/common';
@@ -99,7 +99,7 @@ function WhereItGoes({ status }: { status: ChannelStatus }) {
     'Posts to your tenant’s single default Slack channel — this digest isn’t scoped by cost category or account yet, so every account’s numbers land in that one channel.';
   if (status.state === 'set') {
     return (
-      <Typography variant='body2' sx={BODY_SX}>
+      <Typography component='div' sx={BODY_SX}>
         {intro} Already mapped:{' '}
         <Chip size='2xs' variant='tag' tone='success'>
           #{status.channelName}

@@ -140,9 +140,9 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   // fragment/subFragment handling for its "Auto Optimize" sub-tabs. The Cost
   // Report tab is itself role gated (see showCostReportTab), so a deep link to
   // it must not bypass that — showCostReportTab is a dependency here so that
-  // once the async role check resolves true, this effect re-runs and honors
-  // a link that arrived before it did. Landing here with the flag still off
-  // is fine — the tab renders the "how to enable" teaser rather than data.
+  // this effect re-runs and honors a link that arrived before the router was
+  // ready. Landing here with the flag still off is fine — the tab renders
+  // the "how to enable" teaser rather than data.
   React.useEffect(() => {
     if (!router.isReady) return;
     const hash = router.asPath.split('#')[1];
