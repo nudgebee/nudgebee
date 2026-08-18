@@ -1,27 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Box } from '@mui/material';
 import { useRouter } from 'next/router';
+import dayjs from 'dayjs';
 import FilterDropdown from '@ui/FilterDropdown';
+import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import apiHome from '@api1/home';
 import { applyFiltersOnRouter } from '@lib/router';
 import { useBriefingWindow } from './useBriefingData';
-
-export const RANGE_OPTIONS: { label: string; value: string; minutes: number }[] = [
-  { label: 'Last 30 mins', value: '30m', minutes: 30 },
-  { label: 'Last 1 hr', value: '1h', minutes: 60 },
-  { label: 'Last 3 hrs', value: '3h', minutes: 180 },
-  { label: 'Last 12 hrs', value: '12h', minutes: 720 },
-  { label: 'Last 24 hrs', value: '24h', minutes: 1440 },
-  { label: 'Last 7 days', value: '7d', minutes: 10080 },
-];
-
-const DEFAULT_RANGE = '24h';
-
-export const matchRange = (startMs: number, endMs: number): string => {
-  const minutes = Math.round((endMs - startMs) / 60000);
-  const nearest = RANGE_OPTIONS.reduce((best, option) => (Math.abs(option.minutes - minutes) < Math.abs(best.minutes - minutes) ? option : best));
-  return Math.abs(nearest.minutes - minutes) <= Math.max(1, nearest.minutes * 0.02) ? nearest.value : '';
-};
 
 interface Props {
   showRange?: boolean;
@@ -32,6 +17,10 @@ const BriefingFilters = ({ showRange = true }: Props) => {
   const { startMs, endMs } = useBriefingWindow();
   const [accounts, setAccounts] = useState<any[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
+  // Duration behind the current window when it came from a shortcut click, so
+  // the trigger reads "Last 24 Hours" instead of "Aug 17 - Aug 18". Reset below
+  // whenever the window is changed by something other than this picker.
+  const [shortcutClickTime, setShortcutClickTime] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +39,12 @@ const BriefingFilters = ({ showRange = true }: Props) => {
       cancelled = true;
     };
   }, []);
+
+  // A briefing drill-down pins its own window onto the URL; once the window no
+  // longer matches the shortcut that produced it, it is a plain absolute range.
+  useEffect(() => {
+    if (shortcutClickTime && endMs - startMs !== shortcutClickTime) setShortcutClickTime(0);
+  }, [startMs, endMs, shortcutClickTime]);
 
   const accountOptions = useMemo(
     () =>
@@ -71,19 +66,16 @@ const BriefingFilters = ({ showRange = true }: Props) => {
     [accountOptions, selectedAccountIds]
   );
 
-  const activeRange = useMemo(() => matchRange(startMs, endMs) || DEFAULT_RANGE, [startMs, endMs]);
-
   const onAccountsChange = (event: any) => {
     const selected = event?.target?.value;
     const ids = (Array.isArray(selected) ? selected : selected ? [selected] : []).map((option: any) => option?.value ?? option).filter(Boolean);
     applyFiltersOnRouter(router, { accountIds: ids.length ? ids.join(',') : undefined });
   };
 
-  const onRangeChange = (event: any) => {
-    const minutes = RANGE_OPTIONS.find((range) => range.value === event?.target?.value)?.minutes;
-    if (!minutes) return;
-    const end = Date.now();
-    applyFiltersOnRouter(router, { start_time: String(end - minutes * 60000), end_time: String(end) });
+  const onRangeChange = ({ selection }: { selection: { startTime: number; endTime: number; shortcutClickTime?: number } }) => {
+    if (!Number.isFinite(selection?.startTime) || !Number.isFinite(selection?.endTime)) return;
+    setShortcutClickTime(selection.shortcutClickTime ?? 0);
+    applyFiltersOnRouter(router, { start_time: String(selection.startTime), end_time: String(selection.endTime) });
   };
 
   return (
@@ -102,14 +94,10 @@ const BriefingFilters = ({ showRange = true }: Props) => {
         onSelect={onAccountsChange}
       />
       {showRange && (
-        <FilterDropdown
-          id='briefing-filter-range'
-          label='Range'
-          size='sm'
-          clearable={false}
-          options={RANGE_OPTIONS.map(({ label, value }) => ({ label, value }))}
-          value={activeRange}
-          onSelect={onRangeChange}
+        <CustomDateTimeRangePicker
+          passedSelectedDateTime={{ startTime: startMs, endTime: endMs, shortcutClickTime }}
+          minDate={dayjs().subtract(6, 'month')}
+          onChange={onRangeChange}
         />
       )}
     </Box>
