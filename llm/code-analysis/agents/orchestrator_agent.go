@@ -417,6 +417,41 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 		return sanitizeExploreResponse(specialistResult), nil
 	}
 
+	// A fix-mode run that never got the repository on disk cannot have determined
+	// anything about its contents. The specialist abstains in that situation
+	// (requires_fix=false, caveats naming the access failure), and the branch
+	// below would stamp that abstention as a no_op — which llm-server renders as
+	// "the requested change is already present in the repository". That is the
+	// exact opposite of the truth, it marks the resolution Success in the UI, and
+	// it hides real credential/permission breakage indefinitely. Report the clone
+	// failure as the failure it is, with the git error attached, so the caller
+	// shows an actionable cause.
+	if reason, failed := a.repoCloneFailure(); failed {
+		a.reportProgress("Analysis failed — the repository could not be cloned.")
+		a.logger.Log(common.EventStepFailure, "Repository never cloned - reporting failure instead of no-op", map[string]any{
+			"reason":                  reason,
+			"specialist_requires_fix": requiresFix,
+			"raise_pr_requested":      request.RaisePR,
+		})
+		summary := "Repository could not be cloned, so no analysis of its contents was possible: " + reason
+		// `null` unmarshals without error into a nil map, and writing to a nil
+		// map panics — the specialist result is LLM output, so treat both the
+		// parse error and the nil result as "start from an empty envelope".
+		var resultData map[string]any
+		if err := json.Unmarshal([]byte(specialistResult), &resultData); err != nil || resultData == nil {
+			resultData = map[string]any{}
+		}
+		resultData["execution_status"] = ExecutionStatusFailed
+		resultData["execution_summary"] = summary
+		resultData["pr_creation_status"] = "skipped"
+		resultData["pr_creation_reason"] = summary
+		resultData["mode"] = mode
+		if modifiedJSON, err := json.Marshal(resultData); err == nil {
+			return string(modifiedJSON), nil
+		}
+		return "", fmt.Errorf("%s", summary)
+	}
+
 	if !requiresFix {
 		a.reportProgress("Analysis complete — no code fix required.")
 		a.logger.Log(common.EventStepComplete, "Skipping fixer agent and PR creation - requires_fix is false", map[string]any{
@@ -1684,6 +1719,12 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 // failure — the pipeline ran to completion and the result is correct. PR
 // followup mode already emits this value; the standard fix flow now does too.
 const ExecutionStatusNoOp = "no_op"
+
+// ExecutionStatusFailed marks a run that could not do its job. Callers
+// (llm-server, then api-server's resolution bookkeeping) treat anything that is
+// neither "success" nor "no_op" as a failure and surface execution_summary as
+// the cause, so the summary must name what actually broke.
+const ExecutionStatusFailed = "failed"
 
 // shouldCreatePR determines if a PR should be created based on review results and changes.
 // Returns (shouldCreate, noChanges, reason): noChanges is true only for the empty-diff
@@ -3070,6 +3111,37 @@ func (a *OrchestratorAgent) commitChanges(ctx context.Context, title, descriptio
 	})
 
 	return nil
+}
+
+// repoCloneFailure reports whether this run attempted to clone the repository and
+// never succeeded, along with the last error git returned. A run that never
+// called repo_clone at all (a local-path analysis, or a pre-seeded workspace) is
+// not a failure — only an attempted-and-failed clone is.
+func (a *OrchestratorAgent) repoCloneFailure() (string, bool) {
+	if a.toolTracker == nil {
+		return "", false
+	}
+	attempted := false
+	reason := ""
+	for _, inv := range a.toolTracker.GetInvocations() {
+		if inv.ToolName != "repo_clone" {
+			continue
+		}
+		if inv.Status == "success" {
+			return "", false
+		}
+		attempted = true
+		if inv.Error != "" {
+			reason = inv.Error
+		}
+	}
+	if !attempted {
+		return "", false
+	}
+	if reason == "" {
+		reason = "no successful repo_clone invocation"
+	}
+	return reason, true
 }
 
 // updateWorkingDirectoryFromToolInvocations checks tool tracker for repo_clone invocations

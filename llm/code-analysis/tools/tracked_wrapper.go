@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 
 	"nudgebee/code-analysis-agent/common"
 	"nudgebee/code-analysis-agent/tools/core"
@@ -97,8 +98,16 @@ func (w *TrackedToolWrapper) Execute(ctx context.Context, input map[string]any) 
 	// Execute the actual tool
 	response := w.tool.Execute(ctx, input)
 
-	// Complete tracking with results
-	w.tracker.CompleteInvocation(invocationID, w.sanitizeOutput(response), response.Status, nil)
+	// Complete tracking with results. Pass the tool's own error through rather
+	// than nil — the tracker only fills TrackedToolInvocation.Error from this
+	// argument, so a nil left every wrapper-tracked failure with a status but no
+	// cause, and callers inspecting invocations could not say why a step failed.
+	// The ReAct planner already threads it this way.
+	var execErr error
+	if response.Status == "error" && response.Error != "" {
+		execErr = errors.New(response.Error)
+	}
+	w.tracker.CompleteInvocation(invocationID, w.sanitizeOutput(response), response.Status, execErr)
 
 	// Add metadata about the execution
 	w.tracker.AddMetadata(invocationID, "execution_context", "agent_managed")

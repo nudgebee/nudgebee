@@ -181,44 +181,7 @@ func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (codeAnalysisResult, error) {
 	logger := ctx.GetLogger()
 
-	// Resolve git token from credentials
-	gitToken := ""
-	if len(creds) > 0 {
-		switch creds[0].AuthType {
-		case "token":
-			gitToken = creds[0].Password
-		case "application":
-			if provider == "github" {
-				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
-					// A GitHub App integration stores the installation ID in the
-					// password field; if it is not a plain integer we cannot mint a
-					// token. Swallowing this silently produced an invisible failure:
-					// the workspace clone then ran unauthenticated and the analysis
-					// abstained with "repository inaccessible".
-					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
-				} else {
-					apiUrl := creds[0].Url
-					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
-					} else {
-						gitToken = token
-					}
-				}
-			} else {
-				gitToken = creds[0].Password
-			}
-		}
-	}
-	// Fallback to env var when no credentials are provided (e.g. local testing)
-	if gitToken == "" {
-		if provider == "gitlab" {
-			gitToken = os.Getenv("GITLAB_TOKEN")
-		} else {
-			gitToken = os.Getenv("GITHUB_TOKEN")
-		}
-	}
+	gitToken := resolveGitToken(ctx, creds, request.GitRepo, provider)
 
 	// Build the request body matching the code-analysis server's AgenticAnalyzeRequest
 	tenantId := ""
@@ -2097,6 +2060,115 @@ func fuzzyMatchRepo(workloadName string, projectURLs []string) string {
 	return ""
 }
 
+// resolveGitToken produces the token the workspace clone authenticates with.
+// Both entrypoints that call the code-analysis workspace — the analysis run and
+// the PR followup — need the identical resolution, and they previously carried
+// two copies of it that had already drifted apart in their logging.
+func resolveGitToken(ctx *security.RequestContext, creds []GitCredentials, repoURL string, provider string) string {
+	logger := ctx.GetLogger()
+
+	gitToken := ""
+	if len(creds) > 0 {
+		cred := selectGitCredential(logger, creds, repoURL, provider)
+		switch cred.AuthType {
+		case "token":
+			gitToken = cred.Password
+		case "application":
+			if provider == "github" {
+				installationID := int64(0)
+				if _, err := fmt.Sscanf(cred.Password, "%d", &installationID); err != nil {
+					// A GitHub App integration stores the installation ID in the
+					// password field; if it is not a plain integer we cannot mint a
+					// token. Swallowing this silently produced an invisible failure:
+					// the workspace clone then ran unauthenticated and the analysis
+					// abstained with "repository inaccessible".
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
+					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), cred.Url, installationID)
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
+						gitToken = token
+					}
+				}
+			} else {
+				gitToken = cred.Password
+			}
+		}
+	}
+
+	// Fallback to env var when no credentials are provided (e.g. local testing)
+	if gitToken == "" {
+		if provider == "gitlab" {
+			gitToken = os.Getenv("GITLAB_TOKEN")
+		} else {
+			gitToken = os.Getenv("GITHUB_TOKEN")
+		}
+	}
+	return gitToken
+}
+
+// selectGitCredential picks the credential to authenticate the clone of repoURL.
+//
+// getGitCredentials returns every enabled git integration on the tenant, ordered
+// only by provider, so creds[0] is arbitrary whenever a tenant has more than one.
+// Cloning a private repo with the wrong org's token fails as "Repository not
+// found" — indistinguishable from a typo, and the analysis then abstains with a
+// misleading "nothing to change". Match on the repo list the integration
+// enumerated at connect time; fall back to provider, then to the first
+// credential, so a tenant whose project list is empty or stale behaves exactly
+// as before.
+func selectGitCredential(logger *slog.Logger, creds []GitCredentials, repoURL string, provider string) GitCredentials {
+	if len(creds) == 1 {
+		return creds[0]
+	}
+
+	if org, repo := parseOrgRepo(repoURL); org != "" && repo != "" {
+		want := strings.ToLower(org + "/" + repo)
+		for _, cred := range creds {
+			if !credentialCoversRepo(cred, want) {
+				continue
+			}
+			if logger != nil {
+				logger.Info("code: selected git credential covering the target repository",
+					"repo", want, "integration_user", cred.Username, "provider", cred.Provider)
+			}
+			return cred
+		}
+		if logger != nil {
+			// Worth a warning: the clone is about to run with a credential that
+			// does not list this repo, which is the failure mode above.
+			logger.Warn("code: no git credential lists the target repository; falling back",
+				"repo", want, "credential_count", len(creds), "provider", provider)
+		}
+	}
+
+	for _, cred := range creds {
+		if cred.Provider == provider {
+			return cred
+		}
+	}
+	return creds[0]
+}
+
+// credentialCoversRepo reports whether cred's enumerated projects include the
+// "org/repo" identity in want (lowercased). Projects carry either a full URL or
+// a bare "org/repo" key, so both are normalized through parseOrgRepo.
+func credentialCoversRepo(cred GitCredentials, want string) bool {
+	for _, project := range cred.Projects {
+		candidate := resolveProjectRepoURL(project, cred)
+		if candidate == "" {
+			continue
+		}
+		if org, repo := parseOrgRepo(candidate); org != "" && repo != "" {
+			if strings.ToLower(org+"/"+repo) == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // resolveProjectRepoURL extracts and constructs a full repository URL from a project map entry.
 func resolveProjectRepoURL(project map[string]string, cred GitCredentials) string {
 	// Try "repository" key first
@@ -2845,37 +2917,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		return core.NBAgentResponse{}, errors.New("git credentials are required for PR followup")
 	}
 
-	// Resolve git token from credentials (same pattern as evaluateCodeUsingWorkspace)
-	gitToken := ""
-	if len(creds) > 0 {
-		switch creds[0].AuthType {
-		case "token":
-			gitToken = creds[0].Password
-		case "application":
-			if provider == "github" {
-				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
-					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
-				} else {
-					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), creds[0].Url, installationID)
-					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
-					} else {
-						gitToken = token
-					}
-				}
-			} else {
-				gitToken = creds[0].Password
-			}
-		}
-	}
-	if gitToken == "" {
-		if provider == "gitlab" {
-			gitToken = os.Getenv("GITLAB_TOKEN")
-		} else {
-			gitToken = os.Getenv("GITHUB_TOKEN")
-		}
-	}
+	gitToken := resolveGitToken(ctx, creds, request.GitRepo, provider)
 
 	tenantId := ""
 	if ctx.GetSecurityContext() != nil {
