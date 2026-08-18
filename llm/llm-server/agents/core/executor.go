@@ -607,20 +607,22 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// Pre-step path: KB content goes to the human message, not the
 			// cacheable system prefix. The `<skill-lists>` menu is built for any
 			// agent with KB mappings (so load_skills still works); the eager RAG
-			// retrieval runs only for the top-level invocation — sub-agents keep
-			// the lazy menu + load_skills flow.
+			// retrieval runs uniformly across all agent invocations.
 			kbs := fetchAgentKBs(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, selected)
 			// No zero-KB short-circuit: the retrieval below is account-wide RAG
 			// and needs no agent mapping — an agent with no mapped KBs must
 			// still surface account knowledge (e.g. a synced Confluence runbook
 			// for the alert under investigation, #34779). Only the menu is
 			// mapping-dependent; BuildSkillListsMenu returns "" for empty kbs.
-			block := ""
-			var kbRefs []AgentReference
-			if isTopLevelInvocation {
-				// Per-KB retrieval: references reflect only the KBs whose
-				// content actually matched, not every mapped KB.
+			// Per-KB retrieval: references reflect only the KBs whose content
+			// actually matched, not every mapped KB. If pre-step content was
+			// already populated or retrieval was already executed for this turn
+			// (e.g. propagated by the caller), reuse it to avoid redundant RAG calls.
+			block := strings.TrimSpace(request.KBPrestepContent)
+			kbRefs := request.KBReferences
+			if !request.KBPrestepExecuted && block == "" {
 				block, kbRefs = retrieveRelevantKB(ctx, request, kbs)
+				block = strings.TrimSpace(block)
 			}
 			menu := BuildSkillListsMenu(kbs, block != "")
 			kbChan <- kbAssemblyResult{prompt: prompt, menu: menu, prestepBlock: block, kbRefs: kbRefs}
@@ -687,6 +689,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// cacheable system prefix). Empty on the legacy path.
 	request.SkillListsMenu = kbResult.menu
 	request.KBPrestepContent = kbResult.prestepBlock
+	request.KBReferences = kbResult.kbRefs
+	request.KBPrestepExecuted = true
 
 	// Persist pre-step KB references so the UI's "Skills used" surface shows
 	// which KBs the pre-step retrieval pulled in — the same way it shows lazy

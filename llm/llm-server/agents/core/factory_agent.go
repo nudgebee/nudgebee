@@ -434,9 +434,15 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 		// computed once at top-level entry. Sub-agents must trust the parent's
 		// selection — re-running it against a mechanical sub-agent command (e.g.
 		// "fetch CPU for pod foo") would destroy relevance.
-		OriginalQuery:    nbRequestContext.OriginalQuery,
-		SelectedSkillIds: nbRequestContext.SelectedSkillIds,
-		SessionId:        nbRequestContext.SessionId,
+		OriginalQuery:     nbRequestContext.OriginalQuery,
+		SelectedSkillIds:  nbRequestContext.SelectedSkillIds,
+		SessionId:         nbRequestContext.SessionId,
+		KBPrestepContent:  nbRequestContext.KBPrestepContent,
+		KBPrestepExecuted: nbRequestContext.KBPrestepExecuted,
+		KBReferences: func() []AgentReference {
+			refs, _ := nbRequestContext.KBReferences.([]AgentReference)
+			return refs
+		}(),
 	}
 	resp, err := executeAgent(nbRequestContext.Ctx, agent, agentRequest)
 	return resp, err

@@ -242,6 +242,11 @@ type NbToolContext struct {
 	// selection across delegation. See NBAgentRequest field comments for semantics.
 	OriginalQuery    string
 	SelectedSkillIds []string
+	// KBPrestepContent, KBPrestepExecuted, and KBReferences carry the pre-step retrieval results
+	// across delegation so sub-agents can reuse them without triggering redundant RAG executions.
+	KBPrestepContent  string
+	KBPrestepExecuted bool
+	KBReferences      any
 	// Stats accumulates the DB/relay split for the in-flight tool call. A tool
 	// that records sets this on its local copy of the context at the top of
 	// Call(); because NbToolContext is passed by value the pointer — not the

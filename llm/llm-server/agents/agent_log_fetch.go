@@ -1035,6 +1035,14 @@ func buildLogIntentMessages(systemPrompt string, request core.NBAgentRequest) []
 		fmt.Fprintf(&human, "Context:\n%s\n\n", request.ConversationContext)
 		hasHints = true
 	}
+	if kb := strings.TrimSpace(request.KBPrestepContent); kb != "" {
+		fmt.Fprintf(&human, "Domain Knowledge / Runbooks:\n%s\n\n", kb)
+		hasHints = true
+	}
+	if sc := strings.TrimSpace(request.SkillsContext); sc != "" {
+		fmt.Fprintf(&human, "Skills Context:\n%s\n\n", sc)
+		hasHints = true
+	}
 	if hasHints {
 		fmt.Fprintf(&human, "Current query: %s", request.Query)
 	} else {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/asserts"
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
@@ -1510,6 +1511,24 @@ func TestK8sAgent_FunctionExecutionWithApproval(t *testing.T) {
 		UserId:            os.Getenv("TEST_USER"),
 		Query:             fmt.Sprintf("/call check_ci_failure investigate failure of action `%s` in %s repo", action, repo),
 		ApprovalResponses: []string{approval},
+	}
+	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_LoadSkillsForSubagents(t *testing.T) {
+	prev := config.Config.LlmServerKBPrestepEnabled
+	config.Config.LlmServerKBPrestepEnabled = true
+	t.Cleanup(func() { config.Config.LlmServerKBPrestepEnabled = prev })
+	skipIfNoFixtureEnv(t)
+	agent := newK8sOrchestratorAgent("25f42d26-f179-4acd-9946-271ee0cf1b73")
+
+	tc := k8sTestCase{
+		Name:              "ci_failure_investigation",
+		SessionId:         "ut-skills-subagents-1",
+		AccountId:         "25f42d26-f179-4acd-9946-271ee0cf1b73",
+		UserId:            os.Getenv("TEST_USER"),
+		Query:             "can you get me memory usage of llm-server in nudgebee namespace.",
+		ApprovalResponses: []string{},
 	}
 	runTestMinimal(t, agent, tc)
 }

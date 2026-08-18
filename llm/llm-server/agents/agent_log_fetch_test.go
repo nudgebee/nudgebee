@@ -852,6 +852,62 @@ func TestBuildLogIntentMessages_AccountPromptPropagation(t *testing.T) {
 	})
 }
 
+func TestBuildLogIntentMessages_DomainKnowledgePropagation(t *testing.T) {
+	const sysPrompt = "Static system prompt. Extract log retrieval parameters."
+	const kbBlock = "<retrieved_knowledge>\nFor service payments, search in index custom-app-logs-* with field k8s_container_name.\n</retrieved_knowledge>"
+	const skillsCtx = "<skill>\n<name>log_custom_conventions</name>\n<content>Use index app-logs-*</content>\n</skill>"
+
+	textOf := func(m llms.MessageContent) string {
+		var b strings.Builder
+		for _, p := range m.Parts {
+			if tp, ok := p.(llms.TextContent); ok {
+				b.WriteString(tp.Text)
+			}
+		}
+		return b.String()
+	}
+
+	t.Run("KBPrestepContent lands in human message and leaves system prompt stable", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for payments", KBPrestepContent: kbBlock})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Equal(t, sysPrompt, sys, "system message must stay cache-stable")
+		assert.Contains(t, human, "Domain Knowledge / Runbooks:")
+		assert.Contains(t, human, kbBlock)
+		assert.Contains(t, human, "Current query: logs for payments")
+	})
+
+	t.Run("SkillsContext fallback lands in human message when KBPrestepContent is empty", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for auth", SkillsContext: skillsCtx})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Equal(t, sysPrompt, sys, "system message must stay cache-stable")
+		assert.Contains(t, human, "Skills Context:")
+		assert.Contains(t, human, skillsCtx)
+	})
+
+	t.Run("both KBPrestepContent and SkillsContext are included when present", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for payments", KBPrestepContent: kbBlock, SkillsContext: skillsCtx})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Equal(t, sysPrompt, sys, "system message must stay cache-stable")
+		assert.Contains(t, human, "Domain Knowledge / Runbooks:")
+		assert.Contains(t, human, kbBlock)
+		assert.Contains(t, human, "Skills Context:")
+		assert.Contains(t, human, skillsCtx)
+		assert.Contains(t, human, "Current query: logs for payments")
+	})
+
+	t.Run("neither present produces clean human query without domain knowledge header", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "show me logs"})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Equal(t, sysPrompt, sys)
+		assert.NotContains(t, human, "Domain Knowledge")
+		assert.Equal(t, "show me logs", human)
+	})
+}
+
 // TestDefaultProviderLogFields pins the fallback field vocabulary advertised
 // to the query-generator when backend label discovery fails: Signoz stores
 // logs under OTel attribute names — the generic `_body`/`namespace`/`pod` set

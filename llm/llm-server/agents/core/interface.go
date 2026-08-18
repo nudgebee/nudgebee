@@ -131,6 +131,11 @@ type NBAgentRequest struct {
 	// message — not the cacheable system prefix — so per-request KB content
 	// never thrashes the LLM cache.
 	KBPrestepContent string `json:"kb_prestep_content,omitempty"`
+	// KBReferences holds references to knowledge base sources retrieved by the pre-step.
+	KBReferences []AgentReference `json:"kb_references,omitempty"`
+	// KBPrestepExecuted indicates whether pre-step RAG retrieval has already been performed
+	// for this turn or propagated from a parent invocation, avoiding redundant embedding and RAG queries.
+	KBPrestepExecuted bool `json:"kb_prestep_executed,omitempty"`
 	// SkillListsMenu holds the `<skill-lists>` discovery block (names +
 	// descriptions, no bodies) when LlmServerKBPrestepEnabled is on. Like
 	// KBPrestepContent it is rendered into the human message instead of the

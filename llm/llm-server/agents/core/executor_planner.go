@@ -3641,6 +3641,9 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		toolContext.InheritSkillsFromAgents = delegationSkillScope(agentRequest.InheritSkillsFromAgents, parentAgentName)
 		toolContext.SelectedSkillIds = agentRequest.SelectedSkillIds
 	}
+	toolContext.KBPrestepContent = agentRequest.KBPrestepContent
+	toolContext.KBPrestepExecuted = agentRequest.KBPrestepExecuted
+	toolContext.KBReferences = agentRequest.KBReferences
 
 	// Check if this tool requires configuration
 	if _, ok := tool.(toolcore.NBToolConfig); ok {
