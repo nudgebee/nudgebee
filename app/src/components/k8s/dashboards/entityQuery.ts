@@ -9,6 +9,15 @@
 
 export type EntityColumnType = 'string' | 'number' | 'datetime' | 'boolean' | 'json';
 
+/**
+ * How a value reads once rendered, for the columns where the raw number is not
+ * the answer — money, memory, cores, latency. Each maps to the same format
+ * component the product's own listings use, so a savings figure in a panel and
+ * a savings figure on the Optimize page look alike. Absent means plain text;
+ * `datetime` columns are handled by their type and need nothing here.
+ */
+export type EntityColumnFormat = 'currency' | 'memory' | 'cpu' | 'duration' | 'number';
+
 export interface EntityColumn {
   name: string;
   label: string;
@@ -19,6 +28,8 @@ export interface EntityColumn {
    * parameters rather than a free where clause (see traceQuery.ts).
    */
   filterable?: boolean;
+  /** Overrides plain-text rendering — see EntityColumnFormat. */
+  format?: EntityColumnFormat;
 }
 
 export interface EntityTable {
@@ -58,7 +69,7 @@ const EVENT_COLUMNS: EntityColumn[] = [
   { name: 'description', label: 'Description', type: 'string' },
   { name: 'priority', label: 'Priority', type: 'string' },
   { name: 'computed_priority', label: 'Computed priority', type: 'string' },
-  { name: 'computed_score', label: 'Computed score', type: 'number' },
+  { name: 'computed_score', label: 'Computed score', type: 'number', format: 'number' },
   { name: 'status', label: 'Status', type: 'string' },
   { name: 'nb_status', label: 'Nudgebee status', type: 'string' },
   { name: 'category', label: 'Category', type: 'string' },
@@ -76,6 +87,10 @@ const EVENT_COLUMNS: EntityColumn[] = [
   { name: 'is_new_issue', label: 'Is new issue', type: 'boolean' },
   { name: 'urgency', label: 'Urgency', type: 'string' },
   { name: 'labels', label: 'Labels', type: 'json' },
+  // The two a link column needs to reach /investigate. Rarely worth SHOWING —
+  // hide them under the panel's Hidden columns and they still feed the link.
+  { name: 'id', label: 'Event id', type: 'string' },
+  { name: 'account_id', label: 'Account id', type: 'string' },
 ];
 
 const EVENT_GROUPING_COLUMNS: EntityColumn[] = [
@@ -87,15 +102,15 @@ const EVENT_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'priority', label: 'Priority', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
   { name: 'category', label: 'Category', type: 'string' },
-  { name: 'event_count', label: 'Event count', type: 'number' },
-  { name: 'count_priority_p0', label: 'P0 count', type: 'number' },
-  { name: 'count_priority_p1', label: 'P1 count', type: 'number' },
-  { name: 'count_priority_p2', label: 'P2 count', type: 'number' },
-  { name: 'count_priority_p3', label: 'P3 count', type: 'number' },
-  { name: 'count_new_issues', label: 'New issues', type: 'number' },
-  { name: 'count_pod_issues', label: 'Pod issues', type: 'number' },
-  { name: 'count_node_issues', label: 'Node issues', type: 'number' },
-  { name: 'count_application_issues', label: 'Application issues', type: 'number' },
+  { name: 'event_count', label: 'Event count', type: 'number', format: 'number' },
+  { name: 'count_priority_p0', label: 'P0 count', type: 'number', format: 'number' },
+  { name: 'count_priority_p1', label: 'P1 count', type: 'number', format: 'number' },
+  { name: 'count_priority_p2', label: 'P2 count', type: 'number', format: 'number' },
+  { name: 'count_priority_p3', label: 'P3 count', type: 'number', format: 'number' },
+  { name: 'count_new_issues', label: 'New issues', type: 'number', format: 'number' },
+  { name: 'count_pod_issues', label: 'Pod issues', type: 'number', format: 'number' },
+  { name: 'count_node_issues', label: 'Node issues', type: 'number', format: 'number' },
+  { name: 'count_application_issues', label: 'Application issues', type: 'number', format: 'number' },
   { name: 'max_created_at', label: 'Last seen', type: 'datetime' },
   { name: 'min_created_at', label: 'First seen', type: 'datetime' },
   { name: 'starts_at', label: 'Started at', type: 'datetime' },
@@ -109,7 +124,7 @@ const RECOMMENDATION_COLUMNS: EntityColumn[] = [
   { name: 'category', label: 'Category', type: 'string' },
   { name: 'severity', label: 'Severity', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
-  { name: 'estimated_savings', label: 'Estimated savings', type: 'number' },
+  { name: 'estimated_savings', label: 'Estimated savings', type: 'number', format: 'currency' },
   { name: 'resource_name', label: 'Resource', type: 'string' },
   { name: 'resource_type', label: 'Resource type', type: 'string' },
   { name: 'resource_cloud_service', label: 'Service', type: 'string' },
@@ -124,7 +139,7 @@ const RECOMMENDATION_COLUMNS: EntityColumn[] = [
   // primary, superseded revisions are not. Filter on it to avoid counting the
   // same finding several times.
   { name: 'is_primary_recommendation', label: 'Is primary', type: 'boolean' },
-  { name: 'finops_score', label: 'FinOps score', type: 'number' },
+  { name: 'finops_score', label: 'FinOps score', type: 'number', format: 'number' },
   { name: 'finops_band', label: 'FinOps band', type: 'string' },
   { name: 'safety_band', label: 'Safety band', type: 'string' },
   { name: 'note', label: 'Note', type: 'string' },
@@ -135,9 +150,9 @@ const RECOMMENDATION_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'category', label: 'Category', type: 'string' },
   { name: 'severity', label: 'Severity', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
-  { name: 'count', label: 'Recommendations', type: 'number' },
-  { name: 'sum_estimated_savings', label: 'Total savings', type: 'number' },
-  { name: 'estimated_savings', label: 'Estimated savings', type: 'number' },
+  { name: 'count', label: 'Recommendations', type: 'number', format: 'number' },
+  { name: 'sum_estimated_savings', label: 'Total savings', type: 'number', format: 'currency' },
+  { name: 'estimated_savings', label: 'Estimated savings', type: 'number', format: 'currency' },
   { name: 'account_name', label: 'Account', type: 'string' },
   { name: 'account_cloud_provider', label: 'Cloud provider', type: 'string' },
   { name: 'resource_name', label: 'Resource', type: 'string' },
@@ -156,10 +171,10 @@ const SPEND_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'resource_region', label: 'Region', type: 'string' },
   { name: 'resource_id', label: 'Resource id', type: 'string' },
   { name: 'account_id', label: 'Account id', type: 'string' },
-  { name: 'spend_amount', label: 'Spend', type: 'number' },
-  { name: 'spend_count', label: 'Line items', type: 'number' },
-  { name: 'resource_count', label: 'Resources', type: 'number' },
-  { name: 'account_count', label: 'Accounts', type: 'number' },
+  { name: 'spend_amount', label: 'Spend', type: 'number', format: 'currency' },
+  { name: 'spend_count', label: 'Line items', type: 'number', format: 'number' },
+  { name: 'resource_count', label: 'Resources', type: 'number', format: 'number' },
+  { name: 'account_count', label: 'Accounts', type: 'number', format: 'number' },
   { name: 'currency_type', label: 'Currency', type: 'string' },
   // Rows the biller excludes from a total — credits, refunds, tax lines. Every
   // spend figure in the product filters these out; a panel that forgets to
@@ -169,12 +184,12 @@ const SPEND_GROUPING_COLUMNS: EntityColumn[] = [
 
 const CLUSTER_COLUMNS: EntityColumn[] = [
   { name: 'account_id', label: 'Cluster account', type: 'string' },
-  { name: 'node_count', label: 'Nodes', type: 'number' },
-  { name: 'node_spot_count', label: 'Spot nodes', type: 'number' },
-  { name: 'node_cpu_capacity', label: 'CPU capacity', type: 'number' },
-  { name: 'node_cpu_allocatable', label: 'CPU allocatable', type: 'number' },
-  { name: 'node_memory_capacity', label: 'Memory capacity', type: 'number' },
-  { name: 'node_memory_allocatable', label: 'Memory allocatable', type: 'number' },
+  { name: 'node_count', label: 'Nodes', type: 'number', format: 'number' },
+  { name: 'node_spot_count', label: 'Spot nodes', type: 'number', format: 'number' },
+  { name: 'node_cpu_capacity', label: 'CPU capacity', type: 'number', format: 'cpu' },
+  { name: 'node_cpu_allocatable', label: 'CPU allocatable', type: 'number', format: 'cpu' },
+  { name: 'node_memory_capacity', label: 'Memory capacity', type: 'number', format: 'memory' },
+  { name: 'node_memory_allocatable', label: 'Memory allocatable', type: 'number', format: 'memory' },
   { name: 'workload_type_counts', label: 'Workloads by kind', type: 'json' },
   { name: 'pod_status_counts', label: 'Pods by status', type: 'json' },
 ];
@@ -186,14 +201,14 @@ const NODE_COLUMNS: EntityColumn[] = [
   { name: 'node_flavor', label: 'Instance type', type: 'string' },
   { name: 'node_region', label: 'Region', type: 'string' },
   { name: 'node_zone', label: 'Zone', type: 'string' },
-  { name: 'cpu_capacity', label: 'CPU capacity', type: 'number' },
-  { name: 'cpu_allocatable', label: 'CPU allocatable', type: 'number' },
-  { name: 'cpu_limits', label: 'CPU limits', type: 'number' },
-  { name: 'memory_capacity', label: 'Memory capacity', type: 'number' },
-  { name: 'memory_allocatable', label: 'Memory allocatable', type: 'number' },
-  { name: 'memory_limits', label: 'Memory limits', type: 'number' },
-  { name: 'pod_count', label: 'Pods', type: 'number' },
-  { name: 'cost', label: 'Cost', type: 'number' },
+  { name: 'cpu_capacity', label: 'CPU capacity', type: 'number', format: 'cpu' },
+  { name: 'cpu_allocatable', label: 'CPU allocatable', type: 'number', format: 'cpu' },
+  { name: 'cpu_limits', label: 'CPU limits', type: 'number', format: 'cpu' },
+  { name: 'memory_capacity', label: 'Memory capacity', type: 'number', format: 'memory' },
+  { name: 'memory_allocatable', label: 'Memory allocatable', type: 'number', format: 'memory' },
+  { name: 'memory_limits', label: 'Memory limits', type: 'number', format: 'memory' },
+  { name: 'pod_count', label: 'Pods', type: 'number', format: 'number' },
+  { name: 'cost', label: 'Cost', type: 'number', format: 'currency' },
   { name: 'node_creation_time', label: 'Created at', type: 'datetime' },
   { name: 'updated_at', label: 'Updated at', type: 'datetime' },
   { name: 'cloud_account_id', label: 'Cluster account', type: 'string' },
@@ -216,7 +231,7 @@ const TICKET_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'title', label: 'Title', type: 'string' },
   { name: 'reference_id', label: 'Reference', type: 'string' },
   { name: 'account_id', label: 'Account id', type: 'string' },
-  { name: 'count', label: 'Tickets', type: 'number' },
+  { name: 'count', label: 'Tickets', type: 'number', format: 'number' },
 ];
 
 const ANOMALY_COLUMNS: EntityColumn[] = [
@@ -254,9 +269,9 @@ const CIS_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'rule_description', label: 'Description', type: 'string' },
   { name: 'rule_id', label: 'Rule id', type: 'string' },
   { name: 'severity', label: 'Severity', type: 'string' },
-  { name: 'severity_weight', label: 'Severity weight', type: 'number' },
+  { name: 'severity_weight', label: 'Severity weight', type: 'number', format: 'number' },
   { name: 'status', label: 'Status', type: 'string' },
-  { name: 'count', label: 'Findings', type: 'number' },
+  { name: 'count', label: 'Findings', type: 'number', format: 'number' },
   { name: 'updated_at', label: 'Last checked', type: 'datetime' },
   { name: 'account_id', label: 'Account id', type: 'string' },
 ];
@@ -265,7 +280,7 @@ const VULNERABILITY_COLUMNS: EntityColumn[] = [
   { name: 'created_at', label: 'Created at', type: 'datetime' },
   { name: 'updated_at', label: 'Updated at', type: 'datetime' },
   { name: 'severity', label: 'Severity', type: 'string' },
-  { name: 'severity_weight', label: 'Severity weight', type: 'number' },
+  { name: 'severity_weight', label: 'Severity weight', type: 'number', format: 'number' },
   { name: 'status', label: 'Status', type: 'string' },
   { name: 'is_active', label: 'Is active', type: 'boolean' },
   { name: 'image', label: 'Image', type: 'string' },
@@ -280,7 +295,7 @@ const VULNERABILITY_COLUMNS: EntityColumn[] = [
 const AUTOPILOT_TASK_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'auto_pilot_category', label: 'Category', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
-  { name: 'count', label: 'Tasks', type: 'number' },
+  { name: 'count', label: 'Tasks', type: 'number', format: 'number' },
   { name: 'scheduled_time', label: 'Scheduled for', type: 'datetime' },
   { name: 'auto_pilot_id', label: 'Autopilot id', type: 'string' },
   { name: 'auto_pilot_account_id', label: 'Autopilot account', type: 'string' },
@@ -331,7 +346,7 @@ const AI_CONVERSATION_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'source', label: 'Source', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
   { name: 'title', label: 'Title', type: 'string' },
-  { name: 'count', label: 'Investigations', type: 'number' },
+  { name: 'count', label: 'Investigations', type: 'number', format: 'number' },
   { name: 'created_at', label: 'Started at', type: 'datetime' },
   { name: 'updated_at', label: 'Updated at', type: 'datetime' },
   { name: 'account_id', label: 'Account id', type: 'string' },
@@ -348,7 +363,7 @@ const TRACE_COLUMNS: EntityColumn[] = [
   { name: 'destination_name', label: 'Destination', type: 'string', filterable: true },
   { name: 'destination_workload_name', label: 'Destination workload', type: 'string', filterable: true },
   { name: 'destination_workload_namespace', label: 'Destination namespace', type: 'string', filterable: true },
-  { name: 'duration_ns', label: 'Duration (ns)', type: 'number', filterable: true },
+  { name: 'duration_ns', label: 'Duration (ns)', type: 'number', filterable: true, format: 'duration' },
   { name: 'status_code', label: 'Status code', type: 'string', filterable: true },
   { name: 'http_status_code', label: 'HTTP status', type: 'string', filterable: true },
   { name: 'resource', label: 'Resource', type: 'string', filterable: true },
@@ -366,12 +381,12 @@ const TRACE_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'destination_workload_namespace', label: 'Destination namespace', type: 'string', filterable: true },
   { name: 'destination_workload_zone', label: 'Destination zone', type: 'string' },
   { name: 'http_status_code', label: 'HTTP status', type: 'string', filterable: true },
-  { name: 'count', label: 'Requests', type: 'number' },
-  { name: 'error_count', label: 'Errors', type: 'number' },
-  { name: 'duration_ns', label: 'Duration (ns)', type: 'number' },
-  { name: 'p95_latency', label: 'p95 latency', type: 'number' },
-  { name: 'p99_latency', label: 'p99 latency', type: 'number' },
-  { name: 'max_latency', label: 'Max latency', type: 'number' },
+  { name: 'count', label: 'Requests', type: 'number', format: 'number' },
+  { name: 'error_count', label: 'Errors', type: 'number', format: 'number' },
+  { name: 'duration_ns', label: 'Duration (ns)', type: 'number', format: 'duration' },
+  { name: 'p95_latency', label: 'p95 latency', type: 'number', format: 'duration' },
+  { name: 'p99_latency', label: 'p99 latency', type: 'number', format: 'duration' },
+  { name: 'max_latency', label: 'Max latency', type: 'number', format: 'duration' },
 ];
 
 /**

@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { Modal } from '@ui/Modal';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
@@ -10,11 +11,12 @@ import Tooltip from '@ui/Tooltip';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
-import { isCommandDatasource, type AccountOption, type Panel, type PanelDatasource, type PanelType } from '@api1/dashboards';
+import { isCommandDatasource, type AccountOption, type Panel, type PanelColumn, type PanelDatasource, type PanelType } from '@api1/dashboards';
 import EntityQueryBuilder from './EntityQueryBuilder';
 import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPreview';
-import { buildEntityQuery, defaultDraft, draftFromQuery, tablesFor, type EntityQueryDraft } from './entityQuery';
+import { buildEntityQuery, defaultDraft, draftFromQuery, findTable, tablesFor, type EntityQueryDraft } from './entityQuery';
 import { grantTooltip, missingDatasourceGrant, queryableTables } from './panelAccess';
+import { isCompleteColumn, panelColumnsOf, referencedColumns, setHiddenColumns } from './panelColumns';
 import { accountsOfTypes, coversAllOfTypes, deriveAccountTypes, panelScopeFromTypes } from './panelAccounts';
 import { referencedVariables, type VariableValues } from './templating';
 
@@ -75,6 +77,14 @@ const COMMAND_HELP: Record<string, { placeholder: string; allowed: string; examp
     example: "SELECT state, count(*) FROM pg_stat_activity WHERE state = 'active' GROUP BY state",
   },
 };
+
+/**
+ * The link picker's stand-in for "attach to nothing, add a column of my own".
+ * A Select renders its PLACEHOLDER for an empty value, so the option cannot be
+ * `''` — "New column" is a real choice, not the absence of one. Editor-local:
+ * it is mapped back to an absent `column` before the panel is stored.
+ */
+const NEW_COLUMN = '__new_column__';
 
 /** A card's heading: what the group is, and why its fields are together. */
 const GroupHeader: React.FC<{ title: string; description: string }> = ({ title, description }) => (
@@ -191,6 +201,23 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
         : prev
     );
 
+  /**
+   * Column settings live in one list on `options`, and an empty one is dropped
+   * rather than saved as `[]` — a panel that configures no column should read as
+   * a panel that has never heard of the feature.
+   */
+  const patchColumns = (next: PanelColumn[]) =>
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const options: Record<string, unknown> = { ...(prev.options || {}), columns: next };
+      if (next.length === 0) delete options.columns;
+      // The two arrays this list replaced. Dropped on the next write, the same
+      // way the server's upgradeDefinition drops them on read.
+      delete options.link_columns;
+      delete options.hidden_columns;
+      return { ...prev, options };
+    });
+
   const changeAccountTypes = (next: string[]) => {
     setAccountTypes(next);
     // Selections from a provider that is no longer chosen would be invisible in
@@ -222,6 +249,9 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
             ...prev,
             datasource,
             type: tabular ? 'table' : prev.type,
+            // Link and hidden columns name the previous table's columns, and the
+            // query they came from has just been thrown away with them.
+            options: undefined,
             // A nudgebee panel is authored as a structured query, so it starts
             // from a working default rather than an empty one.
             targets: entity
@@ -239,10 +269,54 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
   const isEntity = entityTables.length > 0;
   const isLogs = draft.datasource === 'logs';
   const isText = draft.type === 'text';
+  /**
+   * Panels whose rows are real records — the only ones a link column means
+   * anything on. A metrics table is series-and-latest, which has no row to open.
+   */
+  const isRowTable = isEntity || Boolean(commandHelp) || isLogs;
+  // The editor reads the list RAW: an author typing a path has an incomplete
+  // entry, and the render-time filter would delete the row out from under them.
+  const columns = panelColumnsOf(draft);
+  const hiddenColumns = columns.filter((c) => c.visibility === 'hidden' && c.name).map((c) => c.name as string);
+  // Links are the only column setting the editor authors today. A column's other
+  // settings — a title override, a format override — are honoured by the
+  // renderer and set by import or by hand until this grows fields for them.
+  const links = columns.filter((c) => Boolean(c.link));
+  /**
+   * What a link can be attached to: an existing column, whose own values become
+   * the links, or a new column of its own.
+   *
+   * Hidden columns are left out — a link on a column nobody can see is a link
+   * nobody can click — and so is a column another link already claims, which the
+   * server rejects as configured twice. Refusing to offer it beats saving it and
+   * reading the refusal back as a failed round trip.
+   */
+  const linkTargetOptionsFor = (current: PanelColumn) => [
+    { label: 'New column', value: NEW_COLUMN },
+    ...entityDraft.columns
+      .filter((name) => !hiddenColumns.includes(name))
+      .filter((name) => name === current.name || !links.some((l) => l !== current && l.name === name))
+      .map((name) => ({ label: findTable(entityDraft.table).columns.find((c) => c.name === name)?.label || name, value: name })),
+  ];
+  /**
+   * Placeholders that name a column the query does not select. The link would
+   * render as an empty cell, which looks like missing data rather than a typo.
+   */
+  const unknownPlaceholders = isEntity
+    ? [...new Set(links.flatMap((l) => referencedColumns(l.link?.url || '')))].filter((c) => !entityDraft.columns.includes(c))
+    : [];
+  // Includes links that are merely unfinished — they block Save, so they have to
+  // say so rather than leaving the button greyed out for no visible reason.
+  const unfinishedLinks = links.filter((l) => !isCompleteColumn(l));
   /** Only a `nudgebee` panel may name several providers at once. */
   const multiType = draft.datasource === 'nudgebee';
   const hasScope = accountTypes.length > 0 || accountIds.length > 0;
-  const canSave = draft.title.trim().length > 0 && (isText || (hasScope && (isEntity ? Boolean(draft.targets?.[0]?.query) : expr.trim().length > 0)));
+  const canSave =
+    draft.title.trim().length > 0 &&
+    (isText || (hasScope && (isEntity ? Boolean(draft.targets?.[0]?.query) : expr.trim().length > 0))) &&
+    // The server refuses these too; catching them here saves a round trip that
+    // comes back as a message about a panel the author can no longer see.
+    columns.every(isCompleteColumn);
   // A panel that has been saved always carries a title (`canSave` demands one),
   // so a titled panel is one being edited rather than a blank being authored.
   const isEdit = Boolean(panel?.title);
@@ -396,6 +470,11 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
                           onChange={(next, query, timeColumn) => {
                             setEntityDraft(next);
                             patchTarget({ query: query as any, time_column: timeColumn, expr: undefined });
+                            // Settings for a column the query no longer selects would come back
+                            // to life the moment the author selects it again — drop them, but
+                            // keep the added columns, which name no query column at all.
+                            const kept = columns.filter((c) => !c.name || next.columns.includes(c.name));
+                            if (kept.length !== columns.length) patchColumns(kept);
                           }}
                         />
                       ) : commandHelp ? (
@@ -470,6 +549,144 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
                   </Form.Field>
                 </Form.Section>
               </Card>
+
+              {isRowTable && (
+                <Card
+                  variant='tinted'
+                  header={
+                    <GroupHeader
+                      title='Table columns'
+                      description='What the table shows, and where a row can take you — either by making a column clickable or by adding a column of links.'
+                    />
+                  }
+                >
+                  <Form.Section>
+                    {isEntity && (
+                      <Form.Field
+                        label='Hidden columns'
+                        description='Still queried, just not shown — hide the ids a link is built from so the table stays readable.'
+                      >
+                        <Select
+                          multiple
+                          value={hiddenColumns}
+                          options={entityDraft.columns.map((name) => ({
+                            label: findTable(entityDraft.table).columns.find((c) => c.name === name)?.label || name,
+                            value: name,
+                          }))}
+                          onChange={(next: string[]) => patchColumns(setHiddenColumns(columns, next))}
+                          placeholder='None'
+                          id='panel-hidden-columns'
+                        />
+                      </Form.Field>
+                    )}
+
+                    <Box>
+                      <Stack direction='row' alignItems='center' gap={1} sx={{ mb: 1 }}>
+                        <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 13, fontWeight: 600, color: ds.gray[700] }}>
+                          Links
+                        </Typography>
+                        <Box sx={{ flex: 1 }} />
+                        <Button
+                          tone='secondary'
+                          size='sm'
+                          onClick={() => patchColumns([...columns, { title: 'Investigate', link: { url: '' } }])}
+                          id='add-link-column'
+                        >
+                          Add link
+                        </Button>
+                      </Stack>
+
+                      {links.length === 0 ? (
+                        <Typography variant='caption' sx={{ color: ds.gray[500] }}>
+                          No links — the table is text only.
+                        </Typography>
+                      ) : (
+                        <Stack gap={1}>
+                          {links.map((link) => {
+                            const patchLink = (next: Partial<PanelColumn>) => patchColumns(columns.map((c) => (c === link ? { ...c, ...next } : c)));
+                            return (
+                              <Stack key={links.indexOf(link)} direction='row' gap={1} alignItems='center'>
+                                {isEntity && (
+                                  <Box sx={{ flex: 1.2 }}>
+                                    <Select
+                                      value={link.name || NEW_COLUMN}
+                                      options={linkTargetOptionsFor(link)}
+                                      // Switching target swaps which field names the link, so the
+                                      // other one is cleared rather than left behind as dead config —
+                                      // the server refuses a link that carries both. Clearing the
+                                      // picker reads as New column, same as choosing it.
+                                      onChange={(v: string) =>
+                                        patchLink(
+                                          v && v !== NEW_COLUMN
+                                            ? { name: v, title: undefined }
+                                            : { name: undefined, title: link.title || 'Investigate' }
+                                        )
+                                      }
+                                    />
+                                  </Box>
+                                )}
+                                {!link.name && (
+                                  <Box sx={{ flex: 1 }}>
+                                    <Input value={link.title || ''} onChange={(v: string) => patchLink({ title: v })} placeholder='Investigate' />
+                                  </Box>
+                                )}
+                                <Box sx={{ flex: 2 }}>
+                                  <Input
+                                    value={link.link?.url || ''}
+                                    onChange={(v: string) => patchLink({ link: { url: v } })}
+                                    placeholder='/investigate?id={{id}}&accountId={{account_id}}'
+                                  />
+                                </Box>
+                                <Button
+                                  tone='ghost'
+                                  composition='icon-only'
+                                  aria-label='Remove link'
+                                  icon={<DeleteOutlineIcon sx={{ fontSize: 18 }} />}
+                                  // A link on an existing column keeps that column's other settings;
+                                  // an added column has nothing left once its link is gone.
+                                  onClick={() => patchColumns(columns.flatMap((c) => (c !== link ? [c] : c.name ? [{ ...c, link: undefined }] : [])))}
+                                  id={`remove-link-${links.indexOf(link)}`}
+                                />
+                              </Stack>
+                            );
+                          })}
+                        </Stack>
+                      )}
+
+                      {isEntity && links.length > 0 && (
+                        <Typography variant='caption' sx={{ display: 'block', mt: 1, color: ds.gray[500] }}>
+                          Attach the link to a column and its own values become the links; choose New column for a plain action column instead. Write
+                          an in-app path and fill it from the row with{' '}
+                          <Box component='code' sx={{ fontFamily: 'monospace' }}>
+                            {'{{column}}'}
+                          </Box>
+                          . Available here: {entityDraft.columns.map((c) => `{{${c}}}`).join(', ')}.
+                        </Typography>
+                      )}
+
+                      {unfinishedLinks.length > 0 && (
+                        <Box sx={{ mt: 1, p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: '6px' }}>
+                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                            Every link needs a header (or a column to attach to) and a path inside the product — starting with a single <code>/</code>
+                            , as in <code>/investigate?id={'{{id}}'}</code>. Anyone who can see this dashboard follows these links, which is why an
+                            external or scripted destination is refused rather than rendered.
+                          </Typography>
+                        </Box>
+                      )}
+
+                      {unknownPlaceholders.length > 0 && (
+                        <Box sx={{ mt: 1, p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: '6px' }}>
+                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                            {unknownPlaceholders.map((c) => `{{${c}}}`).join(', ')} {unknownPlaceholders.length === 1 ? 'is' : 'are'} not selected in
+                            Columns above, so {unknownPlaceholders.length === 1 ? 'it' : 'they'} cannot be filled in — those cells will be blank. Add
+                            the column and hide it if you do not want it shown.
+                          </Typography>
+                        </Box>
+                      )}
+                    </Box>
+                  </Form.Section>
+                </Card>
+              )}
 
               {/* Last: you can only name a panel well once you know what it shows. */}
               <Card variant='tinted' header={<GroupHeader title='Panel details' description='How this panel appears to viewers.' />}>

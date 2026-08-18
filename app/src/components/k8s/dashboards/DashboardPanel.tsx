@@ -4,6 +4,7 @@ import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import Chart from '@ui/Chart';
 import { Chip } from '@ui/Chip';
+import { Link } from '@ui/Link';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Skeleton } from '@ui/Skeleton';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
@@ -14,9 +15,14 @@ import { ds } from '@utils/colors';
 import { downloadJsonFile, filenameSlug } from '@utils/fileDownload';
 import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
+import Currency from '@shared/format/Currency';
+import Memory from '@shared/format/Memory';
+import NumberFormat from '@shared/format/Number';
+import { formatDurationInTrace } from '@utils/common';
 import type { AccountOption, Panel } from '@api1/dashboards';
+import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
 import PanelState, { type PanelStateTone } from './PanelState';
-import { usePanelData, type PanelData, type PanelErrorKind } from './usePanelData';
+import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind } from './usePanelData';
 import { describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
 import { lastValue, statCaption } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
@@ -25,8 +31,13 @@ import type { VariableValues } from './templating';
 /** Plot height, excluding the legend the chart renders beneath it. */
 const CHART_HEIGHT = 160;
 
-/** How far outside the viewport a panel starts loading. */
-const PRELOAD_MARGIN = '300px';
+/**
+ * How far outside the viewport a panel starts loading. Kept short: panel height
+ * is `grid_pos.h * 30`px, so a row of stat panels is ~120px and a generous
+ * margin pulls two or three rows of them in before they are anywhere near the
+ * fold. The queue in panelQueue.ts bounds what that admits either way.
+ */
+const PRELOAD_MARGIN = '120px';
 
 /** True once the element has been within `PRELOAD_MARGIN` of the viewport. */
 function useSeenOnScreen<T extends HTMLElement>() {
@@ -98,6 +109,37 @@ function formatValue(value: number | null | undefined, unit?: string): string {
   const abs = Math.abs(value);
   const rounded = abs >= 100 ? value.toFixed(0) : abs >= 1 ? value.toFixed(2) : value.toPrecision(3);
   return unit ? `${rounded} ${unit}` : rounded;
+}
+
+/**
+ * One table cell, rendered the way the product's own listings render it: a
+ * savings figure as money, memory in GB, a latency as "1ms", a timestamp as
+ * relative text with the absolute time on hover. The kind comes off the query
+ * builder's column registry, so a `nudgebee` panel needs no per-panel setup.
+ *
+ * Values arrive as strings — the panel table is text over the wire — so each
+ * component gets what it parses: the components themselves render "-" for an
+ * empty or unparseable value.
+ */
+function renderTableCell(kind: ColumnKind, value: string): React.ReactNode {
+  if (!value) return value;
+  switch (kind) {
+    case 'time':
+      return <Datetime value={value} sx={{ fontSize: ds.text.caption }} />;
+    case 'currency':
+      return <Currency value={Number(value)} sx={{ fontSize: ds.text.caption }} withTooltip={false} />;
+    case 'memory':
+      // Stored in MB, shown in GB — the same conversion the Nodes listing does.
+      return <Memory value={Number(value)} sourceUnit='mb' targetUnit='gb' sx={{ fontSize: ds.text.caption }} />;
+    case 'cpu':
+      return <NumberFormat value={Number(value)} suffix=' cores' />;
+    case 'duration':
+      return formatDurationInTrace(Number(value));
+    case 'number':
+      return <NumberFormat value={Number(value)} />;
+    default:
+      return value;
+  }
 }
 
 const DashboardPanel: React.FC<Props> = ({
@@ -177,6 +219,9 @@ const DashboardPanel: React.FC<Props> = ({
     endTime,
     refreshKey,
     enabled: (seen || forceLoad) && !sampleData,
+    // `forceLoad` is the preview and the PNG capture — panels someone is waiting
+    // on directly, rather than panels that merely came into view.
+    immediate: forceLoad,
   });
 
   // A sample outranks what the last fetch left behind: `body()` reads `error`
@@ -233,13 +278,62 @@ const DashboardPanel: React.FC<Props> = ({
           </Box>
         );
       }
-      const headers = data.table.columns.map((name) => ({ name }));
+      const columns = data.table.columns;
       const kinds = data.table.column_kinds || [];
+      // Headers are display labels on an entity panel ("Event id"), while the
+      // author configured columns by the QUERY's names (`id`) — so settings
+      // resolve against those, not against what is on screen.
+      const names = data.table.column_names || columns;
+      const panelColumns = panelColumnsOf(panel);
+      const settings = columnSettings(panelColumns);
+      // A hidden column is still QUERIED — it is what a link is built from — so
+      // it is dropped here rather than from the query.
+      const shown = columns
+        .map((label, index) => ({ label, index, column: settings.get(names[index]) }))
+        .filter((c) => c.column?.visibility !== 'hidden');
+      const added = addedColumns(panelColumns);
+      const headers = [...shown.map((c) => ({ name: c.column?.title || c.label })), ...added.map((c) => ({ name: c.title || '' }))];
       // Timestamps go through the same Datetime component the traces and events listings use — relative text
       // with the absolute time on hover — rather than showing the store's raw value.
-      const rows = data.table.rows.map((row) =>
-        row.map((cell, i) => (kinds[i] === 'time' && cell ? { component: <Datetime value={cell} />, value: cell } : { text: cell, value: cell }))
-      );
+      const rows = data.table.rows.map((row) => [
+        ...shown.map(({ index, column }) => {
+          const cell = row[index];
+          // The registry decides how a value reads; a column may override it for
+          // the cases the registry cannot know, like a Postgres panel's own columns.
+          const content = renderTableCell(column?.format || kinds[index] || 'text', cell);
+          const href = column?.link ? renderRowUrl(column.link.url, names, row) : null;
+          // Linked or not, `value` stays the raw cell so sort and CSV export read
+          // the data rather than the markup.
+          if (href)
+            return {
+              // New tab, and the DS Link's arrow says so: a dashboard is something
+              // you watch, and following a row's link in place loses the page you
+              // were reading — along with its time range and account filter.
+              component: (
+                <Link href={href} openInNew>
+                  {content}
+                </Link>
+              ),
+              value: cell,
+            };
+          // A formatted cell is a component; plain text stays text so the table's
+          // own tooltip and truncation keep working on it.
+          return typeof content === 'string' ? { text: content, value: cell } : { component: content, value: cell };
+        }),
+        // An added column has no data of its own — every cell reads as its title.
+        // Never exported: a CSV of the same word repeated is noise.
+        ...added.map((column) => {
+          const href = column.link ? renderRowUrl(column.link.url, names, row) : null;
+          return {
+            component: href ? (
+              <Link href={href} openInNew>
+                {column.title}
+              </Link>
+            ) : null,
+            exportEnabled: false,
+          };
+        }),
+      ]);
       return (
         <Box>
           <CustomTable headers={headers} tableData={rows} />

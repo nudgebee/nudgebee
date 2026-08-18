@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import observability from '@api1/observability';
 import apiDashboards, { isCommandDatasource, type AccountOption, type Panel, type PanelQueryResult } from '@api1/dashboards';
-import { draftFromQuery, findTable, type EntityQueryDraft } from './entityQuery';
+import { draftFromQuery, findTable, type EntityColumnFormat, type EntityQueryDraft } from './entityQuery';
 import { runTracePanel } from './traceQuery';
 import { panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
 import { alignSeries, toRawSeries, type RawSeries } from './panelSeries';
+import { acquirePanelSlot } from './panelQueue';
 import { convertNumberToTimestamp } from 'src/utils/common';
 import { renderTemplate, type VariableValues } from './templating';
 
@@ -19,12 +20,23 @@ function isAwsAccount(account: AccountOption): boolean {
   return (account.cloud_provider || '').toLowerCase() === 'aws';
 }
 
-/** A table cell's kind, so the renderer knows what to hand the cell to. */
-export type ColumnKind = 'time' | 'text';
+/**
+ * A table cell's kind, so the renderer knows what to hand the cell to — the
+ * same Datetime / Currency / Memory / Number components the product's listings
+ * use. Everything not named here renders as plain text.
+ */
+export type ColumnKind = 'time' | 'text' | EntityColumnFormat;
 
 export interface PanelTable extends PanelQueryResult {
   /** Per column; absent means every column is plain text. */
   column_kinds?: ColumnKind[];
+  /**
+   * The QUERY's column names, where `columns` holds display labels — the two
+   * differ for an entity panel, whose headers are relabelled below. A panel's
+   * link and hidden columns name the query's columns, so they resolve against
+   * this; absent means `columns` already holds the query's own names.
+   */
+  column_names?: string[];
 }
 
 /** Why a panel has nothing to show. */
@@ -65,10 +77,27 @@ interface Options {
   refreshKey?: string | number;
   /** `false` holds the query back entirely — the panel renders its skeleton and fetches nothing. */
   enabled?: boolean;
+  /**
+   * Skips the load queue. For the panel a person is looking AT rather than one
+   * that happens to be on screen — the editor's preview, and the PNG capture
+   * that needs every panel drawn — neither of which should wait behind a
+   * dashboard's own panels.
+   */
+  immediate?: boolean;
 }
 
 /** Fetches one panel's data, across every account the panel is scoped to. */
-export function usePanelData({ panel, accounts, accountFilter, variables, startTime, endTime, refreshKey, enabled = true }: Options) {
+export function usePanelData({
+  panel,
+  accounts,
+  accountFilter,
+  variables,
+  startTime,
+  endTime,
+  refreshKey,
+  enabled = true,
+  immediate = false,
+}: Options) {
   const [data, setData] = useState<PanelData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<PanelError | null>(null);
@@ -88,10 +117,61 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
   // Serialised so a new object identity per render doesn't refetch forever.
   const targetsKey = JSON.stringify((panel.targets || []).map((t) => [t.ref_id, renderTemplate(t.expr || '', variables), t.legend_format, t.hide]));
 
+  /**
+   * Being on screen says the panel SHOULD load; the queue says when. Without it
+   * one screenful of short stat panels is a dozen simultaneous provider queries
+   * — see panelQueue.ts. Admission is per panel and permanent: a panel that has
+   * loaded once refetches freely on a time-range change or Refresh, which is a
+   * deliberate action rather than the open-the-dashboard stampede this bounds.
+   */
+  const [admitted, setAdmitted] = useState(false);
+  const releaseSlot = useRef<(() => void) | null>(null);
+  const wantsSlot = enabled && !immediate && panel.type !== 'text' && !admitted;
+
+  useEffect(() => {
+    if (!wantsSlot) return;
+    let cancelled = false;
+    acquirePanelSlot().then((release) => {
+      // Scrolled away or unmounted while queued: give the slot straight back
+      // rather than holding it for a panel nobody is looking at.
+      if (cancelled) {
+        release();
+        return;
+      }
+      releaseSlot.current = release;
+      setAdmitted(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [wantsSlot]);
+
+  // The slot is held only for the FIRST load. `loading` false with something to
+  // show means that load has settled — as does an early return that set an error
+  // without ever fetching, which is why this keys on the outcome and not on the
+  // request. The queue's own timeout covers a panel that somehow reports neither.
+  useEffect(() => {
+    if (!admitted || loading) return;
+    if (!data && !error) return;
+    releaseSlot.current?.();
+    releaseSlot.current = null;
+  }, [admitted, loading, data, error]);
+
+  // Releasing on unmount as well: a panel torn down mid-flight must not take its
+  // slot with it. The release is idempotent, so the settle path may have run too.
+  useEffect(
+    () => () => {
+      releaseSlot.current?.();
+      releaseSlot.current = null;
+    },
+    []
+  );
+
   useEffect(() => {
     if (panel.type === 'text') return;
-    // Off-screen: no request, and no error either — an untried panel must not claim it has no accounts.
-    if (!enabled) return;
+    // Off-screen, or still queued behind other panels: no request, and no error
+    // either — an untried panel must not claim it has no accounts.
+    if (!enabled || !(admitted || immediate)) return;
     const targets = (panel.targets || []).filter((t) => !t.hide);
     setWarning(null);
     // Nothing to resolve a provider from. Say so rather than rendering an empty
@@ -371,18 +451,40 @@ export function usePanelData({ panel, accounts, accountFilter, variables, startT
     return () => {
       cancelled = true;
     };
-  }, [accountsKey, filteredOut, panel.account_type, panel.type, panel.datasource, targetsKey, startTime, endTime, refreshKey, enabled]);
+  }, [
+    accountsKey,
+    filteredOut,
+    panel.account_type,
+    panel.type,
+    panel.datasource,
+    targetsKey,
+    startTime,
+    endTime,
+    refreshKey,
+    enabled,
+    admitted,
+    immediate,
+  ]);
 
   return { data, loading, error, warning };
 }
 
 /** Relabels an entity result with the builder's column labels, and marks which columns are timestamps. */
-function labelEntityColumns(result: PanelQueryResult, draft: EntityQueryDraft): PanelTable {
+export function labelEntityColumns(result: PanelQueryResult, draft: EntityQueryDraft): PanelTable {
   const table = findTable(draft.table);
   return {
     ...result,
     columns: result.columns.map((name) => table.columns.find((c) => c.name === name)?.label || name),
-    column_kinds: result.columns.map((name) => (table.columns.find((c) => c.name === name)?.type === 'datetime' ? 'time' : 'text')),
+    column_kinds: result.columns.map((name) => {
+      const column = table.columns.find((c) => c.name === name);
+      // A datetime is a time whatever else it says; otherwise the registry's
+      // own format decides, and a column without one is plain text.
+      if (column?.type === 'datetime') return 'time';
+      return column?.format || 'text';
+    }),
+    // Relabelling is what makes this necessary: the author configured link and
+    // hidden columns against `id` and `account_id`, not "Event id".
+    column_names: result.columns,
   };
 }
 

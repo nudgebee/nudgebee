@@ -804,7 +804,7 @@ const Investigate = () => {
     }
 
     // Cloud: also set labels from data.labels directly
-    if (isCloud && data.labels) {
+    if (data.labels) {
       setAlertLabels(data.labels);
     }
 

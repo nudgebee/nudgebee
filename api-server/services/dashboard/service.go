@@ -80,6 +80,11 @@ func ValidateDefinition(def Definition) error {
 		if p.GridPos.W < 1 || p.GridPos.W > 12 {
 			return fmt.Errorf("panel %q: grid_pos.w must be between 1 and 12", p.Title)
 		}
+		// A link column renders an href every viewer of this dashboard follows,
+		// so what it may point at is checked before the definition is stored.
+		if err := validateTableOptions(p); err != nil {
+			return err
+		}
 		// A text panel carries prose, not queries; everything else needs a source.
 		if p.Type == VizText {
 			continue
@@ -142,6 +147,10 @@ func ValidateDefinition(def Definition) error {
 // cloud provider or a LIST of accounts. Without this, every dashboard authored
 // before the change renders "No account" on every panel and reopens with an
 // empty account picker.
+//
+// v2 -> v3: a table panel's column settings lived in two arrays keyed by column
+// name, `link_columns` and `hidden_columns`. They are now one `columns` list
+// where each entry carries everything about that column — see table_columns.go.
 func upgradeDefinition(def *Definition) {
 	for i := range def.Panels {
 		p := &def.Panels[i]
@@ -151,6 +160,7 @@ func upgradeDefinition(def *Definition) {
 		// Cleared unconditionally so the field cannot survive a round-trip and
 		// resurrect itself as a second source of truth.
 		p.LegacyAccountId = ""
+		upgradeTableOptions(p)
 	}
 }
 

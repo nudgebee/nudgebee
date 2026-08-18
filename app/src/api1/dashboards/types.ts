@@ -55,6 +55,62 @@ export interface GridPos {
   h: number;
 }
 
+/**
+ * Where a row of a table panel can take you. An object rather than a bare URL
+ * string so link behaviour can grow — a tooltip, a condition, a target — without
+ * changing the shape of the column that carries it.
+ */
+export interface PanelColumnLink {
+  /**
+   * An IN-APP path with `{{column}}` placeholders filled from the row, e.g.
+   * `/investigate?id={{id}}&accountId={{account_id}}`. A panel is authored by
+   * one user and rendered by every viewer, so the path is restricted to a
+   * relative one — see isSafeLinkUrl, and the matching check in the server's
+   * ValidateDefinition.
+   */
+  url: string;
+}
+
+/**
+ * One column's display settings, and the single place they go.
+ *
+ * Every attribute is optional and additive: formatting, truncation, alignment
+ * and whatever comes next are one more key here, never a new parallel array
+ * keyed by column name — which is what `link_columns` / `hidden_columns` were,
+ * and why they are gone (upgradeDefinition folds them forward on read).
+ *
+ * An entry with `name` configures a column the QUERY returns. An entry without
+ * one describes a column the panel ADDS, which is why it needs a `title`.
+ */
+export interface PanelColumn {
+  /** Query column this configures. Absent = a column the panel adds. */
+  name?: string;
+  /** Header text. On an added column it is also every cell's text. */
+  title?: string;
+  /** Absent means visible. Hidden columns are still queried — a link built from an id needs it. */
+  visibility?: 'hidden';
+  /**
+   * Overrides how the value renders. `nudgebee` panels get this from the query
+   * builder's column registry already, so it is for the cases the registry
+   * cannot know — a cost column out of a Postgres panel, say.
+   */
+  format?: 'currency' | 'memory' | 'cpu' | 'duration' | 'number' | 'time' | 'text';
+  /** Makes the cell a link. */
+  link?: PanelColumnLink;
+}
+
+/** `options` on a panel that renders as a table. */
+export interface PanelTableOptions {
+  columns?: PanelColumn[];
+  /**
+   * Superseded by `columns`. Still read so an OLD EXPORT can be imported —
+   * the server folds them forward on read, but an import arrives as raw JSON
+   * that has never been through it. Never written.
+   */
+  link_columns?: { column?: string; title?: string; url: string }[];
+  hidden_columns?: string[];
+}
+
 export interface Panel {
   id: number;
   title: string;
@@ -77,7 +133,7 @@ export interface Panel {
   unit?: string;
   /** Backs the `text` panel type. */
   content?: string;
-  options?: Record<string, unknown>;
+  options?: PanelTableOptions & Record<string, unknown>;
 }
 
 export interface DashboardDefinition {

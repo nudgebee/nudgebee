@@ -141,6 +141,11 @@ export function toTraceParams(filters: EntityFilter[]): { params: TraceFilterPar
 export interface TracePanelResult extends PanelQueryResult {
   /** Per column: 'time' cells render through the Datetime component. */
   column_kinds: ColumnKind[];
+  /**
+   * The query's own column names, since `columns` holds display labels. A
+   * panel's links and hidden columns name these.
+   */
+  column_names: string[];
   /** Filters the traces API cannot express, if the builder ever offers one. */
   unsupported: string[];
 }
@@ -245,12 +250,15 @@ export async function runTracePanel(draft: EntityQueryDraft, accountId: string, 
  * column declares whether it is a timestamp, so the renderer can hand it to the
  * same Datetime component the traces listings use.
  */
-function toResult(table: EntityTable, columns: string[], rows: any[]): PanelQueryResult & { column_kinds: ColumnKind[] } {
+function toResult(table: EntityTable, columns: string[], rows: any[]): PanelQueryResult & { column_kinds: ColumnKind[]; column_names: string[] } {
   const labels = columns.map((name) => table.columns.find((c) => c.name === name)?.label || name);
   const kinds: ColumnKind[] = columns.map((name) => (table.timeColumns.includes(name) ? 'time' : 'text'));
   return {
     columns: labels,
     column_kinds: kinds,
+    // Headers are labels, so a panel's links and hidden columns — which name the
+    // QUERY's columns — resolve against these instead.
+    column_names: columns,
     rows: (rows || []).map((row) => columns.map((name) => formatCell(name, row?.[name], table))),
   };
 }
