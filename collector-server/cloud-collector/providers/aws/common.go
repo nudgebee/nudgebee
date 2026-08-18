@@ -172,6 +172,19 @@ func getAwsConfigFromAccount(ctx context.Context, account providers.Account) (aw
 	return cfg, nil
 }
 
+// curServiceConfig returns cfg with its region forced to us-east-1 — the
+// only region the Cost & Usage Report API (costandusagereportservice) is
+// hosted in, regardless of the account's configured operating region.
+// Without this, accounts outside us-east-1 fail CUR discovery with a DNS
+// lookup error against a nonexistent regional endpoint (e.g.
+// cur.eu-west-1.amazonaws.com). Mirrors the identical override already
+// applied in common/cloud_credential_validator_aws.go's buildAWSConfigForValidation.
+func curServiceConfig(cfg aws.Config) aws.Config {
+	curCfg := cfg.Copy()
+	curCfg.Region = "us-east-1"
+	return curCfg
+}
+
 func isPublicSubnet(ctx context.Context, cfg aws.Config, subnetId string) bool {
 	client := ec2.NewFromConfig(cfg)
 	input := &ec2.DescribeSubnetsInput{
