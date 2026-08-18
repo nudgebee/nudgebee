@@ -123,6 +123,8 @@ const KubernetesLLMResponseGenerator = ({
   historySignal = undefined,
   historyButtonRef = undefined,
   drawerIsOpen = true,
+  // Owns the shared localStorage "last opened conversation" pointer — global drawer only.
+  persistLastSession = true,
 }) => {
   const router = useRouter();
   const { assistantName, baseTitle } = useTenantBranding();
@@ -163,7 +165,7 @@ const KubernetesLLMResponseGenerator = ({
 
   const [uiState, uiDispatch] = useReducer(componentReducer, null, () => {
     let restoredSessionId = router.query.session_id || sessionId || '';
-    if (popup && typeof window !== 'undefined' && !restoredSessionId) {
+    if (popup && persistLastSession && typeof window !== 'undefined' && !restoredSessionId) {
       const stored = localStorage.getItem('nubi_selected_conversation_id');
       if (stored) {
         restoredSessionId = stored;
@@ -222,7 +224,7 @@ const KubernetesLLMResponseGenerator = ({
   // Must stay below the uiState destructure and the setters above: a dependency
   // array is evaluated during render, so listing them any earlier is a TDZ throw.
   useEffect(() => {
-    if (!popup || !drawerIsOpen) {
+    if (!popup || !persistLastSession || !drawerIsOpen) {
       return;
     }
 
@@ -232,7 +234,7 @@ const KubernetesLLMResponseGenerator = ({
         setSelectedSessionId(stored);
       }
     }
-  }, [popup, drawerIsOpen, selectedSessionId, setSelectedSessionId]);
+  }, [popup, persistLastSession, drawerIsOpen, selectedSessionId, setSelectedSessionId]);
 
   const isNewChat = useMemo(() => !selectedSessionId && !selectedConversationId, [selectedSessionId, selectedConversationId]);
   const { troubleShootData, optimizationData } = useClusterInsights(accountId);
@@ -442,7 +444,7 @@ const KubernetesLLMResponseGenerator = ({
           if (!popup) {
             // Standardize on session_id for new chats, clear conversation_id to avoid ambiguity
             applyFiltersOnRouter(router, { session_id: llmSessionId, conversation_id: null }, { shallow: true });
-          } else {
+          } else if (persistLastSession) {
             localStorage.setItem('nubi_selected_conversation_id', llmSessionId);
           }
           setSelectedSessionId(llmSessionId);
@@ -471,6 +473,7 @@ const KubernetesLLMResponseGenerator = ({
       selectedCluster,
       categorySource,
       popup,
+      persistLastSession,
       router,
       startInvestigation,
       setConversationStatus,
@@ -939,13 +942,22 @@ const KubernetesLLMResponseGenerator = ({
     previousConversationStatusRef.current = '';
     if (!popup) {
       applyFiltersOnRouter(router, { session_id: '', conversation_id: '' });
-    } else {
+    } else if (persistLastSession) {
       localStorage.removeItem('nubi_selected_conversation_id');
     }
     setTimeout(() => {
       textareaRef.current?.focus();
     }, 0);
-  }, [popup, router, setMessages, setConversationStatus, setCurrentlyProcessingQuestion, clearSuggestions, resetInvestigationState]);
+  }, [
+    popup,
+    persistLastSession,
+    router,
+    setMessages,
+    setConversationStatus,
+    setCurrentlyProcessingQuestion,
+    clearSuggestions,
+    resetInvestigationState,
+  ]);
 
   const prevNewChatSignalRef = useRef(newChatSignal);
   useEffect(() => {
@@ -998,7 +1010,7 @@ const KubernetesLLMResponseGenerator = ({
         setCurrentlyProcessingQuestion(null);
         if (!popup) {
           applyFiltersOnRouter(router, { session_id: index, conversation_id: null });
-        } else {
+        } else if (persistLastSession) {
           localStorage.setItem('nubi_selected_conversation_id', index);
         }
         setMessages([]);
@@ -1007,7 +1019,17 @@ const KubernetesLLMResponseGenerator = ({
         previousConversationStatusRef.current = '';
       }
     },
-    [selectedSessionId, popup, router, setMessages, setConversationStatus, setCurrentlyProcessingQuestion, clearSuggestions, resetTokenMetrics]
+    [
+      selectedSessionId,
+      popup,
+      persistLastSession,
+      router,
+      setMessages,
+      setConversationStatus,
+      setCurrentlyProcessingQuestion,
+      clearSuggestions,
+      resetTokenMetrics,
+    ]
   );
 
   const handleStopInvestigation = useCallback(() => {
@@ -2075,6 +2097,7 @@ KubernetesLLMResponseGenerator.propTypes = {
   historySignal: PropTypes.number,
   historyButtonRef: PropTypes.object,
   drawerIsOpen: PropTypes.bool,
+  persistLastSession: PropTypes.bool,
 };
 
 export default KubernetesLLMResponseGenerator;

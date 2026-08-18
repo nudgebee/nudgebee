@@ -436,9 +436,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         };
       });
 
-      // Extract ai_session_id from tags for existing AI-generated workflows
-      const aiTag = workflowData.tags?.ai_session_id;
-      if (aiTag && !aiSessionId) {
+      // Session lineage of the loaded automation, so a workflow without one can't inherit the
+      // previously opened workflow's chat. Skipped while a workflow is being created: it is
+      // staged with id null / empty tags, and clearing there would drop the session that
+      // stamps created_from_session_id at create time.
+      const aiTag = workflowData.tags?.ai_session_id || workflowData.created_from_session_id || '';
+      if (workflowData.id && !isTransitioningFromCreateToEdit && aiTag !== aiSessionId) {
         setAiSessionId(aiTag);
       }
     }
@@ -1241,7 +1244,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 triggerCount,
                 definition: workflow.definition,
                 workflowJson,
-                conversationId: workflow.tags?.ai_session_id || aiSessionId,
+                // Only this automation's own lineage — `aiSessionId` may still hold the previously opened one.
+                conversationId: workflow.tags?.ai_session_id || workflow.created_from_session_id || '',
               },
             });
             setIsInitialized(true);

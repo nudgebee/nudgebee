@@ -42,19 +42,8 @@ const ConversationListDrawer = ({
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
 
-  const [persistedSelectedId, setPersistedSelectedIdLocal] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('nubi_selected_conversation_id') || selectedId || '';
-    }
-    return selectedId || '';
-  });
-
-  const setPersistedSelectedId = (id) => {
-    if (id) {
-      localStorage.setItem('nubi_selected_conversation_id', id);
-    }
-    setPersistedSelectedIdLocal(id);
-  };
+  // Row-highlight only; the parent owns persistence via handleSelectConversation.
+  const [persistedSelectedId, setPersistedSelectedId] = useState(selectedId || '');
 
   const sourceLabels = {
     UserInvestigation: 'User Chat',
@@ -233,10 +222,10 @@ const ConversationListDrawer = ({
     }
   };
 
+  // Follow the parent's selection, including when it clears it (New Chat) — a stale highlight
+  // would otherwise point at a conversation that is no longer open.
   useEffect(() => {
-    if (selectedId) {
-      setPersistedSelectedId(selectedId);
-    }
+    setPersistedSelectedId(selectedId || '');
   }, [selectedId]);
 
   const conversations = useMemo(() => {
@@ -268,8 +257,7 @@ const ConversationListDrawer = ({
     });
   }, [rawConversations]);
 
-  // Auto-select the most recent chat when the persisted selection isn't in the
-  // list (e.g. a stale localStorage id). Kept out of the memo so it stays pure.
+  // Auto-select the most recent chat when the selection isn't in the list (stale id).
   useEffect(() => {
     if (conversations.length > 0 && persistedSelectedId) {
       const isSelected = conversations.some((c) => c.sessionId === persistedSelectedId || c.id === persistedSelectedId);
