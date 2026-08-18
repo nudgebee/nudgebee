@@ -20,9 +20,14 @@ func init() {
 
 const IntegrationOpenObserve = "openobserve"
 
-// OpenObserveDefaultLogStream is the stream OpenObserve ingests into unless the
+// OpenObserveDefaultLogStream is the stream OpenObserve ingests logs into unless the
 // collector is configured otherwise.
 const OpenObserveDefaultLogStream = "default"
+
+// OpenObserveDefaultTraceStream is the equivalent default for spans. Kept separate from
+// the log stream: OpenObserve stores each signal in its own stream, so a deployment that
+// renames one has no reason to have renamed the other.
+const OpenObserveDefaultTraceStream = "default"
 
 type OpenObserve struct{}
 
@@ -72,6 +77,13 @@ func (m OpenObserve) ConfigSchema() core.IntegrationSchema {
 					"collector writes to a differently-named stream (e.g. 'k8s_logs').",
 				Default:  OpenObserveDefaultLogStream,
 				Priority: 65,
+			},
+			"openobserve_trace_stream": {
+				Type: core.ToolSchemaTypeString,
+				Description: "Name of the OpenObserve stream holding traces. Leave as 'default' unless your " +
+					"collector writes spans to a differently-named stream.",
+				Default:  OpenObserveDefaultTraceStream,
+				Priority: 64,
 			},
 			core.IntegrationConfigName: {
 				Type:             core.ToolSchemaTypeString,
@@ -225,11 +237,17 @@ type OpenObserveConfig struct {
 	// LogStream is the stream logs are queried from. Always populated
 	// it falls back to OpenObserveDefaultLogStream when unconfigured.
 	LogStream string
+	// TraceStream is the stream spans are queried from. Always populated
+	// it falls back to OpenObserveDefaultTraceStream when unconfigured.
+	TraceStream string
 }
 
 // GetOpenObserveConfigs retrieves and decrypts OpenObserve configuration for an account.
 func GetOpenObserveConfigs(sc *security.RequestContext, accountId string) (OpenObserveConfig, error) {
-	cfg := OpenObserveConfig{LogStream: OpenObserveDefaultLogStream}
+	cfg := OpenObserveConfig{
+		LogStream:   OpenObserveDefaultLogStream,
+		TraceStream: OpenObserveDefaultTraceStream,
+	}
 
 	openobserveIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationOpenObserve)
 	if err != nil {
@@ -252,6 +270,10 @@ func GetOpenObserveConfigs(sc *security.RequestContext, accountId string) (OpenO
 			if stream := strings.TrimSpace(config.Value); stream != "" {
 				cfg.LogStream = stream
 			}
+		case "openobserve_trace_stream":
+			if stream := strings.TrimSpace(config.Value); stream != "" {
+				cfg.TraceStream = stream
+			}
 		case "openobserve_password":
 			cfg.Password = config.Value
 			if config.IsEncrypted {
@@ -265,5 +287,34 @@ func GetOpenObserveConfigs(sc *security.RequestContext, accountId string) (OpenO
 	}
 
 	cfg.URL = normalizeOpenObserveURL(cfg.URL)
+
+	// Stream names are interpolated into SQL as bare identifiers, which cannot be
+	// parameterized. Validating here rather than at each query site is deliberate: the
+	// stream reaches SQL from seven different places across the log and trace sources,
+	// and a per-site guard is one refactor away from being forgotten at the eighth.
+	if !IsSafeOpenObserveStreamName(cfg.LogStream) {
+		return cfg, fmt.Errorf("invalid openobserve_log_stream %q: stream names may only contain letters, digits and underscores", cfg.LogStream)
+	}
+	if !IsSafeOpenObserveStreamName(cfg.TraceStream) {
+		return cfg, fmt.Errorf("invalid openobserve_trace_stream %q: stream names may only contain letters, digits and underscores", cfg.TraceStream)
+	}
+
 	return cfg, nil
+}
+
+// IsSafeOpenObserveStreamName reports whether a stream name is safe to interpolate into a
+// SQL identifier position. OpenObserve itself normalizes stream names to letters, digits
+// and underscores, so this rejects nothing a real stream could be called — it exists to
+// stop a hostile or malformed integration config from breaking out of the quoted
+// identifier in `FROM "<stream>"`.
+func IsSafeOpenObserveStreamName(stream string) bool {
+	if stream == "" || len(stream) > 255 {
+		return false
+	}
+	for _, r := range stream {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }

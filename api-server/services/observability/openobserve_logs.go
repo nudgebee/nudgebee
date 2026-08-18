@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -74,6 +76,78 @@ type openObserveSearchResponse struct {
 
 func escapeOpenObserveString(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
+}
+
+// errOpenObserveStreamNotFound reports that a stream does not exist. Callers disagree on
+// whether that is a failure: a missing *log* stream is a misconfiguration worth surfacing,
+// while a missing *metric* stream is routine — the __name__ list contains families (a
+// summary's base name, say) that never received samples and so have no stream of their own.
+var errOpenObserveStreamNotFound = errors.New("openobserve stream not found")
+
+// decodeOpenObserveSearchResponse decodes a /_search response, preserving numbers as their
+// literal text rather than converting to float64.
+//
+// This matters for 64-bit values: a span's start_time is epoch nanoseconds (~1.79e18),
+// roughly 200x beyond float64's exact-integer limit of 2^53, so a plain decode silently
+// discards the low digits before any formatting runs. Trace waterfalls built from those
+// values collapse to identical timestamps. json.Number keeps the original digits, and
+// openObserveNumber / openObserveInt64 read it back.
+func decodeOpenObserveSearchResponse(r io.Reader) (openObserveSearchResponse, error) {
+	var searchResp openObserveSearchResponse
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	if err := dec.Decode(&searchResp); err != nil {
+		return openObserveSearchResponse{}, err
+	}
+	return searchResp, nil
+}
+
+// openObserveInt64 extracts an exact integer from a decoded JSON cell. json.Number keeps
+// full 64-bit precision; float64 is accepted for callers that decoded without UseNumber.
+func openObserveInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	case float64:
+		return int64(n), true
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case string:
+		i, err := strconv.ParseInt(n, 10, 64)
+		return i, err == nil
+	default:
+		return 0, false
+	}
+}
+
+// formatOpenObserveLabelValue renders a decoded JSON cell as the literal string a filter
+// will be built from.
+//
+// fmt.Sprintf("%v") is wrong here: JSON numbers decode to float64, and %v prints large
+// ones in scientific notation — an Int64 timestamp of 1786612792471605 becomes
+// "1.786612792471605e+15", which is then round-tripped into `col = '1.78...e+15'` and
+// matches nothing. Formatting with 'f' keeps integers intact.
+func formatOpenObserveLabelValue(v any) string {
+	switch n := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return n
+	case json.Number:
+		// Already the literal text OpenObserve sent — no precision to lose.
+		return n.String()
+	case float64:
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(n), 'f', -1, 32)
+	case bool:
+		return strconv.FormatBool(n)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // openObserveAuthHeader builds the Basic auth header every OpenObserve API call needs.
@@ -181,6 +255,12 @@ func buildOpenObserveSQLWhereClause(where query.QueryWhereClause) (string, error
 }
 
 func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest, stream string) (string, error) {
+	// Callers pass a config-resolved stream, which GetOpenObserveConfigs has already
+	// validated. Re-checked here so the function is safe for any caller, not just that one.
+	if !integrations.IsSafeOpenObserveStreamName(stream) {
+		return "", fmt.Errorf("invalid or unsafe stream name: %q", stream)
+	}
+
 	whereClause, err := buildOpenObserveSQLWhereClause(req.QueryRequest.Where)
 	if err != nil {
 		return "", err
@@ -259,8 +339,8 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		return nil, fmt.Errorf("OpenObserve query failed with status %d: %v", resp.StatusCode, errorBody)
 	}
 
-	var searchResp openObserveSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+	searchResp, err := decodeOpenObserveSearchResponse(resp.Body)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode OpenObserve response: %w", err)
 	}
 
@@ -273,10 +353,8 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		for k, v := range hit {
 			switch k {
 			case "_timestamp":
-				if tVal, ok := v.(float64); ok {
-					// convert micros to format
-					ts := time.UnixMicro(int64(tVal))
-					out.Timestamp = ts.UTC().Format(time.RFC3339Nano)
+				if micros, ok := openObserveInt64(v); ok {
+					out.Timestamp = time.UnixMicro(micros).UTC().Format(time.RFC3339Nano)
 				} else if tStr, ok := v.(string); ok {
 					out.Timestamp = tStr
 				}
@@ -406,22 +484,25 @@ func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, re
 		return nil, fmt.Errorf("OpenObserve query failed with status %d", resp.StatusCode)
 	}
 
-	var searchResp openObserveSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+	searchResp, err := decodeOpenObserveSearchResponse(resp.Body)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode OpenObserve response: %w", err)
 	}
 
-	var values []OutputLogLabelValue
+	values := make([]OutputLogLabelValue, 0, len(searchResp.Hits))
 	for _, hit := range searchResp.Hits {
-		if val, ok := hit[col]; ok && val != nil {
-			strVal := fmt.Sprintf("%v", val)
-			if strVal != "" {
-				values = append(values, OutputLogLabelValue{
-					Value:      strVal,
-					Attributes: make(map[string]any),
-				})
-			}
+		val, ok := hit[col]
+		if !ok || val == nil {
+			continue
 		}
+		strVal := formatOpenObserveLabelValue(val)
+		if strVal == "" {
+			continue
+		}
+		values = append(values, OutputLogLabelValue{
+			Value:      strVal,
+			Attributes: make(map[string]any),
+		})
 	}
 
 	return values, nil
@@ -547,9 +628,9 @@ func isOpenObserveIntegerColumn(fieldType string) bool {
 // with the Arrow type name as the value. Types matter as much as names: the same logical
 // field can arrive as Utf8 from one shipper and Int64 from another (severity_text vs a
 // numeric severity), and using the wrong one in a string context fails the whole query.
-func fetchOpenObserveStreamFields(url, orgID, username, password, stream string) (map[string]string, error) {
-	endpoint := fmt.Sprintf("%s/api/%s/streams/%s/schema?type=logs",
-		url, neturl.PathEscape(orgID), neturl.PathEscape(stream))
+func fetchOpenObserveStreamFields(url, orgID, username, password, stream, streamType string) (map[string]string, error) {
+	endpoint := fmt.Sprintf("%s/api/%s/streams/%s/schema?type=%s",
+		url, neturl.PathEscape(orgID), neturl.PathEscape(stream), neturl.QueryEscape(streamType))
 
 	resp, err := common.HttpGet(endpoint,
 		common.HttpWithHeaders(map[string]string{
@@ -565,8 +646,17 @@ func fetchOpenObserveStreamFields(url, orgID, username, password, stream string)
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		body := strings.TrimSpace(string(bodyBytes))
+
+		// Wrapped so callers can distinguish "no such stream" from a real failure without
+		// matching on message text.
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: stream %q (status %d: %s)",
+				errOpenObserveStreamNotFound, stream, resp.StatusCode, body)
+		}
+
 		return nil, fmt.Errorf("OpenObserve schema request for stream %q failed with status %d: %s",
-			stream, resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+			stream, resp.StatusCode, body)
 	}
 
 	var schema openObserveStreamSchema
@@ -736,6 +826,9 @@ func openObserveTimeRangeMicros(startMs, endMs int64, now time.Time) (int64, int
 // openObserveNumber coerces a decoded JSON cell to float64.
 func openObserveNumber(v any) (float64, bool) {
 	switch n := v.(type) {
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
 	case float64:
 		return n, true
 	case int64:
@@ -835,7 +928,7 @@ func (s *OpenObserveLogSource) QueryLogGroup(ctx *security.RequestContext, req F
 
 	// The stream schema decides which columns the aggregation can reference; guessing
 	// would make OpenObserve reject the whole query with a column-not-found error.
-	fields, err := fetchOpenObserveStreamFields(cfg.URL, cfg.OrgID, cfg.Username, cfg.Password, cfg.LogStream)
+	fields, err := fetchOpenObserveStreamFields(cfg.URL, cfg.OrgID, cfg.Username, cfg.Password, cfg.LogStream, "logs")
 	if err != nil {
 		ctx.GetLogger().Error("OpenObserveLogSource.QueryLogGroup: failed to read stream schema", "error", err)
 		return LogGroupOutput{}, err
@@ -898,8 +991,8 @@ func (s *OpenObserveLogSource) QueryLogGroup(ctx *security.RequestContext, req F
 			resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
-	var searchResp openObserveSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+	searchResp, err := decodeOpenObserveSearchResponse(resp.Body)
+	if err != nil {
 		return LogGroupOutput{}, fmt.Errorf("failed to decode OpenObserve response: %w", err)
 	}
 

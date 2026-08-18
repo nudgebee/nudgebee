@@ -56,6 +56,7 @@ func TestOpenObserve_ConfigSchema_PropertiesExist(t *testing.T) {
 	wantKeys := []string{
 		"openobserve_url", "openobserve_org_id",
 		"openobserve_username", "openobserve_password",
+		"openobserve_log_stream", "openobserve_trace_stream",
 		core.IntegrationConfigName, core.AccountId,
 		core.DefaultLogProvider, core.DefaultTraceProvider, core.DefaultMetricsProvider,
 	}
@@ -65,6 +66,22 @@ func TestOpenObserve_ConfigSchema_PropertiesExist(t *testing.T) {
 	}
 }
 
+// Stream names are optional: an integration configured before the fields existed, or one
+// where the user left them blank, must still resolve to OpenObserve's default stream
+// rather than emitting FROM "".
+func TestOpenObserve_ConfigSchema_StreamsAreOptionalWithDefaults(t *testing.T) {
+	schema := OpenObserve{}.ConfigSchema()
+
+	assert.NotContains(t, schema.Required, "openobserve_log_stream")
+	assert.NotContains(t, schema.Required, "openobserve_trace_stream")
+	assert.Equal(t, OpenObserveDefaultLogStream, schema.Properties["openobserve_log_stream"].Default)
+	assert.Equal(t, OpenObserveDefaultTraceStream, schema.Properties["openobserve_trace_stream"].Default)
+
+	// Streams are not credentials — they must not be encrypted at rest.
+	assert.False(t, schema.Properties["openobserve_log_stream"].IsEncrypted)
+	assert.False(t, schema.Properties["openobserve_trace_stream"].IsEncrypted)
+}
+
 func TestOpenObserve_ConfigSchema_PasswordIsEncrypted(t *testing.T) {
 	schema := OpenObserve{}.ConfigSchema()
 	assert.True(t, schema.Properties["openobserve_password"].IsEncrypted)
@@ -72,6 +89,36 @@ func TestOpenObserve_ConfigSchema_PasswordIsEncrypted(t *testing.T) {
 
 func TestOpenObserve_ImplementsTestableIntegration(t *testing.T) {
 	var _ core.TestableIntegration = OpenObserve{}
+}
+
+// ----- stream-name safety ----------------------------------------------------
+
+// Stream names land in SQL as bare identifiers inside FROM "<stream>", a position that
+// cannot be parameterized. Anything able to close that quote is an injection vector.
+func TestIsSafeOpenObserveStreamName(t *testing.T) {
+	valid := []string{"default", "k8s_logs", "otel_spans", "Stream1", "_leading", "a"}
+	for _, s := range valid {
+		assert.True(t, IsSafeOpenObserveStreamName(s), "%q should be accepted", s)
+	}
+
+	invalid := map[string]string{
+		"empty":             "",
+		"quote breakout":    `default" UNION SELECT * FROM secrets --`,
+		"trailing quote":    `default"`,
+		"semicolon":         "default; DROP TABLE users",
+		"space":             "my stream",
+		"hyphen":            "k8s-logs",
+		"dot traversal":     "../other",
+		"backtick":          "default`",
+		"single quote":      "default'",
+		"newline":           "default\nDROP",
+		"comment":           "default--",
+		"too long":          strings.Repeat("a", 256),
+		"unicode homoglyph": "defaulт", // Cyrillic 'т'
+	}
+	for name, s := range invalid {
+		assert.False(t, IsSafeOpenObserveStreamName(s), "%s: %q should be rejected", name, s)
+	}
 }
 
 // ----- ValidateConfig (structural, no I/O) ----------------------------------

@@ -24,6 +24,13 @@ import { useLlmAsyncPolling, extractQueryResultFromConversation } from '@hooks/u
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
 
+// Providers whose metrics are queried with PromQL. They share the metric-name list, the
+// label/value endpoints and the CodeMirror PromQL autocomplete, so a provider missing from
+// this set silently renders an empty builder with no suggestions rather than erroring.
+const PROMQL_METRIC_PROVIDERS = ['prometheus', 'chronosphere', 'victoria-metrics', 'openobserve'];
+
+const isPromQLMetricProvider = (provider) => PROMQL_METRIC_PROVIDERS.includes(provider);
+
 export const chipsToBlockLabelMatchers = (block) => {
   const labelMatchers = [];
   (block?.queryItems || []).forEach((item) => {
@@ -118,6 +125,11 @@ const QueryModeSwitcher = ({
       case 'chronosphere':
       case 'victoria-metrics':
         return 'Example: rate(http_requests_total{status="500", job="api-server"}[5m])';
+      case 'openobserve':
+        // Metrics go through the Prometheus-compatible API; logs are SQL over a stream.
+        return isMetric
+          ? 'Example: rate(http_requests_total{status="500", job="api-server"}[5m])'
+          : "Example: SELECT * FROM \"default\" WHERE k8s_namespace_name = 'prod' AND str_match(body, 'ERROR')";
       case 'signoz':
         return isMetric
           ? 'Example: sum(rate(signoz_calls_total{service_name="api-server",http_status_code="500"}[5m])) by (service_name)'
@@ -395,7 +407,7 @@ const QueryModeSwitcher = ({
   };
 
   useEffect(() => {
-    if (logProvider == 'prometheus' || logProvider == 'chronosphere' || logProvider == 'victoria-metrics') {
+    if (isPromQLMetricProvider(logProvider)) {
       const fetchMetrics = async () => {
         try {
           const cachedPrometheusLabels = cache.getWithSuffix(`${accountId}.prometheus.labels`, null, {});
@@ -476,7 +488,7 @@ const QueryModeSwitcher = ({
   }, [logProvider, initialEsIndex]);
 
   const getExtension = () => {
-    if (logProvider == 'prometheus' || logProvider == 'chronosphere' || logProvider == 'victoria-metrics') {
+    if (isPromQLMetricProvider(logProvider)) {
       extensions.push(
         new PromQLExtension()
           .setComplete({

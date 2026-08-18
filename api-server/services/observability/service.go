@@ -1361,9 +1361,12 @@ var allProviderCaps = map[string]providerStaticCaps{
 		SupportsRawQuery:   true,
 	},
 	"openobserve": {
-		SupportsServiceMap:    true,
-		SupportsRawQuery:      true,
-		SupportsHeatmap:       false,
+		SupportsServiceMap: true,
+		SupportsRawQuery:   true,
+		// The trace waterfall is backed by OpenObserveTraceSource.QueryTracesHeatmap,
+		// which fetches a trace's spans by trace_id. Leaving this false hides the chart
+		// even though the data is available.
+		SupportsHeatmap:       true,
 		SupportsTraceGrouping: false,
 	},
 }

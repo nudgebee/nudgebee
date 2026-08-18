@@ -598,7 +598,8 @@ const LogQueryBuilderAutocomplete = ({
         logProvider == 'datadog' ||
         logProvider == 'newrelic' ||
         logProvider == 'dynatrace' ||
-        logProvider == 'solarwinds') &&
+        logProvider == 'solarwinds' ||
+        logProvider == 'openobserve') &&
       providerType == 'metrics'
     ) {
       const fetchMetrics = async () => {
@@ -697,7 +698,8 @@ const LogQueryBuilderAutocomplete = ({
           logProvider == 'datadog' ||
           logProvider == 'newrelic' ||
           logProvider == 'dynatrace' ||
-          logProvider == 'solarwinds') &&
+          logProvider == 'solarwinds' ||
+          logProvider == 'openobserve') &&
         providerType == 'metrics'
       ) {
         try {
@@ -901,7 +903,8 @@ const LogQueryBuilderAutocomplete = ({
             logProvider === 'datadog' ||
             logProvider == 'newrelic' ||
             logProvider == 'dynatrace' ||
-            logProvider == 'solarwinds') &&
+            logProvider == 'solarwinds' ||
+            logProvider == 'openobserve') &&
           providerType == 'metrics'
         ) {
           const activeBlock = getActiveBlock();
@@ -1559,7 +1562,8 @@ const LogQueryBuilderAutocomplete = ({
                   logProvider === 'datadog' ||
                   logProvider === 'newrelic' ||
                   logProvider === 'dynatrace' ||
-                  logProvider === 'solarwinds') &&
+                  logProvider === 'solarwinds' ||
+                  logProvider === 'openobserve') &&
                   providerType === 'metrics') ||
                   logProvider === 'ES') && (
                   <FilterDropdown
@@ -1611,7 +1615,11 @@ const LogQueryBuilderAutocomplete = ({
                         ((logProvider === 'prometheus' ||
                           logProvider == 'datadog' ||
                           logProvider == 'ES' ||
-                          ((logProvider == 'dynatrace' || logProvider == 'solarwinds') && providerType === 'metrics')) &&
+                          // openobserve is scoped to metrics here on purpose: it is also a
+                          // logs provider, where there is no metric selector to satisfy and
+                          // an unconditional gate would disable the logs builder outright.
+                          ((logProvider == 'dynatrace' || logProvider == 'solarwinds' || logProvider == 'openobserve') &&
+                            providerType === 'metrics')) &&
                           !block.selectedMetric)
                       }
                       variant='outlined'
