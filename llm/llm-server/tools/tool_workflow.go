@@ -454,7 +454,7 @@ func compactWorkflowResponse(resp []byte) string {
 			compactParams := make(map[string]interface{}, len(params))
 			for k, v := range params {
 				if strVal, ok := v.(string); ok && len(strVal) > 200 {
-					compactParams[k] = strVal[:200] + "...(truncated)"
+					compactParams[k] = common.TruncateHead(strVal, 200) + "...(truncated)"
 				} else {
 					compactParams[k] = v
 				}

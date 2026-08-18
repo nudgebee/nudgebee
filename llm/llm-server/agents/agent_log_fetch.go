@@ -1099,10 +1099,7 @@ tail SHOULD be 10000 so the grep has a meaningful window to scan.
 
 	var intent kubectlLogQuery
 	if err := common.ExtractAndUnmarshalJSON([]byte(res.Choices[0].Content), &intent); err != nil {
-		preview := res.Choices[0].Content
-		if len(preview) > 200 {
-			preview = preview[:200]
-		}
+		preview := common.TruncateHead(res.Choices[0].Content, 200)
 		ctx.GetLogger().Error("fetch_logs: kubectl intent JSON unmarshal failed", "error", err, "raw_preview", preview)
 		return kubectlLogQuery{}, fmt.Errorf("intent JSON unmarshal: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 )
@@ -141,19 +142,18 @@ func fileRecallHandle(step *NBAgentPlannerToolActionStep) string {
 // TruncateHead truncates s to at most maxBytes from the start, ensuring the cut
 // does not split a multi-byte UTF-8 character.
 func TruncateHead(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	// Walk back from maxBytes to find a valid rune boundary
-	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
-		maxBytes--
-	}
-	return s[:maxBytes]
+	return common.TruncateHead(s, maxBytes)
 }
 
 // TruncateMiddle truncates s by keeping headBytes from the start and tailBytes
 // from the end, injecting a truncation marker in between.
 func TruncateMiddle(s string, headBytes, tailBytes int) string {
+	if headBytes < 0 {
+		headBytes = 0
+	}
+	if tailBytes < 0 {
+		tailBytes = 0
+	}
 	if len(s) <= headBytes+tailBytes {
 		return s
 	}
@@ -167,6 +167,9 @@ func TruncateMiddle(s string, headBytes, tailBytes int) string {
 // truncateTail returns the last maxBytes of s, ensuring the cut does not split
 // a multi-byte UTF-8 character.
 func truncateTail(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
 	if len(s) <= maxBytes {
 		return s
 	}
