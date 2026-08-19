@@ -19,12 +19,16 @@ package core
 // CachedContent layer (different cache slot owners across calls → 403).
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/azure"
 	"nudgebee/llm/llms/bedrock"
@@ -1097,6 +1101,128 @@ func GetLlmModelWithProvider(provider string, agentName string, appendAgentName 
 	return GetLLMModel(provider, modelName, agentName, appendAgentName, accountId)
 }
 
+// Anthropic prompt-caching fix (regression from PR #36318).
+//
+// The multi-breakpoint layout places its primary cache breakpoint on the
+// SYSTEM message, but langchaingo v0.1.14's handleSystemMessage unwraps
+// llms.CachedContent and serializes `system` as a plain string — silently
+// dropping the cache_control block. Anthropic only caches a system prompt
+// when `system` is sent as a content-block array. Result: zero cache
+// creation/reads on the anthropic provider since 2026-08-16 (worked in March
+// when the old single breakpoint landed on a Human message, which the client
+// serializes correctly).
+//
+// Until the client is patched/upgraded, this transport restores the intended
+// behavior at the wire: when a /v1/messages body carries `system` as a
+// non-empty string (and caching is enabled), it is rewritten to
+//
+//	"system": [{"type":"text","text":<s>,"cache_control":{"type":"ephemeral"}}]
+//
+// which is the documented cacheable form. Prompts below Anthropic's minimum
+// cacheable size are simply not cached by the API — the form is valid either
+// way. Human-message breakpoints are unaffected (they serialize correctly).
+// Composes with the temperature sanitizer (http_sanitizer.go) as its base.
+type anthropicSystemCacheTransport struct {
+	base http.RoundTripper
+}
+
+func (t *anthropicSystemCacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/messages") || req.Body == nil || !config.Config.LlmEnableCaching {
+		return base.RoundTrip(req)
+	}
+	// Honor the per-request opt-out (custom agents embed dynamic content in
+	// their system messages — caching those creates one-off entries).
+	if disabled, _ := req.Context().Value(ContextKeyDisableCaching).(bool); disabled {
+		return base.RoundTrip(req)
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	// Lazy top-level parse: only "system" is inspected; the (large) messages
+	// array stays raw bytes.
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) == nil && payload != nil {
+		var sys string
+		if raw, ok := payload["system"]; ok && json.Unmarshal(raw, &sys) == nil && strings.TrimSpace(sys) != "" {
+			if blocks, mErr := json.Marshal([]map[string]any{{
+				"type":          "text",
+				"text":          sys,
+				"cache_control": map[string]string{"type": "ephemeral"},
+			}}); mErr == nil {
+				payload["system"] = blocks
+				if rewritten, mErr := json.Marshal(payload); mErr == nil {
+					body = rewritten
+				}
+			}
+		}
+	}
+	clone := req.Clone(req.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.ContentLength = int64(len(body))
+	clone.Header.Del("Content-Length")
+	clone.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return base.RoundTrip(clone)
+}
+
+// anthropicCacheHTTPClient carries the system-cache rewrite; passed as the
+// base of newAnthropicHTTPClient so the temperature sanitizer and the cache
+// rewrite compose on one client.
+func anthropicCacheHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:   defaultLLMHTTPTimeout,
+		Transport: &anthropicSystemCacheTransport{},
+	}
+}
+
+// anthropicChoiceNormalizer fixes Claude 5-family responses under langchaingo
+// v0.1.14: processAnthropicResponse emits one Choice PER CONTENT BLOCK in
+// order, and sonnet-5's adaptive reasoning returns [thinking, text] — so
+// Choices[0] is the thinking block with Content == "", and every caller that
+// reads Choices[0] concludes "llm returned empty content". This decorator
+// moves the first choice carrying actual content (text or tool calls) to the
+// front; thinking-only choices keep riding behind it with their
+// GenerationInfo intact.
+type anthropicChoiceNormalizer struct {
+	inner llms.Model
+}
+
+func wrapAnthropicChoiceNormalizer(inner llms.Model) llms.Model {
+	if inner == nil {
+		return inner
+	}
+	return &anthropicChoiceNormalizer{inner: inner}
+}
+
+func (a *anthropicChoiceNormalizer) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	resp, err := a.inner.GenerateContent(ctx, messages, options...)
+	if err != nil || resp == nil || len(resp.Choices) < 2 {
+		return resp, err
+	}
+	if resp.Choices[0] != nil && (strings.TrimSpace(resp.Choices[0].Content) != "" || len(resp.Choices[0].ToolCalls) > 0) {
+		return resp, err
+	}
+	for i := 1; i < len(resp.Choices); i++ {
+		c := resp.Choices[i]
+		if c != nil && (strings.TrimSpace(c.Content) != "" || len(c.ToolCalls) > 0) {
+			resp.Choices[0], resp.Choices[i] = resp.Choices[i], resp.Choices[0]
+			break
+		}
+	}
+	return resp, err
+}
+
+func (a *anthropicChoiceNormalizer) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	return llms.GenerateFromSinglePrompt(ctx, a, prompt, options...)
+}
+
 func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
 	slog.Debug("Initializing Anthropic LLM", "provider", provider, "modelName", modelName, "agentName", agentName, "appendAgentName", appendAgentName, "accountId", accountId)
 
@@ -1112,7 +1238,7 @@ func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool
 	opts := []anthropic.Option{
 		anthropic.WithToken(token),
 		anthropic.WithModel(modelName),
-		anthropic.WithHTTPClient(newAnthropicHTTPClient()),
+		anthropic.WithHTTPClient(newAnthropicHTTPClient(anthropicCacheHTTPClient())),
 	}
 	baseUrl := getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res)
 	if baseUrl != "" {
@@ -1126,7 +1252,8 @@ func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool
 		return nil, err
 	}
 	slog.Info("Using Anthropic LLM", "model", modelName, "agentName", agentName)
-	return llm, nil
+	// Claude 5 responses lead with a thinking choice; promote the text choice.
+	return wrapAnthropicChoiceNormalizer(llm), nil
 }
 
 func getVertexAILLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {

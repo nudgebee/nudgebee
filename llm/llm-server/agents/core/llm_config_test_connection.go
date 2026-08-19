@@ -395,12 +395,18 @@ func newAnthropicFromConfig(model string, cfg map[string]string) (llms.Model, er
 	opts := []anthropic.Option{
 		anthropic.WithToken(cfg[cfgKeyAPIKey]),
 		anthropic.WithModel(model),
-		anthropic.WithHTTPClient(newAnthropicHTTPClient()),
+		// Compose the cache rewrite under the temperature sanitizer, same as runtime.
+		anthropic.WithHTTPClient(newAnthropicHTTPClient(anthropicCacheHTTPClient())),
 	}
 	if ep := cfg[cfgKeyAPIEndpoint]; ep != "" {
 		opts = append(opts, anthropic.WithBaseURL(ep))
 	}
-	return anthropic.New(opts...)
+	llm, err := anthropic.New(opts...)
+	if err != nil {
+		return nil, err
+	}
+	// Claude 5 responses lead with a thinking choice; promote the text choice.
+	return wrapAnthropicChoiceNormalizer(llm), nil
 }
 
 func newHuggingFaceFromConfig(model string, cfg map[string]string) (llms.Model, error) {
