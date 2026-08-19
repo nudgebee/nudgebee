@@ -329,6 +329,61 @@ class Cache:
                 return []
         return []
 
+    # A watch runs up to 24h — longer than the conversation cache TTL — so the
+    # status-message coords need their own key. 25h = small margin over that.
+    WATCH_STATUS_TTL_SECONDS = 25 * 60 * 60
+
+    def cache_watch_status(self, watch_id, status_data, nx=False):
+        """Store the 'watching…' message coords (channel/thread/status_msg_ts/team/
+        platform) under watch_id so the terminal callback can retire it.
+        nx=True -> atomic SET NX, doubling as a claim: only one concurrent
+        watch_registered wins. False if already claimed or on any Redis error."""
+        self._ensure_connection()
+        if not self.redis_client or not watch_id:
+            return False
+        key = f"watch_status:{watch_id}"
+        try:
+            status_data = dict(status_data)
+            status_data["timestamp"] = time.time()
+            value = json.dumps(status_data, default=self._json_serializable)
+            # One SET w/ `ex` -> value + expiry land atomically (SET/EXPIRE could
+            # strand a TTL-less key). With nx it is also the claim: None if taken.
+            return bool(self.redis_client.set(key, value, nx=nx, ex=self.WATCH_STATUS_TTL_SECONDS))
+        except (TypeError, redis.RedisError) as e:
+            LOG.exception(f"Error caching watch status for {watch_id}: {e}")
+            return False
+
+    def get_watch_status(self, watch_id):
+        """Return the stored watch status coordinates, or None if absent/expired."""
+        self._ensure_connection()
+        if not self.redis_client or not watch_id:
+            return None
+        key = f"watch_status:{watch_id}"
+        try:
+            status_json = self.redis_client.get(key)
+        except redis.RedisError as e:
+            LOG.exception(f"Error retrieving watch status for {watch_id}: {e}")
+            return None
+        if status_json:
+            try:
+                return json.loads(status_json)
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    def remove_watch_status(self, watch_id):
+        """Drop the watch status entry once its message has been finalized."""
+        self._ensure_connection()
+        if not self.redis_client or not watch_id:
+            return False
+        key = f"watch_status:{watch_id}"
+        try:
+            self.redis_client.delete(key)
+            return True
+        except redis.RedisError as e:
+            LOG.exception(f"Error removing watch status for {watch_id}: {e}")
+            return False
+
     def cache_channel_session_mapping(self, channel_id, team_id, session_id, account_id=None, tenant_id=None):
         """Cache the mapping between channel_id and session_id from /channels/join"""
         self._ensure_connection()

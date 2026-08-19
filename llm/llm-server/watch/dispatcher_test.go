@@ -216,13 +216,14 @@ func TestDispatcher_Tick_OneDueRow_SubmitsToPool(t *testing.T) {
 
 	require.NoError(t, d.tick())
 
-	// Wait for the worker to drain.
+	// Wait for the worker to drain. observeCalls alone is NOT enough — the UPDATE
+	// lands after Observe returns → flaky "remaining expectation". Wait for both.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		src.mu.Lock()
 		calls := src.observeCalls
 		src.mu.Unlock()
-		if calls >= 1 {
+		if calls >= 1 && mock.ExpectationsWereMet() == nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

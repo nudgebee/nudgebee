@@ -145,11 +145,20 @@ func (WatchCancelTool) Call(nbCtx core.NbToolContext, input core.NBToolCallReque
 	if terr != nil {
 		return errorResponse(terr.Error()), nil
 	}
-	if err := watch.NewManager().Cancel(nbCtx.Ctx.GetContext(), tenantID, id); err != nil {
+	mgr := watch.NewManager()
+	// Read before cancelling — delivery below needs the row's conversation /
+	// notify-session / parent-message coords, which the cancel UPDATE doesn't return.
+	existing, gerr := mgr.Get(nbCtx.Ctx.GetContext(), tenantID, id)
+	if err := mgr.Cancel(nbCtx.Ctx.GetContext(), tenantID, id); err != nil {
 		if errors.Is(err, watch.ErrWatchNotFound) {
 			return errorResponse(fmt.Sprintf("watch %s not found", id)), nil
 		}
 		return errorResponse(fmt.Sprintf("failed to cancel watch: %v", err)), nil
+	}
+	// Resolve the registration indicator — still-live only, so re-cancelling a
+	// terminal watch can't post over the real outcome.
+	if gerr == nil && existing != nil && !existing.Status.IsTerminal() {
+		mgr.DeliverCancelled(nbCtx.Ctx, *existing)
 	}
 	return jsonResponse(map[string]any{
 		"watch_id":  id.String(),

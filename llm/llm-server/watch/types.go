@@ -90,6 +90,10 @@ type Watch struct {
 	PollIntervalSec int     `db:"poll_interval_sec"`
 	MaxDurationSec  int     `db:"max_duration_sec"`
 
+	// NotifySession: chat routing key (Slack "<channel>-<thread_ts>", Teams/GChat id)
+	// captured at create → terminal notify routes back. NULL for legacy/web rows.
+	NotifySession *string `db:"notify_session"`
+
 	Status       Status `db:"status"`
 	PollCount    int    `db:"poll_count"`
 	FailureCount int    `db:"failure_count"`
@@ -128,6 +132,9 @@ type CreateInput struct {
 	NotifyTemplate  string
 	PollIntervalSec int
 	MaxDurationSec  int
+	// NotifySession — see Watch.NotifySession. Optional; watch_resource sets it
+	// from the tool-call context's session id when chat-routable.
+	NotifySession string
 }
 
 // Observation is what a Source.Observe returns for a single poll. Data is the

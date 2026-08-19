@@ -229,6 +229,12 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			return
 		}
 
+		// Cancel is a bare UPDATE — never runs terminate() → deliver the terminal
+		// msg here. Guarded on still-live so a repeat cancel can't overwrite an outcome.
+		if err == nil && existing != nil && !existing.Status.IsTerminal() {
+			mgr.DeliverCancelled(agentContext, *existing)
+		}
+
 		// Read back the row to report final status. Get is tenant-scoped so a
 		// watch in another tenant fails the fetch here — caller sees
 		// affected_rows=0 with no leaked information about the row's

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -103,6 +104,217 @@ func TestBuildNotifyBody_HasExpectedKeys(t *testing.T) {
 	assert.Equal(t, "final", body["type"],
 		"type=final tells the notifier this is the terminal-state message, not a streaming chunk")
 	assert.Contains(t, body["response"], "Watch completed")
+	assert.Equal(t, w.ID.String(), body["watch_id"],
+		"watch_id lets notifications-server retire the in-progress status message")
+}
+
+// ---------------------------------------------------------------------------
+// isRoutableChatSession
+// ---------------------------------------------------------------------------
+
+func TestIsRoutableChatSession(t *testing.T) {
+	cases := []struct {
+		name    string
+		session string
+		want    bool
+	}{
+		{"empty", "", false},
+		{"web UUID session", "22222222-2222-2222-2222-222222222222", false},
+		{"workflow session", "wf__abc123", false},
+		{"slack channel-thread", "C0123ABCD-1699900000.001500", true},
+		{"slack DM channel", "D0123ABCD-1699900000.001500", true},
+		{"google chat space", "spaces/AAAA/threads/BBBB", true},
+		{"teams a: id", "a:1a2b3c-_-msg42", true},
+		{"teams 19: id", "19:meeting_abc@thread.v2-_-msg42", true},
+		// Not routable: watch payloads carry no reply_ref, so an event- session
+		// would land in the wrong thread and broadcast channel-wide.
+		{"event-derived thread", "event-abcd-1234", false},
+		// Single-dash non-Slack shapes: the old len(Split(id,"-"))==2 heuristic
+		// accepted these → POST that _parse_conversation 404s.
+		{"custom run id", "run-12345", false},
+		{"non-slack channel prefix", "X0123ABCD-1699900000.001500", false},
+		{"slack channel without thread_ts dot", "C0123ABCD-1699900000", false},
+		{"thread_ts only, no channel", "-1699900000.001500", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isRoutableChatSession(tc.session))
+			assert.Equal(t, tc.want, IsRoutableChatSession(tc.session))
+		})
+	}
+}
+
+// Cancel must deliver a terminal "cancelled" msg to the chat thread — it is a bare
+// UPDATE that skips terminate(), so the "🔭 Watching…" indicator was never resolved.
+func TestDeliverCancelled_NotifiesChatSession(t *testing.T) {
+	var got notifierRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &got.body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+
+	prev := config.Config.NotificationServerUrl
+	config.Config.NotificationServerUrl = ts.URL
+	t.Cleanup(func() { config.Config.NotificationServerUrl = prev })
+
+	session := "C0123ABCD-1699900000.001500"
+	w := Watch{ID: uuid.New(), ConversationID: uuid.New(), TenantID: uuid.New(), NotifySession: &session}
+
+	// No metastore → responder half no-ops; the notifier half must still fire.
+	NewManager().DeliverCancelled(superAdminCtx(), w)
+
+	assert.Equal(t, session, got.body["conversation_id"], "cancel must route to the chat session, not the UUID")
+	assert.Equal(t, "final", got.body["type"])
+	assert.Equal(t, w.ID.String(), got.body["watch_id"], "watch_id lets the indicator be retired")
+	assert.Contains(t, got.body["response"], "cancelled")
+}
+
+// A stored session must be used verbatim, never hitting the DB → kills the
+// "transient lookup fails → msg dropped" mode. (No metastore ⇒ fallback gives "".)
+func TestResolveNotifySession_PrefersStoredColumn(t *testing.T) {
+	stored := "C0123ABCD-1699900000.001500"
+	w := Watch{ID: uuid.New(), ConversationID: uuid.New(), TenantID: uuid.New(), NotifySession: &stored}
+	assert.Equal(t, stored, resolveNotifySession(superAdminCtx(), w))
+
+	// Empty/nil column falls through to the lookup path, which yields "" here.
+	empty := ""
+	w.NotifySession = &empty
+	assert.Equal(t, "", resolveNotifySession(superAdminCtx(), w))
+	w.NotifySession = nil
+	assert.Equal(t, "", resolveNotifySession(superAdminCtx(), w))
+}
+
+// Headline fix: chat session id → routed to it; UUID/empty → UUID kept so web keeps
+// using the DB responder. Resolve stubbed per-notifier (no metastore, no shared state).
+func TestHTTPNotifier_RoutingOverride(t *testing.T) {
+	cases := []struct {
+		name        string
+		resolved    string
+		wantConvoID func(w Watch) string
+	}{
+		{"chat session overrides UUID", "C0123ABCD-1699900000.001500", func(Watch) string { return "C0123ABCD-1699900000.001500" }},
+		{"empty resolve keeps UUID", "", func(w Watch) string { return w.ConversationID.String() }},
+		{"UUID resolve keeps UUID", "33333333-3333-3333-3333-333333333333", func(w Watch) string { return w.ConversationID.String() }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got notifierRequest
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(raw, &got.body)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(ts.Close)
+
+			prevURL := config.Config.NotificationServerUrl
+			config.Config.NotificationServerUrl = ts.URL
+			t.Cleanup(func() { config.Config.NotificationServerUrl = prevURL })
+
+			notifier := HTTPNotifier{
+				resolveSessionOverride: func(*security.RequestContext, Watch) string { return tc.resolved },
+			}
+			w := Watch{ID: uuid.New(), ConversationID: uuid.New(), TenantID: uuid.New()}
+			require.NoError(t, notifier.Notify(superAdminCtx(), w, StatusCompleted, "done"))
+
+			want := tc.wantConvoID(w)
+			assert.Equal(t, want, got.body["conversation_id"])
+			assert.Equal(t, want, got.body["session_id"])
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Notify — action token header
+// ---------------------------------------------------------------------------
+
+func TestHTTPNotifier_AttachesActionToken_WhenConfigured(t *testing.T) {
+	// /llm/response is behind verify_action_token → notify MUST send X-ACTION-TOKEN
+	// when NOTIFICATION_SERVER_TOKEN is set, else 401.
+	var gotToken string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("X-ACTION-TOKEN")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+
+	prevURL := config.Config.NotificationServerUrl
+	prevTok := config.Config.NotificationServerToken
+	config.Config.NotificationServerUrl = ts.URL
+	config.Config.NotificationServerToken = "s3cr3t"
+	t.Cleanup(func() {
+		config.Config.NotificationServerUrl = prevURL
+		config.Config.NotificationServerToken = prevTok
+	})
+
+	require.NoError(t, HTTPNotifier{}.Notify(superAdminCtx(), Watch{ID: uuid.New()}, StatusCompleted, "x"))
+	assert.Equal(t, "s3cr3t", gotToken)
+}
+
+func TestHTTPNotifier_NoActionToken_WhenUnset(t *testing.T) {
+	var sawHeader bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawHeader = r.Header["X-Action-Token"]
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+
+	prevURL := config.Config.NotificationServerUrl
+	prevTok := config.Config.NotificationServerToken
+	config.Config.NotificationServerUrl = ts.URL
+	config.Config.NotificationServerToken = ""
+	t.Cleanup(func() {
+		config.Config.NotificationServerUrl = prevURL
+		config.Config.NotificationServerToken = prevTok
+	})
+
+	require.NoError(t, HTTPNotifier{}.Notify(superAdminCtx(), Watch{ID: uuid.New()}, StatusCompleted, "x"))
+	assert.False(t, sawHeader, "no X-ACTION-TOKEN header must be sent when the token is unset")
+}
+
+// ---------------------------------------------------------------------------
+// NotifyWatchRegistered
+// ---------------------------------------------------------------------------
+
+func TestNotifyWatchRegistered_PostsWatchRegisteredType(t *testing.T) {
+	var got notifierRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.method = r.Method
+		got.path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &got.body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+
+	prev := config.Config.NotificationServerUrl
+	config.Config.NotificationServerUrl = ts.URL
+	t.Cleanup(func() { config.Config.NotificationServerUrl = prev })
+
+	w := &Watch{ID: uuid.New(), TenantID: uuid.New()}
+	session := "C0123ABCD-1699900000.001500"
+	require.NoError(t, NotifyWatchRegistered(superAdminCtx(), w, session))
+
+	assert.Equal(t, http.MethodPost, got.method)
+	assert.Equal(t, "/llm/response", got.path)
+	assert.Equal(t, "watch_registered", got.body["type"])
+	assert.Equal(t, session, got.body["conversation_id"])
+	assert.Equal(t, session, got.body["session_id"])
+	assert.Equal(t, w.ID.String(), got.body["watch_id"])
+}
+
+func TestNotifyWatchRegistered_NoURLOrSession_SkipsCleanly(t *testing.T) {
+	prev := config.Config.NotificationServerUrl
+	t.Cleanup(func() { config.Config.NotificationServerUrl = prev })
+
+	// No URL configured → no-op success even with a valid session.
+	config.Config.NotificationServerUrl = ""
+	require.NoError(t, NotifyWatchRegistered(superAdminCtx(), &Watch{ID: uuid.New()}, "C1-1.0"))
+
+	// URL configured but empty session → no-op success (nothing to route to).
+	config.Config.NotificationServerUrl = "http://127.0.0.1:0"
+	require.NoError(t, NotifyWatchRegistered(superAdminCtx(), &Watch{ID: uuid.New()}, ""))
 }
 
 // ---------------------------------------------------------------------------
