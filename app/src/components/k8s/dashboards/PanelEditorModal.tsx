@@ -270,10 +270,24 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
   const isLogs = draft.datasource === 'logs';
   const isText = draft.type === 'text';
   /**
-   * Panels whose rows are real records — the only ones a link column means
-   * anything on. A metrics table is series-and-latest, which has no row to open.
+   * Column settings are authored for `nudgebee` panels only.
+   *
+   * They were offered on every panel whose rows are real records — a kubectl
+   * snapshot, a log table, a trace list. But the settings name the columns the
+   * QUERY returns, and only the entity builder knows those ahead of time: a
+   * command or log panel's columns arrive with the first response, so both
+   * controls degrade to typing a column name from memory and finding out at
+   * render whether it existed. Better to offer nothing there than a form that
+   * cannot check its own answers.
+   *
+   * Traces are an entity query too, and could carry links, but their rows open
+   * a trace rather than a record elsewhere in the product — the case the link
+   * column exists for. They join this when there is a destination worth linking.
+   *
+   * Settings a panel already stores are untouched and still rendered; only the
+   * editor's card is scoped. Switching data source clears `options` anyway.
    */
-  const isRowTable = isEntity || Boolean(commandHelp) || isLogs;
+  const isNudgebee = draft.datasource === 'nudgebee';
   // The editor reads the list RAW: an author typing a path has an incomplete
   // entry, and the render-time filter would delete the row out from under them.
   const columns = panelColumnsOf(draft);
@@ -309,7 +323,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
   // say so rather than leaving the button greyed out for no visible reason.
   const unfinishedLinks = links.filter((l) => !isCompleteColumn(l));
   /** Only a `nudgebee` panel may name several providers at once. */
-  const multiType = draft.datasource === 'nudgebee';
+  const multiType = isNudgebee;
   const hasScope = accountTypes.length > 0 || accountIds.length > 0;
   const canSave =
     draft.title.trim().length > 0 &&
@@ -550,7 +564,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
                 </Form.Section>
               </Card>
 
-              {isRowTable && (
+              {isNudgebee && (
                 <Card
                   variant='tinted'
                   header={
