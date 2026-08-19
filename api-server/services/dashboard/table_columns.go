@@ -95,6 +95,13 @@ func upgradeColumns(opts TableOptions) []TableColumn {
 		if name == "" {
 			continue
 		}
+		// The legacy array was a plain list with nothing stopping a column being
+		// named twice. Carrying that duplicate forward would produce two entries
+		// for one column, which validation rejects — so a definition that read
+		// back fine before would refuse to save.
+		if _, ok := at[name]; ok {
+			continue
+		}
 		at[name] = len(columns)
 		columns = append(columns, TableColumn{Name: name, Visibility: VisibilityHidden})
 	}

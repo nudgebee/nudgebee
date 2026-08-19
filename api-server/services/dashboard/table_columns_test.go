@@ -132,3 +132,22 @@ func TestUpgradeDefinition_FoldsLegacyColumnArrays(t *testing.T) {
 	upgradeDefinition(&again)
 	assert.Equal(t, options, again.Panels[0].Options)
 }
+
+// `hidden_columns` was a plain list, so nothing stopped the same column being
+// named twice. Folding both entries forward would emit a duplicate the
+// validator then rejects, turning a dashboard that read back fine into one that
+// refuses to save.
+func TestUpgradeDefinition_DeduplicatesLegacyHiddenColumns(t *testing.T) {
+	def := Definition{Panels: []Panel{eventsTablePanel(map[string]any{
+		"hidden_columns": []any{"id", "account_id", "id", " id ", ""},
+	})}}
+	upgradeDefinition(&def)
+
+	opts, err := decodeTableOptions(def.Panels[0].Options)
+	require.NoError(t, err)
+	require.Len(t, opts.Columns, 2)
+	assert.Equal(t, TableColumn{Name: "id", Visibility: VisibilityHidden}, opts.Columns[0])
+	assert.Equal(t, TableColumn{Name: "account_id", Visibility: VisibilityHidden}, opts.Columns[1])
+
+	require.NoError(t, ValidateDefinition(def))
+}

@@ -151,11 +151,29 @@ export function usePanelData({
   // without ever fetching, which is why this keys on the outcome and not on the
   // request. The queue's own timeout covers a panel that somehow reports neither.
   useEffect(() => {
-    if (!admitted || loading) return;
+    if (!admitted) return;
+    /*
+     * Scrolled back out of view. A fetch abandoned this way never clears
+     * `loading` — the request's `finally` skips the cancelled run — so the
+     * settle path below could never fire, and the slot sat held until the
+     * queue's 15s timeout took it back, starving whatever was queued behind a
+     * panel nobody is looking at any more.
+     *
+     * Admission is given back only when a load was actually in flight. A
+     * settled panel keeps it, so scrolling past one still refetches freely on
+     * the next Refresh — the stampede this queue bounds is the open, not that.
+     */
+    if (!enabled) {
+      releaseSlot.current?.();
+      releaseSlot.current = null;
+      if (loading) setAdmitted(false);
+      return;
+    }
+    if (loading) return;
     if (!data && !error) return;
     releaseSlot.current?.();
     releaseSlot.current = null;
-  }, [admitted, loading, data, error]);
+  }, [admitted, enabled, loading, data, error]);
 
   // Releasing on unmount as well: a panel torn down mid-flight must not take its
   // slot with it. The release is idempotent, so the settle path may have run too.
