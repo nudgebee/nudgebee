@@ -374,6 +374,7 @@ func newOpenAIFromConfig(model string, cfg map[string]string) (llms.Model, error
 		openai.WithToken(cfg[cfgKeyAPIKey]),
 		openai.WithModel(model),
 		openai.WithResponseFormat(&openai.ResponseFormat{Type: "text"}),
+		openai.WithHTTPClient(newOpenAIHTTPClient()),
 	}
 	if ep := cfg[cfgKeyAPIEndpoint]; ep != "" {
 		opts = append(opts, openai.WithBaseURL(ep))
@@ -394,6 +395,7 @@ func newAnthropicFromConfig(model string, cfg map[string]string) (llms.Model, er
 	opts := []anthropic.Option{
 		anthropic.WithToken(cfg[cfgKeyAPIKey]),
 		anthropic.WithModel(model),
+		anthropic.WithHTTPClient(newAnthropicHTTPClient()),
 	}
 	if ep := cfg[cfgKeyAPIEndpoint]; ep != "" {
 		opts = append(opts, anthropic.WithBaseURL(ep))

@@ -1112,6 +1112,7 @@ func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool
 	opts := []anthropic.Option{
 		anthropic.WithToken(token),
 		anthropic.WithModel(modelName),
+		anthropic.WithHTTPClient(newAnthropicHTTPClient()),
 	}
 	baseUrl := getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res)
 	if baseUrl != "" {
@@ -1394,7 +1395,7 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 	slog.Debug("OpenAI configuration", "apiType", apiType, "baseURL", baseURL, "embeddingModel", embeddingModel)
 
 	var responseFormatJSON = &openai.ResponseFormat{Type: "text"}
-	llm, err := openai.New(openai.WithResponseFormat(responseFormatJSON), openai.WithAPIType(apiType), openai.WithToken(token), openai.WithModel(modelName), openai.WithEmbeddingModel(embeddingModel), openai.WithBaseURL(baseURL))
+	llm, err := openai.New(openai.WithResponseFormat(responseFormatJSON), openai.WithAPIType(apiType), openai.WithToken(token), openai.WithModel(modelName), openai.WithEmbeddingModel(embeddingModel), openai.WithBaseURL(baseURL), openai.WithHTTPClient(newOpenAIHTTPClient()))
 	if err != nil {
 		slog.Error("Failed to create OpenAI LLM", "error", err, "modelName", modelName)
 		return nil, err
@@ -2150,4 +2151,52 @@ func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
 	}
 
 	return false
+}
+
+// ModelSupportsTemperature checks if the model supports the 'temperature' parameter.
+// Anthropic reasoning models (claude-sonnet-5, claude-opus-5, claude-5 series) and OpenAI
+// reasoning model families (o1, o3, gpt-5) reject explicit / non-default temperature on the wire.
+func ModelSupportsTemperature(provider, model string) bool {
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+	pLower := strings.ToLower(strings.TrimSpace(provider))
+
+	// Check Anthropic reasoning models
+	if pLower == "anthropic" || strings.Contains(modelLower, "claude") {
+		if strings.Contains(modelLower, "claude-sonnet-5") ||
+			strings.Contains(modelLower, "claude-opus-5") ||
+			strings.Contains(modelLower, "claude-5") {
+			return false
+		}
+	}
+
+	// Check OpenAI reasoning models across any provider, including namespaced proxy/deployment IDs.
+	if isOpenAIReasoningModel(modelLower) {
+		return false
+	}
+
+	return true
+}
+
+func isOpenAIReasoningModel(model string) bool {
+	for _, family := range []string{"o1", "o3", "gpt-5"} {
+		for offset := 0; offset < len(model); {
+			index := strings.Index(model[offset:], family)
+			if index < 0 {
+				break
+			}
+			index += offset
+			beforeFamily := index == 0 || isModelNamespaceSeparator(model[index-1])
+			afterIndex := index + len(family)
+			afterFamily := afterIndex == len(model) || isModelNamespaceSeparator(model[afterIndex])
+			if beforeFamily && afterFamily {
+				return true
+			}
+			offset = index + len(family)
+		}
+	}
+	return false
+}
+
+func isModelNamespaceSeparator(char byte) bool {
+	return char == ':' || char == '/' || char == '.' || char == '_' || char == '-'
 }
