@@ -1244,7 +1244,11 @@ func (a *azureProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, ac
 		}
 	}()
 
-	cliEnv := []string{"AZURE_CONFIG_DIR=" + tmpDir}
+	// AZURE_CORE_COLLECT_TELEMETRY=0 stops az from spawning a fire-and-forget
+	// telemetry-uploader subprocess on every invocation. That subprocess is never
+	// waited on, so it gets orphaned to PID 1 and (absent a reaper) leaks as a
+	// zombie forever — one per az call. See #36530.
+	cliEnv := []string{"AZURE_CONFIG_DIR=" + tmpDir, "AZURE_CORE_COLLECT_TELEMETRY=0"}
 
 	// Pass through AZURE_EXTENSION_DIR if configured, so extensions pre-installed
 	// in the container image are found when AZURE_CONFIG_DIR is overridden.

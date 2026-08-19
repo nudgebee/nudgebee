@@ -2,6 +2,8 @@ package common
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +47,37 @@ func TestSecureExecute(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "command timed out") {
 			t.Errorf("expected error to be about timeout, got %v", err)
+		}
+	})
+
+	// Regression test for #36530: without Setpgid, Kill(-pid, ...) targeted a
+	// process group that didn't exist and failed with ESRCH (silently, since the
+	// error was discarded), so a timed-out process kept running to completion
+	// instead of being terminated. Prove the process is actually dead by having
+	// it create a marker file after the timeout window and asserting it never
+	// appears.
+	//
+	// The marker write runs in a backgrounded subshell (`(...) &`) that outlives
+	// its parent `sh`, while `sh` itself is kept alive by the trailing `sleep 1`
+	// so it's still the process the timeout kills. This only proves the fix if
+	// the whole process *group* is killed, not just the direct child — a
+	// single-pid kill would leave the backgrounded subshell running to still
+	// write the marker, since it isn't `sh`'s direct descendant in the wait
+	// sense once backgrounded.
+	t.Run("TimeoutActuallyKillsProcess", func(t *testing.T) {
+		marker := t.TempDir() + "/ran"
+		opts := SecureCommandOptions{
+			Command: fmt.Sprintf("sh -c '(sleep 0.3 && touch %s) & sleep 1'", marker),
+			Timeout: 50 * time.Millisecond,
+		}
+		_, _, err := SecureExecute(context.Background(), opts)
+		if err == nil || !strings.Contains(err.Error(), "command timed out") {
+			t.Fatalf("expected a timeout error, got %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+		if _, statErr := os.Stat(marker); statErr == nil {
+			t.Fatal("marker file exists: process kept running past its timeout instead of being killed")
 		}
 	})
 }
