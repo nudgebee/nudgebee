@@ -132,6 +132,15 @@ const INHERIT_SENTINEL = '__inherit__';
 const CUSTOM_DEPLOY_PROVIDERS = ['huggingface', 'sagemaker', 'vertexai', 'bedrock', 'custom'];
 const showsContextSize = (p) => CUSTOM_DEPLOY_PROVIDERS.includes(p);
 
+// Providers that can authenticate through an OAuth2 client-credentials
+// gateway — llm-server injects the bearer token only on the azure / openai /
+// custom client paths, so the selector is hidden for every other provider.
+const OAUTH_PROVIDERS = ['custom'];
+const AUTH_TYPE_OPTIONS = [
+  { value: 'api_key', label: 'API key' },
+  { value: 'oauth_client_credentials', label: 'OAuth2 client credentials' },
+];
+
 // providerFieldShape returns which credential inputs apply for a given provider.
 // Mirrors the global section's showsApiKey / showsApiEndpoint / ... booleans so
 // the tier and agent cards can render the same provider-conditional inputs.
@@ -250,6 +259,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [apiType, setApiType] = useState('');
   const [adapterId, setAdapterId] = useState('');
   const [requireAdapterId, setRequireAdapterId] = useState('');
+
+  // OAuth2 client-credentials auth (corporate AI gateways that reject static
+  // keys) + extra per-request headers. Only offered for OAUTH_PROVIDERS.
+  const [authType, setAuthType] = useState('api_key');
+  const [oauthTokenUrl, setOauthTokenUrl] = useState('');
+  const [oauthClientId, setOauthClientId] = useState('');
+  const [oauthClientSecret, setOauthClientSecret] = useState('');
+  const [oauthScope, setOauthScope] = useState('');
+  const [extraHeaders, setExtraHeaders] = useState('');
 
   // Track which secret fields are currently configured on the loaded
   // integration, keyed by field name. The backend redacts secret values in
@@ -503,15 +521,22 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setApiVersion(cfg.llm_provider_api_version || '');
       setRegion(cfg.llm_provider_region || '');
       setContextSize(cfg.llm_model_context_size || '');
-      // Auto-expand Advanced options if a custom context window is already
-      // saved — hiding it inside a collapsed section on edit-mode load would
-      // make the value invisible until the user thinks to click Advanced.
-      setShowAdvanced(!!cfg.llm_model_context_size);
+      // Auto-expand Advanced options if a custom context window or extra
+      // headers are already saved — hiding them inside a collapsed section on
+      // edit-mode load would make the values invisible until the user thinks
+      // to click Advanced.
+      setShowAdvanced(!!cfg.llm_model_context_size || !!cfg.llm_extra_headers);
       setAccessKey('');
       setSecretKey('');
       setApiType(cfg.llm_provider_api_type || '');
       setAdapterId(cfg.llm_provider_adapter_id || '');
       setRequireAdapterId(cfg.llm_provider_require_adapter_id || '');
+      setAuthType(cfg.llm_auth_type || 'api_key');
+      setOauthTokenUrl(cfg.llm_oauth_token_url || '');
+      setOauthClientId(cfg.llm_oauth_client_id || '');
+      setOauthClientSecret(''); // secret — blank in form; secretsConfigured tracks "✓"
+      setOauthScope(cfg.llm_oauth_scope || '');
+      setExtraHeaders(cfg.llm_extra_headers || '');
       // Capture every secret-shaped key (global, per-tier, per-agent) so the
       // tier and agent cards can render "✓ Configured" hints on their own
       // SecretInputs after edit-mode load. The set keys here mirror the names
@@ -520,6 +545,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         llm_provider_api_key: !!hasValueByName.llm_provider_api_key,
         llm_provider_access_key: !!hasValueByName.llm_provider_access_key,
         llm_provider_secret_key: !!hasValueByName.llm_provider_secret_key,
+        llm_oauth_client_secret: !!hasValueByName.llm_oauth_client_secret,
       };
       ['reasoning', 'retrieval', 'summary'].forEach((t) => {
         secretsCfg[`llm_tier_api_key_${t}`] = !!hasValueByName[`llm_tier_api_key_${t}`];
@@ -619,7 +645,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         key.startsWith('llm_provider_api_key') ||
         key.startsWith('llm_provider_access_key') ||
         key.startsWith('llm_provider_secret_key') ||
-        key.startsWith('llm_provider_session_token');
+        key.startsWith('llm_provider_session_token') ||
+        key.startsWith('llm_oauth_client_secret');
       const seedKeys = new Set();
       Object.keys(cfg).forEach((key) => {
         if (isLLMSecretKey(key)) {
@@ -634,7 +661,13 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           // llm_model_context_size — so switching a model to a managed provider
           // (field hidden, save gated off) clears the now-stale window.
           key.startsWith('llm_model_context_size_') ||
-          key === 'llm_model_context_size'
+          key === 'llm_model_context_size' ||
+          // Auth-mode keys: clearing them on save (e.g. switching back to
+          // API-key auth, or to a provider with no OAuth support) empties
+          // the stored rows so llm-server falls back to api_key.
+          key === 'llm_auth_type' ||
+          key.startsWith('llm_oauth_') ||
+          key === 'llm_extra_headers'
         ) {
           seedKeys.add(key);
         }
@@ -673,6 +706,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setApiType('');
       setAdapterId('');
       setRequireAdapterId('');
+      setAuthType('api_key');
+      setOauthTokenUrl('');
+      setOauthClientId('');
+      setOauthClientSecret('');
+      setOauthScope('');
+      setExtraHeaders('');
       setSecretsConfigured({});
       setInitialOverrideKeys(new Set());
       setTiers({
@@ -749,6 +788,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     setApiType('');
     setAdapterId('');
     setRequireAdapterId('');
+    setAuthType('api_key');
+    setOauthTokenUrl('');
+    setOauthClientId('');
+    setOauthClientSecret('');
+    setOauthScope('');
+    setExtraHeaders('');
     // Reset the "✓ Configured" indicators too. Without this, an edit-flow
     // provider switch (e.g. openai → azure) would leave secretsConfigured
     // populated for the OLD provider's secret fields and the save-gate
@@ -917,6 +962,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const showsBedrockKeys = provider === 'bedrock';
   const showsApiType = ['openai', 'custom', 'huggingface'].includes(provider);
   const showsAdapter = ['azure', 'huggingface'].includes(provider);
+  const showsOAuthOption = OAUTH_PROVIDERS.includes(provider);
+  const oauthSelected = showsOAuthOption && authType === 'oauth_client_credentials';
 
   // A secret field counts as "present" if either the user typed a non-empty
   // value OR an existing stored secret was reported by the backend
@@ -925,7 +972,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // preserve the stored value when the field isn't included in the payload.
   const hasSecret = (current, configuredKey) => current.trim() !== '' || !!secretsConfigured[configuredKey];
   const credsReady =
-    (!showsApiKey || hasSecret(apiKey, 'llm_provider_api_key')) &&
+    (!showsApiKey || oauthSelected || hasSecret(apiKey, 'llm_provider_api_key')) &&
+    (!oauthSelected || (oauthTokenUrl.trim() !== '' && oauthClientId.trim() !== '' && hasSecret(oauthClientSecret, 'llm_oauth_client_secret'))) &&
     (!showsBedrockKeys || (hasSecret(accessKey, 'llm_provider_access_key') && hasSecret(secretKey, 'llm_provider_secret_key')));
 
   // credKeyFor builds the scope-qualified secret name (e.g.
@@ -996,6 +1044,44 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     return null;
   };
 
+  // validateOAuthTokenUrl: must be an http(s) URL when set (the required-empty
+  // case is credsReady's job).
+  const validateOAuthTokenUrl = (value) => {
+    const trimmed = (value || '').trim();
+    if (trimmed === '') {
+      return null;
+    }
+    return /^https?:\/\/.+/.test(trimmed) ? null : 'Token URL must be a valid http(s) URL';
+  };
+
+  // validateExtraHeaders: optional, but when set it must be a JSON object of
+  // string values, and must not try to smuggle in an auth header — the
+  // backend rejects those too (llm-server manages Authorization / api-key).
+  const validateExtraHeaders = (value) => {
+    const trimmed = (value || '').trim();
+    if (trimmed === '') {
+      return null;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return 'Must be a JSON object, e.g. {"projectId": "abc-123"}';
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return 'Must be a JSON object, e.g. {"projectId": "abc-123"}';
+    }
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v !== 'string') {
+        return `Header "${k}" must have a string value`;
+      }
+      if (k.toLowerCase() === 'authorization' || k.toLowerCase() === 'api-key') {
+        return `"${k}" cannot be set here — authentication headers are managed by the auth settings`;
+      }
+    }
+    return null;
+  };
+
   // Per-field validation messages. Computed once per render so the helperText
   // / Save-gate can read them without recomputing.
   //
@@ -1013,6 +1099,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     accounts: selectedAccountIds.length === 0 ? 'At least one account must be selected' : null,
     model: validateModelName(model),
     fallbacks: validateFallbacks(fallbacks, model),
+    oauthTokenUrl: oauthSelected ? validateOAuthTokenUrl(oauthTokenUrl) : null,
+    extraHeaders: validateExtraHeaders(extraHeaders),
     tierModels: {
       reasoning: validateModelName(tiers.reasoning.model),
       retrieval: validateModelName(tiers.retrieval.model),
@@ -1048,6 +1136,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     !!errors.accounts ||
     !!errors.model ||
     !!errors.fallbacks ||
+    !!errors.oauthTokenUrl ||
+    !!errors.extraHeaders ||
     Object.values(errors.tierModels).some(Boolean) ||
     Object.values(errors.tierFallbacks).some(Boolean) ||
     Object.values(errors.tierProviderModel).some(Boolean) ||
@@ -1110,7 +1200,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       }
       out.push({ name, value: value.trim(), is_encrypted: false });
     };
-    pushSecret(showsApiKey, 'llm_provider_api_key', apiKey);
+    pushSecret(showsApiKey && !oauthSelected, 'llm_provider_api_key', apiKey);
+    // Auth mode: written whenever the provider offers the selector, so
+    // switching back to API key persists 'api_key' rather than leaving a
+    // stale oauth_client_credentials row behind.
+    if (showsOAuthOption) {
+      out.push({ name: 'llm_auth_type', value: authType, is_encrypted: false });
+    }
+    pushPlain(oauthSelected, 'llm_oauth_token_url', oauthTokenUrl);
+    pushPlain(oauthSelected, 'llm_oauth_client_id', oauthClientId);
+    pushSecret(oauthSelected, 'llm_oauth_client_secret', oauthClientSecret);
+    pushPlain(oauthSelected, 'llm_oauth_scope', oauthScope);
+    pushPlain(showsOAuthOption, 'llm_extra_headers', extraHeaders);
     pushPlain(showsApiEndpoint, 'llm_provider_api_endpoint', apiEndpoint);
     pushPlain(showsApiVersion, 'llm_provider_api_version', apiVersion);
     pushPlain(showsRegion, 'llm_provider_region', region);
@@ -1510,7 +1611,17 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               }
             />
           )}
-          {showsApiKey && (
+          {showsOAuthOption && (
+            <Select
+              label='Authentication'
+              size='sm'
+              value={authType}
+              onChange={setConnField(setAuthType)}
+              options={AUTH_TYPE_OPTIONS}
+              help="API key sends a static key with each request. OAuth2 client credentials fetches a bearer token from your gateway's token endpoint and refreshes it automatically — for corporate AI gateways that reject static keys."
+            />
+          )}
+          {showsApiKey && !oauthSelected && (
             <SecretInput
               label='API Key'
               value={apiKey}
@@ -1520,6 +1631,46 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               helperText='API key for authenticating with the LLM provider. Surrounding whitespace is trimmed when you tab out of the field.'
               required
             />
+          )}
+          {oauthSelected && (
+            <>
+              <Input
+                label='OAuth2 Token URL'
+                size='sm'
+                value={oauthTokenUrl}
+                onChange={setConnField(setOauthTokenUrl)}
+                onBlur={trimOnBlur(oauthTokenUrl, setOauthTokenUrl)}
+                error={errors.oauthTokenUrl}
+                help='Token endpoint the client-credentials grant is POSTed to (e.g. https://api.example.com/oauth2/token).'
+                required
+              />
+              <Input
+                label='OAuth2 Client ID'
+                size='sm'
+                value={oauthClientId}
+                onChange={setConnField(setOauthClientId)}
+                onBlur={trimOnBlur(oauthClientId, setOauthClientId)}
+                help='Client ID for the client-credentials grant.'
+                required
+              />
+              <SecretInput
+                label='OAuth2 Client Secret'
+                value={oauthClientSecret}
+                onChange={setConnField(setOauthClientSecret)}
+                onBlur={trimOnBlur(oauthClientSecret, setOauthClientSecret)}
+                isConfigured={secretsConfigured.llm_oauth_client_secret}
+                helperText='Client secret for the client-credentials grant. Stored encrypted; never shown again.'
+                required
+              />
+              <Input
+                label='OAuth2 Scope'
+                size='sm'
+                value={oauthScope}
+                onChange={setConnField(setOauthScope)}
+                onBlur={trimOnBlur(oauthScope, setOauthScope)}
+                help='Scope(s) requested with the token, space-separated (e.g. https://api.example.com/.default). Optional.'
+              />
+            </>
           )}
           {showsApiEndpoint && (
             <Input
@@ -1592,7 +1743,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               />
             </>
           )}
-          {(canPrice || showsContextSize(provider)) && (
+          {(canPrice || showsContextSize(provider) || showsOAuthOption) && (
             <Box>
               <Box
                 onClick={() => setShowAdvanced((v) => !v)}
@@ -1638,7 +1789,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                     ? 'Override the built-in pricing and set a custom model context window for this tenant.'
                     : canPrice
                     ? 'Override the built-in pricing rates for this tenant.'
-                    : "Set a custom context window for your self-hosted deployment (defaults to the model's built-in window if blank)."}
+                    : showsContextSize(provider)
+                    ? "Set a custom context window for your self-hosted deployment (defaults to the model's built-in window if blank)."
+                    : 'Extra request headers and other optional settings.'}
                 </Box>
               </Box>
               {showAdvanced && (
@@ -1721,6 +1874,20 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                       onChange={setContextSize}
                       onBlur={trimOnBlur(contextSize, setContextSize)}
                       help='Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.'
+                    />
+                  )}
+                  {showsOAuthOption && (
+                    <Input
+                      label='Extra request headers (JSON)'
+                      size='sm'
+                      type='textarea'
+                      rows={3}
+                      value={extraHeaders}
+                      onChange={setConnField(setExtraHeaders)}
+                      onBlur={trimOnBlur(extraHeaders, setExtraHeaders)}
+                      error={errors.extraHeaders}
+                      placeholder='{"projectId": "abc-123"}'
+                      help='Sent with every LLM request — some gateways require identification headers alongside auth. Authorization and api-key cannot be set here. Optional.'
                     />
                   )}
                 </Stack>

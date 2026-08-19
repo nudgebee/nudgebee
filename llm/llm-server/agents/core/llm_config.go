@@ -19,12 +19,16 @@ package core
 // CachedContent layer (different cache slot owners across calls → 403).
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/azure"
 	"nudgebee/llm/llms/bedrock"
@@ -117,12 +121,25 @@ var (
 // Bucket-isolates the SDK-client / cached-content caches so per-tier or
 // per-agent credential overrides on the same (provider, model, account)
 // don't reuse a client built with another tier's creds.
-func credsFingerprint(apiKey, apiEndpoint, apiVersion, region, accessKey, secretKey, sessionToken string) string {
-	h := sha256.Sum256([]byte(apiKey + "|" + apiEndpoint + "|" + apiVersion + "|" + region + "|" + accessKey + "|" + secretKey + "|" + sessionToken))
+func credsFingerprint(parts ...string) string {
+	h := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return hex.EncodeToString(h[:4])
 }
 
 func resolveCredsFingerprint(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
+	// OAuth settings and extra headers join the fingerprint so editing them
+	// evicts cached clients — otherwise a rotated client secret or changed
+	// header keeps serving the old transport until the cache TTL lapses.
+	var res *LLMConfigResolution
+	if len(resolution) > 0 {
+		res = resolution[0]
+	}
+	auth := resolveLLMAuthSettings(accountId, res)
+	extraHeaders := make([]string, 0, len(auth.ExtraHeaders))
+	for k, v := range auth.ExtraHeaders {
+		extraHeaders = append(extraHeaders, k+"="+v)
+	}
+	sort.Strings(extraHeaders)
 	return credsFingerprint(
 		getLLMApiKey(accountId, provider, agentName, appendAgentName, resolution...),
 		getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, resolution...),
@@ -131,6 +148,12 @@ func resolveCredsFingerprint(accountId, provider, agentName string, appendAgentN
 		getLLMAccessKey(accountId, provider, agentName, appendAgentName, resolution...),
 		getLLMSecretKey(accountId, provider, agentName, appendAgentName, resolution...),
 		getLLMSessionToken(accountId, provider, agentName, appendAgentName, resolution...),
+		auth.AuthType,
+		auth.OAuth.TokenURL,
+		auth.OAuth.ClientID,
+		auth.OAuth.ClientSecret,
+		auth.OAuth.Scope,
+		strings.Join(extraHeaders, ","),
 	)
 }
 
@@ -1219,6 +1242,128 @@ func GetLlmModelWithProvider(provider string, agentName string, appendAgentName 
 	return GetLLMModel(provider, modelName, agentName, appendAgentName, accountId)
 }
 
+// Anthropic prompt-caching fix (regression from PR #36318).
+//
+// The multi-breakpoint layout places its primary cache breakpoint on the
+// SYSTEM message, but langchaingo v0.1.14's handleSystemMessage unwraps
+// llms.CachedContent and serializes `system` as a plain string — silently
+// dropping the cache_control block. Anthropic only caches a system prompt
+// when `system` is sent as a content-block array. Result: zero cache
+// creation/reads on the anthropic provider since 2026-08-16 (worked in March
+// when the old single breakpoint landed on a Human message, which the client
+// serializes correctly).
+//
+// Until the client is patched/upgraded, this transport restores the intended
+// behavior at the wire: when a /v1/messages body carries `system` as a
+// non-empty string (and caching is enabled), it is rewritten to
+//
+//	"system": [{"type":"text","text":<s>,"cache_control":{"type":"ephemeral"}}]
+//
+// which is the documented cacheable form. Prompts below Anthropic's minimum
+// cacheable size are simply not cached by the API — the form is valid either
+// way. Human-message breakpoints are unaffected (they serialize correctly).
+// Composes with the temperature sanitizer (http_sanitizer.go) as its base.
+type anthropicSystemCacheTransport struct {
+	base http.RoundTripper
+}
+
+func (t *anthropicSystemCacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/messages") || req.Body == nil || !config.Config.LlmEnableCaching {
+		return base.RoundTrip(req)
+	}
+	// Honor the per-request opt-out (custom agents embed dynamic content in
+	// their system messages — caching those creates one-off entries).
+	if disabled, _ := req.Context().Value(ContextKeyDisableCaching).(bool); disabled {
+		return base.RoundTrip(req)
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	// Lazy top-level parse: only "system" is inspected; the (large) messages
+	// array stays raw bytes.
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) == nil && payload != nil {
+		var sys string
+		if raw, ok := payload["system"]; ok && json.Unmarshal(raw, &sys) == nil && strings.TrimSpace(sys) != "" {
+			if blocks, mErr := json.Marshal([]map[string]any{{
+				"type":          "text",
+				"text":          sys,
+				"cache_control": map[string]string{"type": "ephemeral"},
+			}}); mErr == nil {
+				payload["system"] = blocks
+				if rewritten, mErr := json.Marshal(payload); mErr == nil {
+					body = rewritten
+				}
+			}
+		}
+	}
+	clone := req.Clone(req.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.ContentLength = int64(len(body))
+	clone.Header.Del("Content-Length")
+	clone.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return base.RoundTrip(clone)
+}
+
+// anthropicCacheHTTPClient carries the system-cache rewrite; passed as the
+// base of newAnthropicHTTPClient so the temperature sanitizer and the cache
+// rewrite compose on one client.
+func anthropicCacheHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:   defaultLLMHTTPTimeout,
+		Transport: &anthropicSystemCacheTransport{},
+	}
+}
+
+// anthropicChoiceNormalizer fixes Claude 5-family responses under langchaingo
+// v0.1.14: processAnthropicResponse emits one Choice PER CONTENT BLOCK in
+// order, and sonnet-5's adaptive reasoning returns [thinking, text] — so
+// Choices[0] is the thinking block with Content == "", and every caller that
+// reads Choices[0] concludes "llm returned empty content". This decorator
+// moves the first choice carrying actual content (text or tool calls) to the
+// front; thinking-only choices keep riding behind it with their
+// GenerationInfo intact.
+type anthropicChoiceNormalizer struct {
+	inner llms.Model
+}
+
+func wrapAnthropicChoiceNormalizer(inner llms.Model) llms.Model {
+	if inner == nil {
+		return inner
+	}
+	return &anthropicChoiceNormalizer{inner: inner}
+}
+
+func (a *anthropicChoiceNormalizer) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	resp, err := a.inner.GenerateContent(ctx, messages, options...)
+	if err != nil || resp == nil || len(resp.Choices) < 2 {
+		return resp, err
+	}
+	if resp.Choices[0] != nil && (strings.TrimSpace(resp.Choices[0].Content) != "" || len(resp.Choices[0].ToolCalls) > 0) {
+		return resp, err
+	}
+	for i := 1; i < len(resp.Choices); i++ {
+		c := resp.Choices[i]
+		if c != nil && (strings.TrimSpace(c.Content) != "" || len(c.ToolCalls) > 0) {
+			resp.Choices[0], resp.Choices[i] = resp.Choices[i], resp.Choices[0]
+			break
+		}
+	}
+	return resp, err
+}
+
+func (a *anthropicChoiceNormalizer) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	return llms.GenerateFromSinglePrompt(ctx, a, prompt, options...)
+}
+
 func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
 	slog.Debug("Initializing Anthropic LLM", "provider", provider, "modelName", modelName, "agentName", agentName, "appendAgentName", appendAgentName, "accountId", accountId)
 
@@ -1234,6 +1379,7 @@ func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool
 	opts := []anthropic.Option{
 		anthropic.WithToken(token),
 		anthropic.WithModel(modelName),
+		anthropic.WithHTTPClient(newAnthropicHTTPClient(anthropicCacheHTTPClient())),
 	}
 	baseUrl := getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res)
 	if baseUrl != "" {
@@ -1247,7 +1393,8 @@ func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool
 		return nil, err
 	}
 	slog.Info("Using Anthropic LLM", "model", modelName, "agentName", agentName)
-	return llm, nil
+	// Claude 5 responses lead with a thinking choice; promote the text choice.
+	return wrapAnthropicChoiceNormalizer(llm), nil
 }
 
 func getVertexAILLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
@@ -1500,6 +1647,23 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 	token := getLLMApiKey(accountId, provider, agentName, appendagentName, res)
 	llmApiType := getLLMApiType(accountId, provider, agentName, appendagentName, res)
 	apiType := openai.APITypeOpenAI
+	// OAuth / extra-header transport (#36556) — custom provider only for now.
+	// In OAuth mode the transport owns the Authorization header; the static
+	// token is only a non-empty placeholder so the client library doesn't
+	// reject construction.
+	var authClient *http.Client
+	if strings.EqualFold(provider, ProviderCustom) {
+		var oauthMode bool
+		var err error
+		authClient, oauthMode, err = buildLLMAuthHTTPClient(accountId, res)
+		if err != nil {
+			slog.Error("Failed to resolve LLM auth settings", "error", err, "provider", provider, "agentName", agentName)
+			return nil, err
+		}
+		if oauthMode && token == "" {
+			token = "oauth-managed"
+		}
+	}
 	if token == "" {
 		slog.Error("LLM_PROVIDER_API_KEY environment variable is not set for OpenAI LLM provider. Please set this variable to authenticate with the OpenAI LLM service.")
 	}
@@ -1516,13 +1680,20 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 	slog.Debug("OpenAI configuration", "apiType", apiType, "baseURL", baseURL, "embeddingModel", embeddingModel)
 
 	var responseFormatJSON = &openai.ResponseFormat{Type: "text"}
-	llm, err := openai.New(openai.WithResponseFormat(responseFormatJSON), openai.WithAPIType(apiType), openai.WithToken(token), openai.WithModel(modelName), openai.WithEmbeddingModel(embeddingModel), openai.WithBaseURL(baseURL))
+	// OAuth/header client (nil in static mode) rides as the sanitizer's base so
+	// both wire concerns compose on one client.
+	llm, err := openai.New(openai.WithResponseFormat(responseFormatJSON), openai.WithAPIType(apiType), openai.WithToken(token), openai.WithModel(modelName), openai.WithEmbeddingModel(embeddingModel), openai.WithBaseURL(baseURL), openai.WithHTTPClient(newOpenAIHTTPClient(authClient)))
 	if err != nil {
 		slog.Error("Failed to create OpenAI LLM", "error", err, "modelName", modelName)
 		return nil, err
 	}
 	slog.Info("Using OpenAI LLM", "model", modelName, "agentName", agentName, "apiType", apiType)
-	return llm, nil
+	// Strip llm-server-internal thinking keys (ThinkingBudget/ThinkingLevel) from Metadata so
+	// they never serialize into the outbound OpenAI `metadata` field — the langchaingo openai
+	// client only filters "openai:"-prefixed keys, and strict OpenAI-compatible providers (Vertex
+	// via the NB AI Gateway) reject non-string metadata. Covers `custom` too (getCustomLLM
+	// delegates here). See openai_thinking_metadata.go.
+	return wrapStripInternalThinkingMetadata(llm), nil
 }
 
 // getCustomLLM serves any provider exposing OpenAI's Chat Completions
@@ -1669,6 +1840,15 @@ type LLMConfigResolution struct {
 	PinnedSecretKey    string `json:"-"`
 	PinnedSessionToken string `json:"-"`
 	PinnedAdapterId    string `json:"-"`
+	// OAuth client-credentials settings (#36556). Without these a pinned
+	// OAuth config would silently fall back to api-key auth — the same
+	// pinned-resolution gap that previously bit MaxContext.
+	PinnedAuthType          string `json:"-"`
+	PinnedOAuthTokenURL     string `json:"-"`
+	PinnedOAuthClientID     string `json:"-"`
+	PinnedOAuthClientSecret string `json:"-"`
+	PinnedOAuthScope        string `json:"-"`
+	PinnedExtraHeaders      string `json:"-"`
 }
 
 // credentialIdentity fingerprints every field that decides where a request goes
@@ -1682,7 +1862,9 @@ type LLMConfigResolution struct {
 func credentialIdentity(res *LLMConfigResolution) string {
 	return strings.ToLower(strings.TrimSpace(res.Provider)) + "|" +
 		credsFingerprint(res.PinnedApiKey, res.PinnedEndpoint, res.PinnedApiVersion, res.PinnedRegion,
-			res.PinnedAccessKey, res.PinnedSecretKey, res.PinnedSessionToken) + "|" +
+			res.PinnedAccessKey, res.PinnedSecretKey, res.PinnedSessionToken,
+			res.PinnedAuthType, res.PinnedOAuthTokenURL, res.PinnedOAuthClientID,
+			res.PinnedOAuthClientSecret, res.PinnedOAuthScope, res.PinnedExtraHeaders) + "|" +
 		strings.TrimSpace(res.PinnedApiType) + "|" + strings.TrimSpace(res.PinnedAdapterId)
 }
 
@@ -2828,6 +3010,50 @@ func containsString(xs []string, s string) bool {
 	return false
 }
 
+// ModelSupportsTemperature checks if the model supports the 'temperature' parameter.
+// Anthropic reasoning models (claude-sonnet-5, claude-opus-5, claude-5 series) and OpenAI
+// reasoning model families (o1, o3, gpt-5) reject explicit / non-default temperature on the wire.
+func ModelSupportsTemperature(provider, model string) bool {
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+	pLower := strings.ToLower(strings.TrimSpace(provider))
+
+	// Check Anthropic reasoning models
+	if pLower == "anthropic" || strings.Contains(modelLower, "claude") {
+		if strings.Contains(modelLower, "claude-sonnet-5") ||
+			strings.Contains(modelLower, "claude-opus-5") ||
+			strings.Contains(modelLower, "claude-5") {
+			return false
+		}
+	}
+
+	// Check OpenAI reasoning models across any provider, including namespaced proxy/deployment IDs.
+	if isOpenAIReasoningModel(modelLower) {
+		return false
+	}
+
+	return true
+}
+
+func isOpenAIReasoningModel(model string) bool {
+	for _, family := range []string{"o1", "o3", "gpt-5"} {
+		for offset := 0; offset < len(model); {
+			index := strings.Index(model[offset:], family)
+			if index < 0 {
+				break
+			}
+			index += offset
+			beforeFamily := index == 0 || isModelNamespaceSeparator(model[index-1])
+			afterIndex := index + len(family)
+			afterFamily := afterIndex == len(model) || isModelNamespaceSeparator(model[afterIndex])
+			if beforeFamily && afterFamily {
+				return true
+			}
+			offset = index + len(family)
+		}
+	}
+	return false
+}
+
 // readEnvSlotInto populates res with credentials read from an env: slot and
 // returns the slot's fallback model list (empty if none configured). The caller
 // has already parsed sourceId; this function only touches ENV.
@@ -2937,6 +3163,40 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 		fallbackStr = cfg[fmt.Sprintf(llmModelFallbackFormat, p.Name)]
 	default:
 		return nil, fmt.Errorf("readDbSlotInto: unknown scope %q", p.Scope)
+	}
+
+	// OAuth + extra headers (#36556): tier slots may override, everything else
+	// inherits the integration's global values. Per-agent OAuth keys do not
+	// exist in v1, so the agent scope inherits global too.
+	if p.Scope == "tier" {
+		res.PinnedAuthType = cfg["llm_tier_auth_type_"+p.Name]
+		res.PinnedOAuthTokenURL = cfg["llm_tier_oauth_token_url_"+p.Name]
+		res.PinnedOAuthClientID = cfg["llm_tier_oauth_client_id_"+p.Name]
+		res.PinnedOAuthClientSecret = cfg["llm_tier_oauth_client_secret_"+p.Name]
+		res.PinnedOAuthScope = cfg["llm_tier_oauth_scope_"+p.Name]
+		res.PinnedExtraHeaders = cfg["llm_tier_extra_headers_"+p.Name]
+	}
+	// Per-field global fallback, matching inheritSlotDefaults and the
+	// non-pinned resolver: a tier may override just the client id/secret
+	// while sharing the integration's token URL (one issuer, one client per
+	// tier), so each field falls back independently.
+	if res.PinnedAuthType == "" {
+		res.PinnedAuthType = cfg[llmAuthTypeKey]
+	}
+	if res.PinnedOAuthTokenURL == "" {
+		res.PinnedOAuthTokenURL = cfg[llmOAuthTokenURLKey]
+	}
+	if res.PinnedOAuthClientID == "" {
+		res.PinnedOAuthClientID = cfg[llmOAuthClientIDKey]
+	}
+	if res.PinnedOAuthClientSecret == "" {
+		res.PinnedOAuthClientSecret = cfg[llmOAuthClientSecretKey]
+	}
+	if res.PinnedOAuthScope == "" {
+		res.PinnedOAuthScope = cfg[llmOAuthScopeKey]
+	}
+	if res.PinnedExtraHeaders == "" {
+		res.PinnedExtraHeaders = cfg[llmExtraHeadersKey]
 	}
 
 	// Fill anything this slot doesn't define from the integration's global slot.
@@ -3222,4 +3482,8 @@ func ConfigNameFor(sourceId, integrationName string) string {
 		return fmt.Sprintf("%s · Agent: %s", owner, p.Name)
 	}
 	return sourceId
+}
+
+func isModelNamespaceSeparator(char byte) bool {
+	return char == ':' || char == '/' || char == '.' || char == '_' || char == '-'
 }

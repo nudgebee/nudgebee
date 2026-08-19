@@ -6832,10 +6832,12 @@ var table_metadata = map[string]TableDefinition{
 								icv.name LIKE 'llm_provider_access_key%' OR
 								icv.name LIKE 'llm_provider_secret_key%' OR
 								icv.name LIKE 'llm_provider_session_token%' OR
+								icv.name LIKE 'llm_oauth_client_secret%' OR
 								icv.name LIKE 'llm_tier_api_key%' OR
 								icv.name LIKE 'llm_tier_access_key%' OR
 								icv.name LIKE 'llm_tier_secret_key%' OR
-								icv.name LIKE 'llm_tier_session_token%'
+								icv.name LIKE 'llm_tier_session_token%' OR
+								icv.name LIKE 'llm_tier_oauth_client_secret%'
 							) THEN ''
 							ELSE icv.value
 						END,

@@ -30,10 +30,12 @@ var llmSecretFieldPrefixes = []string{
 	"llm_provider_access_key",
 	"llm_provider_secret_key",
 	"llm_provider_session_token",
+	"llm_oauth_client_secret",
 	"llm_tier_api_key",
 	"llm_tier_access_key",
 	"llm_tier_secret_key",
 	"llm_tier_session_token",
+	"llm_tier_oauth_client_secret",
 }
 
 // IsLLMSecretFieldName reports whether the given integration_config_values
