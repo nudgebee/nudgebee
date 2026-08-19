@@ -16,7 +16,13 @@ name: nudgebee infra-mirror images
 # thing that keeps these patched, and it needs a changing epoch to bust the apt
 # layer. No registry cache for the same reason (caching would re-freeze it).
 #
-# amd64 only — the cluster nodes are amd64. PRs build to validate, no push.
+# Multi-arch (amd64 + arm64), same shape as release.yaml / the base-image
+# workflows: one cell per arch on its NATIVE runner (no QEMU), pushed as
+# <tag>-<arch>, then stitched into a single manifest list under <tag> by the
+# merge job. Every upstream we mirror publishes both arches, so dropping arm64
+# (as this workflow did originally, on the assumption the cluster is amd64-only)
+# silently made the chart uninstallable on Graviton/arm nodes.
+# PRs build to validate, no push.
 
 on:
   workflow_dispatch:
@@ -47,13 +53,40 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      namespace: ${{ steps.v.outputs.namespace }}
+      push: ${{ steps.v.outputs.push }}
+      epoch: ${{ steps.v.outputs.epoch }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          ns="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          # PRs validate only; main / schedule / manual dispatch push.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then push=false; else push=true; fi
+          {
+            echo "namespace=$ns"
+            echo "push=$push"
+            # ISO week (e.g. 2026-W28) — busts the apt layer weekly so the frozen
+            # bitnamilegacy base still picks up current Debian patches.
+            echo "epoch=$(date -u +%G-W%V)"
+          } >> "$GITHUB_OUTPUT"
+
+  # One cell per (image, arch). The Go build stages in the redis / postgres /
+  # postgres-exporter Dockerfiles compile natively for the cell's arch — no
+  # cross-compile plumbing needed, because the whole build runs on a runner of
+  # that arch.
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.plat.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include:
+        img:
           - { image: postgresql,        context: deploy/kubernetes/nudgebee-mirrors/postgresql,        tag: 16.1.0-debian-11-r16-nb1 }
           # -nb2 adds a wait-for-port rebuilt on Go 1.26.5 (clears 2C/19H/43M
           # Go-stdlib CVEs in the stale bitnami startup helper) on top of the apt
@@ -77,45 +110,82 @@ jobs:
           # CVEs in the postgres image's prebuilt gosu); needs a Go build stage.
           - { image: postgres,          context: deploy/kubernetes/nudgebee-mirrors/postgres,          tag: 16.10-alpine-nb2 }
           - { image: nginx,             context: deploy/kubernetes/nudgebee-mirrors/nginx,             tag: stable-alpine3.20-slim-nb1 }
+        plat:
+          - { arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
+          - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      - id: v
-        run: |
-          set -euo pipefail
-          ns="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          # PRs validate only; main / schedule / manual dispatch push.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then push=false; else push=true; fi
-          {
-            echo "namespace=$ns"
-            echo "push=$push"
-            # ISO week (e.g. 2026-W28) — busts the apt layer weekly so the frozen
-            # bitnamilegacy base still picks up current Debian patches.
-            echo "epoch=$(date -u +%G-W%V)"
-          } >> "$GITHUB_OUTPUT"
-
       - uses: docker/login-action@v3
-        if: steps.v.outputs.push == 'true'
+        if: needs.prepare.outputs.push == 'true'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push ${{ matrix.image }} (push=${{ steps.v.outputs.push }})
+      - name: Build & push ${{ matrix.img.image }} (${{ matrix.plat.arch }}, push=${{ needs.prepare.outputs.push }})
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.context }}
-          push: ${{ steps.v.outputs.push == 'true' }}
-          platforms: linux/amd64
+          context: ${{ matrix.img.context }}
+          push: ${{ needs.prepare.outputs.push == 'true' }}
+          platforms: ${{ matrix.plat.platform }}
           provenance: false
           # No cache-from/to: we WANT a fresh apt pull each run; a registry cache
           # would re-freeze the OS packages (the exact bug this job fixes).
           build-args: |
-            OS_PKG_EPOCH=${{ steps.v.outputs.epoch }}
-          tags: ${{ env.REGISTRY }}/${{ steps.v.outputs.namespace }}/${{ matrix.image }}:${{ matrix.tag }}
+            OS_PKG_EPOCH=${{ needs.prepare.outputs.epoch }}
+          tags: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.img.image }}:${{ matrix.img.tag }}-${{ matrix.plat.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.title=${{ matrix.img.image }}
+
+  # Stitch the per-arch images into the canonical <tag> manifest list. Skipped on
+  # PRs (nothing was pushed to merge).
+  #
+  # The image/tag pairs below MUST match the build matrix. A drift fails loudly
+  # here — `imagetools create` errors with `manifest unknown` for the missing
+  # per-arch tag rather than publishing anything wrong.
+  merge:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: postgresql,        tag: 16.1.0-debian-11-r16-nb1 }
+          - { image: redis,             tag: 7.0.12-debian-11-r0-nb2 }
+          - { image: rabbitmq,          tag: 3.13.7-debian-12-r5-nb1 }
+          - { image: clickhouse,        tag: 24.12.4-debian-12-r0-nb-3 }
+          - { image: postgres-exporter, tag: v0.20.1-nb1 }
+          - { image: postgres,          tag: 16.10-alpine-nb2 }
+          - { image: nginx,             tag: stable-alpine3.20-slim-nb1 }
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest for ${{ matrix.image }}
+        env:
+          REPO: ghcr.io/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+          echo "Merging ${REPO}:${TAG} from per-arch images"
+          docker buildx imagetools create \
+            -t "${REPO}:${TAG}" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "index:org.opencontainers.image.title=${{ matrix.image }}" \
+            "${REPO}:${TAG}-amd64" \
+            "${REPO}:${TAG}-arm64"
+
+          docker buildx imagetools inspect "${REPO}:${TAG}"
