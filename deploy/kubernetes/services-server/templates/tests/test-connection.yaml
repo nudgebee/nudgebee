@@ -9,7 +9,7 @@ metadata:
 spec:
   containers:
     - name: wget
-      image: busybox
+      image: ghcr.io/nudgebee/busybox:1.37.0
       command: ['wget']
       args: ['{{ include "services-server.fullname" . }}:{{ .Values.service.port }}']
   restartPolicy: Never
