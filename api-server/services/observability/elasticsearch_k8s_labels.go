@@ -95,6 +95,23 @@ func esCandidateFields(field string) []string {
 	if !ok {
 		return nil
 	}
+	// Every candidate is rendered, including the `.keyword` variants of the body
+	// field. Dropping them for the body looked like a cheap win — the body is matched
+	// with a leading-wildcard scan, the most expensive clause we emit — but it is
+	// wrong on any cluster whose body field is `text`.
+	//
+	// A wildcard is a TERM-level query. Against an analyzed `text` field it is matched
+	// per token, so a multi-word pattern like `*connection reset*` can never equal a
+	// single token and returns nothing. Matching a phrase needs the unanalyzed
+	// `.keyword` subfield, which keeps the whole line as one term. Dev's body field
+	// (`log`) is plain keyword, where multi-word patterns already work — verified:
+	// wildcard `*query execution*` → 10000 hits — but an ECS/dynamic-mapping estate
+	// where `message` is `text` + `message.keyword` would silently return nothing,
+	// which is precisely the failure this change set exists to remove.
+	//
+	// The cost is bounded by what the index actually defines: a `.keyword` candidate
+	// that does not exist matches nothing inside the should, and only clusters that
+	// really have the subfield pay for scanning it — the same clusters that need it.
 	out := make([]string, 0, len(base)*2)
 	for _, f := range base {
 		out = append(out, f, f+".keyword")
