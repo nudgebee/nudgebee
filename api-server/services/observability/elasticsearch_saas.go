@@ -789,7 +789,21 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 
 	index, _ := fetchLogRequest.Request["index"].(string)
 	if index == "" {
-		return nil, fmt.Errorf("index is required for querying index fields")
+		// FetchLogLabelsOrIndexFields settles this when it can, but the integration
+		// it reads the default from is nil whenever the caller supplied both
+		// log_provider and log_provider_source (llm-server does). cfg.LogIndex is
+		// read off the integration record itself, so it still resolves here.
+		index = cfg.LogIndex
+	}
+	if index == "" {
+		// Nothing configured anywhere. A union across every index beats no field
+		// list, but parseESMappingFields merges them all, so the caller gets fields
+		// that need not coexist in whichever index its query runs against — worth a
+		// warning rather than a silent widening.
+		index = esAllIndicesWildcard
+		ctx.GetLogger().Warn("ES index fields: no index requested and none configured, listing across every index",
+			"account_id", fetchLogRequest.AccountId,
+			"hint", "set log_index on the ES integration (or a per-account entry under Advanced Settings → index mapping)")
 	}
 
 	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose

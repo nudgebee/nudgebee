@@ -440,10 +440,7 @@ const QueryModeSwitcher = ({
             setEsIndexList(cachedESIndexes);
           } else {
             setEsIndexList([]);
-            const res = await observability.fetchLogLabels({
-              account_id: accountId,
-              ...(providerOverride ? { log_provider: providerOverride } : {}),
-            });
+            const res = await observability.logIndexList(accountId, providerOverride);
             if (res?.errors) {
               snackbar.error(`failed to fetch indexes - ${parseHttpResponseBodyMessage(res)}`);
               return;

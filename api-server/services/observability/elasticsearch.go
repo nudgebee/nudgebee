@@ -698,11 +698,19 @@ func (s *ElasticSource) ExtractIndexFieldAndAttributes(resp map[string]any) ([]O
 }
 
 func (e *ElasticSource) QueryIndexFields(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabelFields, error) {
+	index, _ := fetchLogRequest.Request["index"].(string)
+	if index == "" {
+		// The relay has no account config to fall back on, so an unresolved index
+		// widens here rather than reaching the agent empty. Mirrors the SaaS source.
+		index = esAllIndicesWildcard
+		ctx.GetLogger().Warn("ES index fields: no index resolved for agent source, listing across every index",
+			"account_id", fetchLogRequest.AccountId)
+	}
 	relayRequest := relay.ActionExecuteBody{
 		AccountID:  fetchLogRequest.AccountId,
 		ActionName: "query_es_index_field",
 		ActionParams: map[string]any{
-			"index": fetchLogRequest.Request["index"],
+			"index": index,
 		},
 		NoSinks: true,
 	}

@@ -161,7 +161,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     }
     let isMounted = true;
     observability
-      .fetchLogLabels({ account_id: accountId, log_provider: 'ES' })
+      .logIndexList(accountId, 'ES')
       .then((res: any) => {
         if (!isMounted) return;
         const indices = (res?.data?.data?.logs_list_labels || [])

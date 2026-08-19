@@ -1130,29 +1130,102 @@ func FetchLogLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogL
 	return source.QueryLabelValues(ctx, fetchLogRequest)
 }
 
-func FetchLogIndexFields(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabelFields, error) {
-	resp, err := GetDefaultProvider(ctx, fetchLogRequest.AccountId, "logs", fetchLogRequest.LogProviderSource, "")
+// esAllIndicesWildcard is the last-resort field-listing target, matching the
+// fallback QueryLogGroup already uses when no log index is configured.
+const esAllIndicesWildcard = "*"
+
+// resolveLogFieldsIndex picks the index a field listing runs against:
+// request.index, else the account default. Returns "" when neither resolves —
+// deliberately NOT the wildcard, because the ES sources hold a second default
+// (cfg.LogIndex, read straight off the integration record) that only they can
+// see, and injecting "*" here would mask it. They own the last resort.
+func resolveLogFieldsIndex(requestIndex, defaultIndex string) string {
+	if idx := strings.TrimSpace(requestIndex); idx != "" {
+		return idx
+	}
+	return strings.TrimSpace(defaultIndex)
+}
+
+// FetchLogLabelsOrIndexFields serves the logs_list_labels action.
+//
+//	fetch_index=true  index targets (ES only — rejected elsewhere, since a
+//	                  provider with no index concept can only mean a confused caller)
+//	absent/false      queryable fields: ES resolves an index and reads _mapping,
+//	                  every other provider's QueryLabels already returns fields
+//
+// The flag used to mean the opposite, so the no-flag answer for ES was a list of
+// index NAMES where callers — LLM agents especially — expected field names, and
+// nothing errored to say so.
+func FetchLogLabelsOrIndexFields(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabel, error) {
+	// LogProvider is forwarded so a pinned provider resolves against itself; the
+	// old path passed "" and answered from the account default. WithIntegration
+	// rather than GetDefaultProvider: it returns the integration the default
+	// index is read from, without the capabilities work a listing never uses.
+	provider, integrationSource, integrationDto, err := getLogsMetricsTracesProviderWithIntegration(ctx, fetchLogRequest.AccountId, fetchLogRequest.LogProvider, "logs", fetchLogRequest.LogProviderSource)
 	if err != nil {
 		return nil, err
 	}
 
-	if resp.Provider != "ES" {
-		return nil, fmt.Errorf("FetchLogIndexFields is only supported for ES provider")
+	// An unresolved provider falls through, so a missing integration reports
+	// itself rather than being blamed on the flag.
+	if provider != "ES" {
+		if fetchLogRequest.FetchIndex && provider != "" {
+			return nil, fmt.Errorf("fetch_index is only supported for the Elasticsearch log provider: %q has no index concept — omit fetch_index to list its queryable labels", provider)
+		}
+		return FetchLogLabels(ctx, fetchLogRequest)
 	}
 
-	logSource, err := getLogSource(resp.Provider, resp.IntegrationSource)
+	if fetchLogRequest.FetchIndex {
+		return FetchLogLabels(ctx, fetchLogRequest)
+	}
+
+	logSource, err := getLogSource(provider, integrationSource)
 	if err != nil {
 		return nil, err
 	}
 
+	// Same default get_default_provider reports: per-account override → log_index.
+	// Note this is nil whenever the caller supplied BOTH log_provider and
+	// log_provider_source (llm-server does), so an unresolved index here is
+	// normal, not exceptional — the source resolves it from its own config.
+	defaultIndex := readIndexFromIntegration(ctx, integrationDto, "logs", fetchLogRequest.AccountId)
+	if index := resolveLogFieldsIndex(common.GetString(fetchLogRequest.Request, "index"), defaultIndex); index != "" {
+		// Both ES variants read Request["index"], so pass it there rather than
+		// teaching each about default resolution. Copied, not mutated: Request is
+		// the caller's and a resolved default must not leak back into it.
+		request := make(map[string]any, len(fetchLogRequest.Request)+1)
+		for k, v := range fetchLogRequest.Request {
+			request[k] = v
+		}
+		request["index"] = index
+		fetchLogRequest.Request = request
+	}
+
+	ctx.GetLogger().Info("logs_list_labels: listing index fields",
+		"account_id", fetchLogRequest.AccountId, "provider", provider,
+		"integration_source", integrationSource,
+		"index", common.GetString(fetchLogRequest.Request, "index"))
+
+	var fields []OutputLogLabelFields
 	switch s := logSource.(type) {
 	case *ElasticSource:
-		return s.QueryIndexFields(ctx, fetchLogRequest)
+		fields, err = s.QueryIndexFields(ctx, fetchLogRequest)
 	case *ElasticSaasSource:
-		return s.QueryIndexFields(ctx, fetchLogRequest)
+		fields, err = s.QueryIndexFields(ctx, fetchLogRequest)
 	default:
 		return nil, fmt.Errorf("log source does not support QueryIndexFields")
 	}
+	if err != nil {
+		return nil, err
+	}
+	labels := make([]OutputLogLabel, len(fields))
+	for i, f := range fields {
+		labels[i] = OutputLogLabel{
+			Label:      f.Field,
+			Attributes: f.Attributes,
+		}
+	}
+	return labels, nil
 }
 
 func FetchLogGroup(ctx *security.RequestContext, fetchLogGroupRequest FetchLogGroupRequest) (LogGroupOutput, error) {

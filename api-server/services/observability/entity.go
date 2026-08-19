@@ -76,7 +76,10 @@ type FetchLogLabelRequest struct {
 	Request           map[string]any `json:"request"`
 	StartTime         int64          `json:"start_time"`
 	EndTime           int64          `json:"end_time"`
-	FetchIndex        bool           `json:"fetch_index"`
+	// FetchIndex true asks for index targets (ES only), false/absent for
+	// queryable fields. See FetchLogLabelsOrIndexFields — it used to mean the
+	// opposite.
+	FetchIndex bool `json:"fetch_index"`
 }
 
 type OutputLogLabel struct {
