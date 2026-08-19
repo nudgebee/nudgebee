@@ -1,4 +1,5 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/router';
 import { Box, Stack, Typography } from '@mui/material';
 import {
   closestCenter,
@@ -65,7 +66,15 @@ const APP_HEADER_HEIGHT = `calc(${ds.space.mul(0, 28)} + 2px)`;
 /** Gap between panels, in px. */
 const GRID_GAP = 10;
 
+/**
+ * Where the author was headed when the unsaved-changes prompt stopped them.
+ * `edit` is the toolbar's own Discard — it leaves edit mode without leaving the
+ * screen; the other two leave the screen entirely.
+ */
+type Exit = { to: 'edit' } | { to: 'back' } | { to: 'route'; url: string };
+
 const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, onChange, canEdit, initialEditing = false }) => {
+  const router = useRouter();
   // Opens on the last hour: a dashboard is read live, and an hour keeps the
   // per-panel provider queries cheap enough to fan out across accounts.
   const [range, setRange] = useState(() => {
@@ -147,11 +156,25 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       descriptionDraft !== (dashboard.description || '') ||
       JSON.stringify(draftPanels) !== JSON.stringify(savedPanels));
 
+  /**
+   * Whether leaving right now would lose work. A create counts as `dirty` from
+   * the moment it opens — `isNew` forces that so Save always writes — but a
+   * blank New dashboard nobody has typed into has nothing to warn about.
+   */
+  const unsavedWork = editing && (isNew ? Boolean(titleDraft.trim() || descriptionDraft.trim() || panels.length) : dirty);
+
   const [editingPanel, setEditingPanel] = useState<Panel | null>(null);
   const [panelModalOpen, setPanelModalOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  /** Non-null while the leave prompt is up; holds the exit it is holding back. */
+  const [pendingExit, setPendingExit] = useState<Exit | null>(null);
+  /**
+   * One free pass through the route guard, for a navigation this screen asked
+   * for: the shallow push the host makes when a create is saved, and the leave
+   * the author has just agreed to. Consumed by the first route change it sees.
+   */
+  const allowNavigation = useRef(false);
   /** The panel awaiting delete confirmation. Held whole so the prompt can name it. */
   const [pendingDelete, setPendingDelete] = useState<Panel | null>(null);
   /** The panel under the cursor mid-drag; drives the DragOverlay. */
@@ -160,6 +183,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   /** Writes the dashboard back. */
   const persist = async (change: { title?: string; description?: string; panels?: Panel[] }): Promise<boolean> => {
     setSaving(true);
+    // A create answers with its new id and the host writes it into the URL. That
+    // push is this screen's own doing, so the guard below must not hold it.
+    allowNavigation.current = true;
     try {
       const res = await apiDashboards.saveDashboard({
         // Empty on a dashboard that has never been written — `saveDashboard`
@@ -177,6 +203,8 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       if (res.errors || !res.data) {
         const message = Array.isArray(res.errors) ? (res.errors[0] as any)?.message : null;
         snackbar.error(message || 'Could not save the dashboard.');
+        // Nothing was written and nothing navigates — hand the pass back.
+        allowNavigation.current = false;
         return false;
       }
       onChange?.(res.data);
@@ -235,25 +263,18 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     setDraftPanels(savedPanels.slice());
   };
 
-  /** Leaves edit mode, asking first if there is anything to lose. */
-  const requestExit = () => {
-    if (dirty) {
-      setConfirmDiscard(true);
-      return;
-    }
+  /**
+   * Carries out an exit, throwing the edits away. Only ever reached once the
+   * author has been asked, or when there was nothing to ask about.
+   */
+  const discardAndLeave = (exit: Exit) => {
+    setPendingExit(null);
     // A never-saved dashboard has nothing to fall back to — leaving edit mode
     // means leaving the screen.
-    if (isNew) {
-      onBack?.();
-      return;
-    }
-    setDraftPanels(null);
-  };
-
-  const discardEdits = () => {
-    setConfirmDiscard(false);
-    if (isNew) {
-      onBack?.();
+    if (exit.to === 'route' || exit.to === 'back' || isNew) {
+      allowNavigation.current = true;
+      if (exit.to === 'route') router.push(exit.url);
+      else onBack?.();
       return;
     }
     setTitleDraft(dashboard.title);
@@ -261,26 +282,110 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     setDraftPanels(null);
   };
 
-  const saveLayout = async () => {
-    if (!draftPanels) return;
+  const saveLayout = async (): Promise<boolean> => {
+    if (!draftPanels) return false;
     const title = titleDraft.trim();
     // The server rejects an untitled dashboard, and a create started from the
     // blank New dashboard path arrives with nothing in the field.
     if (!title) {
       snackbar.error('Give the dashboard a title.');
-      return;
+      return false;
     }
     // Nothing changed — leaving quietly beats a request and a "saved" toast.
     if (!dirty) {
       setDraftPanels(null);
-      return;
+      return true;
     }
-    if (!(await persist({ title, description: descriptionDraft.trim(), panels: draftPanels }))) return;
+    if (!(await persist({ title, description: descriptionDraft.trim(), panels: draftPanels }))) return false;
     snackbar.success(isNew ? 'Dashboard created' : 'Dashboard saved');
     // On a create the host swaps this screen for the saved dashboard; dropping
     // the draft here is what returns it to read-only in both cases.
     setDraftPanels(null);
+    return true;
   };
+
+  /**
+   * Carries out an exit, writing the edits first. A failed save keeps the author
+   * where they are — `saveLayout` has already said why.
+   */
+  const saveAndLeave = async (exit: Exit) => {
+    if (!(await saveLayout())) return;
+    setPendingExit(null);
+    if (exit.to === 'route' || exit.to === 'back') {
+      allowNavigation.current = true;
+      if (exit.to === 'route') router.push(exit.url);
+      else onBack?.();
+    }
+    // 'edit' needs nothing further: the save already left edit mode.
+  };
+
+  /** Leaves edit mode, asking first if there is anything to lose. */
+  const requestExit = () => {
+    if (unsavedWork) {
+      setPendingExit({ to: 'edit' });
+      return;
+    }
+    discardAndLeave({ to: 'edit' });
+  };
+
+  /** Leaves the screen, asking first if there is anything to lose. */
+  const requestBack = () => {
+    if (unsavedWork) {
+      setPendingExit({ to: 'back' });
+      return;
+    }
+    onBack?.();
+  };
+
+  // A pass granted to a save that turned out not to navigate must not carry
+  // into the next edit, which nobody has been asked about yet.
+  useEffect(() => {
+    if (unsavedWork) allowNavigation.current = false;
+  }, [unsavedWork]);
+
+  /*
+   * Nothing in edit mode is written until Save, so every way off this screen has
+   * to ask first — a click on the nav, the browser's own Back, a reload. The
+   * toolbar's Back and Discard route through requestBack / requestExit above;
+   * this covers the exits that go around them.
+   */
+  useEffect(() => {
+    if (!unsavedWork) return undefined;
+
+    const handleRouteChangeStart = (url: string) => {
+      if (allowNavigation.current) {
+        allowNavigation.current = false;
+        return;
+      }
+      // A popstate has already rewritten the address bar. Put it back, so the
+      // URL still names the dashboard the author is being held on.
+      const here = router.asPath;
+      if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== here) {
+        window.history.pushState(null, '', here);
+      }
+      setPendingExit({ to: 'route', url });
+      // Next's own way of cancelling a transition from routeChangeStart: emit
+      // the error event the router listens for, then unwind out of the handler.
+      router.events.emit('routeChangeError');
+      throw 'Route change aborted — the dashboard has unsaved changes. This is not an error.';
+    };
+
+    // The tab closing or reloading is the browser's to warn about; it renders
+    // its own dialog and ignores any wording we pass.
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // eslint-disable-next-line deprecation/deprecation -- returnValue is deprecated but still required for cross-browser beforeunload support
+      event.returnValue = '';
+      return '';
+    };
+
+    router.events.on('routeChangeStart', handleRouteChangeStart);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      router.events.off('routeChangeStart', handleRouteChangeStart);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [unsavedWork, router]);
 
   /*
    * Deleting asks first, even though the change is buffered and Discard would
@@ -483,7 +588,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           <Button tone='secondary' onClick={requestExit} disabled={saving} id='dashboard-discard-btn' data-testid='dashboard-discard-btn'>
             Discard
           </Button>
-          <Button onClick={saveLayout} loading={saving} disabled={saving} id='dashboard-save-btn' data-testid='dashboard-save-btn'>
+          <Button onClick={() => void saveLayout()} loading={saving} disabled={saving} id='dashboard-save-btn' data-testid='dashboard-save-btn'>
             Save
           </Button>
         </>
@@ -525,7 +630,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           borderBottom: `1px solid ${ds.gray[200]}`,
         }}
       >
-        {onBack && <BackButton id='dashboard-back-btn' onClick={onBack} />}
+        {onBack && <BackButton id='dashboard-back-btn' onClick={requestBack} />}
         {editing ? (
           /* The name and description are plain fields here rather than a
              separate rename control: edit mode is already a buffered session
@@ -676,15 +781,52 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       />
 
       {/* Only reached with unsaved changes — leaving a clean edit session just
-          leaves. Nothing here is recoverable afterwards, so it asks. */}
+          leaves. Nothing here is recoverable afterwards, so it asks, and offers
+          the save the author most likely meant rather than only the loss. */}
       <Modal
-        open={confirmDiscard}
-        handleClose={() => setConfirmDiscard(false)}
-        title='Discard changes?'
-        confirmText='Discard'
-        onConfirm={discardEdits}
+        open={Boolean(pendingExit)}
+        handleClose={() => setPendingExit(null)}
+        title='Unsaved changes'
+        actionButtons={
+          <Stack direction='row' gap={1} justifyContent='flex-end' sx={{ width: '100%' }}>
+            <Button
+              tone='ghost'
+              size='md'
+              onClick={() => setPendingExit(null)}
+              disabled={saving}
+              id='dashboard-exit-cancel-btn'
+              data-testid='dashboard-exit-cancel-btn'
+            >
+              Cancel
+            </Button>
+            <Button
+              tone='secondary'
+              size='md'
+              onClick={() => pendingExit && discardAndLeave(pendingExit)}
+              disabled={saving}
+              id='dashboard-exit-discard-btn'
+              data-testid='dashboard-exit-discard-btn'
+            >
+              Discard
+            </Button>
+            <Button
+              tone='primary'
+              size='md'
+              onClick={() => pendingExit && void saveAndLeave(pendingExit)}
+              loading={saving}
+              disabled={saving}
+              id='dashboard-exit-save-btn'
+              data-testid='dashboard-exit-save-btn'
+            >
+              Save
+            </Button>
+          </Stack>
+        }
       >
-        <Typography variant='body2'>Your layout changes to {dashboard.title} will be lost. This cannot be undone.</Typography>
+        <Typography variant='body2'>
+          {isNew ? 'This dashboard has not been saved yet.' : `Your changes to ${dashboard.title} have not been saved.`} Discard them and they are
+          gone — this cannot be undone.
+        </Typography>
       </Modal>
 
       <Modal
