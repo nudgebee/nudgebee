@@ -171,8 +171,8 @@ func LabelsFromIndexFields(fields []OutputLogLabelFields) []OutputLogLabel {
 // does not describe queryable FIELDS. Elasticsearch is the case that matters: its
 // QueryLabels returns index names, while the per-field types live behind
 // QueryIndexFields. Both ES sources already implement this method (see the type
-// switch in FetchLogIndexFields), so declaring the interface costs nothing and keeps
-// type resolution generic instead of special-casing ES at the call site.
+// switch in FetchLogLabelsOrIndexFields), so declaring the interface costs nothing
+// and keeps type resolution generic instead of special-casing ES at the call site.
 type LogLabelFieldsSource interface {
 	QueryIndexFields(ctx *security.RequestContext, request FetchLogLabelRequest) ([]OutputLogLabelFields, error)
 }

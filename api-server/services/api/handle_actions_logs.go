@@ -119,20 +119,10 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		if request.FetchIndex {
-			indexFields, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name+":index", observabilityMetadataActionTimeout, func() ([]observability.OutputLogLabelFields, error) {
-				return observability.FetchLogIndexFields(ctx, request)
-			})
-			if err != nil {
-				c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-				return
-			}
-			c.JSON(200, observability.LabelsFromIndexFields(indexFields))
-			return
-		}
-
+		// FetchLogLabelsOrIndexFields owns the fetch_index fork, so the mode is
+		// decided in one testable place rather than split across the handler.
 		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputLogLabel, error) {
-			return observability.FetchLogLabels(ctx, request)
+			return observability.FetchLogLabelsOrIndexFields(ctx, request)
 		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
