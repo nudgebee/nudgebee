@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"net/url"
 	"nudgebee/llm/tools/core"
 	"strings"
@@ -1213,4 +1214,28 @@ func TestQueryBuilderToObservQuery(t *testing.T) {
 
 	}
 
+}
+
+// The priority list is what survives the 50-field cap, so it decides which spellings
+// the model sees at all. It previously named only the Fluent-Bit + `.keyword`
+// spellings, so on an ECS estate (kubernetes.namespace, kubernetes.pod.name) the
+// genuinely queryable fields were the ones NOT promoted.
+func TestCapESLabels_PromotesBothShipperConventions(t *testing.T) {
+	filler := make([]string, 0, 80)
+	for i := 0; i < 80; i++ {
+		filler = append(filler, fmt.Sprintf("noise.field_%02d", i))
+	}
+
+	ecs := append([]string{"kubernetes.namespace", "kubernetes.pod.name", "kubernetes.container.name"}, filler...)
+	got := capESLabels(ecs)
+	assert.Len(t, got, maxESLabelsInPrompt)
+	for _, f := range []string{"kubernetes.namespace", "kubernetes.pod.name", "kubernetes.container.name"} {
+		assert.Contains(t, got, f, "ECS spelling must survive the cap")
+	}
+
+	fluent := append([]string{"kubernetes.namespace_name", "kubernetes.pod_name", "kubernetes.container_name"}, filler...)
+	got = capESLabels(fluent)
+	for _, f := range []string{"kubernetes.namespace_name", "kubernetes.pod_name", "kubernetes.container_name"} {
+		assert.Contains(t, got, f, "Fluent-Bit spelling must still survive the cap")
+	}
 }

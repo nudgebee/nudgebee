@@ -31,7 +31,7 @@ func (e *ElasticSource) GetLabelMapping() map[string]string {
 }
 
 func (e *ElasticSource) GetSupportedOperators() []string {
-	return []string{"_eq", "_neq", "_contains", "_like", "_nlike", "_gt", "_lt", "_is_null"}
+	return []string{"_eq", "_neq", "_contains", "_like", "_ilike", "_nlike", "_gt", "_lt", "_is_null"}
 }
 
 // GetQuery implements [LogSource].

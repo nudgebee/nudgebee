@@ -2,10 +2,13 @@ package observability
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"nudgebee/services/query"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // The pod/workload Logs tab filters on the canonical labels namespace / pod /

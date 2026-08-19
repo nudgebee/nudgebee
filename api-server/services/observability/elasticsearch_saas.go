@@ -387,7 +387,7 @@ func (e *ElasticSaasSource) GetLabelMapping() map[string]string {
 }
 
 func (e *ElasticSaasSource) GetSupportedOperators() []string {
-	return []string{"_eq", "_neq", "_contains", "_like", "_nlike", "_gt", "_lt", "_is_null"}
+	return []string{"_eq", "_neq", "_contains", "_like", "_ilike", "_nlike", "_gt", "_lt", "_is_null"}
 }
 
 func (e *ElasticSaasSource) GetQuery(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (string, error) {

@@ -137,7 +137,7 @@ func TestShouldFallbackToKubectl(t *testing.T) {
 // resolves when those words are literally keys in label_mappings) nor any
 // provider-native field name.
 func TestCanonicalQueryExamples(t *testing.T) {
-	examples := canonicalQueryExamples()
+	examples := canonicalQueryExamples(defaultLogQueryOperators)
 	assert.NotEmpty(t, examples)
 
 	var answers strings.Builder

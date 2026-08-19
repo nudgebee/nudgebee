@@ -3,6 +3,8 @@ package observability
 import (
 	"testing"
 
+	"nudgebee/services/query"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

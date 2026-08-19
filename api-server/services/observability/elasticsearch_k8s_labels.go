@@ -1,6 +1,8 @@
 package observability
 
 import (
+	"strings"
+
 	"nudgebee/services/query"
 )
 
@@ -27,6 +29,9 @@ import (
 // The canonical name is always the first candidate: an index that really does
 // carry a top-level "namespace" field keeps matching exactly as before, and the
 // expansion only ever widens.
+// esCanonicalBodyField is the canonical log-body name llm-server advertises.
+const esCanonicalBodyField = "_body"
+
 var esCanonicalK8sFields = map[string][]string{
 	"namespace": {
 		"namespace",
@@ -119,6 +124,34 @@ func esCandidateFields(field string) []string {
 	return out
 }
 
+// esKeywordSuffixCandidates handles a non-canonical field the caller wrote with a
+// `.keyword` suffix. `.keyword` is only real when the parent is mapped `text` —
+// Elasticsearch adds that subfield for text, not for keyword. Shippers map
+// `kubernetes.namespace_name`, `kubernetes.pod_name` and friends as plain keyword, so
+// `<field>.keyword` does not exist and a term against it matches ZERO documents and
+// returns HTTP 200. The caller then reads "no logs" where the truth is "wrong field".
+//
+// Measured on the dev cluster against logs-kubernetes.container_logs-*:
+// term on `kubernetes.namespace_name` → 10000 hits; term on
+// `kubernetes.namespace_name.keyword` → 0 hits, no error. Same for
+// `kubernetes.namespace` / `kubernetes.namespace.keyword`.
+//
+// So a suffixed field is matched against BOTH spellings. A candidate the index does
+// not define simply matches nothing inside the should, exactly as for the canonical
+// expansion above, which makes listing both free.
+//
+// The reverse direction (caller wrote the bare name, index maps it as text) is
+// deliberately NOT expanded: a term against a text field can match analyzed tokens and
+// would widen results rather than repair them. Canonical labels already cover that case
+// through esCanonicalK8sFields.
+func esKeywordSuffixCandidates(field string) []string {
+	base, ok := strings.CutSuffix(field, ".keyword")
+	if !ok || base == "" {
+		return nil
+	}
+	return []string{field, base}
+}
+
 // binaryClauseForField renders one binary operation into an ES clause,
 // expanding a canonical k8s label across every field name a shipper might have
 // written it to. Non-canonical fields pass through to binaryToESClause
@@ -131,6 +164,9 @@ func esCandidateFields(field string) []string {
 // these fields exist".
 func binaryClauseForField(field string, op query.BinaryWhereClauseType, val any) (map[string]any, bool, error) {
 	candidates := esCandidateFields(field)
+	if len(candidates) == 0 {
+		candidates = esKeywordSuffixCandidates(field)
+	}
 	if len(candidates) == 0 {
 		return binaryToESClause(field, op, val)
 	}

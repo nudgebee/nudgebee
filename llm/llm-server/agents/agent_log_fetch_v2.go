@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -402,7 +403,7 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 	b.WriteString("- Read the caller's ORIGINAL user question (when provided) to classify intent.\n")
 
 	b.WriteString("\n**Examples:**\n")
-	examples := canonicalQueryExamples()
+	examples := canonicalQueryExamples(supportedOperators)
 	if !useCanonical {
 		if pe := providerSpecificQueryExamples(providerName); len(pe) > 0 {
 			examples = pe
@@ -478,7 +479,16 @@ func resolveQueryOperators(providerOperators []string) []string {
 // e.g. a backend whose canonical keys are `app`/`content`). The examples teach
 // query shape (operators, _or, time_range/limit, when to add an error filter);
 // the field list above teaches which name to substitute.
-func canonicalQueryExamples() []core.NBAgentPromptExample {
+func canonicalQueryExamples(supportedOperators []string) []core.NBAgentPromptExample {
+	// The few-shots are the strongest signal in this prompt — stronger than the
+	// operator list a few lines above it. Hardcoding `_ilike` here meant the model
+	// emitted it against Elasticsearch, which rejects it outright, even though the
+	// advertised operator list correctly omitted it. So the examples must be built
+	// from the SAME set the backend advertises.
+	contains := `_ilike`
+	if !slices.Contains(supportedOperators, "_ilike") {
+		contains = `_like`
+	}
 	return []core.NBAgentPromptExample{
 		{
 			Question:    "show me recent logs for the checkout workload",
@@ -487,12 +497,12 @@ func canonicalQueryExamples() []core.NBAgentPromptExample {
 		},
 		{
 			Question:    "errors in the checkout workload in the last hour",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}, "time_range": "1h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}, "time_range": "1h", "limit": 5000}`,
 			Explanation: "Replace <LOG_TEXT_FIELD> with the canonical_name for the log body. The question says 'last hour' → set time_range to \"1h\" EXACTLY; never widen a window the user gave (use the 24h default ONLY when the question gives no window). 'checkout' is illustrative — substitute the real workload name from the question.",
 		},
 		{
 			Question:    "warn or error logs for checkout",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"_ilike": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"` + contains + `": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
 			Explanation: "Multiple values for the same concept → _or over the log-body canonical_name.",
 		},
 		{
