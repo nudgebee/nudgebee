@@ -7,14 +7,13 @@ import { Card } from '@ui/Card';
 import { Chip } from '@ui/Chip';
 import Tooltip from '@ui/Tooltip';
 import { ToggleGroup } from '@ui/ToggleGroup';
-import SearchInput from '@ui/SearchInput';
 import { snackbar } from '@ui/Toast';
 import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
 import type { AccountOption, Dashboard } from '@api1/dashboards';
 import { deriveAccountTypes } from './panelAccounts';
 import { defaultWidgetScope, findPanelTemplate, roleLabel, TEMPLATE_ROLES, type TemplateRole } from './panelTemplates';
-import { convertTemplate, DASHBOARD_TEMPLATES, filterTemplatesBySearch, templateWidgets, type DashboardTemplate } from './dashboardTemplates';
+import { convertTemplate, DASHBOARD_TEMPLATES, templateWidgets, type DashboardTemplate } from './dashboardTemplates';
 import { grantTooltip, missingPanelGrant } from './panelAccess';
 
 interface Props {
@@ -69,14 +68,10 @@ function readableTemplate(template: DashboardTemplate): DashboardTemplate {
  */
 const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, onDraft }) => {
   const [role, setRole] = useState<TemplateRole | typeof ALL_ROLES>(ALL_ROLES);
-  const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState('');
 
   const selected: DashboardTemplate | undefined = useMemo(() => DASHBOARD_TEMPLATES.find((t) => t.id === selectedId), [selectedId]);
-  const visible = useMemo(() => {
-    const byRole = role === ALL_ROLES ? DASHBOARD_TEMPLATES : DASHBOARD_TEMPLATES.filter((t) => t.roles.includes(role));
-    return filterTemplatesBySearch(byRole, query);
-  }, [role, query]);
+  const visible = useMemo(() => (role === ALL_ROLES ? DASHBOARD_TEMPLATES : DASHBOARD_TEMPLATES.filter((t) => t.roles.includes(role))), [role]);
   const roleOptions = useMemo(() => [{ value: ALL_ROLES, label: 'All' }, ...TEMPLATE_ROLES.map((r) => ({ value: r.value, label: r.label }))], []);
 
   const widgets = selected ? templateWidgets(selected) : [];
@@ -124,7 +119,6 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
 
   const reset = () => {
     setRole(ALL_ROLES);
-    setQuery('');
     setSelectedId('');
   };
 
@@ -218,15 +212,11 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
               onChange={(next) => setRole(next as TemplateRole | typeof ALL_ROLES)}
               id='template-role-toggle'
             />
-            {/* Filters the static gallery live by name and description — no API,
-                so it narrows as you type rather than on Enter, matching the role
-                toggle beside it. */}
-            <SearchInput value={query} onChange={setQuery} label='Search templates' id='template-search' ml='auto' />
           </Stack>
 
           {visible.length === 0 ? (
             <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block', mt: 1.5 }} data-testid='template-empty'>
-              No templates match your search.
+              No templates for this role.
             </Typography>
           ) : (
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 1.5, mt: 1 }} data-testid='template-gallery'>
