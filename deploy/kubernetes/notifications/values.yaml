@@ -11,6 +11,10 @@ global:
   initImages:
     postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
     curl: 'ghcr.io/nudgebee/curl:8.10.1'
+  # `helm test` connection pod (templates/tests/test-connection.yaml). Full ref,
+  # like initImages above: a third-party image a private-registry install has to
+  # mirror under whatever name that registry uses.
+  testImage: 'ghcr.io/nudgebee/busybox:1.37.0'
 
 image:
   repository: nudgebee-notifications

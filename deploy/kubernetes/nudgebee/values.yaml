@@ -6,6 +6,12 @@ global:
     # -nb2 rebuilds gosu on Go 1.26.5 (clears 1C/14H Go-stdlib CVEs); fully clean.
     postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine-nb2'
     curl: 'ghcr.io/nudgebee/curl:8.10.1'
+  # `helm test` connection pods only (each service chart's
+  # templates/tests/test-connection.yaml). A full ref, like initImages above,
+  # rather than a repository composed onto global.image.registry: this is a
+  # third-party image, so a private-registry install has to mirror it under
+  # whatever name that registry uses.
+  testImage: 'ghcr.io/nudgebee/busybox:1.37.0'
   existingNudgebeeSecretName: ''
 nudgebee_registry_secret:
   enabled: false
@@ -352,7 +358,7 @@ temporal:
   web:
     image:
       repository: ghcr.io/nudgebee/temporal-ui
-      tag: 2.52.0
+      tag: '2.52.0'
     # Disabled: the Temporal Web UI is a standalone read-only dashboard that no
     # nudgebee component references (workflow-server talks to temporal-frontend:7233,
     # not the UI; no ingress or app link points at it). Removing it drops the
@@ -404,7 +410,7 @@ temporal:
   server:
     image:
       repository: ghcr.io/nudgebee/temporal-server
-      tag: 1.31.2
+      tag: '1.31.2'
     enabled: true
     replicaCount: 1
     dynamicConfig:
