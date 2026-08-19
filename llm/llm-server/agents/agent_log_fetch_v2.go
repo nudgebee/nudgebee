@@ -368,9 +368,19 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 
 // defaultLogQueryOperators is the comparison-operator set advertised to the
 // LLM when get_default_provider omits capabilities.supported_operators (older
-// backends, fetch failure). Combinators are added separately by
-// resolveQueryOperators.
-var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_ilike", "_nlike", "_is_null"}
+// backends, fetch failure).
+//
+// It must stay the INTERSECTION of what every backend can execute, because it is
+// used precisely when we do not know which backend we are talking to. `_ilike` is
+// excluded for that reason: it is not universal (Signoz rejects it), and a rejected
+// query costs a full agent iteration to discover. `_like` is the portable spelling.
+//
+// Elasticsearch DOES execute `_ilike` — natively, via a case-insensitive wildcard —
+// and advertises it, so an ES account receives it through capabilities rather than
+// through this fallback. The fallback only applies when the backend told us nothing.
+//
+// Combinators are added separately by resolveQueryOperators.
+var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_nlike", "_is_null"}
 
 // logQueryCombinators are the structural JSON combinators the where-schema
 // relies on. They are not provider comparison operators, so the backend's

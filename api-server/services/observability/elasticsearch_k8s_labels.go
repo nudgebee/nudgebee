@@ -52,6 +52,24 @@ var esCanonicalK8sFields = map[string][]string{
 	// "app" is the workload name. Fluent-Bit carries it as a pod label; the
 	// Elastic Agent k8s integration writes the owning controller's name under
 	// its own kind, so all three kinds are candidates.
+	// The canonical log-BODY field. llm-server advertises `_body` to the query
+	// generator unconditionally (tool_logs.go appends it to the label list), but no
+	// shipper writes a field called `_body` — Fluent-Bit writes `log`, ECS writes
+	// `message`, OTel writes `body`. Without this mapping the generator's
+	// `{"_body": {"_ilike": "%error%"}}` reached ES as a wildcard on a field that
+	// does not exist and matched NOTHING, silently, with HTTP 200.
+	//
+	// Verified on the dev cluster: logs-kubernetes.container_logs-* maps `log`
+	// (keyword) and has no `_body` field at all.
+	esCanonicalBodyField: {
+		"log",
+		"message",
+		// JSON-structured loggers (zap, logrus, bunyan, winston) write the line to
+		// `msg`, which a shipper with a JSON parse filter lands as its own field.
+		"msg",
+		"body",
+		"content",
+	},
 	"app": {
 		"app",
 		"kubernetes.labels.app",

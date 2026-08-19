@@ -740,6 +740,66 @@ func escapeESWildcard(s string) string {
 	return s
 }
 
+// sqlLikeToESWildcard translates a canonical SQL LIKE pattern into an Elasticsearch
+// wildcard pattern: `%` → `*`, `_` → `?`, honouring `\%` / `\_` / `\\` escapes and
+// escaping any literal `*` / `?` the value already contained.
+//
+// The canonical where-clause contract is SQL LIKE — Loki converts the same input with
+// convertSQLLikeToRegex (`%`→`.*`, `_`→`.`), and the query generator is prompted with
+// patterns like "%error%". Elasticsearch was the only backend that passed the pattern
+// through verbatim, so `%error%` reached ES as a literal wildcard containing percent
+// signs and matched NOTHING — silently, with HTTP 200.
+//
+// Measured against the dev cluster on logs-kubernetes.container_logs-*:
+// wildcard "%nudgebee%" → 0 hits; wildcard "*nudgebee*" → 10000 hits.
+func sqlLikeToESWildcard(pattern string) string {
+	// Scanned rune by rune rather than by successive ReplaceAll passes: the passes
+	// could not tell a lone backslash from an escape introducer. `a\b` kept its single
+	// backslash, which ES reads as an escape and drops (matching "ab"), and `a\*b`
+	// (literal backslash, literal star) became `a\\*b`, where the star was left as a
+	// wildcard instead of a literal.
+	var sb strings.Builder
+	sb.Grow(len(pattern) + 8)
+	runes := []rune(pattern)
+	for i := 0; i < len(runes); i++ {
+		switch r := runes[i]; r {
+		case '\\':
+			// SQL escape: `\%` and `\_` yield the literal character; anything else is a
+			// literal backslash, which ES needs doubled.
+			if i+1 < len(runes) && (runes[i+1] == '%' || runes[i+1] == '_') {
+				sb.WriteRune(runes[i+1])
+				i++
+				continue
+			}
+			sb.WriteString(`\\`)
+			if i+1 < len(runes) && runes[i+1] == '\\' {
+				i++
+			}
+		case '%':
+			sb.WriteByte('*')
+		case '_':
+			sb.WriteByte('?')
+		case '*', '?':
+			// Already an ES wildcard in the source value — keep it literal.
+			sb.WriteByte('\\')
+			sb.WriteRune(r)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+// esWildcardValue renders a filter value as the wildcard pattern string. The value is
+// already a string on every path the query generator produces; the Sprintf fallback
+// exists only for the numeric/bool literals a hand-written where clause can carry.
+func esWildcardValue(val any) string {
+	if s, ok := val.(string); ok {
+		return sqlLikeToESWildcard(s)
+	}
+	return sqlLikeToESWildcard(fmt.Sprintf("%v", val))
+}
+
 // binaryToESClause converts a single binary where operation to an ES DSL clause.
 // Returns the clause, whether it's a negation (must_not), and any error.
 func binaryToESClause(field string, op query.BinaryWhereClauseType, val any) (clause map[string]any, negate bool, err error) {
@@ -761,9 +821,25 @@ func binaryToESClause(field string, op query.BinaryWhereClauseType, val any) (cl
 	case query.NotIn:
 		return map[string]any{"terms": map[string]any{field: val}}, true, nil
 	case query.Like:
-		return map[string]any{"wildcard": map[string]any{field: map[string]any{"value": val}}}, false, nil
+		return map[string]any{
+			"wildcard": map[string]any{field: map[string]any{"value": esWildcardValue(val)}},
+		}, false, nil
 	case query.NLike:
-		return map[string]any{"wildcard": map[string]any{field: map[string]any{"value": val}}}, true, nil
+		return map[string]any{
+			"wildcard": map[string]any{field: map[string]any{"value": esWildcardValue(val)}},
+		}, true, nil
+	case query.ILike:
+		// Elasticsearch does case-insensitive wildcard matching natively, so there is
+		// no reason to reject `_ilike` — and rejecting it was expensive. The generator
+		// emits `_ilike` for text matching whatever the advertised operator list says
+		// (few-shots outweigh the list), the whole query was then refused with
+		// `unsupported operator "_ilike"`, and the agent burned a full iteration —
+		// minutes of model time — rediscovering that by trial and error.
+		return map[string]any{
+			"wildcard": map[string]any{field: map[string]any{
+				"value": esWildcardValue(val), "case_insensitive": true,
+			}},
+		}, false, nil
 	case query.Gt:
 		return map[string]any{"range": map[string]any{field: map[string]any{"gt": val}}}, false, nil
 	case query.Lt:
