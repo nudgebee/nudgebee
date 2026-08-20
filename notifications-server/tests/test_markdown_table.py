@@ -207,6 +207,31 @@ class TestRenderTable:
             {"type": "text", "text": "urgent", "style": {"bold": True, "italic": True}}
         ]
 
+    def test_table_cell_with_real_llm_server_bold_italic_form(self):
+        # Traced directly against llm-server's convertMarkdownToSlackMarkdown
+        # (executor_response_formatter.go, 2026-08-20): GFM "**_urgent_**"
+        # hits its reBold regex first (2 asterisks beat reItalic), capturing
+        # "_urgent_" and re-wrapping in single asterisks - producing
+        # "*_urgent_*" (asterisk OUTER), not "_*urgent*_" (underscore outer,
+        # the test above). Before bold_italic3 existed, this fell through to
+        # bold3 instead: bold-only, with the inner underscores left as
+        # literal characters in the text ("_urgent_" shown verbatim, bold).
+        text = "| Name | Note |\n|---|---|\n| foo | *_urgent_* |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][1]["elements"][0]["elements"] == [
+            {"type": "text", "text": "urgent", "style": {"bold": True, "italic": True}}
+        ]
+
+    def test_table_cell_with_bold_italic_underscore_containing_identifier(self):
+        # bold_italic3's content must allow underscores, not just exclude
+        # them, or a genuine bold+italic FinOps identifier like a bucket
+        # name falls through to bold3 (bold only, underscores left literal).
+        text = "| Name | Note |\n|---|---|\n| foo | *_my_bucket_name_* |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[1][1]["elements"][0]["elements"] == [
+            {"type": "text", "text": "my_bucket_name", "style": {"bold": True, "italic": True}}
+        ]
+
     def test_table_cell_with_slack_native_link(self):
         # Slack's own link syntax <url|label> / bare <url> - what GFM
         # "[label](url)" becomes after llm-server's conversion pass.

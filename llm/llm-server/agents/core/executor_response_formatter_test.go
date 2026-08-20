@@ -152,6 +152,51 @@ func TestConvertMarkdownToSlackMarkdown(t *testing.T) {
 			input:    "```\n**not bold**\n```",
 			expected: "```\n**not bold**\n```",
 		},
+		{
+			// Regression guard: "*_text_*" is redundant same-level GFM
+			// emphasis - "*x*" and "_x_" both mean italic, nesting them
+			// doesn't add bold. Before reNestedItalic existed, reItalic
+			// captured "_John_" (underscores included) as flat content and
+			// wrapped it again, producing "__John__" - invalid Slack syntax
+			// that renders as bold, not italic.
+			name:     "Single-asterisk wrapping a complete underscore span collapses to italic",
+			input:    "This is *_John_* here.",
+			expected: "This is _John_ here.",
+		},
+		{
+			// Genuine GFM bold-italic ("**_text_**") must still convert
+			// correctly: reBold consumes the whole span before
+			// reNestedItalic ever sees it, so this is unaffected by the fix.
+			name:     "Double-asterisk wrapping a complete underscore span stays bold+italic",
+			input:    "This is **_John_** here.",
+			expected: "This is *_John_* here.",
+		},
+		{
+			// Plain single-asterisk italic (content isn't itself a
+			// complete underscore span) is unaffected.
+			name:     "Plain single-asterisk italic is unaffected",
+			input:    "This is *plain* here.",
+			expected: "This is _plain_ here.",
+		},
+		{
+			// Plain snake_case content isn't itself wrapped in underscores
+			// ("*my_bucket_name*", not "*_my_bucket_name_*"), so it doesn't
+			// start with "_" and reNestedItalic never matches - falls
+			// through to reItalic exactly as before, unaffected by the fix.
+			name:     "Snake_case identifier in single asterisks is unaffected",
+			input:    "Use *my_bucket_name* here.",
+			expected: "Use _my_bucket_name_ here.",
+		},
+		{
+			// reNestedItalic's content must allow underscores, not just
+			// exclude them, or a redundant wrap around a multi-underscore
+			// identifier (common in FinOps/technical content) skips the
+			// collapse and falls to reItalic instead, producing invalid
+			// "__my_bucket_name__" (bold) instead of italic.
+			name:     "Single-asterisk wrapping an underscore span containing underscores still collapses to italic",
+			input:    "This is *_my_bucket_name_* here.",
+			expected: "This is _my_bucket_name_ here.",
+		},
 	}
 
 	for _, tc := range testCases {

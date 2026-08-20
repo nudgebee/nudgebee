@@ -25,6 +25,7 @@ var (
 	reInlineCode    = regexp.MustCompile("`([^`]+)`")
 	reBoldItalic    = regexp.MustCompile(`\*\*\*(.+?)\*\*\*`)
 	reBold          = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reNestedItalic  = regexp.MustCompile(`\*(_[^*]+?_)\*`)
 	reItalic        = regexp.MustCompile(`\*(.+?)\*`)
 	reHeader        = regexp.MustCompile(`(?m)^#+\s+(.*)$`)
 	reUnderlineBold = regexp.MustCompile(`__(.*?)__`)
@@ -63,6 +64,7 @@ func convertMarkdownToSlackMarkdown(response string) string {
 
 	response = reBoldItalic.ReplaceAllString(response, "||BI_S||$1||BI_E||")
 	response = reBold.ReplaceAllString(response, "||B_S||$1||B_E||")
+	response = reNestedItalic.ReplaceAllString(response, "$1")
 	response = reItalic.ReplaceAllString(response, "||I_S||$1||I_E||")
 	response = reHeader.ReplaceAllString(response, "*$1*")
 	response = reUnderlineBold.ReplaceAllString(response, "*$1*")

@@ -43,7 +43,8 @@ _NUMBER_RE = re.compile(r"^-?\d+(\.\d+)?$")
 # | slack_link_*   | <url\|label>  | link                | Slack-native           |
 # | slack_bare_url | <url>         | link (text = url)   | Slack-native           |
 # | bold_italic    | ***text***    | bold, italic        | GFM                    |
-# | bold_italic2   | _*text*_      | bold, italic        | Slack-native           |
+# | bold_italic2   | _*text*_      | bold, italic        | manual (see note)      |
+# | bold_italic3   | *_text_*      | bold, italic        | Slack-native (see note)|
 # | bold           | **text**      | bold                | GFM                    |
 # | bold2          | __text__      | bold                | GFM                    |
 # | strike         | ~~text~~      | strike              | GFM                    |
@@ -60,6 +61,11 @@ _NUMBER_RE = re.compile(r"^-?\d+(\.\d+)?$")
 #   "Slack-native" rows above are actually expected; the "GFM" rows are
 #   defensive coverage (hand-authored content, tests, a future non-Slack
 #   caller), not something that reaches here unconverted in production.
+# - bold_italic3 ("*_text_*", asterisk outer) is what real traffic carries:
+#   llm-server's reBold matches GFM "**_text_**" before reItalic runs, so it
+#   re-wraps "_text_" in single asterisks - asterisk stays outermost. Without
+#   this row it falls through to bold3 (bold only, underscores left literal).
+#   bold_italic2 (underscore outer) only covers hand-authored/test content.
 # - bold3 ("*text*") is genuinely ambiguous: raw GFM would mean italic, but
 #   since llm-server already rewrites "**bold**" -> "*bold*" before this code
 #   ever sees it, a lone "*text*" in real traffic is overwhelmingly the
@@ -78,6 +84,7 @@ _INLINE_TOKEN_RE = re.compile(
     rf"|<(?P<slack_bare_url>{_SLACK_URL_SCHEME}[^<>]+)>"
     r"|\*\*\*(?P<bold_italic>[^*]+?)\*\*\*"
     r"|_\*(?P<bold_italic2>[^*_]+?)\*_"
+    r"|\*_(?P<bold_italic3>[^*]+?)_\*"
     r"|\*\*(?P<bold>[^*]+?)\*\*"
     r"|__(?P<bold2>[^_]+?)__"
     r"|~~(?P<strike>[^~]+?)~~"
@@ -251,6 +258,7 @@ def _truncate_cell_text(text: str, max_chars: int = _MAX_CELL_CHARS) -> str:
 _STYLE_GROUPS = {
     "bold_italic": {"bold": True, "italic": True},
     "bold_italic2": {"bold": True, "italic": True},
+    "bold_italic3": {"bold": True, "italic": True},
     "bold": {"bold": True},
     "bold2": {"bold": True},
     "bold3": {"bold": True},
