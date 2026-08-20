@@ -38,6 +38,7 @@ func IsCommandDatasource(datasource string) bool {
 const (
 	VizTimeseries = "timeseries"
 	VizStat       = "stat"
+	VizGauge      = "gauge"
 	VizTable      = "table"
 	VizBar        = "bar"
 	VizText       = "text"

@@ -8,7 +8,7 @@
  * why it is `postgresql` rather than `postgres`.
  */
 export type PanelDatasource = 'metrics' | 'logs' | 'traces' | 'nudgebee' | 'redis' | 'rabbitmq' | 'postgresql';
-export type PanelType = 'timeseries' | 'stat' | 'table' | 'bar' | 'text';
+export type PanelType = 'timeseries' | 'stat' | 'gauge' | 'table' | 'bar' | 'text';
 
 export const COMMAND_DATASOURCES: PanelDatasource[] = ['redis', 'rabbitmq', 'postgresql'];
 

@@ -422,7 +422,7 @@ export function usePanelData({
           start_time: startTime,
           end_time: endTime,
           // CloudWatch has no instant form — it always answers with a range.
-          instant: cloudwatch ? false : panel.type === 'stat',
+          instant: cloudwatch ? false : panel.type === 'stat' || panel.type === 'gauge',
           // Named explicitly for AWS, because CloudWatch is never an account's DEFAULT metrics provider: it
           // is not an integration that can carry that flag, so without this the query goes to whatever the
           // account does default to (Datadog, typically) and comes back unparseable.

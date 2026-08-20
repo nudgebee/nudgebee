@@ -32,7 +32,7 @@ const PANEL_TYPE_MAP: Record<string, PanelType> = {
   'graph-old': 'timeseries',
   stat: 'stat',
   singlestat: 'stat',
-  gauge: 'stat',
+  gauge: 'gauge',
   bargauge: 'stat',
   table: 'table',
   'table-old': 'table',

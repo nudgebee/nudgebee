@@ -11,7 +11,7 @@ import nbClickhouse from '@components/dashboards/apps/nb_clickhouse.json';
 import otelNodejs from '@components/dashboards/apps/otel_nodejs.json';
 
 const SCOPE: PanelScope = { account_type: 'K8s', account_ids: [] };
-const VALID_TYPES = new Set(['timeseries', 'stat', 'table', 'bar', 'text']);
+const VALID_TYPES = new Set(['timeseries', 'stat', 'gauge', 'table', 'bar', 'text']);
 
 describe('parseGrafanaJson', () => {
   it('accepts a bare dashboard model and the API-wrapped form', () => {
@@ -108,6 +108,20 @@ describe('convertGrafanaDashboard', () => {
     const types = new Set(convertGrafanaDashboard(otelNodejs, SCOPE).definition.panels.map((p) => p.type));
     expect(types.has('timeseries')).toBe(true);
     expect(types.has('stat')).toBe(true);
+  });
+
+  it('imports a Grafana gauge as a gauge, and a bar gauge as the stat it reads like', () => {
+    const result = convertGrafanaDashboard(
+      {
+        title: 'gauges',
+        panels: [
+          { id: 1, type: 'gauge', title: 'memory %', targets: [{ refId: 'A', expr: 'up' }] },
+          { id: 2, type: 'bargauge', title: 'per-node %', targets: [{ refId: 'A', expr: 'up' }] },
+        ],
+      },
+      SCOPE
+    );
+    expect(result.definition.panels.map((p) => p.type)).toEqual(['gauge', 'stat']);
   });
 
   it('warns about variables nothing on this page can fill', () => {

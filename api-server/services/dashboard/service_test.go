@@ -35,10 +35,14 @@ func TestSlugify(t *testing.T) {
 }
 
 func TestValidateDefinition_AcceptsValidPanels(t *testing.T) {
+	gauge := timeseriesPanel()
+	gauge.Id = 3
+	gauge.Type = VizGauge
 	def := Definition{
 		Panels: []Panel{
 			timeseriesPanel(),
 			{Id: 2, Title: "Notes", Type: VizText, GridPos: GridPos{W: 12, H: 4}, Content: "hello"},
+			gauge,
 		},
 	}
 	require.NoError(t, ValidateDefinition(def))

@@ -43,6 +43,7 @@ interface Props {
 const PANEL_TYPES: { label: string; value: PanelType }[] = [
   { label: 'Time series', value: 'timeseries' },
   { label: 'Stat', value: 'stat' },
+  { label: 'Gauge', value: 'gauge' },
   { label: 'Table', value: 'table' },
   { label: 'Bar', value: 'bar' },
   { label: 'Text', value: 'text' },
@@ -552,7 +553,10 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                     </Form.Field>
                   )}
 
-                  <Form.Field label='Visualisation'>
+                  <Form.Field
+                    label='Visualisation'
+                    description={draft.type === 'gauge' ? 'The dial runs 0 to 100 — write the query to return a percentage.' : undefined}
+                  >
                     <Select
                       value={draft.type}
                       options={commandHelp || isEntity || isLogs ? PANEL_TYPES.filter((t) => t.value === 'table') : PANEL_TYPES}
