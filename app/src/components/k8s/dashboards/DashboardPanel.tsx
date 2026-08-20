@@ -111,16 +111,9 @@ function formatValue(value: number | null | undefined, unit?: string): string {
   return unit ? `${rounded} ${unit}` : rounded;
 }
 
-/**
- * One table cell, rendered the way the product's own listings render it: a
- * savings figure as money, memory in GB, a latency as "1ms", a timestamp as
- * relative text with the absolute time on hover. The kind comes off the query
- * builder's column registry, so a `nudgebee` panel needs no per-panel setup.
- *
- * Values arrive as strings — the panel table is text over the wire — so each
- * component gets what it parses: the components themselves render "-" for an
- * empty or unparseable value.
- */
+const NUMBER_CELL_SX = { textAlign: 'right', fontSize: ds.text.caption, fontWeight: 'var(--ds-font-weight-regular)', color: 'var(--ds-gray-700)' };
+const NUMBER_CELL_SUFFIX_SX = { color: 'var(--ds-gray-700)', fontSize: ds.text.caption };
+
 function renderTableCell(kind: ColumnKind, value: string): React.ReactNode {
   if (!value) return value;
   switch (kind) {
@@ -132,11 +125,11 @@ function renderTableCell(kind: ColumnKind, value: string): React.ReactNode {
       // Stored in MB, shown in GB — the same conversion the Nodes listing does.
       return <Memory value={Number(value)} sourceUnit='mb' targetUnit='gb' sx={{ fontSize: ds.text.caption }} />;
     case 'cpu':
-      return <NumberFormat value={Number(value)} suffix=' cores' />;
+      return <NumberFormat value={Number(value)} suffix=' cores' sx={NUMBER_CELL_SX} suffixSx={NUMBER_CELL_SUFFIX_SX} />;
     case 'duration':
       return formatDurationInTrace(Number(value));
     case 'number':
-      return <NumberFormat value={Number(value)} />;
+      return <NumberFormat value={Number(value)} sx={NUMBER_CELL_SX} />;
     default:
       return value;
   }

@@ -23,6 +23,7 @@ import { referencedVariables, type VariableValues } from './templating';
 interface Props {
   open: boolean;
   panel: Panel | null;
+  isEdit: boolean;
   /** Every account the author may point this panel at, across providers. */
   accountOptions: AccountOption[];
   /** The host page's variables, so the preview substitutes `$namespace` as the dashboard will. */
@@ -107,7 +108,7 @@ const GroupHeader: React.FC<{ title: string; description: string }> = ({ title, 
   </Box>
 );
 
-const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variables, startTime, endTime, onClose, onSave }) => {
+const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions, variables, startTime, endTime, onClose, onSave }) => {
   const [draft, setDraft] = useState<Panel | null>(panel);
   /** Account types are editor-local, not panel state. */
   const [accountTypes, setAccountTypes] = useState<string[]>([]);
@@ -331,9 +332,6 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, accountOptions, variab
     // The server refuses these too; catching them here saves a round trip that
     // comes back as a message about a panel the author can no longer see.
     columns.every(isCompleteColumn);
-  // A panel that has been saved always carries a title (`canSave` demands one),
-  // so a titled panel is one being edited rather than a blank being authored.
-  const isEdit = Boolean(panel?.title);
 
   /** The draft as it would be stored — the preview runs this and the save sends it. */
   const resolvedDraft: Panel = { ...draft, ...panelScopeFromTypes(accountTypes, accountIds, accountOptions) };

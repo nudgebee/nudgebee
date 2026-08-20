@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
@@ -37,8 +38,8 @@ interface Props {
   startTime?: number;
   endTime?: number;
   onClose: () => void;
-  /** Adds the copy. May be async; the modal stays open so several can be added. */
-  onAdd: (panel: Panel) => void | Promise<void>;
+  /** Hands the copy to the panel editor, where the account is configured before it's saved. */
+  onConfigure: (panel: Panel) => void;
 }
 
 /** Role filter value meaning "every widget". */
@@ -53,16 +54,19 @@ function queryText(panel: Panel): string {
 }
 
 /** Picks one widget out of the library: selecting previews it, the footer's Add copies it onto the dashboard. */
-const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptions, variables, startTime, endTime, onClose, onAdd }) => {
+const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptions, variables, startTime, endTime, onClose, onConfigure }) => {
   const [role, setRole] = useState<TemplateRole | typeof ALL_ROLES>(ALL_ROLES);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<PanelTemplate | null>(null);
-  const [adding, setAdding] = useState(false);
-  /** What has been added this visit — the confirmation toast renders behind the modal. */
-  const [addedIds, setAddedIds] = useState<string[]>([]);
   const fallbackRange = usePreviewRange(open);
 
-  const roleOptions = useMemo(() => [{ value: ALL_ROLES, label: 'All' }, ...TEMPLATE_ROLES.map((r) => ({ value: r.value, label: r.label }))], []);
+  const roleOptions = useMemo(
+    () => [
+      { value: ALL_ROLES, label: 'All' },
+      ...TEMPLATE_ROLES.filter((r) => r.value !== 'developer').map((r) => ({ value: r.value, label: r.label })),
+    ],
+    []
+  );
 
   /**
    * Widget id → the `<module>:Read` grant its viewer is missing.
@@ -113,19 +117,13 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
     setSearch('');
     setRole(ALL_ROLES);
     setSelected(null);
-    setAddedIds([]);
     onClose();
   };
 
-  const add = async () => {
-    if (!selected || !previewPanel) return;
-    setAdding(true);
-    try {
-      await onAdd(previewPanel);
-      setAddedIds((prev) => (prev.includes(selected.id) ? prev : [...prev, selected.id]));
-    } finally {
-      setAdding(false);
-    }
+  const configure = () => {
+    if (!previewPanel) return;
+    onConfigure(previewPanel);
+    close();
   };
 
   return (
@@ -133,17 +131,24 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
       open={open}
       handleClose={close}
       title='Add a panel from the library'
-      subtitle='Pick one to preview it with your data. Adding puts it straight on the dashboard, scoped to the account its query needs.'
+      subtitle='Pick one to preview it with sample data. Continuing opens it in the panel editor, where you set the account before it’s added.'
       width='lg'
       maxHeight='85vh'
       contentStyles={{ padding: 0, overflow: 'hidden', display: 'flex' }}
       actionButtons={
         <Stack direction='row' gap='12px' sx={{ button: { minWidth: '140px' } }}>
-          <Button tone='secondary' onClick={close} disabled={adding} id='panel-library-close-btn'>
+          <Button tone='secondary' onClick={close} id='panel-library-close-btn'>
             Close
           </Button>
-          <Button onClick={add} disabled={!selected || adding} loading={adding} id='panel-library-add-btn' data-testid='panel-library-add-btn'>
-            Add to dashboard
+          <Button
+            onClick={configure}
+            disabled={!selected}
+            icon={<ArrowForwardIcon sx={{ fontSize: 16 }} />}
+            iconPlacement='end'
+            id='panel-library-add-btn'
+            data-testid='panel-library-add-btn'
+          >
+            Configure
           </Button>
         </Stack>
       }
@@ -165,10 +170,12 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
             display: 'flex',
             flexDirection: 'column',
             overflow: { xs: 'visible', md: 'hidden' },
-            padding: 'var(--ds-space-5) var(--ds-space-6)',
+            padding: 'var(--ds-space-5) var(--ds-space-2)',
+            pb: 0,
           }}
         >
-          <Stack direction='row' alignItems='center' gap={1.5} flexWrap='wrap' sx={{ mb: 1.5, flexShrink: 0 }}>
+          <Stack direction='row' alignItems='center' gap={1.5} sx={{ px: ds.space[5], mb: 1.5, flexShrink: 0 }}>
+            <SearchInput value={search} onChange={setSearch} label='Search widgets' id='panel-library-search' sx={{ flexShrink: 0 }} />
             <ToggleGroup
               selection='single'
               size='sm'
@@ -178,29 +185,27 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
               onChange={(next) => setRole(next as TemplateRole | typeof ALL_ROLES)}
               id='panel-library-role-toggle'
             />
-            <SearchInput value={search} onChange={setSearch} label='Search widgets' id='panel-library-search' />
           </Stack>
 
           {byCategory.length === 0 ? (
             <EmptyState size='section' illustration='no-results' title='No widget matches' description='Try another role, or clear the search.' />
           ) : (
             // Only the list scrolls, so the filters stay put.
-            <Box sx={{ flex: 1, minHeight: 0, overflowY: { xs: 'visible', md: 'auto' }, pr: 0.5 }} data-testid='panel-library-list'>
+            <Box sx={{ flex: 1, minHeight: 0, px: ds.space[5], overflowY: { xs: 'visible', md: 'auto' } }} data-testid='panel-library-list'>
               {byCategory.map(({ category, widgets }) => (
                 <Box key={category} sx={{ mb: 2 }}>
                   <Typography
                     sx={{
                       fontFamily: 'var(--ds-font-display)',
                       fontSize: 13,
-                      fontWeight: 620,
+                      fontWeight: ds.weight.semibold,
                       color: ds.gray[600],
                       mb: 0.75,
-                      textTransform: 'uppercase',
                     }}
                   >
                     {category}
                   </Typography>
-                  <Stack gap={0.75}>
+                  <Stack gap={1.5}>
                     {widgets.map((widget) => {
                       const blocked = blockedWidgets[widget.id];
                       const card = (
@@ -208,23 +213,27 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
                           variant='outlined'
                           elevation='flat'
                           size='sm'
-                          // A widget the viewer's role cannot read is left in
-                          // place but inert — adding it would put a panel on the
-                          // dashboard that only ever renders Access Denied.
                           interactive={!blocked}
                           onClick={blocked ? undefined : () => setSelected(widget)}
                           data-testid={`widget-${widget.id}`}
                           sx={{
-                            ...(selected?.id === widget.id ? { borderColor: ds.blue[500], background: ds.blue[100] } : {}),
+                            ...(selected?.id === widget.id
+                              ? { borderColor: ds.blue[300], background: ds.blue[100], boxShadow: '0 4px 8px rgba(0, 0, 0, 0.08)' }
+                              : {}),
                             ...(blocked ? { opacity: 0.55, cursor: 'not-allowed', background: ds.background[200] } : {}),
+                            // Card's `interactive` hover always adds a lift shadow regardless of `elevation` — flat here means flat.
+                            '&:hover': { boxShadow: 'none', transform: 'none' },
                           }}
                         >
                           <Stack direction='row' alignItems='center' gap={1.5}>
                             <Box sx={{ minWidth: 0, flex: 1 }}>
-                              <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 13.5, fontWeight: 600, color: ds.gray[700] }} noWrap>
+                              <Typography
+                                sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 'var(--ds-text-body)', fontWeight: 600, color: ds.gray[700] }}
+                                noWrap
+                              >
                                 {widget.panel.title}
                               </Typography>
-                              <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block' }}>
+                              <Typography variant='caption' sx={{ color: ds.gray[600], display: 'block' }}>
                                 {widget.summary}
                               </Typography>
                             </Box>
@@ -238,22 +247,20 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
                                 </Chip>
                               ) : (
                                 <>
-                                  {addedIds.includes(widget.id) && (
-                                    <Chip size='2xs' tone='success' data-testid={`widget-added-${widget.id}`}>
-                                      Added
-                                    </Chip>
-                                  )}
                                   <Chip size='2xs' tone='subtle'>
                                     {widget.panel.type}
                                   </Chip>
                                   <Chip size='2xs' tone='subtle'>
                                     {widget.panel.datasource}
                                   </Chip>
-                                  {widget.roles.slice(0, 2).map((r) => (
-                                    <Chip key={r} size='2xs' tone='info'>
-                                      {roleLabel(r)}
-                                    </Chip>
-                                  ))}
+                                  {widget.roles
+                                    .filter((r) => r !== 'developer')
+                                    .slice(0, 2)
+                                    .map((r) => (
+                                      <Chip key={r} size='2xs' tone='info'>
+                                        {roleLabel(r)}
+                                      </Chip>
+                                    ))}
                                 </>
                               )}
                             </Stack>
@@ -300,12 +307,32 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
                 variables={variables || {}}
                 startTime={startTime ?? fallbackRange.start}
                 endTime={endTime ?? fallbackRange.end}
+                forceSample
               />
-              {/* What the row could not fit — `description` previously surfaced only
-                  as the panel's hover tooltip, after it had been added. */}
-              <Box>
+              <Card
+                size='sm'
+                elevation='flat'
+                footer={
+                  queryText(previewPanel) ? (
+                    <Box
+                      sx={{
+                        maxHeight: 140,
+                        overflow: 'auto',
+                        fontFamily: 'monospace',
+                        fontSize: 11.5,
+                        color: ds.gray[600],
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                      }}
+                      data-testid='panel-library-query'
+                    >
+                      {queryText(previewPanel)}
+                    </Box>
+                  ) : undefined
+                }
+              >
                 {previewPanel.description && (
-                  <Typography variant='body2' sx={{ color: ds.gray[600], mb: 1.5 }}>
+                  <Typography variant='body2' sx={{ color: ds.gray[600], mb: 1.5, fontSize: ds.text.body, fontWeight: ds.weight.semibold }}>
                     {previewPanel.description}
                   </Typography>
                 )}
@@ -316,28 +343,7 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
                   {/* The one thing Add decides for you — including "No account". */}
                   <DetailRow label='Accounts' value={describePanelScope(previewPanel, accountOptions)} />
                 </Stack>
-                {queryText(previewPanel) && (
-                  <Box
-                    sx={{
-                      mt: 1.5,
-                      p: 1,
-                      maxHeight: 140,
-                      overflow: 'auto',
-                      background: ds.background[100],
-                      border: `1px solid ${ds.gray[200]}`,
-                      borderRadius: '6px',
-                      fontFamily: 'monospace',
-                      fontSize: 11.5,
-                      color: ds.gray[600],
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                    }}
-                    data-testid='panel-library-query'
-                  >
-                    {queryText(previewPanel)}
-                  </Box>
-                )}
-              </Box>
+              </Card>
             </Stack>
           ) : (
             <Box
@@ -356,7 +362,7 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
               data-testid='panel-library-preview-empty'
             >
               <Typography variant='body2' sx={{ color: ds.gray[500] }}>
-                Pick a widget to see it drawn with your data before you add it.
+                Pick a widget to see it drawn with sample data before you configure it.
               </Typography>
             </Box>
           )}

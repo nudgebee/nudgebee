@@ -220,17 +220,14 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     setPanelModalOpen(true);
   };
 
-  /**
-   * A library widget lands on the dashboard directly. It used to open in the panel editor first, so
-   * the pre-filled account and query were read before anything was committed.
-   */
-  const addLibraryPanel = async (panel: Panel) => {
-    if (!(await savePanel(panel, { silent: true }))) return;
-    snackbar.success(`“${panel.title}” added to the dashboard`);
+  const openLibraryPanel = (panel: Panel) => {
+    setLibraryOpen(false);
+    setEditingPanel(panel);
+    setPanelModalOpen(true);
   };
 
   /** Resolves true once the panel is on the dashboard — buffered in edit mode, written otherwise. */
-  const savePanel = async (panel: Panel, options?: { silent?: boolean }): Promise<boolean> => {
+  const savePanel = async (panel: Panel): Promise<boolean> => {
     const isNew = !panels.some((p) => p.id === panel.id);
     const next = isNew ? [...panels, panel] : panels.map((p) => (p.id === panel.id ? panel : p));
 
@@ -245,9 +242,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     }
 
     if (!(await persist({ panels: next }))) return false;
-    // `persist` reports its own failures, so silence here only ever suppresses a
-    // success the caller is about to word better.
-    if (!options?.silent) snackbar.success(isNew ? 'Panel added' : 'Panel updated');
+    snackbar.success(isNew ? 'Panel added' : 'Panel updated');
     setPanelModalOpen(false);
     setEditingPanel(null);
     return true;
@@ -761,12 +756,13 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
         startTime={range.startDate}
         endTime={range.endDate}
         onClose={() => setLibraryOpen(false)}
-        onAdd={addLibraryPanel}
+        onConfigure={openLibraryPanel}
       />
 
       <PanelEditorModal
         open={panelModalOpen}
         panel={editingPanel}
+        isEdit={editingPanel ? panels.some((p) => p.id === editingPanel.id) : false}
         accountOptions={accounts}
         // The preview runs against the same window and variables the panels beside it do, so it is not
         // answering a different question from the dashboard the author is looking at.

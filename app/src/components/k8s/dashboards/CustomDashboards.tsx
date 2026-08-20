@@ -6,9 +6,14 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { DeleteIconRed as deleteIcon, downloadIcon, K8sIcon, writeIconLight } from '@assets';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Button } from '@ui/Button';
+import { DropdownMenu } from '@ui/DropdownMenu';
 import { Modal } from '@ui/Modal';
 import { snackbar } from '@ui/Toast';
 import SearchInput from '@ui/SearchInput';
+import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import LibraryBooksOutlinedIcon from '@mui/icons-material/LibraryBooksOutlined';
+import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
@@ -406,10 +411,11 @@ const CustomDashboards: React.FC = () => {
   }
 
   const headers = [
-    { name: 'Dashboard', width: '52%' },
-    { name: 'Panels', width: '10%' },
-    { name: 'Updated At', width: '20%' },
-    { name: 'Action', width: '18%' },
+    { name: 'Dashboard', width: '40%' },
+    { name: 'Panels', width: '8%' },
+    { name: 'Created At', width: '16%' },
+    { name: 'Updated At', width: '16%' },
+    { name: 'Action', width: '20%' },
   ];
 
   // CustomTable renders `component || text` — a cell carrying only `value` renders blank, which is why Panels
@@ -443,6 +449,10 @@ const CustomDashboards: React.FC = () => {
     { text: String(d.definition?.panels?.length ?? 0), value: String(d.definition?.panels?.length ?? 0) },
     {
       // Relative time with an absolute tooltip, matching every other listing.
+      component: <Datetime value={d.created_at} />,
+      value: d.created_at || '',
+    },
+    {
       component: <Datetime value={d.updated_at} />,
       value: d.updated_at || '',
     },
@@ -502,34 +512,45 @@ const CustomDashboards: React.FC = () => {
         <ListingLayout.Toolbar
           actions={
             canWrite ? (
-              <Stack direction='row' gap={1}>
-                {/* First of the three: on an empty tenant a template is the
-                    answer far more often than a blank canvas or someone else's
-                    exported JSON. */}
-                <Button
-                  tone='secondary'
-                  onClick={() => setTemplatesOpen(true)}
-                  id='open-template-gallery-btn'
-                  data-testid='open-template-gallery-btn'
-                >
-                  Use a template
-                </Button>
-                {/* Not `import-dashboard-btn` — that id belongs to the modal's
-                    own submit button, and two elements cannot share one. */}
-                <Button tone='secondary' onClick={() => setImportOpen(true)} id='open-import-dashboard-btn' data-testid='open-import-dashboard-btn'>
-                  Import dashboard
-                </Button>
-                <Button
-                  onClick={() => {
-                    setDraftDashboard(BLANK_DASHBOARD);
-                    setMode({ name: 'create' });
-                  }}
-                  id='new-dashboard-btn'
-                  data-testid='new-dashboard-btn'
-                >
-                  New dashboard
-                </Button>
-              </Stack>
+              // Same shape as the in-dashboard Add panel menu: one button, three
+              // ways to start, so the toolbar reads as one action instead of
+              // three competing buttons.
+              <DropdownMenu
+                align='end'
+                trigger={
+                  <Button
+                    icon={<KeyboardArrowDownIcon sx={{ fontSize: 18 }} />}
+                    iconPlacement='end'
+                    id='new-dashboard-btn'
+                    data-testid='new-dashboard-btn'
+                  >
+                    New dashboard
+                  </Button>
+                }
+                items={[
+                  {
+                    id: 'open-template-gallery-btn',
+                    label: 'Use a template',
+                    icon: <LibraryBooksOutlinedIcon sx={{ fontSize: 17 }} />,
+                    onSelect: () => setTemplatesOpen(true),
+                  },
+                  {
+                    id: 'open-import-dashboard-btn',
+                    label: 'Import dashboard',
+                    icon: <UploadFileOutlinedIcon sx={{ fontSize: 17 }} />,
+                    onSelect: () => setImportOpen(true),
+                  },
+                  {
+                    id: 'new-blank-dashboard-btn',
+                    label: 'Blank dashboard',
+                    icon: <AddOutlinedIcon sx={{ fontSize: 17 }} />,
+                    onSelect: () => {
+                      setDraftDashboard(BLANK_DASHBOARD);
+                      setMode({ name: 'create' });
+                    },
+                  },
+                ]}
+              />
             ) : null
           }
         >
