@@ -87,6 +87,16 @@ func applyCalleeRunTags(searchAttrs, memo map[string]any, calleeWorkflowID strin
 	}
 }
 
+// resolveLastExecutionTarget returns the id of the workflow row whose last_execution_*
+// columns this run writes: itself, the callee for a core.call-workflow run (its "inline-…"
+// id matches no row), or "" for definition-synthesizing children that own no row.
+func resolveLastExecutionTarget(wfID, startAttrWorkflowID string) string {
+	if !strings.HasPrefix(wfID, "inline-") {
+		return wfID
+	}
+	return startAttrWorkflowID
+}
+
 // getUserDisplayName returns the display name to attribute the workflow run to.
 // Prefers the actual triggerer (manual / retrigger), falls back to the last
 // updater for scheduled/webhook/event-rule triggers.
@@ -530,6 +540,8 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	if !hasStartWorkflowID || startWorkflowID == "" {
 		systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID).ValueSet(wf.ID))
 	}
+	// The workflow row this run's last_execution_* columns belong to.
+	lastExecTarget := resolveLastExecutionTarget(wf.ID, startWorkflowID)
 
 	// Add workflow trigger type if available from info.SearchAttributes
 	if searchAttributes.Size() > 0 {
@@ -552,7 +564,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 			logger.Error("Panic recovered in workflow execution", "panic", r)
 			panicMessage := fmt.Sprintf("%v", r)
 			// Pass the panic message to the final status update
-			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, inputs, logger, temporal.NewApplicationError("workflow panic", "panic", panicMessage))
+			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, temporal.NewApplicationError("workflow panic", "panic", panicMessage))
 			// Set the error for the workflow function to return, causing the Temporal workflow to fail.
 			err = temporal.NewApplicationError("workflow panic: non-deterministic", "panic", panicMessage)
 		}
@@ -570,9 +582,10 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 		return "", err
 	}
 
-	// Update workflow status to RUNNING with retry logic, only for parent workflows
-	if !isChildWorkflow && !wf.DryRun {
-		updateInprogressWorkflowStatus(ctx, wf, logger)
+	// Update status to RUNNING for every run that owns a workflow row — top-level
+	// runs, and called runs, which own the callee's row.
+	if lastExecTarget != "" && !wf.DryRun {
+		updateInprogressWorkflowStatus(ctx, wf, lastExecTarget, logger)
 	}
 
 	// Upsert static Search Attributes from wf.Tags
@@ -737,7 +750,10 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	if workflowError != nil {
 		logger.Info("Workflow execution failed because of error", "workflowId", wf.ID, "error", workflowError)
 		if !isChildWorkflow {
-			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, inputs, logger, workflowError)
+			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, workflowError)
+		} else if !wf.DryRun {
+			// A called run records status on the callee's row, but not its hooks or tags.
+			setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusFailed, workflowError.Error(), logger)
 		}
 		return "", workflowError
 	}
@@ -852,7 +868,10 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 				}
 			}
 		}
-		updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, inputs, logger, nil)
+		updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, nil)
+	} else if !wf.DryRun {
+		// As on the failure path: status on the callee's row, no hooks or tags.
+		setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusCompleted, "", logger)
 	}
 
 	logger.Info("Workflow execution completed", "workflowId", wf.ID, "result", workflowResult)
@@ -863,9 +882,12 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	return string(resultBytes), nil
 }
 
-func updateInprogressWorkflowStatus(ctx workflow.Context, wf *model.Workflow, logger temporalLog.Logger) {
-	logger.Info("updating workflow status to in-progress", "id", wf.ID, "tenant", wf.TenantID, "account", wf.AccountID)
-	// Update workflow status to RUNNING with retry logic
+// setLastExecutionStatus records status on targetWorkflowID's row, which is not always
+// wf.ID (see resolveLastExecutionTarget) — hence the copy; wf keeps its own id elsewhere.
+func setLastExecutionStatus(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, status model.WorkflowExecutionStatus, statusMessage string, logger temporalLog.Logger) {
+	if targetWorkflowID == "" {
+		return
+	}
 	activityOptions := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Second, // Short timeout for status update
 		RetryPolicy: &temporal.RetryPolicy{
@@ -876,11 +898,18 @@ func updateInprogressWorkflowStatus(ctx workflow.Context, wf *model.Workflow, lo
 		},
 	}
 	statusUpdateCtx := workflow.WithActivityOptions(ctx, activityOptions)
-	statusFuture := workflow.ExecuteActivity(statusUpdateCtx, Internal_UpdateLastExecutionStatusActivity, wf, model.WorkflowExecutionStatusRunning, "")
+	targetWf := *wf
+	targetWf.ID = targetWorkflowID
+	statusFuture := workflow.ExecuteActivity(statusUpdateCtx, Internal_UpdateLastExecutionStatusActivity, &targetWf, status, statusMessage)
 	if err := statusFuture.Get(statusUpdateCtx, nil); err != nil {
-		logger.Error("Failed to update workflow status to RUNNING", "error", err)
+		logger.Error("Failed to update workflow last execution status", "workflowId", targetWorkflowID, "status", status, "error", err)
 		// Optionally: surface alert here if critical
 	}
+}
+
+func updateInprogressWorkflowStatus(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, logger temporalLog.Logger) {
+	logger.Info("updating workflow status to in-progress", "id", targetWorkflowID, "tenant", wf.TenantID, "account", wf.AccountID)
+	setLastExecutionStatus(ctx, wf, targetWorkflowID, model.WorkflowExecutionStatusRunning, "", logger)
 }
 
 type internalTaskResult struct {
@@ -1821,7 +1850,7 @@ func processTaskLoop(
 	return completedTasks, executionTrace, nil
 }
 
-func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Workflow, inputs map[string]any, logger temporalLog.Logger, workflowError error) {
+func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, inputs map[string]any, logger temporalLog.Logger, workflowError error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Panic recovered in workflow deferred cleanup hooks", "panic", r)
@@ -1847,12 +1876,8 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 	}
 
 	if !wf.DryRun {
-		logger.Info("updating final workflow status", "id", wf.ID, "tenant", wf.TenantID, "account", wf.AccountID)
-		statusFuture := workflow.ExecuteActivity(statusUpdateCtx, Internal_UpdateLastExecutionStatusActivity, wf, finalStatus, statusMessage)
-		statusErr := statusFuture.Get(statusUpdateCtx, nil)
-		if statusErr != nil {
-			logger.Error("Failed to update final workflow status", "error", statusErr)
-		}
+		logger.Info("updating final workflow status", "id", targetWorkflowID, "tenant", wf.TenantID, "account", wf.AccountID)
+		setLastExecutionStatus(ctx, wf, targetWorkflowID, finalStatus, statusMessage, logger)
 
 		// Update linked event_resolution if one exists for this execution (no-op if none)
 		info := workflow.GetInfo(ctx)
