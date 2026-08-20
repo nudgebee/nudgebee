@@ -1,0 +1,45 @@
+# sha	disposition	oss_commit	notes
+aeeb38bc0d73c1130308c3a22821e7e74b589846	applied/oss-synced	-	TaskRunner key remount is present in the reconciled UI
+685dcbac2a653d372a0e087034382590d7ebda48	applied/oss-synced	-	non-fatal migration behavior is superseded by the Atlas migration job implementation
+f8bf02b8dbeb431ec54032371e1d4827f49be868	oss-skip	-	EE memory rerank/store subsystem is excluded; public glue has no functional OSS store
+86dddd6dda4a01b92c53a7e896dcd806bc4d1934	applied/oss-synced	-	OSS boundary workflow and exclusion list have newer OSS-native equivalents
+3a3a714148aaf9efd96b4849c03c1e9c0d306044	applied/oss-synced	-	Ask Nubi entry-point consolidation is present in the later reconciled navigation
+a3a721162e1f046da4761d2cebcebf7555755018	applied/oss-synced	-	thinking-token cap and watchdog behavior are present in the later reconciled LLM implementation
+72793f2c304ae0b311ac04af53e32a19f8b91166	applied/oss-synced	-	automated React pass is superseded by the later cumulative React correctness reconciliation
+f57217cef0cb5ff4160b6ff972585696f9921c74	oss-deferred	-	tour anchors target Global Search elements removed by the later consolidated navigation; requires a separately retargeted tour
+608e5d7d72b91ea2f57826f1607adb71ef385d2b	applied/oss-synced	-	native-mode signal is superseded by the later reconciled direct and lean orchestrator modes
+98fd4dcb9de6361e4c856e6c36551878a0042873	applied/oss-synced	-	default-filter behavior is superseded by the later reconciled Elasticsearch query implementation
+d6a05f2105ebcc2cd1c65e26675a542ea516b158	applied/oss-synced	-	superseded by the later cumulative Knowledge Graph columnar filter reconciliation
+697a8b03f4b84958a6891743029722511a69af11	applied/oss-synced	-	superseded by the later cumulative Knowledge Graph columnar filter reconciliation
+a3be3ad0d79476891bcc03a145115132f0c73aa2	applied/oss-synced	-	superseded by the later cumulative Knowledge Graph columnar filter reconciliation
+646440f9d9b08ac59dbe42e7e37d2aebaf52b769	applied/oss-synced	-	superseded by the later cumulative Knowledge Graph columnar filter reconciliation
+25689ef0d1b73173b3dbaa7d6e99fd274be43921	applied/oss-synced	-	native-agent prompt path is superseded by the later lean-default orchestrator reconciliation
+7043238a7ea4b38643d2fae4294fdadabd3d57f2	oss-skip	-	EE dev E2E workflow is not part of the OSS workflow set
+85b3d61658d7e6336e1d5498a137a1e97a4511ce	applied/oss-synced	-	account-aware Ask AI navigation is present in the later consolidated Global Search implementation
+29cfd66ca09aec62cc84ba799c7e35c4a8f7c294	applied/oss-synced	-	forward-port dependency outcome is already present in the OSS deployment state
+7188807a653dc4561e9d492b1a975e45c13f86fa	applied/oss-synced	-	forward-port security dependency outcome is already present or superseded by later dependency bumps
+75622c035e1db925a1bbc13f892e8631863b0e6d	applied/oss-synced	-	forward-port Temporal chart outcome is already present in the OSS deployment state
+70ea68ad1a273c77417ab6b2310c4366568a2ede	applied/oss-synced	-	Dependabot grouping is already present or superseded by the current OSS configuration
+ed281a4421af6c76d2f2bfca69380bccae27a455	applied/oss-synced	-	dependency API rename is already present or superseded by the reconciled api-server dependency state
+20bc055ecf3809c9dc1ce149cf0ab5af6f3264fc	applied/oss-synced	-	Kubernetes dependency bump is already present or superseded by the reconciled lockfile
+ddf226d702609d352431e3f0f5e346e1d97c382d	applied/oss-synced	-	dependency group is already present or superseded by the reconciled lockfile
+845ecace99fa6d9da4c9d8add939f38c62c82c06	applied/oss-synced	-	Dependabot react-icons grouping is already present or superseded by current OSS configuration
+17a54d69a7744384cb2c17ded326a55a73cfa128	applied/oss-synced	-	api-server dependency group is superseded by the later reconciled dependency bump
+8597c5871152e19c33a76e4efb32754a80068638	applied/oss-synced	-	llm-server dependency group is already present or superseded by the reconciled dependency state
+2d621e05c8884c704fa202a3931ef765e9e68a84	applied/oss-synced	-	run-migrations behavior is superseded by the Atlas migration job implementation
+96007a1ade8f0585697ef88f076729e3275e039c	applied/oss-synced	-	agent mention parsing behavior is present in the later reconciled router
+f224f7662d1a0881da7112345146dd0821379dea	oss-skip	-	EE test deployment workflow is not part of the OSS workflow set
+baa524daae52f9315933616e8b2d5844a53b8cd0	applied/oss-synced	28507eeb67	Atlas conflict hash is superseded by the final deterministic rehash
+573a4f2c35527f14ce7375ca1c914ab3c64a77e3	applied/oss-synced	-	new FilterBar derives its date label directly from controlled filters; nonce remount is obsolete
+ed9ff4e4797a244a6b986dfdb2b43ebdce12d401	oss-skip	-	OSS Settings has no EE Gateway administration tab to feature-gate
+c793467cc6698949ac4bd5074f563131aa5f1831	applied/oss-synced	-	superseded by the later reconciled log fallback and classification implementation
+2c1f7f33f5fac3e1629664245c7f337c9265f1e3	applied/oss-synced	-	Claude log stabilization behavior is present in the later reconciled LLM tests and implementation
+382b6c634e7a800292de6a744c198f2e55f2096b	applied/oss-synced	-	backport test expectations are represented by the later reconciled planner tests
+c4dda3a3e798167a3b7c4e640f2ceec9db5cea75	oss-skip	-	EE memory preferences store and admin surface are excluded; public glue has no functional OSS store
+7166337f56d158d37d87e5c4a58872e8c062341e	oss-skip	-	EE cross-store memory dedup and vote subsystem is excluded; public glue has no functional OSS stores
+1d47223f5ebda5f326e32275d77747977948716d	applied/oss-synced	28507eeb67	intermediate Atlas hash is superseded by the final deterministic rehash
+4bea257a7f8537ad27b21fecd7603fc93d23866c	applied/oss-synced	28507eeb67	merge-resolution delta is Atlas-only and covered by the final deterministic rehash
+f8a4e1f0d83bdcba78293337fd5bdab2571f40a9	applied/oss-synced	-	merge-resolution delta only resolves migration-hook text superseded by the Atlas implementation
+68c9271a035e1fe56d89c4c9461c5e29cc96fafa	applied/oss-synced	28507eeb67	Atlas rehashed; branding plus tour snooze, explicit-agent routing, log-agent default, and provider override choices verified in current OSS
+a9ab965eac11a47bbd7f3675e49db17f5feae57f	applied/oss-synced	-	Elasticsearch parser extraction and structured-row expectation are present in the later reconciled implementation
+38607fbe0abc29b2319bf3f8fdd38b72ebf3272c	applied/oss-synced	28507eeb67	merge-resolution delta is Atlas-only and covered by the final deterministic rehash
