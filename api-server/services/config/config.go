@@ -156,6 +156,11 @@ type appConfig struct {
 
 	KGEdgeStaleAfterDays           int `mapstructure:"kg_edge_stale_after_days"`
 	NBRetentionDaysKGInactiveEdges int `mapstructure:"nb_retention_days_kg_inactive_edges"`
+	// May be shorter than NBRetentionDaysKGInactiveEdges: an inactive edge can
+	// briefly outlive the node it points at. Harmless because every read path
+	// filters is_active = true, so a tombstoned edge is never traversed, and the
+	// cleanup job refuses to delete a node that still has an *active* edge.
+	NBRetentionDaysKGInactiveNodes int `mapstructure:"nb_retention_days_kg_inactive_nodes"`
 
 	// LLM token-usage prompt/response cleanup (PII/storage retention). Two passes:
 	// a frequent short-term pass that only cleans up "standard" successful calls, and a
@@ -377,6 +382,7 @@ func init() {
 	viper.SetDefault("nb_retention_days_recommendations_archive", 30)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
 	viper.SetDefault("nb_retention_days_kg_inactive_edges", 14)
+	viper.SetDefault("nb_retention_days_kg_inactive_nodes", 7)
 	viper.SetDefault("llm_token_usage_cleanup_short_term_hours", 3)
 	viper.SetDefault("llm_token_usage_cleanup_catch_all_days", 7)
 	viper.SetDefault("llm_token_usage_cleanup_max_latency_seconds", 20.0)
