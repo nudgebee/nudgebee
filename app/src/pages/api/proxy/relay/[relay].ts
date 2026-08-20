@@ -5,18 +5,12 @@ import { authOptions } from '@pages/api/auth/[...nextauth]';
 import { decrypt, decodeSessionJWT } from '@lib/internal';
 import { queryGraphQL } from '@lib/HttpService';
 import { hasAccountAccess } from '@lib/accountAccess';
+import { ALLOWED_RELAY_ENDPOINTS } from '@lib/relayEndpoints';
 import crypto from 'crypto';
 import { context, propagation, trace, SpanStatusCode } from '@opentelemetry/api';
 
 const relayEndpoint = process.env.RELAY_SERVER_ENDPOINT ?? 'http://localhost:52832';
 const secretKey = process.env.RELAY_SERVER_SECRET_KEY ?? '';
-
-// Allowlist of known relay-server endpoints reachable through this single-segment
-// proxy. The dynamic `[relay]` segment is interpolated into the upstream fetch URL,
-// so it must be validated against this set to prevent forwarding to arbitrary paths.
-// Only POST endpoints the app actually targets are allowed (`hitRelayServer` uses
-// `/request` and `/grafana`).
-const ALLOWED_RELAY_ENDPOINTS = new Set(['request', 'grafana']);
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const tracer = trace.getTracer('relay-api');
