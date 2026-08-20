@@ -1,0 +1,9 @@
+user_prompt: "are there any S3 buckets with public access enabled?"
+expected_output:
+  - The response must check actual S3 bucket public-access settings (e.g. public access block config or bucket ACLs/policies), not guess.
+  - If any buckets have public access enabled, the response must name them specifically; if none do, it must clearly state that no buckets have public access enabled — either is acceptable as long as it reflects a real check.
+tags:
+  - aws
+  - cloud
+  - security
+  - orchestrator

@@ -1,0 +1,16 @@
+user_prompt: "what's our daily burn rate looking like this week? feels like we're spending more than usual"
+expected_output:
+  - |
+    The agent should call spend_summary for this week's window and report the
+    day-by-day (or average daily) burn rate in dollars, citing [spend_summary].
+    Because the user is asking whether spend is unusually high, the agent
+    should also check for cost anomalies (calling anomaly_execute filtered by
+    anomaly_type IN ('CloudSpendService','CloudSpendAccount') for the recent
+    period) and either confirm a specific anomaly (with pct_change and
+    total_impact) or explicitly state that spend is within normal range — it
+    must not simply agree that spending is higher without checking.
+tags:
+  - finops
+  - spend
+  - anomaly
+  - orchestrator

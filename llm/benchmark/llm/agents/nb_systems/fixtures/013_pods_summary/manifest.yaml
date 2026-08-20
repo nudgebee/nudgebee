@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: running-app
+  namespace: app-013
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: running-app
+  template:
+    metadata:
+      labels:
+        app: running-app
+    spec:
+      containers:
+      - name: app
+        image: busybox:1.36
+        command: ["sh", "-c", "sleep 3600"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: failing-pod-1
+  namespace: app-013
+  labels:
+    app: failing-app
+spec:
+  restartPolicy: Never
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ["sh", "-c", "exit 1"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: failing-pod-2
+  namespace: app-013
+  labels:
+    app: failing-app
+spec:
+  restartPolicy: Never
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ["sh", "-c", "exit 1"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pending-pod-1
+  namespace: app-013
+  labels:
+    app: pending-app
+spec:
+  nodeSelector:
+    nonexistent-label: "true"
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 3600"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pending-pod-2
+  namespace: app-013
+  labels:
+    app: pending-app
+spec:
+  nodeSelector:
+    nonexistent-label: "true"
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 3600"]

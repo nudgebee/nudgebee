@@ -1,0 +1,10 @@
+agent: gcp
+user_prompt: "show me all GKE clusters across my GCP projects and their current health status"
+expected_output:
+  - The response must enumerate every GKE cluster in the connected GCP project(s), not just one.
+  - For each cluster, the response must state a current health/status indicator (e.g. RUNNING, node pool health), not just the cluster name.
+  - The agent must invoke a real GCP tool call to gather this rather than fabricating cluster names or statuses.
+tags:
+  - gcp
+  - cloud
+  - tool

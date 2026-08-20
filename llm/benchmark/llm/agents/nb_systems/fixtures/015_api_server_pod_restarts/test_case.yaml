@@ -1,0 +1,20 @@
+user_prompt: "my api-server pod in namespace app-015 keeps restarting — how many times has it restarted today and what's killing it?"
+
+expected_output:
+  - The response must identify that the api-server pod (in namespace app-015) is being killed by OOMKilled — it repeatedly exceeds its 100Mi memory limit.
+  - The response must report that the pod has restarted multiple times (at least 2 restarts) due to this repeated OOM-kill / CrashLoopBackOff cycle.
+
+before_test: |
+  set -e
+  kubectl create namespace app-015 || true
+  kubectl label namespace app-015 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml -n app-015
+  timeout 90 bash -c 'until RESTARTS=$(kubectl get pod -n app-015 -l app=api-server -o jsonpath="{.items[0].status.containerStatuses[0].restartCount}" 2>/dev/null || echo 0); [ "${RESTARTS:-0}" -ge 2 ]; do sleep 5; done'
+
+after_test: |
+  kubectl delete namespace app-015 --ignore-not-found
+
+tags:
+  - kubernetes
+  - rca
+  - orchestrator

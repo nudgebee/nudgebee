@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: orphan-service
+  namespace: app-003
+spec:
+  selector:
+    app: orphan-backend
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: healthy-service
+  namespace: app-003
+spec:
+  selector:
+    app: healthy-backend
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthy-backend
+  namespace: app-003
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: healthy-backend
+  template:
+    metadata:
+      labels:
+        app: healthy-backend
+    spec:
+      containers:
+      - name: nginx
+        image: nginx

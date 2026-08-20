@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: app-015
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+      - name: memory-eater
+        image: python:3.11-alpine
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "api-server starting"
+            echo "FATAL: allocating ~180MB against a 100Mi limit - OOMKilled expected"
+            python -c "
+            print('allocating 180MB request buffer', flush=True)
+            buf = bytearray(180 * 1024 * 1024)
+            print('loaded', len(buf), 'bytes', flush=True)
+            while True:
+                pass
+            "
+        resources:
+          limits:
+            memory: 100Mi
+          requests:
+            memory: 100Mi
+      restartPolicy: Always

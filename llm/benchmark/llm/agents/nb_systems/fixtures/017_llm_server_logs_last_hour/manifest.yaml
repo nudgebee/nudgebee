@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-server-app
+  namespace: app-017
+type: Opaque
+stringData:
+  app.sh: |
+    #!/bin/sh
+    echo "2024-01-15T10:00:00.000Z [INFO] LLM Server v3.2.1 starting"
+    echo "2024-01-15T10:00:01.000Z [INFO] Loading model 'gpt-oss-120b'..."
+    echo "2024-01-15T10:00:05.000Z [INFO] Loaded model 'gpt-oss-120b' successfully"
+    echo "2024-01-15T10:00:06.000Z [INFO] Server listening on port 8080"
+    echo "2024-01-15T10:01:00.000Z [INFO] Received inference request id=req-1001"
+    echo "2024-01-15T10:01:00.842Z [INFO] Completed request id=req-1001 in 842ms"
+    echo "2024-01-15T10:02:15.000Z [INFO] Received inference request id=req-1042"
+    echo "2024-01-15T10:02:15.100Z [WARN] Request req-1042 exceeded token budget (4096 > 4000)"
+    echo "2024-01-15T10:02:15.900Z [INFO] Completed request id=req-1042 in 900ms"
+    sleep 3600
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-server
+  namespace: app-017
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-server
+  template:
+    metadata:
+      labels:
+        app: llm-server
+    spec:
+      containers:
+      - name: llm-server
+        image: busybox
+        command: ["sh", "/app/app.sh"]
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        secret:
+          secretName: llm-server-app
+          defaultMode: 0755

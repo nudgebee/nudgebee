@@ -1,0 +1,21 @@
+user_prompt: "show me a summary for namespace app-013 — how many pods are running, how many are failing, how many are pending?"
+
+expected_output:
+  - The response must report exactly 3 pods Running (from the running-app deployment).
+  - The response must report exactly 2 pods Failed/failing (failing-pod-1 and failing-pod-2, which exit immediately with restartPolicy Never).
+  - The response must report exactly 2 pods Pending (pending-pod-1 and pending-pod-2, unschedulable because their nodeSelector matches no node).
+
+before_test: |
+  set -e
+  kubectl create namespace app-013 || true
+  kubectl label namespace app-013 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml -n app-013
+  kubectl wait --for=condition=ready pod -l app=running-app -n app-013 --timeout=60s
+  timeout 30 bash -c 'until [ "$(kubectl get pod -n app-013 -l app=failing-app -o jsonpath="{.items[*].status.phase}")" = "Failed Failed" ]; do sleep 1; done'
+
+after_test: |
+  kubectl delete namespace app-013 --ignore-not-found
+
+tags:
+  - kubernetes
+  - orchestrator

@@ -1,0 +1,15 @@
+user_prompt: "give me 30-day compute, storage, networking spend across all accounts"
+expected_output:
+  - |
+    The agent should call spend_summary with window=30d (spend_summary only
+    supports group_by=cloud_account or group_by=service, not a resource-type
+    dimension directly, so the agent must call it and then categorize the
+    returned services into compute, storage, and networking buckets). The
+    answer must report a dollar figure for each of the three categories —
+    compute, storage, and networking — aggregated across all connected cloud
+    accounts, must state the 30-day window explicitly, and must cite
+    [spend_summary].
+tags:
+  - finops
+  - spend
+  - orchestrator

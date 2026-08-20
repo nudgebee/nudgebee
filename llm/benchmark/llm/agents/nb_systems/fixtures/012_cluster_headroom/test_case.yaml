@@ -1,0 +1,16 @@
+user_prompt: "how much headroom do I have left on the cluster? if I need to deploy something big, is there room?"
+expected_output:
+  - |
+    The agent should query real cluster capacity (e.g. kubectl describe nodes
+    or kube_node_status_allocatable via the metrics agent) and real current
+    resource requests (e.g. kubectl_execute or
+    kube_pod_container_resource_requests) to compute headroom as allocatable
+    minus requested, for both CPU and memory, across the cluster's nodes. The
+    answer must state concrete CPU and memory headroom figures (not just
+    "there is some room") and give an explicit yes/no judgment on whether a
+    large new workload could plausibly be scheduled, stating what "large" was
+    assumed to mean. It must not fabricate numbers without querying real data.
+tags:
+  - kubernetes
+  - metrics
+  - orchestrator

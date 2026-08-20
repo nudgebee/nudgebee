@@ -1,0 +1,16 @@
+user_prompt: "give me more detail about Vertical Rightsize"
+expected_output:
+  - |
+    The agent should call the recommendations tool filtered to RightSizing /
+    VerticalRightsize-category recommendations and explain what they cover
+    (adjusting a container's CPU/memory requests and limits to match observed
+    usage). For at least one concrete open recommendation, the answer should
+    include: the affected resource/pod name and namespace, the current vs
+    recommended CPU/memory requests/limits, the estimated monthly dollar
+    savings, and a risk/confidence indicator. If there are no open
+    VerticalRightsize recommendations, the agent should explicitly say so
+    rather than inventing one. Cite [recommendations].
+tags:
+  - recommendations
+  - rightsizing
+  - orchestrator
