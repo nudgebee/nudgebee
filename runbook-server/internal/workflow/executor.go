@@ -563,8 +563,14 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 		if r := recover(); r != nil {
 			logger.Error("Panic recovered in workflow execution", "panic", r)
 			panicMessage := fmt.Sprintf("%v", r)
-			// Pass the panic message to the final status update
-			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, temporal.NewApplicationError("workflow panic", "panic", panicMessage))
+			// Pass the panic message to the final status update, on the same terms as
+			// the failure path below: a called run records status, not the callee's hooks.
+			panicErr := temporal.NewApplicationError("workflow panic", "panic", panicMessage)
+			if !isChildWorkflow {
+				updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, panicErr)
+			} else if !wf.DryRun {
+				setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusFailed, panicErr.Error(), logger)
+			}
 			// Set the error for the workflow function to return, causing the Temporal workflow to fail.
 			err = temporal.NewApplicationError("workflow panic: non-deterministic", "panic", panicMessage)
 		}
