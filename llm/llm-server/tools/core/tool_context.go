@@ -61,9 +61,8 @@ type NBQueryConfig struct {
 	LogProviderOverride string `json:"log_provider_override,omitempty"`
 
 	// LLM provider overrides (per-request)
-	LlmProvider         string `json:"llm_provider,omitempty"`
-	LlmModelName        string `json:"llm_model_name,omitempty"`
-	LogProviderOverride string `json:"log_provider_override,omitempty"`
+	LlmProvider  string `json:"llm_provider,omitempty"`
+	LlmModelName string `json:"llm_model_name,omitempty"`
 
 	// Mutually exclusive with LlmProvider+LlmModelName above.
 	LlmTierModels map[string]TierModelPick `json:"llm_tier_models,omitempty"`
