@@ -122,10 +122,10 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Optimize', label: 'Optimize Resolutions', path: '/optimise#resolutions' },
   { group: 'Optimize', label: 'Auto Optimize - Optimizations', path: '/optimise#auto-optimize/optimizations' },
   { group: 'Optimize', label: 'Auto Optimize - Approvals', path: '/optimise#auto-optimize/approvals' },
-  // Both gated in GlobalPageSearch.jsx by isUiFeatureEnabled (the deployment's
-  // UI_ENABLE_LLM_ANALYSER / UI_ENABLE_LLM_GATEWAY env vars, read off the
-  // session — see optimise/index.jsx's getServerSideProps) plus
-  // hasReadAccess(selectedCluster?.value), same two gates the tab itself uses.
+  // Both gated in GlobalPageSearch.jsx by the same two gates the tabs themselves
+  // use: LLM Analyser on the per-tenant LLM_ANALYSER feature flag, AI Gateway on
+  // the deployment's UI_ENABLE_LLM_GATEWAY env var (read off the session — see
+  // optimise/index.jsx), each narrowed by hasReadAccess(selectedCluster?.value).
   { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#cost-analyser' },
   { group: 'Optimize', label: 'AI Gateway', path: '/optimise#ai-gateway' },
 

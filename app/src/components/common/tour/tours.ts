@@ -12,7 +12,7 @@
  */
 import { getAssistantName, getBrandTitle } from '@hooks/useTenantBranding';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
-import { isUiFeatureEnabled, getUserSession, isTenantAdmin } from '@lib/auth';
+import { isUiFeatureEnabled, hasFeatureAccessCached, getUserSession, isTenantAdmin } from '@lib/auth';
 import apiUser from '@api1/user';
 
 /**
@@ -1477,10 +1477,14 @@ const optimizeTour: TourDef = {
       align: 'start',
     },
     // Both optional: the tab (and therefore the anchor) only renders when its
-    // UI_ENABLE_* toggle is on AND the user has read access to the selected
+    // own gate is on AND the user has read access to the selected
     // account/cluster — see filterOptions in pages/optimise/index.jsx. `optional`
     // makes the engine skip the step instead of showing a detached popover when
     // either condition fails, which is exactly the access check we want here.
+    //
+    // The two gates are NOT the same kind: LLM Analyser is a per-tenant feature
+    // flag (read from the warmed cache, like llmAnalyserTour's requiresFeature),
+    // while AI Gateway is still a per-deployment UI_ENABLE_* toggle.
     {
       element: '#anchor-tab-llm-analyser',
       title: 'LLM Analyser',
@@ -1488,7 +1492,7 @@ const optimizeTour: TourDef = {
       side: 'bottom',
       align: 'start',
       optional: true,
-      isAvailable: () => isUiFeatureEnabled('llmAnalyser'),
+      isAvailable: () => hasFeatureAccessCached('LLM_ANALYSER'),
     },
     {
       element: '#anchor-tab-ai-gateway',

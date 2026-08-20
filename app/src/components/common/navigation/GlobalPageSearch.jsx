@@ -32,7 +32,7 @@ import { toast as snackbar } from '@ui/Toast';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
-import { hasPermission, hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
+import { hasFeatureAccess, hasPermission, hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
 import { trackProductEvent } from '@lib/productAnalytics';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
@@ -1021,6 +1021,16 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
     () => (hasOpenedSearch ? navSearchProviderItems(gcpDetailsSearchFragments, 'GCP', gcpSearchAccountId, '/cloud-account/details') : []),
     [hasOpenedSearch, gcpSearchAccountId]
   );
+  // LLM_ANALYSER is a per-tenant feature flag, so it can only be resolved
+  // client-side — same pattern as optimise/index.jsx, which owns the tab this
+  // search entry jumps to. Fails closed until it resolves.
+  const [llmAnalyserEnabled, setLlmAnalyserEnabled] = useState(false);
+  useEffect(() => {
+    hasFeatureAccess('LLM_ANALYSER')
+      .then(setLlmAnalyserEnabled)
+      .catch(() => setLlmAnalyserEnabled(false));
+  }, []);
+
   // Same gate the sidebar's own "Admin" nav item uses (layout/index.jsx) — a
   // user who can't see that nav entry shouldn't find its pages (Users,
   // Groups, Audits, Notifications, Integrations, Ownership) via search either.
@@ -1046,13 +1056,13 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       data?.isSuperAdmin ||
       data?.permissions?.includes('customroles:Read'))
   );
-  // Same two gates optimise/index.jsx's own LLM Analyser/AI Gateway tabs use:
-  // isUiFeatureEnabled reads the deployment's UI_ENABLE_LLM_ANALYSER/
-  // UI_ENABLE_LLM_GATEWAY env vars off the session (per-deployment, not a
-  // tenant feature flag — see auth.tsx's isUiFeatureEnabled doc comment), and
-  // hasReadAccess(selectedCluster?.value) mirrors the page's own per-account
-  // check.
-  const canAccessLlmAnalyser = isUiFeatureEnabled('llmAnalyser') && hasReadAccess(selectedCluster?.value);
+  // Same two gates optimise/index.jsx's own LLM Analyser/AI Gateway tabs use.
+  // They are different KINDS of gate: LLM_ANALYSER is a per-tenant feature flag
+  // (resolved asynchronously, hence the state above), while AI Gateway is still
+  // a per-deployment UI_ENABLE_LLM_GATEWAY env var read off the session by
+  // isUiFeatureEnabled. Both are then narrowed by
+  // hasReadAccess(selectedCluster?.value), mirroring the page's per-account check.
+  const canAccessLlmAnalyser = llmAnalyserEnabled && hasReadAccess(selectedCluster?.value);
   // The `llm:Read` disjunct mirrors the page too: the gateway usage API is
   // tenant-scoped, so hasReadAccess (per-account) never sees that grant and the
   // row went missing for grant holders. Keep in lockstep with optimise/index.jsx.

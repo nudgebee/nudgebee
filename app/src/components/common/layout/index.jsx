@@ -17,6 +17,7 @@ import {
   withAuth,
   hasAdminSurfaceAccess,
   hasReadAccess,
+  hasFeatureAccess,
   isGrantsOnlyUser,
   isUiFeatureEnabled,
   hasPermission,
@@ -355,6 +356,17 @@ const PageLayout = ({ children }) => {
     return generateMenuItems(session?.hasMultipleTenantAccess || false);
   }, []);
 
+  // LLM_ANALYSER is a per-tenant feature flag, not a UI_ENABLE_* deployment
+  // toggle, so it can only be resolved client-side — same pattern as
+  // optimise/index.jsx, which owns the tab this nav entry links to. Fails
+  // closed until it resolves.
+  const [llmAnalyserEnabled, setLlmAnalyserEnabled] = useState(false);
+  useEffect(() => {
+    hasFeatureAccess('LLM_ANALYSER')
+      .then(setLlmAnalyserEnabled)
+      .catch(() => setLlmAnalyserEnabled(false));
+  }, []);
+
   const menuItems = useMemo(() => {
     const isAdmin = !!(session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin'));
     const canReadAccount = hasReadAccess(selectedCluster?.value);
@@ -387,7 +399,7 @@ const PageLayout = ({ children }) => {
         icon: RecommendationResolutionIcon,
       },
       { text: 'Auto Optimize', path: '/optimise#auto-optimize', id: 'sidenav-optimise-auto-optimize', module: 'autooptimize', icon: AutomateBlue },
-      ...(isUiFeatureEnabled('llmAnalyser') && canReadAccount
+      ...(llmAnalyserEnabled && canReadAccount
         ? [{ text: 'LLM Analyser', path: '/optimise#cost-analyser', id: 'sidenav-optimise-cost-analyser', icon: LLMConsumptionIcon }]
         : []),
       // `llm` is a TENANT-scoped module (@lib/permissionCatalog): the gateway usage
@@ -584,7 +596,7 @@ const PageLayout = ({ children }) => {
         ? gated
         : { ...gated, disabled: true, disabledTooltip: subItems[0].disabledTooltip };
     });
-  }, [selectedCluster?.value, session]);
+  }, [selectedCluster?.value, session, llmAnalyserEnabled]);
 
   // Route/Page Type Detection
   const pageFlags = useMemo(
