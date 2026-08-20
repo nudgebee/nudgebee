@@ -162,7 +162,7 @@ const KubernetesClusterOverview = () => {
     } else if (type === 'pod') {
       const podStatusCounts = cluster?.pod_status_counts ?? {};
       const podStatusArray = Object.entries(podStatusCounts)
-        .filter(([_, count]) => count > 0)
+        .filter(([, count]) => count > 0)
         .map(([type, count]) => ({
           type,
           count,

@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import PRLink, { resolutionsDeepLink, hasRenderablePRState } from '@shared/links/PRLink';
+import CustomPRLink from '@components/common/CustomPRLink';
 
 describe('CustomPRLink', () => {
   describe('basic rendering', () => {

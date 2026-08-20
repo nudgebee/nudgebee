@@ -17,10 +17,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentity v1.35.1
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider v1.65.0
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.307.0
-	github.com/aws/aws-sdk-go-v2/service/marketplaceentitlementservice v1.36.2
-	github.com/aws/aws-sdk-go-v2/service/marketplacemetering v1.38.3
 	github.com/aws/aws-sdk-go-v2/service/pricing v1.44.0
-	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.25
 	github.com/beltran/gohive v1.8.1
 	github.com/eko/gocache/lib/v4 v4.2.4
 	github.com/eko/gocache/store/bigcache/v4 v4.2.4
@@ -124,6 +121,7 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jaeyo/go-drain3 v0.1.2 // indirect
+	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/microsoft/kiota-abstractions-go v1.9.4 // indirect
 	github.com/microsoft/kiota-http-go v1.5.6 // indirect
 	github.com/microsoft/kiota-serialization-form-go v1.1.3 // indirect

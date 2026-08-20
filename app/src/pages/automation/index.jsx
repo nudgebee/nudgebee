@@ -15,9 +15,7 @@ const Automation = () => {
   const session = getUserSession();
   const isAdmin = session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin');
 
-  // 1. Initialize state with defaults (0) instead of router.query
-  const [selectedFilter, setSelectedFilter] = React.useState(null);
-  const [subTab, setSubTab] = React.useState(0);
+  const [selectedFilter, setSelectedFilter] = React.useState(0);
 
   // Executions is appended rather than inserted first: selectedFilter defaults
   // to 0 and the render block below is index-based, so putting it first would
@@ -30,34 +28,22 @@ const Automation = () => {
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
-    if (!hash || !filterOptions.length) {
-      setSelectedFilter(0);
-      return;
-    }
-    const [fragment, subFragment] = hash.split('/');
+    if (!hash || !filterOptions.length) return;
+    const [fragment] = hash.split('/');
     const filter = filterOptions.find((option) => option.fragment === fragment && !option.disabled);
     if (filter) {
       setSelectedFilter(filter.value);
-      if (!subFragment) return;
-      const subTab = (filter?.tabOptions || []).find((tab) => tab.fragment === subFragment);
-      if (subTab) {
-        setSubTab(subTab.value);
-      }
-    } else {
-      setSelectedFilter(0);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.asPath, router.isReady]);
 
-  const getAnchorComponent = () => {
-    let Anchor = (
+  return (
+    <>
       <AnchorComponent
         manageRoute={true}
-        options={filterOptions[selectedFilter]?.options || []}
         filterOptions={filterOptions.filter((opt) => !opt.disabled)}
-        // Updated Handler: Pushes new Hash URL instead of setting state directly
-        onChangeFilter={(val, subVal) => {
+        onChangeFilter={(val) => {
           setSelectedFilter(val);
-          setSubTab(subVal);
         }}
       />
       <Box sx={{ position: 'relative', mt: 3 }}>

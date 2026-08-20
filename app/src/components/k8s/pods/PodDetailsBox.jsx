@@ -150,7 +150,7 @@ const PodDetailsBox = ({ pod, wordBreak, accountId }) => {
         states = states.filter((f) => item.state[f]);
         const lastStateKey = Object.keys(item?.last_state || {})?.find((key) => item.last_state[key] !== null) || {};
         const rawLastState = item?.last_state?.[lastStateKey] || {};
-        const lastState = Object.fromEntries(Object.entries(rawLastState)?.filter(([_, value]) => value !== null)) || {};
+        const lastState = Object.fromEntries(Object.entries(rawLastState)?.filter(([, value]) => value !== null)) || {};
 
         return states.map((state) => {
           return [

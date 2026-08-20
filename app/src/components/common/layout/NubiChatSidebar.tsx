@@ -55,12 +55,6 @@ interface NubiChatSidebarProps {
   // on the same or a different entry after the user collapsed the panel) has no other way to
   // force the panel back open — changing this value re-expands it.
   openSignal?: number;
-  // Set when the opener lives inside a MUI Dialog (e.g. the Node Details modal's Logs tab).
-  // The overlay portal and the Dialog are both body-level siblings, so the default z-index
-  // (1000) loses to theme.zIndex.modal (1300) and the panel renders behind the modal. This
-  // lifts the overlay one step above the modal layer. The host Modal must also pass
-  // `disableEnforceFocus`, or the Dialog's focus trap steals every keystroke from the chat input.
-  aboveModal?: boolean;
 }
 
 const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
@@ -86,7 +80,6 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
   urlSessionId = '',
   aboveModal = false,
   openSignal,
-  aboveModal = false,
 }) => {
   const theme = useTheme();
   const { assistantName, nubiIconUrl } = useTenantBranding();

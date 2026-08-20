@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
@@ -225,7 +225,7 @@ const transformTableData = (
             <NBStatusBadge
               eventId={item.latest_event_id}
               currentStatus={item.latest_nb_status}
-              onStatusChange={onStatusChange}
+              onStatusChange={(newStatus) => onStatusChange?.(item.latest_event_id, newStatus)}
               onCreateTicket={() => onCreateTicket?.(item)}
               disabled={!canWrite}
               disableSnoozeTooltip
@@ -777,7 +777,6 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   }, [groupEventType, isTroubleshootPage]);
 
   // 3. Main Data Fetching
-  const fetchTableDataRef = useRef<() => Promise<void>>();
 
   const fetchTableData = useCallback(async () => {
     if (!selectedAccountId.length && !isTroubleshootPage) {
@@ -942,9 +941,6 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     fetchTableData();
   }, [fetchTableData]);
 
-  // Keep ref updated for use in table row callbacks
-  fetchTableDataRef.current = fetchTableData;
-
   // Derive table data from raw API response + display dependencies (no API call)
   const tableData = useMemo(
     () =>
@@ -956,7 +952,8 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         resolvedAccountType,
         selectedDateRange,
         onMenuClick,
-        () => fetchTableDataRef.current?.(),
+        handleNBStatusChange,
+        handlePriorityChange,
         (item: any) => {
           setTicketData(item);
           setIsTicketCreateFormOpen(true);
@@ -973,6 +970,8 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       resolvedAccountType,
       selectedDateRange,
       onMenuClick,
+      handleNBStatusChange,
+      handlePriorityChange,
       handleClassifySelect,
       ticketReferenceMap,
       selectedNBStatus,

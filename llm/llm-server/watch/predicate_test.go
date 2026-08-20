@@ -427,7 +427,7 @@ func typeNameOf(v any) string {
 		return "<nil>"
 	}
 	t := reflect.TypeOf(v)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.String()

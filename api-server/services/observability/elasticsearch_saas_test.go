@@ -246,7 +246,7 @@ func TestElasticSaasSource_LabelMappingAndOperators(t *testing.T) {
 	var e ElasticSaasSource
 	assert.Equal(t, map[string]string{}, e.GetLabelMapping())
 	assert.Equal(t,
-		[]string{"_eq", "_neq", "_contains", "_like", "_nlike", "_gt", "_lt", "_is_null"},
+		[]string{"_eq", "_neq", "_contains", "_like", "_ilike", "_nlike", "_gt", "_lt", "_is_null"},
 		e.GetSupportedOperators(),
 	)
 }

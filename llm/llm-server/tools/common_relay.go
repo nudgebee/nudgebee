@@ -897,8 +897,15 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 			secureFlag = "--secure"
 		}
 
-		chFlags := fmt.Sprintf(`--host $%s --port %s --user $%s --password $%s --database %s %s`,
-			chHost, chPort, chUserKeyInSecret, chPasswordKeyInSecret, chDatabase, secureFlag)
+		// When host is the sentinel, expand it from the k8s secret env var at
+		// runtime ($CLICKHOUSE_HOST). When it's an actual hostname from tool
+		// config, embed it literally — matching relay-server's buildWorkspaceAction.
+		hostExpr := "$" + chHost
+		if chHost != "CLICKHOUSE_HOST" {
+			hostExpr = chHost
+		}
+		chFlags := fmt.Sprintf(`--host %s --port %s --user $%s --password $%s --database %s %s`,
+			hostExpr, chPort, chUserKeyInSecret, chPasswordKeyInSecret, chDatabase, secureFlag)
 
 		if !raw {
 			query = strings.TrimSpace(query)
@@ -906,11 +913,12 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 			query = fmt.Sprintf(`clickhouse client %s --query "%s" --format CSVWithNames --send_logs_level=none --progress=0`,
 				chFlags, query)
 		} else {
-			// For raw mode, try to inject flags if clickhouse client is present
+			// For raw mode, inject flags and normalise the binary name. The relay
+			// image ships the `clickhouse` multi-call binary, not its legacy symlink.
 			if strings.Contains(query, "clickhouse client") {
 				query = strings.Replace(query, "clickhouse client", "clickhouse client "+chFlags, 1)
 			} else if strings.Contains(query, "clickhouse-client") {
-				query = strings.Replace(query, "clickhouse-client", "clickhouse-client "+chFlags, 1)
+				query = strings.Replace(query, "clickhouse-client", "clickhouse client "+chFlags, 1)
 			}
 		}
 
@@ -995,7 +1003,18 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 				passKey = cfg.Value
 			}
 		}
-		envFromSecret[hostKey] = hostKey
+		// A literal host from tool config is embedded in the command and must not
+		// be replaced by a same-named secret environment variable.
+		chHostFromConfig := ""
+		for _, cfg := range toolContext.ToolConfig.Values {
+			if cfg.Name == "host" {
+				chHostFromConfig = cfg.Value
+				break
+			}
+		}
+		if chHostFromConfig == "" || chHostFromConfig == "CLICKHOUSE_HOST" {
+			envFromSecret[hostKey] = hostKey
+		}
 		envFromSecret[userKey] = userKey
 		envFromSecret[passKey] = passKey
 		actionParams["env_from_secret_keys"] = envFromSecret

@@ -11,7 +11,7 @@ func TestCreateExternalServiceApplications(t *testing.T) {
 	dependencyMap := map[string]*ServiceDependency{
 		"user-service->postgres-db": {
 			Source:         "user-service",
-			Target:         "postgres-prod.example.com",
+			Target:         "postgres-prod.example.invalid",
 			CallCount:      50,
 			ErrorCount:     2,
 			TotalDuration:  250000000, // 50 calls * 5ms each = 250ms total in nanoseconds
@@ -99,7 +99,7 @@ func TestCreateExternalServiceApplications(t *testing.T) {
 
 		// Check specific application types
 		switch app.Id.Name {
-		case "postgres-prod.example.com":
+		case "postgres-prod.example.invalid":
 			expectedTypes := []string{"postgres", "database"}
 			if !equalStringSlices(app.Type, expectedTypes) {
 				t.Errorf("Expected types %v for postgres, got %v", expectedTypes, app.Type)
@@ -134,7 +134,7 @@ func TestCreateExternalServiceApplications(t *testing.T) {
 	}
 
 	// Verify expected external services are present
-	expectedServices := []string{"postgres-prod.example.com", "production-dlq-global-worker", "redis-cluster.internal"}
+	expectedServices := []string{"postgres-prod.example.invalid", "production-dlq-global-worker", "redis-cluster.internal"}
 	for _, expected := range expectedServices {
 		if !appNames[expected] {
 			t.Errorf("Expected external service %s not found", expected)

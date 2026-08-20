@@ -698,6 +698,37 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
 // Cloud providers we render a real logo for. `external` (and anything else)
 // deliberately gets no icon — CloudProviderIcon falls back to the AWS logo for
 // unknown providers, which would be misleading on an ExternalService row.
+function getNodeTypeLeaves(nodeType, specificTypesByNodeType) {
+  const specificTypes = specificTypesByNodeType?.[nodeType];
+  return specificTypes?.length ? specificTypes : [nodeType];
+}
+
+function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
+  return (nodeTypes || []).flatMap((nodeType) => {
+    const leaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
+    const hasRealBreakdown = !(leaves.length === 1 && leaves[0] === nodeType);
+    return leaves.map((leaf) => ({
+      label: snakeToTitleCase(leaf),
+      value: leaf,
+      ...(hasRealBreakdown ? { group: nodeType, searchText: nodeType } : {}),
+    }));
+  });
+}
+
+function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeType) {
+  const selectedSet = new Set(selectedValues || []);
+  const resultNodeTypes = [];
+  const resultSpecificTypes = [];
+  (nodeTypes || []).forEach((nodeType) => {
+    const groupLeaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
+    const selectedInGroup = groupLeaves.filter((leaf) => selectedSet.has(leaf));
+    if (selectedInGroup.length === 0) return;
+    if (selectedInGroup.length === groupLeaves.length) resultNodeTypes.push(nodeType);
+    else resultSpecificTypes.push(...selectedInGroup);
+  });
+  return { nodeTypes: resultNodeTypes, specificTypes: resultSpecificTypes };
+}
+
 const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure']);
 
 // parseUniqueKey is imported from ./kgFilterCascade (shared with the client-side cascade).
@@ -798,6 +829,7 @@ const ServiceMapContent = () => {
   const [kgFiltersReady, setKgFiltersReady] = useState(false);
   const [isFilterOptionsRefreshing, setIsFilterOptionsRefreshing] = useState(false);
   const initialKgFilterOptionsRef = useRef(null);
+  const nodeTypeGroupingRef = useRef({ nodeTypeList: [], specificTypesByNodeType: {} });
   const kgFiltersInitialized = useRef(false);
   const filterOptionsDebounceRef = useRef(null);
   const prevAccountIdsRef = useRef([]);
@@ -1062,7 +1094,9 @@ const ServiceMapContent = () => {
       const { nodeTypeList, specificTypesByNodeType } = computed;
       const updates = {
         ...(!suppressNodeTypesUpdate && {
-          nodeTypes: d?.node_types?.map((v) => ({ label: snakeToTitleCase(v), value: v })) || [],
+          nodeTypes: buildNodeTypeOptions(nodeTypeList, specificTypesByNodeType),
+          nodeTypeList,
+          specificTypesByNodeType,
         }),
         labelMap: computed.labelMap,
         attributeMap: computed.attributeMap,
@@ -1070,6 +1104,7 @@ const ServiceMapContent = () => {
         nodeClusterMap: computed.nodeClusterMap,
         nodeSpecificTypeMap: computed.nodeSpecificTypeMap,
       };
+      if (!suppressNodeTypesUpdate) nodeTypeGroupingRef.current = { nodeTypeList, specificTypesByNodeType };
       setKgFilterOptions((prev) => ({ ...prev, ...updates }));
       setIsFilterOptionsRefreshing(false);
     };
