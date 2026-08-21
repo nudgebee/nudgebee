@@ -1,4 +1,6 @@
 -- Reconcile workload_criticality's unique index with the form V776 was finalized to.
+-- OSS ordering note: this migration follows the OSS-renumbered table and
+-- updated_by migrations (1785401659101 and 1785401660101).
 --
 -- V776's committed form creates a PLAIN unique index on (cloud_account_id, cloud_resource_id).
 -- An environment that applied an EARLIER draft of V776 has it as a PARTIAL index instead:
