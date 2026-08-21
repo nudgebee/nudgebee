@@ -43,3 +43,21 @@ f8a4e1f0d83bdcba78293337fd5bdab2571f40a9	applied/oss-synced	-	merge-resolution d
 68c9271a035e1fe56d89c4c9461c5e29cc96fafa	applied/oss-synced	28507eeb67	Atlas rehashed; branding plus tour snooze, explicit-agent routing, log-agent default, and provider override choices verified in current OSS
 a9ab965eac11a47bbd7f3675e49db17f5feae57f	applied/oss-synced	-	Elasticsearch parser extraction and structured-row expectation are present in the later reconciled implementation
 38607fbe0abc29b2319bf3f8fdd38b72ebf3272c	applied/oss-synced	28507eeb67	merge-resolution delta is Atlas-only and covered by the final deterministic rehash
+5ae074c29053423345bb0a7cd056a2b7558e2c56	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V803->V1803 to avoid existing and future EE label collisions
+6be1cbc377b06a6a2f7d3aba8469554db590a2be	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V804->V1804 to avoid existing and future EE label collisions
+f3f3ecf6226ece97dad8c05a4feb96bc69a3eb06	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V802->V1802 to avoid existing and future EE label collisions
+fbfe461fe7bd094485033439a67d3733bae61397	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V805->V1805 to avoid existing and future EE label collisions
+67d3342bdb029b78e7cc49372e84183418d2d0d6	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V806->V1806 to avoid existing and future EE label collisions
+dff4042d0e6fc3bc6077aa0991ae5422f6279a48	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS labels remapped V807->V1807 and V808->V1808 to avoid existing and future EE label collisions
+aeb0413c08f4ac6d2b1231857d61339d3fda0124	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V809->V1809 to avoid existing and future EE label collisions
+a8f34002f813a0a442a76fd67b8a4185b0231199	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V810->V1810 to avoid existing and future EE label collisions
+642596281a46fdf77de0b3433d67e3c52c4964e0	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V811->V1811 to avoid existing and future EE label collisions
+daf51ea4dbc90933e9ac68c4f3a36bd1072e234b	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS labels remapped V812->V1812 and V813->V1813 to avoid existing and future EE label collisions
+6807cbbe47b68040c522fb5e1239ae71bfd0785f	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V814->V1814 to avoid existing and future EE label collisions
+fafb313365f5cbaacc726d9c5949ed752551bcd1	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V818->V1818 to avoid existing and future EE label collisions
+5ce5b2de1ab87ec336c4276535af93f3d5041500	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS labels remapped V820->V1820 and V821->V1821 to avoid existing and future EE label collisions
+0b4836d47634823ebcc179f9ec5c6f931d39cc0f	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V817->V1817 to avoid existing and future EE label collisions
+bfed77d376a6807a534d3239e915e0a52ac52fa0	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V819->V1819 to avoid existing and future EE label collisions
+38b1297870c0baa89dd0bb1a4c6c61cef1e6ff82	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V823->V1823 to avoid existing and future EE label collisions
+04bdb500d71c7992ad4848e439668928890bccd0	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V824->V1824 to avoid existing and future EE label collisions
+d31ae7d38d17ea9230f0602c2ae6fcbe29d44d0a	applied/oss-synced	db75de86bc	migration SQL preserved byte-for-byte; OSS label remapped V825->V1825 to avoid existing and future EE label collisions
