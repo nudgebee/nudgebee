@@ -44,7 +44,7 @@ func UpdateAzureMetricAlertThreshold(ctx providers.CloudProviderContext, account
 		if name == "" {
 			return fmt.Errorf("could not extract alert name from resource id %q", ruleRef)
 		}
-		client, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureAuditOpts(ctx))
+		client, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureMetricAlertsOpts(ctx))
 		if err != nil {
 			return fmt.Errorf("failed to create metric alerts client: %w", err)
 		}
@@ -58,7 +58,7 @@ func UpdateAzureMetricAlertThreshold(ctx providers.CloudProviderContext, account
 		if subID == "" {
 			continue
 		}
-		client, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureAuditOpts(ctx))
+		client, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureMetricAlertsOpts(ctx))
 		if err != nil {
 			ctx.GetLogger().Warn("azure: failed to create metric alerts client", "subscriptionId", subID, "error", err)
 			continue

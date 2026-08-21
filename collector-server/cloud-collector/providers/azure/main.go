@@ -1393,7 +1393,7 @@ func (a *azureProvider) ListEventRules(ctx providers.CloudProviderContext, accou
 			continue
 		}
 
-		client, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureAuditOpts(ctx))
+		client, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureMetricAlertsOpts(ctx))
 		if err != nil {
 			ctx.GetLogger().Error("azure:ListEventRules failed to create metric alerts client", "error", err, "subscriptionID", subID)
 			continue

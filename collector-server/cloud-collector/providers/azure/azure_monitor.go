@@ -124,7 +124,7 @@ func (s *monitorService) GetResources(ctx providers.CloudProviderContext, accoun
 		}
 
 		// Get Metric Alerts
-		metricAlertsClient, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureAuditOpts(ctx))
+		metricAlertsClient, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureMetricAlertsOpts(ctx))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create metric alerts client: %w", err)
 		}

@@ -37,7 +37,7 @@ func CreateAzureMetricAlert(ctx providers.CloudProviderContext, account provider
 		subscriptionID = session.SubscriptionID
 	}
 
-	client, err := armmonitor.NewMetricAlertsClient(subscriptionID, cred, getAzureAuditOpts(ctx))
+	client, err := armmonitor.NewMetricAlertsClient(subscriptionID, cred, getAzureMetricAlertsOpts(ctx))
 	if err != nil {
 		return fmt.Errorf("failed to create metric alerts client: %w", err)
 	}
