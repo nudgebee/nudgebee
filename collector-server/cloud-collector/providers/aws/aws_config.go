@@ -1,9 +1,9 @@
 package aws
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
 	"strings"
 	"time"
@@ -65,7 +65,7 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 	resources := []providers.Resource{}
 
 	// Get Configuration Recorders
-	recordersResult, err := svc.DescribeConfigurationRecorders(context.TODO(), &configservice.DescribeConfigurationRecordersInput{})
+	recordersResult, err := svc.DescribeConfigurationRecorders(ctx.GetContext(), &configservice.DescribeConfigurationRecordersInput{})
 	if err != nil {
 		ctx.GetLogger().Error("failed to fetch Config recorders", "error", err, "accountNumber", account.AccountNumber, "region", region)
 		return resources, err
@@ -80,7 +80,7 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 		tags := make(map[string][]string)
 
 		// Get recorder status
-		statusResult, err := svc.DescribeConfigurationRecorderStatus(context.TODO(), &configservice.DescribeConfigurationRecorderStatusInput{
+		statusResult, err := svc.DescribeConfigurationRecorderStatus(ctx.GetContext(), &configservice.DescribeConfigurationRecorderStatusInput{
 			ConfigurationRecorderNames: []string{*recorder.Name},
 		})
 		if err != nil {
@@ -97,7 +97,7 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 		}
 
 		// Get delivery channel info
-		channelsResult, err := svc.DescribeDeliveryChannels(context.TODO(), &configservice.DescribeDeliveryChannelsInput{})
+		channelsResult, err := svc.DescribeDeliveryChannels(ctx.GetContext(), &configservice.DescribeDeliveryChannelsInput{})
 		if err != nil {
 			ctx.GetLogger().Warn("failed to fetch Config delivery channels", "error", err, "recorderName", *recorder.Name)
 		} else if channelsResult.DeliveryChannels != nil {
@@ -121,99 +121,126 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 		resources = append(resources, resource)
 	}
 
-	// Get Config Rules
-	rulesPaginator := configservice.NewDescribeConfigRulesPaginator(svc, &configservice.DescribeConfigRulesInput{})
-	for rulesPaginator.HasMorePages() {
-		result, err := rulesPaginator.NextPage(context.TODO())
-		if err != nil {
-			ctx.GetLogger().Error("failed to fetch Config rules", "error", err, "accountNumber", account.AccountNumber, "region", region)
-			break
-		}
-
-		for _, rule := range result.ConfigRules {
-			if rule.ConfigRuleName == nil {
-				ctx.GetLogger().Warn("Skipping Config rule due to missing name")
-				continue
+	// Get Config Rules. Gated behind a flag (off by default): each rule costs three
+	// sequential API calls (tags, compliance, evaluation status), and a Security Hub-
+	// enabled account has hundreds of rules per region — this is the dominant cost of
+	// the whole post-report resource sync. Recorders, delivery channels, aggregators
+	// and conformance packs below are unaffected.
+	if config.Config.CloudCollectorAwsConfigRuleDiscoveryEnabled {
+		rulesPaginator := configservice.NewDescribeConfigRulesPaginator(svc, &configservice.DescribeConfigRulesInput{})
+		for rulesPaginator.HasMorePages() {
+			result, err := rulesPaginator.NextPage(ctx.GetContext())
+			if err != nil {
+				// A cancelled context means the rules we have are a partial view.
+				// Returning it with a nil error would let StoreResources treat the
+				// missing rows as deleted and archive live resources.
+				if ctx.GetContext().Err() != nil {
+					return resources, err
+				}
+				ctx.GetLogger().Error("failed to fetch Config rules", "error", err, "accountNumber", account.AccountNumber, "region", region)
+				break
 			}
 
-			tags := make(map[string][]string)
+			for _, rule := range result.ConfigRules {
+				// Each rule below costs three sequential API calls. Once the sync
+				// budget is gone every one of them fails, so stop here rather than
+				// logging a warning for each of the hundreds of remaining rules.
+				if cerr := ctx.GetContext().Err(); cerr != nil {
+					ctx.GetLogger().Warn("stopping Config rule discovery: context done",
+						"error", cerr, "accountNumber", account.AccountNumber, "region", region)
+					return resources, cerr
+				}
 
-			// Get tags for the rule
-			if rule.ConfigRuleArn != nil {
-				tagsResult, err := svc.ListTagsForResource(context.TODO(), &configservice.ListTagsForResourceInput{
-					ResourceArn: rule.ConfigRuleArn,
-				})
-				if err != nil {
-					ctx.GetLogger().Warn("failed to fetch Config rule tags", "error", err, "ruleArn", *rule.ConfigRuleArn)
-				} else if tagsResult.Tags != nil {
-					for _, tag := range tagsResult.Tags {
-						if tag.Key != nil && tag.Value != nil {
-							tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
+				if rule.ConfigRuleName == nil {
+					ctx.GetLogger().Warn("Skipping Config rule due to missing name")
+					continue
+				}
+
+				tags := make(map[string][]string)
+
+				// Get tags for the rule
+				if rule.ConfigRuleArn != nil {
+					tagsResult, err := svc.ListTagsForResource(ctx.GetContext(), &configservice.ListTagsForResourceInput{
+						ResourceArn: rule.ConfigRuleArn,
+					})
+					if err != nil {
+						ctx.GetLogger().Warn("failed to fetch Config rule tags", "error", err, "ruleArn", *rule.ConfigRuleArn)
+					} else if tagsResult.Tags != nil {
+						for _, tag := range tagsResult.Tags {
+							if tag.Key != nil && tag.Value != nil {
+								tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
+							}
 						}
 					}
 				}
-			}
 
-			metaMap := structToMap(rule)
+				metaMap := structToMap(rule)
 
-			// Get compliance information
-			complianceResult, err := svc.DescribeComplianceByConfigRule(context.TODO(), &configservice.DescribeComplianceByConfigRuleInput{
-				ConfigRuleNames: []string{*rule.ConfigRuleName},
-			})
-			if err != nil {
-				ctx.GetLogger().Warn("failed to fetch Config rule compliance", "error", err, "ruleName", *rule.ConfigRuleName)
-			} else if len(complianceResult.ComplianceByConfigRules) > 0 {
-				compliance := complianceResult.ComplianceByConfigRules[0]
-				metaMap["Compliance"] = structToMap(compliance)
-			}
-
-			// Get rule evaluation status
-			evalStatusResult, err := svc.DescribeConfigRuleEvaluationStatus(context.TODO(), &configservice.DescribeConfigRuleEvaluationStatusInput{
-				ConfigRuleNames: []string{*rule.ConfigRuleName},
-			})
-			if err != nil {
-				ctx.GetLogger().Warn("failed to fetch Config rule evaluation status", "error", err, "ruleName", *rule.ConfigRuleName)
-			} else if len(evalStatusResult.ConfigRulesEvaluationStatus) > 0 {
-				evalStatus := evalStatusResult.ConfigRulesEvaluationStatus[0]
-				metaMap["EvaluationStatus"] = structToMap(evalStatus)
-			}
-
-			status := providers.ResourceStatusActive
-			if rule.ConfigRuleState == types.ConfigRuleStateDeleting {
-				status = providers.ResourceStatusDeleted
-			}
-
-			// Override status based on compliance
-			if compliance, ok := metaMap["Compliance"].(map[string]any); ok {
-				if complianceType, ok := compliance["ComplianceType"].(string); ok {
-					status = configRuleComplianceToNbStatus(types.ComplianceType(complianceType))
+				// Get compliance information
+				complianceResult, err := svc.DescribeComplianceByConfigRule(ctx.GetContext(), &configservice.DescribeComplianceByConfigRuleInput{
+					ConfigRuleNames: []string{*rule.ConfigRuleName},
+				})
+				if err != nil {
+					ctx.GetLogger().Warn("failed to fetch Config rule compliance", "error", err, "ruleName", *rule.ConfigRuleName)
+				} else if len(complianceResult.ComplianceByConfigRules) > 0 {
+					compliance := complianceResult.ComplianceByConfigRules[0]
+					metaMap["Compliance"] = structToMap(compliance)
 				}
-			}
 
-			ruleArn := ""
-			if rule.ConfigRuleArn != nil {
-				ruleArn = *rule.ConfigRuleArn
-			}
+				// Get rule evaluation status
+				evalStatusResult, err := svc.DescribeConfigRuleEvaluationStatus(ctx.GetContext(), &configservice.DescribeConfigRuleEvaluationStatusInput{
+					ConfigRuleNames: []string{*rule.ConfigRuleName},
+				})
+				if err != nil {
+					ctx.GetLogger().Warn("failed to fetch Config rule evaluation status", "error", err, "ruleName", *rule.ConfigRuleName)
+				} else if len(evalStatusResult.ConfigRulesEvaluationStatus) > 0 {
+					evalStatus := evalStatusResult.ConfigRulesEvaluationStatus[0]
+					metaMap["EvaluationStatus"] = structToMap(evalStatus)
+				}
 
-			resource := providers.Resource{
-				Id:          *rule.ConfigRuleName,
-				ServiceName: ServiceNameConfig,
-				Name:        *rule.ConfigRuleName,
-				Status:      status,
-				Region:      region,
-				Tags:        tags,
-				Meta:        metaMap,
-				Arn:         ruleArn,
-				CreatedAt:   time.Time{},
-				Type:        getAwsServiceResourceType(ServiceNameConfig, "rule"),
+				status := providers.ResourceStatusActive
+				if rule.ConfigRuleState == types.ConfigRuleStateDeleting {
+					status = providers.ResourceStatusDeleted
+				}
+
+				// Override status based on compliance
+				if compliance, ok := metaMap["Compliance"].(map[string]any); ok {
+					if complianceType, ok := compliance["ComplianceType"].(string); ok {
+						status = configRuleComplianceToNbStatus(types.ComplianceType(complianceType))
+					}
+				}
+
+				ruleArn := ""
+				if rule.ConfigRuleArn != nil {
+					ruleArn = *rule.ConfigRuleArn
+				}
+
+				resource := providers.Resource{
+					Id:          *rule.ConfigRuleName,
+					ServiceName: ServiceNameConfig,
+					Name:        *rule.ConfigRuleName,
+					Status:      status,
+					Region:      region,
+					Tags:        tags,
+					Meta:        metaMap,
+					Arn:         ruleArn,
+					CreatedAt:   time.Time{},
+					Type:        getAwsServiceResourceType(ServiceNameConfig, "rule"),
+				}
+				resources = append(resources, resource)
 			}
-			resources = append(resources, resource)
 		}
+	} else {
+		ctx.GetLogger().Info("aws config per-rule discovery disabled by flag; collecting recorders only",
+			"flag", "cloud_collector_aws_config_rule_discovery_enabled", "region", region)
 	}
 
 	// Get Aggregators
-	aggregatorsResult, err := svc.DescribeConfigurationAggregators(context.TODO(), &configservice.DescribeConfigurationAggregatorsInput{})
+	aggregatorsResult, err := svc.DescribeConfigurationAggregators(ctx.GetContext(), &configservice.DescribeConfigurationAggregatorsInput{})
 	if err != nil {
+		if ctx.GetContext().Err() != nil {
+			return resources, err
+		}
 		ctx.GetLogger().Warn("failed to fetch Config aggregators", "error", err, "accountNumber", account.AccountNumber, "region", region)
 	} else {
 		for _, aggregator := range aggregatorsResult.ConfigurationAggregators {
@@ -226,7 +253,7 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 
 			// Get tags for the aggregator
 			if aggregator.ConfigurationAggregatorArn != nil {
-				tagsResult, err := svc.ListTagsForResource(context.TODO(), &configservice.ListTagsForResourceInput{
+				tagsResult, err := svc.ListTagsForResource(ctx.GetContext(), &configservice.ListTagsForResourceInput{
 					ResourceArn: aggregator.ConfigurationAggregatorArn,
 				})
 				if err != nil {
@@ -271,8 +298,11 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 	// Get Conformance Packs
 	conformancePacksPaginator := configservice.NewDescribeConformancePacksPaginator(svc, &configservice.DescribeConformancePacksInput{})
 	for conformancePacksPaginator.HasMorePages() {
-		result, err := conformancePacksPaginator.NextPage(context.TODO())
+		result, err := conformancePacksPaginator.NextPage(ctx.GetContext())
 		if err != nil {
+			if ctx.GetContext().Err() != nil {
+				return resources, err
+			}
 			ctx.GetLogger().Warn("failed to fetch Config conformance packs", "error", err, "accountNumber", account.AccountNumber, "region", region)
 			break
 		}
@@ -288,7 +318,7 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 			metaMap := structToMap(pack)
 
 			// Get conformance pack compliance
-			complianceResult, err := svc.DescribeConformancePackCompliance(context.TODO(), &configservice.DescribeConformancePackComplianceInput{
+			complianceResult, err := svc.DescribeConformancePackCompliance(ctx.GetContext(), &configservice.DescribeConformancePackComplianceInput{
 				ConformancePackName: pack.ConformancePackName,
 			})
 			if err != nil {

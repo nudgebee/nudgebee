@@ -117,6 +117,21 @@ type appConfig struct {
 	// INFORMATION_SCHEMA query and/or a longer refresh cadence.
 	CloudCollectorGcpBigqueryTableDiscoveryEnabled bool `mapstructure:"cloud_collector_gcp_bigquery_table_discovery_enabled"`
 
+	// CloudCollectorAwsConfigRuleDiscoveryEnabled gates per-rule AWS Config discovery.
+	// Disabled by default: enumerating every Config rule costs three sequential API
+	// calls per rule (tags, compliance, evaluation status) in every region, which on
+	// a Security Hub-enabled account means tens of thousands of calls and dominates
+	// the post-report resource sync. In practice the rules are almost entirely
+	// Security Hub-generated (`securityhub-*`) duplicates of standards we already
+	// collect via AWSSecurityHub, and the large majority have never evaluated
+	// (INSUFFICIENT_DATA). Config recorders, delivery channels, aggregators and
+	// conformance packs are still discovered when this is off, so the
+	// aws_config_not_enabled / recorder_not_recording / no_delivery_channel
+	// recommendations are unaffected. Re-enable once rule discovery uses the bulk
+	// (no ConfigRuleNames) DescribeComplianceByConfigRule and
+	// DescribeConfigRuleEvaluationStatus sweeps instead of per-rule calls.
+	CloudCollectorAwsConfigRuleDiscoveryEnabled bool `mapstructure:"cloud_collector_aws_config_rule_discovery_enabled"`
+
 	// EnableMultiSourceServicemap is the rollout toggle for the multi-source AWS
 	// service-map engine (VPC Flow Logs etc.) instead of the legacy AWS Config path.
 	// Env: ENABLE_MULTI_SOURCE_SERVICEMAP
@@ -217,6 +232,9 @@ func init() {
 
 	// Per-table BigQuery discovery is off by default — see CloudCollectorGcpBigqueryTableDiscoveryEnabled.
 	viper.SetDefault("cloud_collector_gcp_bigquery_table_discovery_enabled", false)
+
+	// Per-rule AWS Config discovery is off by default — see CloudCollectorAwsConfigRuleDiscoveryEnabled.
+	viper.SetDefault("cloud_collector_aws_config_rule_discovery_enabled", false)
 
 	// Multi-source service-map engine is off by default — see EnableMultiSourceServicemap.
 	viper.SetDefault("enable_multi_source_servicemap", false)
