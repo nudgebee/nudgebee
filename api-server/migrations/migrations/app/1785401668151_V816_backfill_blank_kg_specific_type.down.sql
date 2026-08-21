@@ -1,4 +1,5 @@
 -- Intentional no-op. Once backfilled, a specific_type = 'Service' (etc.) row
+-- OSS ordering note: paired with the post-schema backfill at version 1785401668151.
 -- is indistinguishable from a row that was always correctly defaulted to its
 -- own node_type by core.NewNode — there is no way to tell which rows this
 -- migration touched. Reverting by blanking specific_type back to '' would

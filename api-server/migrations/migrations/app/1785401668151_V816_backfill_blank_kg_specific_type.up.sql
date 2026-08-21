@@ -1,4 +1,6 @@
 -- Backfill pre-existing knowledge_graph_node rows with specific_type = '' —
+-- OSS ordering note: this migration follows the OSS-renumbered migration that
+-- creates specific_type (1785401668101).
 -- Go's zero value for string, persisted literally instead of NULL or a real
 -- value by ConvertServiceMapToGraph's node-literal construction (fixed in the
 -- same PR as this migration; nudgebee-enterprise#34880). core.NewNode's own
