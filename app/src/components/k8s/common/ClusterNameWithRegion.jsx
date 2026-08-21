@@ -37,9 +37,14 @@ const ClusterNameWithRegion = ({
         flexDirection: 'column',
         gap: namespace ? 0 : 'var(--ds-space-1)',
         maxWidth: maxWidth,
+        // Lets the box shrink inside a flex/table cell instead of holding its
+        // content's intrinsic width and overflowing into the next column.
+        minWidth: 0,
         cursor: cursorPointer ? 'pointer' : 'unset',
         '@media(max-width: 1100px)': {
-          maxWidth: `${smallScreenWidth} !important`,
+          // Only narrow when a caller actually asked for it — an unset
+          // `smallScreenWidth` used to emit an invalid `max-width: !important`.
+          ...(smallScreenWidth ? { maxWidth: `${smallScreenWidth} !important` } : {}),
           p: {
             fontSize: 'var(--ds-text-body) !important',
           },
