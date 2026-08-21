@@ -6,6 +6,12 @@ global:
     # -nb2 rebuilds gosu on Go 1.26.5 (clears 1C/14H Go-stdlib CVEs); fully clean.
     postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine-nb2'
     curl: 'ghcr.io/nudgebee/curl:8.10.1'
+  # `helm test` connection pods only (each service chart's
+  # templates/tests/test-connection.yaml). A full ref, like initImages above,
+  # rather than a repository composed onto global.image.registry: this is a
+  # third-party image, so a private-registry install has to mirror it under
+  # whatever name that registry uses.
+  testImage: 'ghcr.io/nudgebee/busybox:1.37.0'
   existingNudgebeeSecretName: ''
 nudgebee_registry_secret:
   enabled: false
@@ -341,7 +347,18 @@ nudgebee-qdrant-server:
 temporal:
   enabled: true
   fullnameOverride: temporal
+  # The upstream temporal chart defaults every image to docker.io/temporalio/*.
+  # Repointed at our ghcr clones (same digests, copied by
+  # nudgebee-mirrors/clone-third-party.sh) so the chart pulls nothing from Docker
+  # Hub — no anonymous rate limits, one registry to allow-list. These are clones,
+  # NOT rebuilds: the upstream CVE floor comes with them, and the fix is still a
+  # version bump. Keep the tags in step with the chart version in Chart.yaml —
+  # the subchart's defaults are what these override, so a chart bump that moves
+  # the default tag needs the clone + these values bumped together.
   web:
+    image:
+      repository: ghcr.io/nudgebee/temporal-ui
+      tag: '2.52.0'
     # Disabled: the Temporal Web UI is a standalone read-only dashboard that no
     # nudgebee component references (workflow-server talks to temporal-frontend:7233,
     # not the UI; no ingress or app link points at it). Removing it drops the
@@ -350,6 +367,9 @@ temporal:
     # Re-enable if operators want the dashboard for debugging.
     enabled: false
   admintools:
+    image:
+      repository: ghcr.io/nudgebee/temporal-admin-tools
+      tag: '1.31.2'
     # Disabled: the admintools Deployment is only a standing shell with the
     # temporal/tctl CLI for operators to exec into — no nudgebee component uses
     # it (workflow-server talks to temporal-frontend:7233 via SDK). Schema
@@ -388,6 +408,9 @@ temporal:
     # flow that can't rely on hook ordering.
     useHelmHooks: false
   server:
+    image:
+      repository: ghcr.io/nudgebee/temporal-server
+      tag: '1.31.2'
     enabled: true
     replicaCount: 1
     dynamicConfig:

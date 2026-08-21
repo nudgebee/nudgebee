@@ -9,7 +9,7 @@ metadata:
 spec:
   containers:
     - name: wget
-      image: busybox
+      image: {{ .Values.global.testImage }}
       command: ['wget']
       args: ['{{ include "rag-server.fullname" . }}:{{ .Values.service.port }}']
   restartPolicy: Never
