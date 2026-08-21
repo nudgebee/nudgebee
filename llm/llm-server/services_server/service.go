@@ -563,10 +563,12 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 		if esIndex == "" {
 			esIndex = utils.GetESAccountIndexConfig(accountId, "logs").DefaultIndex
 		}
+		// An empty index is fine — logs_list_labels resolves the account default
+		// server-side. fetch_index is deliberately unset: it now asks for the
+		// index list, and this caller wants fields, which is the default.
 		queryPayload["input"].(map[string]any)["request"].(map[string]any)["request"] = map[string]any{
 			"index": esIndex,
 		}
-		queryPayload["input"].(map[string]any)["request"].(map[string]any)["fetch_index"] = true
 	}
 
 	tenant := ctx.GetSecurityContext().GetTenantId()

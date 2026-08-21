@@ -16,7 +16,6 @@ import apiIntegrations from '@api1/integrations';
 import k8sApi from '@api1/kubernetes';
 import PropTypes from 'prop-types';
 import buttonConfiguration from '@lib/buttonConfiguration';
-import { useData } from '@context/DataContext';
 import ActionButtons from './AutoOptimizeActionButtons';
 import NotificationForm from './AutoOptimizeNotificationForm';
 import apiAutoPilot from '@api1/autoPilot';
@@ -70,6 +69,8 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   setIsLoading,
   reviewAutoOptimize = false,
   approvalData = {},
+  accountOptions = [],
+  defaultAccountId = '',
 }: {
   autoOptimizeData: any;
   closeAutoPilotSingleConfigModal: (success: boolean, status?: string) => void;
@@ -85,6 +86,8 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   setIsLoading: (loading: boolean) => void;
   reviewAutoOptimize?: boolean;
   approvalData?: any;
+  accountOptions?: { label: string; value: string }[];
+  defaultAccountId?: string;
 }) => {
   const [updatedData, setUpdatedData] = useState(data || { cpu: {}, memory: {} });
   const [allocatedData, setAllocatedData] = useState(
@@ -176,7 +179,15 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   // only on Kubernetes 1.35+; older clusters fall back to a rolling restart.
   const [inPlace, setInPlace] = useState<boolean>(autoOptimizeData?.rule?.in_place ?? true);
   const [resizePolicyMode, setResizePolicyMode] = useState<string>(autoOptimizeData?.attributes?.git_ops_config?.resize_policy ?? 'in-place');
-  const { selectedCluster } = useData();
+  // Account picked in this modal only (K8s-only, matching the outer Auto
+  // Optimize tab's own account filter) — fixed to the existing resource's
+  // account when editing/reviewing, otherwise editable and defaulted from
+  // the tab's currently resolved account.
+  const isExistingConfig = Boolean(autoOptimizeData?.accountId ?? autoOptimizeData?.account_id);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>(
+    autoOptimizeData?.accountId ?? autoOptimizeData?.account_id ?? defaultAccountId ?? ''
+  );
+  const selectedCluster = accountOptions.find((option) => option.value === selectedAccountId) || null;
   const requestAnnotations = CI_REQUEST_ANNOTATIONS;
   const [reviewComment, setReviewComment] = useState('');
   const [selectedApplications, setSelectedApplications] = useState<any[]>([]);
@@ -1049,6 +1060,11 @@ const VerticalAutoOptimizeSingleConfiguration = ({
         setSelectedApplications(selectedApplications.filter((app: any) => value.includes(app.namespace)));
         setSelectedNamespaces(value);
         break;
+      case 'cluster':
+        setSelectedAccountId(value);
+        setSelectedNamespaces([]);
+        setSelectedApplications([]);
+        break;
     }
   };
 
@@ -1107,6 +1123,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
         reviewRunbook={reviewAutoOptimize}
         handleChildComponentChange={handleChildComponentChange}
         hideTabs
+        clusterOptions={isExistingConfig ? undefined : accountOptions}
       />
       <Box sx={{ display: 'flex', gap: '16px', marginTop: '16px' }}>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>

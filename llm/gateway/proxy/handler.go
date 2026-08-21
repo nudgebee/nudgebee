@@ -87,6 +87,7 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 		bodyLog: bodyLog,
 		limiter: limiter,
 		pricer:  pricer,
+		router:  router,
 		// Request pipeline (control stages), run after auth and before passthrough.
 		// route → ratelimit → resolver → filter. Each stage is pluggable; an unset
 		// stage defaults to pass-through.
@@ -115,6 +116,7 @@ type handler struct {
 	bodyLog  metering.BodyLogSink
 	limiter  *ratelimit.Limiter
 	pricer   *metering.Pricer
+	router   routing.Resolver // for pre-pipeline tier-alias lane resolution on /v1
 	pipeline *Pipeline
 }
 
@@ -198,7 +200,10 @@ func (h *handler) handle(c *gin.Context) {
 		SafeHeaders: safeHeaders(c.Request.Header),
 	}
 
-	sessionID, sessionSource := resolveSession(c, rc.Body)
+	// Fingerprint the stable prompt prefix (system+tools+first-user): the cache-affinity
+	// key + the inferred session id when the client supplies none. Uses the ORIGINAL body.
+	fingerprint := prefixFingerprint(rc.Identity, rc.Body)
+	sessionID, sessionSource := resolveSession(c, rc.Body, fingerprint)
 	rm := &reqMeta{
 		reqID:         uuid.NewString(),
 		provider:      provider,
@@ -212,6 +217,7 @@ func (h *handler) handle(c *gin.Context) {
 		start:         start,
 		sessionID:     sessionID,
 		sessionSource: sessionSource,
+		prefixFinger:  fingerprint,
 		reqAttrs:      extractRequestAttributes(provider, rc.Body),
 		identity:      identity,
 		decision:      rc.Decision,
@@ -253,6 +259,7 @@ type reqMeta struct {
 	start          time.Time
 	sessionID      string
 	sessionSource  string
+	prefixFinger   string // stable-prefix fingerprint (cache-affinity key + inferred session id)
 	reqAttrs       map[string]any
 	identity       auth.Identity
 	decision       routing.Decision
@@ -461,6 +468,9 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	}
 	if rm.surface != "" {
 		attrs.Derived["surface"] = rm.surface
+	}
+	if rm.prefixFinger != "" {
+		attrs.Derived["prefix_fingerprint"] = rm.prefixFinger
 	}
 	if len(rm.degraded) > 0 {
 		attrs.Derived["degraded"] = rm.degraded

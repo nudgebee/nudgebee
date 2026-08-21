@@ -485,6 +485,54 @@ func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID, accountID 
 	return out, nil
 }
 
+// GetUserNames resolves user ids to display names. Ids with no matching user
+// row are simply absent from the result, so callers render whatever fallback
+// suits them (executions triggered by a schedule carry no user id at all).
+func (s *WorkflowDao) GetUserNames(ctx context.Context, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	// These ids come from a Temporal search attribute, which as far as Postgres
+	// is concerned is free-form text. One non-UUID value would fail the whole
+	// batch with "invalid input syntax for type uuid" and blank out every name
+	// on the page, so drop them rather than let one poison the rest.
+	validIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err == nil {
+			validIDs = append(validIDs, id)
+		}
+	}
+	if len(validIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id::text, display_name FROM users WHERE id = ANY($1::uuid[])`,
+		pq.Array(validIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch user names: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("workflow_dao: failed to close rows: %v", cerr)
+		}
+	}()
+	for rows.Next() {
+		var id string
+		var displayName sql.NullString
+		if err := rows.Scan(&id, &displayName); err != nil {
+			return nil, fmt.Errorf("failed to scan user name row: %w", err)
+		}
+		if displayName.Valid {
+			out[id] = displayName.String
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed iterating user name rows: %w", err)
+	}
+	return out, nil
+}
+
 // applyVersionRefs copies the joined live + draft version columns onto wf if
 // present. Centralized so List / Find / FindByName / FindByIntegrationName stay
 // consistent. liveStatus is mirrored to workflows.status by the DAO, but kept as

@@ -53,6 +53,11 @@ ERR_TOKEN_REFRESH_FAILED = "Token refresh failed"
 ERR_GCHAT_TOKEN_REFRESH = "Unable to refresh g chat token for installation id %s"
 MSG_DM_SENT_SUCCESS = "Direct message sent successfully"
 
+# Separates the latest user message from the rest of a thread transcript. The
+# text before it is what the user actually just asked; everything after is
+# surrounding conversation. Callers that need the question alone split on this.
+THREAD_CONTEXT_MARKER = "\n--- context ---"
+
 
 class CommonService:
     def __init__(self, engine, slack_app, teams_app):
@@ -62,6 +67,11 @@ class CommonService:
         self._scoped_session = BaseDB.session(self.engine)
         self.session = self._scoped_session()
         self.teams_adapter = None
+        # Set per-request by the event/interactive dispatcher (from the incoming
+        # payload's api_app_id) so get_slack_installation can disambiguate when
+        # multiple apps are installed to the same team_id. None means "unknown",
+        # preserving the original team-only lookup.
+        self.app_id = None
 
     def close(self):
         """Close and remove the scoped session, returning the connection to the pool."""
@@ -1590,7 +1600,7 @@ class CommonService:
             return last_message
 
         context = "\n".join(f"{role}:\n{text}\n" for role, text in context_entries)
-        return f"{last_message}\n\n--- context ---\n{context}"
+        return f"{last_message}\n{THREAD_CONTEXT_MARKER}\n{context}"
 
     def _extract_meaningful_text(self, msg, bot):
         parts = []
@@ -1693,7 +1703,7 @@ class CommonService:
         return text
 
     def get_slack_installation(self, team_id):
-        return load_installation_by_team(self.session, team_id, "slack")
+        return load_installation_by_team(self.session, team_id, "slack", app_id=self.app_id)
 
     def get_slack_user_display_name(self, team_id, user_id):
         """

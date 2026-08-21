@@ -620,6 +620,28 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 
 	logs, err := source.QueryLogs(ctx, fetchLogRequest)
 
+	// Resolve the query that was actually used so callers (UI, LLM, runbooks) can show
+	// it — including on the empty-result diagnosis early-returns below, not just the
+	// success path. fetchLogRequest.Query holds the raw query or the GetQuery result set
+	// above. Providers that consume the where-clause natively emit no query string, so
+	// fall back to the canonical where JSON.
+	usedQuery := fetchLogRequest.Query
+	if usedQuery == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
+		if b, mErr := json.Marshal(fetchLogRequest.QueryRequest.Where); mErr == nil {
+			usedQuery = string(b)
+		}
+	}
+
+	// Resolve the provider for the result. The canonical (v2) path sends an empty
+	// LogProvider and lets us resolve the account default, so fall back to the
+	// resolved default provider when the request didn't name one.
+	provider := fetchLogRequest.LogProvider
+	if provider == "" {
+		if resolved, _, _, perr := getLogsMetricsTracesProviderWithIntegration(ctx, fetchLogRequest.AccountId, "", "logs", fetchLogRequest.LogProviderSource); perr == nil {
+			provider = resolved
+		}
+	}
+
 	// A query that matched nothing — or that failed with a backend error — is frequently
 	// caused by a mistyped label NAME (e.g. "service_nam") or a mistyped label VALUE (e.g.
 	// namespace="prodd"). Some backends silently return zero rows for an unknown label/value
@@ -649,7 +671,7 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 
 		if verr := validateReferencedLabels(ctx, source, fetchLogRequest, referencedLabels, filteringMap); verr != nil {
 			outcome = "unknown_label_name"
-			return FetchLogsResult{Logs: []OutputLog{}, Provider: fetchLogRequest.LogProvider, Suggestion: verr.Error()}, nil
+			return FetchLogsResult{Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: verr.Error()}, nil
 		}
 		// Value suggestions only apply to a query that ran cleanly but matched nothing.
 		// On a backend error the empty result isn't a "wrong value" signal — the value-set
@@ -658,7 +680,7 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		if err == nil && len(logs) == 0 {
 			if verr := validateReferencedLabelValues(ctx, source, fetchLogRequest, referencedValues); verr != nil {
 				outcome = "unknown_label_value"
-				return FetchLogsResult{Logs: []OutputLog{}, Provider: fetchLogRequest.LogProvider, Suggestion: verr.Error()}, nil
+				return FetchLogsResult{Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: verr.Error()}, nil
 			}
 		}
 	}
@@ -667,26 +689,6 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	}
 	normalizeOutputLogLabels(logs, filteringMap)
 
-	// Resolve the query that was actually used so callers (UI, LLM, runbooks)
-	// can show it. fetchLogRequest.Query holds the raw query or the GetQuery
-	// result set above. Providers that consume the where-clause natively emit
-	// no query string, so fall back to the canonical where JSON.
-	usedQuery := fetchLogRequest.Query
-	if usedQuery == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
-		if b, mErr := json.Marshal(fetchLogRequest.QueryRequest.Where); mErr == nil {
-			usedQuery = string(b)
-		}
-	}
-
-	// Resolve the provider for the result. The canonical (v2) path sends an empty
-	// LogProvider and lets us resolve the account default, so fall back to the
-	// resolved default provider when the request didn't name one.
-	provider := fetchLogRequest.LogProvider
-	if provider == "" {
-		if resolved, _, _, perr := getLogsMetricsTracesProviderWithIntegration(ctx, fetchLogRequest.AccountId, "", "logs", fetchLogRequest.LogProviderSource); perr == nil {
-			provider = resolved
-		}
-	}
 	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider}, nil
 }
 
@@ -882,13 +884,15 @@ func closestValues(target string, candidates []string) []string {
 
 // unknownLabelError builds the actionable, token-conscious error returned when a query
 // references label names the provider doesn't expose. It names the unknown label(s) and
-// either the closest valid matches or a pointer to the label-listing action — never the
-// full label list. noun is "logs"/"traces", providerNoun is "log"/"trace".
-func unknownLabelError(noun, providerNoun, listAction string, unknown, available []string) error {
+// either the closest valid matches or action-agnostic guidance (verify or drop the
+// filter) — never the full label list, and never a listing tool the caller may not
+// have (mirrors unknownValueError's fallback). noun is "logs"/"traces", providerNoun is
+// "log"/"trace".
+func unknownLabelError(noun, providerNoun string, unknown, available []string) error {
 	if suggestions := suggestLabels(unknown, available); len(suggestions) > 0 {
 		return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; closest valid label(s): %v", noun, unknown, providerNoun, suggestions)
 	}
-	return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; call %s for valid names", noun, unknown, providerNoun, listAction)
+	return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; verify the name is correct or remove this filter", noun, unknown, providerNoun)
 }
 
 // unknownReferencedLabels partitions the referenced field names against the set the
@@ -952,7 +956,7 @@ func validateReferencedLabels(ctx *security.RequestContext, source LogSource, fe
 	if len(unknown) == 0 {
 		return nil
 	}
-	return unknownLabelError("logs", "log", "logs_list_labels", unknown, available)
+	return unknownLabelError("logs", "log", unknown, available)
 }
 
 // valueValidationLookback bounds how far back the value validator looks when establishing a
@@ -1076,7 +1080,7 @@ func validateReferencedTraceLabels(ctx *security.RequestContext, source TraceSou
 	if len(unknown) == 0 {
 		return nil
 	}
-	return unknownLabelError("traces", "trace", "traces_list_labels", unknown, available)
+	return unknownLabelError("traces", "trace", unknown, available)
 }
 
 // normalizeOutputLogLabels adds canonical label names as aliases for provider-specific
@@ -1126,29 +1130,102 @@ func FetchLogLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogL
 	return source.QueryLabelValues(ctx, fetchLogRequest)
 }
 
-func FetchLogIndexFields(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabelFields, error) {
-	resp, err := GetDefaultProvider(ctx, fetchLogRequest.AccountId, "logs", fetchLogRequest.LogProviderSource, "")
+// esAllIndicesWildcard is the last-resort field-listing target, matching the
+// fallback QueryLogGroup already uses when no log index is configured.
+const esAllIndicesWildcard = "*"
+
+// resolveLogFieldsIndex picks the index a field listing runs against:
+// request.index, else the account default. Returns "" when neither resolves —
+// deliberately NOT the wildcard, because the ES sources hold a second default
+// (cfg.LogIndex, read straight off the integration record) that only they can
+// see, and injecting "*" here would mask it. They own the last resort.
+func resolveLogFieldsIndex(requestIndex, defaultIndex string) string {
+	if idx := strings.TrimSpace(requestIndex); idx != "" {
+		return idx
+	}
+	return strings.TrimSpace(defaultIndex)
+}
+
+// FetchLogLabelsOrIndexFields serves the logs_list_labels action.
+//
+//	fetch_index=true  index targets (ES only — rejected elsewhere, since a
+//	                  provider with no index concept can only mean a confused caller)
+//	absent/false      queryable fields: ES resolves an index and reads _mapping,
+//	                  every other provider's QueryLabels already returns fields
+//
+// The flag used to mean the opposite, so the no-flag answer for ES was a list of
+// index NAMES where callers — LLM agents especially — expected field names, and
+// nothing errored to say so.
+func FetchLogLabelsOrIndexFields(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabel, error) {
+	// LogProvider is forwarded so a pinned provider resolves against itself; the
+	// old path passed "" and answered from the account default. WithIntegration
+	// rather than GetDefaultProvider: it returns the integration the default
+	// index is read from, without the capabilities work a listing never uses.
+	provider, integrationSource, integrationDto, err := getLogsMetricsTracesProviderWithIntegration(ctx, fetchLogRequest.AccountId, fetchLogRequest.LogProvider, "logs", fetchLogRequest.LogProviderSource)
 	if err != nil {
 		return nil, err
 	}
 
-	if resp.Provider != "ES" {
-		return nil, fmt.Errorf("FetchLogIndexFields is only supported for ES provider")
+	// An unresolved provider falls through, so a missing integration reports
+	// itself rather than being blamed on the flag.
+	if provider != "ES" {
+		if fetchLogRequest.FetchIndex && provider != "" {
+			return nil, fmt.Errorf("fetch_index is only supported for the Elasticsearch log provider: %q has no index concept — omit fetch_index to list its queryable labels", provider)
+		}
+		return FetchLogLabels(ctx, fetchLogRequest)
 	}
 
-	logSource, err := getLogSource(resp.Provider, resp.IntegrationSource)
+	if fetchLogRequest.FetchIndex {
+		return FetchLogLabels(ctx, fetchLogRequest)
+	}
+
+	logSource, err := getLogSource(provider, integrationSource)
 	if err != nil {
 		return nil, err
 	}
 
+	// Same default get_default_provider reports: per-account override → log_index.
+	// Note this is nil whenever the caller supplied BOTH log_provider and
+	// log_provider_source (llm-server does), so an unresolved index here is
+	// normal, not exceptional — the source resolves it from its own config.
+	defaultIndex := readIndexFromIntegration(ctx, integrationDto, "logs", fetchLogRequest.AccountId)
+	if index := resolveLogFieldsIndex(common.GetString(fetchLogRequest.Request, "index"), defaultIndex); index != "" {
+		// Both ES variants read Request["index"], so pass it there rather than
+		// teaching each about default resolution. Copied, not mutated: Request is
+		// the caller's and a resolved default must not leak back into it.
+		request := make(map[string]any, len(fetchLogRequest.Request)+1)
+		for k, v := range fetchLogRequest.Request {
+			request[k] = v
+		}
+		request["index"] = index
+		fetchLogRequest.Request = request
+	}
+
+	ctx.GetLogger().Info("logs_list_labels: listing index fields",
+		"account_id", fetchLogRequest.AccountId, "provider", provider,
+		"integration_source", integrationSource,
+		"index", common.GetString(fetchLogRequest.Request, "index"))
+
+	var fields []OutputLogLabelFields
 	switch s := logSource.(type) {
 	case *ElasticSource:
-		return s.QueryIndexFields(ctx, fetchLogRequest)
+		fields, err = s.QueryIndexFields(ctx, fetchLogRequest)
 	case *ElasticSaasSource:
-		return s.QueryIndexFields(ctx, fetchLogRequest)
+		fields, err = s.QueryIndexFields(ctx, fetchLogRequest)
 	default:
 		return nil, fmt.Errorf("log source does not support QueryIndexFields")
 	}
+	if err != nil {
+		return nil, err
+	}
+	labels := make([]OutputLogLabel, len(fields))
+	for i, f := range fields {
+		labels[i] = OutputLogLabel{
+			Label:      f.Field,
+			Attributes: f.Attributes,
+		}
+	}
+	return labels, nil
 }
 
 func FetchLogGroup(ctx *security.RequestContext, fetchLogGroupRequest FetchLogGroupRequest) (LogGroupOutput, error) {

@@ -21,18 +21,16 @@
 import React, { ReactNode } from 'react';
 import { Box, Tooltip, Typography, SxProps, Theme } from '@mui/material';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
-import { SlackIcon, MSTeamsIcon, GChatIcon, jiraIcon, serviceNowIcon, freshdeskIcon, PagerDutyIcon } from '@assets';
+import { SlackIcon, MSTeamsIcon, GChatIcon, DiscordIcon, jiraIcon, serviceNowIcon, freshdeskIcon, PagerDutyIcon } from '@assets';
 import { colors } from 'src/utils/colors';
 import SafeIcon from './SafeIcon';
-
-import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 
 // Built-in presets for common use cases
 const PRESETS: Record<string, { icon: any; label: string; muiIcon?: ReactNode }> = {
   slack: { icon: SlackIcon, label: 'Slack' },
   ms_teams: { icon: MSTeamsIcon, label: 'Teams' },
   google_chat: { icon: GChatIcon, label: 'Google Chat' },
-  discord: { icon: null, label: 'Discord', muiIcon: <ChatBubbleOutlineIcon /> },
+  discord: { icon: DiscordIcon, label: 'Discord' },
   email: { icon: null, label: 'Email', muiIcon: <MailOutlineIcon /> },
   jira: { icon: jiraIcon, label: 'Jira' },
   servicenow: { icon: serviceNowIcon, label: 'ServiceNow' },

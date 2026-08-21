@@ -664,6 +664,30 @@ query GenerateAIRecommendation($eventId: String!, $accountId: String!, $recommen
 }
 `;
 
+export const AI_REMEDIATION_GENERATE = `
+query AiRemediationGenerate($accountId: String!, $eventId: String, $context: String!, $availableArtifacts: [String!]) {
+  ai_remediation_generate(account_id: $accountId, event_id: $eventId, context: $context, available_artifacts: $availableArtifacts) {
+    data
+  }
+}
+`;
+
+export const AI_REMEDIATION_GET = `
+query AiRemediationGet($accountId: String!, $eventId: String) {
+  ai_remediation_get(account_id: $accountId, event_id: $eventId) {
+    data
+  }
+}
+`;
+
+export const AI_REMEDIATION_EXECUTE = `
+mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String) {
+  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot) {
+    data
+  }
+}
+`;
+
 export const NB_LATEST_VERSIONS = `
 query NBVersions{
   nudgebee_list_versions{
@@ -3718,6 +3742,35 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       regenerate: regenerate || false,
     });
     return response?.data?.data?.generate_ai_recommendation?.data || parseHttpResponseBodyMessage(response?.data);
+  },
+  async generateRemediation(accountId: string, eventId: string, context: string, availableArtifacts: string[] = []) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_REMEDIATION_GENERATE, 'AiRemediationGenerate', {
+      accountId,
+      eventId,
+      context,
+      availableArtifacts,
+    });
+    return response?.data?.data?.ai_remediation_generate?.data;
+  },
+  async getRemediation(accountId: string, eventId: string) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_REMEDIATION_GET, 'AiRemediationGet', {
+      accountId,
+      eventId,
+    });
+    return response?.data?.data?.ai_remediation_get?.data;
+  },
+  async executeRemediationCommand(accountId: string, command: string, eventId?: string, configName?: string, slot?: string) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_REMEDIATION_EXECUTE, 'AiRemediationExecute', {
+      accountId,
+      eventId: eventId || null,
+      command,
+      configName: configName || null,
+      slot: slot || null,
+    });
+    return response?.data?.data?.ai_remediation_execute?.data;
   },
   async scanImage({ accountId, namespace, workloadName }: { accountId: string; namespace: string; workloadName: string }) {
     if (accountId === 'demo') return null;

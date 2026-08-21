@@ -18,7 +18,7 @@ func TestAwsDebug_IncludesMCPIntegrationTools(t *testing.T) {
 	defer tocore.ClearMCPIntegrationToolCache(testAccountId)
 
 	sc := security.NewRequestContextForSuperAdmin()
-	tools := getAwsPlannerSupportedTools(sc, testAccountId)
+	tools := getAwsPlannerSupportedTools(sc, testAccountId, AgentAwsOrchestratorName, false)
 	toolNames := make([]string, len(tools))
 	for i, tool := range tools {
 		toolNames[i] = tool.Name()

@@ -9,13 +9,17 @@ import (
 	"net/http"
 	neturl "net/url"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
+var httpTransport = otelhttp.NewTransport(http.DefaultTransport)
+
 func HttpClient() *http.Client {
 	return &http.Client{
-		Transport: otelhttp.NewTransport(http.DefaultTransport),
+		Timeout:   30 * time.Second,
+		Transport: httpTransport,
 	}
 }
 

@@ -301,7 +301,7 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
   };
 
   return (
-    <Grid container columnSpacing={2}>
+    <Grid container columnSpacing={2} rowSpacing={1.5}>
       {renderFields()}
     </Grid>
   );

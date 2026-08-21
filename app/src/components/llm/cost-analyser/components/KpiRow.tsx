@@ -39,6 +39,11 @@ export function KpiRow({ current, previous, storageCost = 0 }: KpiRowProps) {
   const costDelta = pctDelta(current.totalCost, previous.totalCost);
   const avgDelta = pctDelta(current.avgCostPerRun, previous.avgCostPerRun);
   const runsDelta = pctDelta(current.runs, previous.runs);
+  // Percentage-point difference, not pctDelta's relative-% change: cacheHitRatePct
+  // is itself a rate, so a relative change reads confusingly (20%->40% as "+100%")
+  // and pctDelta's before=0 guard would flatten a real 0%->15% jump to "+0%".
+  const cacheHitDelta = Number((current.cacheHitRatePct - previous.cacheHitRatePct).toFixed(1));
+  const cacheSavingsDelta = pctDelta(current.cacheSavingsUsd, previous.cacheSavingsUsd);
   // All-in = token cost + prorated cache-storage cost. The hero shows this so
   // the headline isn't under-reporting; the split is spelled out on hover and in
   // the dedicated storage card.
@@ -65,6 +70,31 @@ export function KpiRow({ current, previous, storageCost = 0 }: KpiRowProps) {
           info={{
             tooltip:
               'Prorated cache-lifecycle storage cost over the window. Scoped by account + model only — not affected by source/user/agent/status filters.',
+          }}
+        />
+      </Card>
+
+      <Card sx={cardSx}>
+        <Stat
+          label='Cache hit rate'
+          value={`${current.cacheHitRatePct.toFixed(1)}%`}
+          // Neutral tone by design (spec §6): unlike cost, a hit-rate change isn't
+          // automatically "good" or "bad", so it isn't primed green/red.
+          delta={pctDeltaProps(cacheHitDelta, 'neutral')}
+          deltaPlacement='inline'
+          info={{ tooltip: 'Share of input tokens served from cache: cached input tokens ÷ total input tokens.' }}
+        />
+      </Card>
+
+      <Card sx={cardSx}>
+        <Stat
+          label='Cache savings'
+          value={fmtCost(current.cacheSavingsUsd)}
+          delta={pctDeltaProps(cacheSavingsDelta, cacheSavingsDelta > 0 ? 'savings' : cacheSavingsDelta < 0 ? 'waste' : 'neutral')}
+          deltaPlacement='inline'
+          info={{
+            tooltip:
+              'Cached input tokens valued at the full (non-cached) input rate — what those cache hits would have cost without caching. Does not yet net the cache write premium or storage cost.',
           }}
         />
       </Card>

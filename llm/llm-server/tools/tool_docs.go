@@ -10,6 +10,7 @@ import (
 	_ "nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"strings"
+	"time"
 
 	"github.com/samber/lo"
 	"github.com/tmc/langchaingo/schema"
@@ -185,7 +186,10 @@ func searchConfluence(query string, accountId string) (ConfluenceSearchResponse,
 	req.Header.Set("Authorization", confluenceAuthHeader(mode, configs["username"], configs["token"]))
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := &http.Client{
+		Transport: common.HttpClient().Transport,
+		Timeout:   30 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ConfluenceSearchResponse{}, "", err

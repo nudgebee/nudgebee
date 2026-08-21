@@ -13,6 +13,19 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// testRabbitConfigName returns the tool-config name to use as the
+// clarification followup when the agent asks which RabbitMQ instance to
+// target. Read from TEST_RABBITMQ_CONFIG_NAME so different environments
+// (each with different config names in the DB) can be tested without
+// editing the test. Defaults to "dev" for back-compat with the prior
+// hardcoded value.
+func testRabbitConfigName() string {
+	if v := os.Getenv("TEST_RABBITMQ_CONFIG_NAME"); v != "" {
+		return v
+	}
+	return "dev"
+}
+
 // TODO mock DBs
 // TODO mock Tool Execution
 func TestRabbitmqAgent1(t *testing.T) {
@@ -56,7 +69,7 @@ func TestRabbitmqAgent1(t *testing.T) {
 		agentId, err := uuid.Parse(resp.AgentId)
 		assert.Nil(t, err)
 
-		resp, err = core.HandleConversationSessionRequest(sc, k8sAgent, tc.UserId, tc.AccountId, tc.SessionId, "dev", core.ConversationSessionRequestWithMessageId(uuid.NullUUID{
+		resp, err = core.HandleConversationSessionRequest(sc, k8sAgent, tc.UserId, tc.AccountId, tc.SessionId, testRabbitConfigName(), core.ConversationSessionRequestWithMessageId(uuid.NullUUID{
 			UUID:  messageId,
 			Valid: true,
 		}), core.ConversationSessionRequestWithAgentId(uuid.NullUUID{
@@ -118,7 +131,7 @@ func TestRabbitmqAgent2(t *testing.T) {
 		agentId, err := uuid.Parse(resp.AgentId)
 		assert.Nil(t, err)
 
-		resp, err = core.HandleConversationSessionRequest(sc, k8sAgent, tc.UserId, tc.AccountId, tc.SessionId, "dev", core.ConversationSessionRequestWithMessageId(uuid.NullUUID{
+		resp, err = core.HandleConversationSessionRequest(sc, k8sAgent, tc.UserId, tc.AccountId, tc.SessionId, testRabbitConfigName(), core.ConversationSessionRequestWithMessageId(uuid.NullUUID{
 			UUID:  messageId,
 			Valid: true,
 		}), core.ConversationSessionRequestWithAgentId(uuid.NullUUID{
@@ -180,7 +193,7 @@ func TestRabbitmqAgent3(t *testing.T) {
 		agentId, err := uuid.Parse(resp.AgentId)
 		assert.Nil(t, err)
 
-		resp, err = core.HandleConversationSessionRequest(sc, k8sAgent, tc.UserId, tc.AccountId, tc.SessionId, "dev", core.ConversationSessionRequestWithMessageId(uuid.NullUUID{
+		resp, err = core.HandleConversationSessionRequest(sc, k8sAgent, tc.UserId, tc.AccountId, tc.SessionId, testRabbitConfigName(), core.ConversationSessionRequestWithMessageId(uuid.NullUUID{
 			UUID:  messageId,
 			Valid: true,
 		}), core.ConversationSessionRequestWithAgentId(uuid.NullUUID{

@@ -108,7 +108,8 @@ query KgFilterOptions {
       label_keys
       node_types
       last_sync_time
-      node_id_map
+      node_keys
+      node_ids
       node_count
     }
   }

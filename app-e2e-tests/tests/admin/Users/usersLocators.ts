@@ -19,6 +19,8 @@ export class UserLocators extends CommonLocators {
   readonly statusFilterBtn: Locator;
   readonly userSearchToggleBtn: Locator;
   readonly userSearchInput: Locator;
+  readonly statusButton: Locator;
+  readonly nameSearchInput: Locator;
 
   constructor(page: Page) {
     super(page);
@@ -40,6 +42,8 @@ export class UserLocators extends CommonLocators {
     this.statusFilterBtn = page.locator('button').filter({ hasText: 'By Status' });
     this.userSearchToggleBtn = page.locator('#box-all-users-search-toggle-button');
     this.userSearchInput = page.locator('#box-all-users-search-input-text');
+    this.statusButton = page.locator('#auto-complete-all-users-status-filter');
+    this.nameSearchInput = page.locator('#all-users-name-search');
   }
 
   async selectRole(role: string): Promise<void> {
@@ -57,5 +61,34 @@ export class UserLocators extends CommonLocators {
 
   getStatusOption(status: string): Locator {
     return this.page.getByTestId(`user-modal-status-${status.toLowerCase()}`);
+  }
+
+  // Set the user's status inside the edit/add modal.
+  // Radio group with no id/testid — match by exact text ("Active" is a substring of "Inactive").
+  async setUserStatus(status: "Active" | "Inactive" | "Suspended"): Promise<void> {
+    await this.page.getByRole("radio", { name: status, exact: true }).click();
+  }
+
+  // The table row for a given user, matched by email — used to verify presence after filter/search.
+  getUserRow(email: string): Locator {
+    return this.page.locator("tr").filter({ hasText: email });
+  }
+
+  // Open the list Status filter dropdown and pick Active / Inactive / Suspended.
+  // Options render only after the button is clicked and carry no id/testid — match by exact text.
+  async selectStatusFilter(status: string): Promise<void> {
+    await this.statusButton.click();
+    await this.page
+      .locator('[role="option"]')
+      .filter({ hasText: new RegExp(`^${status}$`) })
+      .click();
+  }
+
+  // Type a name into the users search box and submit.
+  // Enter is required — fill() alone does not trigger the filter.
+  async searchByName(name: string): Promise<void> {
+    await this.nameSearchInput.click(); // ensure focus so Enter reliably lands
+    await this.nameSearchInput.fill(name);
+    await this.nameSearchInput.press("Enter");
   }
 }

@@ -46,8 +46,15 @@ const AutoPilotHeaderCard = ({
   scalingType = '',
   reviewAutoOptimize = false,
   workloadRequired = true,
+  accountOptions = [],
+  defaultAccountId = '',
 }) => {
-  const { selectedCluster } = useData();
+  const { selectedCluster: contextSelectedCluster } = useData();
+  // Callers that own their own (e.g. modal-local) account selection pass
+  // accountOptions + defaultAccountId (same contract used everywhere else in
+  // the Auto Optimize flow); otherwise this falls back to the global
+  // selectedCluster.
+  const selectedCluster = accountOptions.find((option) => option.value === defaultAccountId) || contextSelectedCluster;
 
   const [selectedNamespace, setSelectedNamespace] = React.useState(
     data?.auto_optimize_resource_maps?.map((r) => r?.resource_identifier?.namespace) ?? ''
@@ -101,7 +108,7 @@ const AutoPilotHeaderCard = ({
           setIsOptionsLoading(false);
         });
     }
-  }, [selectedNamespace]);
+  }, [selectedNamespace, selectedCluster?.value]);
 
   React.useEffect(() => {
     if (data?.auto_optimize_resource_maps?.length > 0) {
@@ -159,6 +166,23 @@ const AutoPilotHeaderCard = ({
       setPvc(pvcData?.filter((item) => item.metadata.namespace == selectedNamespace).map((item) => item.metadata.name) ?? []);
     }
   }, [selectedNamespace, selectedCluster?.value, type]);
+
+  // Namespace/workload/PVC selections are specific to the previously selected
+  // account — clear them when the account actually changes (not on initial
+  // mount, so editing/reviewing an existing config keeps its saved selection).
+  const prevClusterValueRef = React.useRef(selectedCluster?.value);
+  React.useEffect(() => {
+    if (prevClusterValueRef.current === selectedCluster?.value) {
+      return;
+    }
+    prevClusterValueRef.current = selectedCluster?.value;
+    setSelectedNamespace(isMultiSelect ? [] : '');
+    setSelectedWorkloads(isMultiSelect ? [] : '');
+    setSelectedPvs(isMultiSelect ? [] : '');
+    if (setResourceFilter) {
+      setResourceFilter([]);
+    }
+  }, [selectedCluster?.value]);
 
   const handleNamespaceChange = (next) => {
     setSelectedNamespace(next);
@@ -523,6 +547,8 @@ AutoPilotHeaderCard.propTypes = {
   scalingType: PropTypes.string,
   reviewAutoOptimize: PropTypes.bool,
   workloadRequired: PropTypes.bool,
+  accountOptions: PropTypes.array,
+  defaultAccountId: PropTypes.string,
 };
 
 export default AutoPilotHeaderCard;

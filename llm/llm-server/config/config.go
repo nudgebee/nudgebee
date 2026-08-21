@@ -218,6 +218,11 @@ type appConfig struct {
 	// skill-lists menu) in the human message instead of the cacheable system
 	// prefix. Off keeps the legacy in-prompt <skill-lists> + lazy load_skills flow.
 	LlmServerKBPrestepEnabled bool `mapstructure:"llm_server_kb_prestep_enabled"`
+	// LlmServerKBPrestepTimeoutSeconds bounds the pre-step's RAG call. The
+	// default is sized for the reranked search (embed + query + one LLM rerank
+	// call); the pre-step fails open on timeout, so setting this too low turns
+	// reranking into silent knowledge loss. Values <= 0 fall back to the default.
+	LlmServerKBPrestepTimeoutSeconds int `mapstructure:"llm_server_kb_prestep_timeout_seconds"`
 	// LlmServerSkillDelegationPropagationEnabled, when on, propagates a delegating
 	// agent's skill scope (its own name + the question-aware SelectedSkillIds) to the
 	// sub-agents it delegates to. Skills are agent-scoped, so a runbook mapped to an
@@ -371,6 +376,15 @@ type appConfig struct {
 	// (always direct) and @k8s_orchestrator_lean (always lean) eval handles are
 	// unaffected by this — they exist for side-by-side A/B regardless of mode.
 	K8sOrchestratorMode string `mapstructure:"llm_server_k8s_orchestrator_mode"`
+	// AwsOrchestratorMode selects what the router-selected aws_orchestrator runs.
+	// Boot-time, per-deploy (rollback = change + redeploy). One of:
+	//   "delegating" (default) — v1: route AWS resource CLI through the `aws` sub-agent
+	//   "direct"               — v2: hold `aws_execute` and run the AWS CLI directly
+	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + direct aws_execute
+	// (`aws_observability` stays delegated in all.) Unknown/empty falls back to
+	// "delegating". The @aws_orchestrator_2 (always direct) and @aws_orchestrator_lean
+	// (always lean) eval handles are unaffected — they exist for side-by-side A/B.
+	AwsOrchestratorMode string `mapstructure:"llm_server_aws_orchestrator_mode"`
 	// TraceAgentV2Enabled gates the canonical, provider-independent traces agent
 	// (TracesDefaultAgentV2). Global per-deploy toggle; default false.
 	TraceAgentV2Enabled                    bool   `mapstructure:"llm_server_trace_agent_v2_enabled"`
@@ -622,6 +636,13 @@ type appConfig struct {
 	// LLM Trace - logs full prompt messages and LLM responses for debugging
 	LlmTraceEnabled bool `mapstructure:"llm_trace_enabled"`
 
+	// LogsStandardGrepEnabled exposes the standard_diagnostic_grep primitive
+	// to the logs agent — a server-side pattern-bundle grep tool that avoids
+	// one-LLM-turn-per-pattern latency. Default off; flip on after validating
+	// the bundle set matches production log shapes. When off, the logs agent
+	// falls back to LLM-emitted shell_execute greps as today.
+	LogsStandardGrepEnabled bool `mapstructure:"llm_logs_standard_grep_enabled"`
+
 	// Memory Module — layered memory architecture (Phase 1+)
 	MemoryModuleEnabled     bool   `mapstructure:"llm_memory_module_enabled"`
 	MemoryLayerSoulEnabled  bool   `mapstructure:"llm_memory_layer_soul_enabled"`
@@ -807,6 +828,7 @@ func init() {
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
 	viper.SetDefault("llm_server_integration_kb_enabled", true)
 	viper.SetDefault("llm_server_kb_prestep_enabled", false)
+	viper.SetDefault("llm_server_kb_prestep_timeout_seconds", 12)
 	viper.SetDefault("llm_server_skill_delegation_propagation_enabled", false)
 	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
 	// validator). Other tools stay text-description-only until their schema
@@ -958,8 +980,15 @@ func init() {
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
-	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
-	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")
+	// k8s/aws orchestrator mode: lean (default) | delegating (v1) | direct (v2).
+	// Lean = reduced tool core + minimal prompt + search_tools reach-back. Run as the
+	// dev/QA default with no regression: caches normally on gemini, same call count as
+	// delegating, critiqued under the standard gate (lean does NOT disable critique —
+	// it is governed by llm_server_react_critique_enabled, same as the heavy agent).
+	// Rollback = set the mode back to delegating + redeploy. An unknown/typo value
+	// falls back to delegating. Deployments that set the env explicitly are unaffected.
+	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
+	viper.SetDefault("llm_server_aws_orchestrator_mode", "lean")
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)

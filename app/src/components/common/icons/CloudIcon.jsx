@@ -172,7 +172,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = GitLabIcon;
   } else if (cloud_provider.toUpperCase() === 'GRAFANA-TEMPO') {
     Icon = GrafanaTempoIcon;
-  } else if (cloud_provider.toUpperCase() === 'ES') {
+  } else if (cloud_provider.toUpperCase() === 'ES' || cloud_provider.toUpperCase() === 'ELASTICSEARCH_WEBHOOK') {
     Icon = ElasticSearchIcon;
   } else if (cloud_provider.toUpperCase() === 'PINOT') {
     Icon = PinotIcon;

@@ -999,6 +999,9 @@ func ListIntegrationConfigs(context *security.RequestContext, accountId string, 
 		}
 	}()
 
+	// First pass: read the rows only. Config values are loaded after the cursor is
+	// closed so this never holds one pool connection while asking for another.
+	pending := []pendingIntegration{}
 	for rows.Next() {
 		var configId, tenantId, accId, configName, configLabels, source, integrationType *string
 		err = rows.Scan(&configId, &tenantId, &accId, &configName, &configLabels, &source, &integrationType)
@@ -1016,19 +1019,38 @@ func ListIntegrationConfigs(context *security.RequestContext, accountId string, 
 			}
 		}
 
-		values, err := loadIntegrationConfigValues(dbms, *configId)
+		pending = append(pending, pendingIntegration{
+			id:              *configId,
+			name:            *configName,
+			labels:          labels,
+			source:          *source,
+			integrationType: *integrationType,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("integrations: failed to iterate config rows", "error", err)
+		return configs, err
+	}
+	if cerr := rows.Close(); cerr != nil {
+		slog.Error("integrations: failed to close config rows", "error", cerr)
+		return configs, cerr
+	}
+
+	// Second pass: the cursor is closed, so its connection is back in the pool.
+	for _, p := range pending {
+		values, err := loadIntegrationConfigValues(dbms, p.id)
 		if err != nil {
 			slog.Error("integrations: failed to get config values", "error", err)
 			return configs, err
 		}
 
 		configs = append(configs, IntegrationDto{
-			Id:      *configId,
-			Name:    *configName,
+			Id:      p.id,
+			Name:    p.name,
 			Configs: values,
-			Tags:    labels,
-			Source:  *source,
-			Type:    *integrationType,
+			Tags:    p.labels,
+			Source:  p.source,
+			Type:    p.integrationType,
 		})
 	}
 
@@ -1094,6 +1116,9 @@ func ListIntegrationConfigsByTenant(context *security.RequestContext, integratio
 		}
 	}()
 
+	// First pass: read the rows only. Config values are loaded after the cursor is
+	// closed so this never holds one pool connection while asking for another.
+	pending := []pendingIntegration{}
 	for rows.Next() {
 		var configId, configName, configLabels, source, integrationType *string
 		if err = rows.Scan(&configId, &configName, &configLabels, &source, &integrationType); err != nil {
@@ -1109,28 +1134,64 @@ func ListIntegrationConfigsByTenant(context *security.RequestContext, integratio
 			}
 		}
 
-		values, err := loadIntegrationConfigValues(dbms, *configId)
+		pending = append(pending, pendingIntegration{
+			id:              *configId,
+			name:            *configName,
+			labels:          labels,
+			source:          *source,
+			integrationType: *integrationType,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("integrations: failed to iterate config rows", "error", err)
+		return configs, err
+	}
+	if cerr := rows.Close(); cerr != nil {
+		slog.Error("integrations: failed to close config rows", "error", cerr)
+		return configs, cerr
+	}
+
+	// Second pass: the cursor is closed, so its connection is back in the pool.
+	for _, p := range pending {
+		values, err := loadIntegrationConfigValues(dbms, p.id)
 		if err != nil {
 			slog.Error("integrations: failed to get config values", "error", err)
 			return configs, err
 		}
 
 		configs = append(configs, IntegrationDto{
-			Id:      *configId,
-			Name:    *configName,
+			Id:      p.id,
+			Name:    p.name,
 			Configs: values,
-			Tags:    labels,
-			Source:  *source,
-			Type:    *integrationType,
+			Tags:    p.labels,
+			Source:  p.source,
+			Type:    p.integrationType,
 		})
 	}
 
 	return configs, nil
 }
 
+// pendingIntegration is one integrations row held between the two passes the
+// listing functions make. The first pass only reads rows and then closes the
+// cursor; the second loads each integration's config values. Keeping those
+// separate matters because the cursor pins a pool connection for as long as it
+// is open, so loading values inside the loop means holding one connection while
+// asking for a second. With enough concurrent callers every connection in the
+// pool ends up held by a loop waiting for a connection that can never come free,
+// and the pod stops serving until it is restarted (see #34973).
+type pendingIntegration struct {
+	id              string
+	name            string
+	labels          map[string]any
+	source          string
+	integrationType string
+}
+
 // loadIntegrationConfigValues reads all config values for a single integration
 // id. Shared by ListIntegrationConfigs and ListIntegrationConfigsByTenant so the
 // query, scan loop, and close handling can't drift between them.
+// Call this only after the caller's own cursor is closed.
 func loadIntegrationConfigValues(dbms *database.DatabaseManager, integrationId string) ([]IntegrationConfigValue, error) {
 	rows, err := dbms.Db.Queryx(fmt.Sprintf(`
 		SELECT name::text, value::text, is_encrypted

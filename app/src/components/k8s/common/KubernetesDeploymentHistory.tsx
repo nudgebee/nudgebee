@@ -43,7 +43,7 @@ const KubernetesDeploymentHistory: React.FC<KubernetesDeploymentHistoryProps> = 
     accountId = (router?.query?.accountId as string) || (router.query?.KubernetesDetails as string) || '';
   }
 
-  const getKubernetesDeployments = async () => {
+  const getKubernetesDeployments = async (isCancelled?: () => boolean) => {
     try {
       const limit = rowsPerPage;
       const subject_type = subjectType?.toLocaleLowerCase() || 'deployment';
@@ -69,6 +69,7 @@ const KubernetesDeploymentHistory: React.FC<KubernetesDeploymentHistoryProps> = 
           ['title', 'subject_name', 'starts_at', 'description', 'status']
         )
         .then((response: any) => {
+          if (isCancelled?.()) return;
           const allDeploymentsData = response?.data?.events.map((e: any) => {
             const data: any = [];
             data.push({ text: <Text value={e?.title} showAutoEllipsis sx={{ minWidth: '200px' }} /> });
@@ -83,13 +84,18 @@ const KubernetesDeploymentHistory: React.FC<KubernetesDeploymentHistoryProps> = 
           setLoading(false);
         });
     } catch (error) {
+      if (isCancelled?.()) return;
       console.error(error);
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    getKubernetesDeployments();
+    let cancelled = false;
+    getKubernetesDeployments(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [currentPage, rowsPerPage, accountId, cloudResourceId, subjectName, subjectNamespace, subjectType]);
 
   return (

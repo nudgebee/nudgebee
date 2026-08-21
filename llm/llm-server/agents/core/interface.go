@@ -138,6 +138,15 @@ type NBAgentRequest struct {
 	// system prompt. When the flag is off this stays empty and the legacy
 	// injectKBContext path prepends the block to the system prompt instead.
 	SkillListsMenu string `json:"skill_lists_menu,omitempty"`
+	// ChannelContext holds conversation observed in a messaging channel the
+	// tenant opted into watching. It is third-party text that nobody addressed
+	// to the agent, so it is kept in its own field rather than folded into
+	// Query: once concatenated, no downstream component can tell the user's
+	// request apart from what other people happened to say. The planner renders
+	// it into the human message inside a fenced block, and the rule for treating
+	// it as reference-only lives in the shared security rules, where it is
+	// operator-controlled rather than sitting inside the untrusted content.
+	ChannelContext string `json:"channel_context,omitempty"`
 }
 
 // DO not use for API calls

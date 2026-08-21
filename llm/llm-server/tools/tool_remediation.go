@@ -8,9 +8,13 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// Kubernetes namespace: RFC 1123 DNS label (lowercase alphanumeric + hyphens, 1-63 chars)
+var k8sNamespaceRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const ToolRemediationGenerate = "remediation_generate"
 const ToolRemediationExecute = "remediation_execute"
@@ -276,6 +280,12 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 
 	// Append namespace if provided and not already in command
 	if namespace, ok := input.Arguments["namespace"].(string); ok && namespace != "" {
+		if !k8sNamespaceRe.MatchString(namespace) {
+			return core.NBToolResponse{
+				Data:   "Invalid namespace: must be a valid Kubernetes namespace (lowercase alphanumeric and hyphens, 1-63 chars)",
+				Status: core.NBToolResponseStatusError,
+			}, fmt.Errorf("invalid namespace %q: does not match Kubernetes naming rules", namespace)
+		}
 		if !strings.Contains(command, "-n ") && !strings.Contains(command, "--namespace") {
 			if strings.HasPrefix(command, "kubectl") {
 				command = fmt.Sprintf("%s -n %s", command, namespace)
@@ -429,17 +439,30 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 	}, nil
 }
 
-// validateCommandSafety checks if the command is safe to execute
-func (r RemediationExecuteTool) validateCommandSafety(command string) error {
-	lowerCmd := strings.ToLower(strings.TrimSpace(command))
+// ValidateCommandSafety blocks catastrophic command patterns (fork bomb, disk wipe, etc).
+// Exported so direct execute handlers (e.g. the remediation RPC play-button path) enforce the
+// same hard-block layer the agent tool applies. Write-level gating (create/update/delete) is a
+// separate concern handled via RBAC at the call site.
+//
+// Note: Dangerous k8s operations (delete namespace, delete pv, etc.) are intentionally NOT blocked
+// here — they are gated by the write-access RBAC check, not this destructive-pattern list.
+func ValidateCommandSafety(command string) error {
+	// Collapse runs of whitespace to single spaces so the substring patterns survive spacing
+	// variation ("rm -rf  /", tabs, etc.).
+	lowerCmd := strings.Join(strings.Fields(strings.ToLower(command)), " ")
 
-	// Block destructive commands without safeguards
 	dangerousPatterns := []string{
 		"rm -rf /",
+		"rm -fr /",
+		"rm -r -f /",
+		"rm -f -r /",
+		"--no-preserve-root",
 		"dd if=/dev/zero",
+		"dd if=/dev/random",
 		"mkfs.",
 		":(){ :|:& };:", // fork bomb
 		"> /dev/sda",
+		"of=/dev/sda",
 	}
 
 	for _, pattern := range dangerousPatterns {
@@ -448,11 +471,12 @@ func (r RemediationExecuteTool) validateCommandSafety(command string) error {
 		}
 	}
 
-	// Note: Dangerous operations (delete namespace, delete pv, etc.) are handled
-	// via the InferToolRequestTypePrompt mechanism which requires user approval
-	// for all create/update/delete operations
-
 	return nil
+}
+
+// validateCommandSafety checks if the command is safe to execute (agent-tool path).
+func (r RemediationExecuteTool) validateCommandSafety(command string) error {
+	return ValidateCommandSafety(command)
 }
 
 // formatExecutionResult formats the execution result as JSON

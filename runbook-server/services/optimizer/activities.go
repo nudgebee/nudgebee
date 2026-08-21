@@ -200,6 +200,19 @@ func (a *Activities) ExecuteTaskActivity(ctx context.Context, taskID string) err
 
 	if err := a.Dao.SaveAutoOptimizeTask(ctx, *task); err != nil {
 		slog.Error("Failed to save task status", "task_id", taskID, "error", err)
+		// This save is the only place the run's outcome is recorded. If it fails
+		// the row keeps the Scheduled status it was created with, which reads as
+		// "waiting its turn" and holds the recommendation back from every later
+		// run (#34943). Fall back to a status-only write so the task always
+		// reaches a terminal state, carrying the outcome the run actually
+		// reached rather than just the save failure.
+		reason := fmt.Sprintf("failed to record task outcome: %v", err)
+		if taskErr != nil {
+			reason = fmt.Sprintf("%v (and the outcome could not be recorded: %v)", taskErr, err)
+		}
+		if markErr := a.Dao.MarkAutoOptimizeTaskTerminal(ctx, task.ID, task.Status, reason); markErr != nil {
+			slog.Error("Failed to record terminal task status after save error", "task_id", taskID, "error", markErr)
+		}
 		if taskErr == nil {
 			return err
 		}

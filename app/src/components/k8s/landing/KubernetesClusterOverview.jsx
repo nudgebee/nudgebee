@@ -55,7 +55,6 @@ const ClusterCardSkeleton = ({ cardStyle }) => (
 );
 
 const KubernetesClusterOverview = () => {
-  const [allClusters, setAllClusters] = useState([]);
   const [clusterOption, setClusterOption] = useState([]);
   const [allNameSpaces, setAllNameSpaces] = useState([]);
   const [k8sClusters, setK8sClusters] = useState([]);
@@ -63,7 +62,7 @@ const KubernetesClusterOverview = () => {
   const [showAddClusterModal, setShowAddClusterModal] = useState(false);
 
   const sortedClusters = useMemo(() => {
-    if (!allClusters.length) return allClusters;
+    if (!k8sClusters?.length) return k8sClusters || [];
 
     const checkConnections = (clusterEntry) => {
       const requiredProps = ['logsConnection', 'nodeAgentConnection', 'prometheusConnection', 'relayConnection'];
@@ -81,13 +80,13 @@ const KubernetesClusterOverview = () => {
       return 2;
     };
 
-    return [...allClusters].sort((a, b) => {
+    return [...k8sClusters].sort((a, b) => {
       const pA = getConnectionPriority(a);
       const pB = getConnectionPriority(b);
       if (pA !== pB) return pA - pB;
       return (a.account_name || '').localeCompare(b.account_name || '', undefined, { numeric: true, sensitivity: 'base' });
     });
-  }, [allClusters]);
+  }, [k8sClusters]);
 
   useEffect(() => {
     getClustersData();
@@ -119,16 +118,6 @@ const KubernetesClusterOverview = () => {
       setLoading(false);
     }
   };
-
-  useEffect(() => {
-    const appendEventstoAllDataArray = [];
-    k8sClusters?.forEach((element) => {
-      let row = { ...element };
-      appendEventstoAllDataArray.push(row);
-      return false;
-    });
-    setAllClusters(appendEventstoAllDataArray);
-  }, [k8sClusters]);
 
   const getDropDownData = async (accountIds) => {
     try {
@@ -173,7 +162,7 @@ const KubernetesClusterOverview = () => {
     } else if (type === 'pod') {
       const podStatusCounts = cluster?.pod_status_counts ?? {};
       const podStatusArray = Object.entries(podStatusCounts)
-        .filter(([_, count]) => count > 0)
+        .filter(([, count]) => count > 0)
         .map(([type, count]) => ({
           type,
           count,

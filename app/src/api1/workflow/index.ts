@@ -8,6 +8,8 @@ import type {
   WorkflowCancelRequest,
   WorkflowCompleteApprovalRequest,
   WorkflowValidateRequest,
+  AccountExecutionListRequest,
+  ExecutionAggregateRequest,
 } from './types';
 
 export const GET_WORKFLOW_BY_ID = `
@@ -611,6 +613,52 @@ export const workflows_count_executions = `
 query WorkflowExecutionCount($request: WorkflowExecutionCountRequest!) {
   workflows_count_executions(request: $request) {
     count
+  }
+}
+`;
+
+// Cross-automation execution dashboard. Note there is no sort argument: the
+// Temporal visibility store backing these actions cannot ORDER BY, so results
+// are always newest-first.
+export const LIST_ACCOUNT_EXECUTIONS = `
+query ListAccountExecutions($request: AccountExecutionListRequest!) {
+  executions_list(request: $request) {
+    next_page_token
+    total_count
+    total_is_approximate
+    executions {
+      id
+      workflow_id
+      workflow_name
+      status
+      start_time
+      close_time
+      duration_ms
+      trigger_type
+      triggered_by
+      user_name
+      failure_reason
+      version_number
+    }
+  }
+}
+`;
+
+export const AGGREGATE_EXECUTIONS = `
+query AggregateExecutions($request: ExecutionAggregateRequest!) {
+  executions_aggregate(request: $request) {
+    total
+    succeeded
+    failed
+    running
+    counts_are_approximate
+    top_failed_is_approximate
+    retention_days
+    top_failed {
+      workflow_id
+      workflow_name
+      failure_count
+    }
   }
 }
 `;
@@ -1250,6 +1298,36 @@ const apiWorkflow = {
       };
     } catch (error) {
       console.error('Failed to get workflow execution count:', error);
+      return { data: null, errors: [error] };
+    }
+  },
+  async listAccountExecutions(accountId: string, request: AccountExecutionListRequest) {
+    try {
+      if (accountId === 'demo') return { data: null, errors: null };
+      const response = await queryGraphQL(LIST_ACCOUNT_EXECUTIONS, 'ListAccountExecutions', {
+        request: { ...request, account_id: accountId },
+      });
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+      };
+    } catch (error) {
+      console.error('Failed to list account executions:', error);
+      return { data: null, errors: [error] };
+    }
+  },
+  async aggregateExecutions(accountId: string, request: ExecutionAggregateRequest) {
+    try {
+      if (accountId === 'demo') return { data: null, errors: null };
+      const response = await queryGraphQL(AGGREGATE_EXECUTIONS, 'AggregateExecutions', {
+        request: { ...request, account_id: accountId },
+      });
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+      };
+    } catch (error) {
+      console.error('Failed to aggregate executions:', error);
       return { data: null, errors: [error] };
     }
   },

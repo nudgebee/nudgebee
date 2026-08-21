@@ -139,18 +139,21 @@ func TestExtractPromSubject(t *testing.T) {
 		labels   map[string]string
 		wantKind string
 		wantName string
+		wantSkip bool // expects the nb_skip_workload_match label to be set
 	}{
 		{
 			name:     "datname only falls back to database name",
 			labels:   map[string]string{"alertname": "PostgreSQLCacheHitRatio", "datname": "temporal_visibility", "severity": "warning"},
 			wantKind: "database",
 			wantName: "temporal_visibility",
+			wantSkip: true,
 		},
 		{
 			name:     "rdsadmin datname falls back to database name (not a workload)",
 			labels:   map[string]string{"alertname": "PostgreSQLCacheHitRatio", "datname": "rdsadmin"},
 			wantKind: "database",
 			wantName: "rdsadmin",
+			wantSkip: true,
 		},
 		{
 			name:     "server host (RDS endpoint) preferred over datname, port stripped",
@@ -248,6 +251,10 @@ func TestExtractPromSubject(t *testing.T) {
 			kind, name := extractPromSubject(tt.labels)
 			assert.Equal(t, tt.wantKind, kind, "kind")
 			assert.Equal(t, tt.wantName, name, "name")
+			// A logical-database (datname) fallback must opt out of the
+			// workload name-match; a host-resolved database subject must not.
+			_, gotSkip := tt.labels[core.SkipWorkloadMatchLabel]
+			assert.Equal(t, tt.wantSkip, gotSkip, "skip-workload-match label")
 		})
 	}
 }

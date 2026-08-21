@@ -171,6 +171,44 @@ func TestIsThrottleError(t *testing.T) {
 	}
 }
 
+func TestIsRegionDisabled(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain string error", errors.New("boom"), false},
+		{"InvalidClientTokenId (STS token invalid in disabled region)", &smithy.GenericAPIError{Code: "InvalidClientTokenId"}, true},
+		{"UnrecognizedClientException (JSON-protocol services)", &smithy.GenericAPIError{Code: "UnrecognizedClientException"}, true},
+		{"AuthFailure (EC2-family)", &smithy.GenericAPIError{Code: "AuthFailure"}, true},
+		{"OptInRequired", &smithy.GenericAPIError{Code: "OptInRequired"}, true},
+		{"SubscriptionRequiredException", &smithy.GenericAPIError{Code: "SubscriptionRequiredException"}, true},
+		{"plain AccessDenied must still surface", &smithy.GenericAPIError{Code: "AccessDenied"}, false},
+		{"AccessDeniedException must still surface", &smithy.GenericAPIError{Code: "AccessDeniedException"}, false},
+		{"wrapped via fmt.Errorf %w", fmt.Errorf("fetch failed: %w", &smithy.GenericAPIError{Code: "AuthFailure"}), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isRegionDisabled(c.err); got != c.want {
+				t.Fatalf("isRegionDisabled=%v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestIsRegionDisabledRealSdkChain pins the full aws-sdk-go-v2 wrapping a call
+// into a not-opted-in region produces: the endpoint answers fast with an
+// auth-layer rejection (no retries), wrapped in smithy.OperationError.
+func TestIsRegionDisabledRealSdkChain(t *testing.T) {
+	respErr := &smithyhttp.ResponseError{Response: &smithyhttp.Response{Response: &http.Response{StatusCode: 403}}, Err: &smithy.GenericAPIError{Code: "InvalidClientTokenId", Message: "The security token included in the request is invalid"}}
+	opErr := &smithy.OperationError{ServiceID: "EKS", OperationName: "ListClusters", Err: respErr}
+
+	if !isRegionDisabled(opErr) {
+		t.Fatalf("isRegionDisabled=false for the real SDK disabled-region chain; the region skip would not trigger in prod")
+	}
+}
+
 // TestIsThrottleErrorRealSdkChain pins the FULL aws-sdk-go-v2 wrapping that a
 // throttled ListClustersV2 produces in prod after the SDK exhausts its retries:
 // smithy.OperationError -> retry.MaxAttemptsError -> smithyhttp.ResponseError{429}.

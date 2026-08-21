@@ -11,7 +11,6 @@ import (
 	"nudgebee/llm/config"
 )
 
-const PromptAgentK8sDebug = "agent_k8s_debug"
 const PromptAgentK8sDebugReact = "agent_k8s_debug_react"
 const PromptResponseFormatter = "executor_response_formatter"
 const PromptResponseFormatterSlack = "executor_response_formatter_slack"
@@ -25,7 +24,6 @@ var promptMapping = map[string]struct {
 	name     string
 	category PromptCategory
 }{
-	PromptAgentK8sDebug:          {"k8s_debug", CategoryAgents},
 	PromptAgentK8sDebugReact:     {"k8s_debug_react", CategoryAgents},
 	PromptResponseFormatter:      {"response_formatter", CategoryUtilities},
 	PromptResponseFormatterSlack: {"response_formatter_slack", CategoryUtilities},

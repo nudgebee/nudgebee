@@ -1,0 +1,333 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/router';
+import apiWorkflow from '@api1/workflow';
+import apiUser from '@api1/user';
+import type { AccountExecutionItem, AccountExecutionListRequest, ExecutionAggregateResponse } from '@api1/workflow/types';
+import { isExecutionCompleted } from '../utils/executionStatus';
+import {
+  AUTOMATION_OPTIONS_LIMIT,
+  DASHBOARD_POLL_INTERVAL_MS,
+  DEFAULT_PAGE_SIZE,
+  DEFAULT_RANGE_DAYS,
+  TOP_FAILED_LIMIT,
+  executionUserLabel,
+} from './constants';
+
+export interface ExecutionDashboardFilters {
+  startDate: Date;
+  endDate: Date;
+  workflowIds: string[];
+  triggeredBy: string[];
+  statuses: string[];
+}
+
+export interface FilterOption {
+  value: string;
+  label: string;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const toCsv = (values: string[]) => (values.length ? values.join(',') : undefined);
+const fromCsv = (raw: unknown): string[] => (typeof raw === 'string' && raw ? raw.split(',').filter(Boolean) : []);
+
+const parseDate = (raw: unknown, fallback: Date): Date => {
+  if (typeof raw !== 'string' || !raw) return fallback;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+};
+
+/**
+ * Owns the dashboard's filter state, URL sync and data fetching.
+ *
+ * Two requests back the page and they refresh on different triggers: the table
+ * on every filter/page change (and on a poll while something is running), and
+ * the summary exactly once per account on mount. Filtering the table never
+ * refetches the summary.
+ */
+export function useExecutionDashboard(accountId?: string) {
+  const router = useRouter();
+
+  const [filters, setFilters] = useState<ExecutionDashboardFilters>(() => ({
+    startDate: new Date(Date.now() - DEFAULT_RANGE_DAYS * DAY_MS),
+    endDate: new Date(),
+    workflowIds: [],
+    triggeredBy: [],
+    statuses: [],
+  }));
+  const [page, setPage] = useState(1);
+  // Seed from the user's saved table page size — the same preference every
+  // other table in the app reads, written by CustomTablePagination when the
+  // user picks a size. DEFAULT_PAGE_SIZE only applies when none is stored.
+  const [pageSize, setPageSize] = useState(() => apiUser.getUserPreferencesTablePageSize() ?? DEFAULT_PAGE_SIZE);
+  // The size this session started at. `size` is only worth putting in the URL
+  // when it differs from that, so a shared link doesn't carry the viewer's own
+  // preference as if it were an explicit choice.
+  const initialPageSizeRef = useRef(pageSize);
+
+  const [executions, setExecutions] = useState<AccountExecutionItem[]>([]);
+  const [totalRows, setTotalRows] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [aggregate, setAggregate] = useState<ExecutionAggregateResponse | null>(null);
+  const [automationOptions, setAutomationOptions] = useState<FilterOption[]>([]);
+
+  const isMountedRef = useRef(true);
+  const requestIdRef = useRef(0);
+  // Cursor for each page we have already walked to. Temporal only hands out
+  // forward-only tokens; where one is known it is used, otherwise the server
+  // falls back to a single over-fetch for that page.
+  const pageTokensRef = useRef<Record<number, string>>({});
+  // State, not a ref: the sync effect below must not run in the same commit as
+  // the seed. With a ref it would see "seeded" while `filters` still held the
+  // defaults, and immediately write those defaults over the URL it was meant
+  // to read — two replaces in one tick, which Next.js reports as
+  // "Cancel rendering route".
+  const [seeded, setSeeded] = useState(false);
+  // Flipped by updateFilters / changePage. Gates the URL sync below so the
+  // hook never writes to the URL on mount.
+  const userChangedFiltersRef = useRef(false);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  // Seed once from the URL so a shared link reproduces the same view. Runs
+  // after router.isReady because router.query is empty on first render.
+  useEffect(() => {
+    if (!router.isReady || seeded) return;
+    const { from, to, automations, users, statuses, page: pageParam, size } = router.query;
+    setFilters((prev) => ({
+      startDate: parseDate(from, prev.startDate),
+      endDate: parseDate(to, prev.endDate),
+      workflowIds: fromCsv(automations),
+      triggeredBy: fromCsv(users),
+      statuses: fromCsv(statuses),
+    }));
+    const parsedPage = Number(pageParam);
+    if (Number.isFinite(parsedPage) && parsedPage > 0) setPage(parsedPage);
+    const parsedSize = Number(size);
+    if (Number.isFinite(parsedSize) && parsedSize > 0) setPageSize(parsedSize);
+    setSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady, seeded]);
+
+  // Mirror state back into the URL, but only once the user has actually
+  // changed something.
+  //
+  // /automation has two other owners of its URL: withAccountGuard appends
+  // accountId, and AnchorComponent#manageRoute owns the `#<tab>` hash. Writing
+  // on mount raced both of them — the replace landed between their
+  // navigations, dropped the hash, and bounced the page back to the first tab.
+  // Nothing is lost by staying quiet until there is a user choice to record.
+  useEffect(() => {
+    if (!router.isReady || !userChangedFiltersRef.current) return;
+
+    const query: Record<string, string> = {};
+    Object.entries(router.query).forEach(([key, value]) => {
+      if (typeof value === 'string') query[key] = value;
+    });
+
+    const nextParams: Record<string, string | undefined> = {
+      from: filters.startDate.toISOString(),
+      to: filters.endDate.toISOString(),
+      automations: toCsv(filters.workflowIds),
+      users: toCsv(filters.triggeredBy),
+      statuses: toCsv(filters.statuses),
+      page: page > 1 ? String(page) : undefined,
+      size: pageSize !== initialPageSizeRef.current ? String(pageSize) : undefined,
+    };
+    // Delete rather than assign undefined: Next serializes an undefined query
+    // value as a bare `key=`, which would also make this effect see a change
+    // on every render and replace forever.
+    Object.entries(nextParams).forEach(([key, value]) => {
+      if (value) {
+        query[key] = value;
+      } else {
+        delete query[key];
+      }
+    });
+
+    // Read the hash from the live location rather than router.asPath, which
+    // can already have been rewritten by one of the owners above.
+    const hash = typeof window === 'undefined' ? '' : window.location.hash.replace('#', '');
+    router.replace(
+      {
+        pathname: router.pathname,
+        query,
+        ...(hash ? { hash } : {}),
+      },
+      undefined,
+      { shallow: true }
+    );
+    // router is intentionally omitted — including it re-runs on every replace.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, page, pageSize, router.isReady]);
+
+  const filterRequest = useMemo(
+    () => ({
+      start_date: filters.startDate.toISOString(),
+      end_date: filters.endDate.toISOString(),
+      workflow_ids: filters.workflowIds.length ? filters.workflowIds : undefined,
+      triggered_by: filters.triggeredBy.length ? filters.triggeredBy : undefined,
+      statuses: filters.statuses.length ? filters.statuses : undefined,
+    }),
+    [filters]
+  );
+
+  const fetchExecutions = useCallback(
+    async (isPolling = false) => {
+      // Wait for the URL seed, otherwise a shared link fetches the default
+      // range first and immediately refetches the real one.
+      if (!seeded) return;
+      // No account yet (router.query is empty on first render). Settle out of
+      // the skeleton rather than leaving it spinning forever.
+      if (!accountId) {
+        setLoading(false);
+        return;
+      }
+      const requestId = ++requestIdRef.current;
+      if (!isPolling) setLoading(true);
+
+      const request: AccountExecutionListRequest = {
+        ...filterRequest,
+        limit: pageSize,
+        page,
+      };
+      const knownToken = pageTokensRef.current[page];
+      if (knownToken) request.next_page_token = knownToken;
+
+      const response = await apiWorkflow.listAccountExecutions(accountId, request);
+      // Drop a response the user has already navigated away from.
+      if (!isMountedRef.current || requestId !== requestIdRef.current) return;
+
+      const payload = response?.data?.executions_list;
+      if (!payload) {
+        setError(response?.errors?.[0]?.message || 'Failed to load executions');
+        setExecutions([]);
+        setTotalRows(0);
+      } else {
+        setError(null);
+        setExecutions(payload.executions || []);
+        setTotalRows(payload.total_count || 0);
+        if (payload.next_page_token) {
+          pageTokensRef.current[page + 1] = payload.next_page_token;
+        }
+      }
+      if (!isPolling) setLoading(false);
+    },
+    [accountId, filterRequest, page, pageSize, seeded]
+  );
+
+  /**
+   * The summary is a fixed header, not a reflection of the table: it is sent
+   * with no filters and no date bounds, so it covers everything Temporal still
+   * holds — i.e. exactly the namespace retention window. Deliberately does not
+   * depend on `filterRequest`, so filtering the table costs zero extra calls.
+   */
+  const fetchAggregate = useCallback(async () => {
+    if (!accountId) return;
+    const response = await apiWorkflow.aggregateExecutions(accountId, { top_failed_limit: TOP_FAILED_LIMIT });
+    if (!isMountedRef.current) return;
+    setAggregate(response?.data?.executions_aggregate || null);
+  }, [accountId]);
+
+  useEffect(() => {
+    fetchExecutions();
+  }, [fetchExecutions]);
+
+  useEffect(() => {
+    fetchAggregate();
+  }, [fetchAggregate]);
+
+  // Options for the Automation filter. Fetched once per account — the filter
+  // lists automations, not executions, so it doesn't move with the date range.
+  useEffect(() => {
+    if (!accountId) return;
+    let cancelled = false;
+    apiWorkflow.listWorkflows(accountId, undefined, undefined, undefined, AUTOMATION_OPTIONS_LIMIT).then((response: any) => {
+      if (cancelled || !isMountedRef.current) return;
+      const workflows = response?.data?.workflow_list?.workflows || [];
+      setAutomationOptions(workflows.map((workflow: any) => ({ value: workflow.id, label: workflow.name || workflow.id })));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
+
+  // Poll the table only, and only while something is actually running.
+  const hasRunningExecution = executions.some((execution) => !isExecutionCompleted(execution.status));
+  useEffect(() => {
+    if (!hasRunningExecution) return;
+    const timer = setInterval(() => fetchExecutions(true), DASHBOARD_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [hasRunningExecution, fetchExecutions]);
+
+  /**
+   * Users who appear in the current page, offered as the User filter's
+   * options. This is an approximation: someone who triggered runs but has none
+   * on the visible page won't be listed until the filters bring one into view.
+   * Already-selected ids are kept so a selection never vanishes from its own
+   * dropdown.
+   */
+  const userOptions = useMemo<FilterOption[]>(() => {
+    const byId = new Map<string, string>();
+    executions.forEach((execution) => {
+      if (execution.triggered_by) {
+        byId.set(execution.triggered_by, executionUserLabel(execution.user_name, execution.triggered_by));
+      }
+    });
+    filters.triggeredBy.forEach((id) => {
+      if (!byId.has(id)) byId.set(id, executionUserLabel(undefined, id));
+    });
+    return Array.from(byId, ([value, label]) => ({ value, label }));
+  }, [executions, filters.triggeredBy]);
+
+  // Any filter change invalidates the cursor ledger and returns to page 1.
+  const updateFilters = useCallback((update: Partial<ExecutionDashboardFilters>) => {
+    userChangedFiltersRef.current = true;
+    pageTokensRef.current = {};
+    setPage(1);
+    setFilters((prev) => ({ ...prev, ...update }));
+  }, []);
+
+  const changePage = useCallback(
+    (nextPage: number, nextPageSize?: number) => {
+      userChangedFiltersRef.current = true;
+      // Resizing the page invalidates every cursor, which are per page size.
+      if (nextPageSize && nextPageSize !== pageSize) {
+        pageTokensRef.current = {};
+        setPageSize(nextPageSize);
+      }
+      setPage(nextPage);
+    },
+    [pageSize]
+  );
+
+  const refresh = useCallback(() => {
+    pageTokensRef.current = {};
+    fetchExecutions();
+    fetchAggregate();
+  }, [fetchExecutions, fetchAggregate]);
+
+  return {
+    filters,
+    updateFilters,
+    page,
+    pageSize,
+    changePage,
+    executions,
+    totalRows,
+    loading,
+    error,
+    aggregate,
+    automationOptions,
+    userOptions,
+    refresh,
+  };
+}
+
+export default useExecutionDashboard;

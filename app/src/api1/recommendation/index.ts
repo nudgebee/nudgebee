@@ -1637,9 +1637,19 @@ const apiRecommendations = {
       },
     };
   },
+  /**
+   * PR resolutions for the given recommendations, newest first.
+   *
+   * Returns the rows rather than a recommendation-keyed map because a scheduled
+   * optimizer re-applies the same recommendation on every run, producing one
+   * resolution per run. Callers that know which run they are rendering (the
+   * Auto Optimize tasks listing) must match on the resolution id they recorded;
+   * collapsing to one row per recommendation here would relabel historical runs
+   * with the newest run's outcome.
+   */
   async listPRResolutionsByRecommendationIds(recommendationIds: string[]) {
     if (!recommendationIds || recommendationIds.length === 0) {
-      return new Map();
+      return [];
     }
     const GET_PR_RESOLUTIONS = `
       query GetPRResolutions($where: RecommendationResolutionWhereRequest) {
@@ -1649,6 +1659,7 @@ const apiRecommendations = {
             recommendation_id
             type_reference_id
             status
+            status_message
             type
             updated_at
           }
@@ -1662,19 +1673,20 @@ const apiRecommendations = {
           type: { _eq: 'PullRequest' },
         },
       });
-      const resolutions = response?.data?.data?.recommendation_resolution?.rows || [];
-      const resolutionMap = new Map();
-      for (const resolution of resolutions) {
-        if (!resolutionMap.has(resolution.recommendation_id)) {
-          resolutionMap.set(resolution.recommendation_id, resolution);
-        }
-      }
-      return resolutionMap;
+      return response?.data?.data?.recommendation_resolution?.rows || [];
     } catch (error) {
       console.error('Error fetching PR resolutions:', error);
-      return new Map();
+      return [];
     }
   },
+  /**
+   * Latest PR resolution per recommendation, whether it is still running or has
+   * already failed. Failed rows are included deliberately: PR creation is
+   * asynchronous, so a failure is the only record that the attempt happened, and
+   * excluding it renders as "no resolution at all". Callers that gate an action
+   * on a resolution being live must therefore test `status === 'InProgress'`
+   * rather than mere presence.
+   */
   async listActiveResolutionsByRecommendationIds(recommendationIds: string[]) {
     if (!recommendationIds || recommendationIds.length === 0) {
       return new Map();
@@ -1698,7 +1710,7 @@ const apiRecommendations = {
       const response = await queryGraphQL(GET_ACTIVE_RESOLUTIONS, 'GetActiveResolutions', {
         where: {
           recommendation_id: { _in: recommendationIds },
-          status: { _eq: 'InProgress' },
+          status: { _in: ['InProgress', 'Failed'] },
           type: { _eq: 'PullRequest' },
         },
       });

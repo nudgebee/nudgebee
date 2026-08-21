@@ -80,6 +80,11 @@ function componentReducer(state, action) {
   }
 }
 
+// How long a conversation's usage snapshot is trusted before the next hover
+// re-reads it. Bounds the extra traffic (at most one refetch per conversation
+// per window) while still picking up rows written after the run settled.
+const TOKEN_USAGE_TTL_MS = 30_000;
+
 const getInitials = (name) => {
   if (!name?.trim()) {
     return '?';
@@ -123,6 +128,10 @@ const KubernetesLLMResponseGenerator = ({
   const prevSessionConvIdRef = useRef({ sessionId, conversationId });
   const isAlertOpen = useRef(false);
   const currentSessionRef = useRef('');
+  // When the current conversation's usage snapshot was last read (0 = never).
+  // Only consulted once isTokenDataFetched is true, i.e. after a fetch for THIS
+  // conversation, so a switch never has to reset it.
+  const tokenUsageFetchedAtRef = useRef(0);
 
   // Clear processed IDs only when session/conversation actually changes.
   // Comparing against a ref (instead of clearing on every effect setup) avoids
@@ -897,10 +906,18 @@ const KubernetesLLMResponseGenerator = ({
     // in the URL). The backend normalizes whichever is passed. Mirror the same fallback the
     // rest of this component uses (e.g. fetchConversation, share id).
     const usageKey = selectedSessionId || selectedConversationId;
-    if (!isTokenDataFetched && !isFetchingTokenData && usageKey) {
+    // Re-read once the snapshot is older than the TTL. The first fetch fires the
+    // moment the run settles, but post-response background calls (follow-up
+    // suggestions, memory extraction, title generation) bill against this same
+    // conversation and land seconds later — with a fetch-once latch the panel
+    // under-reported calls/tokens/cost for the life of the page, and disagreed
+    // with Optimize → LLM Analyser, which re-queries on every load.
+    const isStale = Date.now() - tokenUsageFetchedAtRef.current > TOKEN_USAGE_TTL_MS;
+    if ((!isTokenDataFetched || isStale) && !isFetchingTokenData && usageKey) {
       setIsFetchingTokenData(true);
       try {
         await fetchTokenUsage(usageKey);
+        tokenUsageFetchedAtRef.current = Date.now();
         setIsTokenDataFetched(true);
       } catch (error) {
         console.error('Failed to fetch token usage:', error);

@@ -1,0 +1,5 @@
+-- Intentional no-op. These rows are confirmed-wrong data (phantom Service
+-- nodes for what are really K8s worker nodes); resurrecting them by flipping
+-- is_active back to true would reintroduce the bug's symptom rather than
+-- undo a schema change. If this migration needs to be rolled back, restore
+-- from a pre-migration backup rather than re-running this file.

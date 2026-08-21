@@ -20,5 +20,5 @@ func TestGithubAgent_HasCodeAgentTool(t *testing.T) {
 	}
 
 	assert.Contains(t, toolNames, "github_execute", "should have github_execute tool")
-	assert.Contains(t, toolNames, AgentCode2, "should have agent_code_2 tool for code fixes and PR creation")
+	assert.Contains(t, toolNames, AgentCodeAnalyzer, "should have code_analyzer tool for code fixes and PR creation")
 }

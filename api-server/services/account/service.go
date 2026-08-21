@@ -2190,6 +2190,34 @@ func ValidateCloudCredentials(context *security.RequestContext, query ValidateCl
 		return result, nil
 
 	case "GCP":
+		// AccountID resolves the credentials of an already-onboarded account
+		// server-side, for callers (e.g. Edit Billing Config) that only have
+		// billing fields and no raw service account key.
+		if query.AccountID != "" {
+			if !context.GetSecurityContext().HasAccountAccess(query.AccountID, security.SecurityAccessTypeRead) {
+				return ValidateCloudCredentialsResponse{}, common.ErrorUnauthorized("unauthorized")
+			}
+			acct, err := GetAccount(context, query.AccountID)
+			if err != nil {
+				return ValidateCloudCredentialsResponse{}, fmt.Errorf("failed to load account %s: %w", query.AccountID, err)
+			}
+			if acct.AccessSecret == nil || *acct.AccessSecret == "" {
+				return ValidateCloudCredentialsResponse{
+					Success:      false,
+					Provider:     provider,
+					ErrorMessage: "no stored credentials found for this account",
+				}, nil
+			}
+			decrypted, err := common.Decrypt(*acct.AccessSecret)
+			if err != nil {
+				return ValidateCloudCredentialsResponse{}, fmt.Errorf("failed to decrypt credentials for account %s: %w", query.AccountID, err)
+			}
+			query.CredentialsJSON = decrypted
+			if query.ProjectID == "" && acct.AccountNumber != nil {
+				query.ProjectID = *acct.AccountNumber
+			}
+		}
+
 		// Validate required GCP fields
 		if query.CredentialsJSON == "" || query.ProjectID == "" {
 			return ValidateCloudCredentialsResponse{

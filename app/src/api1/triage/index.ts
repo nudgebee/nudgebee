@@ -496,6 +496,8 @@ mutation EventGetThresholdSuggestion($event_id: String!) {
       recommendation_type
       suggested_duration
       duration_reason
+      risk_level
+      risk_warnings
     }
     alert_quality {
       classification
@@ -1389,6 +1391,8 @@ export interface ThresholdSuggestionResponse {
     recommendation_type?: string;
     suggested_duration?: number;
     duration_reason?: string;
+    risk_level?: string;
+    risk_warnings?: string[];
   };
   alert_quality?: {
     classification: string;

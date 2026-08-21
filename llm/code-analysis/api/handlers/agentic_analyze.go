@@ -147,6 +147,13 @@ type LLMConfigOverride struct {
 	ApiVersion  string `json:"api_version,omitempty"`
 	ApiType     string `json:"api_type,omitempty"`
 	Region      string `json:"region,omitempty"`
+	// Tiers carries the model-tier resolution from llm-server's existing layered
+	// config (ENV-tier + tenant DB; ModelTier taxonomy): "reasoning", "retrieval",
+	// "summary". Mapping here: retrieval → router+fixer (mechanical execution),
+	// summary → review, reasoning → the specialist (run model). A forwarded tier
+	// wins over this pod's AGENT_MODEL_* env, which remains the local/dev
+	// fallback. Same provider/credentials as the run model.
+	Tiers map[string]string `json:"tiers,omitempty"`
 }
 
 func (o *LLMConfigOverride) toConfigOverride() config.LLMOverride {
@@ -368,9 +375,20 @@ func (ah *AgenticAnalyzeHandler) HandleAnalyze(c *gin.Context) {
 		defer cancel()
 
 		response, err := ah.HandleAgenticAnalyze(ctx, req)
-		if err != nil {
+		switch {
+		case err != nil:
 			common.FailAnalysis(analysisID, err.Error())
-		} else {
+		case response != nil && response.Error != "":
+			// HandleAgenticAnalyze folds an analysis error into the response body
+			// and returns a nil error (its synchronous callers rely on that). Keyed
+			// on Error rather than Success: a followup that ran and legitimately
+			// reported ExecutionStatus "failed" carries a real AgentResponse the
+			// PR-lifecycle cron still needs, and must stay "completed". Without this
+			// branch a run that never started is stored as completed, so /status
+			// reports success and the failure appears in no log at all.
+			log.Printf("ERROR: analysis %s failed: %s", analysisID, response.Error)
+			common.FailAnalysis(analysisID, response.Error)
+		default:
 			common.CompleteAnalysis(analysisID, response)
 		}
 
@@ -432,6 +450,22 @@ func (ah *AgenticAnalyzeHandler) resolveClients(req AgenticAnalyzeRequest, logge
 	cfg := ah.config
 	if req.LLMConfig != nil {
 		cfg = ah.config.CloneWithLLMOverride(req.LLMConfig.toConfigOverride())
+		// Model tiers resolved by llm-server's layered config (ENV-tier + tenant
+		// DB) win over this pod's AGENT_MODEL_* env fallback. retrieval drives the
+		// mechanical roles (router, fixer); summary drives review; reasoning is
+		// the specialist's tier and equals the forwarded run model.
+		if tiers := req.LLMConfig.Tiers; tiers != nil {
+			if m := tiers["retrieval"]; m != "" {
+				cfg.Agent.ModelRouter = m
+				cfg.Agent.ModelFixer = m
+			}
+			if m := tiers["summary"]; m != "" {
+				cfg.Agent.ModelReview = m
+			}
+			if m := tiers["reasoning"]; m != "" {
+				cfg.LLM.Model = m
+			}
+		}
 	}
 	client, err := llm.NewClient(cfg)
 	if err != nil {

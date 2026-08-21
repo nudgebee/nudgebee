@@ -65,17 +65,23 @@ func traceResponseHeaderMiddleware() gin.HandlerFunc {
 }
 
 // providerCreds assembles the operator provider credentials from config: a key
-// per API-key provider (Anthropic/OpenAI/Gemini — set any subset to serve them
-// all at once) plus the LLM_PROVIDER_* block for a single cloud provider
+// per API-key provider (Anthropic/OpenAI/Gemini/HuggingFace — set any subset to
+// serve them all at once) plus the LLM_PROVIDER_* block for a single cloud provider
 // (Bedrock/Vertex/Azure) that needs structured creds. engine.New dedupes by
 // provider (per-provider keys win) and skips entries with no credential.
 func providerCreds() []engine.ProviderCredsConfig {
 	var creds []engine.ProviderCredsConfig
 
-	// LLM_PROVIDER_* block — only when it actually carries a credential (avoids a
-	// spurious "configured but unusable" warning for the default provider name).
+	// LLM_PROVIDER_* block — when it carries a credential, an endpoint for a self-hosted
+	// provider (Ollama/vLLM/SGL are reached by base URL with an optional key), or when the
+	// named provider can run keyless (Bedrock via IRSA / the AWS default credential chain,
+	// enabled by setting LLM_PROVIDER=bedrock with no static keys). Scoping the endpoint
+	// case to self-hosted avoids a spurious "configured but unusable" warning for a plain
+	// base-URL override on an api-key provider that has no key set.
 	c := config.Config
-	if c.LlmProviderApiKey != "" || c.LlmProviderAccessKey != "" || c.LlmProviderSecretKey != "" {
+	if c.LlmProviderApiKey != "" || c.LlmProviderAccessKey != "" || c.LlmProviderSecretKey != "" ||
+		(c.LlmProviderApiEndpoint != "" && engine.SupportsEndpointOperator(c.LlmProvider)) ||
+		engine.SupportsKeylessOperator(c.LlmProvider) {
 		creds = append(creds, engine.ProviderCredsConfig{
 			Provider:     c.LlmProvider,
 			APIKey:       c.LlmProviderApiKey,
@@ -92,6 +98,7 @@ func providerCreds() []engine.ProviderCredsConfig {
 		{Provider: "anthropic", APIKey: c.AnthropicAPIKey},
 		{Provider: "openai", APIKey: c.OpenAIAPIKey},
 		{Provider: "gemini", APIKey: c.GeminiAPIKey},
+		{Provider: "huggingface", APIKey: c.HuggingFaceAPIKey},
 	} {
 		if pc.APIKey != "" {
 			creds = append(creds, pc)
@@ -176,6 +183,18 @@ func main() {
 		slog.Error("main: routing config invalid", "error", err)
 		os.Exit(1)
 	}
+	// Append the platform-default tier aliases (nb-fast/cheap/smart) unless tiering is
+	// disabled deployment-wide. They carry a high priority so config-file and tenant DB
+	// rules override them; appended last so a config-file tier rule (lower priority /
+	// earlier) wins the tie.
+	if config.Config.TiersEnabled {
+		staticRules = append(staticRules, routing.DefaultTierRules()...)
+	} else {
+		// Authoritative disable: drop the defaults AND any config-file tier rule, so
+		// nb-* can't resolve on any surface. Tenant DB tier rules are stripped below.
+		staticRules = routing.StripTierAliasRules(staticRules)
+		slog.Info("main: tiering disabled (gateway_tiers_enabled=false); nb-* aliases will not resolve")
+	}
 	// RuleLoader returns the registered dynamic rule loader, or nil when none is
 	// registered (static config-file rules only). NewStore treats a nil loader as
 	// "static only". The loader reads the metastore, so it's a no-op when no DB is
@@ -183,6 +202,18 @@ func main() {
 	var ruleLoader routing.LoaderFunc
 	if config.Config.GatewayDBURL != "" {
 		ruleLoader = routing.RuleLoader()
+		// When tiering is off, strip tier-alias rules from the DB set too, so a tenant
+		// override can't resolve nb-* on a native mount (which bypasses the /v1 gate).
+		if ruleLoader != nil && !config.Config.TiersEnabled {
+			raw := ruleLoader
+			ruleLoader = func() ([]routing.Rule, error) {
+				rules, err := raw()
+				if err != nil {
+					return nil, err
+				}
+				return routing.StripTierAliasRules(rules), nil
+			}
+		}
 	}
 	router := routing.NewStore(staticRules, ruleLoader,
 		time.Duration(config.Config.RoutingRefreshSeconds)*time.Second)

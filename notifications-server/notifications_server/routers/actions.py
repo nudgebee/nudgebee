@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from json import JSONDecodeError
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -64,7 +65,18 @@ async def handle_slack_interactive_action(request: Request):
     try:
         payload = json.loads(raw or b"{}")
     except JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        # Slack's native interactive delivery is application/x-www-form-urlencoded
+        # with the JSON payload URL-encoded in a `payload` field (unlike
+        # /slack/events, which Slack sends as raw JSON). The edge-forwarded path
+        # re-serializes as plain JSON and is handled above; this is the fallback
+        # for interactive requests arriving directly from Slack.
+        try:
+            form_payload = parse_qs(raw.decode("utf-8")).get("payload", [None])[0]
+            payload = json.loads(form_payload) if form_payload else None
+        except (JSONDecodeError, UnicodeDecodeError, AttributeError):
+            payload = None
+        if payload is None:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
     actions = payload.get("actions") if isinstance(payload, dict) else None
     if not isinstance(actions, list) or len(actions) == 0:
         msg = f"Illegal trigger request {payload}"

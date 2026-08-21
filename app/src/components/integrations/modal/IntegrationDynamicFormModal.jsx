@@ -247,7 +247,7 @@ const IntegrationDynamicFormModal = ({
               setProviderFields(extractedProviderFields);
             }
             const filteredProperties = Object.fromEntries(
-              Object.entries(configs.properties || {}).filter(([_, prop]) => {
+              Object.entries(configs.properties || {}).filter(([, prop]) => {
                 // If it's true, filter it out.
                 // If it's undefined, null, or false, keep it.
                 return prop.avoid_to_show !== true;
@@ -1450,6 +1450,14 @@ const IntegrationDynamicFormModal = ({
         text: 'how to configure SolarWinds Observability Webhook',
       },
     },
+    elasticsearch_webhook: {
+      endpoint: 'elasticsearch',
+      message: 'Configure the following URL in a Kibana Webhook connector (Stack Management \u2192 Connectors)',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/elasticsearch_webhook/'),
+        text: 'how to configure Elasticsearch/Kibana Webhook',
+      },
+    },
     workflow_webhook: {
       endpoint: 'workflow',
       message: 'Point your external system at the following URL to trigger the associated automation',
@@ -1609,6 +1617,7 @@ const IntegrationDynamicFormModal = ({
             'splunk_webhook',
             'grafana_webhook',
             'solarwinds_webhook',
+            'elasticsearch_webhook',
             'workflow_webhook',
           ].includes(integrationName)
         }

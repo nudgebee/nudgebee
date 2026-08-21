@@ -307,6 +307,17 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
+  - name: ai_delete_tool
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
   - name: ai_delete_function
     definition:
       kind: synchronous
@@ -754,6 +765,22 @@ actions:
       - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
+  - name: llm_gateway_list_sessions
+    definition:
+      kind: synchronous
+      handler: '{{LLM_GATEWAY_URL}}/rpc/usage/sessions'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_GATEWAY_ACTION_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: llm_gateway_get_request_body
     definition:
       kind: synchronous
@@ -829,8 +856,64 @@ actions:
       - role: tenant_admin
       - role: account_admin_readonly
       - role: account_admin
-    comment: Hit LLM to get RCA for event
-  - name: ai_get_rcaformat
+      - role: tenant_admin
+  - name: egressfilter_get
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: Get the current tenant's LLM egress-filter config (mode + enabled)
+  - name: egressfilter_update
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Update the current tenant's LLM egress-filter mode / enabled flag
+  - name: egressfilter_upsert_pattern
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Create or update one custom egress detection pattern for the tenant
+  - name: egressfilter_delete_pattern
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Delete one custom egress detection pattern by id
+  - name: egressfilter_clear_override
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Clear the tenant's egress-filter override so env defaults apply
+  - name: ai_get_gc
     definition:
       kind: "synchronous"
       handler: '{{LLM_SERVER_URL}}/v1/analyze/event/rca/format_get'
@@ -861,6 +944,50 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Hit OpenAI to get suggestions on log
+  - name: ai_remediation_generate
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/analyze/remediation/generate'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Generate a structured remediation plan (execute/verify/rollback commands) from an investigation
+  - name: ai_remediation_get
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/analyze/remediation/get'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Return the saved remediation plan for an event (empty when none has been generated yet)
+  - name: ai_remediation_execute
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/analyze/remediation/execute'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Run a single remediation command against the account cluster (server enforces write RBAC + safety). Matches the tenant/account-admin-only grant of the other *_execute_command actions; k8s_namespace_admin is excluded because the account-scoped RBAC check does not enforce the namespace half of the scope.
   - name: ai_get_workspace_file
     definition:
       kind: "synchronous"
@@ -2153,6 +2280,22 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Get chronological timeline of events related to an event
+  - name: event_get_impact
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Get topology-inferred blast radius (impacted dependent services) for an event
   - name: event_get_triage_rule_events
     definition:
       kind: synchronous
@@ -3358,6 +3501,48 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Get Notification Service Channels
+  - name: notifications_list_watchable_channels
+    definition:
+      kind: "synchronous"
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/channels/watchable'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: List Slack channels Nubi can watch, with per-channel watch state
+  - name: notifications_enable_channel_watch
+    definition:
+      kind: "synchronous"
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/channels/watch'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+    comment: Enable Nubi channel awareness for a channel (posts an in-channel disclosure)
+  - name: notifications_disable_channel_watch
+    definition:
+      kind: "synchronous"
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/channels/unwatch'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+    comment: Disable Nubi channel awareness for a channel
   - name: notification_get_user_list
     definition:
       kind: "synchronous"
@@ -4873,6 +5058,36 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
   - name: workflows_count_executions
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: executions_list
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: executions_aggregate
     definition:
       kind: "synchronous"
       handler: '{{WORKFLOW_SERVER_URL}}/rpc'

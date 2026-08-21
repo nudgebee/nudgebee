@@ -14,6 +14,10 @@ import (
 const (
 	defaultFilterLimit = 500
 	maxFilterLimit     = 1000
+
+	// filterQueryConcurrency caps how many filter queries one request runs at
+	// once, and so how much of the connection pool (20 per pod) it can hold.
+	filterQueryConcurrency = 4
 )
 
 // SQL query templates for each filter type - WITH COUNT (slower)
@@ -340,7 +344,17 @@ func GetEventFilterValues(ctx *security.RequestContext, req GetEventFilterValues
 	results := make([]FilterResult, len(req.FilterTypes))
 	var mu sync.Mutex
 
-	g, gCtx := errgroup.WithContext(context.Background())
+	// Tie the fan-out to the caller. With context.Background() these queries had
+	// no way to stop: a goroutine queued for a pool connection kept waiting even
+	// after the caller had gone away, so abandoned requests held pool demand
+	// indefinitely (see #34973). The request context ends when the client
+	// disconnects, so that queue drains instead.
+	//
+	// SetLimit caps how much of the pool one request can take. There are 10 filter
+	// types and the pool is 20 per pod, so an unbounded fan-out let two concurrent
+	// callers ask for every connection at once.
+	g, gCtx := errgroup.WithContext(ctx.GetContext())
+	g.SetLimit(filterQueryConcurrency)
 
 	for i, filterType := range req.FilterTypes {
 		i, filterType := i, filterType // capture loop variables

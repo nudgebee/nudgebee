@@ -351,9 +351,16 @@ const ResolutionsView = () => {
           },
           {
             component: (
-              <Label tone={statusToTone(rr.status)} size='sm'>
-                {statusText}
-              </Label>
+              <Box display='flex' flexDirection='column' gap={ds.space[1]}>
+                <Label tone={statusToTone(rr.status)} size='sm'>
+                  {statusText}
+                </Label>
+                {/* Surface the reason inline: a failure (or a success that produced no
+                    link) is otherwise only readable after expanding the row. */}
+                {rr.status_message && (rr.status === 'Failed' || (rr.status === 'Success' && !containsLink(rr.type_reference_id))) && (
+                  <Text value={rr.status_message} secondaryText showAutoEllipsis sx={{ fontSize: ds.text.small }} />
+                )}
+              </Box>
             ),
           },
           {

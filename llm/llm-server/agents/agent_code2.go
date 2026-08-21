@@ -35,7 +35,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-const AgentCode2 = "agent_code_2"
+// AgentCodeAnalyzer is the canonical registered name for the code-analysis
+// agent. Keep the old name as an agent-only factory for stored history and
+// explicit invocations created before the rename.
+const AgentCodeAnalyzer = "code_analyzer"
+
+const agentCodeAnalyzerLegacyName = "agent_code_2"
 
 // sanitizeWorkspacePathID maps an ID to the workspace's safe path charset
 // ([A-Za-z0-9_-]; everything else becomes '_') — the SAME mapping the workspace
@@ -122,9 +127,11 @@ Plain text format:
 The 'query' field (or plain text) is REQUIRED and describes the analytical task. Use this when simple shell commands are insufficient for diagnosing an issue. Set 'target_branch' to the branch the PR should be opened against (e.g. 'prod', 'main', 'release/1.x'); when omitted, the repository default branch is used.`
 	toolOutput := "Structured JSON containing: 'root_cause' (summary), 'affected_files' (array with paths/line numbers), 'suggested_fixes' (remediation steps), 'analysis_details' (comprehensive explanation), 'source_details' (repo and commit), and optional 'pr_url' if raise_pr was enabled."
 
-	core.RegisterNBAgentFactoryAndTool(AgentCode2, func(accountId string) (core.NBAgent, error) {
+	codeAnalyzerFactory := func(accountId string) (core.NBAgent, error) {
 		return newCodeAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
+	}
+	core.RegisterNBAgentFactoryAndTool(AgentCodeAnalyzer, codeAnalyzerFactory, toolDescription, toolInput, toolOutput)
+	core.RegisterNBAgentFactory(agentCodeAnalyzerLegacyName, codeAnalyzerFactory)
 }
 
 func evaluateCodeUsingCli(ctx *security.RequestContext, request CodeAgent2Request, creds []GitCredentials, provider string) (string, error) {
@@ -297,6 +304,58 @@ func getKubeClient(qps float32, burst int) (*kubernetes.Clientset, error) {
 	return clientset, nil
 }
 
+// forwardedLLMConfigToMap renders a resolved tenant LLM config as the JSON body
+// block consumed by the code-analysis /analyze endpoint (workspace path).
+func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
+	m := map[string]any{"provider": c.Provider}
+	if c.Model != "" {
+		m["model"] = c.Model
+	}
+	if c.ApiKey != "" {
+		m["api_key"] = c.ApiKey
+	}
+	if c.ApiEndpoint != "" {
+		m["endpoint"] = c.ApiEndpoint
+	}
+	if c.ApiVersion != "" {
+		m["api_version"] = c.ApiVersion
+	}
+	if c.ApiType != "" {
+		m["api_type"] = c.ApiType
+	}
+	if c.Region != "" {
+		m["region"] = c.Region
+	}
+	return m
+}
+
+// forwardedLLMConfigToEnv renders a resolved LLM config as pod env vars
+// for the legacy ephemeral pod path. Appended AFTER the LLM_* SecretKeyRef
+// fallback so these per-request values win (last duplicate env name wins in k8s).
+//
+// The credential vars are emitted even when empty: this override always sets
+// LLM_PROVIDER, so leaving an empty one out would let the secret's credential
+// for a *different* provider survive underneath it (a keyless Bedrock config
+// inheriting the pod's Google key). Blank beats mismatched. LLM_MODEL_NAME is
+// not a credential and keeps falling through, since an unresolved model is
+// better served by the pod's default than by nothing at all.
+func forwardedLLMConfigToEnv(c *core.ForwardedLLMConfig) []corev1.EnvVar {
+	env := []corev1.EnvVar{{Name: "LLM_PROVIDER", Value: c.Provider}}
+	if c.Model != "" {
+		env = append(env, corev1.EnvVar{Name: "LLM_MODEL_NAME", Value: c.Model})
+	}
+	for _, kv := range []struct{ name, val string }{
+		{"LLM_PROVIDER_API_KEY", c.ApiKey},
+		{"LLM_PROVIDER_API_ENDPOINT", c.ApiEndpoint},
+		{"LLM_PROVIDER_API_VERSION", c.ApiVersion},
+		{"LLM_PROVIDER_API_TYPE", c.ApiType},
+		{"LLM_PROVIDER_REGION", c.Region},
+	} {
+		env = append(env, corev1.EnvVar{Name: kv.name, Value: kv.val})
+	}
+	return env
+}
+
 func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (string, error) {
 	logger := ctx.GetLogger()
 	// Default values for pod execution
@@ -406,6 +465,39 @@ func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgen
 				Value: gitToken,
 			})
 		}
+	}
+
+	// Forward the public app base URL so the code-analysis agent can build
+	// correct deep-links (e.g. the "Nubi Conversation" link in generated PRs).
+	// The full nudgebee secret is deliberately NOT mounted into this pod (see
+	// below); BASE_URL alone is non-sensitive, and llm-server already holds the
+	// correct per-environment value in its own env. Without this the agent's
+	// config falls back to the hardcoded prod default, so non-prod PRs link to
+	// app.nudgebee.com.
+	if baseURL := os.Getenv("BASE_URL"); baseURL != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "BASE_URL",
+			Value: baseURL,
+		})
+	}
+
+	// Pass only the minimal LLM_* keys via SecretKeyRef instead of mounting the
+	// entire nudgebee secret. This keeps app-infra secrets (DB URLs, RabbitMQ,
+	// encryption key, OAuth/internal tokens, cloud creds) out of a pod that runs
+	// untrusted customer build/agent commands. These are the global fallback;
+	// the tenant-resolved llm_config appended below overrides them.
+	if config.Config.LlmServerCodeAgentSecret != "" {
+		envVars = append(envVars, workspace.LLMSecretEnvVars(config.Config.LlmServerCodeAgentSecret)...)
+	}
+
+	// Forward the resolved, decrypted LLM config as explicit env vars, appended
+	// after the SecretKeyRef fallback so they win (last duplicate env name wins
+	// in k8s). Degrade gracefully; never log the API key.
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
+		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
+	} else if llmCfg != nil {
+		envVars = append(envVars, forwardedLLMConfigToEnv(llmCfg)...)
+		logger.Info("code: forwarding resolved LLM config to analysis pod", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 	}
 
 	pod := &corev1.Pod{
@@ -640,7 +732,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// analysis must never be blocked on skills.
 	skillsBlock := ""
 	{
-		skillAgentNames := append([]string{AgentCode2}, agentRequest.InheritSkillsFromAgents...)
+		skillAgentNames := append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...)
 		skillQuery := agentRequest.OriginalQuery
 		if skillQuery == "" {
 			skillQuery = request.Query
@@ -712,6 +804,19 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 			"type":  "token",
 			"token": gitToken,
 		}
+	}
+
+	// Forward the resolved, decrypted LLM config so the stateless code-analysis
+	// service runs on the tenant's own LLM integration — or, absent one, on the
+	// same default llm-server itself resolved — instead of whatever its startup
+	// env happens to name. Degrade gracefully: on any failure, or when no
+	// provider resolves at all, omit the block and let the pod use its
+	// fallback. The API key is plaintext — never log it.
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
+		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
+	} else if llmCfg != nil {
+		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+		logger.Info("code: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 	}
 
 	// Pre-flight: verify workspace pod is reachable before dispatching analysis
@@ -1224,7 +1329,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		ConversationID:      query.ConversationId,
 		MessageID:           query.MessageId,
 		AgentID:             agentUUID,
-		AgentName:           AgentCode2,
+		AgentName:           AgentCodeAnalyzer,
 		AccountID:           query.AccountId,
 		UserID:              query.UserId,
 		LLMProvider:         provider,
@@ -1269,11 +1374,11 @@ type CodeAgent2 struct {
 }
 
 func (l CodeAgent2) GetName() string {
-	return AgentCode2
+	return AgentCodeAnalyzer
 }
 
 func (l CodeAgent2) GetNameAliases() []string {
-	return []string{"code_analyzer", "code_debugger", "code_error_analyzer", "code_rca_agent"}
+	return []string{agentCodeAnalyzerLegacyName, "code_debugger", "code_error_analyzer", "code_rca_agent"}
 }
 
 func (l CodeAgent2) GetDescription() string {
@@ -2915,6 +3020,19 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 			"type":  "token",
 			"token": gitToken,
 		}
+	}
+
+	// Forward the resolved LLM config, exactly as the main analysis path does.
+	// Without this the workspace pod falls back to its global LLM_* secret env,
+	// which is not guaranteed to name a provider code-analysis supports — every
+	// followup then fails at client construction before doing any work. Degrade
+	// gracefully: on any failure, or when no provider resolves at all, omit the
+	// block. The API key is plaintext — never log it.
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, query.AccountId, AgentCodeAnalyzer, query.ConversationId); lerr != nil {
+		logger.Warn("code followup: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
+	} else if llmCfg != nil {
+		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+		logger.Info("code followup: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 	}
 
 	// Pre-flight: verify workspace pod is reachable

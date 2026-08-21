@@ -88,7 +88,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.LogProviderOverride == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && len(q.ToolConfigs) == 0 &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0
+		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == ""
 }
 
 // MergeFrom copies fields from src into q only when q's field is the zero value.
@@ -138,6 +138,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if q.LlmModelName == "" {
 		q.LlmModelName = src.LlmModelName
+	}
+	if q.LogProviderOverride == "" {
+		q.LogProviderOverride = src.LogProviderOverride
 	}
 	if len(q.LlmTierModels) == 0 && len(src.LlmTierModels) > 0 {
 		q.LlmTierModels = src.LlmTierModels

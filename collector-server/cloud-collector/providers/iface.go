@@ -287,6 +287,13 @@ type Event struct {
 
 type ListResourcesResponse struct {
 	Items []Resource `json:"items"`
+	// SkippedRegions lists regions that were requested but not actually
+	// observed this run — unreachable endpoints, rate-limited regions, or
+	// regions disabled for the account. Absence of items from these regions
+	// says nothing about whether resources exist there, so callers that
+	// archive resources missing from the result MUST exclude these regions
+	// from the archival scope.
+	SkippedRegions []string `json:"skipped_regions,omitempty"`
 }
 
 type ListRecommendationsResponse struct {

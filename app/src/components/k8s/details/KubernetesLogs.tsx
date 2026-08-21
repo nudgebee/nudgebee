@@ -175,6 +175,8 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   const [logOperations, setLogOperations] = useState<any[]>([]);
   const [qLEditor, setQLEditor] = useState('code');
   const [esIndex, setEsIndex] = useState('');
+  // ES Code-tab query language ('dsl' | 'kql'), driven by QueryModeSwitcher.
+  const [esQueryType, setEsQueryType] = useState('dsl');
   // Tracks the currently-selected provider so an async index resolve (on ES
   // override) can bail if the user has switched away before it returns.
   const selectedLogProviderRef = useRef('');
@@ -598,7 +600,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           };
           requestBody.query = '';
         } else if (logProvider == 'ES' && qLEditor == 'code') {
-          requestBody['request'] = { query_type: 'dsl', ...(esIndex ? { index: esIndex } : {}) };
+          requestBody['request'] = { query_type: esQueryType || 'dsl', ...(esIndex ? { index: esIndex } : {}) };
         } else if (logProvider == 'ES' && qLEditor == 'build') {
           if (logQueryItems && logQueryItems.length > 0) {
             const mapESOperatorToBackend = (uiOperator: string): string => {
@@ -622,6 +624,13 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                 value = false;
               } else if (item.operator === '!exists') {
                 backendOp = '_is_null';
+                value = true;
+              }
+
+              // The IS NULL chip is value-less, so the builder gives it value ''.
+              // _is_null carries its meaning in the value and the backend requires a
+              // boolean there, so '' was rejected and the whole filter was dropped.
+              if (backendOp === '_is_null' && typeof value !== 'boolean') {
                 value = true;
               }
 
@@ -693,6 +702,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
       logQueryItems,
       logOperations,
       esIndex,
+      esQueryType,
       formatLogResults,
       generateQuestionText,
       conversationId,
@@ -1161,6 +1171,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                 onQueryChange={(e: any) => {
                   setLogQuery(e.query);
                   if (e.index !== undefined) setEsIndex(e.index);
+                  if (e.queryType !== undefined) setEsQueryType(e.queryType);
                 }}
                 logProvider={logProvider}
                 providerOverride={logProvider && defaultProvider && logProvider !== defaultProvider ? logProvider : undefined}

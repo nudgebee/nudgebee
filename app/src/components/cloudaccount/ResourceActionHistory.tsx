@@ -62,14 +62,21 @@ const ResourceActionHistory: React.FC<ResourceActionHistoryProps> = ({ accountId
 
   useEffect(() => {
     if (!accountId || !resourceId) return;
+    let cancelled = false;
     setLoading(true);
     apiCloudAccount
       .listResourceActionHistory(accountId, resourceId, limit, offset)
       .then((result) => {
+        if (cancelled) return;
         setAudits(result.audits);
         setCount(result.count);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, resourceId, limit, offset]);
 
   useEffect(() => {

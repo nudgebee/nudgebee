@@ -590,7 +590,9 @@ type ListRequest struct {
 	RoutingReason string   // filter to one routing_reason (drill-in from Governance intelligence)
 	RejectReason  string   // filter to one derived.reject_reason (drill-in from Governance rejects)
 	Dlp           bool     // filter to requests that tripped the egress filter (drill-in from Governance DLP)
-	CallerUserID  string   // the requesting user (x-user-id); a row's body is viewable only by its own user
+	SessionID     string   // filter to one session/conversation (drill-in from a request's session)
+	CallerUserID  string   // the requesting user (x-user-id); a row's body is viewable by its own user
+	CallerIsAdmin bool     // caller is a tenant admin → may view ANY user's body within the tenant
 	Limit         int
 	Offset        int
 }
@@ -615,6 +617,7 @@ type RequestRow struct {
 	LatencyMs         int64     `json:"latency_ms"`
 	CostUsd           float64   `json:"cost_usd"`
 	SessionID         string    `json:"session_id"`
+	SessionSource     string    `json:"session_source"` // header | metadata.user_id | inferred | ""
 	// Dlp is set only when this request tripped the egress secret filter — the mode
 	// that was active and which rules fired. nil (omitted) for the vast majority.
 	Dlp *RequestDLP `json:"dlp,omitempty"`
@@ -675,6 +678,7 @@ type reqScan struct {
 	LatencyMs      int64     `db:"latency_ms"`
 	Cost           float64   `db:"cost_usd"`
 	SessionID      string    `db:"session_id"`
+	SessionSource  string    `db:"session_source"`
 }
 
 // listRequestsFilter builds the WHERE clause + args for ListRequests (count and
@@ -727,6 +731,10 @@ func listRequestsFilter(req ListRequest) (string, []any) {
 	if req.Dlp {
 		where += " AND g.attributes LIKE '%\"dlp\"%' AND (NULLIF(g.attributes,'')::jsonb #> '{derived,dlp}') IS NOT NULL"
 	}
+	if req.SessionID != "" {
+		where += fmt.Sprintf(" AND g.session_id = $%d", len(args)+1)
+		args = append(args, req.SessionID)
+	}
 	return where, args
 }
 
@@ -775,7 +783,8 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		       COALESCE(g.cache_read_tokens,0) AS cache_read_tokens, COALESCE(g.cache_write_tokens,0) AS cache_write_tokens,
 		       COALESCE(g.latency_ms,0) AS latency_ms,
 		       COALESCE(g.cost_usd,0) AS cost_usd,
-		       COALESCE(g.session_id,'') AS session_id
+		       COALESCE(g.session_id,'') AS session_id,
+		       COALESCE(NULLIF(g.attributes,'')::jsonb #>> '{derived,session_source}','') AS session_source
 		FROM llm_gateway_usage g
 		LEFT JOIN users u ON u.id::text = g.user_id
 		WHERE %s
@@ -804,11 +813,14 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 			RequestedModel: r.RequestedModel, RespondedModel: r.RespondedModel, RoutingReason: r.RoutingReason, Surface: r.Surface,
 			StatusCode: r.StatusCode, Streaming: r.Streaming,
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
-			LatencyMs:   r.LatencyMs,
-			CostUsd:     r.Cost,
-			SessionID:   r.SessionID,
-			Dlp:         parseDLP(r.DlpJSON),
-			CanViewBody: bodyEnabled && req.CallerUserID != "" && r.UserID == req.CallerUserID,
+			LatencyMs: r.LatencyMs,
+			CostUsd:   r.Cost,
+			SessionID: r.SessionID, SessionSource: r.SessionSource,
+			Dlp: parseDLP(r.DlpJSON),
+			// Viewable when body-logging is on AND (the row is the caller's own request
+			// OR the caller is a tenant admin — admins may view any user's body within
+			// the tenant; the query is already tenant-scoped, so never cross-tenant).
+			CanViewBody: bodyEnabled && (req.CallerIsAdmin || (req.CallerUserID != "" && r.UserID == req.CallerUserID)),
 		})
 	}
 	return &RequestList{Rows: out, Total: total, Limit: limit, Offset: offset}, nil

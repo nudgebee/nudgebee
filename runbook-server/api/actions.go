@@ -64,6 +64,10 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleListWorkflowExecutions(c, sc, args)
 	case "workflow_list_executions_for_event":
 		s.handleListWorkflowExecutionsForEvent(c, sc, args)
+	case "executions_list":
+		s.handleListAccountExecutions(c, sc, args)
+	case "executions_aggregate":
+		s.handleAggregateExecutions(c, sc, args)
 	case "workflow_get_execution":
 		s.handleGetWorkflowExecution(c, sc, args)
 	case "workflow_cancel_execution":
@@ -422,7 +426,7 @@ func (s *Server) handleTriggerWorkflow(c *gin.Context, sc *security.RequestConte
 	}
 	if err != nil {
 		s.logger.Error("failed to trigger workflow via RPC", "workflowID", workflowID, "mode", callTy, "error", err)
-		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to trigger workflow"))
+		handleServiceError(c, err, "failed to trigger workflow")
 		return
 	}
 

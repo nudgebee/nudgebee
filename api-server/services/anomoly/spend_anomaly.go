@@ -948,6 +948,7 @@ func generateSpendAnomalyEvent(dbms *database.DatabaseManager, anomaly *Anomaly,
 		StartsAt:         anomaly.EvaluatedAt,
 		Fingerprint:      fmt.Sprintf("spend-anomaly-%s-%s-%s", anomaly.AccountId, anomaly.AnomalyType, anomaly.Name),
 		Cluster:          cloudAccountName,
+		Labels:           spendStatLabels(anomaly, cfg.money),
 	}
 
 	_, err := event.InsertEvent(eventObj, "")

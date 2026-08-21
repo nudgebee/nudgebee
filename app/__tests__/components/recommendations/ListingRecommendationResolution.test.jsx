@@ -220,7 +220,7 @@ describe('ListingRecommendationResolution (integration)', () => {
     });
   });
 
-  it('fetches resolution list on mount with default filters (status=InProgress)', async () => {
+  it('fetches resolution list on mount with no status filter, so failed resolutions are visible', async () => {
     render(<ListingRecommendationResolution accountId='acc-1' />);
 
     await waitFor(() => expect(apiRecommendations.getRecommendationResolution).toHaveBeenCalled());
@@ -229,7 +229,7 @@ describe('ListingRecommendationResolution (integration)', () => {
       limit: 10,
       offset: 0,
       accountId: 'acc-1',
-      status: 'InProgress',
+      status: '',
       type: '',
       resolverType: '',
     });

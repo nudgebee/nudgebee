@@ -30,19 +30,19 @@ APPLICATION_JSON = "application/json"
 
 def get_embeddings() -> Embeddings:
     embeddings: Embeddings
-    if Config.embeddings_provider.lower() == "azure":
+    if Config.eval_embeddings_provider.lower() == "azure":
         embeddings = get_azure_embeddings()
-    elif Config.embeddings_provider.lower() == "huggingface":
+    elif Config.eval_embeddings_provider.lower() == "huggingface":
         embeddings = get_hf_embeddings()
-    elif Config.embeddings_provider.lower() == "ollama":
+    elif Config.eval_embeddings_provider.lower() == "ollama":
         embeddings = get_ollama_embeddings()
-    elif Config.embeddings_provider.lower() == "sagemaker":
+    elif Config.eval_embeddings_provider.lower() == "sagemaker":
         embeddings = get_sagemaker_embeddings()
-    elif Config.embeddings_provider.lower() == "openai":
+    elif Config.eval_embeddings_provider.lower() == "openai":
         embeddings = get_openai_embeddings()
-    elif Config.embeddings_provider.lower() == "googleai":
+    elif Config.eval_embeddings_provider.lower() == "googleai":
         embeddings = get_google_ai_embeddings()
-    elif Config.embeddings_provider.lower() == "vertexai":
+    elif Config.eval_embeddings_provider.lower() == "vertexai":
         embeddings = get_vertexai_embeddings()
     else:
         embeddings = get_bedrock_embeddings()
@@ -50,147 +50,149 @@ def get_embeddings() -> Embeddings:
 
 
 def get_google_ai_embeddings():
-    if not Config.embeddings_model_id:
+    if not Config.eval_embeddings_model_id:
         raise ValueError(
             "Google AI embeddings provider requires EMBEDDINGS_MODEL_NAME in environment"
         )
-    if not Config.embeddings_api_key:
+    if not Config.eval_embeddings_api_key:
         raise ValueError(
             "Google AI embeddings provider requires EMBEDDINGS_PROVIDER_API_KEY in environment"
         )
     # model format is models/embedding-001
-    model = Config.embeddings_model_id
+    model = Config.eval_embeddings_model_id
     if not model.startswith("models/"):
         model = f"models/{model}"
     return GoogleGenerativeAIEmbeddings(
-        model=model, google_api_key=Config.embeddings_api_key
+        model=model, google_api_key=Config.eval_embeddings_api_key
     )
 
 
 def get_vertexai_embeddings():
-    if not Config.embeddings_model_id:
+    if not Config.eval_embeddings_model_id:
         raise ValueError(
             "Vertex AI embeddings provider requires EMBEDDINGS_MODEL_NAME in environment"
         )
-    if not Config.embeddings_region:
+    if not Config.eval_embeddings_region:
         raise ValueError(
             "Vertex AI embeddings provider requires EMBEDDINGS_PROVIDER_REGION in environment"
         )
     return VertexAIEmbeddings(
-        model_name=Config.embeddings_model_id, location=Config.embeddings_region
+        model_name=Config.eval_embeddings_model_id,
+        location=Config.eval_embeddings_region,
     )
 
 
 def get_bedrock_embeddings():
-    if not Config.embeddings_model_id:
+    if not Config.eval_embeddings_model_id:
         raise ValueError(
             "Bedrock embeddings provider requires EMBEDDINGS_MODEL_NAME in environment"
         )
     return BedrockEmbeddings(
-        client=bedrock_client(), model_id=Config.embeddings_model_id
+        client=bedrock_client(), model_id=Config.eval_embeddings_model_id
     )
 
 
 def get_azure_embeddings():
-    if not Config.embeddings_api_endpoint:
+    if not Config.eval_embeddings_api_endpoint:
         raise ValueError(
             "Azure embeddings provider requires EMBEDDINGS_PROVIDER_API_ENDPOINT in environment"
         )
-    if not Config.embeddings_api_key:
+    if not Config.eval_embeddings_api_key:
         raise ValueError(
             "Azure embeddings provider requires EMBEDDINGS_PROVIDER_API_KEY in environment"
         )
-    if not Config.embeddings_model_id:
+    if not Config.eval_embeddings_model_id:
         raise ValueError(
             "Azure embeddings provider requires EMBEDDINGS_MODEL_NAME in environment"
         )
     return AzureAIEmbeddingsModel(
-        endpoint=Config.embeddings_api_endpoint,
-        credential=Config.embeddings_api_key,
-        api_version=Config.embeddings_api_version,
+        endpoint=Config.eval_embeddings_api_endpoint,
+        credential=Config.eval_embeddings_api_key,
+        api_version=Config.eval_embeddings_api_version,
     )
 
 
 def get_ollama_embeddings():
-    if not Config.embeddings_model_id:
+    if not Config.eval_embeddings_model_id:
         raise ValueError(
             "Ollama embeddings provider requires EMBEDDINGS_MODEL_NAME in environment"
         )
-    if not Config.embeddings_api_endpoint:
+    if not Config.eval_embeddings_api_endpoint:
         raise ValueError(
             "Ollama embeddings provider requires EMBEDDINGS_PROVIDER_API_ENDPOINT in environment"
         )
     return OllamaEmbeddings(
-        model=Config.embeddings_model_id, base_url=Config.embeddings_api_endpoint
+        model=Config.eval_embeddings_model_id,
+        base_url=Config.eval_embeddings_api_endpoint,
     )
 
 
 def get_hf_embeddings():
-    if not Config.embeddings_api_endpoint:
+    if not Config.eval_embeddings_api_endpoint:
         raise ValueError(
             "Huggingface embeddings provider requires EMBEDDINGS_PROVIDER_API_ENDPOINT in environment"
         )
-    if not Config.embeddings_api_key:
+    if not Config.eval_embeddings_api_key:
         raise ValueError(
             "Huggingface embeddings provider requires EMBEDDINGS_PROVIDER_API_KEY in environment"
         )
     return HuggingFaceInferenceAPIEmbeddings(
-        api_key=SecretStr(Config.embeddings_api_key),
-        api_url=Config.embeddings_api_endpoint,
+        api_key=SecretStr(Config.eval_embeddings_api_key),
+        api_url=Config.eval_embeddings_api_endpoint,
     )
 
 
 def get_sagemaker_embeddings():
-    if not Config.embeddings_api_endpoint:
+    if not Config.eval_embeddings_api_endpoint:
         raise ValueError(
             "Sagemaker embeddings provider requires EMBEDDINGS_PROVIDER_API_ENDPOINT in environment"
         )
-    if not Config.embeddings_region:
+    if not Config.eval_embeddings_region:
         raise ValueError(
             "Sagemaker embeddings provider requires EMBEDDINGS_PROVIDER_REGION in environment"
         )
     content_handler = ContentHandler()
     return SagemakerEndpointEmbeddings(
-        endpoint_name=Config.embeddings_api_endpoint,
-        region_name=Config.embeddings_region,
+        endpoint_name=Config.eval_embeddings_api_endpoint,
+        region_name=Config.eval_embeddings_region,
         content_handler=content_handler,
     )
 
 
 def get_openai_embeddings():
-    if not Config.embeddings_api_key:
+    if not Config.eval_embeddings_api_key:
         raise ValueError(
             "OpenAI embeddings provider requires EMBEDDINGS_PROVIDER_API_KEY in environment"
         )
-    if not Config.embeddings_model_id:
+    if not Config.eval_embeddings_model_id:
         raise ValueError(
             "OpenAI embeddings provider requires EMBEDDINGS_MODEL_NAME in environment"
         )
-    if not Config.embeddings_api_version:
+    if not Config.eval_embeddings_api_version:
         raise ValueError(
             "OpenAI embeddings provider requires EMBEDDINGS_PROVIDER_API_VERSION in environment"
         )
-    if not Config.embeddings_api_type:
+    if not Config.eval_embeddings_api_type:
         raise ValueError(
             "OpenAI embeddings provider requires EMBEDDINGS_PROVIDER_API_TYPE in environment"
         )
-    if Config.embeddings_api_type == "azure":
-        if not Config.embeddings_api_endpoint:
+    if Config.eval_embeddings_api_type == "azure":
+        if not Config.eval_embeddings_api_endpoint:
             raise ValueError(
                 "Azure OpenAI embeddings provider requires EMBEDDINGS_PROVIDER_API_ENDPOINT in environment"
             )
         embeddings = AzureOpenAIEmbeddings(
-            model=Config.embeddings_model_id,
-            api_key=Config.embeddings_api_key,
-            api_version=Config.embeddings_api_version,
-            openai_api_type=Config.embeddings_api_type,
-            azure_endpoint=Config.embeddings_api_endpoint,
+            model=Config.eval_embeddings_model_id,
+            api_key=Config.eval_embeddings_api_key,
+            api_version=Config.eval_embeddings_api_version,
+            openai_api_type=Config.eval_embeddings_api_type,
+            azure_endpoint=Config.eval_embeddings_api_endpoint,
         )
     else:
         embeddings = OpenAIEmbeddings(
-            api_key=Config.embeddings_api_key,
-            model=Config.embeddings_model_id,
-            api_version=Config.embeddings_api_version,
+            api_key=Config.eval_embeddings_api_key,
+            model=Config.eval_embeddings_model_id,
+            api_version=Config.eval_embeddings_api_version,
         )
     return embeddings
 
@@ -226,7 +228,7 @@ class SageMakerContentHandler(LLMContentHandler):
 
 def get_bedrock_llm() -> BedrockLLM:
     return BedrockLLM(
-        model=Config.llm_model_name,
+        model=Config.eval_llm_model_name,
         region=Config.aws_region,
         client=bedrock_client(),
         streaming=True,
@@ -239,30 +241,30 @@ def get_bedrock_llm() -> BedrockLLM:
 
 
 def get_vertexai_llm(model_name: str) -> VertexAI:
-    if not Config.llm_provider_api_key:
+    if not Config.eval_llm_provider_api_key:
         logger.error("LLM_PROVIDER_API_KEY environment variable is not set")
     return VertexAI(model_name=model_name, temperature=0, streaming=True)
 
 
 def get_google_ai_llm(model_name: str) -> GoogleGenerativeAI:
-    if not Config.llm_provider_api_key:
+    if not Config.eval_llm_provider_api_key:
         logger.error("LLM_PROVIDER_API_KEY environment variable is not set")
     return GoogleGenerativeAI(
         model=model_name,
-        api_key=SecretStr(Config.llm_provider_api_key),
+        api_key=SecretStr(Config.eval_llm_provider_api_key),
         temperature=0,
     )
 
 
 def get_azure_llm(model_name: str) -> AzureChatOpenAI:
-    if not Config.llm_provider_api_key:
+    if not Config.eval_llm_provider_api_key:
         logger.error(
             "LLM_PROVIDER_API_KEY environment variable is not set for Azure LLM provider."
         )
     return AzureChatOpenAI(
-        api_key=Config.llm_provider_api_key,
-        base_url=Config.llm_provider_api_endpoint,
-        api_version=Config.llm_provider_api_version,
+        api_key=Config.eval_llm_provider_api_key,
+        base_url=Config.eval_llm_provider_api_endpoint,
+        api_version=Config.eval_llm_provider_api_version,
         azure_deployment=model_name,
         temperature=0,
         streaming=True,
@@ -272,8 +274,8 @@ def get_azure_llm(model_name: str) -> AzureChatOpenAI:
 def get_hf_llm(model_name: str) -> HuggingFaceEndpoint:
     return HuggingFaceEndpoint(
         model=model_name,
-        endpoint_url=Config.llm_provider_api_endpoint,
-        huggingfacehub_api_token=Config.llm_provider_api_key,
+        endpoint_url=Config.eval_llm_provider_api_endpoint,
+        huggingfacehub_api_token=Config.eval_llm_provider_api_key,
         task="text-generation",
         streaming=True,
     )
@@ -282,23 +284,23 @@ def get_hf_llm(model_name: str) -> HuggingFaceEndpoint:
 def get_sagemaker_llm() -> SagemakerEndpoint:
     content_handler = SageMakerContentHandler()
     return SagemakerEndpoint(
-        endpoint_name=Config.llm_provider_api_endpoint,
-        region_name=Config.llm_provider_region,
+        endpoint_name=Config.eval_llm_provider_api_endpoint,
+        region_name=Config.eval_llm_provider_region,
         content_handler=content_handler,
         streaming=True,
     )
 
 
 def get_openai_llm(model_name: str) -> ChatOpenAI:
-    if not Config.llm_provider_api_key:
+    if not Config.eval_llm_provider_api_key:
         logger.error("LLM_PROVIDER_API_KEY is not set for OpenAI provider.")
     return ChatOpenAI(
         model=model_name,
-        api_key=SecretStr(Config.llm_provider_api_key),
+        api_key=SecretStr(Config.eval_llm_provider_api_key),
         base_url=(
-            Config.llm_provider_api_endpoint
+            Config.eval_llm_provider_api_endpoint
             if hasattr(Config, "openai_api_type")
-            and Config.llm_provider_api_type.lower() != "openai"
+            and Config.eval_llm_provider_api_type.lower() != "openai"
             else None
         ),
         temperature=0,
@@ -308,19 +310,19 @@ def get_openai_llm(model_name: str) -> ChatOpenAI:
 
 def get_llm() -> BaseLLM | AzureChatOpenAI | ChatOpenAI:
     llm: BaseLLM | AzureChatOpenAI | ChatOpenAI
-    provider = Config.llm_provider.lower()
+    provider = Config.eval_llm_provider.lower()
     if provider == "azure":
-        llm = get_azure_llm(Config.llm_model_name)
+        llm = get_azure_llm(Config.eval_llm_model_name)
     elif provider == "openai":
-        llm = get_openai_llm(Config.llm_model_name)
+        llm = get_openai_llm(Config.eval_llm_model_name)
     elif provider == "googleai":
-        llm = get_google_ai_llm(Config.llm_model_name)
+        llm = get_google_ai_llm(Config.eval_llm_model_name)
     elif provider == "vertexai":
-        llm = get_vertexai_llm(Config.llm_model_name)
+        llm = get_vertexai_llm(Config.eval_llm_model_name)
     elif provider == "sagemaker":
         llm = get_sagemaker_llm()
     elif provider == "huggingface":
-        llm = get_hf_llm(Config.llm_model_name)
+        llm = get_hf_llm(Config.eval_llm_model_name)
     else:
         llm = get_bedrock_llm()
 

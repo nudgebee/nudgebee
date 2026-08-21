@@ -2,15 +2,15 @@ import { useEffect, useState, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { Box, Typography, CircularProgress } from '@mui/material';
 import observability from '@api1/observability';
-import CloudLogViewer from '@components/cloudaccount/investigate/cards/CloudLogViewer';
+import CloudLogsTable from '@components/cloudaccount/cloud-logs/CloudLogsTable';
 
 // CloudTraceLogs fetches GCP Cloud Logging entries correlated to a single trace.
 // It reuses the existing native cloud-logs query (observability.fetchLogs ->
 // cloud.QueryLogs); `trace="projects/<project>/traces/<id>"` is a real Cloud
 // Logging filter string, so it scopes the result to exactly this trace's logs
 // (request log + the service's own app logs for that request) and bypasses scope
-// resolution. Rendering is delegated to CloudLogViewer for parity with the
-// Cloud Logs evidence card.
+// resolution. Rendering is delegated to CloudLogsTable for parity with the
+// Cloud Logs evidence card and the Cloud Logs tab.
 const CloudTraceLogs = ({ accountId, project, region, serviceName, traceId, timestamp }) => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -40,13 +40,14 @@ const CloudTraceLogs = ({ accountId, project, region, serviceName, traceId, time
       // reads) — the entries are under .logs, not logs_list itself.
       const rawLogs = res?.data?.data?.logs_list?.logs;
       const list = Array.isArray(rawLogs) ? rawLogs : [];
-      // observability flattens GCP label pairs into a `labels` object; CloudLogViewer
-      // renders structured fields from `attributes`, so alias the two.
+      // observability returns entries already in the CloudLogsTable contract
+      // ({timestamp, message, severity, labels}); pass them straight through.
       setLogs(
         list.map((l) => ({
           timestamp: l.timestamp,
           message: l.message,
-          attributes: l.labels && typeof l.labels === 'object' ? l.labels : {},
+          severity: l.severity ?? '',
+          labels: l.labels && typeof l.labels === 'object' ? l.labels : {},
         }))
       );
     } catch (err) {
@@ -81,7 +82,7 @@ const CloudTraceLogs = ({ accountId, project, region, serviceName, traceId, time
       </Box>
     );
   }
-  return <CloudLogViewer logs={logs} />;
+  return <CloudLogsTable id={`cloudTraceLogs_${traceId}`} logs={logs} />;
 };
 
 CloudTraceLogs.propTypes = {

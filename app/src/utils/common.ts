@@ -265,6 +265,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'ES':
       label = 'Elasticsearch';
       break;
+    case 'ELASTICSEARCH_WEBHOOK':
+      label = 'Elasticsearch Webhook';
+      break;
     case 'PINOT':
       label = 'Apache Pinot';
       break;

@@ -1,13 +1,16 @@
 package query
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/samber/lo"
 )
@@ -1058,6 +1061,32 @@ func GenerateSqlQuery(ctx *security.RequestContext, accountId string, request Qu
 	return queryBuilder.String(), nil
 }
 
+// sqlQueryContext bounds a single RPC query, covering both the wait for a pool
+// connection and the query itself. Without it these waits are unbounded: this
+// path has no request context, so database/sql falls back to context.Background()
+// and a goroutine queued for a connection never gives up — not even when the
+// client has already disconnected.
+//
+// This query drains its rows into a slice and never issues a nested query, so it
+// only ever waits on the pool — it cannot be the handler that starves it. The
+// bound therefore makes these requests fail fast instead of hanging; it does not
+// by itself free a pool held by handlers that query while iterating rows (those
+// need their own bound, or the nesting removed). Login goes through this path, so
+// failing fast here is the difference between a clear error and a dead login page.
+//
+// app_database_query_timeout_seconds defaults to 120: well above the slowest
+// queries we actually see (11-21s routinely, ~27s for a cold finops recompute —
+// see #34921) and well under the 300s the frontend waits before giving up, so a
+// starved pool surfaces as errors rather than a hang. Set it to 0 to disable the
+// bound and restore the previous unbounded behaviour.
+func sqlQueryContext() (context.Context, context.CancelFunc) {
+	seconds := config.Config.ServiceDBQueryTimeoutSeconds
+	if seconds <= 0 {
+		return context.Background(), func() {}
+	}
+	return context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
+}
+
 func executeSqlQuery(source database.DatabaseManagerType, query string, args []any, limit int) ([]QueryRow, error) {
 
 	if source == "" {
@@ -1069,7 +1098,10 @@ func executeSqlQuery(source database.DatabaseManagerType, query string, args []a
 		return nil, err
 	}
 
-	rows, err := databaseManager.Db.Queryx(query, args...)
+	ctx, cancel := sqlQueryContext()
+	defer cancel()
+
+	rows, err := databaseManager.Db.QueryxContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

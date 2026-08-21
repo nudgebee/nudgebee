@@ -5,21 +5,47 @@ from contextlib import asynccontextmanager, suppress
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-from notifications_server import engine, slack_app, teams_app
+from notifications_server import engine, sync_engine, slack_app, teams_app
 from notifications_server.configs import setup_logger, HealthCheckFilter, settings
 from notifications_server.processors.notification import NotificationProcessor
 from notifications_server.rabbitmq.message_consumer import Consumer
 from notifications_server.routers import tools, common, actions, llm_callbacks
+from notifications_server.services.channel_ingest import ChannelIngestService
 from notifications_server.tracing import setup_tracing
 
 setup_logger()
 setup_tracing()
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 LOG = logging.getLogger(__name__)
+
+
+def _sweep_expired_channel_messages():
+    with ChannelIngestService(engine=sync_engine) as ingest:
+        return ingest.sweep_expired()
+
+
+async def run_retention_sweeper():
+    """Enforce each channel's retention window. Retained conversation is only
+    acceptable because it expires, so this runs alongside ingest rather than
+    being deferred to external scheduling. The delete is offloaded to a worker
+    thread — this service has previously wedged its health checks by running
+    blocking work on the shared event loop."""
+    interval = max(settings.notifications.channel_retention_sweep_minutes, 1) * 60
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            deleted = await run_in_threadpool(_sweep_expired_channel_messages)
+            if deleted:
+                LOG.info("Channel retention sweep removed %d expired messages", deleted)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.exception("Channel retention sweep failed; will retry next interval")
 
 
 @asynccontextmanager
@@ -39,14 +65,19 @@ async def lifespan(_: FastAPI):
     processor = NotificationProcessor(consumer, engine, slack_app, teams_app)
     consumer_task = asyncio.create_task(consumer.run(processor.process_task))
     LOG.info("RabbitMQ consumer started as asyncio task")
+    sweeper_task = asyncio.create_task(run_retention_sweeper())
+    LOG.info("Channel retention sweeper started as asyncio task")
     try:
         yield
     finally:
         await consumer.stop()
         consumer_task.cancel()
+        sweeper_task.cancel()
         with suppress(asyncio.CancelledError):
             await consumer_task
-        LOG.info("RabbitMQ consumer stopped")
+        with suppress(asyncio.CancelledError):
+            await sweeper_task
+        LOG.info("RabbitMQ consumer and retention sweeper stopped")
 
 
 app = FastAPI(lifespan=lifespan)

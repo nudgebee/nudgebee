@@ -51,6 +51,7 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleWorkspaceApis(r, tracer, meter)
 	handleLLMConfigTestApis(r, tracer, meter)
 	handleEgressfilterTenantApis(r)
+	handleEgressfilterConfigApis(r, tracer, meter)
 	handleSwagger(r)
 }
 

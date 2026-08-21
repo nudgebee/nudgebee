@@ -3,6 +3,8 @@ package observability
 import (
 	"testing"
 
+	"nudgebee/services/query"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -204,4 +206,63 @@ func TestParseSourceMap_AttributesOnly(t *testing.T) {
 	assert.Equal(t, "svc", got.Labels["service.name"])
 	assert.Equal(t, "stdout", got.Labels["log.iostream"])
 	assert.NotContains(t, got.Labels, "attributes", "attributes must be flattened, not kept nested")
+}
+
+// The canonical where-clause contract is SQL LIKE (Loki converts the same input with
+// convertSQLLikeToRegex, and the query generator is prompted with "%error%" patterns).
+// Elasticsearch passed the pattern through verbatim, so `%error%` reached ES as a
+// literal wildcard containing percent signs and matched nothing, silently, with 200.
+// Measured on the dev cluster: wildcard "%nudgebee%" → 0 hits, "*nudgebee*" → 10000.
+func TestSQLLikeToESWildcard(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"contains", "%error%", "*error*"},
+		{"prefix", "api-%", "api-*"},
+		{"single char", "pod_1", "pod?1"},
+		{"escaped percent stays literal", `100\%`, "100%"},
+		{"escaped underscore stays literal", `kube\_system`, "kube_system"},
+		{"literal star is escaped", "a*b", `a\*b`},
+		{"literal question is escaped", "a?b", `a\?b`},
+		{"no wildcards", "checkout", "checkout"},
+		// Backslash handling: ES treats `\` as an escape introducer, so a lone
+		// backslash in the value must be doubled or ES swallows it.
+		{"single backslash is doubled", `a\b`, `a\\b`},
+		{"escaped backslash stays one backslash", `a\\b`, `a\\b`},
+		{"literal star after a backslash stays literal", `a\*b`, `a\\\*b`},
+		{"trailing backslash", `ab\`, `ab\\`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, sqlLikeToESWildcard(tc.in))
+		})
+	}
+}
+
+// _ilike is now executed rather than rejected: Elasticsearch does case-insensitive
+// wildcard matching natively. Rejecting it cost the agent a whole iteration to
+// rediscover by trial and error.
+func TestBinaryToESClause_ILikeIsCaseInsensitiveWildcard(t *testing.T) {
+	clause, negate, err := binaryToESClause("_body", query.ILike, "%ERROR%")
+	assert.NoError(t, err)
+	assert.False(t, negate)
+
+	w := clause["wildcard"].(map[string]any)["_body"].(map[string]any)
+	assert.Equal(t, "*ERROR*", w["value"], "SQL wildcards must be translated for ES")
+	assert.Equal(t, true, w["case_insensitive"])
+}
+
+func TestBinaryToESClause_LikeTranslatesSQLWildcards(t *testing.T) {
+	clause, _, err := binaryToESClause("_body", query.Like, "%error%")
+	assert.NoError(t, err)
+	w := clause["wildcard"].(map[string]any)["_body"].(map[string]any)
+	assert.Equal(t, "*error*", w["value"])
+	assert.Nil(t, w["case_insensitive"], "_like stays case-sensitive")
+}
+
+// esWildcardValue fast-paths the string case and falls back to Sprintf for the
+// numeric/bool literals a hand-written where clause can carry. Pinned because the
+// fallback is easy to wire back into itself while refactoring.
+func TestESWildcardValue_HandlesNonStringValues(t *testing.T) {
+	assert.Equal(t, "*error*", esWildcardValue("%error%"))
+	assert.Equal(t, "500", esWildcardValue(500))
+	assert.Equal(t, "true", esWildcardValue(true))
+	assert.Equal(t, "1?5", esWildcardValue("1_5"), "SQL wildcards still translate on the string path")
 }

@@ -128,7 +128,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
     try {
       // Reuse the shared ES index-list API (logs_list_labels); force the ES
       // provider so it resolves even when ES isn't the account's default log provider.
-      const res = await observability.fetchLogLabels({ account_id: selectedK8sAccount, log_provider: 'ES' });
+      const res = await observability.logIndexList(selectedK8sAccount as string, 'ES');
       const indexes = (res?.data?.data?.logs_list_labels || []).map((l: any) => l?.label).filter(Boolean);
       setEsIndexList(indexes);
     } catch {

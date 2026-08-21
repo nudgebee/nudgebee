@@ -1140,6 +1140,18 @@ func (e *LoadBalancerK8sEnricher) createWorkloadNode(
 		"name":       ownerName,
 		"namespace":  podInfo.Namespace,
 		"owner_kind": ownerKind,
+		"kind":       ownerKind,
+		"subtype":    ownerKind,
+	}
+
+	// Concrete native label (specific_type), e.g. KubernetesDaemonSet. Mirrors
+	// sources/k8s/workload.go's convention. This node's unique key/ID
+	// deliberately matches the authoritative k8s_source Workload node (see
+	// comment below), so leaving specific_type unset would let SaveNodes'
+	// ON CONFLICT upsert blank out the real value with core.NewNode's
+	// generic "Workload" fallback whenever this enricher's save runs last.
+	if ownerKind != "" {
+		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(ownerKind)
 	}
 
 	// Add K8s cluster if available (use "cluster" key like k8s_source)

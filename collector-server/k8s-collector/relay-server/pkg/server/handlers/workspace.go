@@ -238,7 +238,7 @@ func workspaceToolToIntegrationType(tool string) string {
 		return "argocd"
 	case "clickhouse", "clickhouse-client":
 		return "clickhouse"
-	case "rabbitmq", "rabbitmqadmin":
+	case "rabbitmq", "rabbitmqadmin", "rabbitmq-api":
 		return "rabbitmq"
 	case "kafka", "kcat":
 		return "kafka"
@@ -414,11 +414,24 @@ func buildWorkspaceAction(tool, command string, configValues []db.WorkspaceConfi
 		return "pod_script_run_enricher", params, nil
 
 	// ── rabbitmq ──────────────────────────────────────────────────────────────
-	case "rabbitmq", "rabbitmqadmin":
-		if strings.Contains(command, "rabbitmqadmin") {
+	case "rabbitmq", "rabbitmqadmin", "rabbitmq-api":
+		// rabbitmq-api is a scoped HTTP Management API shim: `rabbitmq-api METHOD /path
+		// [extra curl args]` is rewritten to a curl invocation with basic-auth injected
+		// and host/port hard-locked to $RABBITMQ_HOST:${RABBITMQ_MGMT_PORT:-15672} so
+		// the LLM cannot redirect the call to an arbitrary host (not a general curl).
+		// Ordered before the rabbitmqadmin / curl branches so its rewrite is authoritative
+		// — the generated curl string is not double-processed by the branches below.
+		switch {
+		case strings.HasPrefix(strings.TrimSpace(command), "rabbitmq-api"):
+			rewritten, err := rewriteRabbitmqAPICommand(command)
+			if err != nil {
+				return "", nil, err
+			}
+			command = rewritten
+		case strings.Contains(command, "rabbitmqadmin"):
 			command = strings.Replace(command, "rabbitmqadmin",
 				"rabbitmqadmin --host $RABBITMQ_HOST --port $RABBITMQ_PORT --username $RABBITMQ_USER --password $RABBITMQ_PASSWORD", 1)
-		} else if strings.Contains(command, "curl") && strings.Contains(command, "/api/") {
+		case strings.Contains(command, "curl") && strings.Contains(command, "/api/"):
 			command = strings.Replace(command, "curl ", "curl -s -u $RABBITMQ_USER:$RABBITMQ_PASSWORD ", 1)
 			command = strings.ReplaceAll(command, "$RABBITMQ_PORT", "${RABBITMQ_MGMT_PORT:-15672}")
 		}
@@ -669,6 +682,71 @@ func buildArgoCDFlagsFromConfig(configValues []db.WorkspaceConfigValue) string {
 		flags = append(flags, "--config", cfgPath)
 	}
 	return strings.Join(flags, " ")
+}
+
+var (
+	// rabbitmqAPIShimHeader parses the `METHOD /path [extra]` header of a
+	// rabbitmq-api shim invocation. Whitespace runs between the header tokens
+	// are collapsed (\s+), tolerating tabs and multi-space runs; interior
+	// whitespace inside the optional [extra] group is preserved verbatim so
+	// JSON bodies and shell-quoted args survive intact for the passthrough.
+	rabbitmqAPIShimHeader = regexp.MustCompile(`^\s*rabbitmq-api\s+(\S+)\s+(\S+)(?:\s+([\s\S]*?))?\s*$`)
+
+	// rabbitmqAPIPathAllowlist restricts the shim's /path segment to characters
+	// that are both URL-legal AND safe to interpolate inside a double-quoted
+	// shell string. Characters excluded from the allowlist ($, `, \, ", ', ;,
+	// |, <, >, (, ), {, }, !, *, whitespace) are the ones that would let the
+	// path break out of the double-quoted URL — either by closing the quote or
+	// by triggering command substitution ($() / backticks) — and thereby
+	// defeat the SSRF scope-lock that this rewrite exists to enforce. Query
+	// strings, fragments, and URL-encoded octets (%2F) are all still allowed.
+	rabbitmqAPIPathAllowlist = regexp.MustCompile(`^/[A-Za-z0-9\-._~/?&=#%@:+,\[\]]*$`)
+)
+
+// rewriteRabbitmqAPICommand transforms the workspace-shim invocation
+// `rabbitmq-api METHOD /path [extra curl args]` into a curl call against the
+// RabbitMQ HTTP Management API on the customer's broker, with basic-auth
+// injected from the k8s secret. The URL host and port are hard-locked to
+// $RABBITMQ_HOST:${RABBITMQ_MGMT_PORT:-15672} so the shim is scope-locked to
+// the configured broker — the LLM cannot supply a full URL and redirect the
+// call elsewhere (no SSRF gadget).
+//
+// Security note: /path is validated against a strict allowlist because it is
+// interpolated inside a double-quoted shell string. Double quotes DO NOT
+// prevent $()-style command substitution or literal-" quote-breakout, so an
+// unfiltered path segment would trivially defeat the SSRF scope-lock by
+// closing the URL and appending arbitrary curl targets or shell commands.
+// [extra] is deliberately NOT allowlist-filtered — the LLM legitimately needs
+// -d '{"durable":true}', -H "content-type: ...", etc. — so it is passed
+// through with the same trust model as the args string every other workspace
+// shim accepts today. This preserves the SSRF property without breaking
+// legitimate PUT/POST bodies.
+func rewriteRabbitmqAPICommand(command string) (string, error) {
+	m := rabbitmqAPIShimHeader.FindStringSubmatch(command)
+	if m == nil {
+		return "", fmt.Errorf("rabbitmq-api: expected 'rabbitmq-api METHOD /path [extra args]', got %q", command)
+	}
+	method := strings.ToUpper(m[1])
+	switch method {
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD":
+	default:
+		return "", fmt.Errorf("rabbitmq-api: unsupported HTTP method %q (allowed: GET/POST/PUT/DELETE/PATCH/HEAD)", m[1])
+	}
+	path := m[2]
+	if !rabbitmqAPIPathAllowlist.MatchString(path) {
+		return "", fmt.Errorf("rabbitmq-api: path %q contains characters outside the safe URL-path allowlist "+
+			"(letters, digits, and -._~/?&=#%%@:+,[]); reject prevents shell breakout inside the double-quoted URL",
+			path)
+	}
+	extra := ""
+	if m[3] != "" {
+		extra = " " + m[3]
+	}
+	// Host/port refs are shell-expanded at execution time inside the customer-env
+	// pod, which has RABBITMQ_HOST/USER/PASSWORD set from the k8s secret. Mgmt
+	// port defaults to 15672 if the secret doesn't provide RABBITMQ_MGMT_PORT.
+	return fmt.Sprintf(`curl -s -X %s -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" "http://$RABBITMQ_HOST:${RABBITMQ_MGMT_PORT:-15672}%s"%s`,
+		method, path, extra), nil
 }
 
 // extractOracleSQL parses a workspace sqlplus command and returns the SQL.

@@ -24,6 +24,7 @@ export function useGatewayRequests(
     models?: string[];
     status?: string;
     tool?: string;
+    sessionId?: string;
     routingReason?: string;
     rejectReason?: string;
     dlp?: boolean;
@@ -44,6 +45,7 @@ export function useGatewayRequests(
     models: opts.models ?? [],
     status: opts.status ?? '',
     tool: opts.tool ?? '',
+    sessionId: opts.sessionId ?? '',
     routingReason: opts.routingReason ?? '',
     rejectReason: opts.rejectReason ?? '',
     dlp: opts.dlp ?? false,
@@ -68,6 +70,7 @@ export function useGatewayRequests(
             models: opts.models,
             status: opts.status,
             tool: opts.tool,
+            sessionId: opts.sessionId,
             routingReason: opts.routingReason,
             rejectReason: opts.rejectReason,
             dlp: opts.dlp,

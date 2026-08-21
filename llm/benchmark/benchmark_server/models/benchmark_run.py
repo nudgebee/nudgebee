@@ -185,3 +185,46 @@ class BenchmarkInfraState(Base):
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class MagicLinkToken(Base):
+    """One-shot magic-link tokens, shared across uvicorn workers.
+
+    Previously the token store lived in a per-process dict which only
+    worked with ``UVICORN_WORKERS=1`` — an operator or the AutoOptimize
+    scaler bumping workers silently broke ~50% of logins (the worker that
+    handled the click didn't have the dict entry from the worker that
+    minted it). Persisting to Postgres removes the worker-affinity trap.
+
+    Tokens are consumed via ``DELETE ... RETURNING`` for atomic one-shot
+    semantics — no window where the same token can be redeemed twice
+    across concurrent workers.
+    """
+
+    __tablename__ = "benchmark_magic_link_tokens"
+
+    token = Column(String(64), primary_key=True)
+    email = Column(String(320), nullable=False)  # RFC 5321 max local+@+domain
+    # Naive UTC to stay consistent with the rest of this schema
+    # (BenchmarkRun / BenchmarkTestResult all use naive DateTime). Python
+    # callers strip tzinfo before inserting, and SQL comparisons use
+    # `NOW() AT TIME ZONE 'utc'` so the check is independent of the
+    # Postgres session timezone.
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class EmailLoginCooldown(Base):
+    """Per-email throttle for the unauthenticated /auth/email-login endpoint,
+    shared across uvicorn workers.
+
+    Same rationale as MagicLinkToken — the previous in-process dict was
+    per-worker, so N workers → up to N sends per cooldown window instead
+    of one. Postgres row keyed by (normalised) email closes that.
+    """
+
+    __tablename__ = "benchmark_email_login_cooldown"
+
+    email = Column(String(320), primary_key=True)
+    # Naive UTC — see MagicLinkToken above for rationale.
+    last_sent_at = Column(DateTime, nullable=False)

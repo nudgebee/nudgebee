@@ -18,6 +18,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
+import SearchOffRoundedIcon from '@mui/icons-material/SearchOffRounded';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import FilterListIcon from '@mui/icons-material/FilterList';
@@ -48,6 +49,7 @@ import LogQueryBuilderAutocomplete, { PropertyFilterHelp } from '@components/k8s
 import EdgeDetails from '@components/k8s/details/EdgeDetails';
 import Datetime from '@shared/format/Datetime';
 import KGSettings from './KGSettings';
+import { parseUniqueKey, decodeFilterOptions, computeFilterOptionsClientSide } from './kgFilterCascade';
 import { isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
 
@@ -264,6 +266,13 @@ const fallbackLayout = async (nodes, edges, options) => {
 };
 
 const LOD_ZOOM_THRESHOLD = 0.35;
+
+// fitView() is never allowed to auto-zoom out past this. Below LOD_ZOOM_THRESHOLD
+// nodes already collapse to 12px dots; once the canvas transform scales those down
+// further too, a small-but-real result set renders as imperceptible specks (looks
+// identical to "no results"). Capped comfortably above the LOD threshold so an
+// auto-fit lands somewhere legible even if it means panning to see the rest.
+const FIT_VIEW_MIN_ZOOM = 0.4;
 
 // Datastore-facet labels for in-cluster workloads classified as databases/caches/queues.
 // Keyed by the node's `role` (see backend db_classifier.go).
@@ -689,21 +698,40 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
 // Cloud providers we render a real logo for. `external` (and anything else)
 // deliberately gets no icon — CloudProviderIcon falls back to the AWS logo for
 // unknown providers, which would be misleading on an ExternalService row.
+function getNodeTypeLeaves(nodeType, specificTypesByNodeType) {
+  const specificTypes = specificTypesByNodeType?.[nodeType];
+  return specificTypes?.length ? specificTypes : [nodeType];
+}
+
+function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
+  return (nodeTypes || []).flatMap((nodeType) => {
+    const leaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
+    const hasRealBreakdown = !(leaves.length === 1 && leaves[0] === nodeType);
+    return leaves.map((leaf) => ({
+      label: snakeToTitleCase(leaf),
+      value: leaf,
+      ...(hasRealBreakdown ? { group: nodeType, searchText: nodeType } : {}),
+    }));
+  });
+}
+
+function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeType) {
+  const selectedSet = new Set(selectedValues || []);
+  const resultNodeTypes = [];
+  const resultSpecificTypes = [];
+  (nodeTypes || []).forEach((nodeType) => {
+    const groupLeaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
+    const selectedInGroup = groupLeaves.filter((leaf) => selectedSet.has(leaf));
+    if (selectedInGroup.length === 0) return;
+    if (selectedInGroup.length === groupLeaves.length) resultNodeTypes.push(nodeType);
+    else resultSpecificTypes.push(...selectedInGroup);
+  });
+  return { nodeTypes: resultNodeTypes, specificTypes: resultSpecificTypes };
+}
+
 const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure']);
 
-// Parse a canonical 6-part KG unique key into its components.
-// Format: {cloud_provider}:{account}:{location}:{NodeType}:{hierarchy}:{name}
-// (see api-server/services/knowledge_graph/core/unique_key_builder.go). `name` is
-// guaranteed colon-free server-side, so a positional split is safe. Returns null
-// for non-canonical keys (e.g. legacy 3-part flow-source keys) so callers fall
-// back to the raw string.
-const parseUniqueKey = (key) => {
-  if (typeof key !== 'string') return null;
-  const parts = key.split(':');
-  if (parts.length !== 6) return null;
-  const [provider, account, location, nodeType, hierarchy, name] = parts;
-  return { provider, account, location, nodeType, hierarchy, name };
-};
+// parseUniqueKey is imported from ./kgFilterCascade (shared with the client-side cascade).
 
 // PascalCase NodeType → spaced label ("ServiceIdentity" → "Service Identity").
 // snakeToTitleCase only splits on '_', so it would leave these un-spaced.
@@ -801,6 +829,7 @@ const ServiceMapContent = () => {
   const [kgFiltersReady, setKgFiltersReady] = useState(false);
   const [isFilterOptionsRefreshing, setIsFilterOptionsRefreshing] = useState(false);
   const initialKgFilterOptionsRef = useRef(null);
+  const nodeTypeGroupingRef = useRef({ nodeTypeList: [], specificTypesByNodeType: {} });
   const kgFiltersInitialized = useRef(false);
   const filterOptionsDebounceRef = useRef(null);
   const prevAccountIdsRef = useRef([]);
@@ -864,6 +893,9 @@ const ServiceMapContent = () => {
   // hasn't applied any filters. Indicates KG ingestion hasn't populated yet
   // (vs. "filters returned nothing", which is a different empty state).
   const isTenantEmpty = !hasUserFilters && kgNodeCount === 0;
+  // Filters applied but the query matched nothing — without this, the canvas
+  // just renders blank with no explanation, indistinguishable from "still loading".
+  const isFilteredEmpty = hasUserFilters && !isGraphLoading && (rawData?.nodes?.length || 0) === 0;
 
   const handleInfoClick = useCallback(async (properties) => {
     const { adjacencyMap, edgeTypeLookup, uniqueServiceKeysMap, selectedNodes } = pathComputationRef.current;
@@ -992,25 +1024,20 @@ const ServiceMapContent = () => {
     apiKubernetes1
       .knowledgeGraphFilterOptions()
       .then((res) => {
-        const filterOptions = {};
-        const nodeTypes =
-          res?.data?.data?.kg_get_filter_options?.data?.node_types?.map((d) => ({
-            label: snakeToTitleCase(d),
-            value: d,
-          })) || [];
-        filterOptions.nodeTypes = nodeTypes;
-        const attributes = res?.data?.data?.kg_get_filter_options?.data?.attribute_keys || [];
-        filterOptions.attributeMap = attributes.map((l) => ({ label: l }));
-        const labels = res?.data?.data?.kg_get_filter_options?.data?.label_keys || [];
-        filterOptions.labelMap = labels.map((l) => ({ label: l }));
-        const accountIds = res?.data?.data?.kg_get_filter_options?.data?.account_ids || [];
-        filterOptions.accountIds = accountIds;
-        const lastSyncTime = res?.data?.data?.kg_get_filter_options?.data?.last_sync_time || null;
-        filterOptions.lastSyncTime = lastSyncTime;
-        const nodeIdMap = res?.data?.data?.kg_get_filter_options?.data?.node_id_map || {};
-        filterOptions.nodeIdMap = nodeIdMap;
-        const nodeCount = res?.data?.data?.kg_get_filter_options?.data?.node_count ?? 0;
-        filterOptions.nodeCount = nodeCount;
+        // The payload is columnar (v2); decode it back into the maps the UI consumes.
+        // The ref also carries the label/attr key tuple coverage used by the offline
+        // label/attribute cascade (kept on the ref only, not rendered).
+        const decoded = decodeFilterOptions(res?.data?.data?.kg_get_filter_options?.data);
+        const filterOptions = {
+          ...decoded,
+          nodeTypes: buildNodeTypeOptions(decoded.nodeTypeList, decoded.specificTypesByNodeType),
+          labelMap: decoded.labelKeys.map((l) => ({ label: l })),
+          attributeMap: decoded.attributeKeys.map((l) => ({ label: l })),
+        };
+        nodeTypeGroupingRef.current = {
+          nodeTypeList: decoded.nodeTypeList,
+          specificTypesByNodeType: decoded.specificTypesByNodeType,
+        };
         initialKgFilterOptionsRef.current = filterOptions;
         setKgFilterOptions(filterOptions);
         setKgFiltersReady(true);
@@ -1058,36 +1085,51 @@ const ServiceMapContent = () => {
 
     const suppressNodeTypesUpdate = draftNodeTypes?.length > 0 && !accountChanged;
 
-    const onFilterOptionsSuccess = (res) => {
+    // Apply the client-computed dropdown scoping. Mirrors the previous network
+    // onFilterOptionsSuccess shape: still gates the Node-Type update behind
+    // suppressNodeTypesUpdate, always refreshes the Node maps, and scopes the
+    // label/attribute key lists (Option-B tuple coverage) to the current selection.
+    const applyComputedOptions = (computed) => {
       if (cancelled) return;
-      const d = res?.data?.data?.kg_get_filter_options?.data;
+      const { nodeTypeList, specificTypesByNodeType } = computed;
       const updates = {
         ...(!suppressNodeTypesUpdate && {
-          nodeTypes: d?.node_types?.map((v) => ({ label: snakeToTitleCase(v), value: v })) || [],
+          nodeTypes: buildNodeTypeOptions(nodeTypeList, specificTypesByNodeType),
+          nodeTypeList,
+          specificTypesByNodeType,
         }),
-        labelMap: (d?.label_keys || []).map((l) => ({ label: l })),
-        attributeMap: (d?.attribute_keys || []).map((l) => ({ label: l })),
-        nodeIdMap: d?.node_id_map || {},
+        labelMap: computed.labelMap,
+        attributeMap: computed.attributeMap,
+        nodeIdMap: computed.nodeIdMap,
+        nodeClusterMap: computed.nodeClusterMap,
+        nodeSpecificTypeMap: computed.nodeSpecificTypeMap,
       };
+      if (!suppressNodeTypesUpdate) nodeTypeGroupingRef.current = { nodeTypeList, specificTypesByNodeType };
       setKgFilterOptions((prev) => ({ ...prev, ...updates }));
       setIsFilterOptionsRefreshing(false);
     };
 
     clearTimeout(filterOptionsDebounceRef.current);
     filterOptionsDebounceRef.current = setTimeout(() => {
+      // Baseline is guaranteed loaded here (the effect early-returns until
+      // kgFiltersInitialized flips, which happens after the ref is set), but guard
+      // defensively so a future refactor can't scope the dropdowns to empty maps.
+      const baseline = initialKgFilterOptionsRef.current;
+      if (cancelled || !baseline) return;
       setIsFilterOptionsRefreshing(true);
-      apiKubernetes1
-        .knowledgeGraphFilterOptions({
-          accountIds: draftAccountIds?.map((e) => e.value),
-          nodeTypes: draftNodeTypes?.map((e) => e.value),
-        })
-        .then(onFilterOptionsSuccess)
-        .catch((err) => {
-          if (cancelled) return;
-          console.error('Failed to refresh filter options:', err);
-          setIsFilterOptionsRefreshing(false);
-        });
-    }, 300);
+      const { nodeTypes: draftBroadNodeTypes, specificTypes: draftSpecificTypes } = splitNodeTypeSelection(
+        draftNodeTypes?.map((e) => e.value),
+        nodeTypeGroupingRef.current.nodeTypeList,
+        nodeTypeGroupingRef.current.specificTypesByNodeType
+      );
+      // Scope the dropdowns entirely client-side from the unfiltered baseline — no backend round-trip.
+      const computed = computeFilterOptionsClientSide(baseline, {
+        accountIds: draftAccountIds?.map((e) => e.value),
+        broadNodeTypes: draftBroadNodeTypes,
+        specificTypes: draftSpecificTypes,
+      });
+      applyComputedOptions(computed);
+    }, 150);
 
     return () => {
       cancelled = true;
@@ -1617,7 +1659,7 @@ const ServiceMapContent = () => {
       );
       setEdges((eds) => eds.map((e) => ({ ...e, hidden: !connectedIds.has(e.source) || !connectedIds.has(e.target) })));
 
-      setTimeout(() => fitView({ duration: 300, padding: 0.2 }), 100);
+      setTimeout(() => fitView({ duration: 300, padding: 0.2, minZoom: FIT_VIEW_MIN_ZOOM }), 100);
     },
     [getNodes, getEdges, setNodes, setEdges, fitView, clearPinHighlight]
   );
@@ -1635,7 +1677,7 @@ const ServiceMapContent = () => {
     originalPositionsRef.current = null;
     focusLayoutIdRef.current++;
     setFocusedNodeId(null);
-    setTimeout(() => fitView({ duration: 300 }), 50);
+    setTimeout(() => fitView({ duration: 300, minZoom: FIT_VIEW_MIN_ZOOM }), 50);
   }, [setNodes, setEdges, fitView]);
 
   // Keep the stable ref pointer up to date whenever enterFocusMode changes (adjacency map update)
@@ -1664,7 +1706,7 @@ const ServiceMapContent = () => {
         if (currentLayoutId !== layoutIdRef.current) return;
         setNodes(layouted.nodes);
         setEdges(layouted.edges);
-        setTimeout(() => window.requestAnimationFrame(() => fitView()), 50);
+        setTimeout(() => window.requestAnimationFrame(() => fitView({ minZoom: FIT_VIEW_MIN_ZOOM })), 50);
       } finally {
         if (currentLayoutId === layoutIdRef.current) {
           setIsGraphLoading(false);
@@ -2661,6 +2703,69 @@ const ServiceMapContent = () => {
                   </Box>
                 </Box>
               </Box>
+            ) : isFilteredEmpty ? (
+              <Box
+                data-testid='kg-empty-filtered'
+                display='flex'
+                flexDirection='column'
+                alignItems='center'
+                justifyContent='center'
+                height='100%'
+                width='100%'
+                p={ds.space[6]}
+              >
+                <Box
+                  sx={{
+                    maxWidth: ds.space.mul(0, 240),
+                    width: '100%',
+                    textAlign: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 'var(--ds-space-5)',
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: ds.space.mul(0, 32),
+                      height: ds.space.mul(0, 32),
+                      borderRadius: 'var(--ds-radius-pill)',
+                      background: 'linear-gradient(135deg, var(--ds-gray-100) 0%, var(--ds-gray-200) 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <SearchOffRoundedIcon sx={{ fontSize: 32, color: 'var(--ds-gray-500)' }} />
+                  </Box>
+
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                    <Typography
+                      sx={{
+                        fontSize: 'var(--ds-text-heading)',
+                        fontWeight: 'var(--ds-font-weight-semibold)',
+                        fontFamily: 'Poppins',
+                        color: ds.gray[700],
+                      }}
+                    >
+                      No nodes match your filters
+                    </Typography>
+                    <Typography
+                      sx={{
+                        fontSize: 'var(--ds-text-body)',
+                        fontWeight: 'var(--ds-font-weight-regular)',
+                        color: ds.gray[600],
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      Try a broader level, a different node, or clearing filters entirely.
+                    </Typography>
+                  </Box>
+                  <Button data-testid='kg-empty-filtered-clear-btn' tone='secondary' size='sm' onClick={handleClear}>
+                    Clear Filters
+                  </Button>
+                </Box>
+              </Box>
             ) : (
               <>
                 <ReactFlow
@@ -2678,6 +2783,7 @@ const ServiceMapContent = () => {
                   onNodeMouseEnter={handleNodeMouseEnter}
                   onNodeMouseLeave={handleNodeMouseLeave}
                   fitView
+                  fitViewOptions={{ minZoom: FIT_VIEW_MIN_ZOOM }}
                   minZoom={0.1}
                   maxZoom={2}
                   proOptions={REACT_FLOW_PRO_OPTIONS}

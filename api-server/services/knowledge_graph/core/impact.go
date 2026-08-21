@@ -275,7 +275,7 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 	summary.Truncated = truncated
 
 	if downRels := downstreamRelationshipStrings(seed.NodeType); len(downRels) > 0 {
-		downstream, err := s.traverseDownstreamDependencies(tenantID, nodeID, downRels)
+		downstream, err := s.traverseDownstreamDependencies(tenantID, nodeID, downRels, maxDepth)
 		if err != nil {
 			return nil, err
 		}
@@ -330,6 +330,14 @@ func hasSeedFlowEvidence(seedID string, upstreamEdges []*DbEdge, downstream []Im
 		}
 	}
 	for _, d := range downstream {
+		// Only dependencies one hop away vouch for the seed: their attributed
+		// edge touches it. Deeper entries exist since the downstream walk went
+		// multi-hop, and a flow-asserted edge between hop 1 and hop 2 (e.g.
+		// product-catalog -> postgres) says nothing about whether the seed's
+		// own edges are watched.
+		if d.HopsAway != 1 {
+			continue
+		}
 		for _, s := range d.Sources {
 			if flowObservationSources[s] {
 				return true
@@ -396,13 +404,17 @@ func (s *Service) accountHasFlowObservedEdges(tenantID, accountID string) (bool,
 	return exists, nil
 }
 
-// traverseDownstreamDependencies walks one hop in the opposite direction —
-// edges whose source is the seed — to name what the seed itself depends on.
-// Depth is fixed at 1: a dependency's own dependencies are unaffected by
-// changing the seed.
-func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTypes []string) ([]ImpactedService, error) {
+// traverseDownstreamDependencies walks in the opposite direction — edges whose
+// source is the seed — to name what the seed itself depends on. It walks to the
+// same maxDepth as the dependents traversal: for change-safety a dependency's
+// own dependencies are unaffected by changing the seed, but for cause
+// attribution the propagation is real in this direction too — a failing
+// transitive dependency (frontend → product-catalog → postgres) breaks the
+// seed, and a depth-1 list hid exactly those roots from the incident cause
+// lane while the depth-2 dependents walk showed the seed from the root's side.
+func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTypes []string, maxDepth int) ([]ImpactedService, error) {
 	discoveredIDs, _, nodeMinDepth, err := s.discoverDirectional(
-		[]string{nodeID}, TraverseDirectionDownstream, 1, relTypes, nil, nil)
+		[]string{nodeID}, TraverseDirectionDownstream, maxDepth, relTypes, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("downstream traversal for %s: %w", nodeID, err)
 	}

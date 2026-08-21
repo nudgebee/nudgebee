@@ -4,6 +4,7 @@ import { ds } from 'src/utils/colors';
 import { ErrorIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import Router from 'next/router';
+import { reportClientError } from '@lib/clientErrorReporter';
 
 // ─── Inline fallback (component-level) ───────────────────────────────────────
 
@@ -95,6 +96,13 @@ function reportError(error: Error, info: React.ErrorInfo, boundary: string) {
     componentStack: info.componentStack,
     error,
   });
+  reportClientError({
+    kind: 'react-boundary',
+    message: error.message,
+    stack: error.stack,
+    componentStack: info.componentStack ?? undefined,
+    source: boundary,
+  });
 }
 
 /**
@@ -104,6 +112,13 @@ function reportError(error: Error, info: React.ErrorInfo, boundary: string) {
  */
 export function reportHandledError(error: Error, context: string, metadata?: Record<string, unknown>) {
   console.error(`[${context}]`, error.message, { error, ...metadata });
+  reportClientError({
+    kind: 'handled',
+    message: error.message,
+    stack: error.stack,
+    source: context,
+    meta: metadata,
+  });
 }
 
 // ─── ErrorBoundary ────────────────────────────────────────────────────────────

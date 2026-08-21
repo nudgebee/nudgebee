@@ -277,7 +277,10 @@ type TicketSummary struct {
 
 // SearchTickets searches for tickets by reference ID and source
 func SearchTickets(ctx *security.RequestContext, request SearchTicketsRequest) (SearchTicketsResponse, error) {
-	headers := map[string]string{}
+	headers := map[string]string{
+		"x-tenant-id": ctx.GetSecurityContext().GetTenantId(),
+		"x-user-id":   ctx.GetSecurityContext().GetUserId(),
+	}
 	resp, err := common.HttpPost(config.Config.TicketServerEndpoint+"/tickets/search", common.HttpWithHeaders(headers), common.HttpWithJsonBody(request))
 	if err != nil {
 		ctx.GetLogger().Error("tickets: unable to process search request", "error", err)

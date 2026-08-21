@@ -50,7 +50,7 @@ func (a GithubAgent) GetDescription() string {
 
 func (a GithubAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	supportedTools := []toolcore.NBTool{tools.GithubCliTool{}}
-	if codeAgentTool, ok := toolcore.GetNBTool(a.accountId, AgentCode2); ok {
+	if codeAgentTool, ok := toolcore.GetNBTool(a.accountId, AgentCodeAnalyzer); ok {
 		supportedTools = append(supportedTools, codeAgentTool)
 	}
 	return supportedTools

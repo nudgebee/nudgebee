@@ -111,6 +111,95 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 	}, nil
 }
 
+// esQueryFieldNames extracts the field names a DSL query filters on. Walks the parsed
+// body looking for the leaf clauses that name a field — {"term":{"<field>":…}},
+// {"exists":{"field":"<field>"}}, and friends — at any depth, so nested bool/must_not
+// structures are covered.
+func esQueryFieldNames(node any, out map[string]bool) {
+	switch v := node.(type) {
+	case map[string]any:
+		for k, child := range v {
+			switch k {
+			case "term", "terms", "match", "match_phrase", "wildcard", "prefix", "regexp", "range", "fuzzy":
+				// {"term": {"<field>": <value>}}
+				if m, ok := child.(map[string]any); ok {
+					for field := range m {
+						out[field] = true
+					}
+				}
+			case "exists":
+				// {"exists": {"field": "<field>"}}
+				if m, ok := child.(map[string]any); ok {
+					if f, ok := m["field"].(string); ok {
+						out[f] = true
+					}
+				}
+			}
+			esQueryFieldNames(child, out)
+		}
+	case []any:
+		for _, child := range v {
+			esQueryFieldNames(child, out)
+		}
+	}
+}
+
+// esUnknownQueryFields returns the fields a query references that the index does not
+// have, ignoring any it cannot resolve.
+//
+// This exists because filtering on a field that is absent fails SILENTLY and in two
+// opposite directions. In a `filter`/`must` an absent field matches nothing, which looks
+// like "no data". In a `must_not` it excludes nothing, which is worse: the query
+// degenerates to whatever remains — often just the time range — and returns a healthy
+// row count that looks like the exclusion worked. One traced query excluded
+// `__name__: kubernetes.proxy*` and `kubernetes.node*`, matched neither field, and
+// returned 224 series that had been filtered by nothing but time.
+//
+// `__name__` is the common case: the backend synthesises it onto every series, so it
+// appears in results and looks queryable, but no such field exists in the index.
+func esUnknownQueryFields(fields []OutputMetricLabels, queryDSL string) []string {
+	if len(fields) == 0 {
+		// Cannot resolve the mapping — say nothing rather than warn wrongly.
+		return nil
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(queryDSL), &body); err != nil {
+		return nil
+	}
+	referenced := map[string]bool{}
+	esQueryFieldNames(body, referenced)
+	if len(referenced) == 0 {
+		return nil
+	}
+
+	knownTypes := make(map[string]string, len(fields))
+	for _, f := range fields {
+		t, _ := f.Attributes["type"].(string)
+		knownTypes[f.Label] = t
+	}
+
+	var unknown []string
+	for f := range referenced {
+		if _, ok := knownTypes[f]; ok {
+			continue
+		}
+		// `.keyword` is only real when the parent is `text` — Elasticsearch adds that
+		// subfield to text fields, not to fields already mapped as keyword. ECS maps
+		// `kubernetes.namespace` and friends as plain keyword, so `<field>.keyword`
+		// there resolves to nothing and matches nothing: the same silent miss that
+		// motivated the unsuffixed fallback in #36408. Treating an unmapped `.keyword`
+		// as valid would suppress the warning for exactly that case.
+		if strings.HasSuffix(f, ".keyword") {
+			if t, ok := knownTypes[strings.TrimSuffix(f, ".keyword")]; ok && t == "text" {
+				continue
+			}
+		}
+		unknown = append(unknown, f)
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
 func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext, req FetchMetricsRequest) (OutputMetricQuery, error) {
 	cfg, err := GetElasticsearchConfig(ctx, req.AccountId)
 	if err != nil {
@@ -127,6 +216,11 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 
 	var results []QueryResult
 	queryType, _ := req.Request["query_type"].(string)
+
+	// Resolved at most once per request and shared by every query in it: the mapping
+	// lookup is a network round trip, and req.Queries can hold several entries.
+	var indexFields []OutputMetricLabels
+	var fetchedIndexFields bool
 
 	for queryKey, queryDSL := range req.Queries {
 		queryBody, buildErr := buildESMetricsQueryBody(queryType, queryDSL, req.StartTime, req.EndTime)
@@ -176,7 +270,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			continue
 		}
 
-		payload, err := parseESMetricsHits(bodyBytes)
+		payload, stats, err := parseESMetricsHitsWithStats(bodyBytes)
 		if err != nil {
 			errStr := fmt.Sprintf("failed to parse ES metrics response: %v", err)
 			results = append(results, QueryResult{
@@ -187,11 +281,50 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			continue
 		}
 
-		results = append(results, QueryResult{
-			QueryKey: queryKey,
-			Query:    renderedQuery,
-			Payload:  payload,
-		})
+		// Report matched-vs-extracted separately. An empty payload has two causes that
+		// look identical to the caller: the query matched nothing, or it matched
+		// documents that carried no numeric value path the extractor recognised —
+		// typically a `_source` projection listing only label fields such as
+		// `__name__`, which excludes the very numeric paths the series are built from.
+		// Measured on one customer conversation: the same query block with
+		// `_source: true` yielded 6, 196 and 28 series, and with a label-only
+		// projection yielded zero six times running. The agent read those zeros as
+		// "this filter found nothing", discarded correct queries and reformulated.
+		docsMatched := stats.DocsMatched
+		qr := QueryResult{
+			QueryKey:    queryKey,
+			Query:       renderedQuery,
+			Payload:     payload,
+			DocsMatched: &docsMatched,
+		}
+		if len(payload) == 0 && stats.DocsMatched > 0 {
+			qr.Note = "The query matched documents but no metric series could be extracted from them. " +
+				"This is NOT an absence of data. The most common cause is a `_source` projection that keeps only " +
+				"label fields (e.g. `__name__`) and therefore excludes the numeric value paths the series are built " +
+				"from — re-run without `_source`, or include the numeric field paths in it."
+		}
+		// Flag clauses that name fields the index does not have. Absent fields fail
+		// silently and in opposite directions depending on where they sit: nothing
+		// matches inside a filter, nothing is excluded inside a must_not. The second
+		// returns a plausible row count from a query that filtered on nothing at all,
+		// so it is reported even when the payload is non-empty.
+		if !fetchedIndexFields {
+			indexFields, _ = esFetchMetricFields(cfg, index)
+			fetchedIndexFields = true
+		}
+		if unknown := esUnknownQueryFields(indexFields, queryDSL); len(unknown) > 0 {
+			if qr.Note != "" {
+				qr.Note += " "
+			}
+			qr.Note += fmt.Sprintf(
+				"The query references fields that do not exist in %s: %s. "+
+					"Elasticsearch does not error on these — inside a filter they match nothing, and inside a "+
+					"must_not they exclude nothing, so the result may look filtered when it was not. "+
+					"Note that `__name__` is never a queryable field: it is this backend's label for a numeric "+
+					"field path, so select that metric with {\"exists\":{\"field\":\"<path>\"}} instead.",
+				index, strings.Join(unknown, ", "))
+		}
+		results = append(results, qr)
 	}
 
 	return OutputMetricQuery{Results: results}, nil
@@ -257,6 +390,23 @@ func (e *ElasticSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestCo
 		return nil, fmt.Errorf("index is required for Elasticsearch metric label values query")
 	}
 
+	return esFetchLabelValues(cfg, index, req.Label)
+}
+
+// esFetchLabelValues aggregates the distinct values of a label field in an index.
+// Split from FetchMetricLabelValues so the .keyword fallback can be tested against a
+// stub Elasticsearch without a database-backed integration config.
+// esLabelValuesWindow bounds label enumeration to actively-written data. Introspection
+// does not need history, and an unbounded agg over a snapshot-backed pattern is
+// expensive; see buildDSL below.
+const (
+	esLabelValuesWindow    = "now-24h"
+	esLabelValuesTimeField = "@timestamp"
+)
+
+func esFetchLabelValues(cfg *ElasticsearchConfig, index, reqLabel string) ([]OutputMetricsLabelValues, error) {
+	req := FetchMetricsLabelValueRequest{Label: reqLabel}
+
 	// OTel-native keyword fields (resource.attributes.*, scope.*, metrics.*) are
 	// already aggregatable keywords; appending .keyword targets a subfield that
 	// does not exist. Append it only for other (legacy text) fields.
@@ -265,9 +415,29 @@ func (e *ElasticSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestCo
 		labelField = labelField + ".keyword"
 	}
 
+	// Bound the aggregation to recent data.
+	//
+	// Without a time filter this terms agg runs over every index the pattern matches.
+	// On one customer estate that is 276 indices, 211 of them searchable snapshots on
+	// object storage — an unbounded frozen-tier scan on every label lookup, paid for in
+	// S3 retrieval. With a range filter Elasticsearch can_match-prunes the cold shards:
+	// measured on that cluster, a filtered query skipped 287 of 292 shards and returned
+	// in 138ms.
+	//
+	// The window only needs to be long enough to enumerate labels that are in active
+	// use; a label absent for this long is not one the caller should be steered toward.
 	buildDSL := func(field string) map[string]any {
 		return map[string]any{
 			"size": 0,
+			"query": map[string]any{
+				"bool": map[string]any{
+					"filter": []any{
+						map[string]any{"range": map[string]any{
+							esLabelValuesTimeField: map[string]any{"gte": esLabelValuesWindow},
+						}},
+					},
+				},
+			},
 			"aggs": map[string]any{
 				"label_values": map[string]any{
 					"terms": map[string]any{
@@ -279,49 +449,75 @@ func (e *ElasticSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestCo
 		}
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(labelField), cfg) //nolint:bodyclose
-	if err != nil {
-		return nil, fmt.Errorf("failed to query metric label values: %w", err)
+	// Aggregating a field that does not exist is NOT an error in Elasticsearch — it
+	// returns zero buckets. So a `.keyword` suffix guessed onto a field that is already
+	// a plain keyword silently yields "no values" instead of failing, and the
+	// retry-without-suffix below never fires.
+	//
+	// That is the ECS case, and it is not rare: Elastic Agent / Metricbeat map
+	// `kubernetes.namespace`, `metricset.name`, `host.name` and friends as plain
+	// `keyword`, so `<field>.keyword` does not exist. Every label-values lookup on such
+	// an index came back empty while the same field aggregated fine unsuffixed, which
+	// read to callers as "this environment has no such label".
+	//
+	// The suffix is still tried FIRST because the opposite case is a hard error: OTel
+	// `name` is `text`, aggregating it unsuffixed fails outright, and only
+	// `name.keyword` works. So: try the suffixed field, then fall back on either an
+	// error OR an empty result.
+	queryLabelValues := func(field string) ([]OutputMetricsLabelValues, error) {
+		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(field), cfg) //nolint:bodyclose
+		if err != nil {
+			return nil, fmt.Errorf("failed to query metric label values: %w", err)
+		}
+		bodyBytes, err := readResponse(resp, "metric label values")
+		if err != nil {
+			return nil, err
+		}
+
+		var searchResp esTraceSearchResponse
+		if err := json.Unmarshal(bodyBytes, &searchResp); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal metric label values response: %w", err)
+		}
+
+		var output []OutputMetricsLabelValues
+		if raw, ok := searchResp.Aggregations["label_values"]; ok {
+			var termsAgg struct {
+				Buckets []struct {
+					Key      string `json:"key"`
+					DocCount int    `json:"doc_count"`
+				} `json:"buckets"`
+			}
+			if err := json.Unmarshal(raw, &termsAgg); err == nil {
+				for _, bucket := range termsAgg.Buckets {
+					output = append(output, OutputMetricsLabelValues{
+						Value:      bucket.Key,
+						Attributes: map[string]any{},
+					})
+				}
+			}
+		}
+		return output, nil
 	}
 
-	bodyBytes, err := readResponse(resp, "metric label values")
-	if err != nil {
-		// If .keyword field doesn't exist, retry with original field name
-		if labelField != req.Label {
-			resp, err = esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(req.Label), cfg) //nolint:bodyclose
-			if err != nil {
-				return nil, fmt.Errorf("failed to query metric label values: %w", err)
-			}
-			bodyBytes, err = readResponse(resp, "metric label values")
-			if err != nil {
+	output, err := queryLabelValues(labelField)
+	if labelField != req.Label && (err != nil || len(output) == 0) {
+		fallback, ferr := queryLabelValues(req.Label)
+		if ferr == nil && len(fallback) > 0 {
+			slog.Info("ES metric label values: resolved unsuffixed field after empty .keyword lookup",
+				"index", index, "field", req.Label, "num_values", len(fallback))
+			return fallback, nil
+		}
+		// Keep the original error when neither spelling worked, so a genuine backend
+		// failure is not masked by an empty fallback.
+		if err != nil {
+			if ferr != nil {
 				return nil, err
 			}
-		} else {
 			return nil, err
 		}
 	}
-
-	var searchResp esTraceSearchResponse
-	if err := json.Unmarshal(bodyBytes, &searchResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal metric label values response: %w", err)
-	}
-
-	var output []OutputMetricsLabelValues
-	if raw, ok := searchResp.Aggregations["label_values"]; ok {
-		var termsAgg struct {
-			Buckets []struct {
-				Key      string `json:"key"`
-				DocCount int    `json:"doc_count"`
-			} `json:"buckets"`
-		}
-		if err := json.Unmarshal(raw, &termsAgg); err == nil {
-			for _, bucket := range termsAgg.Buckets {
-				output = append(output, OutputMetricsLabelValues{
-					Value:      bucket.Key,
-					Attributes: map[string]any{},
-				})
-			}
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	return output, nil
@@ -338,6 +534,13 @@ func (e *ElasticSaasMetricSource) FetchMetricsLabels(ctx *security.RequestContex
 		return nil, fmt.Errorf("index is required for Elasticsearch metrics labels query")
 	}
 
+	return esFetchMetricFields(cfg, index)
+}
+
+// esFetchMetricFields returns every field the index pattern exposes, merged across all
+// matching indices and carrying each field's type. Split from FetchMetricsLabels so the
+// merge can be tested against a stub Elasticsearch without a database-backed config.
+func esFetchMetricFields(cfg *ElasticsearchConfig, index string) ([]OutputMetricLabels, error) {
 	// Fetch field names from the index mapping.
 	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
 	if err != nil {
@@ -354,7 +557,24 @@ func (e *ElasticSaasMetricSource) FetchMetricsLabels(ctx *security.RequestContex
 		return nil, fmt.Errorf("failed to unmarshal metrics labels response: %w", err)
 	}
 
-	var output []OutputMetricLabels
+	// Merge every index the pattern matched, and keep each field's TYPE.
+	//
+	// This used to `break` after the first index in the response and drop the type.
+	// Both were consequential. A metrics index pattern routinely fans out over
+	// per-dataset data streams — one customer estate has 64 datasets across 276
+	// indices — and the order Elasticsearch returns them in is arbitrary: not
+	// alphabetical, not by recency, and it can be an index holding zero documents.
+	// So the caller was handed one dataset's fields chosen essentially at random and
+	// told that was the index. In the traced incident that was `system.socket`, which
+	// carries no `kubernetes.*` fields at all, so the agent never learned that
+	// `kubernetes.pod.cpu.usage.nanocores` existed and spent 56 tool calls guessing.
+	//
+	// The type matters just as much: numeric fields are the metric value paths
+	// (select with `exists`), keyword fields are the dimensions (select with `term`).
+	// Without it the caller has to guess which is which, and guessing is what the
+	// canned field catalogues were papering over.
+	seen := make(map[string]bool)
+	output := make([]OutputMetricLabels, 0)
 	for _, indexData := range mappingResp {
 		indexMap, ok := indexData.(map[string]any)
 		if !ok {
@@ -368,15 +588,22 @@ func (e *ElasticSaasMetricSource) FetchMetricsLabels(ctx *security.RequestContex
 		if !ok {
 			continue
 		}
-		fields := extractFieldsFromProperties(properties, "")
-		for _, f := range fields {
-			output = append(output, OutputMetricLabels{
-				Label:      f.Field,
-				Attributes: map[string]any{},
-			})
+		for _, f := range extractFieldsFromProperties(properties, "") {
+			if seen[f.Field] {
+				continue
+			}
+			seen[f.Field] = true
+			attrs := f.Attributes
+			if attrs == nil {
+				attrs = map[string]any{}
+			}
+			output = append(output, OutputMetricLabels{Label: f.Field, Attributes: attrs})
 		}
-		break
 	}
+
+	// Stable order, so the same estate always yields the same field list regardless of
+	// the order Elasticsearch happened to enumerate its indices in.
+	sort.Slice(output, func(i, j int) bool { return output[i].Label < output[j].Label })
 
 	return output, nil
 }
@@ -515,7 +742,21 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 // parseESMetricsHits parses an ES search response into []Result grouped by label set.
 // Each unique combination of metric name + attributes becomes one Result with
 // collected timestamps (epoch seconds) and values.
+// esParseStats is what the extractor observed, so callers can tell "nothing matched"
+// from "documents matched but nothing was extractable from them". These numbers were
+// already computed for the log lines below; they were simply never returned.
+type esParseStats struct {
+	DocsMatched  int64
+	HitsReturned int
+	SeriesParsed int
+}
+
 func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
+	res, _, err := parseESMetricsHitsWithStats(bodyBytes)
+	return res, err
+}
+
+func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, error) {
 	var esResp struct {
 		Hits struct {
 			Hits []struct {
@@ -524,7 +765,7 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 		} `json:"hits"`
 	}
 	if err := json.Unmarshal(bodyBytes, &esResp); err != nil {
-		return nil, err
+		return nil, esParseStats{}, err
 	}
 
 	type seriesData struct {
@@ -709,7 +950,11 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 		})
 	}
 
-	return results, nil
+	return results, esParseStats{
+		DocsMatched:  esHitsTotal(string(bodyBytes)),
+		HitsReturned: returned,
+		SeriesParsed: len(groups),
+	}, nil
 }
 
 // esOtlpMetricName maps abstract utilisation keys to OTLP metric names

@@ -23,6 +23,31 @@ func GenerateEdgeID(sourceNodeID, destinationNodeID string, relationshipType Rel
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
 }
 
+// canonicalWorkloadKinds maps case-insensitive Kubernetes workload kind names to
+// their canonical PascalCase form — the casing Kubernetes itself uses, and what
+// sources/k8s/workload.go's "Kubernetes"+Kind specific_type convention expects.
+var canonicalWorkloadKinds = map[string]string{
+	"deployment":  "Deployment",
+	"statefulset": "StatefulSet",
+	"daemonset":   "DaemonSet",
+	"job":         "Job",
+	"cronjob":     "CronJob",
+	"replicaset":  "ReplicaSet",
+}
+
+// CanonicalWorkloadKind normalizes a Kubernetes workload kind string to its
+// canonical PascalCase form (e.g. "statefulset" -> "StatefulSet") so
+// "Kubernetes"+kind always matches sources/k8s/workload.go's specific_type
+// convention regardless of the casing an upstream observer (eBPF agent, traces
+// exporter, Prometheus label) happens to send. Kinds outside this table (e.g.
+// eBPF's custom "Runner" category) pass through unchanged.
+func CanonicalWorkloadKind(kind string) string {
+	if canonical, ok := canonicalWorkloadKinds[strings.ToLower(kind)]; ok {
+		return canonical
+	}
+	return kind
+}
+
 // NewNode creates a new node with generated ID and timestamps.
 //
 // uniqueKey must be a fully-built 6-part key whose position-0 is the
@@ -199,13 +224,14 @@ const (
 	EdgePriority5 EdgeSourcePriority = 5 // traces
 	EdgePriority6 EdgeSourcePriority = 6 // datadog-apm
 	EdgePriority7 EdgeSourcePriority = 7 // newrelic-apm
-	EdgePriority8 EdgeSourcePriority = 8 // Lowest priority (unknown sources)
+	EdgePriority8 EdgeSourcePriority = 8 // aws-vpc-flow (VPC Flow Logs — coarsest network observation: no L7, no latency, IP-derived)
+	EdgePriority9 EdgeSourcePriority = 9 // Lowest priority (unknown sources)
 )
 
 // Aliases for readability
 const (
 	EdgePriorityHighest = EdgePriority1
-	EdgePriorityLowest  = EdgePriority8
+	EdgePriorityLowest  = EdgePriority9
 )
 
 // edgeTypePriorities defines source priority for each edge type.
@@ -229,6 +255,7 @@ var edgeTypePriorities = map[RelationshipType]map[string]EdgeSourcePriority{
 		"gcp-cloud-traces": EdgePriority5, // GCP Cloud Trace (disjoint from K8s "traces" accounts)
 		"datadog-apm":      EdgePriority6, // External APM source (instrumentation-derived)
 		"newrelic-apm":     EdgePriority7, // External APM source (NRQL Span aggregation)
+		"aws-vpc-flow":     EdgePriority8, // VPC Flow Logs: sees cloud-managed edges others miss, but coarsest (no L7/latency) — loses to any richer source that corroborates
 	},
 	RelationshipResolvesTo: {
 		"k8s":              EdgePriority1, // K8s DNS resolution
@@ -278,6 +305,11 @@ var edgeTypePriorities = map[RelationshipType]map[string]EdgeSourcePriority{
 		"datadog-apm":  EdgePriority6,
 		"newrelic-apm": EdgePriority7,
 	},
+	// CONNECTION_REJECTED is produced only by the VPC-flow source (the security
+	// view of blocked traffic). Sole producer, so priority is nominal.
+	RelationshipConnectionRejected: {
+		"aws-vpc-flow": EdgePriority1,
+	},
 }
 
 // metricsToMerge defines which edge properties should be merged with source prefix
@@ -298,6 +330,11 @@ var metricsToMerge = []string{
 	"manual_declared",
 	"manual_dependency_id",
 	"declared_by_user_id",
+	// VPC-flow traffic volumes: preserved (source-prefixed) when aws-vpc-flow
+	// loses dedup to a richer source, so byte/packet counts aren't lost.
+	"total_bytes",
+	"total_packets",
+	"connection_count",
 }
 
 // GetEdgeSourcePriority returns the priority for a source creating a specific edge type.
@@ -565,6 +602,10 @@ var nodeTypeLogoMap = map[NodeType]string{
 	NodeTypeK8sSecret:          "k8ssecret",
 	NodeTypeConfigMap:          "configmap",
 	NodeTypeCRD:                "crd",
+	NodeTypeSourceControlOrg:   "sourcecontrolorg",
+	NodeTypeUserAccount:        "useraccount",
+	NodeTypeUserGroup:          "usergroup",
+	NodeTypeOnCallService:      "pagerduty",
 }
 
 // azureServiceLogoMap maps an Azure resource-provider type (the lowercased `service_name`
@@ -671,17 +712,33 @@ func extractNodeLocation(properties map[string]interface{}) string {
 	return ""
 }
 
-// languageLogoID normalizes a backend canonical language name to the logo_id expected by LangTypeIcon.jsx.
-// LangTypeIcon lowercases before matching, so keys here must align with its switch cases.
+// knownLanguageLogoIDs are the language keys LangTypeIcon.jsx actually renders. Anything
+// outside this set is not a language — most commonly a non-language app.Type tag (e.g. "http",
+// "Service") that GetPrimaryLanguage falls back to returning verbatim when it can't classify it,
+// which then lands in properties["language"] on the node. Passing that through unchecked used to
+// collide with an unrelated icon key (languageLogoID("http") == "http", which LangTypeIcon
+// renders as the external-service globe) — the "wrong logo" failure mode.
+var knownLanguageLogoIDs = map[string]bool{
+	"go": true, "golang": true, "python": true, "java": true,
+	"nodejs": true, "ruby": true, "dotnet": true, "php": true,
+}
+
+// languageLogoID normalizes a backend canonical language name to the logo_id expected by
+// LangTypeIcon.jsx, or "" if lang isn't a language LangTypeIcon has an icon for (see
+// knownLanguageLogoIDs) — callers must treat "" as "no match" and fall through, the same
+// contract as engineLogoID.
 func languageLogoID(lang string) string {
-	switch strings.ToLower(lang) {
+	normalized := strings.ToLower(lang)
+	switch normalized {
 	case "javascript", "typescript", "js", "ts":
 		return "nodejs" // LangTypeIcon has 'nodejs', not 'javascript'
 	case "c#", "csharp":
 		return "dotnet" // LangTypeIcon has 'dotnet', not 'c#'
-	default:
-		return strings.ToLower(lang) // golang, python, java, ruby, php pass through as-is
 	}
+	if knownLanguageLogoIDs[normalized] {
+		return normalized
+	}
+	return ""
 }
 
 // resolveServiceLogoID resolves the logo_id from service_name, handling AWS special cases where
@@ -751,14 +808,57 @@ func engineLogoID(engine string) string {
 	return ""
 }
 
+// specificTypeLogoMap overrides nodeTypeLogoMap for concrete specific_types that need a
+// different icon than their NodeType's generic fallback — e.g. GitHubUser/GitHubOrganization
+// get the GitHub glyph, while other specific_types under the same NodeType (NudgebeeUser under
+// UserAccount) keep the generic icon from nodeTypeLogoMap.
+var specificTypeLogoMap = map[string]string{
+	"GitHubUser":         "github",
+	"GitHubOrganization": "github",
+	"GitLabUser":         "gitlab",
+	"GitLabOrganization": "gitlab",
+	"GitLabGroup":        "gitlab",
+	"PagerDutyUser":      "pagerduty",
+	"PagerDutyTeam":      "pagerduty",
+}
+
 // ComputeLogoID returns the icon identifier for a KG node so the frontend can render the correct logo.
 // source is the node's top-level source field (e.g. "aws", "gcp", "k8s", "trace") — not from properties.
-func ComputeLogoID(nodeType NodeType, source string, properties map[string]interface{}) string {
+func ComputeLogoID(nodeType NodeType, specificType string, source string, properties map[string]interface{}) string {
+	// 0. specific_type override — takes priority over every property-based heuristic below,
+	// since it's the most concrete signal available.
+	if logo, ok := specificTypeLogoMap[specificType]; ok {
+		return logo
+	}
+
 	// 1. Database/cache/queue engine — handles managed-DB strings ("POSTGRES_17",
 	// "aurora-postgresql") and in-cluster canonical engines ("redis", "valkey", "mongodb").
 	if engine := strings.ToLower(getNodeProp(properties, "engine")); engine != "" {
 		if logo := engineLogoID(engine); logo != "" {
 			return logo
+		}
+	}
+
+	// 1.2 K8s Workload resolution — handled entirely here, before service_name, so a Workload
+	// node never falls through to an AWS/GCP-oriented heuristic below that has no legitimate
+	// reason to match a k8s node in the first place. A known runtime language (set by
+	// trace/eBPF enrichment, e.g. a Deployment observed running a Python app) still wins over
+	// the generic kind icon, matching this function's original priority. Otherwise, recognized
+	// kinds map to their own icon; anything else — an uncommon kind like ReplicaSet, or a
+	// missing kind — falls back to the generic Deployment icon
+	// (github.com/kubernetes/community icons/svg/resources/labeled/deploy.svg) so a Workload
+	// node is never left without a logo.
+	if nodeType == NodeTypeWorkload {
+		if lang := getNodeProp(properties, "language"); lang != "" {
+			if logo := languageLogoID(lang); logo != "" {
+				return logo
+			}
+		}
+		switch kind := strings.ToLower(getNodeProp(properties, "kind")); kind {
+		case "deployment", "statefulset", "daemonset", "job", "cronjob":
+			return kind
+		default:
+			return "deployment"
 		}
 	}
 
@@ -789,17 +889,12 @@ func ComputeLogoID(nodeType NodeType, source string, properties map[string]inter
 
 	// 4. Programming language — normalize to LangTypeIcon-compatible keys
 	if lang := getNodeProp(properties, "language"); lang != "" {
-		return languageLogoID(lang)
-	}
-
-	// 5. K8s workload kind
-	if nodeType == NodeTypeWorkload {
-		if kind := getNodeProp(properties, "kind"); kind != "" {
-			return strings.ToLower(kind)
+		if logo := languageLogoID(lang); logo != "" {
+			return logo
 		}
 	}
 
-	// 6. Node-type fallback
+	// 5. Node-type fallback
 	return nodeTypeLogoMap[nodeType]
 }
 
@@ -854,7 +949,7 @@ func ConvertDbNodeToKgNode(dbNode *DbNode) KgNode {
 		Properties:         properties,
 		Labels:             labels,
 		LastUpdated:        dbNode.UpdatedAt,
-		LogoID:             ComputeLogoID(dbNode.NodeType, dbNode.Source, properties),
+		LogoID:             ComputeLogoID(dbNode.NodeType, dbNode.SpecificType, dbNode.Source, properties),
 	}
 }
 

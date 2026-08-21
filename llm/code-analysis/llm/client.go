@@ -28,6 +28,10 @@ type Client struct {
 	logger      *common.Logger
 	tokenUsage  *TokenUsage
 	tokenMu     sync.Mutex // protects tokenUsage
+	// usageParent, when set, receives a copy of every usage delta so a derived
+	// per-role client's spend still lands in the run client's cumulative totals
+	// (the analysis handler snapshots those for the final response and billing).
+	usageParent *Client
 }
 
 type TokenUsage struct {
@@ -42,10 +46,23 @@ type TokenUsage struct {
 type Provider string
 
 const (
-	ProviderBedrock  Provider = "bedrock"
-	ProviderOpenAI   Provider = "openai"
-	ProviderGoogleAI Provider = "googleai"
+	ProviderBedrock     Provider = "bedrock"
+	ProviderOpenAI      Provider = "openai"
+	ProviderGoogleAI    Provider = "googleai"
+	ProviderHuggingFace Provider = "huggingface"
 )
+
+// huggingFaceBaseURL adapts a HuggingFace endpoint host to the base URL the
+// OpenAI client expects. langchaingo posts to "{baseURL}/chat/completions",
+// while a HuggingFace dedicated endpoint serves the OpenAI-compatible route at
+// "{host}/v1/chat/completions" — so the "/v1" has to be part of the base.
+func huggingFaceBaseURL(endpoint string) string {
+	base := strings.TrimRight(endpoint, "/")
+	if strings.HasSuffix(base, "/v1") {
+		return base
+	}
+	return base + "/v1"
+}
 
 func NewClient(cfg *config.Config) (*Client, error) {
 	if cfg == nil {
@@ -74,15 +91,31 @@ func NewClient(cfg *config.Config) (*Client, error) {
 			bedrockOpts = append(bedrockOpts, bedrock.WithClient(bedrockruntime.NewFromConfig(awsCfg)))
 		}
 		llm, err = bedrock.New(bedrockOpts...)
-	case ProviderOpenAI:
+	case ProviderOpenAI, ProviderHuggingFace:
 		opts := []openai.Option{
 			openai.WithModel(cfg.LLM.Model),
 		}
 		if cfg.LLM.ApiKey != "" {
 			opts = append(opts, openai.WithToken(cfg.LLM.ApiKey))
 		}
-		if cfg.LLM.ApiEndpoint != "" {
-			opts = append(opts, openai.WithBaseURL(cfg.LLM.ApiEndpoint))
+		baseURL := cfg.LLM.ApiEndpoint
+		// HuggingFace deployments here are dedicated endpoints fronted by an
+		// OpenAI-compatible API (llm-server resolves LLM_PROVIDER_API_TYPE=openai
+		// for them), so they run through the same client rather than a second SDK.
+		// Reject the native HuggingFace inference protocol up front instead of
+		// silently sending it OpenAI-shaped requests that only fail once the agent
+		// is already mid-run.
+		if Provider(cfg.LLM.Provider) == ProviderHuggingFace {
+			if baseURL == "" {
+				return nil, errors.New("LLM_PROVIDER_API_ENDPOINT is required for the huggingface provider")
+			}
+			if !strings.EqualFold(cfg.LLM.ApiType, "openai") {
+				return nil, fmt.Errorf("huggingface provider requires an OpenAI-compatible endpoint (api_type %q, want \"openai\")", cfg.LLM.ApiType)
+			}
+			baseURL = huggingFaceBaseURL(baseURL)
+		}
+		if baseURL != "" {
+			opts = append(opts, openai.WithBaseURL(baseURL))
 		}
 		llm, err = openai.New(opts...)
 	case "googleai":
@@ -318,10 +351,33 @@ func (c *Client) SnapshotTokenUsage() *TokenUsage {
 	}
 }
 
+// ShareUsageWith makes every future usage delta on this client also accumulate
+// on parent. Used by per-role tier clients so the run's reported totals include
+// their spend. One-way child→parent only; self-parenting is ignored.
+func (c *Client) ShareUsageWith(parent *Client) {
+	if parent == c {
+		return
+	}
+	// Refuse any link that would close a cycle (directly or through the chain):
+	// addTokenUsage recurses through usageParent, and a cycle would overflow the
+	// stack. Locks are taken one node at a time, never nested — no deadlock.
+	for curr := parent; curr != nil; {
+		if curr == c {
+			return
+		}
+		curr.tokenMu.Lock()
+		next := curr.usageParent
+		curr.tokenMu.Unlock()
+		curr = next
+	}
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	c.usageParent = parent
+}
+
 // addTokenUsage adds token counts to the cumulative total under lock.
 func (c *Client) addTokenUsage(promptTokens, completionTokens, totalTokens, cachedTokens int) {
 	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
 	if c.tokenUsage == nil {
 		c.tokenUsage = &TokenUsage{}
 	}
@@ -333,6 +389,12 @@ func (c *Client) addTokenUsage(promptTokens, completionTokens, totalTokens, cach
 		c.tokenUsage.TotalTokens += promptTokens + completionTokens
 	}
 	c.tokenUsage.CachedContentTokens += cachedTokens
+	parent := c.usageParent
+	c.tokenMu.Unlock()
+
+	if parent != nil {
+		parent.addTokenUsage(promptTokens, completionTokens, totalTokens, cachedTokens)
+	}
 }
 
 func (c *Client) ResetTokenUsage() {

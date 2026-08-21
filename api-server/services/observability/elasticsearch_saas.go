@@ -151,6 +151,30 @@ func BuildElasticsearchConfigFromValues(values []core.IntegrationConfigValue) *E
 	return cfg
 }
 
+// validateESConfig checks that a resolved config carries the fields its auth
+// method requires. Split out from GetElasticsearchConfig so the per-auth-type
+// requirements are unit-testable without a live integration record.
+func validateESConfig(cfg *ElasticsearchConfig) error {
+	if cfg.Url == "" {
+		return fmt.Errorf("missing required elasticsearch URL")
+	}
+	switch cfg.AuthType {
+	case "api_key":
+		if cfg.ApiKey == "" {
+			return fmt.Errorf("missing api_key for auth_type 'api_key'")
+		}
+	case "bearer_token":
+		if cfg.BearerToken == "" {
+			return fmt.Errorf("missing bearer_token for auth_type 'bearer_token'")
+		}
+	default: // "basic", "cognito"
+		if cfg.Username == "" || cfg.Password == "" {
+			return fmt.Errorf("missing required elasticsearch username/password")
+		}
+	}
+	return nil
+}
+
 func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*ElasticsearchConfig, error) {
 	integrationDto, err := core.ListIntegrationConfigs(ctx, accountId, "ES")
 	if err != nil {
@@ -205,22 +229,8 @@ func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*El
 		cfg.TraceIndex = override
 	}
 
-	if cfg.Url == "" {
-		return nil, fmt.Errorf("missing required elasticsearch URL")
-	}
-	switch cfg.AuthType {
-	case "api_key":
-		if cfg.ApiKey == "" {
-			return nil, fmt.Errorf("missing api_key for auth_type 'api_key'")
-		}
-	case "bearer_token":
-		if cfg.BearerToken == "" {
-			return nil, fmt.Errorf("missing bearer_token for auth_type 'bearer_token'")
-		}
-	default: // "basic", "cognito"
-		if cfg.Username == "" || cfg.Password == "" {
-			return nil, fmt.Errorf("missing required elasticsearch username/password")
-		}
+	if err := validateESConfig(cfg); err != nil {
+		return nil, err
 	}
 	cfg.Url = strings.TrimRight(cfg.Url, "/")
 
@@ -387,7 +397,7 @@ func (e *ElasticSaasSource) GetLabelMapping() map[string]string {
 }
 
 func (e *ElasticSaasSource) GetSupportedOperators() []string {
-	return []string{"_eq", "_neq", "_contains", "_like", "_nlike", "_gt", "_lt", "_is_null"}
+	return []string{"_eq", "_neq", "_contains", "_like", "_ilike", "_nlike", "_gt", "_lt", "_is_null"}
 }
 
 func (e *ElasticSaasSource) GetQuery(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (string, error) {
@@ -478,7 +488,68 @@ func finalizeESLogQueryBody(queryJSON string, startMillis, endMillis int64, limi
 	return body, nil
 }
 
+// parseESSearchLogs decodes a standard ES _search response into OutputLogs,
+// dropping hits ParseSourceMap can't interpret. Shared by the dsl and kql
+// query paths, which differ only in how the request body is built.
+func parseESSearchLogs(rawJSON string) ([]OutputLog, error) {
+	var searchResp SearchResponse
+	if err := json.Unmarshal([]byte(rawJSON), &searchResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal DSL response: %w", err)
+	}
+	output := make([]OutputLog, 0, len(searchResp.Hits.Hits))
+	for _, hit := range searchResp.Hits.Hits {
+		if log, ok := ParseSourceMap(hit.Source); ok {
+			output = append(output, log)
+		}
+	}
+	return output, nil
+}
+
+// parseESPPLLogs decodes an OpenSearch PPL response (schema + datarows) into
+// OutputLogs by zipping each row against the column names before ParseSourceMap.
+func parseESPPLLogs(rawJSON string) ([]OutputLog, error) {
+	var pplResp PPLResponse
+	if err := json.Unmarshal([]byte(rawJSON), &pplResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal PPL response: %w", err)
+	}
+	output := make([]OutputLog, 0, len(pplResp.DataRows))
+	colNames := make([]string, len(pplResp.Schema))
+	for i, col := range pplResp.Schema {
+		colNames[i] = col.Name
+	}
+	for _, row := range pplResp.DataRows {
+		src := make(map[string]any)
+		for i, val := range row {
+			if i < len(colNames) {
+				src[colNames[i]] = val
+			}
+		}
+		if log, ok := ParseSourceMap(src); ok {
+			output = append(output, log)
+		}
+	}
+	return output, nil
+}
+
 func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
+	// A where clause that failed to render must never reach the cluster as an
+	// unfiltered search. FetchLogs treats a GetQuery error as non-fatal — some
+	// providers (Signoz, Datadog) apply the where clause natively inside
+	// QueryLogs — and leaves Query empty; Elasticsearch has no such path, the
+	// rendered body is the only place a filter can live, and
+	// finalizeESLogQueryBody turns an empty body into match_all. The caller
+	// would then get every document in the time window back as though the
+	// filter had applied. Re-run the render here so the reason it failed (e.g.
+	// "_is_null operator requires boolean value") reaches the UI instead of
+	// wrong rows.
+	if strings.TrimSpace(fetchLogRequest.Query) == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
+		_, qErr := e.GetQuery(ctx, fetchLogRequest)
+		if qErr == nil {
+			qErr = errors.New("filter rendered to an empty query")
+		}
+		return nil, fmt.Errorf("elasticsearch: refusing to run an unfiltered search: %w", qErr)
+	}
+
 	cfg, err := GetElasticsearchConfig(ctx, fetchLogRequest.AccountId)
 	if err != nil {
 		return nil, err
@@ -492,10 +563,8 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		queryType = "dsl"
 	}
 
-	var rawJSON string
-
 	switch queryType {
-	case "dsl":
+	case "dsl", "kql":
 		index, _ := fetchLogRequest.Request["index"].(string)
 		if index == "" {
 			// No explicit index in the request — fall back to the account's default:
@@ -504,10 +573,20 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			index = cfg.LogIndex
 		}
 		if index == "" {
-			return nil, fmt.Errorf("index is required for DSL query")
+			return nil, fmt.Errorf("index is required for %s query", queryType)
 		}
 
-		body, berr := finalizeESLogQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
+		// dsl passes a raw DSL body straight through; kql translates the typed
+		// KQL expression into standard DSL (see elasticsearch_kql.go). Both then
+		// share the identical time-window / size / offset / sort merge and _search
+		// response parsing, so kql works on every ES version + OpenSearch.
+		var body map[string]any
+		var berr error
+		if queryType == "kql" {
+			body, berr = buildESKQLQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
+		} else {
+			body, berr = finalizeESLogQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
+		}
 		if berr != nil {
 			return nil, berr
 		}
@@ -524,15 +603,15 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 
 		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), body, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute elasticsearch DSL query: %w", err)
+			return nil, fmt.Errorf("failed to execute elasticsearch %s query: %w", queryType, err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 
-		bodyBytes, err := readResponse(resp, "elasticsearch DSL query")
+		bodyBytes, err := readResponse(resp, "elasticsearch "+queryType+" query")
 		if err != nil {
 			return nil, err
 		}
-		rawJSON = string(bodyBytes)
+		return parseESSearchLogs(string(bodyBytes))
 
 	case "ppl":
 		pplBody := map[string]any{"query": fetchLogRequest.Query}
@@ -551,75 +630,12 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		if err != nil {
 			return nil, err
 		}
-		rawJSON = string(bodyBytes)
+		return parseESPPLLogs(string(bodyBytes))
 
 	default:
 		return nil, fmt.Errorf("unsupported query_type: %v", queryType)
 	}
 
-	var output []OutputLog
-
-	if queryType == "ppl" {
-		var pplResp PPLResponse
-		if err := json.Unmarshal([]byte(rawJSON), &pplResp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal PPL response: %w", err)
-		}
-
-		output = make([]OutputLog, 0, len(pplResp.DataRows))
-		colNames := make([]string, len(pplResp.Schema))
-		for i, col := range pplResp.Schema {
-			colNames[i] = col.Name
-		}
-
-		for _, row := range pplResp.DataRows {
-			src := make(map[string]any)
-			for i, val := range row {
-				if i < len(colNames) {
-					src[colNames[i]] = val
-				}
-			}
-			if log, ok := ParseSourceMap(src); ok {
-				output = append(output, log)
-			}
-		}
-	} else {
-		var searchResp SearchResponse
-		if err := json.Unmarshal([]byte(rawJSON), &searchResp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal DSL response: %w", err)
-		}
-
-		output = make([]OutputLog, 0, len(searchResp.Hits.Hits))
-		for _, hit := range searchResp.Hits.Hits {
-			if log, ok := ParseSourceMap(hit.Source); ok {
-				output = append(output, log)
-			}
-		}
-
-		// An empty log result carries no error, so the two very different causes —
-		// "the query matched nothing" and "the query matched but every hit was an
-		// unrecognised shape" — look identical at the UI. Separate them here:
-		// matched is the cluster's own hit count, returned is what came back under
-		// `size`, and parsed is what survived ParseSourceMap.
-		matched := esHitsTotal(rawJSON)
-		returned := len(searchResp.Hits.Hits)
-		switch {
-		case returned == 0:
-			slog.Info("ES log query: matched no documents",
-				"matched", matched, "returned", 0,
-				"hint", "index pattern or @timestamp window excludes everything; labels/label-values do not apply a time bound, which is why they still return data")
-		case len(output) == 0:
-			slog.Warn("ES log query: all hits dropped as unparseable",
-				"matched", matched, "returned", returned, "parsed", 0,
-				"sample_source_fields", esSourceFieldNames(searchResp.Hits.Hits[0].Source),
-				"hint", "ParseSourceMap needs a message at log|body|body.text|message and an @timestamp")
-		default:
-			slog.Info("ES log query: parsed hits",
-				"matched", matched, "returned", returned, "parsed", len(output),
-				"dropped", returned-len(output))
-		}
-	}
-
-	return output, nil
 }
 
 // esHitsTotal best-effort reads hits.total from a raw _search response for
@@ -727,6 +743,13 @@ func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetch
 		}
 	}
 
+	return parseESLabelValuesResponse(bodyBytes)
+}
+
+// parseESLabelValuesResponse pulls the terms-aggregation bucket keys out of an ES
+// aggregation response into label values, skipping empty keys. Split out from
+// QueryLabelValues so the response-shape handling is unit-testable.
+func parseESLabelValuesResponse(bodyBytes []byte) ([]OutputLogLabelValue, error) {
 	var result map[string]any
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal aggregation response: %w", err)
@@ -771,7 +794,21 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 
 	index, _ := fetchLogRequest.Request["index"].(string)
 	if index == "" {
-		return nil, fmt.Errorf("index is required for querying index fields")
+		// FetchLogLabelsOrIndexFields settles this when it can, but the integration
+		// it reads the default from is nil whenever the caller supplied both
+		// log_provider and log_provider_source (llm-server does). cfg.LogIndex is
+		// read off the integration record itself, so it still resolves here.
+		index = cfg.LogIndex
+	}
+	if index == "" {
+		// Nothing configured anywhere. A union across every index beats no field
+		// list, but parseESMappingFields merges them all, so the caller gets fields
+		// that need not coexist in whichever index its query runs against — worth a
+		// warning rather than a silent widening.
+		index = esAllIndicesWildcard
+		ctx.GetLogger().Warn("ES index fields: no index requested and none configured, listing across every index",
+			"account_id", fetchLogRequest.AccountId,
+			"hint", "set log_index on the ES integration (or a per-account entry under Advanced Settings → index mapping)")
 	}
 
 	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
@@ -784,16 +821,50 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		return nil, err
 	}
 
+	return parseESMappingFields(bodyBytes)
+}
+
+// parseESMappingFields flattens an ES _mapping response into the field list
+// (including multi-fields) via extractFieldsFromProperties. Split out from
+// QueryIndexFields so the nested unwrap is unit-testable. Returns nil when the
+// response carries no recognizable {index: {mappings: {properties}}} shape.
+func parseESMappingFields(bodyBytes []byte) ([]OutputLogLabelFields, error) {
 	var mappingResp map[string]any
 	if err := json.Unmarshal(bodyBytes, &mappingResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal mapping response: %w", err)
 	}
 
-	var result []OutputLogLabelFields
+	// Merge every index the pattern matched.
+	//
+	// This used to return after the FIRST index in the response. A log index pattern
+	// fans out over one backing index per data stream — commonly one per namespace,
+	// plus rollovers — and those mappings genuinely differ, because a field only
+	// appears where a document carried it. Measured on the dev cluster, the pattern
+	// `logs-kubernetes.container_logs-*` matches 5 indices holding 77-84 fields each:
+	// 86 distinct fields in the union, but only 70 common to all. So 16 fields —
+	// `kubernetes.labels.component`, `kubernetes.job.name`, `kubernetes.statefulset.name`
+	// and similar — were visible or invisible depending on which index was picked.
+	//
+	// And the pick was a coin flip: this ranges over a Go map, whose iteration order is
+	// deliberately randomized, so the same account could get a different field list on
+	// consecutive calls. The result feeds applyLabelDataTypes, which skips any field it
+	// cannot type (`if !known { continue }`) — so a missing field silently disables the
+	// operator guard and the value coercion for it, and a query the type check would
+	// have rejected reaches Elasticsearch to fail there as a raw error or an empty
+	// result. That is "we asked wrongly" arriving disguised as "there is no data".
+	//
+	// Indices are visited in sorted order so that a field mapped with conflicting types
+	// across indices resolves the same way every time.
+	indices := make([]string, 0, len(mappingResp))
+	for index := range mappingResp {
+		indices = append(indices, index)
+	}
+	sort.Strings(indices)
 
-	// The mapping response has the structure: {index_name: {mappings: {properties: {field: {type: ...}}}}}
-	for _, indexData := range mappingResp {
-		indexMap, ok := indexData.(map[string]any)
+	seen := make(map[string]bool)
+	output := make([]OutputLogLabelFields, 0)
+	for _, index := range indices {
+		indexMap, ok := mappingResp[index].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -805,11 +876,23 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		if !ok {
 			continue
 		}
-		result = extractFieldsFromProperties(properties, "")
-		break // only process the first index mapping
+		for _, f := range extractFieldsFromProperties(properties, "") {
+			if seen[f.Field] {
+				continue
+			}
+			seen[f.Field] = true
+			output = append(output, f)
+		}
 	}
 
-	return result, nil
+	if len(output) == 0 {
+		return nil, nil
+	}
+
+	// Stable order, so the same estate always yields the same field list.
+	sort.Slice(output, func(i, j int) bool { return output[i].Field < output[j].Field })
+
+	return output, nil
 }
 
 func extractFieldsFromProperties(properties map[string]any, prefix string) []OutputLogLabelFields {
@@ -865,92 +948,49 @@ func extractFieldsFromProperties(properties map[string]any, prefix string) []Out
 
 // QueryLogGroup implements LogGroupSource for Elasticsearch SaaS.
 // Uses ES terms aggregation to group error/critical logs by message, namespace, and workload.
+// QueryLogGroup implements LogGroupSource for Elasticsearch SaaS (Loki-style).
+//
+// Like the agent ElasticSource variant, it fetches raw error/critical/fatal log
+// documents from the selected index via QueryLogs (which parses both Fluent-Bit
+// and OTel-native doc shapes through ParseSourceMap) and groups them in-memory
+// via the shared groupESLogsByPattern, instead of a terms aggregation on
+// hardcoded Fluent-Bit keyword fields that returned nothing for OTel indices.
+// The time range is injected by finalizeESLogQueryBody inside QueryLogs.
 func (e *ElasticSaasSource) QueryLogGroup(ctx *security.RequestContext, req FetchLogGroupRequest) (LogGroupOutput, error) {
-	cfg, err := GetElasticsearchConfig(ctx, req.AccountId)
-	if err != nil {
-		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: failed to get config: %w", err)
-	}
-
-	selectedNamespace := common.GetString(req.Request, "selectedNamespace")
-	selectedWorkload := common.GetString(req.Request, "selectedWorkload")
+	// When the caller doesn't pick an index, prefer the account's configured log
+	// index (per-account index_account_mapping → top-level log_index, both resolved
+	// into cfg.LogIndex) over scanning every index on the cluster. Fall back to "*"
+	// only when nothing is configured, matching the prior behaviour.
 	index := common.GetString(req.Request, "index")
 	if index == "" {
-		index = "*"
+		if cfg, cfgErr := GetElasticsearchConfig(ctx, req.AccountId); cfgErr == nil && cfg.LogIndex != "" {
+			index = cfg.LogIndex
+		} else {
+			index = "*"
+		}
 	}
+	selectedNamespace := common.GetString(req.Request, "selectedNamespace")
+	selectedWorkload := common.GetString(req.Request, "selectedWorkload")
 
-	// Build filter for error/critical logs
-	filters := []any{
-		map[string]any{"bool": map[string]any{
-			"should": []map[string]any{
-				{"terms": map[string]any{"level": []string{"error", "critical", "fatal", "ERROR", "CRITICAL", "FATAL"}}},
-				{"terms": map[string]any{"severity": []string{"error", "critical", "fatal", "ERROR", "CRITICAL", "FATAL"}}},
-			},
-			"minimum_should_match": 1,
-		}},
-		map[string]any{"range": map[string]any{
-			"@timestamp": map[string]any{
-				"gte":    req.StartTime,
-				"lte":    req.EndTime,
-				"format": "epoch_millis",
-			},
-		}},
-	}
-	if selectedNamespace != "" {
-		filters = append(filters, map[string]any{
-			"term": map[string]any{"kubernetes.namespace_name.keyword": selectedNamespace},
-		})
-	}
-	if selectedWorkload != "" {
-		filters = append(filters, map[string]any{
-			"wildcard": map[string]any{"kubernetes.pod_name.keyword": escapeESWildcard(selectedWorkload) + "*"},
-		})
-	}
-
-	queryBody := map[string]any{
-		"size": 0,
-		"query": map[string]any{
-			"bool": map[string]any{"filter": filters},
-		},
-		"aggs": map[string]any{
-			"log_groups": map[string]any{
-				"terms": map[string]any{
-					"field": "log.keyword",
-					"size":  100,
-				},
-				"aggs": map[string]any{
-					"namespaces": map[string]any{
-						"terms": map[string]any{"field": "kubernetes.namespace_name.keyword", "size": 10},
-					},
-					"workloads": map[string]any{
-						"terms": map[string]any{"field": "kubernetes.pod_name.keyword", "size": 10},
-					},
-					"containers": map[string]any{
-						"terms": map[string]any{"field": "kubernetes.container_name.keyword", "size": 10},
-					},
-					"levels": map[string]any{
-						"terms": map[string]any{"field": "level", "size": 10},
-					},
-					// Read back by parseESLogGroupResponse. Without it every group
-					// reports the end of the query window as its last-seen.
-					"last_seen": map[string]any{
-						"max": map[string]any{"field": "@timestamp"},
-					},
-				},
-			},
-		},
-	}
-
-	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
-	resp, err := esRequestJSON("POST", searchURL, queryBody, cfg) //nolint:bodyclose
+	body, err := json.Marshal(map[string]any{
+		"query": esLogGroupErrorQuery(),
+		"sort":  esLogGroupSort(),
+	})
 	if err != nil {
-		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: request failed: %w", err)
+		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: failed to marshal query: %w", err)
 	}
 
-	bodyBytes, err := readResponse(resp, "QueryLogGroup")
+	logs, err := e.QueryLogs(ctx, FetchLogRequest{
+		AccountId: req.AccountId,
+		Query:     string(body),
+		Request:   map[string]any{"index": index, "query_type": "dsl"},
+		StartTime: req.StartTime,
+		EndTime:   req.EndTime,
+		Limit:     esLogGroupFetchLimit,
+	})
 	if err != nil {
-		return LogGroupOutput{}, err
+		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: failed to fetch logs: %w", err)
 	}
 
-	// Reuse the same parsing logic as ElasticSource
-	return parseESLogGroupResponse(string(bodyBytes), req.EndTime)
+	return groupESLogsByPattern(logs, selectedNamespace, selectedWorkload, req.EndTime), nil
 }

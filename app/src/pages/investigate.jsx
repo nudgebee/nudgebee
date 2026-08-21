@@ -15,7 +15,7 @@ import WorkflowTemplatesModal from '@components/workflow/components/WorkflowTemp
 import AiGenerateWorkflowModal from '@components/workflow/components/AiGenerateWorkflowModal';
 import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu';
 import apiWorkflow from '@api1/workflow';
-import { SparklesIconBG, ExternalLinkIcon } from '@assets';
+import { SparklesIconBG } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
 import { Label } from '@ui/Label';
 import apiRecommendations from '@api1/recommendation';
@@ -88,12 +88,14 @@ import { LuChartLine } from 'react-icons/lu';
 import Chart from '@ui/Chart';
 import { getDateString } from '@lib/datetime';
 import TimelineCard from '@components/k8s/investigate/cards/TimelineCard';
+import ImpactCard from '@components/k8s/investigate/cards/ImpactCard';
 import UpdateEvent from '@components/events/UpdateEvent';
 import EventClassifyModal from '@components/events/EventClassifyModal';
 import { LiaEditSolid } from 'react-icons/lia';
 import { MdOutlineCategory } from 'react-icons/md';
 import DatadogMonitorSearch from '@components/k8s/investigate/cards/DatadogMonitorSearch';
 import SafeIcon from '@shared/icons/SafeIcon';
+import RemediationPanel from '@components/k8s/investigate/cards/RemediationPanel';
 // Cloud-specific card imports
 import CloudTrailEventCard from '@components/cloudaccount/investigate/cards/CloudTrailEventCard';
 import EventBridgeEventCard from '@components/cloudaccount/investigate/cards/EventBridgeEventCard';
@@ -1089,6 +1091,13 @@ const Investigate = () => {
         }
       }
 
+      // The incident card leads: it answers "what is this and what caused it", which is
+      // the question the page is opened to answer. The timeline is supporting evidence.
+      const impactCard = new ImpactCard(row);
+      if (await impactCard.canRenderContent()) {
+        dynamicCards.push(impactCard);
+      }
+
       const card = new TimelineCard(row);
       if (await card.canRenderContent()) {
         dynamicCards.push(card);
@@ -1677,25 +1686,6 @@ const Investigate = () => {
                 <FeedbackVote onFeedbackSubmit={(feedbackObject) => aiCreateFeedback(feedbackObject)} sentFeedback={sentFeedback} />
               </Box>
             )}
-            {!askAiCardObject?.errorMessage && (
-              <Box mt='auto' mb={ds.space[5]} mr={ds.space[6]}>
-                <Button
-                  tone='secondary'
-                  size='xs'
-                  composition='icon+text'
-                  icon={<SafeIcon src={ExternalLinkIcon} alt='external link' height={16} width={16} />}
-                  disabled={!row.fingerprint}
-                  onClick={() => {
-                    if (row.fingerprint) {
-                      let href = `/ask-nudgebee?accountId=${row.cloud_account_id || router.query.accountId}&session_id=event-${row.fingerprint}`;
-                      window.open(href, '_blank');
-                    }
-                  }}
-                >
-                  Continue With Analysis
-                </Button>
-              </Box>
-            )}
           </Box>
         )}
       </>
@@ -1856,10 +1846,8 @@ const Investigate = () => {
       {isK8s && isUpdateEvent && (
         <UpdateEvent
           selectedEvent={row}
-          handlePopupClose={() => {
-            setIsUpdateEvent(false);
-            loadData(row.id);
-          }}
+          handlePopupClose={() => setIsUpdateEvent(false)}
+          onUpdated={() => loadData(row.id)}
           isUpdateEvent={isUpdateEvent}
         />
       )}
@@ -2406,6 +2394,21 @@ const Investigate = () => {
                               // remounts the memoized card and restarts its polling useEffect.
                               <AIOrRcaCard key={`ai-card-${option.id}-${option?.refreshRenderId || 0}`} option={option} noPadding />
                             ))}
+
+                          {(() => {
+                            const askAi = matchedOptions.find((option) => option?.id === 'AskAiCard');
+                            const remediationEventId = row.id || router.query.id;
+                            return isK8s && askAi && !askAi.errorMessage && askAi.isCompleted?.() ? (
+                              // Key on eventId + refreshRenderId so the panel (and its generated plan) resets
+                              // when the event changes or Refresh Investigation re-runs, matching the AI card above.
+                              <RemediationPanel
+                                key={`remediation-${remediationEventId}-${askAi?.refreshRenderId || 0}`}
+                                accountId={row.cloud_account_id || router.query.accountId}
+                                eventId={remediationEventId}
+                                nbStatus={row?.nb_status}
+                              />
+                            ) : null;
+                          })()}
 
                           {isK8s && !currentInvestigation?.text && matchedOptions.length > 0 && (
                             <Box sx={{ display: 'flex', flexDirection: 'column' }}>{showReferenceLinks()}</Box>

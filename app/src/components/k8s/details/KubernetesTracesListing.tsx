@@ -391,7 +391,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
       // Reuse the shared ES index-list API (logs_list_labels). The lister is no
       // longer type-filtered, so one endpoint serves logs/metrics/traces; force the
       // ES provider so it resolves even when ES isn't the account's default log provider.
-      const res = await observability.fetchLogLabels({ account_id: selectedK8sAccount, log_provider: 'ES' });
+      const res = await observability.logIndexList(selectedK8sAccount, 'ES');
       const indexes = (res?.data?.data?.logs_list_labels || []).map((l: any) => l?.label).filter(Boolean);
       setEsIndexList(indexes);
     } catch {

@@ -308,16 +308,21 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	// description with no Alertmanager labels block (typical for vmalert →
 	// Zenduty). The /api/incidents/{id}/alerts/ endpoint exposes the clean
 	// alertname (entity_id) and the upstream source name (integration_object.name)
-	// that the webhook does not. Cached per incident; fails soft on any API error.
-	enrichWithZendutyAPI(sc, &alert, incident.UniqueID)
+	// that the webhook does not, and the alert-payload endpoint recovers the raw
+	// Alertmanager label set (namespace/pod/deployment/...) that makes subject
+	// resolution deterministic. incident.Summary selects the right alert out of a
+	// collated incident. Cached per incident; fails soft on any API error.
+	enrichWithZendutyAPI(sc, &alert, incident.UniqueID, incident.Summary)
 
-	// Fingerprint: prefer Zenduty's stable IncidentKey (its documented dedup key)
-	// over UniqueID which is per-incident. Today the parser sets neither, so
-	// every webhook delivery becomes a new event. Strict improvement.
+	// Fingerprint: prefer Zenduty's stable IncidentKey (its documented dedup key).
+	// When absent — the norm, since the parser does not populate it — leave it
+	// empty here and derive a canonical fingerprint from the alert's identity
+	// after subject resolution below. Keying on the per-incident UniqueID (the
+	// previous fallback) fragments repeat incidents for the same alert into
+	// separate occurrence chains; finding_id already carries UniqueID, so rows are
+	// unaffected either way.
 	if incident.IncidentKey != "" {
 		alert.Fingerprint = incident.IncidentKey
-	} else {
-		alert.Fingerprint = incident.UniqueID
 	}
 
 	// RuleId / RuleName: derive from the extracted alertname so multiple firings
@@ -388,10 +393,10 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	accountMapping := core.ParseAccountMapping(settings, sc.GetLogger())
 	accountId = core.ApplyAccountMapping(accountId, parsedPayload.Investigation.Labels, accountMapping)
 
-	// Validate and enrich subject against k8s_workloads inventory
-	if parsedPayload.EventSubjectName != "" {
-		matchWorkloadAndEnrich(sc, &parsedPayload, accountId)
-	}
+	// Subject validation against k8s_workloads is NOT done here. Every webhook event
+	// goes through core.MatchWorkloadAndEnrich in enrichEventsWithSubjectResolution
+	// after account mapping, and that matcher scopes the lookup to the event's own
+	// namespace and refuses ambiguous rows when the namespace is unknown.
 
 	// Deterministic last resort: the Zenduty service itself. Only reached once the
 	// title regex, the firing-label walk and the API enrichment have all come up
@@ -408,18 +413,47 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	secCtx := sc.GetSecurityContext()
 
 	// LLM fallback: if no subject found after deterministic parsing, use LLM
+	resolvedByLLM := false
 	if parsedPayload.EventSubjectName == "" {
 		if secCtx == nil {
 			parsedPayload.Investigation.Labels["nb_llm_match"] = "disabled"
 		} else if tenant.IsFeatureEnabled(sc, secCtx.GetTenantId(), tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
 			resolveZendutySubjectUsingLLM(sc, &parsedPayload, accountId)
+			resolvedByLLM = parsedPayload.EventSubjectName != ""
 		} else {
 			parsedPayload.Investigation.Labels["nb_llm_match"] = "disabled"
 		}
 	}
 
-	// Auto-learn: save confirmed title → service mapping for future LLM prompts
-	if secCtx != nil && parsedPayload.EventSubjectName != "" && parsedPayload.EventTitle != "" {
+	// If Zenduty gave no stable dedup key (IncidentKey), derive a canonical
+	// fingerprint from the alert's identity now that the subject is resolved, so
+	// repeat incidents for the same alert collapse into one occurrence chain
+	// instead of fragmenting on the per-incident UniqueID. Use the stable alert
+	// name (not RuleId, which itself falls back to UniqueID). Require a real
+	// alert-type or subject to avoid over-merging distinct alerts; otherwise keep
+	// the per-incident id.
+	if parsedPayload.Investigation.Fingerprint == "" {
+		alertType := alertname
+		if alertType == "" {
+			alertType = rulename
+		}
+		if alertType != "" || parsedPayload.EventSubjectName != "" {
+			parsedPayload.Investigation.Fingerprint = core.CanonicalFingerprint(
+				"zenduty",
+				alertType,
+				parsedPayload.EventSubjectNamespace,
+				parsedPayload.EventSubjectName,
+			)
+		} else {
+			parsedPayload.Investigation.Fingerprint = incident.UniqueID
+		}
+	}
+
+	// Auto-learn: save confirmed title → service mapping for future LLM prompts.
+	// Only LLM-resolved subjects are learned — a deterministic match already came
+	// from structured metadata, not the title's wording, so it isn't a genuine
+	// title→service pattern and would misleadingly bias future prompts.
+	if resolvedByLLM && secCtx != nil && parsedPayload.EventSubjectName != "" && parsedPayload.EventTitle != "" {
 		LearnSubjectMapping(sc, secCtx.GetTenantId(), TenantAttrZendutyIncidentsKey, parsedPayload.EventTitle, parsedPayload.EventSubjectName)
 	}
 
@@ -523,7 +557,7 @@ func resolveZendutySubjectFromService(sc *security.RequestContext, parsedPayload
 	}
 
 	parsedPayload.EventSubjectName = serviceName
-	matchWorkloadAndEnrich(sc, parsedPayload, accountId)
+	core.MatchWorkloadAndEnrich(sc, parsedPayload, accountId)
 
 	if parsedPayload.Investigation.Labels["nb_matched_workload"] == "true" {
 		parsedPayload.Investigation.Labels["nb_subject_resolution"] = "zenduty_service_validated"
@@ -587,7 +621,7 @@ func resolveZendutySubjectUsingLLM(sc *security.RequestContext, parsedPayload *c
 	common.MetricsSubjectResolution(sc.GetContext(), IntegrationZendutyWebhook, "live", "matched", tenantId)
 
 	parsedPayload.EventSubjectName = name
-	matchWorkloadAndEnrich(sc, parsedPayload, accountId)
+	core.MatchWorkloadAndEnrich(sc, parsedPayload, accountId)
 }
 
 // EnrichWithZenDutyIncident enriches the event with full incident details from ZenDuty API.

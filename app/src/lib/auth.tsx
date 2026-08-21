@@ -245,13 +245,13 @@ export function isTenantAdmin(): boolean {
  * `hasFeatureAccess` / `requiresFeature` can't answer it. Use it when a surface
  * is gated on one of these vars but the code asking isn't the page that receives
  * them as props — e.g. the guided-tour catalog deciding whether /optimise will
- * render its LLM Analyser / AI Gateway tabs.
+ * render its AI Gateway tab.
  *
  * Sync and needs no warming (unlike `hasFeatureAccessCached`): `withAuth`
  * populates `userData` before any of this renders. Fails closed if the session
  * predates the field.
  */
-export function isUiFeatureEnabled(feature: 'llmAnalyser' | 'llmGateway'): boolean {
+export function isUiFeatureEnabled(feature: 'llmGateway'): boolean {
   return Boolean(userData?.uiFeatures?.[feature]);
 }
 

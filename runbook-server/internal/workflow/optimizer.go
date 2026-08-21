@@ -28,6 +28,12 @@ const (
 	prFollowupMaxAttempts  = 8
 )
 
+// OptimizerWorkflowExecutionTimeout caps a single auto optimize run. Past this
+// Temporal terminates the run, so a task cannot legitimately stay in Scheduled
+// any longer — which is what makes model.ScheduledTaskStaleAfter safe to bound.
+// Keep that value above this one; see TestScheduledTaskStaleAfterExceedsWorkflowTimeout.
+const OptimizerWorkflowExecutionTimeout = 1 * time.Hour
+
 type OptimizerWorkflowInput struct {
 	AutoOptimizeID string
 }

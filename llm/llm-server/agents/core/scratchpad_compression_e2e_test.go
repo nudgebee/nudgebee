@@ -106,7 +106,7 @@ func newCompressionFixture(t *testing.T, env compressionE2EEnv, keep bool) *comp
 		MessageRoleHuman, MessageTypeGeneration,
 		"investigate something that takes many steps", "",
 		"LLM", uuid.Nil, nil, "",
-		config.Config.LlmProvider, config.Config.LlmModel)
+		config.Config.LlmProvider, config.Config.LlmModel, ConversationStatusInProgress)
 	require.NoError(t, err, "SaveConversationMessage must succeed")
 	msgID := msgUUID.String()
 

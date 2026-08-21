@@ -104,6 +104,9 @@ type ServiceDependency struct {
 	// Track how this dependency was detected for better filter hints
 	DependencyType string `json:"dependency_type,omitempty"` // "direct_service", "net_peer", "db_connection"
 	OriginalTarget string `json:"original_target,omitempty"` // Original target before transformation
+	// SampleSpanID is the span_id of the first span observed for this
+	// dependency — evidence that the edge it produces genuinely happened.
+	SampleSpanID string `json:"sample_span_id,omitempty"`
 }
 
 type ServiceCategory struct {
@@ -117,25 +120,43 @@ type NodeStats struct {
 }
 
 type ServiceApplication struct {
-	Id                ServiceApplicationId `json:"Id"`
-	Category          ServiceCategory      `json:"Category"`
-	Labels            map[string]string    `json:"Labels"`
-	Status            *int                 `json:"Status"`
-	Indicators        []string             `json:"Indicators"`
-	Upstreams         []UpstreamLink       `json:"Upstreams"`
-	Downstreams       []DownstreamLink     `json:"Downstreams"`
-	Instances         []Instance           `json:"Instances"`
-	Type              []string             `json:"Type"`
-	DesiredInstances  int                  `json:"DesiredInstances"`
-	FailedInstances   int                  `json:"FailedInstances"`
-	OOMKills          int                  `json:"OOMKills"`
-	Restarts          int                  `json:"Restarts"`
-	CPUThrottlingTime float64              `json:"CPUThrottlingTime"`
-	VolumeSize        float64              `json:"VolumeSize"`
-	VolumeUsed        float64              `json:"VolumeUsed"`
-	IsHealthy         bool                 `json:"IsHealthy"`
-	HealthReason      string               `json:"HealthReason"`
-	NodeStats         *NodeStats           `json:"NodeStats,omitempty"`
+	Id           ServiceApplicationId    `json:"Id"`
+	Category     ServiceCategory         `json:"Category"`
+	Labels       map[string]string       `json:"Labels"`
+	Status       *int                    `json:"Status"`
+	Indicators   []string                `json:"Indicators"`
+	Upstreams    []UpstreamLink          `json:"Upstreams"`
+	Downstreams  []DownstreamLink        `json:"Downstreams"`
+	Instances    []Instance              `json:"Instances"`
+	Type         []string                `json:"Type"`
+	TypeEvidence map[string]TypeEvidence `json:"TypeEvidence,omitempty"`
+	// CreationEvidence is the span that proves this application/node exists at
+	// all — set for every application, not just ones whose type was overridden.
+	CreationEvidence  *TypeEvidence `json:"CreationEvidence,omitempty"`
+	DesiredInstances  int           `json:"DesiredInstances"`
+	FailedInstances   int           `json:"FailedInstances"`
+	OOMKills          int           `json:"OOMKills"`
+	Restarts          int           `json:"Restarts"`
+	CPUThrottlingTime float64       `json:"CPUThrottlingTime"`
+	VolumeSize        float64       `json:"VolumeSize"`
+	VolumeUsed        float64       `json:"VolumeUsed"`
+	IsHealthy         bool          `json:"IsHealthy"`
+	HealthReason      string        `json:"HealthReason"`
+	NodeStats         *NodeStats    `json:"NodeStats,omitempty"`
+}
+
+// TypeEvidence records the specific span whose attributes caused
+// detectApplicationType to classify a service as a given application type —
+// keyed by that type in ServiceApplication.TypeEvidence so a misclassification
+// (e.g. a Postgres-calling service mistaken for a MessageQueue) can be traced
+// back to the exact span that triggered it.
+type TypeEvidence struct {
+	TraceID      string `json:"trace_id"`
+	SpanID       string `json:"span_id"`
+	SpanName     string `json:"span_name"`
+	Timestamp    string `json:"timestamp"`
+	MatchedKey   string `json:"matched_key"`
+	MatchedValue string `json:"matched_value"`
 }
 
 type ServiceApplicationId struct {
@@ -150,31 +171,35 @@ type Instance struct {
 }
 
 type UpstreamLink struct {
-	Id            string         `json:"Id"`
-	Status        int            `json:"Status"`
-	Stats         []string       `json:"Stats"`
-	Weight        float64        `json:"Weight"`
-	Latency       float64        `json:"Latency"`
-	RequestCount  float64        `json:"RequestCount"`
-	FailureCount  float64        `json:"FailureCount"`
-	Protocol      string         `json:"Protocol"`
-	BytesSent     float64        `json:"BytesSent"`
-	BytesReceived float64        `json:"BytesReceived"`
-	DrillDown     *LinkDrillDown `json:"DrillDown,omitempty"`
+	Id             string         `json:"Id"`
+	Status         int            `json:"Status"`
+	Stats          []string       `json:"Stats"`
+	Weight         float64        `json:"Weight"`
+	Latency        float64        `json:"Latency"`
+	RequestCount   float64        `json:"RequestCount"`
+	FailureCount   float64        `json:"FailureCount"`
+	Protocol       string         `json:"Protocol"`
+	DependencyType string         `json:"DependencyType,omitempty"`
+	SampleSpanID   string         `json:"SampleSpanID,omitempty"`
+	BytesSent      float64        `json:"BytesSent"`
+	BytesReceived  float64        `json:"BytesReceived"`
+	DrillDown      *LinkDrillDown `json:"DrillDown,omitempty"`
 }
 
 type DownstreamLink struct {
-	Id            ServiceApplicationId `json:"Id"`
-	Status        int                  `json:"Status"`
-	Stats         []string             `json:"Stats"`
-	Weight        float64              `json:"Weight"`
-	Latency       float64              `json:"Latency"`
-	RequestCount  float64              `json:"RequestCount"`
-	FailureCount  float64              `json:"FailureCount"`
-	Protocol      string               `json:"Protocol"`
-	BytesSent     float64              `json:"BytesSent"`
-	BytesReceived float64              `json:"BytesReceived"`
-	DrillDown     *LinkDrillDown       `json:"DrillDown,omitempty"`
+	Id             ServiceApplicationId `json:"Id"`
+	Status         int                  `json:"Status"`
+	Stats          []string             `json:"Stats"`
+	Weight         float64              `json:"Weight"`
+	Latency        float64              `json:"Latency"`
+	RequestCount   float64              `json:"RequestCount"`
+	FailureCount   float64              `json:"FailureCount"`
+	Protocol       string               `json:"Protocol"`
+	DependencyType string               `json:"DependencyType,omitempty"`
+	SampleSpanID   string               `json:"SampleSpanID,omitempty"`
+	BytesSent      float64              `json:"BytesSent"`
+	BytesReceived  float64              `json:"BytesReceived"`
+	DrillDown      *LinkDrillDown       `json:"DrillDown,omitempty"`
 }
 
 type LinkDrillDown struct {

@@ -44,6 +44,14 @@ type RetryConfig struct {
 // reformat prompt.
 var ErrParseFailure = errors.New("unable to parse LLM response: no action, final answer, or clarification")
 
+// ErrNotebookOnlyTurn signals that the LLM output was a VALID notebook update
+// (the model "remembering" a finding) with no accompanying tool action or final
+// answer. It is deliberately distinct from ErrParseFailure: the turn is not
+// malformed, so the caller must NOT run the generic reformat-retry loop (which
+// mislabels the notebook as malformed and burns MaxRetries). Instead it issues a
+// single targeted nudge to continue, bounded by maxConsecutiveNotebookOnlyTurns.
+var ErrNotebookOnlyTurn = errors.New("planner: turn updated the notebook but emitted no action or final answer")
+
 // reActMemoryRefRegex extracts each <ref n="N" note="..."/> from a
 // <memory_used> child of an <action>. Uses raw regex (rather than XML)
 // because the surrounding action XML is already lenient in this parser

@@ -243,6 +243,20 @@ func GetTracesTableNames(ctx *security.RequestContext, accountId string) []strin
 	return defaultTables
 }
 
+// traceSourceExpr returns the SQL deriving the synthetic `trace_source` column for a traces
+// table without materialized columns. Our own agent table (account.AgentTraceTableConfigKey,
+// i.e. otel_traces) carries the instrumentation scope in the ScopeName column the collector's
+// clickhouse exporter writes; SpanAttributes['otel.scope.name'] is only populated by exporters
+// predating that column, so both are matched. Third-party ClickHouse stores (Last9's
+// otel.traces) keep the attribute-only form — they may not expose ScopeName at all, and an
+// unknown identifier there would fail every trace query instead of just the eBPF filter.
+func traceSourceExpr(tableName string) string {
+	if tableName == account.AgentTraceTableConfigKey {
+		return "CASE WHEN ScopeName = 'nudgebee-node-agent' OR SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END"
+	}
+	return "CASE WHEN SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END"
+}
+
 func GetTracesProviderAndUrl(ctx *security.RequestContext, accountId string) (string, string, bool) {
 	agentDetails, err := account.GetAgentConnectionDetails(accountId)
 	traceProvider := "otel_clickhouse"
@@ -722,7 +736,25 @@ func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string
 			sql = " AND " + sqlColumn + " IN (" + strings.Join(quoted, ",") + ")"
 		}
 	}
-	if sql != "" {
+	// Only drop the filter when it came from the top-level Binary map. A filter found
+	// inside an _and clause is left in place so the outer WHERE keeps enforcing it, and
+	// the pushed-down copy acts purely as a planner hint.
+	//
+	// This matters because extractFilterSQL is shared by ~14 DefGenerators, and not all
+	// of them push into a subquery that constrains the same rows the outer filter would.
+	// k8s_workloads_cloud_account_monitoring_v2 pushes account_id into the LEFT JOINed
+	// event_count CTE while workload_list stays unscoped and the outer WHERE carries no
+	// account predicate — so removing an account restriction there widens the result set
+	// across accounts instead of narrowing it. The security layer (service.go) appends
+	// exactly such tenant/account restrictions as _and clauses, which is why _and is the
+	// dangerous case to delete from and the top-level map is not.
+	//
+	// (Deleting a top-level Binary filter is long-standing behaviour and is preserved
+	// as-is. The same widening is possible through that path for a caller-supplied
+	// account_id filter on that table, but it predates this function's _and support and
+	// is left for a separate fix.)
+	_, fromTopLevelBinary := request.Where.Binary[filterName]
+	if sql != "" && fromTopLevelBinary {
 		delete(holder, filterName)
 	}
 	return sql
@@ -1250,6 +1282,11 @@ var table_metadata = map[string]TableDefinition{
 			"latest_title": {
 				Type:         ColumnDefinitionTypeString,
 				Def:          "(array_agg(title ORDER BY events.created_at DESC))[1]",
+				IsAggregated: true,
+			},
+			"latest_snoozed_until": {
+				Type:         ColumnDefinitionTypeDatetime,
+				Def:          "(array_agg(events.snoozed_until ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 			"max_created_at": {
@@ -2324,7 +2361,7 @@ var table_metadata = map[string]TableDefinition{
 			traceProvider, traceProviderUrl, hasMaterializedColumn := GetTracesProviderAndUrl(ctx, accountId)
 			baseQuery := fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, workload_namespace, workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, tableName)
 			if !hasMaterializedColumn {
-				baseQuery = fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, CASE WHEN SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, tableName)
+				baseQuery = fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, traceSourceExpr(tableName), tableName)
 			}
 			if traceProvider == "bigquery" {
 				baseQuery = fmt.Sprintf(`(SELECT extendedFields.traceId AS trace_id, span.spanId AS span_id, span.parentSpanId AS parent_span_id, span.attributes.attributeMap.source_workload_namespace AS workload_namespace, span.attributes.attributeMap.source_workload_name AS workload_name, span.startTime AS timestamp, TIMESTAMP_DIFF(span.endTime, span.startTime, MICROSECOND) * 1000 AS duration_ns, CASE WHEN SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) >= 400 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) < 200 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) IS NULL THEN 'STATUS_CODE_ERROR' ELSE 'STATUS_CODE_UNSET' END AS status_code, span.displayName.value AS span_name, CASE WHEN span.attributes.attributeMap.http_url IS NOT NULL THEN span.attributes.attributeMap.http_url ELSE span.attributes.attributeMap._http_path END AS resource, CASE WHEN span.attributes.attributeMap.destination_workload_name IS NOT NULL THEN span.attributes.attributeMap.destination_workload_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_workload_name, CASE WHEN span.attributes.attributeMap.destination_workload_namespace IS NOT NULL THEN span.attributes.attributeMap.destination_workload_namespace ELSE span.attributes.attributeMap.destination_namespace END AS destination_workload_namespace, CASE WHEN span.attributes.attributeMap.destination_name IS NOT NULL THEN span.attributes.attributeMap.destination_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_name, span.attributes.attributeMap.http_headers AS headers, span.attributes.attributeMap._http_status_code AS http_status_code, span.attributes.attributeMap.http_request_payload AS request_payload, span.attributes.attributeMap.http_response AS http_response, CASE WHEN span.attributes.attributeMap.otel_scope_name = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source FROM %s) AS traces_v2`, traceProviderUrl)
@@ -2544,7 +2581,7 @@ var table_metadata = map[string]TableDefinition{
 			traceProvider, traceProviderUrl, hasMaterializedColumn := GetTracesProviderAndUrl(ctx, accountId)
 			baseQuery := fmt.Sprintf(`(SELECT workload_zone, destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, cloud_availability_zone, workload_namespace,workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source FROM %s) AS traces_grouping_v2`, tableName)
 			if !hasMaterializedColumn {
-				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availablity_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, CASE WHEN SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source FROM %s) AS traces_grouping_v2`, tableName)
+				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availablity_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source FROM %s) AS traces_grouping_v2`, traceSourceExpr(tableName), tableName)
 			}
 			if traceProvider == "bigquery" {
 				baseQuery = fmt.Sprintf(`(SELECT span.attributes.attributeMap.source_workload_namespace AS workload_namespace, span.attributes.attributeMap.source_workload_name AS workload_name, span.startTime AS timestamp, span.displayName.value AS span_name, CASE WHEN SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) >= 400 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) < 200 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) IS NULL THEN 'STATUS_CODE_ERROR' ELSE 'STATUS_CODE_UNSET' END AS status_code, span.attributes.attributeMap._http_status_code as http_status_code, TIMESTAMP_DIFF(span.endTime, span.startTime, MICROSECOND) * 1000 AS duration_ns, CASE WHEN span.attributes.attributeMap.http_url IS NOT NULL THEN span.attributes.attributeMap.http_url ELSE span.attributes.attributeMap._http_path END AS resource, CASE WHEN span.attributes.attributeMap.destination_workload_name IS NOT NULL THEN span.attributes.attributeMap.destination_workload_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_workload_name, CASE WHEN span.attributes.attributeMap.destination_workload_namespace IS NOT NULL THEN span.attributes.attributeMap.destination_workload_namespace ELSE span.attributes.attributeMap.destination_namespace END AS destination_workload_namespace FROM %s) AS traces_grouping_v2`, traceProviderUrl)
@@ -5369,6 +5406,15 @@ var table_metadata = map[string]TableDefinition{
 			// Strip "resource_" prefix from column names to match actual DB columns
 			resourcesWhereClause = renameWhereColumns(resourcesWhereClause, "resource_")
 
+			// Per-service spend must NOT be gated by the live-resource status filter
+			// (the Services tab defaults resource_status=Active). A service's period cost
+			// includes resources that are now Deleted — churned mid-period, or billing rows
+			// a later discovery reconciliation mislabelled Deleted. So split the status
+			// predicate out: the resource COUNT keeps the full (status) filter, while the
+			// spend rollup uses this status-agnostic clause. All other resource filters
+			// (service/region/tag) still apply to both.
+			_, resourcesWhereClauseNoStatus := splitWhereClause(resourcesWhereClause, []string{"status"})
+
 			// Reject if remaining contains mixed-family _or/_not filters that reference
 			// pushdown-only columns — these can't be evaluated on the outer query
 			if whereReferencesColumns(remaining, pushdownOnlyColumns) {
@@ -5376,7 +5422,7 @@ var table_metadata = map[string]TableDefinition{
 			}
 
 			request.Where = remaining
-			var spendsWhereStr, recommendationWhereStr, resourceWhereStr string
+			var spendsWhereStr, recommendationWhereStr, resourceWhereStr, resourceWhereStrNoStatus string
 			var err error
 			if hasFilters(spendWhereClause) {
 				tempTableDef := TableDefinition{
@@ -5433,53 +5479,63 @@ var table_metadata = map[string]TableDefinition{
 				recommendationWhereStr = "1 = 1"
 			}
 
-			if hasFilters(resourcesWhereClause) {
-				tempTableDef := TableDefinition{
-					Columns: map[string]ColumnDefinition{
-						"id": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"name": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"status": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"type": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"arn": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"region": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"service_name": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"tags": {
-							Type: ColumnDefinitionTypeJson,
-						},
+			resourceTableDef := TableDefinition{
+				Columns: map[string]ColumnDefinition{
+					"id": {
+						Type: ColumnDefinitionTypeString,
 					},
-					Type:   Normal,
-					Def:    "cloud_resourses",
-					Name:   "cloud_resourses",
-					Source: database.Metastore,
-				}
-				resourceWhereStr, err = generateWhereClause(resourcesWhereClause, tempTableDef)
+					"name": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"status": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"type": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"arn": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"region": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"service_name": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"tags": {
+						Type: ColumnDefinitionTypeJson,
+					},
+				},
+				Type:   Normal,
+				Def:    "cloud_resourses",
+				Name:   "cloud_resourses",
+				Source: database.Metastore,
+			}
+			if hasFilters(resourcesWhereClause) {
+				resourceWhereStr, err = generateWhereClause(resourcesWhereClause, resourceTableDef)
 				if err != nil {
 					return "", request, fmt.Errorf("failed to generate resources where clause: %w", err)
 				}
 			} else {
 				resourceWhereStr = "1 = 1"
 			}
+			// Status-agnostic variant for the spend rollup (see the status split above).
+			if hasFilters(resourcesWhereClauseNoStatus) {
+				resourceWhereStrNoStatus, err = generateWhereClause(resourcesWhereClauseNoStatus, resourceTableDef)
+				if err != nil {
+					return "", request, fmt.Errorf("failed to generate status-agnostic resources where clause: %w", err)
+				}
+			} else {
+				resourceWhereStrNoStatus = "1 = 1"
+			}
 
 			// Push account_id and tenant_id into the CTE so the planner can use
 			// the account/tenant index before the full status+type scan.
 			// extractFilterSQL also removes them from request.Where to avoid
 			// redundant re-application on the outer query.
-			resourceWhereStr += extractFilterSQL(&request, "account_id", "account")
-			resourceWhereStr += extractFilterSQL(&request, "tenant_id", "tenant")
+			accountTenantWhereSQL := extractFilterSQL(&request, "account_id", "account") + extractFilterSQL(&request, "tenant_id", "tenant")
+			resourceWhereStr += accountTenantWhereSQL
+			resourceWhereStrNoStatus += accountTenantWhereSQL
 
 			// Skip joins that aren't needed by this request — avoids scanning
 			// spends/recommendation when the caller only wants resource counts.
@@ -5504,8 +5560,13 @@ var table_metadata = map[string]TableDefinition{
 			}
 
 			if isServiceRollup {
+				spendResourceBaseCTE := ""
 				if needsSpend {
-					spendJoin = `left join (select sum(spends1.spend_amount) as spend_amount, cr2.tenant, cr2.service_name, spends1.cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 join resource_base cr2 on cr2.id = spends1.cloud_resource_id and cr2.account = spends1.cloud_account where __spends__where__ group by cr2.tenant, cr2.service_name, spends1.cloud_account) s on s.tenant = cr.tenant and s.service_name = cr.service_name and s.cloud_account = cr.account`
+					// Aggregate spend against the status-agnostic resource set so a service's
+					// cost includes spend on now-Deleted resources. resource_count below still
+					// comes from the status-filtered resource_base.
+					spendResourceBaseCTE = `, spend_resource_base as (select tenant, account, id, service_name from cloud_resourses where __resources_nostatus__where__)`
+					spendJoin = `left join (select sum(spends1.spend_amount) as spend_amount, cr2.tenant, cr2.service_name, spends1.cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 join spend_resource_base cr2 on cr2.id = spends1.cloud_resource_id and cr2.account = spends1.cloud_account where __spends__where__ group by cr2.tenant, cr2.service_name, spends1.cloud_account) s on s.tenant = cr.tenant and s.service_name = cr.service_name and s.cloud_account = cr.account`
 				}
 				if needsRec {
 					recJoin = `left join (select count(*) as recommendation_count, sum(r1.recommendation_estimated_savings) as recommendation_estimated_savings, r1.cloud_account_id, cr3.tenant, cr3.service_name from (select id as recommendation_id, rule_name as recommendation_rule_name, category as recommendation_category, status as recommendation_status, severity as recommendation_severity, estimated_savings as recommendation_estimated_savings, resource_id, cloud_account_id from recommendation) r1 join resource_base cr3 on cr3.id = r1.resource_id and cr3.account = r1.cloud_account_id where __recommendations__where__ group by cr3.tenant, cr3.service_name, r1.cloud_account_id) r on r.tenant = cr.tenant and r.service_name = cr.service_name and r.cloud_account_id = cr.account`
@@ -5513,7 +5574,7 @@ var table_metadata = map[string]TableDefinition{
 				baseQuery = fmt.Sprintf(`(
 					with resource_base as (
 						select tenant, account, id, service_name from cloud_resourses where __resources__where__
-					)
+					)%s
 					select cr.tenant as tenant_id, cr.account as account_id, cr.service_name
 						, resource_count::int
 						, %s
@@ -5521,7 +5582,7 @@ var table_metadata = map[string]TableDefinition{
 					from (select tenant, account, service_name, count(*) as resource_count from resource_base group by tenant, account, service_name) cr
 					%s
 					%s
-				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
+				) as resource_group`, spendResourceBaseCTE, spendSelect, recSelect, spendJoin, recJoin)
 			} else {
 				if needsSpend {
 					spendJoin = `left join (select sum(spend_amount) as spend_amount, cloud_resource_id, cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 where __spends__where__ group by cloud_resource_id, cloud_account) s on s.cloud_resource_id = cr.id and s.cloud_account = cr.account`
@@ -5540,6 +5601,7 @@ var table_metadata = map[string]TableDefinition{
 				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
 			}
 
+			baseQuery = strings.ReplaceAll(baseQuery, "__resources_nostatus__where__", resourceWhereStrNoStatus)
 			baseQuery = strings.ReplaceAll(baseQuery, "__resources__where__", resourceWhereStr)
 			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
 			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations__where__", recommendationWhereStr)

@@ -387,12 +387,20 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageSt
 			stat.FailedRequests++
 		}
 
-		// Cost is tiered per call (see CalculateTotalCost) on that call's own
-		// prompt size, so it must be computed per record and summed here —
-		// aggregating tokens across the whole conversation first and pricing
-		// the total once would push the combined volume over the long-ctx
-		// threshold even when no single call did, wildly inflating cost.
-		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
+		// Prefer the cost persisted at insert time — the conversation total
+		// (GetConversationTokenUsage) and the Cost Analyser (perCallCostExpr) both
+		// do, so recomputing here made this table contradict the very total it sits
+		// under whenever llm_model_pricing changed after the call was billed.
+		//
+		// Legacy rows with no stored cost fall back to a live recompute. Cost is
+		// tiered per call (see CalculateTotalCost) on that call's own prompt size,
+		// so it must be computed per record and summed here — aggregating tokens
+		// across the whole conversation first and pricing the total once would push
+		// the combined volume over the long-ctx threshold even when no single call
+		// did, wildly inflating cost.
+		if record.CostUsd.Valid {
+			stat.CostUsd += record.CostUsd.Float64
+		} else if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
 			nonCachedTokens := record.InputTokens - record.CachedInputTokens
 			if nonCachedTokens < 0 {
 				nonCachedTokens = 0

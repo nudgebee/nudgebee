@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import CustomPRLink from '@shared/CustomPRLink';
+import PRLink, { resolutionsDeepLink, hasRenderablePRState } from '@shared/links/PRLink';
+import CustomPRLink from '@components/common/CustomPRLink';
 
 describe('CustomPRLink', () => {
   describe('basic rendering', () => {
@@ -98,6 +99,79 @@ describe('CustomPRLink', () => {
       const { container } = render(<CustomPRLink prURL='https://github.com/org/repo/pull/123' />);
       // MUI icons render as SVG elements
       expect(container.querySelector('svg')).toBeInTheDocument();
+    });
+  });
+
+  describe('resolution states without a PR url', () => {
+    it('reports a failed PR attempt instead of rendering nothing', () => {
+      render(<PRLink status='Failed' statusMessage='push rejected' />);
+      expect(screen.getByText('PR Failed')).toBeInTheDocument();
+    });
+
+    it('reports a PR attempt still in progress', () => {
+      render(<PRLink status='InProgress' />);
+      expect(screen.getByText('PR Pending')).toBeInTheDocument();
+    });
+
+    it('reports a terminal success that raised no PR', () => {
+      render(<PRLink status='Success' />);
+      expect(screen.getByText('No PR Needed')).toBeInTheDocument();
+    });
+
+    it('renders nothing for an unknown status', () => {
+      const { container } = render(<PRLink status='Something' />);
+      expect(container.firstChild).toBeNull();
+    });
+
+    it('links a failed attempt to its resolution when a href is given', () => {
+      render(<PRLink status='Failed' resolutionHref='/optimise?id=rec-1#resolutions' />);
+      expect(screen.getByText('PR Failed').closest('a')).toHaveAttribute('href', '/optimise?id=rec-1#resolutions');
+    });
+
+    it('renders a non-clickable chip when no resolution href is available', () => {
+      render(<PRLink status='Failed' />);
+      expect(screen.getByText('PR Failed').closest('a')).toBeNull();
+    });
+
+    it('prefers the PR url over the status when both are present', () => {
+      render(<PRLink prURL='https://github.com/org/repo/pull/7' status='Failed' />);
+      expect(screen.getByText('PR #7')).toBeInTheDocument();
+      expect(screen.queryByText('PR Failed')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('hasRenderablePRState', () => {
+    it.each([
+      ['a url', { type_reference_id: 'https://github.com/org/repo/pull/1' }],
+      ['a failed status', { status: 'Failed' }],
+      ['an in-progress status', { status: 'InProgress' }],
+      ['a success status', { status: 'Success' }],
+    ])('is true for a resolution with %s', (_label, resolution) => {
+      expect(hasRenderablePRState(resolution)).toBe(true);
+    });
+
+    it.each([
+      ['no resolution', undefined],
+      ['a null resolution', null],
+      ['an unrecognised status and no url', { status: 'Something', type_reference_id: '' }],
+    ])('is false for %s, so callers do not render empty chrome', (_label, resolution) => {
+      expect(hasRenderablePRState(resolution)).toBe(false);
+    });
+
+    it('agrees with what PRLink actually renders', () => {
+      const resolution = { status: 'Something' };
+      const { container } = render(<PRLink status={resolution.status} />);
+      expect(container.firstChild === null).toBe(!hasRenderablePRState(resolution));
+    });
+  });
+
+  describe('resolutionsDeepLink', () => {
+    it('scopes the Resolutions listing to a recommendation', () => {
+      expect(resolutionsDeepLink('rec-1')).toBe('/optimise?id=rec-1#resolutions');
+    });
+
+    it('returns an empty href when there is no recommendation to scope by', () => {
+      expect(resolutionsDeepLink(undefined)).toBe('');
     });
   });
 });

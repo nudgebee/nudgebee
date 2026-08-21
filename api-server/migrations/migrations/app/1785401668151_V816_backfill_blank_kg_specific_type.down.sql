@@ -1,0 +1,7 @@
+-- Intentional no-op. Once backfilled, a specific_type = 'Service' (etc.) row
+-- OSS ordering note: paired with the post-schema backfill at version 1785401668151.
+-- is indistinguishable from a row that was always correctly defaulted to its
+-- own node_type by core.NewNode — there is no way to tell which rows this
+-- migration touched. Reverting by blanking specific_type back to '' would
+-- reintroduce the exact bug being fixed, not undo a schema change. If this
+-- needs to be rolled back, do it by restoring from a pre-migration backup.

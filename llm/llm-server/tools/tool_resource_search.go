@@ -86,6 +86,47 @@ var k8sResourceTypeMappings = map[string][]string{
 	"podsecuritypolicy":  {"podsecuritypolicies", "psp"},
 	"storageclass":       {"storageclasses", "sc"},
 	"crd":                {"customresourcedefinitions", "crds"},
+	"replicaset":         {"replicasets", "rs"},
+}
+
+// k8sTypeStopwords is the set of Kubernetes resource-TYPE and scope words (every
+// kind + alias + plural from k8sResourceTypeMappings, which includes
+// namespace/ns). A query term that is a type/scope word ("deployments",
+// "nodes", "namespace") is NOT a resource identity, so the relevance filter must
+// not match it against resource names — doing so over-prunes valid results to a
+// false "No resources found". Derived from the single source of truth so it
+// never drifts as kinds are added there.
+var k8sTypeStopwords = func() map[string]bool {
+	// Spellings the plural-oriented mappings lack (they key on the short/plural
+	// form): the "workloads" plural and the long singular forms, plus the plurals
+	// of the generic infra/scope descriptors ("apps", "servers", …) whose singular
+	// forms are filler words — a query like "list apps in nudgebee" must not treat
+	// "apps" as an identity to match resource names against.
+	m := map[string]bool{
+		"workloads":                true,
+		"persistentvolume":         true,
+		"persistentvolumeclaim":    true,
+		"customresourcedefinition": true,
+		"apps":                     true,
+		"servers":                  true,
+		"apis":                     true,
+		"clusters":                 true,
+		"clouds":                   true,
+	}
+	for kind, aliases := range k8sResourceTypeMappings {
+		m[kind] = true
+		for _, a := range aliases {
+			m[a] = true
+		}
+	}
+	return m
+}()
+
+// IsK8sTypeOrScopeWord reports whether w is a Kubernetes resource-type or scope
+// word (kind / alias / plural, or namespace). Such words must not be treated as
+// resource-name match terms by the relevance filter. Case-insensitive.
+func IsK8sTypeOrScopeWord(w string) bool {
+	return k8sTypeStopwords[strings.ToLower(strings.TrimSpace(w))]
 }
 
 // Pre-computed lookup tables built once at init from k8sResourceTypeMappings.
@@ -1491,7 +1532,10 @@ func (r K8sResourceSearchTool) filterResourcesByRelevance(resources []K8sResourc
 	var terms []string
 	add := func(t string) {
 		t = strings.ToLower(strings.TrimSpace(t))
-		if len(t) >= 3 && !genericTerms[t] && !seen[t] {
+		// Skip type/scope words ("deployments", "namespace", "nodes", …) — they
+		// describe kind/scope, not a resource identity, so matching resource
+		// names against them over-prunes valid results to a false empty.
+		if len(t) >= 3 && !genericTerms[t] && !k8sTypeStopwords[t] && !seen[t] {
 			seen[t] = true
 			terms = append(terms, t)
 		}
@@ -1499,8 +1543,11 @@ func (r K8sResourceSearchTool) filterResourcesByRelevance(resources []K8sResourc
 
 	queryLower := strings.ToLower(query)
 	add(queryLower)
+	// Split on spaces too, not just -/_/. — a multi-word query like "llm server"
+	// must yield the "llm" term (which matches "llm-server-abc"); otherwise the
+	// whole "llm server" string is the only term and matches no hyphenated name.
 	for _, part := range strings.FieldsFunc(queryLower, func(c rune) bool {
-		return c == '-' || c == '_' || c == '.'
+		return c == '-' || c == '_' || c == '.' || c == ' '
 	}) {
 		add(part)
 	}
@@ -1511,7 +1558,7 @@ func (r K8sResourceSearchTool) filterResourcesByRelevance(resources []K8sResourc
 
 	var filtered []K8sResourceInfo
 	for _, res := range resources {
-		if ResourceNameMatchesTerms(res.Name, terms) {
+		if ResourceMatchesTerms(res.Name, res.Namespace, terms) {
 			filtered = append(filtered, res)
 		}
 	}
@@ -1528,6 +1575,49 @@ func ResourceNameMatchesTerms(name string, terms []string) bool {
 		}
 	}
 	return false
+}
+
+// ResourceMatchesTerms returns true when the resource's name OR namespace
+// contains at least one of the provided terms (case-insensitive). Matching the
+// namespace too is what keeps namespace-scoped results — a query like "pods in
+// nudgebee namespace" returns pods whose NAMESPACE is nudgebee even though their
+// NAMES don't contain "nudgebee"; name-only matching dropped them all and turned
+// a valid search into a false "No resources found". The relevance guard still
+// holds: results in a different namespace with a non-matching name are dropped.
+func ResourceMatchesTerms(name, namespace string, terms []string) bool {
+	lowerNS := strings.ToLower(namespace)
+	for _, t := range terms {
+		// WHOLE-VALUE equality on the scope field, not substring: a namespace is a
+		// discrete scope, so a common token ("prod", "west") that merely appears
+		// inside it must NOT match — otherwise one incidental term keeps every
+		// resource in that namespace and floods the result. Names still use
+		// substring (below), where partial matches ("checkout" → "checkout-svc")
+		// are intended.
+		if t == lowerNS {
+			return true
+		}
+	}
+	return ResourceNameMatchesTerms(name, terms)
+}
+
+// CloudResourceMatchesTerms is the cloud analog of ResourceMatchesTerms: a cloud
+// resource is relevant when its name, service, OR region contains a query term —
+// so "rds databases in us-west-2" keeps an RDS instance whose NAME lacks "rds"
+// but whose service (rds) / region (us-west-2) match. Guard intact: resources in
+// an unrelated service/region with a non-matching name are still dropped.
+func CloudResourceMatchesTerms(name, service, region string, terms []string) bool {
+	lowerSvc := strings.ToLower(service)
+	lowerRegion := strings.ToLower(region)
+	for _, t := range terms {
+		// WHOLE-VALUE equality on service/region, not substring: a term like
+		// "west" (from "west-coast-app") must NOT match region "us-west-2" and keep
+		// every resource in that region. Only an exact service ("rds") or region
+		// ("us-west-2") term matches the scope; names still use substring below.
+		if t == lowerSvc || t == lowerRegion {
+			return true
+		}
+	}
+	return ResourceNameMatchesTerms(name, terms)
 }
 
 // removeDuplicateResources removes duplicate resources from the slice

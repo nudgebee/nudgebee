@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
@@ -115,7 +115,8 @@ const transformTableData = (
   accountType: string,
   dateRange: DateRange,
   onMenuClick: (menuItem: any, data: any) => void,
-  onStatusChange?: () => void,
+  onStatusChange?: (eventId: string, newStatus: string, snoozedUntil?: string) => void,
+  onPriorityChange?: (eventId: string, newPriority: string | null, newScore?: number | null, newFactors?: unknown) => void,
   onCreateTicket?: (item: any) => void,
   onClassify?: (item: any, classificationType: string) => void,
   ticketMap?: Map<string, any>,
@@ -212,8 +213,9 @@ const transformTableData = (
                 accountId={item.account_id}
                 currentPriority={item.latest_computed_priority}
                 currentScore={item.latest_computed_score}
+                currentScoreFactors={item.latest_score_factors}
                 canWrite={canWrite}
-                onChanged={onStatusChange}
+                onChanged={(newPriority, newScore, newFactors) => onPriorityChange?.(item.latest_event_id, newPriority, newScore, newFactors)}
               />
             </Box>
           ),
@@ -223,11 +225,11 @@ const transformTableData = (
             <NBStatusBadge
               eventId={item.latest_event_id}
               currentStatus={item.latest_nb_status}
-              onStatusChange={onStatusChange}
+              onStatusChange={(newStatus) => onStatusChange?.(item.latest_event_id, newStatus)}
               onCreateTicket={() => onCreateTicket?.(item)}
               disabled={!canWrite}
               disableSnoozeTooltip
-              tooltipTitle={getTriageStatusTooltip(item.latest_nb_status)}
+              tooltipTitle={getTriageStatusTooltip(item.latest_nb_status, item.latest_snoozed_until)}
             />
           ),
         },
@@ -315,7 +317,7 @@ const transformTableData = (
         { component: <Text value={item.count_aggregation_key ?? '-'} /> },
         {
           component: (
-            <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status)} placement='top'>
+            <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status, item.latest_snoozed_until)} placement='top'>
               <Box>
                 <Label margin='auto' text={appNbStatus.label} variant={appNbStatus.variant} />
               </Box>
@@ -354,7 +356,7 @@ const transformTableData = (
       { component: <Text value={item.count_subject_name ?? '-'} /> },
       {
         component: (
-          <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status)} placement='top'>
+          <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status, item.latest_snoozed_until)} placement='top'>
             <Box>
               <Label margin='auto' text={eventTypeNbStatus.label} variant={eventTypeNbStatus.variant} />
             </Box>
@@ -575,6 +577,27 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     [handleClassifyClose]
   );
 
+  const handlePriorityChange = useCallback((eventId: string, newPriority: string | null, newScore?: number | null, newFactors?: unknown) => {
+    setRawEventGroupings((prev) =>
+      prev.map((row) =>
+        row.latest_event_id === eventId
+          ? {
+              ...row,
+              latest_computed_priority: newPriority,
+              ...(newScore !== undefined ? { latest_computed_score: newScore } : {}),
+              ...(newFactors !== undefined ? { latest_score_factors: newFactors } : {}),
+            }
+          : row
+      )
+    );
+  }, []);
+
+  const handleNBStatusChange = useCallback((eventId: string, newStatus: string, snoozedUntil?: string) => {
+    setRawEventGroupings((prev) =>
+      prev.map((row) => (row.latest_event_id === eventId ? { ...row, latest_nb_status: newStatus, latest_snoozed_until: snoozedUntil ?? null } : row))
+    );
+  }, []);
+
   const closeTicketCreateForm = useCallback(() => {
     setIsTicketCreateFormOpen(false);
     setTicketData(null);
@@ -754,7 +777,6 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   }, [groupEventType, isTroubleshootPage]);
 
   // 3. Main Data Fetching
-  const fetchTableDataRef = useRef<() => Promise<void>>();
 
   const fetchTableData = useCallback(async () => {
     if (!selectedAccountId.length && !isTroubleshootPage) {
@@ -810,6 +832,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         'latest_score_factors',
         'latest_computed_score',
         'latest_nb_status',
+        'latest_snoozed_until',
         'latest_title',
         'is_new_issue',
         'fingerprint_first_seen_at',
@@ -827,6 +850,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         'distinct_status',
         'account_id',
         'latest_nb_status',
+        'latest_snoozed_until',
         'latest_computed_score',
       ];
       groupCols = ['tenant_id', 'account_id', 'subject_name', 'subject_namespace'];
@@ -840,6 +864,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         'count_subject_name',
         'account_id',
         'latest_nb_status',
+        'latest_snoozed_until',
         'latest_computed_score',
       ];
       groupCols = ['tenant_id', 'account_id', 'aggregation_key'];
@@ -916,9 +941,6 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     fetchTableData();
   }, [fetchTableData]);
 
-  // Keep ref updated for use in table row callbacks
-  fetchTableDataRef.current = fetchTableData;
-
   // Derive table data from raw API response + display dependencies (no API call)
   const tableData = useMemo(
     () =>
@@ -930,7 +952,8 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         resolvedAccountType,
         selectedDateRange,
         onMenuClick,
-        () => fetchTableDataRef.current?.(),
+        handleNBStatusChange,
+        handlePriorityChange,
         (item: any) => {
           setTicketData(item);
           setIsTicketCreateFormOpen(true);
@@ -947,6 +970,8 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       resolvedAccountType,
       selectedDateRange,
       onMenuClick,
+      handleNBStatusChange,
+      handlePriorityChange,
       handleClassifySelect,
       ticketReferenceMap,
       selectedNBStatus,

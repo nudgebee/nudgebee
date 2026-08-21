@@ -151,6 +151,12 @@ func (l *LogAgent) buildToolList(ctx *security.RequestContext) []toolcore.NBTool
 	if config.Config.LlmServerShellToolEnabled {
 		names = append(names, toolcore.ToolExecuteShellCommand)
 	}
+	// standard_diagnostic_grep is no longer exposed to the LLM — the bundle
+	// now fires deterministically inside fetch_logs when the query wording
+	// asks for error content, and the result rides back in the fetch
+	// envelope's `bundle_signal` field. Advertising the tool here would let
+	// the LLM issue a redundant second call for the bundle it already has
+	// in hand. See runAutoDiagnosticBundle in agent_log_fetch.go.
 	var tl []toolcore.NBTool
 	for _, name := range names {
 		if t, ok := toolcore.GetNBTool(l.accountId, name); ok {
@@ -227,13 +233,18 @@ func sharedHeaderAndWorkflow() []string {
 // routineInstructions returns the body for MODE = ROUTINE: a single small
 // fetch, no shell_execute pass, no widening. Investigation/enumeration blocks
 // are not included.
+//
+// The fetch_logs envelope carries a pre-computed `bundle_signal` field when
+// the user's query wording asked for error content — the LLM just reads it
+// out of the response, no separate tool call needed.
 func routineInstructions() []string {
 	return []string{
 		"**Workflow (Routine):**",
 		"  3. **Single fetch is enough.** Phrase the NL question using the right label depending on whether the user gave a hashed pod name or an app/deployment name (see Label-anchor rules below). Keep limits small (200-1000 lines).",
 		labelAnchorRules(),
-		"  4. **No shell_execute pass.** Read the fetch_logs response inline and answer.",
-		"  5. **No widening on empty result.** If the small fetch returns nothing for the user's window, say so explicitly — this mode is for routine viewing, not investigation.",
+		"  4. **Read the fetch response — including the pre-computed bundle_signal.** The fetch_logs envelope carries a `bundle_signal` field. When it's non-empty (the user asked for error content), it holds a category-tagged sweep (error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx) computed server-side against the saved file — use its output as the body of your answer without issuing your own grep. When it's empty, answer from the inline logs directly.",
+		"  5. **Envelope is the answer.** Rely entirely on the fetch response (inline logs + `bundle_signal` when present) for your reply. The envelope already contains the categorised signal, so a follow-up shell_execute grep would only re-derive what you already have.",
+		"  6. **No widening on empty result.** If the small fetch returns nothing for the user's window, say so explicitly — this mode is for routine viewing, not investigation.",
 	}
 }
 
@@ -252,21 +263,34 @@ func investigationInstructions(shellEnabled bool) []string {
 	}
 
 	if shellEnabled {
+		// The fetch_logs envelope carries `bundle_signal` — a pre-computed
+		// category sweep that runs deterministically server-side whenever
+		// the query wording asks for error content. That obsoletes the old
+		// "please call standard_diagnostic_grep first" step and saves an
+		// LLM turn. If the bundle signal is clear the LLM can answer from
+		// it directly; if it's thin or ambiguous, the manual Call A + B
+		// pass below still runs.
+		if config.Config.LogsStandardGrepEnabled {
+			out = append(out,
+				"  4a. **Read `bundle_signal` first (fastest path).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side sweep across error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx categories against the saved file. When it's non-empty and shows a clear signal (matches concentrated in one category with a visible transition timestamp), skip step 4 below and go straight to the WHEN report. When it's empty (bundle didn't fire — query wording wasn't error-adjacent) or thin (matches scattered across categories, no clear timestamp cluster), fall through to step 4 for the manual Call A+B pass and any domain-aware patterns. Use the provided bundle output directly — the server has already run the sweep.",
+			)
+		}
 		out = append(out,
 			"  4. **Mandatory shell_execute pass (NOT optional for this mode).** When `fetch_logs` returns a non-empty `file_ref`, you MUST run AT LEAST TWO `shell_execute` calls before producing a final answer. Call A and Call B read the SAME file with different patterns and are INDEPENDENT — **emit BOTH in ONE iteration as a single parallel batch** (do NOT wait for A's result before issuing B); correlate their outputs afterward once both return:",
+			"     **Never batch a `fetch_logs` call together with a `shell_execute` grep on the file_ref it is expected to return — not here, not anywhere else in this workflow.** `file_ref` only exists once `fetch_logs` actually finishes; a grep queued in the same iteration cannot know the real value and will target a file that hasn't been written yet, producing `No such file or directory` even though your command is otherwise correct. Call A and Call B are safe to batch because they both read a file_ref `fetch_logs` has ALREADY returned in a prior, completed step — always let a `fetch_logs` call finish and observe its `file_ref` before grepping it, in the NEXT iteration.",
 			"     Call A — scan for the error transition:",
 			"       `grep -nE \"ERROR|FATAL|PANIC|exception|traceback\" <file_ref> | head -20`",
 			"       Once it returns, note the timestamp on the first matching line — that is the transition point.",
 			"     Call B — scan for the trigger:",
 			"       `grep -nE \"reload|reconfigur|deploy|rollout|secret.rotat|config.changed|started|loaded|env|config\" <file_ref> | head -20`",
 			"       The trigger usually lives in WARN/INFO/CONFIG lines that Call A skipped; after both return, pick the trigger line that immediately precedes Call A's transition point.",
-			"  5. **Second-pass targeted antecedent fetch (only if Call A finds an error timestamp).** Call fetch_logs again with `\"all logs for <pod> in <namespace> from <T-5min> to <T>, limit 500, in chronological forward order\"`. This pulls the trigger context (config reload, deploy, secret rotation) immediately preceding the error — bounded by explicit `start_time`/`end_time`, so forward+limit is safe. Then re-run Call B's grep on the new file_ref. Skip if Call B already found a clear trigger.",
+			"  5. **Second-pass targeted antecedent fetch (only if Call A finds an error timestamp).** Call fetch_logs again with `\"all logs for <pod> in <namespace> from <T-5min> to <T>, limit 500, in chronological forward order\"`. This pulls the trigger context (config reload, deploy, secret rotation) immediately preceding the error — bounded by explicit `start_time`/`end_time`, so forward+limit is safe. Wait for this call to complete and observe its `file_ref`, THEN re-run Call B's grep on it as a separate, later iteration — never in the same batch as this fetch_logs call. Skip if Call B already found a clear trigger.",
 			"  6. **Empty-result recovery (MANDATORY two-step — DO NOT skip):**",
 			"     Step E1 — re-grep with case-insensitive + broader keywords on the SAME file:",
 			"       `grep -inE \"error|fail|fatal|panic|exception|traceback|connection.refused|connectionerror|cannot.connect|timed.out|timeout|denied|unreachable\" <file_ref> | head -20`",
 			"       The default Call A pattern is case-sensitive and misses mixed-case wording (e.g. `ConnectionError`, `Connection refused`) and protocol idioms (`timed out`, `unreachable`).",
 			"     Step E2 — only if Step E1 is also empty, widen the fetch:",
-			"       Re-call fetch_logs with `\"all logs for <pod> in <namespace> last 7d, limit 5000\"` (widen the *window*, not the limit — 5000 is the recommended max across providers), then re-run the Step E1 grep on the new file_ref.",
+			"       Re-call fetch_logs with `\"all logs for <pod> in <namespace> last 7d, limit 5000\"` (widen the *window*, not the limit — 5000 is the recommended max across providers). Wait for it to complete, THEN re-run the Step E1 grep on the new file_ref in a later iteration — never in the same batch as this fetch_logs call.",
 			"       If the user's question or any earlier observation mentions a specific timestamp, ALSO issue a narrower targeted fetch around that timestamp.",
 			"     **Strict prohibitions:**",
 			"       - Do NOT substitute kubectl events, deployment status, or rollout history for a wider log fetch. Events ≠ logs. The critic rejects \"no issues\" answers based on event checks alone.",
@@ -315,6 +339,17 @@ func enumerationInstructions(shellEnabled bool) []string {
 	}
 
 	if shellEnabled {
+		// The fetch_logs envelope's `bundle_signal` field already gives us
+		// a category-tagged sweep for the well-known failure axes (crash /
+		// network / oom / …) — exactly what enumeration wants. Present
+		// those categories directly, then use the manual per-signature
+		// pipeline (step 4) to pick up tail signatures the bundle doesn't
+		// know about (custom app errors, service-specific tokens).
+		if config.Config.LogsStandardGrepEnabled {
+			out = append(out,
+				"  3a. **Read `bundle_signal` first (fastest path for enumeration).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side category sweep against the saved file. When it's non-empty, present those categories directly in your final answer using their tag names (error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx). Then run step 4 below only for signatures the bundle didn't cover (custom application errors, service-specific tokens) — focus step 4 exclusively on the tail patterns absent from the bundle output. When `bundle_signal` is empty (bundle didn't fire — query wording wasn't error-adjacent) start with step 4.",
+			)
+		}
 		out = append(out,
 			"  4. **Per-signature aggregation pipeline (MANDATORY — without this you miss error categories):**",
 			"     ```",
@@ -443,13 +478,35 @@ func (m LogAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 	}
 
 	resp, err := core.ExecuteAgentToolCall(nbRequestContext, agent, input)
+	return buildLogToolResponse(nbRequestContext, agent, input, resp, err)
+}
+
+// buildLogToolResponse shapes ExecuteAgentToolCall's result into the
+// NBToolResponse this tool returns. Split out from Call() so the shaping
+// logic — in particular that every return path carries AdditionalDetails —
+// is directly unit-testable against hand-built resp/err values, without
+// needing to run the real LogAgent (LLM calls, DB-backed
+// ExecuteAgentToolCall). See TestBuildLogToolResponse_AdditionalDetails.
+func buildLogToolResponse(nbRequestContext toolcore.NbToolContext, agent core.NBAgent, input toolcore.NBToolCallRequest, resp core.NBAgentResponse, err error) (toolcore.NBToolResponse, error) {
+	// Use the canonical "agent_id"/"message_id" keys the planner-callback
+	// persistence layer reads (planner_callback_handler.go, factory_agent.go)
+	// to populate child_agent_id on the saved tool_call row — without them the
+	// UI conversation tree (conversation_tree.go) can't nest this call's
+	// sub-tool calls (fetch_logs, shell_execute, resource_search) under the
+	// `logs` node. This wrapper bypasses factory_agent's generic Call(), which
+	// sets these on every return path; agent_delegate.go hit and fixed the
+	// same bug class for delegate_agent.
+	additionalDetails := map[string]any{
+		"agent_id":   resp.AgentId,
+		"message_id": resp.MessageId,
+	}
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("log: unable to process events request", "error", err, "input", input)
-		return toolcore.NBToolResponse{}, err
+		return toolcore.NBToolResponse{AdditionalDetails: additionalDetails, References: resp.References}, err
 	}
 
 	if len(resp.Response) == 0 {
-		return toolcore.NBToolResponse{}, toolcore.ErrUnableToFetchData
+		return toolcore.NBToolResponse{AdditionalDetails: additionalDetails, References: resp.References}, toolcore.ErrUnableToFetchData
 	}
 
 	logData := resp.Response[0]
@@ -497,11 +554,12 @@ func (m LogAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 
 	if _, ok := agent.(core.NBAgentReActPlannerSummaryToolProvider); ok {
 		return toolcore.NBToolResponse{
-			Data:             logData,
-			Type:             toolcore.NBToolResponseTypeText,
-			Status:           toolcore.NBToolResponseStatusSuccess,
-			References:       references,
-			SubAgentEvidence: subAgentEvidence,
+			Data:              logData,
+			Type:              toolcore.NBToolResponseTypeText,
+			Status:            toolcore.NBToolResponseStatusSuccess,
+			References:        references,
+			SubAgentEvidence:  subAgentEvidence,
+			AdditionalDetails: additionalDetails,
 		}, nil
 	}
 
@@ -515,19 +573,21 @@ func (m LogAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 				respType = toolcore.NBToolResponseTypeText
 			}
 			return toolcore.NBToolResponse{
-				Data:             respData,
-				Type:             respType,
-				Status:           toolcore.NBToolResponseStatusSuccess,
-				References:       references,
-				SubAgentEvidence: subAgentEvidence,
+				Data:              respData,
+				Type:              respType,
+				Status:            toolcore.NBToolResponseStatusSuccess,
+				References:        references,
+				SubAgentEvidence:  subAgentEvidence,
+				AdditionalDetails: additionalDetails,
 			}, nil
 		}
 	}
 	return toolcore.NBToolResponse{
-		Data:             logData,
-		Type:             toolcore.NBToolResponseTypeText,
-		Status:           toolcore.NBToolResponseStatusSuccess,
-		References:       references,
-		SubAgentEvidence: subAgentEvidence,
+		Data:              logData,
+		Type:              toolcore.NBToolResponseTypeText,
+		Status:            toolcore.NBToolResponseStatusSuccess,
+		References:        references,
+		AdditionalDetails: additionalDetails,
+		SubAgentEvidence:  subAgentEvidence,
 	}, nil
 }

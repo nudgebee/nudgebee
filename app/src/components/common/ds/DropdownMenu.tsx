@@ -140,7 +140,7 @@ const SearchIcon: React.FC = () => (
     height='12'
     viewBox='0 0 12 12'
     fill='none'
-    style={{ opacity: 0.35, position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }}
+    style={{ opacity: 0.35, position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', zIndex: 1 }}
   >
     <circle cx='5' cy='5' r='4' stroke='currentColor' strokeWidth='1.5' />
     <line x1='8' y1='8' x2='11' y2='11' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />

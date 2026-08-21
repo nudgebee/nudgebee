@@ -904,17 +904,18 @@ const usageFilterFrom = `
 	INNER JOIN llm_conversations c ON c.id = t.conversation_id`
 
 // UsageFilterOption is an id+display-name pair for dimensions the UI shows by
-// name but filters by id (users, accounts).
+// name but filters by id (users, accounts). CloudProvider is set for accounts
+// only — it groups the account dropdown by provider and picks its logo.
 type UsageFilterOption struct {
-	ID   string `db:"id" json:"id"`
-	Name string `db:"name" json:"name"`
+	ID            string `db:"id" json:"id"`
+	Name          string `db:"name" json:"name"`
+	CloudProvider string `db:"cloud_provider" json:"cloud_provider,omitempty"`
 }
 
 // UsageFilters is the option-set payload that populates the Cost Analyser
 // filter bar. String dimensions are filtered by value directly; users/accounts
-// are filtered by id. Every list is scoped to the account+date window so the
-// dropdowns only offer values that actually have data — except accounts, which
-// lists everything the caller may read so it can be used as the scope itself.
+// are filtered by id. Every list — accounts included — is scoped to the date
+// window so the dropdowns only offer values that actually have data.
 type UsageFilters struct {
 	Sources   []string            `json:"sources"`
 	Models    []string            `json:"models"`
@@ -926,9 +927,15 @@ type UsageFilters struct {
 }
 
 // GetUsageFilters returns the distinct filter values present in the account+date
-// window, plus the caller's accessible accounts. `col` arguments are trusted
-// constants, never caller input.
-func (chat *ConversationDao) GetUsageFilters(filter UsageMetricsFilter) (UsageFilters, error) {
+// window. `col` arguments are trusted constants, never caller input.
+//
+// The account list is built from a different scope than the rest: `filter.AccountIDs`
+// is the *selected* scope (one account once the user picks one), while the account
+// dropdown must keep offering every account the caller may read — hence
+// readableAccountIDs. selectedAccountIDs is what the caller explicitly asked for
+// (empty = all) and only keeps an active selection visible when it has no data in
+// the window; see the account query below.
+func (chat *ConversationDao) GetUsageFilters(filter UsageMetricsFilter, readableAccountIDs, selectedAccountIDs []string) (UsageFilters, error) {
 	result := UsageFilters{
 		Sources:   []string{},
 		Models:    []string{},
@@ -992,17 +999,32 @@ func (chat *ConversationDao) GetUsageFilters(filter UsageMetricsFilter) (UsageFi
 	}
 	result.Users = users
 
-	// Accounts the caller may read, resolved to a name — independent of the
-	// date window because this dropdown defines the scope. Only ACTIVE accounts
+	// Accounts the caller may read, resolved to a name + cloud provider (the UI
+	// groups the dropdown by provider and shows its logo). Only ACTIVE accounts
 	// are offered (status ∈ active|disabled|inactive); disabled/inactive accounts
 	// are hidden from the scope picker.
+	//
+	// Candidates are ALL readable accounts, not filter.AccountIDs — that one is the
+	// selected scope, so keying off it would collapse the dropdown to the single
+	// account already chosen. Of those, only accounts with usage in the window are
+	// offered, matching every other dropdown here; the currently-selected account is
+	// kept regardless so an active scope stays visible (and clearable) after the
+	// window moves off its data.
 	accountQuery := `
-		SELECT id::text AS id, COALESCE(account_name, id::text) AS name
-		FROM cloud_accounts
-		WHERE id = ANY($1::uuid[]) AND status = 'active'
+		SELECT ca.id::text AS id,
+			COALESCE(ca.account_name, ca.id::text) AS name,
+			COALESCE(ca.cloud_provider, '') AS cloud_provider
+		FROM cloud_accounts ca
+		WHERE ca.id = ANY($1::uuid[]) AND ca.status = 'active'
+			AND (ca.id = ANY($4::uuid[]) OR EXISTS (
+				SELECT 1
+				FROM llm_conversations c
+				INNER JOIN llm_conversation_token_usage t ON t.conversation_id = c.id
+				WHERE c.account_id = ca.id AND c.created_at >= $2 AND c.created_at <= $3))
 		ORDER BY name`
 	accounts := []UsageFilterOption{}
-	if err = chat.dbManager.Db.Select(&accounts, accountQuery, pq.Array(filter.AccountIDs)); err != nil {
+	if err = chat.dbManager.Db.Select(&accounts, accountQuery,
+		pq.Array(readableAccountIDs), filter.StartDate, filter.EndDate, pq.Array(selectedAccountIDs)); err != nil {
 		slog.Error("GetUsageFilters: accounts query failed", "error", err)
 		return UsageFilters{}, fmt.Errorf("GetUsageFilters accounts: %w", err)
 	}
@@ -1033,12 +1055,24 @@ func HandleUsageFiltersApi(ctx *security.RequestContext, request UsageFiltersReq
 	if err != nil {
 		return UsageFilters{}, err
 	}
+	// The account dropdown offers every readable account, not just the selected
+	// one — so when the caller scoped the request to an account, resolve the
+	// unscoped set too. With nothing selected the two are the same list already.
+	// `selectedAccountIDs` takes the resolved (permission-checked, blank-stripped)
+	// ids rather than the raw request, which may carry an empty string.
+	readableAccountIDs, selectedAccountIDs := accountIDs, []string{}
+	if len(request.AccountIds) > 0 {
+		selectedAccountIDs = accountIDs
+		if readableAccountIDs, err = resolveAccessibleAccounts(ctx, nil); err != nil {
+			return UsageFilters{}, err
+		}
+	}
 
 	return GetConversationDao().GetUsageFilters(UsageMetricsFilter{
 		AccountIDs: accountIDs,
 		StartDate:  startDate,
 		EndDate:    endDate,
-	})
+	}, readableAccountIDs, selectedAccountIDs)
 }
 
 // --- Conversation cost list (explorer) -------------------------------------
@@ -1057,6 +1091,7 @@ var conversationSortColumns = map[string]string{
 	"duration":   "wall_clock_seconds",
 	"llm_calls":  "llm_call_count",
 	"tokens":     "input_tokens",
+	"latency":    "avg_latency_seconds",
 }
 
 // ConversationModelStat is one model's rolled-up calls + cost within a single
@@ -1073,6 +1108,9 @@ type ConversationModelStat struct {
 
 // ConversationCostRow is one explorer row: a conversation with its rolled-up
 // cost, tokens, models, and structural counts (messages/agents/llm calls).
+// AvgLatencySeconds (total model time ÷ llm calls) is the per-call figure the
+// list's Latency column shows — returned so that column and the server-side
+// "latency" ORDER BY rank on exactly the same value.
 type ConversationCostRow struct {
 	ConversationID        string                  `json:"conversation_id"`
 	SessionID             string                  `json:"session_id"`
@@ -1085,6 +1123,7 @@ type ConversationCostRow struct {
 	EndedAt               time.Time               `json:"ended_at"`
 	WallClockSeconds      float64                 `json:"wall_clock_seconds"`
 	TotalModelTimeSeconds float64                 `json:"total_model_time_seconds"`
+	AvgLatencySeconds     float64                 `json:"avg_latency_seconds"`
 	CostUsd               float64                 `json:"cost_usd"`
 	InputTokens           int64                   `json:"input_tokens"`
 	OutputTokens          int64                   `json:"output_tokens"`
@@ -1124,6 +1163,7 @@ type conversationCostScan struct {
 	UpdatedAt             sql.NullTime   `db:"updated_at"`
 	WallClockSeconds      float64        `db:"wall_clock_seconds"`
 	TotalModelTimeSeconds float64        `db:"total_model_time_seconds"`
+	AvgLatencySeconds     float64        `db:"avg_latency_seconds"`
 	CostUsd               float64        `db:"cost_usd"`
 	InputTokens           int64          `db:"input_tokens"`
 	OutputTokens          int64          `db:"output_tokens"`
@@ -1205,6 +1245,7 @@ func (chat *ConversationDao) ListConversationCosts(filter UsageMetricsFilter, so
 				WHERE m.conversation_id = c.id
 			), 0)                                            AS wall_clock_seconds,
 			COALESCE(SUM(t.latency_seconds), 0)              AS total_model_time_seconds,
+			COALESCE(SUM(t.latency_seconds) / NULLIF(COUNT(t.id), 0), 0) AS avg_latency_seconds,
 			COALESCE(SUM(%s), 0)                             AS cost_usd,
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
@@ -1248,6 +1289,7 @@ func (chat *ConversationDao) ListConversationCosts(filter UsageMetricsFilter, so
 			StartedAt:             s.CreatedAt,
 			WallClockSeconds:      s.WallClockSeconds,
 			TotalModelTimeSeconds: s.TotalModelTimeSeconds,
+			AvgLatencySeconds:     s.AvgLatencySeconds,
 			CostUsd:               s.CostUsd,
 			InputTokens:           s.InputTokens,
 			OutputTokens:          s.OutputTokens,

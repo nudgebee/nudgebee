@@ -102,14 +102,11 @@ function shouldAuthenticate(body: any) {
 }
 
 function handleErrorResponse(error: any, res: NextApiResponse, traceParent: string) {
-  console.log('api error', error);
-  res
-    .status(error.status || 500)
-    .setHeader('traceparent', traceParent)
-    .json({
-      code: error.code,
-      error: error.message,
-    });
+  console.error('Slack install error:', error);
+  res.status(500).setHeader('traceparent', traceParent).json({
+    code: 'internal_error',
+    error: 'Internal Server Error',
+  });
 }
 
 async function validateAndReturnResponse(proxyResponse: Response | null, res: NextApiResponse, traceParent: string) {

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"nudgebee/services/query"
 )
 
 // The WHERE-built query carried no time bound / size / sort, so Elasticsearch
@@ -96,6 +98,33 @@ func TestFinalizeESLogQueryBody_OffsetSetsFrom(t *testing.T) {
 func TestFinalizeESLogQueryBody_InvalidJSON(t *testing.T) {
 	if _, err := finalizeESLogQueryBody("not json", 0, 0, 0, 0, nil); err == nil {
 		t.Fatalf("expected parse error for invalid JSON")
+	}
+}
+
+// A filter the DSL builder cannot render must fail, never silently widen to a
+// match_all over the time window. The reported case: the IS NULL chip is
+// value-less, so the UI sent {"_is_null": ""}; binaryToESClause rejected the
+// non-boolean, FetchLogs logged the GetQuery error and carried on with an empty
+// Query, and finalizeESLogQueryBody turned that into match_all — so a query
+// asking for documents WITHOUT elastic_agent.version came back full of
+// documents that have it. The error must also name the reason so the UI can
+// show it.
+func TestElasticSaasQueryLogs_RefusesUnrenderableFilter(t *testing.T) {
+	src := &ElasticSaasSource{}
+	_, err := src.QueryLogs(nil, FetchLogRequest{
+		AccountId: "acc",
+		Request:   map[string]any{"query_type": "dsl", "index": "logs-*"},
+		QueryRequest: LogsQueryBuilderRequest{Where: query.QueryWhereClause{
+			And: []query.QueryWhereClause{
+				{Binary: query.BinaryWhereClause{"elastic_agent.version": {query.IsNull: ""}}},
+			},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected an error, not an unfiltered search")
+	}
+	if !strings.Contains(err.Error(), "unfiltered") || !strings.Contains(err.Error(), "_is_null") {
+		t.Fatalf("error must name the refusal and its cause, got: %v", err)
 	}
 }
 

@@ -91,6 +91,13 @@ func (w *wrappedModel) scanAndDecide(
 	}
 
 	result := Scan(payload)
+	// Per-tenant custom patterns run alongside the built-in corpus. Their
+	// hits carry the constant custom-pattern rule id and flow through the
+	// same source-tagging, allowlist/disabled-rule filtering, and mode/action
+	// resolution as any built-in hit.
+	if tcfg != nil && len(tcfg.compiledCustomRules) > 0 {
+		result.Hits = append(result.Hits, scanCustomRules(payload, tcfg.compiledCustomRules)...)
+	}
 	// Tag hits with their source kind so dashboards and (future) policy
 	// can distinguish user-typed secrets from agents reading configs. Done
 	// before tenant overrides so the Source survives onto FilterEvent hits.
@@ -110,14 +117,27 @@ func (w *wrappedModel) scanAndDecide(
 		effectiveMode = tcfg.Mode
 	}
 
+	// Scope the hits that get REPORTED to this message to the DISTINCT
+	// secrets new to this turn: the per-turn scope drops any that already
+	// appear in the folded-in conversation history (cross-turn carry-over)
+	// or that an earlier LLM call this turn already reported (per-call
+	// multiplication). Security actions below still evaluate the FULL result
+	// — a secret re-sent in history is still egressing. No scope (an LLM call
+	// off the conversation path) → report every hit, as before.
+	reportHits, reportMask := result.Hits, allTrueMask(len(result.Hits))
+	if scope := reportScopeFromContext(ctx); scope != nil {
+		reportHits, reportMask = scope.filter(result.Hits, payload)
+	}
+
 	ruleIDs := result.RuleIDs()
 	auditID := newAuditID()
 	agentName, _ := AgentNameFromContext(ctx)
-	// Build the structured event once; the reporter (if any) and the
-	// returned typed Error share these fields. Agent name is surfaced on
-	// the event for downstream dashboard queries (and the future per-agent
-	// policy phase).
-	event := newFilterEvent(auditID, effectiveMode, len(payload), result, agentName)
+	// Build the structured event once from the current-turn hit subset; the
+	// reporter (if any) surfaces it as the per-message badge. Agent name is
+	// carried for downstream dashboard queries (and the future per-agent
+	// policy phase). The returned typed Error uses the full rule set so an
+	// operator sees everything that fired, carry-over included.
+	event := newFilterEvent(auditID, effectiveMode, len(payload), Result{Hits: reportHits}, agentName)
 
 	// Mode is operator config; Action is what we actually do. The gate
 	// indirection lets a deployment plug in its own post-detection policy
@@ -132,10 +152,11 @@ func (w *wrappedModel) scanAndDecide(
 			"model", w.model,
 			"rule_ids", ruleIDs,
 			"hits", len(result.Hits),
+			"new_hits", len(reportHits),
 			"payload_bytes", len(payload),
 			"latency_seconds", latency,
 		)
-		if fn := reporterFromContext(ctx); fn != nil {
+		if fn := reporterFromContext(ctx); fn != nil && len(reportHits) > 0 {
 			fn(event)
 		}
 		return nil, fmt.Errorf("egressfilter: %w", err)
@@ -154,16 +175,21 @@ func (w *wrappedModel) scanAndDecide(
 				"model", w.model,
 				"rule_ids", ruleIDs,
 				"hits", len(result.Hits),
+				"new_hits", len(reportHits),
 				"payload_bytes", len(payload),
 				"latency_seconds", latency,
 			)
-			if fn := reporterFromContext(ctx); fn != nil {
+			if fn := reporterFromContext(ctx); fn != nil && len(reportHits) > 0 {
 				fn(event)
 			}
 			return nil, nil
 		}
+		// Redact the FULL hit set — a carried-over secret must still be
+		// scrubbed before it reaches the provider — then keep only the
+		// current-turn redactions on the reported event so its Redactions
+		// stay index-aligned with its (scoped) Hits.
 		mutated, redactions := Redactor(messages, result.Hits, regions)
-		event.Redactions = redactions
+		event.Redactions = filterByMask(redactions, reportMask)
 		recordScan(ctx, w.provider, w.model, effectiveMode, "redacted", len(payload), latency, result.Hits)
 		slog.Warn("egressfilter: outbound LLM payload redacted",
 			"audit_id", auditID,
@@ -171,10 +197,11 @@ func (w *wrappedModel) scanAndDecide(
 			"model", w.model,
 			"rule_ids", ruleIDs,
 			"hits", len(result.Hits),
+			"new_hits", len(reportHits),
 			"payload_bytes", len(payload),
 			"latency_seconds", latency,
 		)
-		if fn := reporterFromContext(ctx); fn != nil {
+		if fn := reporterFromContext(ctx); fn != nil && len(reportHits) > 0 {
 			fn(event)
 		}
 		return mutated, nil
@@ -189,14 +216,41 @@ func (w *wrappedModel) scanAndDecide(
 			"model", w.model,
 			"rule_ids", ruleIDs,
 			"hits", len(result.Hits),
+			"new_hits", len(reportHits),
 			"payload_bytes", len(payload),
 			"latency_seconds", latency,
 		)
-		if fn := reporterFromContext(ctx); fn != nil {
+		if fn := reporterFromContext(ctx); fn != nil && len(reportHits) > 0 {
 			fn(event)
 		}
 		return nil, nil
 	}
+}
+
+// allTrueMask returns a length-n mask of all true — the "keep everything"
+// case used when no per-turn reporting scope is attached.
+func allTrueMask(n int) []bool {
+	mask := make([]bool, n)
+	for i := range mask {
+		mask[i] = true
+	}
+	return mask
+}
+
+// filterByMask returns the elements of reds whose aligned mask entry is true,
+// preserving order. Used to keep a redaction slice index-aligned with a hit
+// slice that reportableHits has already filtered.
+func filterByMask(reds []Redaction, mask []bool) []Redaction {
+	// Stay nil until something is kept: FilterEvent.Redactions is omitempty,
+	// and a non-nil empty slice would serialize as `[]` instead of being
+	// dropped from the JSON.
+	var out []Redaction
+	for i, r := range reds {
+		if i < len(mask) && mask[i] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // serializeMessages flattens a langchaingo message slice into the smallest text

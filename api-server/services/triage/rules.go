@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -772,21 +773,30 @@ func insertRuleMatches(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID
 		return nil
 	}
 
-	query := `
-		INSERT INTO event_triage_rule_matches (event_id, rule_id, cloud_account_id, tenant_id, rule_type, action)
-		VALUES `
+	// strings.Builder avoids O(n²) concatenation from repeated += on the query string.
+	var sb strings.Builder
+	sb.Grow(175 + len(matches)*36)
+	sb.WriteString(`INSERT INTO event_triage_rule_matches (event_id, rule_id, cloud_account_id, tenant_id, rule_type, action) VALUES `)
 	args := make([]interface{}, 0, len(matches)*6)
 	for i, m := range matches {
 		if i > 0 {
-			query += ", "
+			sb.WriteString(", ")
 		}
 		base := i * 6
-		query += fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d)", base+1, base+2, base+3, base+4, base+5, base+6)
+		sb.WriteByte('(')
+		for j := 1; j <= 6; j++ {
+			if j > 1 {
+				sb.WriteString(", ")
+			}
+			sb.WriteByte('$')
+			sb.WriteString(strconv.Itoa(base + j))
+		}
+		sb.WriteByte(')')
 		args = append(args, eventID, m.ruleID, cloudAccountID, tenantID, m.ruleType, m.action)
 	}
-	query += " ON CONFLICT (event_id, rule_id, cloud_account_id) DO NOTHING"
+	sb.WriteString(" ON CONFLICT (event_id, rule_id, cloud_account_id) DO NOTHING")
 
-	_, err := db.ExecContext(ctx, query, args...)
+	_, err := db.ExecContext(ctx, sb.String(), args...)
 	return err
 }
 

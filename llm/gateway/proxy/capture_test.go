@@ -33,8 +33,8 @@ func TestResolveSession_HeaderWins(t *testing.T) {
 	c.Request.Header.Set("x-nb-session-id", "sess-1")
 
 	body := []byte(`{"metadata":{"user_id":"user-9"}}`)
-	id, src := resolveSession(c, body)
-	assert.Equal(t, "sess-1", id)
+	id, src := resolveSession(c, body, "fp-abc")
+	assert.Equal(t, "sess-1", id, "header wins over metadata + fingerprint")
 	assert.Equal(t, "header", src)
 }
 
@@ -44,9 +44,41 @@ func TestResolveSession_FallsBackToMetadataUserID(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
 
-	id, src := resolveSession(c, []byte(`{"metadata":{"user_id":"user-9"}}`))
-	assert.Equal(t, "user-9", id)
+	id, src := resolveSession(c, []byte(`{"metadata":{"user_id":"user-9"}}`), "fp-abc")
+	assert.Equal(t, "user-9", id, "metadata wins over fingerprint")
 	assert.Equal(t, "metadata.user_id", src)
+}
+
+func TestResolveSession_NestedSessionIDInUserID(t *testing.T) {
+	withCapture(t, true)
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
+
+	// Claude Code encodes user_id as a JSON blob carrying the real session_id.
+	uid := `{\"device_id\":\"254a15e1\",\"account_uuid\":\"\",\"session_id\":\"85692b00-741d-436a-9189-3db01c5200fe\"}`
+	id, src := resolveSession(c, []byte(`{"metadata":{"user_id":"`+uid+`"}}`), "fp-abc")
+	assert.Equal(t, "85692b00-741d-436a-9189-3db01c5200fe", id, "nested session_id wins over the raw blob")
+	assert.Equal(t, "metadata.session_id", src)
+
+	// A JSON user_id with no session_id must NOT become a raw-JSON session id;
+	// it falls through to the inferred fingerprint.
+	uid2 := `{\"device_id\":\"abc\"}`
+	id2, src2 := resolveSession(c, []byte(`{"metadata":{"user_id":"`+uid2+`"}}`), "fp-abc")
+	assert.Equal(t, "fp-abc", id2)
+	assert.Equal(t, "inferred", src2)
+}
+
+func TestResolveSession_InferredFromFingerprint(t *testing.T) {
+	withCapture(t, true)
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
+
+	// No header, no metadata → fall back to the inferred prefix fingerprint.
+	id, src := resolveSession(c, []byte(`{"model":"x"}`), "fp-abc")
+	assert.Equal(t, "fp-abc", id)
+	assert.Equal(t, "inferred", src)
 }
 
 func TestResolveSession_NoneWhenAbsent(t *testing.T) {
@@ -55,7 +87,7 @@ func TestResolveSession_NoneWhenAbsent(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
 
-	id, src := resolveSession(c, []byte(`{"model":"x"}`))
+	id, src := resolveSession(c, []byte(`{"model":"x"}`), "")
 	assert.Empty(t, id)
 	assert.Empty(t, src)
 }

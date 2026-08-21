@@ -10,6 +10,7 @@ import {
   Input as InputIcon,
   Output as OutputIcon,
   DragIndicator,
+  ErrorOutline,
   AccessTime,
   Schedule,
   PlaylistPlay,
@@ -64,6 +65,7 @@ import ConditionalEdge from './components/ConditionalEdge';
 import TriggerDetailsPanel from './components/TriggerDetailsPanel';
 import ExecutionStatusBar, { type PendingApproval } from './components/ExecutionStatusBar';
 import { findExecutionTaskForNode, getSwitchAncestorChain, getSwitchChildNodeIds } from './utils/templateUtils';
+import { getDuration, getStatusColor, getStatusTone, isExecutionCompleted } from './utils/executionStatus';
 import { getLlmSessionId, buildAskNudgebeeHref } from './utils/llmChat';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 
@@ -183,7 +185,7 @@ const executionEdgeTypes = {
 const ExecutionsView: React.FC<ExecutionsViewProps> = ({
   workflowId,
   accountId,
-  executions,
+  executions: executionsFromList,
   loading,
   onRefresh,
   taskDefinitions,
@@ -210,6 +212,18 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
       setDeepLinkExecutionId(router.query.executionId);
     }
   }, [router.query.executionId]);
+  // A deep-linked execution can be older than the newest page the list hook
+  // fetched (it pages 10 at a time), in which case it simply isn't in the
+  // list and the deep link would silently resolve to the newest run instead.
+  // Such an execution is fetched standalone and pinned to the top of the list.
+  const [pinnedExecution, setPinnedExecution] = useState<ExecutionData | null>(null);
+  const executions = useMemo(
+    () =>
+      pinnedExecution && !executionsFromList.some((exec) => exec.id === pinnedExecution.id)
+        ? [pinnedExecution, ...executionsFromList]
+        : executionsFromList,
+    [executionsFromList, pinnedExecution]
+  );
   const [selectedExecution, setSelectedExecution] = useState<ExecutionData | null>(null);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [executionTasks, setExecutionTasks] = useState<WorkflowExecutionTaskResponse[]>([]);
@@ -293,12 +307,6 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
 
   const { assistantName, nubiIconUrl } = useTenantBranding();
 
-  // Helper to check if execution is in a completed state (not running)
-  const isExecutionCompleted = (status: string) => {
-    const completedStatuses = ['COMPLETE', 'COMPLETED', 'COMPLETE_WITH_ERROR', 'FAILED', 'TERMINATED', 'TIMED_OUT', 'CANCELED', 'CONTINUED_AS_NEW'];
-    return completedStatuses.includes(status.toUpperCase());
-  };
-
   // When the parent passes a new pendingExecutionId, queue it for the next
   // refresh. The existing executions-list effect at line ~275 already drains
   // pendingSelectionRef for the Retry flow; we just feed it.
@@ -307,6 +315,40 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
       pendingSelectionRef.current = pendingExecutionId;
     }
   }, [pendingExecutionId]);
+
+  // Resolve a deep-linked execution that isn't on the currently loaded page.
+  // Attempted once per id — a miss (deleted / retention-expired run) must not
+  // retry on every list refresh.
+  const deepLinkFetchAttemptedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!deepLinkExecutionId || !workflowId || !accountId) return;
+    if (executions.some((exec) => exec.id === deepLinkExecutionId)) return;
+    if (deepLinkFetchAttemptedRef.current === deepLinkExecutionId) return;
+    deepLinkFetchAttemptedRef.current = deepLinkExecutionId;
+
+    (async () => {
+      try {
+        const response: any = await apiWorkflow.getWorkflowExecution(accountId, workflowId, deepLinkExecutionId);
+        if (!isMountedRef.current) return;
+        const execution = response?.data?.workflow_get_execution;
+        if (!execution?.id) return;
+        setPinnedExecution({
+          id: execution.id,
+          status: execution.status,
+          start_time: execution.start_time,
+          close_time: execution.close_time,
+          parent_workflow_id: execution.parent_workflow_id,
+          triggered_by: execution.triggered_by,
+          workflow_id: execution.workflow_id,
+          error: execution.error,
+          version_number: execution.version_number,
+          version: execution.version_number,
+        });
+      } catch (error) {
+        console.error('Error resolving deep-linked execution:', error);
+      }
+    })();
+  }, [deepLinkExecutionId, executions, workflowId, accountId]);
 
   // Track previous execution list identity to detect actual data refreshes (not just reference changes)
   const prevExecutionIdsRef = useRef<string>('');
@@ -454,52 +496,6 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
       console.error('Error fetching execution tasks:', error);
     } finally {
       if (!isPolling && isMountedRef.current) setTasksLoading(false);
-    }
-  };
-
-  // Utility functions
-  const getDuration = (startTime: string, endTime?: string) => {
-    if (!startTime) {
-      return 'N/A';
-    }
-    const start = new Date(startTime.endsWith('Z') ? startTime : startTime + 'Z');
-    const end = endTime ? new Date(endTime.endsWith('Z') ? endTime : endTime + 'Z') : new Date();
-    const diffMs = end.getTime() - start.getTime();
-
-    if (diffMs < 1000) {
-      return `${diffMs}ms`;
-    } else if (diffMs < 60000) {
-      return `${(diffMs / 1000).toFixed(1)}s`;
-    }
-    return `${(diffMs / 60000).toFixed(1)}m`;
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status.toUpperCase()) {
-      case 'COMPLETED':
-      case 'COMPLETE':
-        return ds.green[500];
-      case 'COMPLETE_WITH_ERROR':
-      case 'CONTINUED_AS_NEW':
-        return ds.amber[400];
-      case 'FAILED':
-        return ds.red[600];
-      case 'TERMINATED':
-        return ds.red[500];
-      case 'TIMED_OUT':
-        return ds.amber[400];
-      case 'RUNNING':
-      case 'IN_PROGRESS':
-      case 'SCHEDULED':
-        return ds.blue[500];
-      case 'CANCELED':
-      case 'CANCELLED':
-        return ds.gray[600];
-      case 'SKIPPED':
-        return ds.gray[400];
-      case 'UNSPECIFIED':
-      default:
-        return ds.brand[200];
     }
   };
 
@@ -1412,7 +1408,9 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                       {cancelLoading ? 'Cancelling...' : 'Cancel'}
                     </Button>
                   )}
-                  <Label text={selectedExecution.status.toUpperCase()} />
+                  {/* Overall status lives at the top of the right pane (see
+                      execution-overall-status-header) so it isn't mistaken for
+                      the selected task's status. Don't re-add it here. */}
                 </Box>
               </Box>
 
@@ -1704,6 +1702,67 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
               flexDirection: 'column',
             }}
           >
+            {/* Overall execution status - pinned above the task detail. Rendered
+                even when no task is selected, because that is exactly the state
+                where the user needs to know whether the run passed. */}
+            {selectedExecution && (
+              <Box
+                data-testid='execution-overall-status-header'
+                sx={{
+                  padding: 'var(--ds-space-3) var(--ds-space-4)',
+                  borderBottom: '1px solid var(--ds-brand-150)',
+                  backgroundColor: ds.background[100],
+                  flexShrink: 0,
+                }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', minWidth: 0 }}>
+                  <Label
+                    size='md'
+                    dot
+                    text={selectedExecution.status.toUpperCase()}
+                    tone={getStatusTone(selectedExecution.status)}
+                    id='execution-overall-status-label'
+                  />
+                  <Typography
+                    sx={{
+                      fontSize: 'var(--ds-text-small)',
+                      color: 'var(--ds-gray-600)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    <Datetime value={selectedExecution.start_time} /> · {getDuration(selectedExecution.start_time, selectedExecution.close_time)}
+                  </Typography>
+                </Box>
+                {executionData?.error && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', mt: 'var(--ds-space-1)', minWidth: 0 }}>
+                    <ErrorOutline sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-red-600)', flexShrink: 0 }} />
+                    <Typography
+                      title={executionData.error}
+                      sx={{
+                        fontSize: 'var(--ds-text-caption)',
+                        color: 'var(--ds-red-600)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {executionData.error}
+                    </Typography>
+                    <Button
+                      composition='icon-only'
+                      tone='ghost'
+                      size='xs'
+                      aria-label='Copy execution error'
+                      data-testid='execution-overall-status-copy-error-btn'
+                      icon={<ContentCopy sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-red-600)' }} />}
+                      onClick={() => copyToClipboard(executionData?.error || '', 'Execution Error')}
+                    />
+                  </Box>
+                )}
+              </Box>
+            )}
             {selectedTaskData ? (
               <>
                 {/* Node Header - pinned */}
@@ -1746,6 +1805,18 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                       })()}
                     </Box>
                     <Box sx={{ flex: 1, minWidth: 0 }}>
+                      {/* Eyebrow so this header reads as the *task's* status,
+                          subordinate to the execution status pinned above. */}
+                      <Typography
+                        sx={{
+                          fontSize: 'var(--ds-text-caption)',
+                          fontWeight: 'var(--ds-font-weight-semibold)',
+                          color: 'var(--ds-gray-500)',
+                          letterSpacing: '0.06em',
+                        }}
+                      >
+                        TASK
+                      </Typography>
                       <Typography
                         sx={{
                           fontWeight: 'bold',

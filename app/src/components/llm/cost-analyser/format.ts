@@ -10,13 +10,22 @@ import type { Anomaly, CostFilters, Granularity, ModelSummary, RankedSlice, Run,
 
 // ─── Scalar formatting ───────────────────────────────────────────────────────
 
-/** Currency, always rounded to the nearest 2nd decimal: $9.80 / $0.01 / $1.23K / $3.40M. */
+/**
+ * Currency: $3.40M / $1.23K / $9.80 / $0.0162.
+ *
+ * Sub-dollar amounts keep 4 decimals, matching the conversation-analytics panel
+ * in the chat (`llm/common/TokenUsageDisplay.jsx` formatCost). At 2 decimals a
+ * whole conversation reads "$0.02" against the analytics panel's "$0.0162" —
+ * the same number, apparently disagreeing — and anything under half a cent
+ * collapses to "$0.00".
+ */
 export function fmtCost(amount: number | null | undefined): string {
   if (amount == null) return '—';
   const v = Math.abs(amount);
   if (v >= 1_000_000) return `$${(amount / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `$${(amount / 1_000).toFixed(2)}K`;
-  return `$${amount.toFixed(2)}`;
+  if (v >= 1 || v === 0) return `$${amount.toFixed(2)}`;
+  return `$${amount.toFixed(4)}`;
 }
 
 /** Compact token count: 940 / 12.4K / 3.1M. */
@@ -446,6 +455,10 @@ export interface KpiTotals {
   inputTokens: number;
   outputTokens: number;
   openAnomalies: number;
+  /** Share of input tokens served from cache, 0–100 (spec: Cache Hit Rate). */
+  cacheHitRatePct: number;
+  /** Cached tokens valued at the full input rate (spec: Cache Savings). */
+  cacheSavingsUsd: number;
 }
 
 export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
@@ -460,6 +473,9 @@ export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
     inputTokens,
     outputTokens,
     openAnomalies: anomalies.filter((a) => !a.runId || runIds.has(a.runId)).length,
+    // Mock fixtures carry no cache economics — neutral default, per the API-can't-back note above.
+    cacheHitRatePct: 0,
+    cacheSavingsUsd: 0,
   };
 }
 

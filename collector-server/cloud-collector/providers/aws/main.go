@@ -531,7 +531,11 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	// egress failure would mass-archive live resources. See the all-unreachable
 	// guard after wg.Wait(), which mirrors the zero-regions safeguard in
 	// account.StoreResources.
-	var successCount, unreachableCount, throttledCount int
+	var successCount, unreachableCount, throttledCount, disabledCount int
+	// Regions requested but not observed this run (unreachable, throttled, or
+	// disabled for the account). Reported to the caller via SkippedRegions so
+	// archival never treats an unobserved region's absence as deletion.
+	var skippedRegions []string
 
 	service, ok := GetAwsService(query.ServiceName)
 	if !ok {
@@ -634,6 +638,15 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 					ctx.GetLogger().Warn("skipping unreachable region endpoint", "error", err, "service", query.ServiceName, "region", regionName)
 					mu.Lock()
 					unreachableCount++
+					skippedRegions = append(skippedRegions, regionName)
+					mu.Unlock()
+					return
+				}
+				if isRegionDisabled(err) {
+					ctx.GetLogger().Info("skipping region not enabled for this account", "error", err, "service", query.ServiceName, "region", regionName)
+					mu.Lock()
+					disabledCount++
+					skippedRegions = append(skippedRegions, regionName)
 					mu.Unlock()
 					return
 				}
@@ -641,6 +654,7 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 					ctx.GetLogger().Warn("skipping rate-limited region; will retry next sync", "error", err, "service", query.ServiceName, "region", regionName)
 					mu.Lock()
 					throttledCount++
+					skippedRegions = append(skippedRegions, regionName)
 					mu.Unlock()
 					return
 				}
@@ -669,8 +683,8 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	// resources". Returning nil here would let StoreResources archive every
 	// existing row for this service. Surface an error so the caller skips archival,
 	// exactly as it does when zero regions are queried.
-	if successCount == 0 && (unreachableCount > 0 || throttledCount > 0) {
-		allErrors = multierr.Append(allErrors, fmt.Errorf("all attempted region(s) failed for service %s (%d unreachable, %d throttled); refusing to report an empty result", query.ServiceName, unreachableCount, throttledCount))
+	if successCount == 0 && (unreachableCount > 0 || throttledCount > 0 || disabledCount > 0) {
+		allErrors = multierr.Append(allErrors, fmt.Errorf("all attempted region(s) failed for service %s (%d unreachable, %d throttled, %d disabled); refusing to report an empty result", query.ServiceName, unreachableCount, throttledCount, disabledCount))
 	}
 
 	// Client-side ResourceIds filter — only needed when we fell back to full GetResources
@@ -719,7 +733,8 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	}
 
 	return providers.ListResourcesResponse{
-		Items: resources,
+		Items:          resources,
+		SkippedRegions: skippedRegions,
 	}, allErrors
 }
 

@@ -27,9 +27,31 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Write access on RBAC is required for scenarios whose manifests include
+  # ClusterRole / ClusterRoleBinding / Role / RoleBinding — e.g. the RBAC-gap
+  # fixture in `llm/benchmark/llm/agents/nubi/fixtures/96_no_matching_runbook`
+  # ships a ClusterRole with intentionally-missing verbs so the LLM can
+  # investigate a "cannot reconcile" symptom. Without write verbs here,
+  # `kubectl apply` on the scenario manifest silently drops those resources
+  # and the fixture deploys in a broken half-state.
+  # `bind` and `escalate` are required because Kubernetes prevents creating /
+  # updating Role[Binding]s and ClusterRole[Binding]s unless the user already
+  # possesses the exact permissions being granted, OR has `escalate` on the
+  # role type + `bind` on the referenced role. Scenario manifests grant
+  # arbitrary verbs the benchmark-server SA itself does not hold, so without
+  # `escalate` / `bind` the `kubectl apply` fails with e.g. "cannot bind
+  # clusterrole/... user must have escalate on clusterroles" and the fixture
+  # deploys in a broken half-state.
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "bind", "escalate"]
+  # CRD write access is required for scenarios whose manifests define their
+  # own CustomResourceDefinition (the fixture above defines
+  # `whalewatchers.ocean.io`). Without it, the CRD apply silently fails and
+  # the fixture's dependent CR instances hit "no matches for kind" errors.
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get", "list", "watch"]

@@ -323,6 +323,9 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
     // actions.go (buildContextFromPayload).
     'x-tenant-id': opts.tenantId,
     'x-user-id': opts.userId,
+    // The caller's effective role, so a service (e.g. the AI Gateway) can grant a
+    // tenant admin tenant-wide reads — viewing another user's captured request body.
+    'x-user-role': opts.sessionVariables?.role || '',
   };
   // Apply per-action headers declared in actions.yaml's `headers:` block.
   // The yaml is authoritative — every action must explicitly declare which

@@ -83,7 +83,33 @@ func TestComputeLogoID_Azure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ComputeLogoID(tt.nodeType, tt.source, tt.properties); got != tt.want {
+			if got := ComputeLogoID(tt.nodeType, "", tt.source, tt.properties); got != tt.want {
+				t.Errorf("ComputeLogoID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestComputeLogoID_SpecificTypeOverride covers the specific_type override: GitHubUser and
+// GitHubOrganization share NodeTypeUserAccount/NodeTypeSourceControlOrg with other specific_types
+// (e.g. NudgebeeUser) that must NOT get the GitHub icon, so the override has to be keyed by
+// specific_type rather than the generic node-type fallback.
+func TestComputeLogoID_SpecificTypeOverride(t *testing.T) {
+	tests := []struct {
+		name         string
+		nodeType     NodeType
+		specificType string
+		want         string
+	}{
+		{"GitHubUser gets the GitHub icon", NodeTypeUserAccount, "GitHubUser", "github"},
+		{"GitHubOrganization gets the GitHub icon", NodeTypeSourceControlOrg, "GitHubOrganization", "github"},
+		{"NudgebeeUser falls back to the generic UserAccount icon", NodeTypeUserAccount, "NudgebeeUser", "useraccount"},
+		{"unspecified specific_type falls back to the generic UserAccount icon", NodeTypeUserAccount, "", "useraccount"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ComputeLogoID(tt.nodeType, tt.specificType, "github", map[string]interface{}{}); got != tt.want {
 				t.Errorf("ComputeLogoID() = %q, want %q", got, tt.want)
 			}
 		})
@@ -125,7 +151,81 @@ func TestComputeLogoID_NonAzureUnaffected(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ComputeLogoID(tt.nodeType, tt.source, tt.properties); got != tt.want {
+			if got := ComputeLogoID(tt.nodeType, "", tt.source, tt.properties); got != tt.want {
+				t.Errorf("ComputeLogoID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestComputeLogoID_Workload covers K8s Workload logo resolution: recognized kinds get their
+// own icon, and anything else — an uncommon kind like ReplicaSet, a missing kind, or a stray
+// service_name/type property that has no business on a k8s node — falls back to the generic
+// Deployment icon so a Workload node is never left without a logo.
+func TestComputeLogoID_Workload(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties map[string]interface{}
+		want       string
+	}{
+		{"Deployment kind", map[string]interface{}{"kind": "Deployment"}, "deployment"},
+		{"StatefulSet kind", map[string]interface{}{"kind": "StatefulSet"}, "statefulset"},
+		{"DaemonSet kind", map[string]interface{}{"kind": "DaemonSet"}, "daemonset"},
+		{"Job kind", map[string]interface{}{"kind": "Job"}, "job"},
+		{"CronJob kind", map[string]interface{}{"kind": "CronJob"}, "cronjob"},
+		{"unrecognized kind falls back to deployment", map[string]interface{}{"kind": "ReplicaSet"}, "deployment"},
+		{"missing kind falls back to deployment", map[string]interface{}{}, "deployment"},
+		{
+			// A Workload's own kind must win over a service_name/type that has no legitimate
+			// reason to be set on a k8s node (e.g. leaked from service-map/eBPF matching) —
+			// this is the "wrong logo" (external-service globe) failure mode.
+			name:       "kind wins over a stray service_name",
+			properties: map[string]interface{}{"kind": "Deployment", "service_name": "http", "type": "http"},
+			want:       "deployment",
+		},
+		{
+			// The in-cluster datastore facet (db_classifier.go) still wins over kind — a
+			// Workload running Redis should show the Redis icon, not the generic Deployment one.
+			name:       "engine still wins over kind",
+			properties: map[string]interface{}{"kind": "StatefulSet", "engine": "redis"},
+			want:       "redis",
+		},
+		{
+			// A known runtime language (set by trace/eBPF enrichment on a matched k8s node)
+			// still wins over the generic kind icon, matching this function's pre-existing
+			// engine > language > kind priority for Workload nodes.
+			name:       "language wins over kind",
+			properties: map[string]interface{}{"kind": "Deployment", "language": "python"},
+			want:       "python",
+		},
+		{
+			// Normalized language keys (see languageLogoID) still apply for Workload nodes.
+			name:       "language normalization still applies (typescript -> nodejs)",
+			properties: map[string]interface{}{"kind": "Deployment", "language": "typescript"},
+			want:       "nodejs",
+		},
+		{
+			// Regression: GetPrimaryLanguage (traces/ebpf enrichment) falls back to returning
+			// a raw, unclassified app.Type tag verbatim when it isn't a recognized language —
+			// e.g. "http" (a protocol tag) or "Service" (a kind tag) — and that value lands in
+			// properties["language"] on the matched k8s Workload node. "http" happens to collide
+			// with LangTypeIcon's unrelated externalservice/http icon case, so trusting it
+			// verbatim renders the wrong (external-service globe) icon on a real Deployment.
+			// A non-language value must be ignored and fall through to kind instead.
+			name:       "non-language value in the language property falls back to kind, not passed through",
+			properties: map[string]interface{}{"kind": "Deployment", "language": "http"},
+			want:       "deployment",
+		},
+		{
+			name:       "another non-language value (Service) falls back to kind",
+			properties: map[string]interface{}{"kind": "Deployment", "language": "Service"},
+			want:       "deployment",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ComputeLogoID(NodeTypeWorkload, "", "k8s", tt.properties); got != tt.want {
 				t.Errorf("ComputeLogoID() = %q, want %q", got, tt.want)
 			}
 		})

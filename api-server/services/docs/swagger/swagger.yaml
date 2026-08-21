@@ -161,6 +161,34 @@ paths:
       summary: Dynatrace webhook
       tags:
       - webhooks
+  /api/webhooks/elasticsearch:
+    post:
+      consumes:
+      - application/json
+      description: Receives alerts from a Kibana Alerting Webhook connector (or an
+        Elasticsearch Watcher webhook action) shaped to the canonical body documented
+        in integrations/elasticsearch_webhook.go.
+      parameters:
+      - description: Kibana alerting payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Elasticsearch / Kibana alerting webhook
+      tags:
+      - webhooks
   /api/webhooks/gcp-monitoring:
     post:
       consumes:
@@ -621,11 +649,11 @@ paths:
     post:
       consumes:
       - application/json
-      description: RPC action endpoint. Wraps an ExportRecommendationsRequest in
-        the standard RPC action envelope (`{action, input, session_variables}`).
+      description: RPC action endpoint. Wraps an ExportRecommendationsRequest in the
+        standard RPC action envelope (`{action, input, session_variables}`).
       parameters:
-      - description: RPC action envelope wrapping ExportRecommendationsRequest
-          in `input.request`
+      - description: RPC action envelope wrapping ExportRecommendationsRequest in
+          `input.request`
         in: body
         name: payload
         required: true

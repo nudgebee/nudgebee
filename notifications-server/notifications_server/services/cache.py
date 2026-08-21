@@ -266,6 +266,44 @@ class Cache:
                 return []
         return []
 
+    def cache_thread_mentions(self, thread_ts, user_ids):
+        # The people a question points at ("what did @john say") can only be read
+        # from the raw event text — the cleaned query has had every <@U…> token
+        # stripped by the time retrieval sees it. Stashed per turn, alongside the
+        # images, for the same reason: it belongs to this turn, not the entry.
+        self._ensure_connection()
+        if not self.redis_client:
+            return
+        key = f"chat_mentions:{thread_ts}"
+        with self.redis_client.pipeline() as pipe:
+            try:
+                pipe.set(key, json.dumps(user_ids))
+                pipe.expire(key, settings.redis.conversation_cache_expiration_minutes * 60)
+                pipe.execute()
+            except (TypeError, redis.RedisError) as e:
+                LOG.exception(f"Error caching thread mentions {thread_ts}: {e}")
+
+    def get_thread_mentions(self, thread_ts):
+        """Reads and clears. Button and dropdown followups reach retrieval
+        without re-stashing, and inheriting a previous turn's targets would make
+        Nubi answer "what did @john say" for a question that named nobody."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return []
+        key = f"chat_mentions:{thread_ts}"
+        try:
+            raw = self.redis_client.get(key)
+            self.redis_client.delete(key)
+        except redis.RedisError as e:
+            LOG.exception(f"Error retrieving thread mentions {thread_ts}: {e}")
+            return []
+        if raw:
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+        return []
+
     def cache_channel_session_mapping(self, channel_id, team_id, session_id, account_id=None, tenant_id=None):
         """Cache the mapping between channel_id and session_id from /channels/join"""
         self._ensure_connection()
@@ -333,4 +371,99 @@ class Cache:
                 return True
             except redis.RedisError as e:
                 LOG.exception(f"Error removing channel session mapping for {channel_id}: {e}")
+                return False
+
+    # --- Channel-awareness watched-set mirror -------------------------------
+    # Mirror of the enabled rows in messaging_channel_watch, one Redis set per
+    # workspace, maintained on every toggle. No TTL: the DB is authoritative and
+    # rebuild_watched_channels reseeds after a Redis flush. Readers must treat
+    # None (Redis unavailable) as "unknown" and fall back to the DB.
+
+    @staticmethod
+    def _watched_channels_key(platform, team_id):
+        return f"watched_channels:{platform}:{team_id}"
+
+    def add_watched_channel(self, platform, team_id, channel_id):
+        self._ensure_connection()
+        if not self.redis_client:
+            return False
+        try:
+            self.redis_client.sadd(self._watched_channels_key(platform, team_id), channel_id)
+            return True
+        except redis.RedisError as e:
+            LOG.exception(f"Error adding watched channel {channel_id}: {e}")
+            return False
+
+    def remove_watched_channel(self, platform, team_id, channel_id):
+        self._ensure_connection()
+        if not self.redis_client:
+            return False
+        try:
+            self.redis_client.srem(self._watched_channels_key(platform, team_id), channel_id)
+            return True
+        except redis.RedisError as e:
+            LOG.exception(f"Error removing watched channel {channel_id}: {e}")
+            return False
+
+    def is_channel_watched(self, platform, team_id, channel_id):
+        """True/False from the mirror, or None when Redis is unavailable so the
+        caller can fall back to the messaging_channel_watch table."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return None
+        try:
+            return bool(self.redis_client.sismember(self._watched_channels_key(platform, team_id), channel_id))
+        except redis.RedisError as e:
+            LOG.exception(f"Error checking watched channel {channel_id}: {e}")
+            return None
+
+    def get_cached_user_name(self, team_id, user_id):
+        self._ensure_connection()
+        if not self.redis_client:
+            return None
+        try:
+            return self.redis_client.get(f"slack_user_name:{team_id}:{user_id}")
+        except redis.RedisError as e:
+            LOG.exception(f"Error reading cached user name for {user_id}: {e}")
+            return None
+
+    def cache_user_name(self, team_id, user_id, display_name, ttl_seconds=86400):
+        self._ensure_connection()
+        if not self.redis_client or not display_name:
+            return False
+        try:
+            self.redis_client.set(f"slack_user_name:{team_id}:{user_id}", display_name, ex=ttl_seconds)
+            return True
+        except redis.RedisError as e:
+            LOG.exception(f"Error caching user name for {user_id}: {e}")
+            return False
+
+    def mark_event_seen(self, event_id, ttl_seconds=600):
+        """True the first time an event id is seen, False on Slack's retries.
+        Fails open (True) when Redis is unavailable — the storage layer upserts,
+        so a duplicate is harmless, whereas dropping a real message is not."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return True
+        try:
+            return bool(self.redis_client.set(f"channel_event:{event_id}", "1", nx=True, ex=ttl_seconds))
+        except redis.RedisError as e:
+            LOG.exception(f"Error deduping event {event_id}: {e}")
+            return True
+
+    def rebuild_watched_channels(self, platform, team_id, channel_ids):
+        """Reseed one workspace's mirror from the DB truth (e.g. after a flush)."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return False
+        key = self._watched_channels_key(platform, team_id)
+        with self.redis_client.pipeline() as pipe:
+            try:
+                pipe.delete(key)
+                if channel_ids:
+                    pipe.sadd(key, *channel_ids)
+                pipe.execute()
+                return True
+            except redis.RedisError as e:
+                LOG.exception(f"Error rebuilding watched channels for {team_id}: {e}")
                 return False

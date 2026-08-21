@@ -312,6 +312,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}
 	}
 	request.ConversationContext = historyStr
+	// Tell the egressfilter which text is prior-conversation history so a
+	// secret already surfaced on an earlier message isn't recounted against
+	// this message when the planner re-sends that history on every LLM call.
+	// Reporting-only: block / redact still scan the full outbound payload.
+	ctx.SetContext(egressfilter.WithReportBaseline(ctx.GetContext(), historyStr))
 	// saving the agent to Db
 	var agentId uuid.UUID
 	var previousAgentState string
@@ -454,11 +459,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// retrieval runs only for the top-level invocation — sub-agents keep
 			// the lazy menu + load_skills flow.
 			kbs := fetchAgentKBs(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, selected)
-			if len(kbs) == 0 {
-				kbChan <- kbAssemblyResult{prompt: prompt}
-				return
-			}
-			menu := buildSkillListsMenu(kbs)
+			// No zero-KB short-circuit: the retrieval below is account-wide RAG
+			// and needs no agent mapping — an agent with no mapped KBs must
+			// still surface account knowledge (e.g. a synced Confluence runbook
+			// for the alert under investigation, #34779). Only the menu is
+			// mapping-dependent; BuildSkillListsMenu returns "" for empty kbs.
 			block := ""
 			var kbRefs []AgentReference
 			if isTopLevelInvocation {
@@ -466,6 +471,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 				// content actually matched, not every mapped KB.
 				block, kbRefs = retrieveRelevantKB(ctx, request, kbs)
 			}
+			menu := BuildSkillListsMenu(kbs, block != "")
 			kbChan <- kbAssemblyResult{prompt: prompt, menu: menu, prestepBlock: block, kbRefs: kbRefs}
 			return
 		}
@@ -1415,7 +1421,11 @@ func injectKBContext(ctx *security.RequestContext, accountId string, ownNames []
 		activeCount++
 		escapedName := escapeTemplateSyntax(kb.Name)
 		escapedDesc := escapeTemplateSyntax(kb.Description)
-		skillList = append(skillList, fmt.Sprintf("name: %s - description: %s", escapedName, escapedDesc))
+		if strings.TrimSpace(escapedDesc) != "" {
+			skillList = append(skillList, fmt.Sprintf("name: %s - description: %s", escapedName, escapedDesc))
+		} else {
+			skillList = append(skillList, fmt.Sprintf("name: %s", escapedName))
+		}
 	}
 
 	// Wait for RAG previews and append integration skill entries.
