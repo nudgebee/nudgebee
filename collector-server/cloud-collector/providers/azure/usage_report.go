@@ -100,10 +100,13 @@ func getAzureUsageReport(ctx providers.CloudProviderContext, account providers.A
 		}
 		var respErr *azcore.ResponseError
 		if errors.As(err, &respErr) && respErr.StatusCode == 429 && attempt < maxRetries {
-			backoff := time.Duration(30<<uint(attempt)) * time.Second // 30s, 60s, 120s
+			backoff, fromAzure := costManagementBackoff(respErr.RawResponse, attempt)
 			ctx.GetLogger().Warn("azure: cost management API rate limited, retrying",
-				"attempt", attempt+1, "backoff", backoff, "subscription", session.SubscriptionID)
-			time.Sleep(backoff)
+				"attempt", attempt+1, "backoff", backoff, "honoredRetryAfter", fromAzure,
+				"subscription", session.SubscriptionID)
+			if werr := waitBeforeRetry(ctx.GetContext(), backoff); werr != nil {
+				return providers.GetUsageReportResponse{}, werr
+			}
 			continue
 		}
 		break
@@ -207,15 +210,14 @@ func fetchAzureUsagePage(ctx providers.CloudProviderContext, cred azcore.TokenCr
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
-			backoff := time.Duration(30<<uint(attempt)) * time.Second // 30s, 60s, 120s
+			backoff, fromAzure := costManagementBackoff(resp, attempt)
 			ctx.GetLogger().Warn("azure: cost management API rate limited on pagination, retrying",
-				"attempt", attempt+1, "backoff", backoff, "subscription", subscriptionID)
-			select {
-			case <-time.After(backoff):
-				continue
-			case <-ctx.GetContext().Done():
-				return nil, ctx.GetContext().Err()
+				"attempt", attempt+1, "backoff", backoff, "honoredRetryAfter", fromAzure,
+				"subscription", subscriptionID)
+			if werr := waitBeforeRetry(ctx.GetContext(), backoff); werr != nil {
+				return nil, werr
 			}
+			continue
 		}
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
