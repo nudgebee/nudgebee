@@ -131,14 +131,13 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 		for rulesPaginator.HasMorePages() {
 			result, err := rulesPaginator.NextPage(ctx.GetContext())
 			if err != nil {
-				// A cancelled context means the rules we have are a partial view.
-				// Returning it with a nil error would let StoreResources treat the
-				// missing rows as deleted and archive live resources.
-				if ctx.GetContext().Err() != nil {
-					return resources, err
-				}
+				// Any pagination failure — cancellation, throttling, a transient
+				// network error — leaves a partial view of the rules. Returning it
+				// with a nil error would let StoreResources treat the rules we never
+				// saw as deleted and archive live resources, so surface the error and
+				// let the caller skip the write entirely.
 				ctx.GetLogger().Error("failed to fetch Config rules", "error", err, "accountNumber", account.AccountNumber, "region", region)
-				break
+				return resources, err
 			}
 
 			for _, rule := range result.ConfigRules {
@@ -238,61 +237,60 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 	// Get Aggregators
 	aggregatorsResult, err := svc.DescribeConfigurationAggregators(ctx.GetContext(), &configservice.DescribeConfigurationAggregatorsInput{})
 	if err != nil {
-		if ctx.GetContext().Err() != nil {
-			return resources, err
+		// Same partial-view hazard as the rule paginator above.
+		ctx.GetLogger().Error("failed to fetch Config aggregators", "error", err, "accountNumber", account.AccountNumber, "region", region)
+		return resources, err
+	}
+
+	for _, aggregator := range aggregatorsResult.ConfigurationAggregators {
+		if aggregator.ConfigurationAggregatorName == nil {
+			ctx.GetLogger().Warn("Skipping Config aggregator due to missing name")
+			continue
 		}
-		ctx.GetLogger().Warn("failed to fetch Config aggregators", "error", err, "accountNumber", account.AccountNumber, "region", region)
-	} else {
-		for _, aggregator := range aggregatorsResult.ConfigurationAggregators {
-			if aggregator.ConfigurationAggregatorName == nil {
-				ctx.GetLogger().Warn("Skipping Config aggregator due to missing name")
-				continue
-			}
 
-			tags := make(map[string][]string)
+		tags := make(map[string][]string)
 
-			// Get tags for the aggregator
-			if aggregator.ConfigurationAggregatorArn != nil {
-				tagsResult, err := svc.ListTagsForResource(ctx.GetContext(), &configservice.ListTagsForResourceInput{
-					ResourceArn: aggregator.ConfigurationAggregatorArn,
-				})
-				if err != nil {
-					ctx.GetLogger().Warn("failed to fetch Config aggregator tags", "error", err, "aggregatorArn", *aggregator.ConfigurationAggregatorArn)
-				} else if tagsResult.Tags != nil {
-					for _, tag := range tagsResult.Tags {
-						if tag.Key != nil && tag.Value != nil {
-							tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
-						}
+		// Get tags for the aggregator
+		if aggregator.ConfigurationAggregatorArn != nil {
+			tagsResult, err := svc.ListTagsForResource(ctx.GetContext(), &configservice.ListTagsForResourceInput{
+				ResourceArn: aggregator.ConfigurationAggregatorArn,
+			})
+			if err != nil {
+				ctx.GetLogger().Warn("failed to fetch Config aggregator tags", "error", err, "aggregatorArn", *aggregator.ConfigurationAggregatorArn)
+			} else if tagsResult.Tags != nil {
+				for _, tag := range tagsResult.Tags {
+					if tag.Key != nil && tag.Value != nil {
+						tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
 					}
 				}
 			}
-
-			metaMap := structToMap(aggregator)
-
-			aggregatorArn := ""
-			if aggregator.ConfigurationAggregatorArn != nil {
-				aggregatorArn = *aggregator.ConfigurationAggregatorArn
-			}
-
-			createdAt := time.Time{}
-			if aggregator.CreationTime != nil {
-				createdAt = *aggregator.CreationTime
-			}
-
-			resource := providers.Resource{
-				Id:          *aggregator.ConfigurationAggregatorName,
-				ServiceName: ServiceNameConfig,
-				Name:        *aggregator.ConfigurationAggregatorName,
-				Status:      providers.ResourceStatusActive,
-				Region:      region,
-				Tags:        tags,
-				Meta:        metaMap,
-				Arn:         aggregatorArn,
-				CreatedAt:   createdAt,
-				Type:        getAwsServiceResourceType(ServiceNameConfig, "aggregator"),
-			}
-			resources = append(resources, resource)
 		}
+
+		metaMap := structToMap(aggregator)
+
+		aggregatorArn := ""
+		if aggregator.ConfigurationAggregatorArn != nil {
+			aggregatorArn = *aggregator.ConfigurationAggregatorArn
+		}
+
+		createdAt := time.Time{}
+		if aggregator.CreationTime != nil {
+			createdAt = *aggregator.CreationTime
+		}
+
+		resource := providers.Resource{
+			Id:          *aggregator.ConfigurationAggregatorName,
+			ServiceName: ServiceNameConfig,
+			Name:        *aggregator.ConfigurationAggregatorName,
+			Status:      providers.ResourceStatusActive,
+			Region:      region,
+			Tags:        tags,
+			Meta:        metaMap,
+			Arn:         aggregatorArn,
+			CreatedAt:   createdAt,
+			Type:        getAwsServiceResourceType(ServiceNameConfig, "aggregator"),
+		}
+		resources = append(resources, resource)
 	}
 
 	// Get Conformance Packs
@@ -300,11 +298,9 @@ func (a *awsConfig) GetResources(ctx providers.CloudProviderContext, account pro
 	for conformancePacksPaginator.HasMorePages() {
 		result, err := conformancePacksPaginator.NextPage(ctx.GetContext())
 		if err != nil {
-			if ctx.GetContext().Err() != nil {
-				return resources, err
-			}
-			ctx.GetLogger().Warn("failed to fetch Config conformance packs", "error", err, "accountNumber", account.AccountNumber, "region", region)
-			break
+			// Same partial-view hazard as the rule paginator above.
+			ctx.GetLogger().Error("failed to fetch Config conformance packs", "error", err, "accountNumber", account.AccountNumber, "region", region)
+			return resources, err
 		}
 
 		for _, pack := range result.ConformancePackDetails {
