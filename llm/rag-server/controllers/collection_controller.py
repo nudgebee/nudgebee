@@ -128,7 +128,7 @@ async def configure_ondisk_storage():
         return {"data": result}
     except Exception as e:
         logger.error(f"Error configuring on-disk storage: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error configuring on-disk storage: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to configure on-disk storage")
 
 
 @router.post("/admin/export-qdrant-collections")
@@ -177,7 +177,7 @@ async def export_qdrant_collections():
 
     except Exception as e:
         logger.error(f"Error exporting Qdrant collections: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error exporting Qdrant collections: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to export Qdrant collections")
 
 
 @router.post("/admin/import-qdrant-collections")
@@ -255,7 +255,9 @@ async def import_qdrant_collections(import_data: dict):
             except Exception as e:
                 logger.error(f"Error importing collection {collection_name}: {e}", exc_info=True)
                 result["failed_collections"] += 1
-                result["details"].append({"collection": collection_name, "status": "failed", "error": str(e)})
+                result["details"].append(
+                    {"collection": collection_name, "status": "failed", "error": "Collection import failed"}
+                )
 
         logger.info(
             f"Import complete: {result['imported_collections']}/{result['total_collections']} collections imported"
@@ -267,4 +269,4 @@ async def import_qdrant_collections(import_data: dict):
         raise
     except Exception as e:
         logger.error(f"Error importing Qdrant collections: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error importing Qdrant collections: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to import Qdrant collections")

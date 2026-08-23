@@ -81,7 +81,7 @@ func (s *DynatraceTraceSource) buildSpanDQL(req TracesV3Request, from, to string
 	dql := fmt.Sprintf(`fetch spans, from: "%s", to: "%s"`, from, to)
 	if traceID := s.extractTraceID(req); traceID != "" {
 		// trace.id is a uid type in Grail — must use touid() for equality comparison.
-		dql += fmt.Sprintf(` | filter trace.id == touid("%s")`, traceID)
+		dql += fmt.Sprintf(` | filter trace.id == touid(%s)`, strconv.Quote(traceID))
 		dql += " | sort start_time asc"
 		return dql, nil
 	}
@@ -228,7 +228,7 @@ func (s *DynatraceTraceSource) QueryTracesHeatmap(ctx *security.RequestContext, 
 
 	// No explicit time range — Grail will use its defaultTimeframe (configured on the tenant).
 	// trace.id is a uid type in Grail — must use touid() for equality comparison.
-	dql := fmt.Sprintf(`fetch spans | filter trace.id == touid("%s") | sort start_time asc`, req.TraceId)
+	dql := fmt.Sprintf(`fetch spans | filter trace.id == touid(%s) | sort start_time asc`, strconv.Quote(req.TraceId))
 	ctx.GetLogger().Info("DynatraceTraceSource.QueryTracesHeatmap", "dql", dql)
 
 	result, err := executeDQLQuery(baseURL, apiToken, dql)
