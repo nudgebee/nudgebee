@@ -28,6 +28,9 @@ on:
       - "api-server/migrations/validate_migrations.py"
       - ".github/workflows/migrations-validate.yaml"
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest

@@ -471,7 +471,10 @@ func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req T
 	if len(searchResp.Hits) > 0 {
 		if c, ok := searchResp.Hits[0]["count"]; ok {
 			if num, ok := openObserveInt64(c); ok {
-				count = int(num)
+				maxInt := int64(^uint(0) >> 1)
+				if num >= 0 && num <= maxInt {
+					count = int(num)
+				}
 			}
 		}
 	}

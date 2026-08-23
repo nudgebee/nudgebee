@@ -163,7 +163,7 @@ class QdrantExporter:
                 except Exception as e:
                     logger.error(f"Error exporting collection {collection.name}: {e}")
                     result["failed_collections"] += 1
-                    result["errors"].append({"collection": collection.name, "error": str(e)})
+                    result["errors"].append({"collection": collection.name, "error": "Collection export failed"})
 
             logger.info(
                 f"Export complete: {result['exported_collections']}/{result['total_collections']} collections exported"
@@ -171,6 +171,6 @@ class QdrantExporter:
 
         except Exception as e:
             logger.error(f"Error during export: {e}", exc_info=True)
-            result["error"] = str(e)
+            result["error"] = "Collection export failed"
 
         return result
