@@ -51,7 +51,17 @@ const CATEGORY_OPTIONS = [
   { label: 'PVC RightSizing', value: 'pvc_rightsize' },
 ];
 
-const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptimize, setAutoOptimizeData, refresh, autoOptimizeData }) => {
+const AutoOptimizeListingTable = ({
+  defaultQuery = {},
+  handleOpenCreateAutoOptimize,
+  setAutoOptimizeData,
+  refresh,
+  autoOptimizeData,
+  accountOptions = [],
+  selectedAccountId = '',
+  isAccountsLoading = false,
+  onAccountChange,
+}) => {
   const router = useRouter();
   const autoPilotListId = 'auto-pilot';
   const { setAutoOptimizeNameRequest } = useData();
@@ -76,7 +86,7 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
   const [approvalStatusModalOpen, setApprovalStatusModalOpen] = useState(false);
 
   const getMenuItems = (item) => {
-    if (!hasWriteAccess(item?.account_id || router.query?.accountId || router.query?.KubernetesDetails)) {
+    if (!hasWriteAccess(item?.account_id || selectedAccountId || router.query?.KubernetesDetails)) {
       return [];
     }
 
@@ -110,8 +120,8 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
     setData([]);
     setTotalCount(0);
 
-    if (router.query?.accountId) {
-      query['accountId'] = router.query?.accountId;
+    if (selectedAccountId) {
+      query['accountId'] = selectedAccountId;
     }
     if (defaultQuery) {
       query = { ...query, ...defaultQuery };
@@ -203,7 +213,7 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
             { component: <Text value={item?.user_updated_by ? item?.user_updated_by?.display_name : '-'} /> },
 
             {
-              component: hasWriteAccess(item.account_id || router.query?.accountId || defaultQuery?.accountId) ? (
+              component: hasWriteAccess(item.account_id || selectedAccountId || defaultQuery?.accountId) ? (
                 <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} />
               ) : (
                 <></>
@@ -224,7 +234,7 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
 
   useEffect(() => {
     listAutoPilot();
-  }, [currentPage, recordsPerPage, selectedStatus, router.query?.accountId, router.query?.name, selectedCategory, refresh, appliedName]);
+  }, [currentPage, recordsPerPage, selectedStatus, selectedAccountId, router.query?.name, selectedCategory, refresh, appliedName]);
 
   const onMenuClick = (menuItem, data) => {
     if (menuItem.id === 'toggle-enabled') {
@@ -256,7 +266,7 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
     apiAutoPilot
       .updateAutoPilotStatus(
         selectedAutopilot.id,
-        selectedAutopilot?.account_id || router.query?.accountId,
+        selectedAutopilot?.account_id || selectedAccountId,
         selectedAutopilot.status == 'Active' ? 'Disabled' : 'Active'
       )
       .then((res) => {
@@ -321,6 +331,14 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
       </Modal>
       <ListingLayout id='box-layout-auto-pilot'>
         <ListingLayout.Toolbar actions={<DownloadButton onClick={() => ({ tableId: autoPilotListId })} />}>
+          <FilterDropdown
+            id='auto-pilot-filter-account'
+            label='Account'
+            options={accountOptions}
+            value={selectedAccountId}
+            isOptionsLoading={isAccountsLoading}
+            onSelect={onAccountChange}
+          />
           <FilterDropdown
             id='auto-pilot-filter-status'
             label='Status'
@@ -392,4 +410,8 @@ AutoOptimizeListingTable.propTypes = {
   setAutoOptimizeData: PropTypes.func,
   refresh: PropTypes.bool,
   autoOptimizeData: PropTypes.object,
+  accountOptions: PropTypes.array,
+  selectedAccountId: PropTypes.string,
+  isAccountsLoading: PropTypes.bool,
+  onAccountChange: PropTypes.func,
 };

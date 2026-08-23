@@ -68,16 +68,18 @@ func init() {
 // K8sOrchestratorMode* are the values of config llm_server_k8s_orchestrator_mode,
 // the single boot-time knob for what the router-selected k8s_orchestrator runs.
 const (
-	K8sOrchestratorModeDelegating = "delegating" // v1: delegate kubectl to the sub-agent (default)
+	K8sOrchestratorModeDelegating = "delegating" // v1: delegate kubectl to the sub-agent (fallback for unknown mode)
 	K8sOrchestratorModeDirect     = "direct"     // v2: hold kubectl_execute, run kubectl directly
-	K8sOrchestratorModeLean       = "lean"       // experimental: minimal prompt + critique off
+	K8sOrchestratorModeLean       = "lean"       // reduced tool core + minimal prompt — the DEFAULT (critique unchanged)
+	K8sOrchestratorModeNative     = "native"     // K8s-native: kubectl-first, no cloud/NL-wrapper sub-agents (see agent_k8s_orchestrator_native.go)
 )
 
 // newK8sOrchestratorAgent is the primary, router-selected agent. Its behavior is
 // chosen by config.K8sOrchestratorMode (boot-time; rollback = change + redeploy).
 // Running lean/direct under the primary name keeps routing, stored history, and
 // the @k8s_debug aliases unchanged — only prompt/critique/kubectl behavior differ.
-// Unknown/empty mode falls back to delegating (v1), the safe default.
+// The configured default is "lean" (llm_server_k8s_orchestrator_mode); an
+// unknown/typo value falls back to delegating (v1).
 func newK8sOrchestratorAgent(accountId string) core.NBAgent {
 	switch strings.ToLower(strings.TrimSpace(config.Config.K8sOrchestratorMode)) {
 	case K8sOrchestratorModeLean:
@@ -303,6 +305,14 @@ func InvalidateAgentSupportedToolsCache(accountId string, agentName string) {
 	agentSupportedToolsCacheInstance.delete(accountId, agentName)
 }
 
+// The enterprise release can add the on-demand memory tool to orchestrators.
+// That tool is outside the OSS boundary, so the OSS reconciliation keeps the
+// shared call sites inert instead of exposing a tool that is not registered.
+func appendMemoryToolName(names []string) []string { return names }
+
+// See appendMemoryToolName. OSS has no enterprise memory-tool prompt nudge.
+func memoryNudgeIfEnabled() string { return "" }
+
 // getSupportedTools builds the k8s orchestrator tool list. kubectlTool is the first
 // base tool: KubectlAgentName for the delegating orchestrator, or
 // tools.ToolExecuteKubectlCommand for the direct orchestrator that runs kubectl itself.
@@ -319,7 +329,7 @@ func getSupportedTools(ctx *security.RequestContext, accountId string, agentName
 			toolNames = agentToolNames
 		} else {
 
-			baseTools := []string{kubectlTool, LogsAgentName, WebSearchAgentName, PostgresAgentName, EventsAgentName, TracesAgentName, MetricsAgentName, RedisAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RabbitMQAgentName, SecurityAgentName, HelmAgentName, GithubAgentName, getTicketAgentName(), WorkflowAgentName, ServiceDependencyGraph, VisualizationAgentName, RecommendationsAgentName, aws.AwsAgentName, aws.AgentAwsObservabilityName, GcpAgentName, AzureAgentName, ResourceSearchAgentName, ServerAgentName, AgentCode2, DelegateAgentToolName}
+			baseTools := []string{kubectlTool, LogsAgentName, WebSearchAgentName, PostgresAgentName, EventsAgentName, TracesAgentName, MetricsAgentName, RedisAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RabbitMQAgentName, SecurityAgentName, HelmAgentName, GithubAgentName, getTicketAgentName(), WorkflowAgentName, ServiceDependencyGraph, VisualizationAgentName, RecommendationsAgentName, aws.AwsAgentName, aws.AgentAwsObservabilityName, GcpAgentName, AzureAgentName, ResourceSearchAgentName, ServerAgentName, AgentCodeAnalyzer, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
 
 			// Conditionally add remediation agent based on feature flag
 			if config.Config.RemediationAgentEnabled {

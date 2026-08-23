@@ -50,7 +50,7 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 	// Build envelopes through the real makeFetchResponse so the test tracks the
 	// actual wire shape the agent produces.
 	env := func(logs string) core.NBAgentResponse {
-		return makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, logs, "", nil)
+		return makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, logs, "", "", nil)
 	}
 	cases := []struct {
 		name string
@@ -72,6 +72,61 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 	}
 }
 
+// TestQueryHasExplicitTimeAnchor guards the kubectl-fallback guard added for
+// bug C1 (log_analysis_bugs): kubectl's plain `--tail` fetch has no time
+// filtering, so falling back to it after a services-server success-but-empty
+// result is only safe when the canonical query had no explicit start_time —
+// an absolute historical anchor kubectl cannot honor at all.
+func TestQueryHasExplicitTimeAnchor(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"empty query", "", false},
+		{"unparseable query", "not-json", false},
+		{"no start_time, only relative time_range", `{"where":{},"time_range":"1h"}`, false},
+		{"explicit start_time", `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, true},
+		{"blank start_time field", `{"where":{},"start_time":"  "}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, queryHasExplicitTimeAnchor(c.query))
+		})
+	}
+}
+
+// TestShouldFallbackToKubectl exercises Execute's actual fallback decision
+// (bug C1, log_analysis_bugs) end-to-end at the decision-function level: a
+// Failed primary always falls back regardless of the query; a successful
+// primary with real rows never falls back; a successful-but-empty primary
+// falls back UNLESS the query had an explicit start_time, which kubectl's
+// untimed `--tail` dump cannot honor.
+func TestShouldFallbackToKubectl(t *testing.T) {
+	empty := makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, "", "", "", nil)
+	rows := makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, `{"logs":[{"timestamp":"t","message":"boom"}]}`, "", "", nil)
+	failed := core.NBAgentResponse{Status: core.ConversationStatusFailed, Response: []string{"boom"}}
+
+	cases := []struct {
+		name           string
+		resp           core.NBAgentResponse
+		canonicalQuery string
+		want           bool
+	}{
+		{"failed primary always falls back, no query", failed, "", true},
+		{"failed primary always falls back, even with an explicit window", failed, `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, true},
+		{"successful primary with real rows never falls back", rows, "", false},
+		{"successful-empty primary with no explicit window falls back", empty, `{"where":{},"time_range":"1h"}`, true},
+		{"successful-empty primary with no query info falls back", empty, "", true},
+		{"successful-empty primary with an explicit start_time does NOT fall back", empty, `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, shouldFallbackToKubectl(c.resp, c.canonicalQuery))
+		})
+	}
+}
+
 // TestCanonicalQueryExamples asserts the v2 few-shots use provider-independent
 // canonical entity names — never provider-native field names (which would
 // defeat services-server's canonical→provider resolution).
@@ -82,7 +137,7 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 // resolves when those words are literally keys in label_mappings) nor any
 // provider-native field name.
 func TestCanonicalQueryExamples(t *testing.T) {
-	examples := canonicalQueryExamples()
+	examples := canonicalQueryExamples(defaultLogQueryOperators)
 	assert.NotEmpty(t, examples)
 
 	var answers strings.Builder

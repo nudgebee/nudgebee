@@ -415,9 +415,7 @@ pydantic==2.11.3
     #   qdrant-client
     #   unstructured-client
 pydantic-core==2.33.1
-    # via
-    #   ragserver (pyproject.toml)
-    #   pydantic
+    # via pydantic
 pydantic-settings==2.14.2
     # via ragserver (pyproject.toml)
 pyflakes==3.1.0

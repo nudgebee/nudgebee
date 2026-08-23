@@ -188,17 +188,7 @@ Strategy:
 		return core.NBAgentResponse{}, err
 	}
 
-	type ToolCall struct {
-		Tool       string          `json:"tool"`
-		ToolCode   string          `json:"tool_code"`
-		ToolName   string          `json:"tool_name"`
-		Name       string          `json:"name"`
-		Input      json.RawMessage `json:"input"`
-		Args       json.RawMessage `json:"args"`
-		Parameters json.RawMessage `json:"parameters"`
-		Arguments  json.RawMessage `json:"arguments"`
-	}
-	var toolCalls []ToolCall
+	var toolCalls []resourceSearchToolCall
 
 	// Robust Extraction: Handle Native Tool Calls AND JSON Content
 	respContent := llmResp.Choices[0].Content
@@ -207,7 +197,7 @@ Strategy:
 	// 1. First check for native tool calls
 	for _, tc := range llmResp.Choices[0].ToolCalls {
 		argBytes, _ := json.Marshal(tc.FunctionCall.Arguments)
-		toolCalls = append(toolCalls, ToolCall{
+		toolCalls = append(toolCalls, resourceSearchToolCall{
 			Tool:  tc.FunctionCall.Name,
 			Input: json.RawMessage(argBytes),
 		})
@@ -215,26 +205,14 @@ Strategy:
 
 	// 2. If no native calls, extract from JSON content
 	if len(toolCalls) == 0 {
-		var rawToolCalls []ToolCall
+		var rawToolCalls []resourceSearchToolCall
 		if err := common.ExtractAndUnmarshalJSON([]byte(respContent), &rawToolCalls); err != nil || len(rawToolCalls) == 0 {
 			_ = json.Unmarshal([]byte(respContent), &rawToolCalls)
 		}
 
 		for _, rtc := range rawToolCalls {
 			tc := rtc
-			if tc.Tool == "" && tc.ToolCode != "" {
-				tc.Tool = tc.ToolCode
-			}
-			if tc.Tool == "" && tc.ToolName != "" {
-				tc.Tool = tc.ToolName
-			}
-			// Function-calling-style output ({"name": ..., "arguments": ...})
-			// is what Gemini and OpenAI models emit by habit even when asked
-			// for tool/input keys; without this alias every call is dropped
-			// and the keyword fallback runs instead.
-			if tc.Tool == "" && tc.Name != "" {
-				tc.Tool = tc.Name
-			}
+			tc.Tool = tc.resolveToolName()
 
 			// Priority order for input payload
 			if len(tc.Input) == 0 || string(tc.Input) == "null" {
@@ -256,15 +234,12 @@ Strategy:
 	if len(toolCalls) == 0 {
 		ctx.GetLogger().Info("resource_search: falling back to manual tool construction", "query", request.Query)
 
-		// 1. Better Heuristic Extraction
-		searchTerms := strings.ToLower(request.Query)
-		fillers := []string{"find", "all", "search", "for", "instances", "across", "my", "cluster", "and", "cloud", "accounts"}
-		for _, f := range fillers {
-			searchTerms = strings.ReplaceAll(searchTerms, f, "")
-		}
-		words := strings.Fields(searchTerms)
-		if len(words) > 0 {
-			resourceName := words[0] // Grab first meaningful word
+		// 1. Better Heuristic Extraction — delegated to the tokenised helper
+		// (see extractFallbackResourceName godoc for why substring-replace
+		// was the bug). Empty return means "no non-filler token in query"
+		// and short-circuits the whole fallback.
+		resourceName := extractFallbackResourceName(request.Query)
+		if resourceName != "" {
 
 			// 2. Alias Expansion (e.g., postgres -> postgresql)
 			variations := []string{resourceName}
@@ -283,8 +258,8 @@ Strategy:
 					ctx.GetLogger().Warn("resource_search: failed to marshal cloud_resource_search input", "error", err, "resource_name", v)
 					continue
 				}
-				toolCalls = append(toolCalls, ToolCall{Tool: tools.ToolResourceSearch, Input: json.RawMessage(rsInput)})
-				toolCalls = append(toolCalls, ToolCall{Tool: tools.ToolCloudResourceSearch, Input: json.RawMessage(crsInput)})
+				toolCalls = append(toolCalls, resourceSearchToolCall{Tool: tools.ToolResourceSearch, Input: json.RawMessage(rsInput)})
+				toolCalls = append(toolCalls, resourceSearchToolCall{Tool: tools.ToolCloudResourceSearch, Input: json.RawMessage(crsInput)})
 			}
 		}
 	}
@@ -317,7 +292,7 @@ Strategy:
 		}
 
 		wg.Add(1)
-		go func(tc ToolCall) {
+		go func(tc resourceSearchToolCall) {
 			defer wg.Done()
 
 			// Normalize tool name
@@ -401,8 +376,11 @@ Strategy:
 			if err := common.UnmarshalJson([]byte(res.Response), &k8sResp); err == nil && len(k8sResp.Resources) > 0 {
 				for _, r := range k8sResp.Resources {
 					// Skip resources that don't relate to any meaningful query term.
-					if len(queryTerms) > 0 && !resourceNameMatchesTerms(r.Name, queryTerms) {
-						ctx.GetLogger().Debug("resource_search: skipping irrelevant k8s result", "name", r.Name, "query_terms", queryTerms)
+					// Match name OR namespace so namespace-scoped queries ("pods in
+					// nudgebee namespace") keep in-namespace pods whose names don't
+					// contain the namespace token.
+					if len(queryTerms) > 0 && !resourceMatchesTerms(r.Name, r.Namespace, queryTerms) {
+						ctx.GetLogger().Debug("resource_search: skipping irrelevant k8s result", "name", r.Name, "namespace", r.Namespace, "query_terms", queryTerms)
 						continue
 					}
 
@@ -443,8 +421,11 @@ Strategy:
 						continue
 					}
 					// Skip cloud resources that don't match any meaningful query term.
-					if len(queryTerms) > 0 && !resourceNameMatchesTerms(r.Name, queryTerms) {
-						ctx.GetLogger().Debug("resource_search: skipping irrelevant cloud result", "name", r.Name, "query_terms", queryTerms)
+					// Match name OR service OR region so scope-by-service/region
+					// queries ("rds databases in us-west-2") keep matching resources
+					// whose names don't carry the service/region token.
+					if len(queryTerms) > 0 && !cloudResourceMatchesTerms(r.Name, r.Service, r.Region, queryTerms) {
+						ctx.GetLogger().Debug("resource_search: skipping irrelevant cloud result", "name", r.Name, "service", r.Service, "region", r.Region, "query_terms", queryTerms)
 						continue
 					}
 
@@ -535,6 +516,16 @@ var genericQueryWords = map[string]bool{
 	"cluster": true, "cloud": true, "instances": true, "across": true,
 }
 
+// isNonIdentityTerm reports whether a query word is a filler/generic word or a
+// Kubernetes resource-type/scope word (deployments, namespace, nodes, …). Such
+// words are NOT resource identities, so the relevance filter must not match
+// resource names against them — doing so over-prunes valid results to a false
+// empty. Resource-type/scope words come from the canonical k8sResourceTypeMappings
+// via tools.IsK8sTypeOrScopeWord, so the list never drifts as kinds are added.
+func isNonIdentityTerm(word string) bool {
+	return genericQueryWords[word] || tools.IsK8sTypeOrScopeWord(word)
+}
+
 // extractResourceQueryTerms derives meaningful search terms from a natural-language query.
 // Terms shorter than 3 chars or in genericQueryWords are excluded.
 func extractResourceQueryTerms(query string) []string {
@@ -543,14 +534,14 @@ func extractResourceQueryTerms(query string) []string {
 	for _, word := range strings.Fields(strings.ToLower(query)) {
 		// Strip trailing punctuation
 		word = strings.TrimRight(word, ".,!?;:")
-		if len(word) < 3 || genericQueryWords[word] || seen[word] {
+		if len(word) < 3 || isNonIdentityTerm(word) || seen[word] {
 			continue
 		}
 		seen[word] = true
 		terms = append(terms, word)
 		// Also add hyphen/underscore/dot-split components (e.g. "llm-server" → "llm", "app.kubernetes.io" → "kubernetes")
 		for _, part := range strings.FieldsFunc(word, func(c rune) bool { return c == '-' || c == '_' || c == '.' }) {
-			if len(part) >= 3 && !genericQueryWords[part] && !seen[part] {
+			if len(part) >= 3 && !isNonIdentityTerm(part) && !seen[part] {
 				seen[part] = true
 				terms = append(terms, part)
 			}
@@ -562,4 +553,99 @@ func extractResourceQueryTerms(query string) []string {
 // resourceNameMatchesTerms delegates to the shared implementation in the tools package.
 func resourceNameMatchesTerms(name string, terms []string) bool {
 	return tools.ResourceNameMatchesTerms(name, terms)
+}
+
+// resourceMatchesTerms delegates to the shared name-OR-namespace matcher, so
+// namespace-scoped results survive the relevance filter (see ResourceMatchesTerms).
+func resourceMatchesTerms(name, namespace string, terms []string) bool {
+	return tools.ResourceMatchesTerms(name, namespace, terms)
+}
+
+// cloudResourceMatchesTerms delegates to the shared name-OR-service-OR-region
+// matcher, so service/region-scoped cloud queries survive the relevance filter.
+func cloudResourceMatchesTerms(name, service, region string, terms []string) bool {
+	return tools.CloudResourceMatchesTerms(name, service, region, terms)
+}
+
+// resourceSearchToolCall is the shape the resource_search sub-agent parses
+// LLM tool-call emissions into. Field-alias set is deliberately wide because
+// different LLM providers (OpenAI, Anthropic, Google, older Gemini prompts)
+// use different JSON key names for the same semantic slots:
+//
+//   - Tool name → `tool`, `tool_code`, `tool_name`, or `name` (OpenAI std)
+//   - Arguments → `input`, `args`, `parameters`, or `arguments` (OpenAI std)
+//
+// Missing any alias silently drops the LLM's output and triggers the
+// heuristic fallback (which historically mangled resource names like
+// `my-app-51` → `-app-51` via substring filler stripping). Extracted to
+// package level so unit tests can pin every alias in the set.
+type resourceSearchToolCall struct {
+	Tool       string          `json:"tool"`
+	ToolCode   string          `json:"tool_code"`
+	ToolName   string          `json:"tool_name"`
+	Name       string          `json:"name"`
+	Input      json.RawMessage `json:"input"`
+	Args       json.RawMessage `json:"args"`
+	Parameters json.RawMessage `json:"parameters"`
+	Arguments  json.RawMessage `json:"arguments"`
+}
+
+// resolveToolName picks the first non-empty tool-name alias for this tool
+// call, matching the same precedence the Call() dispatcher uses. Extracted
+// so unit tests can cover every alias without threading through the full
+// resource_search LLM round-trip.
+func (t resourceSearchToolCall) resolveToolName() string {
+	switch {
+	case t.Tool != "":
+		return t.Tool
+	case t.ToolCode != "":
+		return t.ToolCode
+	case t.ToolName != "":
+		return t.ToolName
+	default:
+		return t.Name
+	}
+}
+
+// resourceSearchFillerWords are the noise tokens the manual-fallback
+// keyword extractor drops from a user query. Kept as a set so lookup is
+// O(1) and — critically — matching happens on WHOLE WORDS (via
+// strings.Fields), never on substrings. Substring-matching this set
+// historically stripped "my" out of resource names like "my-app-51" and
+// broke the downstream DB lookup.
+var resourceSearchFillerWords = map[string]struct{}{
+	"find": {}, "all": {}, "search": {}, "for": {}, "instances": {},
+	"across": {}, "my": {}, "cluster": {}, "and": {}, "cloud": {},
+	"accounts": {},
+}
+
+// extractFallbackResourceName tokenises the query and returns the first
+// non-filler token as the candidate resource name. Empty string when the
+// query has no non-filler tokens. Extracted so unit tests can pin the
+// resource-name preservation invariant (specifically that filler words
+// which happen to be prefixes of real resource names — "my" in
+// "my-app-51" — are NOT stripped).
+// resourceSearchTrimCutset is the set of leading/trailing characters
+// stripped from a fallback resource-name candidate: sentence-terminal
+// punctuation plus wrapping quotes and brackets. Interior characters
+// (notably hyphens) are preserved — K8s resource names use them.
+const resourceSearchTrimCutset = ".,?!:;()[]\"'"
+
+func extractFallbackResourceName(query string) string {
+	// Tokenize on the ORIGINAL casing so a resource named `MyService` is
+	// returned as `MyService` (some downstream lookups are case-sensitive).
+	// For the filler-map check we normalise (trim wrapping punctuation +
+	// lowercase) so a query like `Find all, search for my-app-51.`
+	// correctly treats `all,` as the filler `all` and returns `my-app-51`.
+	for _, w := range strings.Fields(query) {
+		normalised := strings.Trim(strings.ToLower(w), resourceSearchTrimCutset)
+		if _, isFiller := resourceSearchFillerWords[normalised]; !isFiller {
+			// Strip wrapping punctuation, quotes, and brackets. Queries
+			// like `find "my-app-51"` or `find (my-app-51)` would
+			// otherwise return the quoted/bracketed form and fail the DB
+			// lookup. Interior hyphens are preserved.
+			return strings.Trim(w, resourceSearchTrimCutset)
+		}
+	}
+	return ""
 }

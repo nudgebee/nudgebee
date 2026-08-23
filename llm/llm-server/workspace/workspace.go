@@ -539,6 +539,26 @@ func ParseExtraEnv(s string) []corev1.EnvVar {
 	return envs
 }
 
+// LLMSecretEnvVars returns the minimal LLM configuration keys a code-analysis
+// pod may read from the shared secret. It intentionally excludes application
+// infrastructure credentials and the encryption master key.
+func LLMSecretEnvVars(secretName string) []corev1.EnvVar {
+	optional := true
+	ref := func(key string) corev1.EnvVar {
+		return corev1.EnvVar{Name: key, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  key,
+			Optional:             &optional,
+		}}}
+	}
+	return []corev1.EnvVar{
+		ref("LLM_PROVIDER"), ref("LLM_MODEL_NAME"), ref("LLM_PROVIDER_API_KEY"),
+		ref("LLM_PROVIDER_API_ENDPOINT"), ref("LLM_PROVIDER_REGION"),
+		ref("LLM_PROVIDER_API_VERSION"), ref("LLM_PROVIDER_API_TYPE"),
+		ref("LLM_PROVIDER_MAX_RETRIES"), ref("BASE_URL"),
+	}
+}
+
 func buildWorkspaceResources() corev1.ResourceRequirements {
 	resources := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{

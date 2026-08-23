@@ -64,6 +64,8 @@ func (s *AzureSource) determineSpecificType(nodeType core.NodeType, serviceName,
 		return "AzureLogAnalytics"
 	case core.NodeTypeServiceIdentity:
 		return "AzureManagedIdentity"
+	case core.NodeTypeWorkload:
+		return "AzureContainerInstance"
 	default:
 		return string(nodeType)
 	}

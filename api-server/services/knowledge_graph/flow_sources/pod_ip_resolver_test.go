@@ -446,3 +446,132 @@ func TestResolveIPNamedExternalService_CallerClusterScopesBothResolvers(t *testi
 		t.Errorf("ambiguous IP without caller cluster should not resolve")
 	}
 }
+
+// resolverWithPodNames constructs a PodIPResolver with only its pod-name index
+// populated, using the production rebuildGlobalNameIndex() to derive the
+// global-name index (so dedup behaviour is exercised, not re-implemented).
+func resolverWithPodNames(entries []struct {
+	namespace string
+	name      string
+	node      *core.DbNode
+}) *PodIPResolver {
+	r := &PodIPResolver{byNamespaceName: make(map[nsNameKey]*core.DbNode)}
+	for _, e := range entries {
+		if _, seen := r.byNamespaceName[nsNameKey{e.namespace, e.name}]; !seen {
+			r.byNamespaceName[nsNameKey{e.namespace, e.name}] = e.node
+		}
+	}
+	r.rebuildGlobalNameIndex()
+	return r
+}
+
+func TestPodIPResolver_ResolvePodName_ExactNamespaceHit(t *testing.T) {
+	redis := makeWorkloadNode("StatefulSet", "redis-master", "redis", "k8s-dev")
+	r := resolverWithPodNames([]struct {
+		namespace string
+		name      string
+		node      *core.DbNode
+	}{
+		{"redis", "redis-master-0", redis},
+	})
+
+	got, ok := r.ResolvePodName("redis", "redis-master-0")
+	if !ok {
+		t.Fatalf("expected same-namespace hit for bare pod name")
+	}
+	if got.Properties["name"] != "redis-master" {
+		t.Errorf("expected redis-master StatefulSet, got %v", got.Properties["name"])
+	}
+}
+
+func TestPodIPResolver_ResolvePodName_NamespaceMissRefuses(t *testing.T) {
+	// redis-master-0 exists in ns "redis" but the caller is in "payments" —
+	// a bare hostname only resolves in the caller's own namespace, so this is
+	// genuinely external and must NOT resolve.
+	redis := makeWorkloadNode("StatefulSet", "redis-master", "redis", "k8s-dev")
+	r := resolverWithPodNames([]struct {
+		namespace string
+		name      string
+		node      *core.DbNode
+	}{
+		{"redis", "redis-master-0", redis},
+	})
+
+	if _, ok := r.ResolvePodName("payments", "redis-master-0"); ok {
+		t.Errorf("known caller namespace with no matching pod must refuse (fail-safe to external)")
+	}
+}
+
+func TestPodIPResolver_ResolvePodName_AmbiguousWithoutNamespaceRefuses(t *testing.T) {
+	// Same pod name in two namespaces (the redis-master-0 real-world case).
+	a := makeWorkloadNode("StatefulSet", "redis-master", "redis", "k8s-dev")
+	b := makeWorkloadNode("StatefulSet", "redis-master", "redis-test", "k8s-dev")
+	r := resolverWithPodNames([]struct {
+		namespace string
+		name      string
+		node      *core.DbNode
+	}{
+		{"redis", "redis-master-0", a},
+		{"redis-test", "redis-master-0", b},
+	})
+
+	if _, ok := r.ResolvePodName("", "redis-master-0"); ok {
+		t.Errorf("bare pod name across namespaces without caller ns must refuse to guess")
+	}
+}
+
+func TestPodIPResolver_ResolvePodName_GloballyUniqueWithoutNamespaceHits(t *testing.T) {
+	checkout := makeWorkloadNode("Deployment", "checkout", "shop", "k8s-dev")
+	r := resolverWithPodNames([]struct {
+		namespace string
+		name      string
+		node      *core.DbNode
+	}{
+		{"shop", "checkout-7d9f8b-abc12", checkout},
+	})
+
+	got, ok := r.ResolvePodName("", "checkout-7d9f8b-abc12")
+	if !ok || got.Properties["name"] != "checkout" {
+		t.Errorf("globally-unique pod name should resolve without caller ns, got %v ok=%v", got, ok)
+	}
+}
+
+func TestPodIPResolver_ResolvePodName_NilAndEmptySafe(t *testing.T) {
+	var r *PodIPResolver
+	if _, ok := r.ResolvePodName("ns", "pod"); ok {
+		t.Errorf("nil resolver should return ok=false")
+	}
+	r2 := resolverWithPodNames(nil)
+	if _, ok := r2.ResolvePodName("ns", ""); ok {
+		t.Errorf("empty pod name should return ok=false")
+	}
+}
+
+func TestPodIPResolver_AddInventoryPodName_MapsRowSkipsDuplicateAndUnknownOwner(t *testing.T) {
+	redis := makeWorkloadNode("StatefulSet", "redis-master", "redis", "k8s-dev")
+	idx := indexWorkloadsByOwner([]*core.DbNode{redis})
+	r := &PodIPResolver{byNamespaceName: make(map[nsNameKey]*core.DbNode)}
+
+	// First source (k8s_pods) resolves the owner and indexes the pod.
+	if !r.addInventoryPodName(idx, "redis", "redis-master-0", "StatefulSet", "redis-master") {
+		t.Fatalf("expected addInventoryPodName to map redis-master-0 -> redis-master")
+	}
+	// Second source reports the same pod -> skipped (first writer wins).
+	if r.addInventoryPodName(idx, "redis", "redis-master-0", "StatefulSet", "redis-master") {
+		t.Errorf("duplicate (namespace,name) should be skipped, not re-added")
+	}
+	// Owner has no Workload node in the graph -> not added.
+	if r.addInventoryPodName(idx, "redis", "ghost-0", "StatefulSet", "ghost") {
+		t.Errorf("pod whose owner has no Workload node should not be added")
+	}
+
+	// After deriving the global index, the dual-source pod is counted once so
+	// the global-unique fallback still resolves it.
+	r.rebuildGlobalNameIndex()
+	if got := len(r.byNameGlobal["redis-master-0"]); got != 1 {
+		t.Fatalf("dual-source pod must be counted once in byNameGlobal, got %d", got)
+	}
+	if n, ok := r.ResolvePodName("redis", "redis-master-0"); !ok || n.Properties["name"] != "redis-master" {
+		t.Errorf("resolve after inventory add failed: %v ok=%v", n, ok)
+	}
+}

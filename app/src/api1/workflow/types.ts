@@ -138,6 +138,71 @@ export interface WorkflowExecutionGetRequest {
   workflow_id: string;
 }
 
+// --- Cross-automation execution dashboard ---
+
+/** Filters shared by the execution list and its aggregate. */
+export interface ExecutionDashboardFilterRequest {
+  start_date?: string;
+  end_date?: string;
+  workflow_ids?: string[];
+  triggered_by?: string[];
+  statuses?: string[];
+  trigger_types?: string[];
+}
+
+export interface AccountExecutionListRequest extends ExecutionDashboardFilterRequest {
+  limit?: number;
+  /** 1-based. Ignored when next_page_token is set. */
+  page?: number;
+  next_page_token?: string;
+  include_failure_reason?: boolean;
+}
+
+export interface ExecutionAggregateRequest extends ExecutionDashboardFilterRequest {
+  top_failed_limit?: number;
+}
+
+export interface AccountExecutionItem {
+  id: string;
+  workflow_id: string;
+  workflow_name?: string;
+  status: string;
+  start_time?: string;
+  close_time?: string;
+  duration_ms?: number;
+  trigger_type?: string;
+  /** User id of whoever triggered the run. Empty for scheduled runs. */
+  triggered_by?: string;
+  user_name?: string;
+  failure_reason?: string;
+  version_number?: number;
+}
+
+export interface AccountExecutionListResponse {
+  executions: AccountExecutionItem[];
+  next_page_token?: string;
+  total_count: number;
+  total_is_approximate: boolean;
+}
+
+export interface FailedAutomationCount {
+  workflow_id: string;
+  workflow_name?: string;
+  failure_count: number;
+}
+
+export interface ExecutionAggregateResponse {
+  total: number;
+  succeeded: number;
+  failed: number;
+  running: number;
+  counts_are_approximate: boolean;
+  top_failed: FailedAutomationCount[];
+  top_failed_is_approximate: boolean;
+  /** Temporal namespace retention. 0 means unknown — do not clamp the picker. */
+  retention_days: number;
+}
+
 export interface WorkflowExecutionTaskResponse {
   id: string;
   type: string;

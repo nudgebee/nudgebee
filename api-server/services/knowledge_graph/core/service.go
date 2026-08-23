@@ -11,14 +11,15 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -112,6 +113,25 @@ type SourceBuildRequest struct {
 	TimeRange      *TimeRange
 	Filters        map[string]string
 	Region         string // Filter by AWS region
+}
+
+// TenantScopedSource is an additive interface for SourceCategoryIntegration sources
+// (e.g. github) that have no cloud_account_id of their own — the integration is
+// configured once per tenant, not per cloud account. BuildGraphs' Phase 1b calls
+// ListInstances to discover the tenant's configured instances of the integration,
+// then calls the embedded SourceInterface.BuildGraph once per instance, passing
+// the instance's ID as SourceBuildRequest.CloudAccountID (a dispatch/partition key
+// only — knowledge_graph_node/_edge.cloud_account_id has no FK to cloud_accounts).
+type TenantScopedSource interface {
+	SourceInterface
+	ListInstances(ctx *security.RequestContext, tenantID string) ([]IntegrationInstance, error)
+}
+
+// IntegrationInstance is one configured instance of a tenant-scoped integration
+// source (e.g. one connected GitHub org/account).
+type IntegrationInstance struct {
+	ID   string // the integrations.id row — used as CloudAccountID for KG rows
+	Name string // integration_config_name, for logging/metadata
 }
 
 // ExternalServiceEnricherInterface defines the interface for enriching external services
@@ -562,6 +582,9 @@ const (
 // getSourceCategory returns the category of a source
 func (s *Service) getSourceCategory(sourceName string) SourceCategory {
 	integrationSources := map[string]bool{
+		"github":    true,
+		"gitlab":    true,
+		"pagerduty": true,
 		// Add other integration sources here as they are implemented
 	}
 
@@ -582,10 +605,13 @@ func (s *Service) shouldIncrementSyncVersion(sources []string, flowSources []str
 
 	// Define static sources that should increment version
 	staticSources := map[string]bool{
-		"aws":   true,
-		"k8s":   true,
-		"azure": true,
-		"gcp":   true,
+		"aws":       true,
+		"k8s":       true,
+		"azure":     true,
+		"gcp":       true,
+		"github":    true,
+		"gitlab":    true,
+		"pagerduty": true,
 	}
 
 	// Check if any static source is present in sources list
@@ -860,6 +886,102 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 	response.AccountsProcessed = len(accounts)
 
 	// ========================================================================
+	// PHASE 1b: Build tenant-scoped integration graphs (GitHub)
+	// Unlike Phase 1 (per-cloud_account), these sources are configured once per
+	// tenant and have no cloud_account_id of their own. ListInstances discovers
+	// however many instances (e.g. connected GitHub orgs) the tenant has
+	// configured, and BuildGraph runs once per instance, keyed by the
+	// integration's own ID (used purely as a dispatch/partition key — see
+	// TenantScopedSource).
+	// ========================================================================
+	s.logger.Info("Phase 1b: Building tenant-scoped integration graphs")
+
+	for sourceName, source := range s.sources {
+		if s.getSourceCategory(sourceName) != SourceCategoryIntegration {
+			continue
+		}
+		if len(req.Sources) > 0 && !slices.Contains(req.Sources, sourceName) {
+			continue
+		}
+		if !source.IsEnabled() {
+			s.logger.Warn("integration source not enabled", "source", sourceName)
+			continue
+		}
+		tenantScoped, ok := source.(TenantScopedSource)
+		if !ok {
+			s.logger.Warn("integration source does not implement TenantScopedSource, skipping", "source", sourceName)
+			continue
+		}
+
+		instances, err := tenantScoped.ListInstances(ctx, req.TenantID)
+		if err != nil {
+			s.logger.Error("failed to list integration instances", "source", sourceName, "error", err)
+			continue
+		}
+
+		for _, instance := range instances {
+			instanceMetadata := AccountGraphMetadata{
+				AccountID:      instance.ID,
+				AccountName:    instance.Name,
+				CloudProvider:  sourceName, // e.g. "github" — tenant-scoped integrations have no cloud_provider
+				SourcesBuilt:   make([]string, 0),
+				BuildSucceeded: true,
+			}
+
+			sourceReq := &SourceBuildRequest{
+				TenantID:       req.TenantID,
+				CloudAccountID: instance.ID,
+				TimeRange:      req.TimeRange,
+				Filters:        req.Filters,
+			}
+
+			s.logger.Info("building graph from integration source",
+				"source", sourceName,
+				"instance_id", instance.ID,
+				"instance_name", instance.Name)
+			startTime := time.Now()
+
+			graph, err := source.BuildGraph(ctx, sourceReq)
+			if err != nil {
+				s.logger.Error("failed to build graph from integration source",
+					"source", sourceName,
+					"instance_id", instance.ID,
+					"error", err,
+					"duration", time.Since(startTime).Seconds())
+				instanceMetadata.BuildSucceeded = false
+				instanceMetadata.Error = fmt.Sprintf("source '%s': %v", sourceName, err)
+				response.AccountMetadata = append(response.AccountMetadata, instanceMetadata)
+				continue
+			}
+
+			unifiedGraph.Nodes = append(unifiedGraph.Nodes, graph.Nodes...)
+			unifiedGraph.Edges = append(unifiedGraph.Edges, graph.Edges...)
+
+			for _, node := range graph.Nodes {
+				node.CloudAccountID = instance.ID
+				node.TenantID = req.TenantID
+			}
+			for _, edge := range graph.Edges {
+				edge.CloudAccountID = instance.ID
+				edge.TenantID = req.TenantID
+			}
+
+			instanceMetadata.SourcesBuilt = append(instanceMetadata.SourcesBuilt, sourceName)
+			instanceMetadata.NodeCount = len(graph.Nodes)
+			instanceMetadata.EdgeCount = len(graph.Edges)
+			response.AccountMetadata = append(response.AccountMetadata, instanceMetadata)
+			response.AccountsProcessed++
+
+			s.logger.Info("successfully built graph from integration source",
+				"source", sourceName,
+				"instance_id", instance.ID,
+				"nodes", len(graph.Nodes),
+				"edges", len(graph.Edges),
+				"duration", time.Since(startTime).Seconds())
+		}
+	}
+
+	// ========================================================================
 	// PHASE 2.1: Cross-source enrichment (AWS LoadBalancer -> K8s)
 	// Runs after all infrastructure sources complete, before flow sources
 	// Enables cross-account matching between different source types
@@ -1108,6 +1230,10 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 			}
 		}
 	}
+
+	// The graph for this tenant is now rebuilt — refresh the filter-options cache so
+	// the dropdown's unfiltered load stays fast. Best-effort; never fails the build.
+	s.refreshFilterOptionsCache(req.TenantID)
 
 	return response, nil
 }
@@ -1895,6 +2021,45 @@ func (s *Service) MarkStaleEdgesInactive() (int64, error) {
 	return rowsAffected, nil
 }
 
+// MarkStaleExternalServiceNodesInactive flips is_active=false on ExternalService
+// nodes whose updated_at is older than KGEdgeStaleAfterDays. These are
+// flow-source leaves: a peer name a caller stopped calling, or a pod-name
+// ExternalService that has since been superseded once the caller resolves to
+// its real workload. markInactiveNodes only tombstones InfraAuthoritativeNodeTypes
+// (ExternalService is non-infra), and nb.CleanupData never deletes nodes, so
+// without this sweep these leaves accumulate as orphans indefinitely.
+//
+// Mirrors MarkStaleEdgesInactive: it shares the same "not re-stamped for N days"
+// threshold (SaveNodes bumps updated_at on every re-observation), leaves
+// updated_at untouched as the retention anchor, and is tenant-agnostic. A node
+// that starts being observed again is re-activated by SaveNodes' upsert.
+func (s *Service) MarkStaleExternalServiceNodesInactive() (int64, error) {
+	staleDays := config.Config.KGEdgeStaleAfterDays
+	if staleDays <= 0 {
+		staleDays = 7
+	}
+	query := `
+		UPDATE knowledge_graph_node
+		SET is_active = false
+		WHERE is_active = true
+		  AND level = 'Tenant'
+		  AND node_type = $2
+		  AND updated_at < NOW() - ($1 * interval '1 day')
+	`
+	result, err := s.dbManager.Exec(query, staleDays, string(NodeTypeExternalService))
+	if err != nil {
+		return 0, fmt.Errorf("failed to mark stale external service nodes inactive: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf(errRowsAffected, err)
+	}
+	s.logger.Info("kg: marked stale external service nodes inactive",
+		"rows", rowsAffected,
+		"stale_days", staleDays)
+	return rowsAffected, nil
+}
+
 // GetGraph retrieves a knowledge graph from a specific source
 func (s *Service) GetGraph(reqCtx *security.RequestContext, req *QueryRequest) (*QueryResponse, error) {
 	if req.Source == "" {
@@ -1981,11 +2146,20 @@ func (s *Service) calculateMetadata(graph *Graph) Metadata {
 
 // queryAccountMappingsFromDB queries account ID -> account name mappings from the DB.
 // It does not touch the cache; callers are responsible for cache updates.
+//
+// UNIONs in the `integrations` rows of tenant-scoped integration sources (currently
+// github, gitlab, and pagerduty) so their pseudo-account IDs (see TenantScopedSource)
+// resolve to a readable name — e.g. the connected org's config name — instead of a raw
+// UUID in the frontend's account filter dropdown.
 func (s *Service) queryAccountMappingsFromDB(tenantID string) (map[string]string, error) {
 	query := `
-		SELECT id, account_name
+		SELECT id::text, account_name
 		FROM cloud_accounts
 		WHERE tenant = $1
+		UNION ALL
+		SELECT id::text, name
+		FROM integrations
+		WHERE tenant_id = $1 AND type IN ('github', 'gitlab', 'pagerduty') AND status != 'disabled'
 	`
 
 	rows, err := s.dbManager.Query(query, tenantID)
@@ -3225,168 +3399,44 @@ func (s *Service) GetMultipleNodeNeighbors(reqCtx *security.RequestContext, node
 //     spanning-tree edge filter (filterLayeredEdges) when callers want a tree response
 //     instead of the induced subgraph.
 func (s *Service) discoverNeighborNodesRecursive(tenantID string, nodeIDs []string, levels int, nodeTypes []NodeType) (discoveredIDs []string, traversedEdgeIDs []string, nodeMinDepth map[string]int, err error) {
-	// Convert NodeType slice to string slice for PostgreSQL
+	// Convert NodeType slice to string slice for PostgreSQL (neighbour filter only).
 	nodeTypeStrings := make([]string, len(nodeTypes))
 	for i, nt := range nodeTypes {
 		nodeTypeStrings[i] = string(nt)
 	}
 
-	// Build the query with optional node type filter for neighbors.
-	// Base case: always include original nodes regardless of type (edge_id is NULL).
-	// Recursive case: filter by node_types if specified, project the walked edge id.
-	var query string
-	var rows *sqlx.Rows
-
-	// Param layout (both CTE branches):
-	//   $1 = seed node ids, $2 = tenant id, $3 = max depth, $4 = node type filter (with-type only).
-	if len(nodeTypes) > 0 {
-		// With node type filter - only filter neighbor nodes, not the original nodes
-		query = `
-			WITH RECURSIVE neighbor_traversal AS (
-				-- Base case: Start with input nodes at depth 0 (no type filter)
-				SELECT
-					id AS node_id,
-					NULL::uuid AS edge_id,
-					0 AS depth,
-					ARRAY[id] AS visited_path
-				FROM knowledge_graph_node
-				WHERE id = ANY($1::uuid[])
-				  AND tenant_id = $2
-				  AND level = 'Tenant'
-				  AND is_active = true
-
-				UNION
-
-				-- Recursive case: Find neighbors at next depth (with type filter)
-				SELECT
-					CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END AS node_id,
-					e.id AS edge_id,
-					nt.depth + 1 AS depth,
-					nt.visited_path || CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END AS visited_path
-				FROM neighbor_traversal nt
-				JOIN knowledge_graph_edge e ON (
-					e.source_node_id = nt.node_id OR e.destination_node_id = nt.node_id
-				)
-				JOIN knowledge_graph_node n ON (
-					n.id = CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END
-				)
-				WHERE nt.depth < $3
-				  AND e.tenant_id = $2
-				  AND e.level = 'Tenant'
-				  AND e.is_active = true
-				  AND n.tenant_id = $2
-				  AND n.level = 'Tenant'
-				  AND n.is_active = true
-				  AND n.node_type = ANY($4::text[])
-				  AND NOT (
-					  CASE
-						  WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						  ELSE e.source_node_id
-					  END = ANY(nt.visited_path)
-				  )
-			)
-			SELECT DISTINCT node_id::text, edge_id::text, depth FROM neighbor_traversal
-		`
-		rows, err = s.dbManager.Query(query, pq.Array(nodeIDs), tenantID, levels, pq.Array(nodeTypeStrings))
-	} else {
-		// Without node type filter - return all neighbors
-		query = `
-			WITH RECURSIVE neighbor_traversal AS (
-				-- Base case: Start with input nodes at depth 0
-				SELECT
-					id AS node_id,
-					NULL::uuid AS edge_id,
-					0 AS depth,
-					ARRAY[id] AS visited_path
-				FROM knowledge_graph_node
-				WHERE id = ANY($1::uuid[])
-				  AND tenant_id = $2
-				  AND level = 'Tenant'
-				  AND is_active = true
-
-				UNION
-
-				-- Recursive case: Find neighbors at next depth
-				SELECT
-					CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END AS node_id,
-					e.id AS edge_id,
-					nt.depth + 1 AS depth,
-					nt.visited_path || CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END AS visited_path
-				FROM neighbor_traversal nt
-				JOIN knowledge_graph_edge e ON (
-					e.source_node_id = nt.node_id OR e.destination_node_id = nt.node_id
-				)
-				JOIN knowledge_graph_node n ON (
-					n.id = CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END
-				)
-				WHERE nt.depth < $3
-				  AND e.tenant_id = $2
-				  AND e.level = 'Tenant'
-				  AND e.is_active = true
-				  AND n.tenant_id = $2
-				  AND n.level = 'Tenant'
-				  AND n.is_active = true
-				  AND NOT (
-					  CASE
-						  WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						  ELSE e.source_node_id
-					  END = ANY(nt.visited_path)
-				  )
-			)
-			SELECT DISTINCT node_id::text, edge_id::text, depth FROM neighbor_traversal
-		`
-		rows, err = s.dbManager.Query(query, pq.Array(nodeIDs), tenantID, levels)
-	}
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("recursive CTE query failed: %w", err)
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			slog.Warn("Failed to close rows", "error", closeErr)
-		}
-	}()
-
-	// A node reached from k parents at depth d-1 produces k rows (one per incoming
-	// edge); a node on multiple paths of different lengths can also appear at
-	// multiple depths. Dedupe edge ids and collapse to per-node minimum depth so
-	// the layered-DAG edge filter can keep only consecutive-layer edges.
-	edgeIDSet := make(map[string]struct{})
+	// Level-by-level BFS with a single global visited set: each node is expanded
+	// exactly once, so cost is O(edges in the k-hop neighbourhood) rather than the
+	// O(paths) of a visited_path recursive CTE (which re-expands a node once per
+	// route that reaches it). The three return values are unchanged: the distinct
+	// discovered node ids, the distinct walked-edge ids, and each node's minimum
+	// BFS depth.
 	nodeMinDepth = make(map[string]int)
-	for rows.Next() {
-		var nodeID string
-		var edgeID sql.NullString
-		var depth int
-		if err := rows.Scan(&nodeID, &edgeID, &depth); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to scan traversal row: %w", err)
-		}
-		if cur, ok := nodeMinDepth[nodeID]; !ok || depth < cur {
-			nodeMinDepth[nodeID] = depth
-		}
-		if edgeID.Valid {
-			edgeIDSet[edgeID.String] = struct{}{}
+	edgeIDSet := make(map[string]struct{})
+
+	// Depth 0: validate seeds against tenant/level/is_active (the CTE's base case).
+	// Seeds are never type-filtered; an isolated seed (no edges) still appears. The
+	// seed cursor is closed inside the helper (before the BFS opens its own queries).
+	seeds, err := s.fetchActiveSeedNodeIDs(tenantID, nodeIDs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var frontier []string
+	for _, id := range seeds {
+		if _, ok := nodeMinDepth[id]; !ok {
+			nodeMinDepth[id] = 0
+			frontier = append(frontier, id)
 		}
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, nil, nil, fmt.Errorf("error iterating discovered node rows: %w", err)
+	// Expand one level at a time (levels <= 3), each a single indexed edge query
+	// over the whole current frontier. A node already in nodeMinDepth is never
+	// re-expanded — that is what removes the recursive CTE's path explosion.
+	for depth := 0; depth < levels && len(frontier) > 0; depth++ {
+		frontier, err = s.expandNeighborFrontier(tenantID, frontier, depth, nodeTypeStrings, nodeMinDepth, edgeIDSet)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
 	discoveredIDs = make([]string, 0, len(nodeMinDepth))
@@ -3397,8 +3447,91 @@ func (s *Service) discoverNeighborNodesRecursive(tenantID string, nodeIDs []stri
 	for id := range edgeIDSet {
 		traversedEdgeIDs = append(traversedEdgeIDs, id)
 	}
-
 	return discoveredIDs, traversedEdgeIDs, nodeMinDepth, nil
+}
+
+// fetchActiveSeedNodeIDs returns the subset of nodeIDs that exist for the tenant and
+// are active Tenant-level nodes — the recursive CTE's base case. It closes its cursor
+// via defer before returning, so the seed connection is released before the BFS loop
+// opens its own per-level queries.
+func (s *Service) fetchActiveSeedNodeIDs(tenantID string, nodeIDs []string) ([]string, error) {
+	rows, err := s.dbManager.Query(`
+		SELECT id::text FROM knowledge_graph_node
+		WHERE id = ANY($1::uuid[]) AND tenant_id = $2 AND level = 'Tenant' AND is_active = true
+	`, pq.Array(nodeIDs), tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("seed validation query failed: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("Failed to close rows", "error", closeErr)
+		}
+	}()
+
+	var seeds []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan seed row: %w", err)
+		}
+		seeds = append(seeds, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating seed rows: %w", err)
+	}
+	return seeds, nil
+}
+
+// expandNeighborFrontier runs one BFS level for discoverNeighborNodesRecursive: it
+// fetches every active tenant edge incident to a frontier node, records each such
+// walked edge, and returns the neighbours newly discovered at depth+1 (registering
+// them in nodeMinDepth). The walk is bidirectional (source OR destination). When
+// nodeTypeStrings is non-empty the neighbour is filtered by node type (seeds are
+// not). The walked edge is recorded even when the far endpoint was already visited
+// (cross/back edges), matching the previous CTE's walked-edge set; filterLayeredEdges
+// prunes it to consecutive layers downstream.
+func (s *Service) expandNeighborFrontier(tenantID string, frontier []string, depth int, nodeTypeStrings []string, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}) ([]string, error) {
+	// otherEnd projects the endpoint of e that is NOT the frontier node.
+	const otherEnd = `CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END`
+	query := `
+		SELECT e.id::text, (` + otherEnd + `)::text AS other_id
+		FROM knowledge_graph_edge e
+		JOIN knowledge_graph_node n ON n.id = ` + otherEnd + `
+		WHERE (e.source_node_id = ANY($1::uuid[]) OR e.destination_node_id = ANY($1::uuid[]))
+		  AND e.tenant_id = $2 AND e.level = 'Tenant' AND e.is_active = true
+		  AND n.tenant_id = $2 AND n.level = 'Tenant' AND n.is_active = true`
+	args := []interface{}{pq.Array(frontier), tenantID}
+	if len(nodeTypeStrings) > 0 {
+		query += ` AND n.node_type = ANY($3::text[])`
+		args = append(args, pq.Array(nodeTypeStrings))
+	}
+
+	rows, err := s.dbManager.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("frontier expansion query failed at depth %d: %w", depth, err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("Failed to close rows", "error", closeErr)
+		}
+	}()
+
+	var next []string
+	for rows.Next() {
+		var edgeID, otherID string
+		if scanErr := rows.Scan(&edgeID, &otherID); scanErr != nil {
+			return nil, fmt.Errorf("failed to scan frontier row at depth %d: %w", depth, scanErr)
+		}
+		edgeIDSet[edgeID] = struct{}{}
+		if _, seen := nodeMinDepth[otherID]; !seen {
+			nodeMinDepth[otherID] = depth + 1
+			next = append(next, otherID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating frontier rows at depth %d: %w", depth, err)
+	}
+	return next, nil
 }
 
 // fetchNodesByIDs retrieves node details for a list of node IDs
@@ -3638,14 +3771,42 @@ func (s *Service) GetEdgeByID(edgeID string) (*KgEdge, error) {
 
 // FilterOptions represents available filter options for the UI
 // This includes account IDs, node types, and available label/attribute keys (but not their values)
+// FilterOptions is the columnar ("v2") filter-options payload. It replaced the
+// earlier four per-node maps (node_id_map / node_cluster_map / node_specific_type_map /
+// node_account_map) and the flat node_types list to shrink the wire + JSONB-cache size
+// ~60%: each unique_key is shipped once (was 3x) and low-cardinality values
+// (account/specific_type/cluster) are dictionary-encoded to small integer indices. The
+// frontend decodes the columns back into the maps it already uses in one O(N) pass.
 type FilterOptions struct {
-	AccountIDs    []string          `json:"account_ids"`              // Unique cloud account IDs
-	NodeTypes     []string          `json:"node_types"`               // Unique node types
-	LabelKeys     []string          `json:"label_keys"`               // Available label keys
-	AttributeKeys []string          `json:"attribute_keys"`           // Available attribute keys
-	LastSyncTime  *time.Time        `json:"last_sync_time,omitempty"` // Last sync time from tenant filters
-	NodeIDMap     map[string]string `json:"node_id_map"`              // Map of unique_key -> node id
-	NodeCount     int               `json:"node_count"`               // Total number of nodes
+	AccountIDs    []string `json:"account_ids"`    // Distinct cloud account IDs (the account dictionary)
+	LabelKeys     []string `json:"label_keys"`     // Available label keys
+	AttributeKeys []string `json:"attribute_keys"` // Available attribute keys
+
+	// NodeTypes maps each node_type to its distinct specific_types (empty list => no
+	// breakdown). Its keys are the full node-type list (replaces the former flat
+	// node_types array + specific_types_by_node_type map).
+	NodeTypes map[string][]string `json:"node_types"`
+
+	// Per-node columns, index-aligned, length = NodeCount.
+	NodeKeys            []string `json:"node_keys"`              // unique_key (account-name rewritten for display)
+	NodeIDs             []string `json:"node_ids"`               // node id
+	NodeAccountIdx      []int    `json:"node_account_idx"`       // index into AccountIDs (-1 = none)
+	NodeSpecificTypeIdx []int    `json:"node_specific_type_idx"` // index into SpecificTypeDict (-1 = none)
+	NodeClusterIdx      []int    `json:"node_cluster_idx"`       // index into ClusterDict (-1 = none)
+	NodeBucketIdx       []int    `json:"node_bucket_idx"`        // index into FilterBuckets (each node's own bucket; for Option-B scoping)
+	SpecificTypeDict    []string `json:"specific_type_dict"`     // dictionary for NodeSpecificTypeIdx
+	ClusterDict         []string `json:"cluster_dict"`           // dictionary for NodeClusterIdx
+
+	// Option B — label/attribute key -> covered filterBuckets, for offline dropdown scoping.
+	// FilterBuckets entries are [account_idx, node_type_idx, specific_type_idx] (indices into
+	// AccountIDs / sorted(keys(NodeTypes)) / SpecificTypeDict; -1 = none). LabelKeyBuckets
+	// and AttributeKeyBuckets are aligned to LabelKeys / AttributeKeys.
+	FilterBuckets       [][3]int `json:"filter_buckets"`
+	LabelKeyBuckets     [][]int  `json:"label_key_buckets"`
+	AttributeKeyBuckets [][]int  `json:"attribute_key_buckets"`
+
+	LastSyncTime *time.Time `json:"last_sync_time,omitempty"` // Last sync time from tenant filters
+	NodeCount    int        `json:"node_count"`               // Total number of nodes
 }
 
 // FilterValuesRequest represents a request to get values for a specific filter key
@@ -3811,154 +3972,305 @@ func buildNodeFilterSQL(filters *GraphFilters, nodeIDs []string, startArgCounter
 	return " AND " + strings.Join(sqlParts, " AND "), args, nil
 }
 
-// GetFilterOptions retrieves available filter options for a tenant
-// Returns account IDs, node types, and available label/attribute keys with their possible values
+// GetFilterOptions retrieves available filter options for a tenant: account IDs,
+// node types, label/attribute keys, and the unique_key -> id map used by the node
+// picker.
+//
+// The unfiltered call (the dropdown's initial load) is served from the per-tenant
+// filter-options cache, which is refreshed at the end of each KG build — so it is
+// never staler than the graph itself. Filtered calls, and unfiltered cache misses,
+// fall through to a live computation.
 func (s *Service) GetFilterOptions(tenantID string, filters *GraphFilters, nodeIDs []string) (*FilterOptions, error) {
 	if s.dbManager == nil {
 		return nil, fmt.Errorf("database manager not initialized")
 	}
 
-	s.logger.Info("retrieving filter options", "tenant_id", tenantID)
-
-	accountMappings, err := s.getAccountMappings(tenantID)
-	if err != nil {
-		s.logger.Warn(msgAccountMappingsFallback, "error", err)
-		accountMappings = make(map[string]string)
+	unfiltered := filters == nil && len(nodeIDs) == 0
+	if unfiltered {
+		if cached, ok := s.readFilterOptionsCache(tenantID); ok {
+			return cached, nil
+		}
 	}
+
+	opts, err := s.computeFilterOptions(tenantID, filters, nodeIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate the cache on an unfiltered miss (e.g. the first read after a deploy,
+	// before the next build refreshes it) so subsequent reads are fast. Best-effort.
+	if unfiltered {
+		s.writeFilterOptionsCache(tenantID, opts)
+	}
+	return opts, nil
+}
+
+// filterOptionsConcurrency caps how many of computeFilterOptions' queries run at
+// once, and so how much of the connection pool (20 per pod) one call can hold.
+const filterOptionsConcurrency = 4
+
+// filterKeyCovRow is one distinct (label|attribute key, node_type, specific_type, account)
+// combination, collected to build Option-B per-key bucket coverage.
+type filterKeyCovRow struct {
+	key          string
+	nodeType     string
+	specificType sql.NullString
+	account      sql.NullString
+}
+
+// scanFilterKeyCoverage runs a `SELECT DISTINCT jsonb_object_keys(col), node_type,
+// specific_type, cloud_account_id` query and appends each row to dst.
+func (s *Service) scanFilterKeyCoverage(query, tenantID string, filterArgs []interface{}, dst *[]filterKeyCovRow) error {
+	rows, err := s.dbManager.Query(query, append([]interface{}{tenantID}, filterArgs...)...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			s.logger.Error("failed to close filter-key coverage rows", "error", closeErr)
+		}
+	}()
+	for rows.Next() {
+		var r filterKeyCovRow
+		if err := rows.Scan(&r.key, &r.nodeType, &r.specificType, &r.account); err != nil {
+			return err
+		}
+		*dst = append(*dst, r)
+	}
+	return rows.Err()
+}
+
+// computeFilterOptions runs the live queries that assemble a FilterOptions payload.
+// GetFilterOptions serves the unfiltered case from cache; this is the source of
+// truth behind both that cache and every filtered call.
+func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, nodeIDs []string) (*FilterOptions, error) {
+	s.logger.Info("computing filter options", "tenant_id", tenantID)
 
 	filterSQL, filterArgs, err := buildNodeFilterSQL(filters, nodeIDs, 2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build node filter SQL: %w", err)
 	}
 
-	// 1. Get unique account IDs
-	accountIDsQuery := `
-		SELECT DISTINCT cloud_account_id
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND cloud_account_id IS NOT NULL AND level = 'Tenant' AND is_active = true
-	` + filterSQL + ` ORDER BY cloud_account_id`
-	accountRows, err := s.dbManager.Query(accountIDsQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query account IDs: %w", err)
-	}
-	defer func() {
-		if err := accountRows.Close(); err != nil {
-			s.logger.Error("failed to close account rows", "error", err)
-		}
-	}()
+	// The data sources below are independent, so fetch them concurrently and join
+	// at g.Wait(). Each goroutine writes a distinct variable (no shared mutable
+	// state), and the pool (MaxOpenConns=20) comfortably absorbs the ~6 connections.
+	// getAccountMappings and last_sync are best-effort: they log and fall back rather
+	// than failing the whole call, preserving the previous sequential behaviour.
+	var (
+		accountIDs              = make([]string, 0)
+		nodeTypes               = make([]string, 0)
+		specificTypesByNodeType = make(map[string][]string)
+		labelKeys               = make([]string, 0)
+		attributeKeys           = make([]string, 0)
+		nodeIDMap               = make(map[string]string)
+		nodeClusterMap          = make(map[string]string)
+		nodeSpecificTypeMap     = make(map[string]string)
+		nodeAccountMap          = make(map[string]string)
+		accountMappings         map[string]string
+		lastSyncTime            *time.Time
+		// Option B: raw (key, node_type, specific_type, account) rows for each label /
+		// attribute key, mapped to bucket ids after columnarization below.
+		labelCov []filterKeyCovRow
+		attrCov  []filterKeyCovRow
+	)
 
-	accountIDs := make([]string, 0)
-	for accountRows.Next() {
-		var accountID string
-		if err := accountRows.Scan(&accountID); err != nil {
-			return nil, fmt.Errorf("failed to scan account ID: %w", err)
+	// scanColumn runs a single-column DISTINCT query and appends each row to dst. A
+	// fresh args slice is built per call, so concurrent callers share no mutable state.
+	scanColumn := func(query string, dst *[]string) error {
+		rows, err := s.dbManager.Query(query, append([]interface{}{tenantID}, filterArgs...)...)
+		if err != nil {
+			return err
 		}
-		accountIDs = append(accountIDs, accountID)
-	}
-
-	// 2. Get unique node types
-	nodeTypesQuery := `
-		SELECT DISTINCT node_type
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND level = 'Tenant' AND is_active = true
-		AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')
-	` + filterSQL + ` ORDER BY node_type`
-	nodeTypeRows, err := s.dbManager.Query(nodeTypesQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query node types: %w", err)
-	}
-	defer func() {
-		if err := nodeTypeRows.Close(); err != nil {
-			s.logger.Error("failed to close node type rows", "error", err)
+		defer func() {
+			if closeErr := rows.Close(); closeErr != nil {
+				s.logger.Error("failed to close filter-option rows", "error", closeErr)
+			}
+		}()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				return err
+			}
+			*dst = append(*dst, v)
 		}
-	}()
-
-	nodeTypes := make([]string, 0)
-	for nodeTypeRows.Next() {
-		var nodeType string
-		if err := nodeTypeRows.Scan(&nodeType); err != nil {
-			return nil, fmt.Errorf("failed to scan node type: %w", err)
-		}
-		nodeTypes = append(nodeTypes, nodeType)
+		return rows.Err()
 	}
 
-	// 3. Get all unique label keys (without values)
-	labelKeysQuery := `
-		SELECT DISTINCT jsonb_object_keys(labels) as label_key
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND labels != '{}'::jsonb AND level = 'Tenant' AND is_active = true
-	` + filterSQL + ` ORDER BY label_key`
-	labelKeyRows, err := s.dbManager.Query(labelKeysQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query label keys: %w", err)
-	}
-	defer func() {
-		if err := labelKeyRows.Close(); err != nil {
-			s.logger.Error("failed to close label key rows", "error", err)
-		}
-	}()
+	// Cap how much of the pool one call can take. The comment above puts this at
+	// roughly 6 connections, which is fine on its own but not once several callers
+	// overlap: the pool is 20 per pod, so four concurrent calls are enough to ask
+	// for every connection at once (see #34973).
+	var g errgroup.Group
+	g.SetLimit(filterOptionsConcurrency)
 
-	labelKeys := make([]string, 0)
-	for labelKeyRows.Next() {
-		var labelKey string
-		if err := labelKeyRows.Scan(&labelKey); err != nil {
-			return nil, fmt.Errorf("failed to scan label key: %w", err)
+	g.Go(func() error {
+		q := `SELECT DISTINCT cloud_account_id FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND cloud_account_id IS NOT NULL AND level = 'Tenant' AND is_active = true` + filterSQL + ` ORDER BY cloud_account_id`
+		if err := scanColumn(q, &accountIDs); err != nil {
+			return fmt.Errorf("failed to query account IDs: %w", err)
 		}
-		labelKeys = append(labelKeys, labelKey)
-	}
+		return nil
+	})
 
-	// 4. Get all unique query attribute keys (without values)
-	attrKeysQuery := `
-		SELECT DISTINCT jsonb_object_keys(query_attributes) as attr_key
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND query_attributes != '{}'::jsonb AND level = 'Tenant' AND is_active = true
-	` + filterSQL + ` ORDER BY attr_key`
-	attrKeyRows, err := s.dbManager.Query(attrKeysQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query attribute keys: %w", err)
-	}
-	defer func() {
-		if err := attrKeyRows.Close(); err != nil {
-			s.logger.Error("failed to close attribute key rows", "error", err)
+	g.Go(func() error {
+		q := `SELECT DISTINCT node_type FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL + ` ORDER BY node_type`
+		if err := scanColumn(q, &nodeTypes); err != nil {
+			return fmt.Errorf("failed to query node types: %w", err)
 		}
-	}()
+		return nil
+	})
 
-	attributeKeys := make([]string, 0)
-	for attrKeyRows.Next() {
-		var attrKey string
-		if err := attrKeyRows.Scan(&attrKey); err != nil {
-			return nil, fmt.Errorf("failed to scan attribute key: %w", err)
+	// specificTypesByNodeType is exclusively written by this goroutine (no shared
+	// mutable state with the others), matching the pattern the rest of this function
+	// already relies on for concurrent safety.
+	g.Go(func() error {
+		q := `SELECT DISTINCT node_type, specific_type FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND level = 'Tenant' AND is_active = true AND specific_type IS NOT NULL
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL + ` ORDER BY node_type, specific_type`
+		rows, err := s.dbManager.Query(q, append([]interface{}{tenantID}, filterArgs...)...)
+		if err != nil {
+			return fmt.Errorf("failed to query specific types: %w", err)
 		}
-		attributeKeys = append(attributeKeys, attrKey)
-	}
+		defer func() {
+			if closeErr := rows.Close(); closeErr != nil {
+				s.logger.Error("failed to close specific-type rows", "error", closeErr)
+			}
+		}()
+		for rows.Next() {
+			var nodeType, specificType string
+			if err := rows.Scan(&nodeType, &specificType); err != nil {
+				return fmt.Errorf("failed to scan specific type row: %w", err)
+			}
+			specificTypesByNodeType[nodeType] = append(specificTypesByNodeType[nodeType], specificType)
+		}
+		return rows.Err()
+	})
 
-	// 5. Get unique_key -> id mapping for all nodes
-	nodeIDMapQuery := `
-		SELECT unique_key, id
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND level = 'Tenant' AND unique_key IS NOT NULL AND is_active = true
-		AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')
-	` + filterSQL
-	nodeIDMapRows, err := s.dbManager.Query(nodeIDMapQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query node ID map: %w", err)
-	}
-	defer func() {
-		if err := nodeIDMapRows.Close(); err != nil {
-			s.logger.Error("failed to close node ID map rows", "error", err)
+	// label_keys / attribute_keys exclude inferred nodes so the global lists share the
+	// exact population behind the node columns and the Option-B bucket coverage — this
+	// keeps the client-side label/attr scoping byte-for-byte identical to a live query.
+	g.Go(func() error {
+		q := `SELECT DISTINCT jsonb_object_keys(labels) AS label_key FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND labels != '{}'::jsonb AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL + ` ORDER BY label_key`
+		if err := scanColumn(q, &labelKeys); err != nil {
+			return fmt.Errorf("failed to query label keys: %w", err)
 		}
-	}()
+		return nil
+	})
 
-	nodeIDMap := make(map[string]string)
-	for nodeIDMapRows.Next() {
-		var uniqueKey, nodeID string
-		if err := nodeIDMapRows.Scan(&uniqueKey, &nodeID); err != nil {
-			return nil, fmt.Errorf("failed to scan node ID map row: %w", err)
+	g.Go(func() error {
+		q := `SELECT DISTINCT jsonb_object_keys(query_attributes) AS attr_key FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND query_attributes != '{}'::jsonb AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL + ` ORDER BY attr_key`
+		if err := scanColumn(q, &attributeKeys); err != nil {
+			return fmt.Errorf("failed to query attribute keys: %w", err)
 		}
-		nodeIDMap[uniqueKey] = nodeID
-	}
-	if err := nodeIDMapRows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating node ID map rows: %w", err)
+		return nil
+	})
+
+	// Option B — per label/attribute key, the distinct (node_type, specific_type, account)
+	// combinations it appears on. Uses the same node population as the node columns
+	// (inferred-excluded) so the combinations map onto the node filterBuckets built below.
+	g.Go(func() error {
+		q := `SELECT DISTINCT jsonb_object_keys(labels) AS k, node_type, specific_type, cloud_account_id FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND labels != '{}'::jsonb AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
+		if err := s.scanFilterKeyCoverage(q, tenantID, filterArgs, &labelCov); err != nil {
+			return fmt.Errorf("failed to query label key coverage: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		q := `SELECT DISTINCT jsonb_object_keys(query_attributes) AS k, node_type, specific_type, cloud_account_id FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND query_attributes != '{}'::jsonb AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
+		if err := s.scanFilterKeyCoverage(q, tenantID, filterArgs, &attrCov); err != nil {
+			return fmt.Errorf("failed to query attribute key coverage: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		// query_attributes->>'cluster' is hoisted (Indexed: true) on nearly every
+		// k8s specific-type schema — surfacing it lets the Node dropdown disambiguate
+		// same-named namespaces/resources across clusters (see buildNodeOption in
+		// the frontend). NULL for non-k8s nodes and k8s node types that don't carry it.
+		// specific_type lets the Node dropdown badge/icon identity nodes (GitHubUser,
+		// PagerDutyUser, NudgebeeUser, ...) by their concrete source instead of the
+		// generic NodeType, mirroring the Node Type filter's existing specific-type nesting.
+		// cloud_account_id (raw UUID) is keyed by node id, not unique_key, so the client can
+		// scope by account offline without the applyAccountNames key rewrite (the key's account
+		// segment becomes the account NAME below, which no longer matches the account-id filter).
+		q := `SELECT unique_key, id, query_attributes->>'cluster' AS cluster, specific_type, cloud_account_id FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND level = 'Tenant' AND unique_key IS NOT NULL AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
+		rows, err := s.dbManager.Query(q, append([]interface{}{tenantID}, filterArgs...)...)
+		if err != nil {
+			return fmt.Errorf("failed to query node ID map: %w", err)
+		}
+		defer func() {
+			if closeErr := rows.Close(); closeErr != nil {
+				s.logger.Error("failed to close node ID map rows", "error", closeErr)
+			}
+		}()
+		for rows.Next() {
+			var uniqueKey, nodeID string
+			var cluster, specificType, cloudAccountID sql.NullString
+			if err := rows.Scan(&uniqueKey, &nodeID, &cluster, &specificType, &cloudAccountID); err != nil {
+				return fmt.Errorf("failed to scan node ID map row: %w", err)
+			}
+			nodeIDMap[uniqueKey] = nodeID
+			if cluster.Valid && cluster.String != "" {
+				nodeClusterMap[uniqueKey] = cluster.String
+			}
+			if specificType.Valid && specificType.String != "" {
+				nodeSpecificTypeMap[uniqueKey] = specificType.String
+			}
+			if cloudAccountID.Valid && cloudAccountID.String != "" {
+				nodeAccountMap[nodeID] = cloudAccountID.String
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("error iterating node ID map rows: %w", err)
+		}
+		return nil
+	})
+
+	// Best-effort: account name mappings (falls back to an empty map on error).
+	g.Go(func() error {
+		m, mErr := s.getAccountMappings(tenantID)
+		if mErr != nil {
+			s.logger.Warn(msgAccountMappingsFallback, "error", mErr)
+			m = make(map[string]string)
+		}
+		accountMappings = m
+		return nil
+	})
+
+	// Best-effort: last sync time from tenant filters (nil when none exist).
+	g.Go(func() error {
+		row, qErr := s.dbManager.QueryRow(`
+			SELECT last_sync_time FROM knowledge_graph_tenant_filters
+			WHERE tenant_id = $1 AND enabled = true
+			ORDER BY last_sync_time DESC NULLS LAST
+			LIMIT 1`, tenantID)
+		if qErr != nil {
+			s.logger.Debug("failed to query last sync time", "tenant_id", tenantID, "error", qErr)
+			return nil
+		}
+		if scanErr := row.Scan(&lastSyncTime); scanErr != nil {
+			// Expected when no filters exist.
+			s.logger.Debug("no last sync time found", "tenant_id", tenantID, "error", scanErr)
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	// Replace account_id with account_name in node_id_map keys.
@@ -3997,50 +4309,287 @@ func (s *Service) GetFilterOptions(tenantID string, filters *GraphFilters, nodeI
 		return result, hasUnmapped
 	}
 
+	effectiveMappings := accountMappings
 	namedNodeIDMap, hasUnmapped := applyAccountNames(nodeIDMap, accountMappings)
 	if hasUnmapped {
 		// At least one account_id was not in the cache — refresh and retry once.
 		if fresh, refreshErr := s.refreshAccountMappings(tenantID); refreshErr == nil {
+			effectiveMappings = fresh
 			namedNodeIDMap, _ = applyAccountNames(nodeIDMap, fresh)
 		}
 	}
 	nodeIDMap = namedNodeIDMap
+	// nodeClusterMap is keyed by the same raw unique_key as nodeIDMap, so it needs
+	// the identical account_id -> account_name key rewrite to stay joinable with it.
+	nodeClusterMap, _ = applyAccountNames(nodeClusterMap, effectiveMappings)
+	nodeSpecificTypeMap, _ = applyAccountNames(nodeSpecificTypeMap, effectiveMappings)
+	// nodeAccountMap is keyed by node id (not unique_key) and its value is the raw
+	// cloud_account_id, so it deliberately skips the applyAccountNames key rewrite —
+	// the client joins it as nodeAccountMap[nodeIdMap[uniqueKey]] and matches the value
+	// against the account-id filter directly.
 
-	// 6. Get last sync time from tenant filters
-	lastSyncQuery := `
-		SELECT last_sync_time
-		FROM knowledge_graph_tenant_filters
-		WHERE tenant_id = $1 AND enabled = true
-		ORDER BY last_sync_time DESC NULLS LAST
-		LIMIT 1
-	`
-	var lastSyncTime *time.Time
-	row, err := s.dbManager.QueryRow(lastSyncQuery, tenantID)
-	if err != nil {
-		s.logger.Debug("failed to query last sync time", "tenant_id", tenantID, "error", err)
-	} else if err := row.Scan(&lastSyncTime); err != nil {
-		// Log as debug since it's expected when no filters exist
-		s.logger.Debug("no last sync time found", "tenant_id", tenantID, "error", err)
+	// ---- Columnarize into the v2 payload ----
+	// Merged node_types: every node_type is a key; value is its specific_types (empty
+	// when the type has no breakdown). Replaces the flat list + specific_types map.
+	mergedNodeTypes := make(map[string][]string, len(nodeTypes))
+	for _, nt := range nodeTypes {
+		if sts, ok := specificTypesByNodeType[nt]; ok {
+			mergedNodeTypes[nt] = sts
+		} else {
+			mergedNodeTypes[nt] = []string{}
+		}
 	}
+
+	// Encoding dictionaries. accountIDs is already the sorted distinct account list;
+	// sortedNodeTypes gives node_type -> index for the filterBuckets.
+	accountIndex := make(map[string]int, len(accountIDs))
+	for i, a := range accountIDs {
+		accountIndex[a] = i
+	}
+	sortedNodeTypes := make([]string, 0, len(mergedNodeTypes))
+	for nt := range mergedNodeTypes {
+		sortedNodeTypes = append(sortedNodeTypes, nt)
+	}
+	sort.Strings(sortedNodeTypes)
+	nodeTypeIndex := make(map[string]int, len(sortedNodeTypes))
+	for i, nt := range sortedNodeTypes {
+		nodeTypeIndex[nt] = i
+	}
+
+	specificTypeDict := make([]string, 0)
+	clusterDict := make([]string, 0)
+	spIndex := make(map[string]int)
+	clIndex := make(map[string]int)
+	intern := func(dict *[]string, index map[string]int, v string) int {
+		if v == "" {
+			return -1
+		}
+		if i, ok := index[v]; ok {
+			return i
+		}
+		i := len(*dict)
+		*dict = append(*dict, v)
+		index[v] = i
+		return i
+	}
+
+	filterBuckets := make([][3]int, 0)
+	bucketIndex := make(map[[3]int]int)
+	internBucket := func(t [3]int) int {
+		if i, ok := bucketIndex[t]; ok {
+			return i
+		}
+		i := len(filterBuckets)
+		filterBuckets = append(filterBuckets, t)
+		bucketIndex[t] = i
+		return i
+	}
+
+	// Deterministic column order (stable cache payload + tests).
+	sortedKeys := make([]string, 0, len(nodeIDMap))
+	for k := range nodeIDMap {
+		sortedKeys = append(sortedKeys, k)
+	}
+	sort.Strings(sortedKeys)
+
+	nodeKeys := make([]string, 0, len(sortedKeys))
+	nodeIDsCol := make([]string, 0, len(sortedKeys))
+	nodeAccountIdx := make([]int, 0, len(sortedKeys))
+	nodeSpecificTypeIdx := make([]int, 0, len(sortedKeys))
+	nodeClusterIdx := make([]int, 0, len(sortedKeys))
+	nodeBucketIdx := make([]int, 0, len(sortedKeys))
+	for _, uk := range sortedKeys {
+		id := nodeIDMap[uk]
+		nodeKeys = append(nodeKeys, uk)
+		nodeIDsCol = append(nodeIDsCol, id)
+		aIdx := -1
+		if acc, ok := nodeAccountMap[id]; ok {
+			if i, ok2 := accountIndex[acc]; ok2 {
+				aIdx = i
+			}
+		}
+		nodeAccountIdx = append(nodeAccountIdx, aIdx)
+		spIdx := intern(&specificTypeDict, spIndex, nodeSpecificTypeMap[uk])
+		nodeSpecificTypeIdx = append(nodeSpecificTypeIdx, spIdx)
+		nodeClusterIdx = append(nodeClusterIdx, intern(&clusterDict, clIndex, nodeClusterMap[uk]))
+		// bucket for this node (node_type is parts[3] of the unique_key). Ship the id per
+		// node so the client never has to recompute it (no Go/JS sort-order dependency).
+		ntIdx := -1
+		if parts := strings.Split(uk, ":"); len(parts) == UniqueKeyPartCount {
+			if i, ok := nodeTypeIndex[parts[3]]; ok {
+				ntIdx = i
+			}
+		}
+		nodeBucketIdx = append(nodeBucketIdx, internBucket([3]int{aIdx, ntIdx, spIdx}))
+	}
+
+	// Option B: map each label/attribute key's coverage rows to bucket ids.
+	buildKeyBuckets := func(keys []string, cov []filterKeyCovRow) [][]int {
+		keyPos := make(map[string]int, len(keys))
+		for i, k := range keys {
+			keyPos[k] = i
+		}
+		sets := make([]map[int]bool, len(keys))
+		for i := range sets {
+			sets[i] = make(map[int]bool)
+		}
+		for _, r := range cov {
+			pos, ok := keyPos[r.key]
+			if !ok {
+				continue
+			}
+			aIdx := -1
+			if r.account.Valid {
+				if i, ok := accountIndex[r.account.String]; ok {
+					aIdx = i
+				}
+			}
+			ntIdx := -1
+			if i, ok := nodeTypeIndex[r.nodeType]; ok {
+				ntIdx = i
+			}
+			spIdx := -1
+			if r.specificType.Valid && r.specificType.String != "" {
+				if i, ok := spIndex[r.specificType.String]; ok {
+					spIdx = i
+				}
+			}
+			sets[pos][internBucket([3]int{aIdx, ntIdx, spIdx})] = true
+		}
+		out := make([][]int, len(keys))
+		for i := range keys {
+			ids := make([]int, 0, len(sets[i]))
+			for t := range sets[i] {
+				ids = append(ids, t)
+			}
+			sort.Ints(ids)
+			out[i] = ids
+		}
+		return out
+	}
+	labelKeyBuckets := buildKeyBuckets(labelKeys, labelCov)
+	attributeKeyBuckets := buildKeyBuckets(attributeKeys, attrCov)
 
 	s.logger.Info("successfully retrieved filter options",
 		"tenant_id", tenantID,
 		"account_ids_count", len(accountIDs),
-		"node_types_count", len(nodeTypes),
+		"node_types_count", len(mergedNodeTypes),
 		"label_keys_count", len(labelKeys),
 		"attribute_keys_count", len(attributeKeys),
-		"node_id_map_count", len(nodeIDMap),
+		"node_count", len(nodeKeys),
+		"specific_type_dict_count", len(specificTypeDict),
+		"cluster_dict_count", len(clusterDict),
+		"filter_buckets_count", len(filterBuckets),
 		"last_sync_time", lastSyncTime)
 
 	return &FilterOptions{
-		AccountIDs:    accountIDs,
-		NodeTypes:     nodeTypes,
-		LabelKeys:     labelKeys,
-		AttributeKeys: attributeKeys,
-		LastSyncTime:  lastSyncTime,
-		NodeIDMap:     nodeIDMap,
-		NodeCount:     len(nodeIDMap),
+		AccountIDs:          accountIDs,
+		LabelKeys:           labelKeys,
+		AttributeKeys:       attributeKeys,
+		NodeTypes:           mergedNodeTypes,
+		NodeKeys:            nodeKeys,
+		NodeIDs:             nodeIDsCol,
+		NodeAccountIdx:      nodeAccountIdx,
+		NodeSpecificTypeIdx: nodeSpecificTypeIdx,
+		NodeClusterIdx:      nodeClusterIdx,
+		NodeBucketIdx:       nodeBucketIdx,
+		SpecificTypeDict:    specificTypeDict,
+		ClusterDict:         clusterDict,
+		FilterBuckets:       filterBuckets,
+		LabelKeyBuckets:     labelKeyBuckets,
+		AttributeKeyBuckets: attributeKeyBuckets,
+		LastSyncTime:        lastSyncTime,
+		NodeCount:           len(nodeKeys),
 	}, nil
+}
+
+// --- Filter-options cache (one JSONB row per tenant, refreshed at each KG build) ---
+
+// refreshFilterOptionsCache recomputes the unfiltered filter options and upserts them
+// into knowledge_graph_filter_options. Called at the end of a successful KG build;
+// best-effort — a failure is logged and never fails the build.
+func (s *Service) refreshFilterOptionsCache(tenantID string) {
+	if s.dbManager == nil || tenantID == "" {
+		return
+	}
+	opts, err := s.computeFilterOptions(tenantID, nil, nil)
+	if err != nil {
+		s.logger.Warn("failed to compute filter options for cache", "tenant_id", tenantID, "error", err)
+		return
+	}
+	s.writeFilterOptionsCache(tenantID, opts)
+}
+
+// readFilterOptionsCache returns the cached unfiltered filter options for a tenant,
+// or ok=false on a miss / malformed payload (the caller then computes live).
+// filterOptionsCacheSchemaVersion is bumped whenever the FilterOptions JSON shape
+// changes (a new field, a renamed key, …). readFilterOptionsCache treats any other
+// version — including a legacy row written before this envelope existed — as a miss,
+// so a shape change can never serve a stale-shape payload past the next recompute.
+// This prevents the transient post-deploy cascade break where an old cached payload
+// lacked a field the current code/UI expects.
+//
+// v2: added FilterOptions.NodeAccountMap (node id -> cloud_account_id) so the client
+// can scope the filter cascade by account offline. v1 rows lack it and are recomputed.
+// v3: columnar payload (node_keys/node_ids/*_idx + dicts), merged node_types map, and
+// Option-B label/attribute key bucket coverage. v2 rows deserialize into empty columns
+// and are recomputed on the first unfiltered read.
+// v4: renamed the coverage fields (filter_buckets / node_bucket_idx / label_key_buckets /
+// attribute_key_buckets); v3 rows carry the old JSON keys, so bump to invalidate them.
+const filterOptionsCacheSchemaVersion = 4
+
+// filterOptionsCacheEnvelope wraps the cached payload with its schema version.
+type filterOptionsCacheEnvelope struct {
+	SchemaVersion int            `json:"schema_version"`
+	Options       *FilterOptions `json:"options"`
+}
+
+func (s *Service) readFilterOptionsCache(tenantID string) (*FilterOptions, bool) {
+	row, err := s.dbManager.QueryRow(
+		`SELECT payload FROM knowledge_graph_filter_options WHERE tenant_id = $1`, tenantID)
+	if err != nil {
+		s.logger.Debug("filter options cache query failed", "tenant_id", tenantID, "error", err)
+		return nil, false
+	}
+	var payload []byte
+	if err := row.Scan(&payload); err != nil {
+		// sql.ErrNoRows (no cache row yet) is the expected miss; log anything else.
+		if !errors.Is(err, sql.ErrNoRows) {
+			s.logger.Debug("filter options cache read failed", "tenant_id", tenantID, "error", err)
+		}
+		return nil, false
+	}
+	var env filterOptionsCacheEnvelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		s.logger.Warn("failed to unmarshal cached filter options", "tenant_id", tenantID, "error", err)
+		return nil, false
+	}
+	// A version mismatch — or a legacy row with no envelope (version 0, nil options) —
+	// means the cached shape may not match the current code. Treat it as a miss so the
+	// caller recomputes and repopulates with the current schema.
+	if env.SchemaVersion != filterOptionsCacheSchemaVersion || env.Options == nil {
+		return nil, false
+	}
+	return env.Options, true
+}
+
+// writeFilterOptionsCache upserts the tenant's filter-options payload. Best-effort.
+func (s *Service) writeFilterOptionsCache(tenantID string, opts *FilterOptions) {
+	payload, err := json.Marshal(filterOptionsCacheEnvelope{
+		SchemaVersion: filterOptionsCacheSchemaVersion,
+		Options:       opts,
+	})
+	if err != nil {
+		s.logger.Warn("failed to marshal filter options for cache", "tenant_id", tenantID, "error", err)
+		return
+	}
+	if _, err := s.dbManager.Exec(`
+		INSERT INTO knowledge_graph_filter_options (tenant_id, payload, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (tenant_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`,
+		tenantID, payload); err != nil {
+		s.logger.Warn("failed to write filter options cache", "tenant_id", tenantID, "error", err)
+	}
 }
 
 // GetFilterValues retrieves values for a specific filter key (label or attribute).
@@ -4097,6 +4646,7 @@ func (s *Service) GetFilterValues(tenantID, filterType, filterKey string, filter
 		FROM knowledge_graph_node
 		WHERE tenant_id = $1
 		  AND level = 'Tenant'
+		  AND is_active = true
 		  AND jsonb_exists(%[1]s, $2)
 		  AND %[1]s->>$2 IS NOT NULL
 		  AND %[1]s->>$2 != ''%[2]s

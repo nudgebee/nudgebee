@@ -1702,9 +1702,13 @@ func getFiringAnalysisForEvent(ctx context.Context, db *sqlx.DB, ev models.Event
 		if alertName == "" {
 			return nil
 		}
+		// aggregation_key is the stored per-source alert identity and, for pagerduty,
+		// equals COALESCE(nb_alert_name, alertname). Filtering it uses the
+		// (tenant, cloud_account_id, aggregation_key) index instead of detoasting the
+		// labels JSONB for every candidate row.
 		query = `SELECT COUNT(*), COALESCE(MIN(starts_at), NOW()), COALESCE(MAX(starts_at), NOW())
 			FROM events
-			WHERE labels->>'nb_alert_name' = $1 AND cloud_account_id = $2 AND tenant = $3
+			WHERE aggregation_key = $1 AND cloud_account_id = $2 AND tenant = $3
 			  AND source = 'pagerduty_webhook'
 			  AND starts_at > NOW() - INTERVAL '30 days'`
 		args = []interface{}{alertName, accountID, tenantID}
@@ -2234,7 +2238,10 @@ func alertRuleWhereClause(source, alertRuleKey string) (whereCondition string, s
 	case "GCP_Metric_Alert":
 		return "labels->>'gcp_policy_id' = $1", ""
 	case "pagerduty_webhook":
-		return "labels->>'nb_alert_name' = $1", "AND source = 'pagerduty_webhook'"
+		// aggregation_key equals COALESCE(nb_alert_name, alertname) for pagerduty events;
+		// filtering it hits the (tenant, cloud_account_id, aggregation_key) index and
+		// avoids detoasting the labels JSONB per row.
+		return "aggregation_key = $1", "AND source = 'pagerduty_webhook'"
 	default:
 		return "", ""
 	}

@@ -465,8 +465,8 @@ func FindTicketsByReferenceId(filter models.TicketFilter) (interface{}, error) {
 	err = dbManager.Select(&tickets, `
 		SELECT id, platform, reference_id, severity, status, ticket_id, url
 		FROM tickets
-		WHERE source = $1 AND reference_id = $2`,
-		filter.Source, filter.ReferenceId)
+		WHERE source = $1 AND reference_id = $2 AND tenant = $3`,
+		filter.Source, filter.ReferenceId, filter.Tenant)
 	if err != nil {
 		slog.Error("Error executing ticket lookup query", "referenceId", filter.ReferenceId, "source", filter.Source, "error", err)
 		return nil, fmt.Errorf("failed to lookup tickets for reference %s (source: %s): %v", filter.ReferenceId, filter.Source, err)

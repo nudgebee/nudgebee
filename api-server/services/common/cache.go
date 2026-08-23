@@ -211,6 +211,50 @@ func CacheClear(namespace string) error {
 	return cache.Invalidate(context.Background(), store.WithInvalidateTags([]string{"namespace:" + namespace}))
 }
 
+// CacheRedisDeleteNamespace wipes every key in shared Redis whose key starts
+// with "<namespace>:". Unlike CacheClear it does NOT require the namespace
+// to be registered in this process — it issues raw SCAN MATCH + DEL via the
+// Redis client. This is what lets api-server clear cache namespaces owned by
+// other services (e.g. llm-server's llm_tool_config) given the platform
+// uses a single shared Redis.
+//
+// Returns (0, nil) when the cache provider is not "redis": the in-memory
+// (bigcache) provider is per-process, so namespaces from other services
+// are unreachable by design.
+//
+// Uses SCAN (cursor-based, COUNT 500) — never KEYS — so it never blocks the
+// Redis event loop on large keyspaces.
+func CacheRedisDeleteNamespace(namespace string) (int, error) {
+	if config.Config.CacheProvider != "redis" {
+		return 0, nil
+	}
+	redisClient, ok := cacheClient.(*redis.Client)
+	if !ok || redisClient == nil {
+		return 0, nil
+	}
+	ctx := context.Background()
+	pattern := namespace + ":*"
+	var cursor uint64
+	var cleared int
+	for {
+		batch, next, err := redisClient.Scan(ctx, cursor, pattern, 500).Result()
+		if err != nil {
+			return cleared, fmt.Errorf("cache: scan %q: %w", pattern, err)
+		}
+		cursor = next
+		if len(batch) > 0 {
+			if err := redisClient.Del(ctx, batch...).Err(); err != nil {
+				return cleared, fmt.Errorf("cache: del: %w", err)
+			}
+			cleared += len(batch)
+		}
+		if cursor == 0 {
+			break
+		}
+	}
+	return cleared, nil
+}
+
 func CacheListNamesapces() []string {
 	return slices.Collect(maps.Keys(cacheManagers))
 }

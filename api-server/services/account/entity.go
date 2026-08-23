@@ -175,6 +175,12 @@ type GcpCheckMonitoringPermissionResponse struct {
 type ValidateCloudCredentialsRequest struct {
 	CloudProvider string `json:"cloud_provider" mapstructure:"cloud_provider" validate:"required"`
 
+	// AccountID, when set, validates an already-onboarded account's stored
+	// credentials (looked up and decrypted server-side) instead of requiring
+	// the caller to resupply CredentialsJSON/AccessKey/etc. Used by the Edit
+	// Billing Config flow, where the raw secret was never returned to the client.
+	AccountID string `json:"account_id,omitempty" mapstructure:"account_id"`
+
 	// Azure fields
 	TenantID       string `json:"tenant_id,omitempty" mapstructure:"tenant_id"`
 	ClientID       string `json:"client_id,omitempty" mapstructure:"client_id"`

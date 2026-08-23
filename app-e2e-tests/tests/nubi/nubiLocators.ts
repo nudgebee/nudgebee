@@ -92,7 +92,9 @@ export class NubiLocators {
 
   constructor(page: Page) {
     this.page = page;
-    this.askNudgebeeBtn = page.locator('img[alt="Ask nubi"]');
+    this.askNudgebeeBtn = page
+      .getByRole("button", { name: "Ask nubi" })
+      .or(page.locator('img[alt="Ask nubi"]'));
     this.newChatBtn = page.locator('img[src*="plus-icon"]');
     this.chatTextbox = page.getByPlaceholder(
       "Ask me about troubleshooting, error logs, resource usage, or optimizations.");

@@ -35,7 +35,12 @@ const (
 	// (body capture / DLP mode) — a data-custody-sensitive, auditable act.
 	EventDataPrivacyUpdate EventType = "GATEWAY_DATA_PRIVACY_UPDATE"
 
+	// EventBodyView is a tenant admin viewing ANOTHER user's captured request/response
+	// body — a PHI-sensitive read, audited for accountability.
+	EventBodyView EventType = "GATEWAY_BODY_VIEW"
+
 	ActionUpdate EventAction = "UPDATE"
+	ActionView   EventAction = "VIEW"
 
 	StatusSuccess EventStatus = "SUCCESS"
 	StatusFailure EventStatus = "FAILURE"

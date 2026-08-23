@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useMemo } from 'react';
 import dayjs from 'dayjs';
 import { Box, Typography } from '@mui/material';
 import Loader from '@shared/Loader';
@@ -29,40 +29,38 @@ const CustomHeatMap = ({
   showTooltip = true,
   loading = true,
 }) => {
-  const minMaxCount = useRef([]);
-  const formattedData = formatDayAndHour(data, selectedOption);
+  const formattedData = useMemo(() => formatDayAndHour(data, selectedOption), [data, selectedOption]);
 
-  const generateBackgroundColor = (count) => {
-    return customColors[count];
-  };
+  const gridCells = useMemo(() => {
+    const cells = {};
+    const formattedHours = yAxisLabels.map((hourLabel) => ({
+      hourLabel,
+      formatted: dayjs('2000-01-01 ' + hourLabel).format('h:mm A'),
+    }));
 
-  const gridCells = xAxisLabels.reduce((days, dayLabel) => {
-    const dayAndHour = yAxisLabels.reduce((hours, hourLabel) => {
-      const hourData = formattedData[dayLabel]?.find((item) => item.hour === hourLabel) || { value: 0 };
-      const formattedHourLabel = dayjs(`${dayLabel} ${hourLabel}`).format('h:mm A');
-      const count = hourData.value;
-      const dataValue = hourData.dataValue;
+    for (const dayLabel of xAxisLabels) {
+      const dayEntries = formattedData[dayLabel];
+      const entryByHour = {};
+      if (dayEntries) {
+        for (const item of dayEntries) {
+          entryByHour[item.hour] = item;
+        }
+      }
 
-      minMaxCount.current = [...minMaxCount.current, count];
-
-      return [
-        ...hours,
-        {
-          dayHour: `${dayLabel} ${formattedHourLabel}`,
+      const hours = [];
+      for (const { hourLabel, formatted } of formattedHours) {
+        const hourData = entryByHour[hourLabel] || { value: 0 };
+        hours.push({
+          dayHour: dayLabel + ' ' + formatted,
           hourLabel,
-          count,
-          dataValue,
-        },
-      ];
-    }, []);
-
-    return {
-      ...days,
-      [dayLabel]: {
-        hours: dayAndHour,
-      },
-    };
-  }, {});
+          count: hourData.value,
+          dataValue: hourData.dataValue,
+        });
+      }
+      cells[dayLabel] = { hours };
+    }
+    return cells;
+  }, [formattedData, xAxisLabels, yAxisLabels]);
 
   return (
     <div className='container'>
@@ -95,7 +93,7 @@ const CustomHeatMap = ({
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        backgroundColor: generateBackgroundColor(count),
+                        backgroundColor: customColors[count],
                         borderRadius: 'var(--ds-radius-sm)',
                         padding: 'var(--ds-space-1)',
                         flex: 1,

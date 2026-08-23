@@ -40,8 +40,8 @@ export const getTaskDescription = (taskType: string, params?: any, taskDefinitio
   }
 
   // Enrich with params-based context when available
-  const enricher = paramEnrichers[taskType];
-  if (enricher) {
+  if (Object.prototype.hasOwnProperty.call(paramEnrichers, taskType)) {
+    const enricher = paramEnrichers[taskType];
     return enricher(params, description) || description;
   }
 

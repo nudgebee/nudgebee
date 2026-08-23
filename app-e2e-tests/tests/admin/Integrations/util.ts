@@ -172,7 +172,12 @@ export async function testConnection(
             console.warn(`⚠️  ${serviceName} test connection — ${reason}. Skipping save.`);
             return;
           }
-          throw new Error(`Neither success nor error toast appeared within ${timeout / 1000}s`);
+          // abortedEarly: the watcher already captured + logged a targeted API failure — surface that, not a misleading "no toast" timeout.
+          throw new Error(
+            abortedEarly
+              ? `${serviceName} test connection failed — GraphQL watcher detected an API failure (see the logged data-level error above)`
+              : `Neither success nor error toast appeared within ${timeout / 1000}s`,
+          );
         }
 
         if (await successToast.isVisible()) {
@@ -225,6 +230,27 @@ async function isRowVisible(page: Page, configName: string, timeout = 8000): Pro
     .catch(() => false);
 }
 
+// Filters the list to `configName` via the "Enter Name" search box so the target row lands on page 1 — row helpers only scan the visible page, so a row on a later page is otherwise missed. No-op when the box is absent.
+async function filterListByName(page: Page, configName: string): Promise<void> {
+  const search = page.getByPlaceholder("Enter Name").first();
+  // Wait for the box to render — disable/enable call this before the list finishes loading; an instant check would skip filtering.
+  const appeared = await search
+    .waitFor({ state: "visible", timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!appeared) return;
+  const refetch = page
+    .waitForResponse(
+      (r) => r.url().includes("/api/graphql") && !!r.request().postData()?.includes("ListIntegrations"),
+      { timeout: 8000 },
+    )
+    .catch(() => null);
+  await search.fill(configName);
+  // The box filters on submit, not keystroke — Enter triggers the ListIntegrations refetch.
+  await search.press("Enter");
+  await refetch;
+}
+
 /**
  * Opens an integration's list page (via the caller-supplied `openList`), clears
  * the status filter so BOTH enabled and disabled configs are listed, and returns
@@ -264,6 +290,7 @@ export async function isIntegrationPresent(
   );
 
   await showAllStatuses(page, statusFilterId);
+  await filterListByName(page, configName);
   const hit = await isRowVisible(page, configName);
   console.log(`${serviceName} integration "${configName}" present: ${hit}`);
   return hit;
@@ -367,6 +394,7 @@ export async function deleteIntegration(
 ): Promise<void> {
   await openList();
   await showAllStatuses(page, statusFilterId);
+  await filterListByName(page, configName);
 
   const row = page.locator("tbody tr").filter({ hasText: configName }).first();
   await row.waitFor({ state: "visible", timeout: 10000 });
@@ -408,6 +436,7 @@ async function changeRowStatus(
     serviceName,
   }: { configName: string; action: "Disable" | "Enable"; serviceName: string },
 ): Promise<void> {
+  await filterListByName(page, configName);
   const row = page.locator("tbody tr").filter({ hasText: configName }).first();
   await row.waitFor({ state: "visible", timeout: 10000 });
 
@@ -561,8 +590,12 @@ export async function saveAndHandleAlreadyExists(
         .catch(() => false);
 
       if (!toastAppeared) {
-        console.log(`${testName}: No toast appeared after save — likely duplicate ignored by backend`);
-        return;
+        // A caller tolerating duplicates (ignoreErrorMessages set) accepts a silent no-op; otherwise a missing snackbar means the save never succeeded.
+        if (ignoreErrorMessages.length > 0) {
+          console.log(`${testName}: No toast appeared after save — likely duplicate ignored by backend`);
+          return;
+        }
+        throw new Error(`${testName}: expected a success snackbar after save, but none appeared`);
       }
 
       if (await successToast.isVisible()) {

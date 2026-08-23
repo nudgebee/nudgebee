@@ -67,12 +67,9 @@ func (s *EbpfFlowSource) isIPAddress(name string) bool {
 // These are ephemeral or intermediate controller resources that are already represented
 // by higher-level workload nodes (Deployment, StatefulSet, DaemonSet).
 func (s *EbpfFlowSource) isIgnoredKind(kind string) bool {
-	ignoredKinds := map[string]bool{
-		"pod":        true, // ephemeral instances, covered by Deployment/StatefulSet/DaemonSet
-		"replicaset": true, // managed by Deployment controller, duplicate of Deployment node
-		"staticpods": true, // kubelet-managed low-level pods, noise
-	}
-	return ignoredKinds[strings.ToLower(kind)]
+	return strings.EqualFold(kind, "pod") ||
+		strings.EqualFold(kind, "replicaset") ||
+		strings.EqualFold(kind, "staticpods")
 }
 
 // isK8sAuthoritativeType reports whether the node type is one for which
@@ -293,6 +290,16 @@ func (s *EbpfFlowSource) processK8sAccount(
 	unmatchedSources := make(map[string]int)
 	unmatchedDestinations := make(map[string]int)
 
+	// Index applications by ID for O(1) lookups in the edge-processing loops below.
+	// Without this, findApplicationByID scans the full slice per edge — O(N*E) total.
+	appByID := make(map[core.ServiceApplicationId]*core.ServiceApplication, len(serviceMap.Applications))
+	for i := range serviceMap.Applications {
+		id := serviceMap.Applications[i].Id
+		if _, exists := appByID[id]; !exists {
+			appByID[id] = &serviceMap.Applications[i]
+		}
+	}
+
 	// Process each application and its connections
 	for i := range serviceMap.Applications {
 		app := &serviceMap.Applications[i]
@@ -352,8 +359,8 @@ func (s *EbpfFlowSource) processK8sAccount(
 		for j := range app.Downstreams {
 			downstream := &app.Downstreams[j]
 
-			// Find the destination application
-			destApp := s.findApplicationByID(serviceMap.Applications, downstream.Id)
+			// Find the destination application (O(1) indexed lookup)
+			destApp := appByID[downstream.Id]
 			var downstreamNode *core.DbNode
 			var destErr error
 
@@ -469,6 +476,17 @@ func (s *EbpfFlowSource) processK8sAccount(
 					// ExternalService that bloats "what does this workload call?".
 					continue
 				default:
+					// Bare pod hostname (e.g. a StatefulSet ordinal like
+					// "redis-master-0") -> its owning Workload, scoped to the
+					// calling app's namespace, before falling back to an orphan
+					// ExternalService. A namespace miss is fail-safe:
+					// ResolvePodName returns false and we create the external
+					// node as before (never a wrong-namespace merge).
+					if node, ok := podIPResolver.ResolvePodName(stringProp(sourceNode, "namespace"), upstreamID.Name); ok {
+						upstreamNode = node
+						skipNodeSearch = true
+						break
+					}
 					upstreamNode = s.createExternalServiceNode(*upstreamID, req.TenantID, account)
 					if upstreamNode == nil {
 						// Empty name, raw IP, or pod-like name — drop the edge so
@@ -488,8 +506,8 @@ func (s *EbpfFlowSource) processK8sAccount(
 				continue
 			}
 
-			// Find the upstream application
-			upstreamApp := s.findApplicationByID(serviceMap.Applications, *upstreamID)
+			// Find the upstream application (O(1) indexed lookup)
+			upstreamApp := appByID[*upstreamID]
 
 			if upstreamApp != nil && !skipNodeSearch {
 				// Skip ephemeral kinds, raw IP names, and the empty-name
@@ -721,7 +739,7 @@ func (s *EbpfFlowSource) parseServiceMapFromRelay(relayResponse map[string]any) 
 func (s *EbpfFlowSource) getApplicationName(app *core.ServiceApplication) string {
 	if app.Id.Name != "" {
 		// If the kind is Pod or the name looks like a pod name, extract the workload name
-		if app.Id.Kind == "Pod" || s.isPodName(app.Id.Name) {
+		if app.Id.Kind == "Pod" || isPodName(app.Id.Name) {
 			_, workloadName := core.ExtractPodOwner(app.Id.Name)
 			return workloadName
 		}
@@ -742,7 +760,7 @@ func (s *EbpfFlowSource) getApplicationName(app *core.ServiceApplication) string
 //   - DaemonSet pattern ({name}-{pod-id}) - too many false positives like "konnectivity-agent"
 //
 // For StatefulSet and DaemonSet pods, the Kind should be "Pod" which triggers extraction directly.
-func (s *EbpfFlowSource) isPodName(name string) bool {
+func isPodName(name string) bool {
 	parts := strings.Split(name, "-")
 
 	// Must have at least 3 parts to avoid false positives
@@ -779,27 +797,11 @@ func (s *EbpfFlowSource) getWorkloadName(app *core.ServiceApplication) string {
 	if app.Id.Name == "" {
 		return ""
 	}
-	if app.Id.Kind == "Pod" || s.isPodName(app.Id.Name) {
+	if app.Id.Kind == "Pod" || isPodName(app.Id.Name) {
 		_, workloadName := core.ExtractPodOwner(app.Id.Name)
 		return workloadName
 	}
 	return app.Id.Name
-}
-
-// findApplicationByID finds an application in the list by its ID
-func (s *EbpfFlowSource) findApplicationByID(
-	applications []core.ServiceApplication,
-	id core.ServiceApplicationId,
-) *core.ServiceApplication {
-	for i := range applications {
-		app := &applications[i]
-		if app.Id.Name == id.Name &&
-			app.Id.Kind == id.Kind &&
-			app.Id.Namespace == id.Namespace {
-			return app
-		}
-	}
-	return nil
 }
 
 // matchApplicationToNode matches a service application to a knowledge graph node
@@ -833,6 +835,17 @@ func (s *EbpfFlowSource) matchApplicationToNode(
 	// canonical type) preserves multi-cluster topology resolution for the
 	// common case (same Service object name across clusters) without
 	// inviting Workload/Service-typed collisions.
+	//
+	// Strategies 2 and 4 drop the namespace filter entirely, so they only
+	// run when app.Id.Namespace == "". When the namespace IS known and
+	// strategy 1/3 miss (e.g. k8s_source hasn't re-synced that namespace
+	// yet), name-only matching must not silently land on a same-named node
+	// in a *different* namespace — that's how cross-namespace false CALLS
+	// edges get minted (nudgebee-enterprise#34639). Falling through to
+	// createNodeForApplication instead is safe here: for Workload/K8sService
+	// kinds it builds a unique_key with cloud_provider="k8s", so the
+	// placeholder node it creates shares k8s_source's own UUID for that
+	// resource and merges cleanly once the namespace re-syncs.
 	nodeTypesToTry := s.nodeTypesToTryFor(app.Id.Kind)
 	inferredType := s.inferNodeType(app.Id.Kind)
 
@@ -856,8 +869,11 @@ func (s *EbpfFlowSource) matchApplicationToNode(
 		}
 	}
 
-	// Strategy 2: name (same account, multi-type probe)
-	if workloadName != "" {
+	// Strategy 2: name (same account, multi-type probe). Only when the
+	// observation carries no namespace — if it does, a namespace-qualified
+	// miss must not be papered over by matching a same-named node in a
+	// different namespace (see matchApplicationToNode doc comment).
+	if app.Id.Namespace == "" && workloadName != "" {
 		for _, nt := range nodeTypesToTry {
 			result, err := matcher.FindNode(MatchCriteria{
 				AccountID: K8sAccountId,
@@ -892,8 +908,9 @@ func (s *EbpfFlowSource) matchApplicationToNode(
 		}
 	}
 
-	// Strategy 4: name (any account, inferred type only)
-	if workloadName != "" {
+	// Strategy 4: name (any account, inferred type only). Same namespace
+	// guard as strategy 2 — see rationale there.
+	if app.Id.Namespace == "" && workloadName != "" {
 		result, err := matcher.FindNode(MatchCriteria{
 			NodeType: inferredType,
 			PropertyMatches: []PropertyMatch{
@@ -1036,6 +1053,14 @@ func (s *EbpfFlowSource) createNodeForApplication(
 	// Add subtype property for eBPF application
 	properties["subtype"] = app.Id.Kind
 
+	// Concrete native label (specific_type), e.g. KubernetesStatefulSet, mirrors
+	// sources/k8s/workload.go's convention. Without this, core.NewNode defaults
+	// specific_type to the literal "Workload" NodeType string for every orphan
+	// node this creates (when matching to the authoritative k8s_source node misses).
+	if nodeType == core.NodeTypeWorkload && app.Id.Kind != "" {
+		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(app.Id.Kind)
+	}
+
 	node := core.NewNode(
 		nodeType,
 		uniqueKey,
@@ -1076,7 +1101,7 @@ func (s *EbpfFlowSource) createExternalServiceNode(
 			"name", id.Name)
 		return nil
 	}
-	if s.isPodName(id.Name) {
+	if isPodName(id.Name) {
 		// The eBPF agent occasionally labels in-cluster pods as kind="external".
 		// Don't persist them as ExternalService — leave matching to the
 		// existing matchApplicationToNode/Workload paths which will resolve
@@ -1168,17 +1193,21 @@ func (s *EbpfFlowSource) matchByApplicationID(
 		}
 	}
 
-	// Strategy 2: name, same account (multi-type probe)
-	for _, nt := range nodeTypesToTry {
-		result, err := matcher.FindNode(MatchCriteria{
-			AccountID: K8sAccountID,
-			NodeType:  nt,
-			PropertyMatches: []PropertyMatch{
-				{PropertyPath: "name", Value: name, MatchType: core.MatchTypeExact, CaseSensitive: false},
-			},
-		})
-		if err == nil && result.Matched {
-			return result.Node, nil
+	// Strategy 2: name, same account (multi-type probe). Only when the
+	// application ID carries no namespace — see matchApplicationToNode's
+	// strategy 2 for the rationale.
+	if id.Namespace == "" {
+		for _, nt := range nodeTypesToTry {
+			result, err := matcher.FindNode(MatchCriteria{
+				AccountID: K8sAccountID,
+				NodeType:  nt,
+				PropertyMatches: []PropertyMatch{
+					{PropertyPath: "name", Value: name, MatchType: core.MatchTypeExact, CaseSensitive: false},
+				},
+			})
+			if err == nil && result.Matched {
+				return result.Node, nil
+			}
 		}
 	}
 
@@ -1196,8 +1225,9 @@ func (s *EbpfFlowSource) matchByApplicationID(
 		}
 	}
 
-	// Strategy 4: name, any account (inferred type only)
-	{
+	// Strategy 4: name, any account (inferred type only). Same namespace
+	// guard as strategy 2.
+	if id.Namespace == "" {
 		result, err := matcher.FindNode(MatchCriteria{
 			NodeType: inferredType,
 			PropertyMatches: []PropertyMatch{
@@ -1256,6 +1286,12 @@ func (s *EbpfFlowSource) createNodeForApplicationID(
 	// Store the original CRD kind for filtering
 	if nodeType == core.NodeTypeCRD {
 		properties["crd_kind"] = id.Kind
+	}
+
+	// Concrete native label (specific_type), e.g. KubernetesStatefulSet — see
+	// createNodeForApplication for why this is needed.
+	if nodeType == core.NodeTypeWorkload && id.Kind != "" {
+		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(id.Kind)
 	}
 
 	node := core.NewNode(

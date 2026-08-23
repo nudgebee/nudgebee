@@ -664,12 +664,9 @@ const LogQueryBuilderAutocomplete = ({
             setMetricsList(cachedESIndexes);
           } else {
             setMetricsList([]);
-            const res = await observability.fetchLogLabels({
-              account_id: accountId,
-              ...(providerOverride ? { log_provider: providerOverride } : {}),
-            });
+            const res = await observability.logIndexList(accountId, providerOverride);
             if (res?.errors) {
-              snackbar.error(`failed to fetch labels- ${parseHttpResponseBodyMessage(res?.data)}`);
+              snackbar.error(`failed to fetch indexes - ${parseHttpResponseBodyMessage(res?.data)}`);
               return;
             }
             const indexList = res?.data?.data?.logs_list_labels?.map((m) => m.label) || [];

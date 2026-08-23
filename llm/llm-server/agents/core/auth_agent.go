@@ -58,6 +58,36 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 	}
 
 	if !found {
+		// Direct-call path for search_tools discovery: the planner surfaced this tool via
+		// search_tools this conversation and is calling it directly (a one-shot) instead of
+		// through delegate_agent. Accept it if it still resolves for the account and passes
+		// the account capability filter — the same authority delegate_agent would grant,
+		// just invoked directly. Scoped to the discovered set, so a tool name the model
+		// merely guessed (never discovered) is NOT accepted.
+		if canonical, discovered := DiscoveredToolCanonicalName(request.ConversationId, toolName); discovered {
+			// Resolve with the canonical (registered) name — the discovery match is
+			// case-insensitive but GetNBTool/GetNBAgent are case-sensitive. On success,
+			// adopt the canonical name so downstream logging and request-type inference
+			// use the correct casing.
+			caps := request.Capabilities.Merge(request.QueryConfig.Capabilities)
+			if t, ok := toolcore.GetNBTool(request.AccountId, canonical); ok && t != nil {
+				if len(FilterTools([]toolcore.NBTool{t}, caps)) > 0 {
+					found = true
+					tool = t
+					toolName = canonical
+				}
+			} else if ag, agok := GetNBAgent(ctx, canonical, request.AccountId, AgentStatusEnabled); agok {
+				at := NewToolFromAgent(ag)
+				if len(FilterTools([]toolcore.NBTool{at}, caps)) > 0 {
+					found = true
+					tool = at
+					toolName = canonical
+				}
+			}
+		}
+	}
+
+	if !found {
 		return nil, nil, fmt.Errorf("auth: tool not found - %s, agent - %s", toolName, agent.GetName())
 	}
 

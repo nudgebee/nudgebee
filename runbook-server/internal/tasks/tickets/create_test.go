@@ -2,6 +2,7 @@ package tickets
 
 import (
 	"nudgebee/runbook/internal/tasks/testutils"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,11 +29,6 @@ func TestResolveReferenceID(t *testing.T) {
 			ctx:      &testutils.MockTaskContext{WorkflowRunId: "run-1"},
 			expected: "run-1",
 		},
-		{
-			name:     "isolated run task has no reference",
-			ctx:      &testutils.MockTaskContext{},
-			expected: "",
-		},
 	}
 
 	for _, tc := range cases {
@@ -40,4 +36,12 @@ func TestResolveReferenceID(t *testing.T) {
 			assert.Equal(t, tc.expected, resolveReferenceID(tc.ctx))
 		})
 	}
+
+	t.Run("isolated run task gets a unique reference", func(t *testing.T) {
+		first := resolveReferenceID(&testutils.MockTaskContext{})
+		second := resolveReferenceID(&testutils.MockTaskContext{})
+
+		assert.True(t, strings.HasPrefix(first, "runtask:"))
+		assert.NotEqual(t, first, second)
+	})
 }

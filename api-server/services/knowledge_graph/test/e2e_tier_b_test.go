@@ -186,7 +186,28 @@ func tierBAssertFilterOptions(t *testing.T, svc *core.Service) {
 		t.Fatalf("GetFilterOptions: %v", err)
 	}
 	if opts == nil {
-		t.Error("GetFilterOptions returned nil")
+		t.Fatal("GetFilterOptions returned nil")
+	}
+	// The concurrent fetch must populate every field correctly (guards against a
+	// goroutine writing the wrong variable). The Tier-B graph is a k8s topology, so
+	// it has account IDs, node types, and a non-empty unique_key -> id map.
+	if len(opts.AccountIDs) == 0 {
+		t.Error("GetFilterOptions: expected non-empty AccountIDs")
+	}
+	if len(opts.NodeTypes) == 0 {
+		t.Error("GetFilterOptions: expected non-empty NodeTypes")
+	}
+	if _, ok := opts.NodeTypes[string(core.NodeTypePod)]; !ok {
+		t.Errorf("GetFilterOptions: NodeTypes %v missing Pod", opts.NodeTypes)
+	}
+	if len(opts.NodeKeys) == 0 {
+		t.Error("GetFilterOptions: expected non-empty NodeKeys")
+	}
+	if opts.NodeCount != len(opts.NodeKeys) {
+		t.Errorf("GetFilterOptions: NodeCount %d != len(NodeKeys) %d", opts.NodeCount, len(opts.NodeKeys))
+	}
+	if len(opts.NodeIDs) != len(opts.NodeKeys) {
+		t.Errorf("GetFilterOptions: NodeIDs %d != NodeKeys %d (columns must be index-aligned)", len(opts.NodeIDs), len(opts.NodeKeys))
 	}
 }
 

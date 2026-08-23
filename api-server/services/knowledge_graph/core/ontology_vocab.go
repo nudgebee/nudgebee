@@ -70,6 +70,14 @@ var canonicalOntologyVocab = map[NodeType][]string{
 	NodeTypeConfiguration:     {"name", "type"},
 	NodeTypeRepository:        {"name", "type", "url"},
 	NodeTypeCloudResource:     {"name", "location", "type"},
+
+	// Source control identity (GitHub today; GitLab/Bitbucket/other SaaS people-and-teams later).
+	NodeTypeSourceControlOrg: {"name", "type", "url"},
+	NodeTypeUserAccount:      {"name", "username", "email", "url"},
+	NodeTypeUserGroup:        {"name", "url"},
+
+	// On-call identity (PagerDuty today; Opsgenie/VictorOps or other on-call SaaS later).
+	NodeTypeOnCallService: {"name", "url", "status"},
 }
 
 // isCanonicalOntologyField reports whether field is allowed for nodeType.

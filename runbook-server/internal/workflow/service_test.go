@@ -725,6 +725,12 @@ func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID, acco
 	return res, args.Error(1)
 }
 
+func (m *MockWorkflowStore) GetUserNames(ctx context.Context, ids []string) (map[string]string, error) {
+	args := m.Called(ctx, ids)
+	res, _ := args.Get(0).(map[string]string)
+	return res, args.Error(1)
+}
+
 func (m *MockWorkflowStore) ListWorkflowVersions(ctx context.Context, workflowID string, limit int) ([]model.WorkflowVersion, error) {
 	args := m.Called(ctx, workflowID, limit)
 	if args.Get(0) == nil {

@@ -3909,7 +3909,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         <FormCard title={config.title} description={config.description} icon={null} number={config.number || ''} columns={1}>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)', width: '100%' }}>
             {Object.entries(schemaData)
-              .filter(([_, fieldSchema]: [string, any]) => !fieldSchema?.hidden)
+              .filter(([, fieldSchema]: [string, any]) => !fieldSchema?.hidden)
               .map(([fieldName, fieldSchema]: [string, any]) => (
                 <Box
                   key={fieldName}
@@ -4039,7 +4039,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       // Sort fields based on order and required status
       const fields = Object.entries(inputSchema)
         .filter(([fieldName, fieldSchema]) => !hiddenFields.has(fieldName) && !(fieldSchema as SchemaProperty).hidden)
-        .sort(([_, schemaA], [__, schemaB]) => {
+        .sort(([, schemaA], [, schemaB]) => {
           const sA = schemaA as SchemaProperty;
           const sB = schemaB as SchemaProperty;
 

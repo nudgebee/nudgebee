@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -31,6 +32,7 @@ type ragQueryRequest struct {
 	AgentID         string            `json:"agent_id,omitempty"`
 	TrackTokenUsage *bool             `json:"track_token_usage,omitempty"`
 	MetadataFilter  map[string]string `json:"metadata_filter,omitempty"`
+	UseReranking    *bool             `json:"use_reranking,omitempty"`
 }
 
 type RAGSearchResult struct {
@@ -75,14 +77,14 @@ func addRAGAuth(req *http.Request) {
 	}
 }
 
-func executeRAGCall(payload ragQueryRequest) (RAGSearchResults, error) {
+func executeRAGCall(ctx context.Context, payload ragQueryRequest) (RAGSearchResults, error) {
 	data, err := common.MarshalJson(payload)
 	if err != nil {
 		slog.Warn("rag: failed to marshal JSON payload", "error", err.Error())
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", getRAGServerURL()+"get_matching_doc", bytes.NewBuffer(data))
+	req, err := http.NewRequestWithContext(ctx, "POST", getRAGServerURL()+"get_matching_doc", bytes.NewBuffer(data))
 	if err != nil {
 		slog.Warn("rag: failed to create request", "error", err.Error())
 		return nil, err
@@ -145,7 +147,7 @@ func GetRAG(userId, accountId, query, module, conversationID, messageId, agentId
 		UserID:          userId,
 	}
 
-	searchResults, err := executeRAGCall(payload)
+	searchResults, err := executeRAGCall(context.Background(), payload)
 	if err != nil {
 		return RAGSearchResult{}
 	}
@@ -169,6 +171,33 @@ func QueryRAG(userId, accountId, query, module string, numberOfResults int, conv
 	return QueryRAGCollection(userId, accountId, query, module, "", numberOfResults, conversationID, messageId, agentId, trackTokenUsage, mf)
 }
 
+// QueryRAGReranked is QueryRAG with server-side LLM reranking requested for
+// this call only — the global RAG_RERANKING_ENABLED default stays untouched
+// for every other caller. Used by the KB pre-step, where ordering decides
+// which page wins the prompt budget: cosine alone ranked two sibling runbooks
+// 0.002 apart and put the wrong one first. Reranking adds an LLM call inside
+// retrieval, so callers must budget a longer timeout than a plain search.
+func QueryRAGReranked(userId, accountId, query, module string, numberOfResults int, conversationID string, messageId string, agentId string, trackTokenUsage bool) RAGSearchResults {
+	yes := true
+	payload := ragQueryRequest{
+		AccountID:       accountId,
+		Query:           query,
+		Module:          module,
+		NumberOfResults: numberOfResults,
+		ConversationID:  conversationID,
+		MessageID:       messageId,
+		AgentID:         agentId,
+		TrackTokenUsage: &trackTokenUsage,
+		UserID:          userId,
+		UseReranking:    &yes,
+	}
+	response, err := executeRAGCall(context.Background(), payload)
+	if err != nil {
+		return RAGSearchResults{}
+	}
+	return response
+}
+
 // Retrieves multiple documents from the RAG server.
 // The optional metadataFilter parameter allows filtering results by metadata
 // fields (e.g., map[string]string{"source": "confluence"}).
@@ -189,7 +218,7 @@ func QueryRAGCollection(userId, accountId, query, module, collectionName string,
 		payload.MetadataFilter = metadataFilter[0]
 	}
 
-	response, err := executeRAGCall(payload)
+	response, err := executeRAGCall(context.Background(), payload)
 	if err != nil {
 		return RAGSearchResults{}
 	}

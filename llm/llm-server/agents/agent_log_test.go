@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	toolcore "nudgebee/llm/tools/core"
@@ -10,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tmc/langchaingo/llms"
 )
 
 // TestLogAgent_BuildToolList: the LLM-visible tool surface must be uniform
@@ -232,6 +235,146 @@ func TestSystemPrompt_NarrowsToOneMode(t *testing.T) {
 	}
 }
 
+// TestAutoBundleGate_ModeAwareness locks the gating rule that runAuto
+// DiagnosticBundle uses to decide whether to fire. The rule is:
+//
+//   - Investigation intent ("were there issues", "why", "broken",
+//     "diagnose", …) → ALWAYS fire. The logs prompt actively tells the
+//     LLM to strip error keywords from the fetch question, so keying only
+//     on the fetch query text would miss the exact investigations the
+//     bundle was built for.
+//   - Enumeration intent ("list errors", "show me distinct errors") →
+//     ALWAYS fire. That IS the enumeration answer.
+//   - Routine intent → fire only when the wording explicitly names error
+//     content (get error logs, any failures, …). Plain "tail last 100
+//     lines" stays a one-shot fetch.
+//
+// This mirrors the same decision runAutoDiagnosticBundle makes inline; the
+// test asserts the composed behaviour so a regression to a keyword-only gate
+// would fail here.
+func TestAutoBundleGate_ModeAwareness(t *testing.T) {
+	cases := []struct {
+		name     string
+		query    string // per-step query the parent passed to fetch_logs
+		original string // OriginalQuery — the user's verbatim question
+		want     bool
+	}{
+		{"investigation via 'were there issues' fires (fetch query itself has no keyword)",
+			"all logs for pod task-scheduler-abc in ns", "Were there issues with the task-scheduler pod", true},
+		{"investigation via 'why is X broken' fires",
+			"all logs for pod x", "why is service-y broken", true},
+		{"enumeration via 'list errors' fires",
+			"all logs last 1h", "list errors in service-z", true},
+		{"routine plain tail does NOT fire",
+			"tail last 100 lines", "", false},
+		{"routine with error keyword fires (fallback)",
+			"get error logs for pod x", "", true},
+		{"routine with no error content stays cold",
+			"give me the last 5 mins of logs", "recent logs for cron-scheduler", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mode := classifyLogMode(tc.query, tc.original)
+			q := strings.TrimSpace(tc.original)
+			if q == "" {
+				q = strings.TrimSpace(tc.query)
+			}
+			got := mode != logModeRoutine || autoBundleQueryRE.MatchString(q)
+			assert.Equal(t, tc.want, got,
+				"mode=%v q=%q — bundle gate mismatch", mode, q)
+		})
+	}
+}
+
+func TestAutoBundleQueryRE(t *testing.T) {
+	// Guards the trigger-word list that gates the auto-diagnostic-bundle
+	// inside fetch_logs. The list is deliberately narrow — a plain "tail
+	// last 100 lines" must NOT trigger the bundle, or we regress fetch's
+	// "one-shot, no extra work" semantic for routine viewing. Any
+	// addition/removal here should be conscious.
+	cases := []struct {
+		q    string
+		want bool
+	}{
+		{"get error logs for pod x", true},
+		{"any failures in namespace y", true},
+		{"show me warnings from last hour", true},
+		{"was there a crash on this pod", true},
+		{"any exceptions in api-server", true},
+		{"timeout occurred?", true},
+		{"OOMKilled events for job", true},
+		{"tail last 100 lines", false},
+		{"recent logs for cron-scheduler", false},
+		{"give me the last 5 mins of logs", false},
+		{"show pod restart count", false},
+	}
+	for _, tc := range cases {
+		assert.Equalf(t, tc.want, autoBundleQueryRE.MatchString(tc.q),
+			"autoBundleQueryRE.MatchString(%q)", tc.q)
+	}
+}
+
+func TestSystemPrompt_BundleSignalInAllModes(t *testing.T) {
+	// The bundle now fires deterministically inside fetch_logs and its
+	// result ships in the fetch envelope's `bundle_signal` field — the
+	// LLM never calls the tool itself. Every mode's prompt (investigation,
+	// enumeration, routine) must tell the LLM to READ `bundle_signal`
+	// from the fetch response, and none of them may reference the
+	// standard_diagnostic_grep tool (dropping it from the toolset would be
+	// misleading if the prompt still asked the LLM to call it).
+	prev := config.Config.LogsStandardGrepEnabled
+	config.Config.LogsStandardGrepEnabled = true
+	defer func() { config.Config.LogsStandardGrepEnabled = prev }()
+
+	ctx := security.NewRequestContextForSuperAdmin()
+	agent := newLogAgent("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", services_server.ObservabilityProvider{Provider: "loki"})
+
+	cases := []struct {
+		name              string
+		query             string
+		original          string
+		wantsBundleSignal bool
+	}{
+		{"investigation references bundle_signal", "get logs", "why is cron-scheduler broken", true},
+		{"enumeration references bundle_signal", "list errors in service-y", "", true},
+		{"routine always references bundle_signal (envelope carries it or not, LLM is told to read it)", "tail last 100 lines", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt := agent.GetSystemPrompt(ctx, core.NBAgentRequest{
+				Query:         tc.query,
+				OriginalQuery: tc.original,
+			})
+			body := strings.Join(prompt.Instructions, "\n")
+			assert.NotContains(t, body, "standard_diagnostic_grep",
+				"the bundle tool is no longer exposed to the LLM — prompt must not reference it")
+			if tc.wantsBundleSignal {
+				assert.Contains(t, body, "bundle_signal",
+					"prompt should tell the LLM to read the pre-computed bundle signal from the fetch envelope")
+			}
+		})
+	}
+}
+
+// TestLogAgent_BundleToolNotInToolset locks the change: after moving the
+// bundle to deterministic auto-fire inside fetch_logs, the LLM's tool list
+// must not include standard_diagnostic_grep — the LLM already has the
+// bundle output in its fetch response and a redundant tool call would
+// waste an LLM turn.
+func TestLogAgent_BundleToolNotInToolset(t *testing.T) {
+	prev := config.Config.LogsStandardGrepEnabled
+	config.Config.LogsStandardGrepEnabled = true
+	defer func() { config.Config.LogsStandardGrepEnabled = prev }()
+
+	ctx := security.NewRequestContextForSuperAdmin()
+	agent := newLogAgent("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", services_server.ObservabilityProvider{Provider: "loki"})
+	names := toolNamesForTest(agent.GetSupportedTools(ctx))
+	for _, n := range names {
+		assert.NotEqual(t, "standard_diagnostic_grep", n,
+			"standard_diagnostic_grep must not be exposed to the LLM — it runs auto inside fetch_logs")
+	}
+}
+
 // TestSystemPrompt_NoFixtureLeaks fails if specific benchmark fixture names,
 // fixture-answer time windows, or literal benchmark prompt phrasings appear
 // in the LLM-visible system prompt or the agent description. The prompt
@@ -329,8 +472,100 @@ func readAgentLogFetchSource(t *testing.T) string {
 	return string(body)
 }
 
-// TODO mock DBs
-// TODO mock Tool Execution
+// fakeLogAgentForCall is a minimal core.NBAgent stand-in for
+// TestBuildLogToolResponse_AdditionalDetails — it lets that test exercise
+// buildLogToolResponse's branches directly against hand-built
+// core.NBAgentResponse values, without running the real LogAgent (which
+// requires a DB-backed ExecuteAgentToolCall and live LLM calls).
+type fakeLogAgentForCall struct{}
+
+func (fakeLogAgentForCall) GetName() string          { return LogsAgentName }
+func (fakeLogAgentForCall) GetNameAliases() []string { return nil }
+func (fakeLogAgentForCall) GetDescription() string   { return "" }
+func (fakeLogAgentForCall) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+	return nil
+}
+func (fakeLogAgentForCall) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	return core.NBAgentPrompt{}
+}
+func (fakeLogAgentForCall) GetPlannerType() core.AgentPlannerType { return core.AgentPlannerTypeReAct }
+
+// fakeSummaryToolLogAgent additionally implements
+// NBAgentReActPlannerSummaryToolProvider, to exercise buildLogToolResponse's
+// summary-tool-provider branch (agent_log.go:545).
+type fakeSummaryToolLogAgent struct{ fakeLogAgentForCall }
+
+func (fakeSummaryToolLogAgent) GetSummaryToolName() string { return "shell_execute" }
+
+// TestBuildLogToolResponse_AdditionalDetails is the regression test for bug
+// A1 (log_analysis_bugs): LogAgentTool.Call() is a hand-copied variant of
+// factory_agent.go's generic nbAgentTool.Call() that drifted and stopped
+// setting AdditionalDetails["agent_id"]/["message_id"] — the keys
+// planner_callback_handler.go reads to populate child_agent_id, which the UI
+// conversation tree needs to nest fetch_logs/shell_execute under the `logs`
+// node. It exercises every return path in buildLogToolResponse (the shaping
+// logic extracted from Call()) to confirm AdditionalDetails survives all of
+// them, not just the happy path.
+func TestBuildLogToolResponse_AdditionalDetails(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	nbCtx := toolcore.NbToolContext{Ctx: ctx, AccountId: "acct", ConversationId: "conv"}
+	input := toolcore.NBToolCallRequest{Command: "get logs for service-x"}
+
+	const wantAgentId = "child-agent-id"
+	const wantMessageId = "child-message-id"
+
+	assertAdditionalDetails := func(t *testing.T, resp toolcore.NBToolResponse) {
+		t.Helper()
+		require.NotNil(t, resp.AdditionalDetails)
+		assert.Equal(t, wantAgentId, resp.AdditionalDetails["agent_id"])
+		assert.Equal(t, wantMessageId, resp.AdditionalDetails["message_id"])
+	}
+
+	t.Run("ExecuteAgentToolCall error still carries agent_id/message_id", func(t *testing.T) {
+		agentResp := core.NBAgentResponse{AgentId: wantAgentId, MessageId: wantMessageId}
+		resp, err := buildLogToolResponse(nbCtx, fakeLogAgentForCall{}, input, agentResp, assert.AnError)
+		assert.ErrorIs(t, err, assert.AnError)
+		assertAdditionalDetails(t, resp)
+	})
+
+	t.Run("empty response (ErrUnableToFetchData) still carries agent_id/message_id", func(t *testing.T) {
+		agentResp := core.NBAgentResponse{AgentId: wantAgentId, MessageId: wantMessageId}
+		resp, err := buildLogToolResponse(nbCtx, fakeLogAgentForCall{}, input, agentResp, nil)
+		assert.ErrorIs(t, err, toolcore.ErrUnableToFetchData)
+		assertAdditionalDetails(t, resp)
+	})
+
+	t.Run("SummaryToolProvider success path carries agent_id/message_id", func(t *testing.T) {
+		agentResp := core.NBAgentResponse{AgentId: wantAgentId, MessageId: wantMessageId, Response: []string{"the logs"}}
+		resp, err := buildLogToolResponse(nbCtx, fakeSummaryToolLogAgent{}, input, agentResp, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "the logs", resp.Data)
+		assertAdditionalDetails(t, resp)
+	})
+
+	t.Run("non-summary agent, matching step-response path carries agent_id/message_id", func(t *testing.T) {
+		agentResp := core.NBAgentResponse{
+			AgentId:   wantAgentId,
+			MessageId: wantMessageId,
+			Response:  []string{"the logs"},
+			AgentStepResponse: []core.ToolInvocation{
+				{Response: llms.ToolCallResponse{Content: "step output"}},
+			},
+		}
+		resp, err := buildLogToolResponse(nbCtx, fakeLogAgentForCall{}, input, agentResp, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "step output", resp.Data)
+		assertAdditionalDetails(t, resp)
+	})
+
+	t.Run("non-summary agent, final fallback path carries agent_id/message_id", func(t *testing.T) {
+		agentResp := core.NBAgentResponse{AgentId: wantAgentId, MessageId: wantMessageId, Response: []string{"the logs"}}
+		resp, err := buildLogToolResponse(nbCtx, fakeLogAgentForCall{}, input, agentResp, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "the logs", resp.Data)
+		assertAdditionalDetails(t, resp)
+	})
+}
 
 func TestGetLogAgent(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()

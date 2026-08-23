@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -33,6 +34,52 @@ import (
 	temporalworkflow "go.temporal.io/sdk/workflow"
 	"google.golang.org/grpc"
 )
+
+// buildEncryptionCodec assembles the Temporal payload encryption codec from
+// config. The legacy single key (nudgebee_encryption_key) is registered under
+// the empty-string id and is the default primary; nudgebee_encryption_keys adds
+// versioned keys for rotation, and nudgebee_encryption_primary_key_id promotes
+// one of them to seal new writes while older keys keep decrypting history.
+// Returns nil (with a warning) when no key is configured. Exits on misconfig.
+func buildEncryptionCodec() converter.PayloadCodec {
+	keys := map[string][]byte{}
+	primaryID := ""
+
+	decodeKey := func(id, hexKey string) []byte {
+		decoded, err := hex.DecodeString(hexKey)
+		if err != nil {
+			slog.Error("invalid Temporal encryption key (not hex)", "keyID", id, "error", err)
+			os.Exit(1)
+		}
+		return decoded
+	}
+
+	if key := config.Config.NudgebeeEncryptionKey; key != "" {
+		keys[""] = decodeKey("", key) // legacy/default primary
+	}
+	for id, hexKey := range config.Config.NudgebeeEncryptionKeys {
+		if id == "" {
+			slog.Error("nudgebee_encryption_keys must not use the empty-string id (reserved for the legacy key)")
+			os.Exit(1)
+		}
+		keys[id] = decodeKey(id, hexKey)
+	}
+	if id := config.Config.NudgebeeEncryptionPrimaryKeyID; id != "" {
+		primaryID = id
+	}
+
+	if len(keys) == 0 {
+		slog.Warn("no Temporal encryption key configured; payloads (including resolved secrets) will be stored unencrypted")
+		return nil
+	}
+
+	codec, err := workflow.NewEncryptionCodec(keys, primaryID)
+	if err != nil {
+		slog.Error("unable to create Temporal payload encryption codec", "error", err)
+		os.Exit(1)
+	}
+	return codec
+}
 
 // @title           Nudgebee Runbook API
 // @version         1.0
@@ -94,9 +141,18 @@ func main() {
 	if temporalGRPCAddress == "" {
 		temporalGRPCAddress = "localhost:7233" // Default Temporal gRpc address
 	}
+	// Codec order matters: CodecDataConverter applies codecs in reverse on
+	// Encode and forward on Decode. Listing encryption first (compression
+	// second) yields compress-then-encrypt on write and decrypt-then-decompress
+	// on read — compressing before encryption preserves the compression ratio.
+	codecs := []converter.PayloadCodec{}
+	if encCodec := buildEncryptionCodec(); encCodec != nil {
+		codecs = append(codecs, encCodec)
+	}
+	codecs = append(codecs, workflow.NewCompressionCodec(1024)) // Compress payloads larger than 1KB
 	dc := converter.NewCodecDataConverter(
 		converter.GetDefaultDataConverter(),
-		workflow.NewCompressionCodec(1024), // Compress payloads larger than 1KB
+		codecs...,
 	)
 	temporalClient, err := client.Dial(client.Options{
 		HostPort:      temporalGRPCAddress,

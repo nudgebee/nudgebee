@@ -5,6 +5,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 )
 
@@ -211,13 +212,14 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		WebSearchAgentName,              // For Web Search
 		RecommendationsAgentName,        // For Recommendations
 		EventsAgentName,
-		PostgresAgentName,     // For PostgreSQL
-		MySQLAgentName,        // For MySQL
-		MSSQLAgentName,        // For MSSQL
-		OracleAgentName,       // For Oracle
-		RedisAgentName,        // For Redis
-		RabbitMQAgentName,     // For RabbitMQ
-		DelegateAgentToolName, // For dynamic specialist sub-agents
+		PostgresAgentName,          // For PostgreSQL
+		MySQLAgentName,             // For MySQL
+		MSSQLAgentName,             // For MSSQL
+		OracleAgentName,            // For Oracle
+		RedisAgentName,             // For Redis
+		RabbitMQAgentName,          // For RabbitMQ
+		DelegateAgentToolName,      // For dynamic specialist sub-agents
+		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
 	}
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, accountId)

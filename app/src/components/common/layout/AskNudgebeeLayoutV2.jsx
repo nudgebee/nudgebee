@@ -313,7 +313,7 @@ const AskNudgebeeLayout = ({
       <TenantSettings
         open={openSettings}
         title={'Tenant Settings'}
-        onClose={(_, _msg) => {
+        onClose={() => {
           setOpenSettings(false);
         }}
       />

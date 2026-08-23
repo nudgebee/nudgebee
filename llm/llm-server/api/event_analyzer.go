@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,6 +190,21 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 	groupV2.POST("/event", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("event_analyzer")
 		processEventAnalysis(c, tracer, meter)
+	})
+
+	groupV2.POST("/remediation/generate", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("remediation_generate")
+		processRemediationGenerate(c, tracer, meter)
+	})
+
+	groupV2.POST("/remediation/get", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("remediation_get")
+		processRemediationGet(c, tracer, meter)
+	})
+
+	groupV2.POST("/remediation/execute", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("remediation_execute")
+		processRemediationExecute(c, tracer, meter)
 	})
 
 	groupV2.POST("/event/rca", func(c *gin.Context) {
@@ -412,7 +428,7 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	}
 
 	if request.UserId == "" || request.AccountId == "" || request.EventId == "" {
-		slog.Error("analyzer: userId, accountId and eventId are required", "payload", slog.AnyValue(actionRequest), "headers", slog.AnyValue(c.Request.Header))
+		slog.Error("analyzer: userId, accountId and eventId are required", "user_id", request.UserId, "account_id", request.AccountId, "event_id", request.EventId)
 		c.JSON(400, buildApiResponse(nil, []error{
 			common.Error{
 				Message: "userId, accountId and eventId are required",
@@ -1397,6 +1413,25 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			core.TruncateHead(evidenceContext, maxInvestigationEvidenceBytes)
 	}
 
+	// Point the investigation at the deterministic incident assembly (#34659):
+	// the same four-tier grouping the incident panel computes. Instruction only,
+	// with the concrete event id inline — the agent fetches the data itself via
+	// the get_incident_assembly tool, so the prompt stays small and the assembly
+	// is current at run time rather than frozen at prompt-build time.
+	eventAnalsysisPrompt = eventAnalsysisPrompt +
+		"\n\n## Related-Alert Candidates\nCall get_incident_assembly with event_id=" + request.EventId +
+		" EARLY in your investigation. It returns the alerts around this event grouped by timing and topology: " +
+		"same_incident (this alert's other firings and cross-source copies), cause (config changes and " +
+		"upstream-dependency alerts shortly before it), impact (dependent services alerting after it) and " +
+		"chronic (background noise for that subject). These are candidates only — they may or may not be " +
+		"related. Verify each against evidence before using it in your root-cause reasoning, and distinguish " +
+		"active causes from chronic background noise.\n" +
+		"REQUIRED: end your analysis with a '### Related Alerts Check' section — one line per cause/impact " +
+		"candidate the tool returned, each marked confirmed (with the evidence), ruled out (with the reason), " +
+		"or not assessed. Render each candidate's alert name as a markdown link to its event page using that " +
+		"candidate's event_id from the tool output: [<alert title>](/investigate?id=<event_id>&accountId=" +
+		request.AccountId + "). If the tool returned no candidates, say so in one line."
+
 	accountPrompt, _, _ := core.AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, "event_log_analysis")
 	debugAnalysisEnabled := true
 	debugAnalysisSkipReason := ""
@@ -1458,6 +1493,49 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 		}
 	}
 	return eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugAnalysisSkipReason, runbookRef, err
+}
+
+// saveEventRunbookReference persists the runbook resolved for this event as a
+// knowledge_base conversation reference, so it appears in the Additional
+// Contexts panel alongside every other context source — not only as a prose
+// footer inside the analysis text. Keyed to the investigation's message, so a
+// regenerate writes its own row and a re-served analysis writes none.
+// Best-effort: a failed insert must not fail the analysis.
+func saveEventRunbookReference(ctx *security.RequestContext, accountId string, resp core.NBAgentResponse, ref *tools.RunbookRef) {
+	if ref == nil || resp.ConversationId == "" {
+		return
+	}
+	url := strings.TrimSpace(ref.URL)
+	if url == "" {
+		return
+	}
+	title := strings.TrimSpace(ref.Title)
+	if title == "" {
+		title = url
+	}
+	metadata := map[string]any{
+		"name":    title,
+		"subject": title,
+		"url":     url,
+		"source":  ref.Source,
+		"via":     "event_runbook",
+	}
+	// Snippet of the fetched runbook body so the Additional Contexts row shows
+	// what was actually injected — there is no llm_knowledgebases row to pull
+	// content from for a fetched page.
+	if snippet := strings.TrimSpace(ref.Text); snippet != "" {
+		metadata["content"] = core.TruncateHead(snippet, 700)
+	}
+	err := core.GetConversationDao().SaveAgentReferences(accountId, resp.ConversationId, resp.MessageId, resp.AgentId, []core.AgentReference{{
+		Type: core.AgentReferenceTypeKB,
+		// The runbook is a fetched page, not an llm_knowledgebases row — use a
+		// stable URL-derived id so repeated saves of the same runbook dedupe.
+		ReferenceID: fmt.Sprintf("runbook:%x", sha256.Sum256([]byte(url))),
+		Metadata:    metadata,
+	}})
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: unable to save runbook reference", "error", err, "conversation_id", resp.ConversationId)
+	}
 }
 
 // appendRunbookReference adds a deterministic, clickable citation for the
@@ -1737,6 +1815,10 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			} else if len(rootcauseAnalysis.Response) > 0 && rootcauseAnalysis.Status == core.ConversationStatusCompleted {
 				investigationResponse = rootcauseAnalysis.Response[0]
 				hasInvestigation = true
+				// Attach the resolved runbook to the investigation conversation
+				// as a context reference (Additional Contexts panel), mirroring
+				// the prose footer appendRunbookReference adds to the text.
+				saveEventRunbookReference(ctx, request.AccountId, rootcauseAnalysis, runbookRef)
 			}
 		}
 
@@ -2607,6 +2689,7 @@ func synthesizeDetailedResponse(ctx *security.RequestContext, request EventAnaly
 		core.MessageRoleHuman, core.MessageTypeGeneration,
 		"synthesize detailed response", "", "event_detailed_response",
 		uuid.Nil, nil, "", "", "",
+		core.ConversationStatusInProgress,
 	)
 	if err != nil {
 		return "", fmt.Errorf("synthesizeDetailedResponse: unable to create message record: %w", err)
@@ -2621,7 +2704,10 @@ func synthesizeDetailedResponse(ctx *security.RequestContext, request EventAnaly
 	if logAnalysis != "" {
 		userPrompt += fmt.Sprintf("\n\n## Log Analysis\n%s", logAnalysis)
 	}
-	userPrompt += "\n\nProduce a consolidated markdown analysis combining all of the above."
+	userPrompt += "\n\nProduce a consolidated markdown analysis combining all of the above." +
+		" If the investigation findings include a 'Related Alerts Check' section, carry it into the final" +
+		" report verbatim (same section heading), naming each related alert as confirmed, ruled out or not" +
+		" assessed — do not summarize it away."
 
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),

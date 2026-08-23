@@ -33,6 +33,23 @@
   color: var(--ds-gray-400, #94a3b8);
 }
 
+/* ← / → keyboard hints flanking the progress count (see kbdHint in
+   TourProvider). Rendered as key-cap chips so they read as "press this". */
+.nb-tour-popover .nb-tour-kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 0 3px;
+  border: 1px solid var(--ds-gray-300, #cbd5e1);
+  border-bottom-width: 2px;
+  border-radius: var(--ds-radius-sm, 4px);
+  background: var(--ds-background-100, #f8fafc);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--ds-gray-500, #64748b);
+}
+
 .nb-tour-popover .driver-popover-footer button {
   text-shadow: none;
   border-radius: var(--ds-radius-md, 8px);

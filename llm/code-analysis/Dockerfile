@@ -215,6 +215,7 @@ RUN ln -s /usr/local/bin/shim /usr/local/bin/kubectl && \
     ln -s /usr/local/bin/shim /usr/local/bin/argocd && \
     ln -s /usr/local/bin/shim /usr/local/bin/clickhouse-client && \
     ln -s /usr/local/bin/shim /usr/local/bin/rabbitmqadmin && \
+    ln -s /usr/local/bin/shim /usr/local/bin/rabbitmq-api && \
     ln -s /usr/local/bin/shim /usr/local/bin/sqlcmd && \
     ln -s /usr/local/bin/shim /usr/local/bin/sqlplus && \
     ln -s /usr/local/bin/shim /usr/local/bin/ssh

@@ -50,6 +50,10 @@ type ConversationApiRequest struct {
 	ClientTools    []toolcore.NBToolCommand   `json:"client_tools"`
 	Capabilities   toolcore.AgentCapabilities `json:"capabilities"`
 	Images         []core.ImageAttachment     `json:"images,omitempty"`
+	// ChannelContext carries conversation from a watched messaging channel.
+	// Callers must never merge it into Query — keeping it separate is what lets
+	// the agent treat it as reference material rather than as a request.
+	ChannelContext string `json:"channel_context,omitempty"`
 }
 
 type ConversationTerminateApiRequest struct {
@@ -470,7 +474,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
-			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation))
+			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithConfig(request.Config))
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
 				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
@@ -519,7 +523,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		// Execute the agent
 		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_chat", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images))
+			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext))
 		}, core.NBAgentResponse{
 			Response:       []string{"Your request has been received and will be processed asynchronously."},
 			Query:          request.Query,
@@ -847,7 +851,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
-			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source))
+			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConfig(request.Config))
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
 				c.JSON(500, buildApiResponse(nil, []error{

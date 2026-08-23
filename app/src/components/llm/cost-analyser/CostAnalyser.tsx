@@ -90,9 +90,19 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const effectiveAccountId = selectedAccountId || accountId;
 
   const patch = (p: Partial<CostFilters>) => setFilters((f) => ({ ...f, ...p }));
-  const reset = () => setFilters(defaultFilters());
+  const reset = () => {
+    setFilters(defaultFilters());
+    setSelectedAccountId('');
+  };
 
-  const { loading, error, usageFilters, metrics, prevTotals, conversations, listCap } = useCostData(effectiveAccountId, filters);
+  // The Conversations tab pages the list itself (server-side), so the shared
+  // top-200 window — which only backs Overview's "most expensive" table — isn't
+  // fetched while that tab is open.
+  const { loading, error, usageFilters, metrics, prevTotals, conversations, listCap } = useCostData(
+    effectiveAccountId,
+    filters,
+    tab === 'conversations'
+  );
 
   // Adapt the API rows into the UI's Run shape (already cost-desc from the list call).
   const runs = React.useMemo(() => (conversations?.rows ?? []).map(rowToRun), [conversations]);
@@ -108,14 +118,16 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const detailAccountId = selected?.accountId || effectiveAccountId;
   const detail = useConversationTree(detailAccountId, selected?.sessionId ?? null);
 
-  const openRun = (sessionId: string) => {
+  // `acct` comes straight from the clicked row; the `runs` lookup is the fallback
+  // for callers that don't carry it.
+  const openRun = (sessionId: string, acct?: string) => {
     const row = runs.find((r) => r.runId === sessionId);
-    setSelected({ sessionId, accountId: row?.accountId });
+    setSelected({ sessionId, accountId: acct ?? row?.accountId });
   };
   // "Analyse" — open straight on the Optimize tab and analyze (cached or fresh).
-  const openAnalyse = (sessionId: string) => {
+  const openAnalyse = (sessionId: string, acct?: string) => {
     const row = runs.find((r) => r.runId === sessionId);
-    setSelected({ sessionId, accountId: row?.accountId, initialTab: 'optimize', autoRunOptimize: true });
+    setSelected({ sessionId, accountId: acct ?? row?.accountId, initialTab: 'optimize', autoRunOptimize: true });
   };
   // Cross-link from the Agents tab: the session + account come from the agent row
   // (the conversation isn't necessarily in the loaded list page). agentId, when
@@ -214,9 +226,8 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
                 ))}
               {tab === 'conversations' && (
                 <ConversationsView
-                  loading={loading}
-                  runs={runs}
-                  total={conversations?.page?.total ?? runs.length}
+                  accountId={effectiveAccountId}
+                  filters={filters}
                   listCap={listCap}
                   accountNameById={accountNameById}
                   onSelectRun={openRun}

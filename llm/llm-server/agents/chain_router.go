@@ -247,8 +247,8 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 		agentName = AgentLogAnalysisName
 	case "automation", "automationmanager", "workflow", "workflowmanager", "automation_builder":
 		agentName = WorkflowAgentName
-	case "code", "code_analyzer", "code_debugger", "code_rca_agent", AgentCode2:
-		agentName = AgentCode2
+	case "code", AgentCodeAnalyzer, "code_debugger", "code_rca_agent", agentCodeAnalyzerLegacyName:
+		agentName = AgentCodeAnalyzer
 	case "nudgebee_docs", "nudgebee", "nubidocs", "product_docs", "nudgebeedocsagent",
 		"knowledge_base", "kb", "knowledgebase",
 		"unifiedsearchagent", "unified_search", "search", WebSearchAgentName:
@@ -287,11 +287,18 @@ func InferAgent(ctx *security.RequestContext, userId string, accountId string, c
 	if conversationId == "" {
 		conversationId = uuid.NewString()
 	}
+	// Carry the caller's QueryConfig so router-time checks (K8s orchestrator
+	// mode signal, tool_configs, capabilities…) see the per-request values
+	// instead of falling back to env defaults. Without this, a UI-selected
+	// k8s_orchestrator_mode never reached ResolveK8sOrchestratorOverride and
+	// the router always resolved to whatever LLM_SERVER_K8S_ORCHESTRATOR_MODE
+	// was booted with.
 	chainRes, err := routerChain.Execute(ctx, core.NBAgentRequest{
 		Query:          query,
 		AccountId:      accountId,
 		ConversationId: conversationId,
 		UserId:         userId,
+		QueryConfig:    core.QueryConfigFromRequests(configs...),
 	})
 
 	if err != nil {

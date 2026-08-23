@@ -104,6 +104,8 @@ func (t *GitTool) Execute(ctx context.Context, input map[string]any) core.NBTool
 		repoDir = workingDir
 	}
 
+	args, fetchRetargeted := rewriteFetchForTracking(args)
+
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repoDir
 
@@ -126,6 +128,9 @@ func (t *GitTool) Execute(ctx context.Context, input map[string]any) core.NBTool
 	}
 
 	observation := fmt.Sprintf("Successfully executed: git %v", args)
+	if fetchRetargeted {
+		observation += "\n(note: fetch was retargeted to create refs/remotes/origin/<branch> so `git merge origin/<branch>` resolves in this single-branch workspace)"
+	}
 	if stdout.Len() > 0 {
 		observation += fmt.Sprintf("\nOutput: %s", stdout.String())
 	}
@@ -135,6 +140,33 @@ func (t *GitTool) Execute(ctx context.Context, input map[string]any) core.NBTool
 		observation,
 		result,
 	)
+}
+
+// rewriteFetchForTracking makes a plain `git fetch origin <branch>` populate
+// refs/remotes/origin/<branch> instead of only FETCH_HEAD.
+//
+// The analysis workspace is a single-branch bare clone (branch noise is kept
+// deliberately low so the LLM isn't derailed by unrelated remote branches), so
+// `git fetch origin <branch>` does not create origin/<branch> and a follow-up
+// `git merge origin/<branch>` — the natural way to reproduce a PR merge
+// conflict — fails with "not something we can merge". Rewriting only the exact
+// `fetch origin <branch>` shape into an explicit refspec creates the tracking
+// ref for that one branch (the same technique as the followup agent's
+// ensureBaseRefFetched), without widening the clone to every remote branch.
+//
+// Only the precise three-token form is touched; anything with extra args,
+// flags, an existing refspec, or an unsafe branch name is passed through
+// unchanged. Returns the possibly-rewritten args and whether a rewrite occurred.
+func rewriteFetchForTracking(args []string) ([]string, bool) {
+	if len(args) != 3 || args[0] != "fetch" || args[1] != "origin" {
+		return args, false
+	}
+	branch := args[2]
+	if strings.Contains(branch, ":") || strings.HasPrefix(branch, "-") ||
+		strings.ContainsAny(branch, " \t?*[\\^~") || strings.Contains(branch, "..") {
+		return args, false
+	}
+	return []string{"fetch", "origin", branch + ":refs/remotes/origin/" + branch}, true
 }
 
 func (t *GitTool) GetType() core.NBToolType {

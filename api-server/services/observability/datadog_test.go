@@ -195,6 +195,24 @@ func TestBuildBinaryClause(t *testing.T) {
 	}
 }
 
+func TestBuildBinaryClauseEscapesQuotedListValues(t *testing.T) {
+	t.Run("in", func(t *testing.T) {
+		result, err := buildBinaryClause(query.BinaryWhereClause{
+			"service": {In: []any{`api" OR *:*`}},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, `(service:"api\" OR *:*")`, result)
+	})
+
+	t.Run("not in", func(t *testing.T) {
+		result, err := buildBinaryClause(query.BinaryWhereClause{
+			"service": {NotIn: []any{`api" OR *:*`}},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, `-service:"api\" OR *:*"`, result)
+	})
+}
+
 // Test buildWhereClause function with different clause types
 func TestBuildWhereClause(t *testing.T) {
 	testCases := []struct {

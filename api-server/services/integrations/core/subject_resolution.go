@@ -43,27 +43,36 @@ func buildWorkloadLookupQuery(predicate string, namespaceScoped bool) string {
 // risks overwriting a correct subject with an unrelated workload whose name
 // happens to contain the candidate as a substring.
 //
-// When labels["nb_workload_candidates"] is set (comma-separated list, e.g. the
-// dynatrace impacted-entity list), each entry is also tried after EventSubjectName
-// fails — first match wins. The label is consumed before persistence.
+// EventSubjectOwner (e.g. the deployment/daemonset a bare pod subject was
+// resolved to) is tried next when set and distinct from EventSubjectName — a
+// pod name rarely matches k8s_workloads directly since that table stores
+// owning workloads, not individual pod instances.
+//
+// When labels[WorkloadCandidatesLabel] is set (comma-separated list, e.g. the
+// dynatrace impacted-entity list), each entry is also tried after the above
+// fail — first match wins. The label is consumed before persistence.
 //
 // When a webhook opts out via labels["nb_skip_workload_match"]="true" (e.g.
 // solarwinds title-as-subject events that would false-positive on ILIKE), the
 // function returns without querying the workloads table. The opt-out label is
 // consumed on its way out so it doesn't leak into the persisted event.
 func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook, accountId string) {
-	if e.EventSubjectName == "" && e.Investigation.Labels[workloadCandidatesLabel] == "" {
+	if e.EventSubjectName == "" && e.Investigation.Labels[WorkloadCandidatesLabel] == "" {
 		return
 	}
-	if e.Investigation.Labels[skipWorkloadMatchLabel] == "true" {
-		delete(e.Investigation.Labels, skipWorkloadMatchLabel)
-		delete(e.Investigation.Labels, workloadCandidatesLabel)
+	if e.Investigation.Labels[SkipWorkloadMatchLabel] == "true" {
+		delete(e.Investigation.Labels, SkipWorkloadMatchLabel)
+		delete(e.Investigation.Labels, WorkloadCandidatesLabel)
 		return
 	}
 
 	candidates := []string{e.EventSubjectName}
-	if extra := e.Investigation.Labels[workloadCandidatesLabel]; extra != "" {
-		seen := map[string]bool{e.EventSubjectName: true}
+	seen := map[string]bool{e.EventSubjectName: true}
+	if e.EventSubjectOwner != "" && !seen[e.EventSubjectOwner] {
+		seen[e.EventSubjectOwner] = true
+		candidates = append(candidates, e.EventSubjectOwner)
+	}
+	if extra := e.Investigation.Labels[WorkloadCandidatesLabel]; extra != "" {
 		for _, c := range strings.Split(extra, ",") {
 			c = strings.TrimSpace(c)
 			if c == "" || seen[c] {
@@ -73,7 +82,7 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 			candidates = append(candidates, c)
 		}
 	}
-	delete(e.Investigation.Labels, workloadCandidatesLabel)
+	delete(e.Investigation.Labels, WorkloadCandidatesLabel)
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -212,16 +221,18 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 	}
 }
 
-// skipWorkloadMatchLabel marks an event whose EventSubjectName is display-only
-// (e.g. an alert title) and should not be matched against the k8s_workloads
-// inventory. The label is consumed by MatchWorkloadAndEnrich so it never
-// reaches the persisted event payload.
-const skipWorkloadMatchLabel = "nb_skip_workload_match"
+// SkipWorkloadMatchLabel marks an event whose EventSubjectName is display-only
+// (e.g. an alert title) or a non-workload identity (e.g. a PostgreSQL database
+// name) and should not be matched against the k8s_workloads inventory. Exported
+// so producing webhooks (e.g. the Prometheus datname path) can set it. The
+// label is consumed by MatchWorkloadAndEnrich so it never reaches the persisted
+// event payload.
+const SkipWorkloadMatchLabel = "nb_skip_workload_match"
 
-// workloadCandidatesLabel carries a comma-separated list of additional workload
+// WorkloadCandidatesLabel carries a comma-separated list of additional workload
 // names a webhook would like MatchWorkloadAndEnrich to try after EventSubjectName
 // (e.g. dynatrace's impacted-entity list). The label is consumed during matching.
-const workloadCandidatesLabel = "nb_workload_candidates"
+const WorkloadCandidatesLabel = "nb_workload_candidates"
 
 const (
 	// webhookSubjectAgentMention pins the dedicated single-shot classifier agent in
@@ -425,6 +436,13 @@ func isClusterScopedAlert(sc *security.RequestContext, accountId string, labels 
 //
 // It returns the matched service name, or "" when the agent declines ("Not Found"),
 // and records the nb_llm_match label (and a default service label) on labels.
+//
+// Every exit records nb_llm_match, so an absent label means only one thing: the
+// agent was never asked. The values are the matched service name, "not_found"
+// (agent declined), "skipped_cluster_scoped" (alert names no object), "error"
+// (the call failed) and "empty" (the call returned nothing). They are diagnostic
+// — nothing parses them; the sole reader is the presence check in
+// enrichEventsWithSubjectResolution.
 func ResolveSubjectNameViaAgent(sc *security.RequestContext, accountId, title, description, sourceURL string, labels map[string]string) string {
 	if labels == nil {
 		labels = map[string]string{}
@@ -457,13 +475,22 @@ func ResolveSubjectNameViaAgent(sc *security.RequestContext, accountId, title, d
 		Source:    webhookSubjectAgentSource,
 	}
 
+	// Both failure exits record the attempt. Without a label an extraction that
+	// blew up is indistinguishable from one that never ran (absent = deterministic
+	// resolution won), and the alreadyTried guard in enrichEventsWithSubjectResolution
+	// — a presence check — would let a failed call be retried immediately by the
+	// next stage, doubling the retry cost ChatCompletion has already paid. The error
+	// text itself stays out of the label: event labels are rendered in the UI's
+	// Alert-labels table, and #35130 was exactly that leak.
 	response, err := llm.ChatCompletion(sc, chatRequest)
 	if err != nil {
 		sc.GetLogger().Error("subject_resolution: webhook_subject_name_extractor call failed", "error", err)
+		labels["nb_llm_match"] = "error"
 		return ""
 	}
 	if response == nil || len(response.Response) == 0 {
 		sc.GetLogger().Warn("subject_resolution: webhook_subject_name_extractor returned empty response")
+		labels["nb_llm_match"] = "empty"
 		return ""
 	}
 
@@ -497,6 +524,17 @@ func ResolveSubjectViaLLM(sc *security.RequestContext, e *EventIncomingWebhook, 
 	MatchWorkloadAndEnrich(sc, e, accountId)
 }
 
+// hasWorkloadValidationInput reports whether an event carries anything the
+// k8s_workloads inventory can be asked about: a subject the webhook resolved
+// itself, or candidate names it offered via nb_workload_candidates (e.g. the
+// elasticsearch container name, the dynatrace impacted-entity list). A
+// candidate-only event is a legitimate input — MatchWorkloadAndEnrich promotes
+// a candidate to the subject only on an exact match, which is what makes it
+// safe for a name that may or may not be a workload.
+func hasWorkloadValidationInput(e *EventIncomingWebhook) bool {
+	return e.EventSubjectName != "" || e.Investigation.Labels[WorkloadCandidatesLabel] != ""
+}
+
 // enrichEventsWithSubjectResolution runs on every webhook event after account
 // mapping. When a subject is already identified, it validates against the
 // workloads inventory. When one isn't, it falls back to the LLM extractor if
@@ -516,9 +554,13 @@ func enrichEventsWithSubjectResolution(sc *security.RequestContext, events []Eve
 		if events[i].Investigation.Labels == nil {
 			events[i].Investigation.Labels = map[string]string{}
 		}
-		if events[i].EventSubjectName != "" {
+		if hasWorkloadValidationInput(&events[i]) {
 			MatchWorkloadAndEnrich(sc, &events[i], accountId)
-			continue
+			// Candidate-only events whose candidates matched nothing still have no
+			// subject; fall through to the remaining resolvers instead of giving up.
+			if events[i].EventSubjectName != "" {
+				continue
+			}
 		}
 		// An integration-specific resolver (datadog/pagerduty/zenduty) already ran
 		// the extractor agent when it set nb_llm_match. Don't fire a second, redundant

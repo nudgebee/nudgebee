@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -405,7 +406,7 @@ func TestDelegateAgentTool_Metadata(t *testing.T) {
 
 func TestResolveToolsForDelegate_DeduplicatesNames(t *testing.T) {
 	// With no tools registered, all should be unresolved
-	resolved, unresolved := resolveToolsForDelegate(nil, "fake-account-id", []string{"tool_a", "tool_a", "TOOL_A"})
+	resolved, _, unresolved := resolveToolsForDelegate(nil, "fake-account-id", []string{"tool_a", "tool_a", "TOOL_A"})
 	assert.Empty(t, resolved)
 	// Only one entry since duplicates are deduped
 	assert.Len(t, unresolved, 1)
@@ -413,7 +414,7 @@ func TestResolveToolsForDelegate_DeduplicatesNames(t *testing.T) {
 }
 
 func TestResolveToolsForDelegate_EmptyList(t *testing.T) {
-	resolved, unresolved := resolveToolsForDelegate(nil, "fake-account-id", nil)
+	resolved, _, unresolved := resolveToolsForDelegate(nil, "fake-account-id", nil)
 	assert.Nil(t, resolved)
 	assert.Nil(t, unresolved)
 }
@@ -451,6 +452,112 @@ func TestFilterOutTool_NoMatch(t *testing.T) {
 
 	filtered := filterOutTool(mockTools, DelegateAgentToolName)
 	assert.Len(t, filtered, 2)
+}
+
+// TestResolveAgentForDelegate_FlattensThinAgent pins the flatten path: a thin agent
+// that opts into flattenableAgent (helm/redis) is inlined to its leaf tool(s) with its
+// static instructions carried, instead of nested as an agent-tool (avoids the redundant
+// delegation hop).
+func TestResolveAgentForDelegate_FlattensThinAgent(t *testing.T) {
+	tools, instructions := resolveAgentForDelegate(nil, HelmAgent{})
+	assert.Len(t, tools, 1)
+	assert.Equal(t, toolcore.NBToolTypeTool, tools[0].GetType(), "flattened agent must yield a leaf tool, not a nested agent-tool")
+	assert.NotEqual(t, HelmAgentName, tools[0].Name(), "flattened tool must be the leaf tool, not the agent itself")
+	assert.NotEmpty(t, instructions, "flattened agent must carry its GetSystemPrompt guidance")
+
+	_, redisInstr := resolveAgentForDelegate(nil, RedisAgent{})
+	assert.NotEmpty(t, redisInstr, "flattened redis must carry its GetSystemPrompt guidance")
+	assert.Contains(t, strings.ToLower(strings.Join(redisInstr, " ")), "redis",
+		"carried guidance must be redis's own (read from GetSystemPrompt, not hand-duplicated)")
+}
+
+// TestResolveAgentForDelegate_NestsNonFlattenable pins the default: an agent that does
+// NOT implement flattenableAgent stays nested (today's behavior), preserving its own
+// dynamically-composed prompt/context — how postgres/aws "earn their hop".
+func TestResolveAgentForDelegate_NestsNonFlattenable(t *testing.T) {
+	tools, instructions := resolveAgentForDelegate(nil, nestOnlyAgent{})
+	assert.Len(t, tools, 1)
+	assert.Equal(t, toolcore.NBToolTypeAgent, tools[0].GetType(), "non-flattenable agent must be nested as an agent-tool")
+	assert.Empty(t, instructions)
+}
+
+// TestDelegateToolFiltering_AppliesCapabilities pins the capability filter the delegate
+// Call applies on the resolved set: drop delegate_agent (recursion guard), then apply the
+// account's allowed/disabled filter — without which a disabled/non-allow-listed tool named
+// in a delegate call would execute in the sub-agent (the dispatch auth gate only checks
+// set membership).
+func TestDelegateToolFiltering_AppliesCapabilities(t *testing.T) {
+	resolved := []toolcore.NBTool{
+		&mockTool{name: "kubectl_execute"},
+		&mockTool{name: "postgres_query_execute"},
+		&mockTool{name: DelegateAgentToolName},
+	}
+	step1 := filterOutTool(resolved, DelegateAgentToolName)
+	names := func(ts []toolcore.NBTool) []string {
+		out := make([]string, 0, len(ts))
+		for _, tl := range ts {
+			out = append(out, tl.Name())
+		}
+		return out
+	}
+	denied := core.FilterTools(step1, toolcore.AgentCapabilities{DisabledTools: []string{"postgres_query_execute"}})
+	assert.ElementsMatch(t, []string{"kubectl_execute"}, names(denied), "disabled tool must be filtered out of the delegated set")
+
+	allowed := core.FilterTools(step1, toolcore.AgentCapabilities{AllowedTools: []string{"kubectl_execute"}})
+	assert.ElementsMatch(t, []string{"kubectl_execute"}, names(allowed), "with an allow-list, non-listed tools must be dropped")
+
+	unfiltered := core.FilterTools(step1, toolcore.AgentCapabilities{})
+	assert.ElementsMatch(t, []string{"kubectl_execute", "postgres_query_execute"}, names(unfiltered))
+}
+
+// TestDynamicReActAgent_RunsOnCheapTier pins the cost decision: a delegated sub-agent runs
+// on the cheap Retrieval tier (scoped grunt work), not the orchestrator's Reasoning tier.
+func TestDynamicReActAgent_RunsOnCheapTier(t *testing.T) {
+	a := &dynamicReActAgent{name: DelegateAgentToolName}
+	assert.Equal(t, core.ModelTierRetrieval, a.GetModelCategory(),
+		"delegated sub-agents must run on the cheap Retrieval tier, not Reasoning")
+}
+
+// TestFlattenAgentGuidance_CarriesInstructionsConstraintsExamples pins that flattening a
+// thin agent carries its full static guidance — instructions, constraints, AND examples
+// (Answer and AnswerSteps forms) — since a CLI wrapper's examples (e.g. rabbitmq's curl/jq
+// recipes) are its real value and must survive flattening.
+func TestFlattenAgentGuidance_CarriesInstructionsConstraintsExamples(t *testing.T) {
+	p := core.NBAgentPrompt{
+		Instructions: []string{"do X"},
+		Constraints:  []string{"only Y"},
+		ToolUsage:    map[string][]string{"rabbitmq_execute": {"you can pipe curl output through jq"}},
+		Examples: []core.NBAgentPromptExample{
+			{Question: "list queues", Answer: "curl .../api/queues", Explanation: "returns queue depths"},
+			{Question: "backlog?", AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{Tool: "rabbitmq", Input: "curl .../api/queues | jq 'select(.messages>0)'"},
+			}},
+		},
+	}
+	joined := strings.Join(flattenAgentGuidance(p), "\n")
+	assert.Contains(t, joined, "do X")
+	assert.Contains(t, joined, "only Y")
+	assert.Contains(t, joined, "you can pipe curl output through jq", "ToolUsage guidance must be carried")
+	assert.Contains(t, joined, "list queues")
+	assert.Contains(t, joined, "curl .../api/queues")
+	assert.Contains(t, joined, "returns queue depths")
+	assert.Contains(t, joined, "jq 'select(.messages>0)'", "AnswerSteps input must be carried")
+}
+
+// nestOnlyAgent is a minimal NBAgent that does NOT implement flattenableAgent.
+type nestOnlyAgent struct{}
+
+func (nestOnlyAgent) GetName() string          { return "nest_only" }
+func (nestOnlyAgent) GetNameAliases() []string { return nil }
+func (nestOnlyAgent) GetDescription() string   { return "nest-only test agent" }
+func (nestOnlyAgent) GetPlannerType() core.AgentPlannerType {
+	return core.AgentPlannerTypeReAct
+}
+func (nestOnlyAgent) GetSupportedTools(*security.RequestContext) []toolcore.NBTool {
+	return []toolcore.NBTool{&mockTool{name: "inner_tool"}}
+}
+func (nestOnlyAgent) GetSystemPrompt(*security.RequestContext, core.NBAgentRequest) core.NBAgentPrompt {
+	return core.NBAgentPrompt{}
 }
 
 // mockTool is a minimal NBTool implementation for testing.

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -95,6 +96,14 @@ type AgentConfig struct {
 	// output back into the SAME ReAct session instead of starting a fresh fixer
 	// attempt — preserving state, cache prefix, and everything already learned.
 	InloopVerify bool `mapstructure:"inloop_verify"`
+	// Per-role model tiers (empty = the run's resolved model, i.e. no tiering).
+	// The specialist keeps the resolved model for reasoning; router, fixer and
+	// review are mechanical roles that receive exact instructions and don't need
+	// reasoning-tier pricing (the aider architect/editor split). Their spend is
+	// still accumulated into the run's totals via usage sharing.
+	ModelRouter string `mapstructure:"model_router"`
+	ModelFixer  string `mapstructure:"model_fixer"`
+	ModelReview string `mapstructure:"model_review"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -161,6 +170,9 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("agent.build_verify_timeout", "5m")
 	viper.SetDefault("agent.harness_verify", false)
 	viper.SetDefault("agent.inloop_verify", false)
+	viper.SetDefault("agent.model_router", "")
+	viper.SetDefault("agent.model_fixer", "")
+	viper.SetDefault("agent.model_review", "")
 
 	// Load secrets file if it exists (e.g., secrets.yaml or secrets.json)
 	// This file should contain sensitive information and should not be committed to VCS.
@@ -199,6 +211,9 @@ func LoadConfig() (*Config, error) {
 	// Explicitly bind environment variables for LLM config (consistent with llm-server)
 	_ = viper.BindEnv("agent.harness_verify", "AGENT_HARNESS_VERIFY")
 	_ = viper.BindEnv("agent.inloop_verify", "AGENT_INLOOP_VERIFY")
+	_ = viper.BindEnv("agent.model_router", "AGENT_MODEL_ROUTER")
+	_ = viper.BindEnv("agent.model_fixer", "AGENT_MODEL_FIXER")
+	_ = viper.BindEnv("agent.model_review", "AGENT_MODEL_REVIEW")
 	_ = viper.BindEnv("llm_provider", "LLM_PROVIDER")
 	_ = viper.BindEnv("llm_model_name", "LLM_MODEL_NAME")
 	// Also support LLM_MODEL for backward compatibility
@@ -237,8 +252,25 @@ type LLMOverride struct {
 // overlaid (non-empty values only). The receiver is not mutated. A shallow
 // struct copy is a sufficient deep copy here because every LLMConfig field is a
 // scalar — no maps/slices are aliased that this method writes to.
+//
+// When the override names a DIFFERENT provider than the startup config, the
+// startup values for every provider-scoped field are dropped first. Model, key,
+// endpoint, version, api-type and region all belong to one provider; overlaying
+// only the non-empty ones would splice this pod's startup credentials onto
+// someone else's provider — a forwarded keyless Bedrock config would inherit
+// the pod's Google API key and model, and fail far from the cause. Overlaying
+// within the same provider stays layered: a forwarded model on top of the pod's
+// key for that provider is coherent.
 func (c *Config) CloneWithLLMOverride(o LLMOverride) *Config {
 	clone := *c
+	if o.Provider != "" && !strings.EqualFold(o.Provider, c.LLM.Provider) {
+		clone.LLM.Model = ""
+		clone.LLM.ApiKey = ""
+		clone.LLM.ApiEndpoint = ""
+		clone.LLM.ApiVersion = ""
+		clone.LLM.ApiType = ""
+		clone.LLM.Region = ""
+	}
 	if o.Provider != "" {
 		clone.LLM.Provider = o.Provider
 	}

@@ -4990,6 +4990,11 @@ func (s *KnowledgeGraphService) BuildServiceMapFromNodes(nodes []*KnowledgeGraph
 	// Build a map of service dependencies with metrics from edges
 	serviceDependencies := make(map[string]map[string]*ServiceDependencyMetrics)
 
+	// Track which resource names have been added per service per label key for O(1) dedup.
+	// Without this, addInfrastructureLabels used strings.Contains on a growing comma-separated
+	// string — O(n²) total and prone to substring false positives (e.g. "pod-1" matching "pod-10").
+	infraLabelSeen := make(map[string]map[string]map[string]struct{})
+
 	for _, edge := range edges {
 		sourceNode := nodeMap[edge.SourceNodeID]
 		destNode := nodeMap[edge.DestinationNodeID]
@@ -5156,7 +5161,10 @@ func (s *KnowledgeGraphService) BuildServiceMapFromNodes(nodes []*KnowledgeGraph
 
 			// Also add pod to LoadBalancer's infrastructure labels for quick reference
 			if serviceApp, exists := serviceGroups[sourceKey]; exists {
-				s.addInfrastructureLabels(serviceApp, destNode)
+				if infraLabelSeen[sourceKey] == nil {
+					infraLabelSeen[sourceKey] = make(map[string]map[string]struct{})
+				}
+				s.addInfrastructureLabels(serviceApp, destNode, infraLabelSeen[sourceKey])
 			}
 		}
 
@@ -5164,7 +5172,10 @@ func (s *KnowledgeGraphService) BuildServiceMapFromNodes(nodes []*KnowledgeGraph
 		if sourceNode.NodeType == NodeTypeService && edge.RelationshipType == RelationshipRunsOn {
 			sourceKey := s.getServiceKey(sourceNode)
 			if serviceApp, exists := serviceGroups[sourceKey]; exists {
-				s.addInfrastructureLabels(serviceApp, destNode)
+				if infraLabelSeen[sourceKey] == nil {
+					infraLabelSeen[sourceKey] = make(map[string]map[string]struct{})
+				}
+				s.addInfrastructureLabels(serviceApp, destNode, infraLabelSeen[sourceKey])
 			}
 		}
 
@@ -5923,8 +5934,26 @@ func (s *KnowledgeGraphService) createUpstreamLink(upstreamService *ServiceAppli
 	}
 }
 
-// addInfrastructureLabels adds infrastructure information to service labels
-func (s *KnowledgeGraphService) addInfrastructureLabels(serviceApp *ServiceApplication, infraNode *KnowledgeGraphNode) {
+// appendUniqueLabel adds resourceName to serviceApp.Labels[key] as a comma-separated value,
+// using labelSeen for O(1) dedup instead of substring search on the accumulated string.
+func appendUniqueLabel(serviceApp *ServiceApplication, key, resourceName string, labelSeen map[string]map[string]struct{}) {
+	if labelSeen[key] == nil {
+		labelSeen[key] = make(map[string]struct{})
+	}
+	if _, seen := labelSeen[key][resourceName]; seen {
+		return
+	}
+	labelSeen[key][resourceName] = struct{}{}
+	if existing, exists := serviceApp.Labels[key]; exists {
+		serviceApp.Labels[key] = existing + "," + resourceName
+	} else {
+		serviceApp.Labels[key] = resourceName
+	}
+}
+
+// addInfrastructureLabels adds infrastructure information to service labels.
+// labelSeen tracks already-added resource names per label key for O(1) dedup.
+func (s *KnowledgeGraphService) addInfrastructureLabels(serviceApp *ServiceApplication, infraNode *KnowledgeGraphNode, labelSeen map[string]map[string]struct{}) {
 	resourceName, ok := infraNode.Properties["name"].(string)
 	if !ok || resourceName == "" {
 		slog.Warn("Skipping infrastructure labeling for node with invalid name",
@@ -5934,45 +5963,17 @@ func (s *KnowledgeGraphService) addInfrastructureLabels(serviceApp *ServiceAppli
 
 	switch infraNode.NodeType {
 	case NodeTypePod:
-		key := "infrastructure.pods"
-		if existing, exists := serviceApp.Labels[key]; exists {
-			if !strings.Contains(existing, resourceName) {
-				serviceApp.Labels[key] = existing + "," + resourceName
-			}
-		} else {
-			serviceApp.Labels[key] = resourceName
-		}
+		appendUniqueLabel(serviceApp, "infrastructure.pods", resourceName, labelSeen)
 	case NodeTypeNamespace:
 		serviceApp.Labels["infrastructure.namespace"] = resourceName
 	case NodeTypeCluster:
 		serviceApp.Labels["infrastructure.cluster"] = resourceName
 	case NodeTypeDatabase:
-		key := "infrastructure.databases"
-		if existing, exists := serviceApp.Labels[key]; exists {
-			if !strings.Contains(existing, resourceName) {
-				serviceApp.Labels[key] = existing + "," + resourceName
-			}
-		} else {
-			serviceApp.Labels[key] = resourceName
-		}
+		appendUniqueLabel(serviceApp, "infrastructure.databases", resourceName, labelSeen)
 	case NodeTypeCache:
-		key := "infrastructure.caches"
-		if existing, exists := serviceApp.Labels[key]; exists {
-			if !strings.Contains(existing, resourceName) {
-				serviceApp.Labels[key] = existing + "," + resourceName
-			}
-		} else {
-			serviceApp.Labels[key] = resourceName
-		}
+		appendUniqueLabel(serviceApp, "infrastructure.caches", resourceName, labelSeen)
 	case NodeTypeMessageQueue:
-		key := "infrastructure.queues"
-		if existing, exists := serviceApp.Labels[key]; exists {
-			if !strings.Contains(existing, resourceName) {
-				serviceApp.Labels[key] = existing + "," + resourceName
-			}
-		} else {
-			serviceApp.Labels[key] = resourceName
-		}
+		appendUniqueLabel(serviceApp, "infrastructure.queues", resourceName, labelSeen)
 	}
 }
 

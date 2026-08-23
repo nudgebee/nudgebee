@@ -17,6 +17,35 @@ const PRIORITY_OPTIONS = [
 // priority snaps computed_score to the band floor. Keep the two in sync.
 const PRIORITY_MIN_SCORE: Record<string, number> = { P0: 80, P1: 60, P2: 40, P3: 20 };
 
+// Mirrors the backend's human-override overlay (api-server/services/triage/classification.go,
+// rules.go): scoring_path/authority/corrected_priority are merged on top of the prior factors so
+// ScoreDisplay's isHuman check (and "Model had suggested" section) flips immediately, without
+// waiting for a refetch.
+const applyHumanOverrideFactors = (currentFactors: unknown, priority: string, scope: 'this_event' | 'this_fingerprint'): Record<string, unknown> => {
+  const parsed =
+    typeof currentFactors === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(currentFactors || '{}');
+          } catch {
+            return {};
+          }
+        })()
+      : currentFactors || {};
+
+  // JSON.parse succeeds on stringified primitives too (e.g. "123"); guard against spreading
+  // anything but a plain object, which would otherwise corrupt the result (e.g. a string spreads
+  // into per-character keys).
+  const parsedObj = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+
+  return {
+    ...parsedObj,
+    scoring_path: 'human_override',
+    authority: scope === 'this_fingerprint' ? 'human:class' : 'human:event',
+    corrected_priority: priority,
+  };
+};
+
 export interface PriorityPinControlProps {
   /** Representative event id the correction is recorded against. The backend derives the
    * signal class from this event's fingerprint, so no fingerprint prop is needed. */
@@ -27,14 +56,17 @@ export interface PriorityPinControlProps {
   currentPriority?: string | null;
   /** Current computed score — captured so a failed API call can revert the optimistic score. */
   currentScore?: number | null;
+  /** Current score factors (object or JSON string) — overlaid with the human-override markers
+   * so the ScoreDisplay icon/popover update immediately; reverted if the API call fails. */
+  currentScoreFactors?: unknown;
   /** Whether the user can write to this account. Renders nothing when false. */
   canWrite?: boolean;
   /**
-   * Called optimistically on selection with the new priority and its band-floor score
-   * (matching what the backend will persist), and again with the previous values if the
-   * background API call fails (so the caller can revert).
+   * Called optimistically on selection with the new priority, its band-floor score (matching
+   * what the backend will persist), and the overlaid score factors; and again with the previous
+   * values if the background API call fails (so the caller can revert).
    */
-  onChanged?: (newPriority: string | null, newScore?: number | null) => void;
+  onChanged?: (newPriority: string | null, newScore?: number | null, newFactors?: Record<string, unknown> | unknown) => void;
   /** Pin scope. Defaults to the whole alert class ('this_fingerprint'). */
   scope?: 'this_event' | 'this_fingerprint';
 }
@@ -49,6 +81,7 @@ const PriorityPinControl: React.FC<PriorityPinControlProps> = ({
   accountId,
   currentPriority,
   currentScore,
+  currentScoreFactors,
   canWrite = false,
   onChanged,
   scope = 'this_fingerprint',
@@ -62,7 +95,10 @@ const PriorityPinControl: React.FC<PriorityPinControlProps> = ({
 
     const previousPriority = currentPriority ?? null;
     const previousScore = currentScore ?? null;
-    onChanged?.(priority, PRIORITY_MIN_SCORE[priority] ?? null); // optimistic update
+    const previousFactors = currentScoreFactors ?? null;
+    // optimistic update — also overlay the human-override markers so the score icon/popover
+    // reflect the correction immediately instead of showing stale model reasoning.
+    onChanged?.(priority, PRIORITY_MIN_SCORE[priority] ?? null, applyHumanOverrideFactors(currentScoreFactors, priority, scope));
 
     try {
       const res = await apiTriage.classifyEvent({
@@ -79,11 +115,11 @@ const PriorityPinControl: React.FC<PriorityPinControlProps> = ({
       });
       if (!res?.success) {
         snackbar.error('Failed to set priority');
-        onChanged?.(previousPriority, previousScore); // revert
+        onChanged?.(previousPriority, previousScore, previousFactors); // revert
       }
     } catch {
       snackbar.error('Failed to set priority');
-      onChanged?.(previousPriority, previousScore); // revert
+      onChanged?.(previousPriority, previousScore, previousFactors); // revert
     }
   };
 

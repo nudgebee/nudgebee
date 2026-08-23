@@ -22,6 +22,12 @@ interface RunbookTargetResourceProps {
   multipleNamespace?: boolean;
   viewOnlyMode?: boolean;
   hideTabs?: boolean;
+  // Full picklist for the cluster field. When provided, the field is a real,
+  // editable selector (options come from here rather than being derived as a
+  // single fixed entry from selectedCluster, and it isn't force-disabled just
+  // because selectedCluster is set) — used by callers that own their own
+  // account selection (e.g. the Auto Optimize create/edit modals).
+  clusterOptions?: { value: string; label: string }[];
 }
 
 interface CheckedItems {
@@ -37,6 +43,7 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
   multipleNamespace = false,
   viewOnlyMode = false,
   hideTabs = false,
+  clusterOptions: clusterOptionsProp,
 }) => {
   const targetResourceTypes = [{ id: 'applications', label: 'Applications' }];
   const [targetResourceType, setTargetResourceType] = useState<string>(targetResourceTypes[0].id);
@@ -48,8 +55,13 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
   const [isLoadingApplications, setIsLoadingApplications] = useState<boolean>(false);
 
   useEffect(() => {
+    if (!selectedCluster?.value) {
+      setNamespaceOption([]);
+      return;
+    }
     getDropDownData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCluster?.value]);
 
   const getDropDownData = async () => {
     try {
@@ -156,7 +168,8 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
   };
 
   const clusterValue = selectedCluster?.value || '';
-  const clusterOptions = selectedCluster ? [{ value: selectedCluster.value, label: selectedCluster.label || selectedCluster.value }] : [];
+  const clusterOptions =
+    clusterOptionsProp ?? (selectedCluster ? [{ value: selectedCluster.value, label: selectedCluster.label || selectedCluster.value }] : []);
   const namespaceMultiValue = Array.isArray(selectedNamespace) ? selectedNamespace : selectedNamespace ? [selectedNamespace] : [];
   const namespaceSingleValue = Array.isArray(selectedNamespace) ? selectedNamespace[0] || '' : selectedNamespace || '';
 
@@ -182,7 +195,7 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
               value={clusterValue}
               options={clusterOptions}
               onChange={(next) => handleChildComponentChange(next, 'cluster')}
-              disabled={!!selectedCluster || reviewRunbook || viewOnlyMode}
+              disabled={(!clusterOptionsProp && !!selectedCluster) || reviewRunbook || viewOnlyMode}
               minWidth={ds.space.mul(0, 115)}
               placeholder='Select cluster'
             />

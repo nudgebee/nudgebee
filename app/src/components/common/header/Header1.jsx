@@ -153,13 +153,20 @@ const Header1 = ({ showBorder = false }) => {
   }, [router.pathname]);
 
   useEffect(() => {
+    let cancelled = false;
     const fetchIntegrationCounts = async () => {
       try {
         const [slackRes, gChatRes] = await Promise.all([apiAccount.getMessagingPlatform('slack'), apiAccount.getMessagingPlatform('google_chat')]);
+        if (cancelled) {
+          return;
+        }
         setSlackAccountsCount(slackRes?.data?.length || 0);
         const configuredGChatCount = gChatRes?.data?.filter((item) => item?.channels).length || 0;
         setGChatAccountsCount(configuredGChatCount);
       } catch (error) {
+        if (cancelled) {
+          return;
+        }
         console.error('Failed to fetch Slack/GChat integration counts:', error);
         setSlackAccountsCount(0);
         setGChatAccountsCount(0);
@@ -169,6 +176,9 @@ const Header1 = ({ showBorder = false }) => {
     if (anchorActiveTab.connectAccountButton && hasWriteAccess()) {
       fetchIntegrationCounts();
     }
+    return () => {
+      cancelled = true;
+    };
   }, [anchorActiveTab]);
 
   useEffect(() => {

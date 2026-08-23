@@ -1,13 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Modal } from '@ui/Modal';
 import apiAccount from '@api1/account';
+import apiUser from '@api1/user';
+import { getCurrentTenant } from '@lib/auth';
 import AutoOptimizeVerticalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeVerticalRightSizingSingleConfiguration';
 import AutoOptimizeHorizontalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeHorizontalRightSizingSingleConfiguration';
 import AutoOptimizePVRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizePVRightSizingSingleConfiguration';
 import AutoOptimizeContinuousVerticalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeContinuousVerticalRightSizingSingleConfiguration';
 import AutoOptimizeListingTable from './AutoOptimizeListingTable';
 import AutoPilotApprovalsListing from './AutoPilotApprovalsTable';
+import { useData } from '@context/DataContext';
+import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
 
 interface AutoOptimizeTabsProps {
   subTab?: number;
@@ -46,8 +49,62 @@ const AutoOptimizeTabs: React.FC<AutoOptimizeTabsProps> = ({
   const [isGoogleChannelsLoading, setIsGoogleChannelsLoading] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [refreshListing, setRefreshListing] = useState<boolean>(false);
+  const [manualAccountId, setManualAccountId] = useState<string>('');
 
-  const router = useRouter();
+  const tenantId = getCurrentTenant().id;
+  const { selectedCluster, allCluster } = useData();
+  const updateAllClusters = useUpdateAllClusterOption();
+
+  // allCluster is only populated by the header cluster dropdown elsewhere in
+  // the app; since /optimise doesn't render it, fetch it ourselves the first
+  // time this tab is opened.
+  useEffect(() => {
+    if (allCluster == null) {
+      updateAllClusters();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allCluster]);
+
+  // Auto Optimize only targets Kubernetes workloads, so the account filter
+  // is scoped to K8s-type accounts only.
+  const accountOptions = useMemo(
+    () =>
+      (allCluster || [])
+        .filter((cluster: any) => cluster.cloud_provider === 'K8s')
+        .map((cluster: any) => ({ label: cluster.label, value: cluster.value })),
+    [allCluster]
+  );
+
+  // The current account is never read from (or written to) the URL, the
+  // per-provider preference cache, or the global selectedCluster — a manual
+  // pick lives only in this tab's own state (manualAccountId). Absent a
+  // manual pick, it defaults the same way GlobalPageSearch.jsx resolves "an
+  // account of this provider": the globally selected cluster if it's K8s,
+  // else the user's last-picked K8s account (read-only lookup), else the
+  // first available K8s account.
+  const resolvedAccountId = useMemo(() => {
+    if (manualAccountId && accountOptions.some((option: { value: string }) => option.value === manualAccountId)) {
+      return manualAccountId;
+    }
+    if (selectedCluster?.cloud_provider === 'K8s' && selectedCluster?.value) {
+      return selectedCluster.value;
+    }
+    const cachedId = apiUser.getLastAccountIdForProvider('K8s', tenantId);
+    if (cachedId && accountOptions.some((option: { value: string }) => option.value === cachedId)) {
+      return cachedId;
+    }
+    return accountOptions[0]?.value || '';
+  }, [manualAccountId, selectedCluster, accountOptions, tenantId]);
+
+  // A manual pick only updates this tab's own state — it doesn't touch the
+  // URL, the per-provider preference cache, or the global selectedCluster.
+  const handleAccountChange = (e: any, option: any): void => {
+    const value = e?.target?.value || option?.value;
+    if (!value) {
+      return;
+    }
+    setManualAccountId(value);
+  };
 
   useEffect(() => {
     const fetchMsTeamsChannels = async () => {
@@ -123,6 +180,8 @@ const AutoOptimizeTabs: React.FC<AutoOptimizeTabsProps> = ({
             googleChannelList={googleChannelList}
             isGoogleChannelsLoading={isGoogleChannelsLoading}
             setIsLoading={setLoading}
+            accountOptions={accountOptions}
+            defaultAccountId={resolvedAccountId}
           />
         </Modal>
       )}
@@ -147,6 +206,8 @@ const AutoOptimizeTabs: React.FC<AutoOptimizeTabsProps> = ({
             isGoogleChannelsLoading={isGoogleChannelsLoading}
             setIsLoading={setLoading}
             currentData={{}}
+            accountOptions={accountOptions}
+            defaultAccountId={resolvedAccountId}
           />
         </Modal>
       )}
@@ -166,6 +227,8 @@ const AutoOptimizeTabs: React.FC<AutoOptimizeTabsProps> = ({
             googleChannelList={googleChannelList}
             isGoogleChannelsLoading={isGoogleChannelsLoading}
             setIsLoading={setLoading}
+            accountOptions={accountOptions}
+            defaultAccountId={resolvedAccountId}
           />
         </Modal>
       )}
@@ -190,6 +253,8 @@ const AutoOptimizeTabs: React.FC<AutoOptimizeTabsProps> = ({
             isGoogleChannelsLoading={isGoogleChannelsLoading}
             setIsLoading={setLoading}
             _isLoading={loading}
+            accountOptions={accountOptions}
+            defaultAccountId={resolvedAccountId}
           />
         </Modal>
       )}
@@ -199,9 +264,22 @@ const AutoOptimizeTabs: React.FC<AutoOptimizeTabsProps> = ({
           autoOptimizeData={autoOptimizeData}
           setAutoOptimizeData={(data: any) => setAutoOptimizeData(data)}
           refresh={refreshListing}
+          accountOptions={accountOptions}
+          selectedAccountId={resolvedAccountId}
+          isAccountsLoading={allCluster == null}
+          onAccountChange={handleAccountChange}
         />
       )}
-      {subTab == 1 && <AutoPilotApprovalsListing type={'auto_optimize'} accountId={router?.query?.accountId as string} />}
+      {subTab == 1 && (
+        <AutoPilotApprovalsListing
+          type={'auto_optimize'}
+          accountId={resolvedAccountId}
+          accountOptions={accountOptions}
+          selectedAccountId={resolvedAccountId}
+          isAccountsLoading={allCluster == null}
+          onAccountChange={handleAccountChange}
+        />
+      )}
     </>
   );
 };

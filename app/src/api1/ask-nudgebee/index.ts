@@ -1180,6 +1180,22 @@ const api = {
       return null;
     }
   },
+  async deleteTool(accountId: string, toolName: string) {
+    if (accountId === 'demo') return null;
+    const DELETE_TOOL = `mutation AiDeleteTool($accountId:String!, $name:String!) {
+      ai_delete_tool(request: {account_id: $accountId, name: $name}) {
+        data
+        errors
+      }
+    }`;
+    try {
+      const response = await queryGraphQL(DELETE_TOOL, 'AiDeleteTool', { accountId: accountId, name: toolName });
+      return response;
+    } catch (error) {
+      console.error('failed to delete tool-', error);
+      return null;
+    }
+  },
   async createAgentExtension(data: CreateAgentExtensionRequest) {
     if (data?.account_id === 'demo') {
       return {
@@ -1574,6 +1590,7 @@ const api = {
           reference_id
           type
           content
+          metadata
           used
           used_by_agent
           created_at

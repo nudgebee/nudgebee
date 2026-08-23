@@ -58,8 +58,12 @@ const RecommendationResolution = ({ recommendation }) => {
     if (!recommendation?.id) {
       return;
     }
+    let cancelled = false;
     setLoading(true);
     recommendationApi.listRecommendationResolution(recommendation.id, perPage, (currentPage - 1) * perPage).then(async (res) => {
+      if (cancelled) {
+        return;
+      }
       setResolutions(res?.data?.recommendation_resolution);
 
       // Get unique resolver_ids first
@@ -81,6 +85,9 @@ const RecommendationResolution = ({ recommendation }) => {
           }
         })
       );
+      if (cancelled) {
+        return;
+      }
       let tableData = res?.data?.recommendation_resolution.map((resolution) => {
         const referenceObj = {};
         if (containsLink(resolution?.type_reference_id)) {
@@ -144,6 +151,9 @@ const RecommendationResolution = ({ recommendation }) => {
       setTableData(tableData);
       setLoading(false);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [recommendation?.id, currentPage, perPage]);
 
   return resolutions?.length >= 0 ? (

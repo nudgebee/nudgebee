@@ -152,11 +152,15 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	}
 
 	if len(response.Logs) == 0 {
-		noLogsMsg := noLogsFoundMessage(response.Suggestion, logProvider.Provider, queryBuilder.Where, start, end, queryBuilder.Limit)
-		return core.NBToolResponse{
-			Data:   noLogsMsg,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
+		// Fold the human-readable message (the ValidateRequest diagnosis suggestion,
+		// or the generic "broaden your query" guidance) into Suggestion and still
+		// serialize the full response — response.Metadata.Query/Provider already
+		// carry the real backend query and provider services-server executed (even
+		// on a zero-row result), and FetchLogsAgentV2's executedLogQuery/
+		// providerFromLogs read them from here. Returning a bare string instead (as
+		// this used to do) silently discarded them, so the UI fell back to showing
+		// the LLM's canonical where-clause JSON instead of the real query.
+		response.Suggestion = noLogsFoundMessage(response.Suggestion, logProvider.Provider, queryBuilder.Where, start, end, queryBuilder.Limit)
 	}
 
 	data, err := common.MarshalJson(response)

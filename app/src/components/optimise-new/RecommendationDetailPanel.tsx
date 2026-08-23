@@ -38,6 +38,14 @@ const resolutionTone = (status: string): LabelTone => {
   return 'neutral';
 };
 
+// Terminal resolution states, keyed by status. A status absent from this map is
+// still running, and falls back to the in-progress wording below. `Success`
+// means no PR was raised — a PR that was raised keeps its resolution InProgress.
+const RESOLUTION_SUMMARY: Record<string, { dot: string; title: string; fallback: string }> = {
+  Failed: { dot: ds.red[500], title: 'Resolution failed', fallback: 'PR creation failed' },
+  Success: { dot: ds.green[500], title: 'No PR needed', fallback: 'No change was required' },
+};
+
 interface RecommendationDetailPanelProps {
   open: boolean;
   onClose: () => void;
@@ -73,18 +81,26 @@ const InlineResolutionHistory = ({ recommendationId, refreshKey }: { recommendat
 
   useEffect(() => {
     if (!recommendationId) return;
+    let cancelled = false;
     setLoading(true);
     recommendationApi
       .listRecommendationResolution(recommendationId, rowsPerPage, page * rowsPerPage)
       .then((res: any) => {
+        if (cancelled) return;
         setResolutions(res?.data?.recommendation_resolution || []);
         setTotalCount(res?.data?.recommendation_resolution_aggregate?.aggregate?.count || 0);
       })
       .catch(() => {
+        if (cancelled) return;
         setResolutions([]);
         setTotalCount(0);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [recommendationId, page, rowsPerPage, refreshKey]);
 
   const tableData = resolutions.map((r: any) => {
@@ -382,14 +398,20 @@ const RecommendationDetailPanel = ({
                       width: ds.space[2],
                       height: ds.space[2],
                       borderRadius: '50%',
-                      backgroundColor: ds.amber[500],
+                      backgroundColor: RESOLUTION_SUMMARY[rec.resolution.status]?.dot ?? ds.amber[500],
                       mt: ds.space[1],
                       flexShrink: 0,
                     }}
                   />
                   <Box>
-                    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[700] }}>Resolution in progress</Typography>
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>PR: {rec.resolution.pr_url || 'Pending'}</Typography>
+                    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[700] }}>
+                      {RESOLUTION_SUMMARY[rec.resolution.status]?.title ?? 'Resolution in progress'}
+                    </Typography>
+                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
+                      {RESOLUTION_SUMMARY[rec.resolution.status]
+                        ? rec.resolution.status_message || RESOLUTION_SUMMARY[rec.resolution.status].fallback
+                        : `PR: ${rec.resolution.pr_url || 'Pending'}`}
+                    </Typography>
                   </Box>
                 </Box>
               )}

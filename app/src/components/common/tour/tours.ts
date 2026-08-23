@@ -120,15 +120,15 @@ export interface TourDef {
   requiresFeature?: string;
   /**
    * Deployment-level UI toggle (a `UI_ENABLE_*` env var) this guide's surface
-   * needs — e.g. the LLM Analyser tab, which only renders when the pod has
-   * UI_ENABLE_LLM_ANALYSER=true.
+   * needs — e.g. the AI Gateway tab, which only renders when the pod has
+   * UI_ENABLE_LLM_GATEWAY=true.
    *
    * Distinct from `requiresFeature`, and not interchangeable with it: these are
    * per-DEPLOYMENT, not per-tenant, so they aren't in `featureflags_list` and
    * `hasFeatureAccessCached` can never see them. Resolved via
    * `isUiFeatureEnabled`, which reads the session — sync, and needs no warming.
    */
-  requiresUiFeature?: 'llmAnalyser' | 'llmGateway';
+  requiresUiFeature?: 'llmGateway';
 }
 
 /**
@@ -1737,16 +1737,15 @@ const optimizeAutoOptimizeTour: TourDef = {
 /**
  * "Optimize: LLM Analyser" deep-dive.
  *
- * Gated on `requiresUiFeature: 'llmAnalyser'`, NOT `requiresFeature`: the tab is
- * gated on `enableLlmAnalyser` (the pod's UI_ENABLE_LLM_ANALYSER env var, read in
- * /optimise's getServerSideProps) — a per-deployment toggle that never appears in
- * `featureflags_list`, so the tenant-flag machinery can't see it. The session
- * carries it instead (see `uiFeatures`), which is what `isUiFeatureEnabled` reads.
+ * Gated on `requiresFeature: 'LLM_ANALYSER'` — a per-tenant feature flag
+ * (`featureflags_list`), resolved via the cached tenant flags
+ * (`hasFeatureAccessCached`); see `canAccessTour`. Tenant admins toggle it from
+ * the Feature Flags section of Tenant Settings.
  *
  * The tab's second gate is `hasReadAccess(selectedCluster?.value)`. That's not
  * resolvable from the global catalog (no cluster context there, same limitation as
  * 'account-write'), and it passes for anyone with read on the selected account —
- * the deployment toggle is the gate that actually decides visibility.
+ * the tenant flag is the gate that actually decides visibility.
  *
  * Anchors (all pre-existing):
  *   #anchor-tab-llm-analyser → the tab (id 'llm-analyser'; note its hash is
@@ -1766,7 +1765,7 @@ const llmAnalyserTour: TourDef = {
   module: 'Optimize',
   description: 'See what your AI is costing you — by model, agent, conversation, and user.',
   route: '/optimise',
-  requiresUiFeature: 'llmAnalyser',
+  requiresFeature: 'LLM_ANALYSER',
   steps: [
     {
       element: '#anchor-tab-llm-analyser',
@@ -1845,8 +1844,14 @@ const llmAnalyserTour: TourDef = {
 };
 
 /**
- * "Optimize: AI Gateway" deep-dive. Same gating story as the LLM Analyser, on the
- * sibling UI_ENABLE_LLM_GATEWAY toggle — see llmAnalyserTour's docblock.
+ * "Optimize: AI Gateway" deep-dive.
+ *
+ * Gated on `requiresUiFeature: 'llmGateway'` — a per-deployment toggle (the pod's
+ * UI_ENABLE_LLM_GATEWAY env var, read in /optimise's getServerSideProps) that
+ * never appears in `featureflags_list`, so the tenant-flag machinery can't see
+ * it. The session carries it instead (see `uiFeatures`), which is what
+ * `isUiFeatureEnabled` reads. Unlike the LLM Analyser's tab (see
+ * llmAnalyserTour), this one hasn't been converted to a tenant feature flag.
  *
  * The Analyser covers {brand}'s own agent traffic; the Gateway covers your BYO-token
  * traffic forwarded through it, which is why they're separate guides.

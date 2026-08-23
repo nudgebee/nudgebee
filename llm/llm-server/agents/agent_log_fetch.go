@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/agents/core"
@@ -42,7 +43,7 @@ type FetchLogsAgent struct {
 func init() {
 	toolDescription := `Fetches logs for a resource and returns raw log content. Translates a natural-language log question into the right backend query (Loki/Signoz/ES JSON, Datadog facet syntax, or kubectl flags) and runs it. Saves output to a workspace file so it can be downloaded or grepped via shell_execute. The caller is responsible for the strategy — fetch_logs runs whatever query the question implies; it does not add implicit error filters or widen windows on its own. For investigations, ask for a broad chronological window so the trigger (config reload, deploy, antecedent context) surfaces before the symptom storm.`
 	toolInput := "Provide a natural-language log question (e.g. 'errors in <service> last 1h', 'why is <service> slow', 'logs for pod <workload>-<6-10 hex>-<5 alnum> in namespace <ns>')."
-	toolOutput := "JSON envelope: {\"query\": \"<rendered backend query>\", \"logs\": \"<raw lines or preview>\", \"file_ref\": \"<workspace file path or empty>\"}"
+	toolOutput := "JSON envelope: {\"query\": \"<rendered backend query>\", \"logs\": \"<raw lines or preview>\", \"file_ref\": \"<workspace file path or empty>\", \"provider\": \"<loki|es|datadog|kubectl>\", \"bundle_signal\": \"<category-tagged crash-bundle sweep against file_ref, computed server-side when the query wording asked for error content (error/fail/crash/timeout/oom/…); empty when it didn't fire>\"}"
 
 	core.RegisterNBAgentFactoryAsTool(FetchLogsAgentName, func(accountId string) (core.NBAgent, error) {
 		// Always construct v2. It embeds v1 and gates the canonical path on the
@@ -122,7 +123,11 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 		return errorResponse(a.GetName(), fmt.Errorf("kubectl fetch failed: %s", reason)), nil
 	}
 	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "kubectl", logs)
-	return makeFetchResponse(a.GetName(), cmd, logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	if err != nil {
+		return core.NBAgentResponse{}, err
+	}
+	return makeFetchResponse(a.GetName(), cmd, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
 func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
@@ -142,7 +147,11 @@ func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
 	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
-	return makeFetchResponse(a.GetName(), jsonQuery, logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	if err != nil {
+		return core.NBAgentResponse{}, err
+	}
+	return makeFetchResponse(a.GetName(), jsonQuery, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
 func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
@@ -159,7 +168,11 @@ func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.Request
 		return errorResponse(a.GetName(), fmt.Errorf("datadog fetch failed: %s", reason)), nil
 	}
 	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "datadog", logs)
-	return makeFetchResponse(a.GetName(), ddQuery, logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	if err != nil {
+		return core.NBAgentResponse{}, err
+	}
+	return makeFetchResponse(a.GetName(), ddQuery, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
 // labelsAndIndices feeds the query-generator prompt real labels/indices instead
@@ -393,12 +406,109 @@ func mergeRefs(toolRefs, fileRefs []toolcore.NBToolResponseReference) []toolcore
 // file_ref duplicated the payload and dominated prompt size.
 const logInlinePreviewBytes = 4096
 
-// makeFetchResponse returns {query, logs, file_ref} so the parent's scratchpad
-// shows which query produced the data and where the raw logs were saved.
-// file_ref lets shell_execute grep the saved file directly without re-fetching.
-// When a file_ref exists, only a head preview of the logs is inlined; the full
-// content lives in the file and is reached via shell_execute grep.
-func makeFetchResponse(agentName, query, logs, fileRef string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
+// autoBundleQueryRE keeps the routine-mode fallback: fire the bundle even
+// on a "get logs" request when the wording explicitly names error content
+// ("get error logs", "show me warnings"). A plain "tail 100 lines" query
+// still gets no bundle overhead. Investigation and enumeration modes are
+// handled by classifyLogMode below (which treats "were there issues",
+// "why", "diagnose", "broken", etc. as investigation intent) — the logs
+// prompt actively instructs the LLM to STRIP error keywords from the
+// fetch_logs question ("errors/exceptions/failures force a body filter
+// that excludes surrounding context"), so keying only off literal
+// keywords would let the bundle miss the exact queries it was built for.
+var autoBundleQueryRE = regexp.MustCompile(`(?i)\b(error|errors|fail|failed|failure|failures|exception|exceptions|crash|crashed|crashes|warn|warning|warnings|timeout|timed\s*out|panic|refused|oom|oomkilled|fatal|traceback)\b`)
+
+// runAutoDiagnosticBundle post-processes a successful fetch_logs call to
+// pre-compute the diagnostic-bundle category signal. Deterministic bypass of
+// the LLM's "should I call the bundle now?" decision — when the operator
+// enabled the bundle flag AND the user's intent is an error investigation
+// or enumeration AND fetch_logs saved a non-empty file, we run the crash
+// bundle server-side and return its output for makeFetchResponse to include
+// in the fetch envelope. Best-effort for TOOL errors (returns empty string,
+// nil error — the fetch response still ships normally); context cancellation
+// and timeout errors ARE propagated so the outer request can abort.
+//
+// Gate uses classifyLogMode over OriginalQuery/Query — the same classifier
+// the LogAgent uses to pick INVESTIGATION vs ENUMERATION vs ROUTINE mode.
+// For investigation/enumeration the bundle always fires (that's the entire
+// point of the mode). For routine the narrow autoBundleQueryRE still gates
+// so a plain "tail last 100 lines" gets no bundle overhead.
+//
+// Runs synchronously — the bundle IS the primary reason a follow-on
+// shell_execute grep pass would exist, so paying its ~1-2s cost here saves
+// a full LLM planner turn (~5-8s) in the parent's ReAct loop.
+func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, request core.NBAgentRequest, fileRef string) (string, error) {
+	// Best-effort post-processing helper: nil ctx (e.g. from a code path that
+	// invokes fetch_logs without a full RequestContext) must fail silently
+	// instead of panicking on ctx.GetLogger() below or on the bundleTool.Call
+	// context expansion.
+	if ctx == nil {
+		return "", nil
+	}
+	if !config.Config.LogsStandardGrepEnabled {
+		return "", nil
+	}
+	if fileRef == "" {
+		return "", nil
+	}
+	q := strings.TrimSpace(request.OriginalQuery)
+	if q == "" {
+		q = strings.TrimSpace(request.Query)
+	}
+	// Investigation / enumeration intent always gets the bundle. Routine
+	// intent only gets it when the wording explicitly names error content.
+	mode := classifyLogMode(request.Query, request.OriginalQuery)
+	if mode == logModeRoutine && !autoBundleQueryRE.MatchString(q) {
+		return "", nil
+	}
+
+	bundleTool, ok := toolcore.GetNBTool(accountId, tools.ToolStandardDiagnosticGrep)
+	if !ok {
+		return "", nil
+	}
+	toolCtx := toolcore.NewNbToolContext(ctx, bundleTool, accountId,
+		request.UserId, request.ConversationId, request.MessageId, request.AgentId,
+		q, nil, request.QueryContext, request.QueryConfig, "")
+	resp, err := bundleTool.Call(toolCtx, toolcore.NBToolCallRequest{
+		Arguments: map[string]any{
+			"bundle":   "crash",
+			"log_file": fileRef,
+		},
+	})
+	if err != nil {
+		// Context cancellation / deadline MUST propagate so the outer
+		// request bails instead of continuing after the user (or a
+		// deadline) has already terminated the call. Check ctx.Err()
+		// FIRST — if the underlying tool masked the cancellation with a
+		// generic error, errors.Is on the wrapped err would miss it.
+		// Fall back to explicit sentinel matching in case ctx.Err() is
+		// somehow still nil (a shell that observed cancellation and
+		// returned a sentinel-wrapped error before our ctx observed it).
+		// Only tool-side failures are swallowed as best-effort.
+		if c := ctx.GetContext(); c != nil {
+			if cerr := c.Err(); cerr != nil {
+				return "", cerr
+			}
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
+		ctx.GetLogger().Debug("fetch_logs: auto-bundle skipped on tool error",
+			"file_ref", fileRef, "error", err)
+		return "", nil
+	}
+	return resp.Data, nil
+}
+
+// makeFetchResponse returns {query, logs, file_ref, bundle_signal} so the
+// parent's scratchpad shows which query produced the data, where the raw
+// logs were saved, and — when the query wording indicates an error-content
+// investigation and the bundle flag is on — a pre-computed category-level
+// grep sweep from standard_diagnostic_grep. bundle_signal is empty when the
+// auto-bundle didn't fire (non-error query, flag off, empty file, or bundle
+// tool error) and the caller should ignore the field. See
+// runAutoDiagnosticBundle for the gating logic.
+func makeFetchResponse(agentName, query, logs, fileRef, bundleSignal string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
 	inlineLogs := logs
 	if fileRef != "" && len(logs) > logInlinePreviewBytes {
 		// ToValidUTF8 drops a partial trailing rune left by the byte slice.
@@ -407,10 +517,11 @@ func makeFetchResponse(agentName, query, logs, fileRef string, refs []toolcore.N
 			len(logs)-logInlinePreviewBytes, fileRef)
 	}
 	envelope := map[string]string{
-		"query":    query,
-		"logs":     inlineLogs,
-		"file_ref": fileRef,
-		"provider": providerFromLogs(logs),
+		"query":         query,
+		"logs":          inlineLogs,
+		"file_ref":      fileRef,
+		"provider":      providerFromLogs(logs),
+		"bundle_signal": bundleSignal,
 	}
 	body, err := common.MarshalJson(envelope)
 	if err != nil {

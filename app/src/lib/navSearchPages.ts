@@ -124,6 +124,27 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Ownership', path: '/user-management#ownership' },
 ];
 
+// Automation (/automation) tabs, kept separate from navSearchPages above for
+// the same reason as k8sDetailsSearchFragments below — the route needs an
+// accountId the caller must resolve at render time. Unlike the K8s/cloud
+// detail pages, that accountId isn't scoped to a single cloud provider (any
+// connected account works), and the route itself carries it as a
+// `?accountId=` query param rather than a path segment (see
+// src/pages/automation/index.jsx), so `fragment` is appended after
+// `/automation?accountId={accountId}#`. `label` is the hardcoded row title
+// shown to the user; `slug` is the slash-joined path used for the row's `type`
+// chip, its searchText, and its acronym.
+export interface AutomationSearchFragment {
+  label: string;
+  slug: string;
+  fragment: string;
+}
+
+export const automationSearchFragments: AutomationSearchFragment[] = [
+  { label: 'Automations', slug: 'automation/automations', fragment: 'automations' },
+  { label: 'Task Runner', slug: 'automation/task-runner', fragment: 'task-runner' },
+];
+
 // Kubernetes Details (/kubernetes/details/[KubernetesDetails]) tabs, kept
 // separate from navSearchPages above because its route needs an accountId the
 // caller must resolve at render time — see each tab's `tabOptions`/fragment in

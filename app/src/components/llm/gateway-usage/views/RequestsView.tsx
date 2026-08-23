@@ -56,6 +56,10 @@ interface RequestsViewProps {
    * governance count (a routing/reject reason, DLP, or the error class). */
   govFilter: GovScope | null;
   onClearGov: () => void;
+  /** Set when drilled into one session/conversation (clicking a row's session). */
+  sessionFilter: string | null;
+  onSelectSession: (id: string) => void;
+  onClearSession: () => void;
 }
 
 const LIMIT = 50;
@@ -171,6 +175,58 @@ function DLPBadge({ dlp }: { dlp: { mode: string; rules: string[] } }) {
   );
 }
 
+/** Compact, clickable session indicator shown under the request time. Clicking
+ * scopes the list to that session (a removable chip). `session_source` decides
+ * fidelity: an exact id (from a client session header or request metadata) reads
+ * as a solid link; an inferred id (grouped by the conversation's opening prompt,
+ * so approximate) is muted + italic + prefixed `~`. Empty session → nothing. */
+function SessionCell({ id, source, onSelect }: { id: string; source: string; onSelect: (id: string) => void }) {
+  if (!id) return null;
+  const exact = source === 'header' || source === 'metadata.session_id' || source === 'metadata.user_id';
+  const short = id.length > 8 ? id.slice(0, 8) : id;
+  const origin =
+    source === 'header'
+      ? 'a client session header'
+      : source === 'metadata.session_id'
+      ? "the client's session id in request metadata"
+      : source === 'metadata.user_id'
+      ? 'request metadata'
+      : "the conversation's opening prompt";
+  const title = exact
+    ? `Session ${id} (from ${origin}) — click to show only this session`
+    : `Inferred session ${id} (grouped by ${origin}; approximate) — click to show only this session`;
+  return (
+    <Box
+      component='button'
+      type='button'
+      title={title}
+      onClick={(e: React.MouseEvent) => {
+        e.stopPropagation();
+        onSelect(id);
+      }}
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        alignSelf: 'flex-start',
+        marginTop: '2px',
+        padding: 0,
+        border: 'none',
+        background: 'none',
+        cursor: 'pointer',
+        fontSize: 'var(--ds-text-small)',
+        fontFamily: 'inherit',
+        fontVariantNumeric: 'tabular-nums',
+        color: exact ? 'var(--ds-blue-600)' : 'var(--ds-gray-500)',
+        fontStyle: exact ? 'normal' : 'italic',
+        '&:hover': { textDecoration: 'underline' },
+        '&:focus-visible': { outline: '2px solid var(--ds-blue-400)', outlineOffset: '1px', borderRadius: 'var(--ds-radius-sm)' },
+      }}
+    >
+      {exact ? '' : '~'}session {short}
+    </Box>
+  );
+}
+
 function StatusPill({ code }: { code: number }) {
   if (!code) {
     return <Box sx={{ ...numCell, textAlign: 'right' }}>—</Box>;
@@ -199,10 +255,22 @@ function StatusPill({ code }: { code: number }) {
   );
 }
 
-function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity, onViewBody: (r: GatewayRequestRow) => void) {
+function toRow(
+  r: GatewayRequestRow,
+  costSev: (v: number) => Severity,
+  onViewBody: (r: GatewayRequestRow) => void,
+  onSelectSession: (id: string) => void
+) {
   const routed = r.requested_model && r.requested_model !== r.model;
   return [
-    { component: <Box sx={numCell}>{dayjs(r.created_at).format('DD MMM HH:mm')}</Box> },
+    {
+      component: (
+        <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <Box sx={numCell}>{dayjs(r.created_at).format('DD MMM HH:mm')}</Box>
+          <SessionCell id={r.session_id} source={r.session_source} onSelect={onSelectSession} />
+        </Box>
+      ),
+    },
     {
       component: <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', overflowWrap: 'anywhere' }}>{r.user || '—'}</Box>,
     },
@@ -314,6 +382,9 @@ export function RequestsView({
   onClearTool,
   govFilter,
   onClearGov,
+  sessionFilter,
+  onSelectSession,
+  onClearSession,
 }: RequestsViewProps) {
   const [offset, setOffset] = React.useState(0);
   const [limit, setLimit] = React.useState(LIMIT);
@@ -341,7 +412,7 @@ export function RequestsView({
   // change via their setters (which always receive a fresh array).
   React.useEffect(() => {
     setOffset(0);
-  }, [filters.startDate, filters.endDate, userFilter?.id, toolFilter, govFilter, models, providers, effStatus, effDlp]);
+  }, [filters.startDate, filters.endDate, userFilter?.id, toolFilter, govFilter, sessionFilter, models, providers, effStatus, effDlp]);
 
   const { loading, error, data } = useGatewayRequests(filters, {
     userId: userFilter?.id,
@@ -349,6 +420,7 @@ export function RequestsView({
     models,
     status: effStatus || undefined,
     tool: toolFilter ?? undefined,
+    sessionId: sessionFilter ?? undefined,
     routingReason: govRouting,
     rejectReason: govReject,
     dlp: effDlp || undefined,
@@ -377,7 +449,7 @@ export function RequestsView({
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
   const costSev = React.useMemo(() => makeSeverity(rows.map((r) => r.cost_usd)), [rows]);
-  const tableData = React.useMemo(() => rows.map((r) => toRow(r, costSev, setBodyRow)), [rows, costSev]);
+  const tableData = React.useMemo(() => rows.map((r) => toRow(r, costSev, setBodyRow, onSelectSession)), [rows, costSev, onSelectSession]);
 
   const showEmpty = !loading && !error && rows.length === 0;
 
@@ -444,6 +516,11 @@ export function RequestsView({
           {govChip && (
             <Chip tone='info' onDismiss={onClearGov} id='gateway-requests-gov-chip'>
               {govChip.label}
+            </Chip>
+          )}
+          {sessionFilter && (
+            <Chip tone='info' onDismiss={onClearSession} id='gateway-requests-session-chip'>
+              Session: {sessionFilter.length > 8 ? sessionFilter.slice(0, 8) : sessionFilter}
             </Chip>
           )}
         </Box>

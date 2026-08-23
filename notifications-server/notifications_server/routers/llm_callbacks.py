@@ -29,7 +29,7 @@ event_cache = Cache()
 
 class LLMResponse(BaseModel):
     conversation_id: str
-    type: str  # "follow-up" or "final"
+    type: str  # "follow-up", "final" or "error"
     response: str
     tenant_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -185,16 +185,29 @@ async def handle_llm_response(request: Request, background_tasks: BackgroundTask
                 "slack": {
                     "follow-up": events_service.handle_followup_response,
                     "final": events_service.handle_final_response,
+                    "error": events_service.handle_error_response,
                 },
                 "ms_teams": {
                     "follow-up": events_service.handle_teams_followup_response,
                     "final": events_service.handle_teams_final_response,
+                    "error": events_service.handle_teams_error_response,
                 },
                 "google_chat": {
                     "follow-up": events_service.handle_gchat_followup_response,
                     "final": events_service.handle_gchat_final_response,
+                    "error": events_service.handle_gchat_error_response,
                 },
             }
+
+            if payload.type == "error":
+                # The upstream error text stays server-side; the thread only ever
+                # sees the generic copy the error handlers post.
+                LOG.error(
+                    "LLM run failed: conversation_id=%s, platform=%s, error=%s",
+                    payload.conversation_id,
+                    platform,
+                    payload.response,
+                )
 
             platform_handlers = handlers.get(platform)
             if not platform_handlers:

@@ -9,6 +9,11 @@
  *   - `metrics`      — KPI totals + per-dim breakdowns (ai_aggregate_usage_metrics)
  *   - `conversations`— up to 200 rows, cost-desc       (ai_list_conversation_costs)
  *
+ * The Conversations explorer does NOT read that shared 200-row window — it pages
+ * the same action server-side through `useConversationList` (below), so its row
+ * count is the filter-wide total rather than the capped window. Callers rendering
+ * that tab pass `skipConversations` to suppress the redundant shared fetch.
+ *
  * Mock-only filters (trigger / assistant / template) are intentionally NOT sent
  * and do not trigger a refetch — they scope the mock-backed widgets only.
  */
@@ -27,7 +32,7 @@ import {
   type UsageMetrics,
   type UsageTotals,
 } from '@api1/ai-cost';
-import { treeToRun } from './adapt';
+import { rowToRun, treeToRun } from './adapt';
 import type { CostFilters, Run } from './types';
 
 const OVERVIEW_DIMS: UsageDimension[] = ['source', 'model', 'agent', 'user', 'account'];
@@ -74,7 +79,7 @@ function toFilterRequest(accountId: string | undefined, f: CostFilters): UsageFi
   };
 }
 
-export function useCostData(accountId: string | undefined, filters: CostFilters): CostData {
+export function useCostData(accountId: string | undefined, filters: CostFilters, skipConversations = false): CostData {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [usageFilters, setUsageFilters] = React.useState<UsageFilters | null>(null);
@@ -125,8 +130,17 @@ export function useCostData(accountId: string | undefined, filters: CostFilters)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersKey]);
 
-  // Content — metrics + conversation list + prev-period totals.
+  // Content — metrics + conversation list + prev-period totals. Each half
+  // remembers the dataKey it was last fetched for, so toggling `skipConversations`
+  // (i.e. switching into or out of the Conversations tab, which pages the list
+  // itself) doesn't re-run the metrics queries that are already current.
+  const metricsKeyRef = React.useRef<string | null>(null);
+  const listKeyRef = React.useRef<string | null>(null);
   React.useEffect(() => {
+    const needMetrics = metricsKeyRef.current !== dataKey;
+    const needList = !skipConversations && listKeyRef.current !== dataKey;
+    if (!needMetrics && !needList) return;
+
     const controller = new AbortController();
     let cancelled = false;
 
@@ -137,14 +151,24 @@ export function useCostData(accountId: string | undefined, filters: CostFilters)
       const prev = previousWindow(filters.startDate, filters.endDate);
       try {
         const [m, cl, pm] = await Promise.all([
-          aggregateUsageMetrics({ ...req, groupBy: OVERVIEW_DIMS, topN: 15, granularity: filters.granularity }, controller.signal),
-          listConversationCosts({ ...req, sortBy: 'cost', sortDir: 'desc', limit: LIST_LIMIT, offset: 0 }, controller.signal),
-          aggregateUsageMetrics({ ...req, startDate: prev.startDate, endDate: prev.endDate, groupBy: [], topN: 0 }, controller.signal),
+          needMetrics
+            ? aggregateUsageMetrics({ ...req, groupBy: OVERVIEW_DIMS, topN: 15, granularity: filters.granularity }, controller.signal)
+            : null,
+          needList ? listConversationCosts({ ...req, sortBy: 'cost', sortDir: 'desc', limit: LIST_LIMIT, offset: 0 }, controller.signal) : null,
+          needMetrics
+            ? aggregateUsageMetrics({ ...req, startDate: prev.startDate, endDate: prev.endDate, groupBy: [], topN: 0 }, controller.signal)
+            : null,
         ]);
         if (cancelled) return;
-        setMetrics(m);
-        setConversations(cl);
-        setPrevTotals(pm?.totals ?? null);
+        if (needMetrics) {
+          setMetrics(m);
+          setPrevTotals(pm?.totals ?? null);
+          metricsKeyRef.current = dataKey;
+        }
+        if (needList) {
+          setConversations(cl);
+          listKeyRef.current = dataKey;
+        }
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : 'Failed to load cost data');
@@ -159,7 +183,7 @@ export function useCostData(accountId: string | undefined, filters: CostFilters)
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataKey]);
+  }, [dataKey, skipConversations]);
 
   return {
     loading,
@@ -171,6 +195,85 @@ export function useCostData(accountId: string | undefined, filters: CostFilters)
     listCap: LIST_LIMIT,
     reload: () => setNonce((n) => n + 1),
   };
+}
+
+/** Server-side sort targets accepted by `ai_list_conversation_costs`. */
+export type ConversationSortBy = 'cost' | 'start_time' | 'duration' | 'llm_calls' | 'tokens' | 'latency';
+
+export interface ConversationListParams {
+  sortBy: ConversationSortBy;
+  sortDir: 'asc' | 'desc';
+  /** Rows per page. Capped server-side at LIST_LIMIT. */
+  limit: number;
+  offset: number;
+}
+
+export interface ConversationListData {
+  loading: boolean;
+  error: string | null;
+  runs: Run[];
+  /** Filter-wide conversation count — NOT the length of the fetched page. */
+  total: number;
+}
+
+/**
+ * The Conversations explorer's own page of rows.
+ *
+ * Unlike the shared `useCostData().conversations` window (a fixed top-200 slice),
+ * this pages server-side: sorting and offset go to the backend and `total` is the
+ * filter-wide `COUNT(DISTINCT c.id)`. That's what keeps the row count the user
+ * sees comparable across account filters — the capped window made an unfiltered
+ * "200" and a per-account "200" look like the same number when the real totals
+ * were 761 and 745 (issue #35686).
+ */
+export function useConversationList(accountId: string | undefined, filters: CostFilters, params: ConversationListParams): ConversationListData {
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [page, setPage] = React.useState<ConversationCostList | null>(null);
+
+  const key = JSON.stringify({
+    accountId: accountId ?? '',
+    startDate: filters.startDate,
+    endDate: filters.endDate,
+    sources: filters.sources ?? [],
+    models: filters.models,
+    providers: filters.providers,
+    agents: filters.agents ?? [],
+    statuses: filters.statuses,
+    userId: filters.userId,
+    ...params,
+  });
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+
+    const run = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const req = toFilterRequest(accountId, filters);
+        const cl = await listConversationCosts({ ...req, ...params }, controller.signal);
+        if (cancelled) return;
+        setPage(cl);
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : 'Failed to load conversations');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const runs = React.useMemo(() => (page?.rows ?? []).map(rowToRun), [page]);
+  return { loading, error, runs, total: page?.page?.total ?? runs.length };
 }
 
 export interface ConversationTreeData {

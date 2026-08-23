@@ -4,7 +4,6 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/security"
-	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 )
 
@@ -85,10 +84,14 @@ func (l *K8sLeanAgent) IsWatchCapable() bool             { return true }
 // prompt as the variable and lets us review how critique behaves on lean answers.
 
 func (l *K8sLeanAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	// Same shared tool list as the direct orchestrator (kubectl_execute first;
-	// helm, logs, events, metrics, resource_search all included). Distinct name →
-	// distinct tool cache key.
-	return getSupportedTools(ctx, l.accountId, l.GetName(), tools.ToolExecuteKubectlCommand)
+	// Lean now preloads only the reduced core (kubectl_execute + logs/events/metrics/
+	// traces/resource_search/SDG/recommendations + delegate_agent + search_tools),
+	// shared with @k8s_orchestrator_trim, instead of the full ~28-tool specialist set.
+	// Every specialist (databases, helm, cloud CLIs, …) is dropped from context and
+	// reached on-demand via search_tools + delegate_agent. This is the tool-context
+	// reduction applied to the lean prompt (the "minimal prompt × reduced surface" cell).
+	// Distinct name → distinct tool cache key.
+	return getTrimmedK8sSupportedTools(ctx, l.accountId, l.GetName())
 }
 
 func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {

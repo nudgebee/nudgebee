@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,6 +68,9 @@ type WorkflowService interface {
 	DryRunWorkflowAsync(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (string, string, error)
 	CountWorkflows(ctx *security.RequestContext, req model.WorkflowCountRequest) (model.WorkflowCountResponse, error)
 	CountWorkflowExecutions(ctx *security.RequestContext, req model.WorkflowExecutionCountRequest) (model.WorkflowExecutionCountResponse, error)
+	// Cross-automation execution dashboard (see execution_dashboard.go)
+	ListAccountExecutions(ctx *security.RequestContext, req model.ListAccountExecutionsRequest) (model.ListAccountExecutionsResponse, error)
+	AggregateExecutions(ctx *security.RequestContext, req model.AggregateExecutionsRequest) (model.AggregateExecutionsResponse, error)
 	// Template operations (type=system uses global store, type=user reserved for future)
 	ListTemplates(ctx *security.RequestContext, request model.ListWorkflowTemplateRequest) (model.ListWorkflowTemplateResponse, error)
 	GetTemplate(ctx *security.RequestContext, id string) (*model.WorkflowTemplate, error)
@@ -113,6 +117,11 @@ type Service struct {
 	taskRegistry     *tasks.TaskRegistry
 	workflowExecutor *WorkflowExecutor
 	configService    configSvc.ConfigService
+
+	// Temporal namespace retention, read lazily and cached once known. It is
+	// the hard ceiling on how far back the execution dashboard can look.
+	retentionMu   sync.RWMutex
+	retentionDays int
 }
 
 func NewService(temporalClient client.Client, store model.WorkflowStore, dataConverter converter.DataConverter, taskRegistry *tasks.TaskRegistry, workflowExecutor *WorkflowExecutor, configService configSvc.ConfigService, templateStore ...model.WorkflowTemplateStore) *Service {
@@ -945,10 +954,17 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 		switch wf.Status {
 		case model.WorkflowStatusPaused:
 			if triggerType != model.WorkflowTriggerManual {
-				return "", fmt.Errorf("workflow %s is paused", id)
+				return "", common.ErrorBadRequest(fmt.Sprintf("workflow %s is paused and can only be run manually", id))
 			}
 		default:
-			return "", fmt.Errorf("workflow %s is not active, status is %s", id, wf.Status)
+			// Manual triggers may run ACTIVE or PAUSED workflows; all other
+			// trigger types require ACTIVE. Reflect that in the message so an
+			// INACTIVE workflow reads accurately for the caller's trigger type.
+			expected := "ACTIVE"
+			if triggerType == model.WorkflowTriggerManual {
+				expected = "ACTIVE or PAUSED"
+			}
+			return "", common.ErrorBadRequest(fmt.Sprintf("workflow cannot be run because its status is %s (must be %s)", wf.Status, expected))
 		}
 	}
 
@@ -994,7 +1010,7 @@ func (s *Service) TriggerWorkflowFromDraft(ctx *security.RequestContext, account
 	// manual triggers). Only fully Inactive / unknown statuses are refused, so a
 	// disabled workflow can't be hot-revived through the draft path.
 	if wf.Status != model.WorkflowStatusActive && wf.Status != model.WorkflowStatusPaused {
-		return "", fmt.Errorf("workflow %s is not runnable, status is %s", id, wf.Status)
+		return "", common.ErrorBadRequest(fmt.Sprintf("workflow cannot be run because its status is %s (must be ACTIVE or PAUSED)", wf.Status))
 	}
 
 	// wf.Definition is the current draft as loaded by Find — run it as-is.
@@ -3322,6 +3338,7 @@ func (s *Service) newIsolatedTaskContext(ctx *security.RequestContext, accountId
 		ctx.GetSecurityContext().GetTenantId(),
 		accountId,
 		"", // workflowID — isolated run, not tied to a workflow execution
+		"", // eventID — isolated run, no triggering event
 		ctx.GetSecurityContext().GetUserId(),
 		"", // workflowName — empty so the tracing footer/link is omitted
 		"", // userDisplayName
@@ -3943,6 +3960,9 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 	for _, task := range taskMap {
 		tasks = append(tasks, *task)
 	}
+
+	// Redact secret values from task inputs before returning to API
+	RedactSecretsFromTasks(tasks, wfDef)
 
 	// Virtualize container tasks. We detect containers by parameter shape so any
 	// task adopting these conventions is handled uniformly:

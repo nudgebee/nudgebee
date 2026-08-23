@@ -128,7 +128,9 @@ const ListingRecommendationResolution = ({ accountId }) => {
   const [rowsPerPage, setRowsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
   const [data, setData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
-  const [selectedStatus, setSelectedStatus] = useState('InProgress');
+  // Default to every status: filtering to InProgress hid exactly the rows someone
+  // opens this listing to read — the failed ones.
+  const [selectedStatus, setSelectedStatus] = useState('');
   const [recommendationTypes, setRecommendationTypes] = useState([]);
   const [resolverTypes, setResolverTypes] = useState([]);
   const [selectedRecommendation, setSelectedRecommendation] = useState('');
@@ -267,10 +269,17 @@ const ListingRecommendationResolution = ({ accountId }) => {
               {
                 component: (() => {
                   const statusText = rr.status === 'InProgress' ? 'In Progress' : rr.status;
+                  // Surface the reason inline: a failure (or a success that produced no
+                  // link) is otherwise only readable after expanding the row.
+                  const showMessage =
+                    rr.status_message && (rr.status === 'Failed' || (rr.status === 'Success' && !containsLink(rr.type_reference_id)));
                   return (
-                    <Label tone={statusToLabelTone(statusText)} size='sm'>
-                      {statusText}
-                    </Label>
+                    <Box display='flex' flexDirection='column' gap={ds.space[1]}>
+                      <Label tone={statusToLabelTone(statusText)} size='sm'>
+                        {statusText}
+                      </Label>
+                      {showMessage && <Text value={rr.status_message} secondaryText showAutoEllipsis sx={{ fontSize: ds.text.small }} />}
+                    </Box>
                   );
                 })(),
               },
@@ -329,6 +338,7 @@ const ListingRecommendationResolution = ({ accountId }) => {
   }, [accountId, selectedStatus, rowsPerPage, page, selectedRecommendation, selectedResolver, currencySymbol]);
 
   const statusOptions = [
+    { label: 'All', value: '' },
     { label: 'Success', value: 'Success' },
     { label: 'Failed', value: 'Failed' },
     { label: 'In Progress', value: 'InProgress' },

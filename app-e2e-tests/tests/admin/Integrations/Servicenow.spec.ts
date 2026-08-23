@@ -30,6 +30,8 @@ test("Add ServiceNow Account Integration", async ({ page }) => {
     serviceName: "ServiceNow",
     saveBtn: locators.servicenowsavebutton,
     operationNames: ["TestTicketConnectionByConfig"],
+    // Test-connection failures return HTTP 200 with { status: "FAILED" } inside data — only caught when checkDataErrors is set.
+    checkDataErrors: true,
   });
 
   await saveAndHandleAlreadyExists(page, {

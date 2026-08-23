@@ -180,6 +180,18 @@ func (m *MockWorkflowService) CountWorkflowExecutions(ctx *security.RequestConte
 	return args.Get(0).(model.WorkflowExecutionCountResponse), args.Error(1)
 }
 
+func (m *MockWorkflowService) ListAccountExecutions(ctx *security.RequestContext, req model.ListAccountExecutionsRequest) (model.ListAccountExecutionsResponse, error) {
+	args := m.Called(ctx, req)
+	res, _ := args.Get(0).(model.ListAccountExecutionsResponse)
+	return res, args.Error(1)
+}
+
+func (m *MockWorkflowService) AggregateExecutions(ctx *security.RequestContext, req model.AggregateExecutionsRequest) (model.AggregateExecutionsResponse, error) {
+	args := m.Called(ctx, req)
+	res, _ := args.Get(0).(model.AggregateExecutionsResponse)
+	return res, args.Error(1)
+}
+
 func (m *MockWorkflowService) CountWorkflows(ctx *security.RequestContext, req model.WorkflowCountRequest) (model.WorkflowCountResponse, error) {
 	args := m.Called(ctx, req)
 	return args.Get(0).(model.WorkflowCountResponse), args.Error(1)

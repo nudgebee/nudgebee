@@ -49,6 +49,24 @@ func TestBuildSpanDQL_WithTraceID(t *testing.T) {
 	assert.NotContains(t, dql, "limit")
 }
 
+func TestBuildSpanDQLEscapesTraceID(t *testing.T) {
+	s := &DynatraceTraceSource{}
+	req := TracesV3Request{
+		QueryRequest: TracesQueryBuilderRequest{
+			Where: query.QueryWhereClause{
+				Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+					"trace_id": {query.Eq: `abc") | filter true | fieldsAdd injected = "yes`},
+				},
+			},
+		},
+	}
+
+	dql, err := s.buildSpanDQL(req, "2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z")
+	require.NoError(t, err)
+	assert.Contains(t, dql, `touid("abc\") | filter true | fieldsAdd injected = \"yes")`)
+	assert.NotContains(t, dql, `touid("abc") | filter true`)
+}
+
 func TestBuildSpanDQL_FromToPresent(t *testing.T) {
 	s := &DynatraceTraceSource{}
 	from := "2024-01-01T00:00:00Z"

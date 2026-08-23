@@ -217,10 +217,17 @@ func (m SplunkWebhook) ProcessEventWebook(sc *security.RequestContext, settings 
 		}
 	}
 
-	// Build fingerprint from SID or search_name + trigger_time
+	// Fingerprint from the alert's stable identity (saved-search name + subject),
+	// NOT the SID: the SID is the search-execution id, unique per firing, so
+	// keying on it fragments every run of the same saved search into its own
+	// occurrence chain. Keep the per-run id only when there is no search name.
+	// When host/source are absent the key is just the saved-search name — a
+	// deliberate choice (the saved search IS the alert identity, and still
+	// strictly better than the per-run SID); flagged for the #34660 harness to
+	// confirm it does not over-merge alerts about different hosts.
 	fingerprint := alertID
-	if payload.SearchName != "" && payload.SID != "" {
-		fingerprint = fmt.Sprintf("%s-%s", payload.SearchName, payload.SID)
+	if payload.SearchName != "" {
+		fingerprint = core.CanonicalFingerprint("splunk", payload.SearchName, host, source)
 	}
 
 	// Determine source URL

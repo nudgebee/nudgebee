@@ -214,6 +214,18 @@ func isGlobalAwsService(serviceName string) bool {
 	return globalServices[normalizedName]
 }
 
+// archivableRegions returns the queried regions minus the ones the provider
+// reports it skipped this run (unreachable, throttled, or disabled for the
+// account). A skipped region was not observed, so the absence of its resources
+// from the fetch result says nothing — archiving them would flap rows to
+// 'Deleted' until the next successful sync resurrects them.
+func archivableRegions(queried, skipped []string) []string {
+	if len(queried) == 0 || len(skipped) == 0 {
+		return queried
+	}
+	return lo.Without(queried, skipped...)
+}
+
 func StoreResources(ctx *security.RequestContext, accountId string, serviceName string, regions ...string) (StoreResourcesResponse, error) {
 	t0 := time.Now()
 
@@ -374,9 +386,24 @@ func StoreResources(ctx *security.RequestContext, accountId string, serviceName 
 		// Global services (S3, IAM, Route53, CloudFront, WAF, …) are account-wide,
 		// so a region-scoped archive would leak rows whose region wasn't iterated.
 		// Treat archival as unscoped for them — same logic as in storeResourcesInsert.
-		archiveScopeRegions := regions
+		archiveScopeRegions := archivableRegions(regions, resources.SkippedRegions)
 		if isGlobalAwsService(serviceName) {
 			archiveScopeRegions = nil
+		} else if len(regions) > 0 && len(archiveScopeRegions) == 0 {
+			// Every queried region was skipped (unreachable/throttled/disabled).
+			// The provider's fail-open guard normally surfaces this as an error
+			// before we get here; if it didn't, an empty scope must NOT fall
+			// through to the unscoped-archival branch below — that would archive
+			// the whole service off an unobserved result.
+			ctx.GetLogger().Warn("refusing to archive: all queried regions were skipped this run",
+				"service", serviceName,
+				"account", accountId,
+				"skipped_regions", resources.SkippedRegions)
+			return StoreResourcesResponse{
+				Count:    0,
+				Arns:     []string{},
+				Duration: time.Since(t0),
+			}, nil
 		}
 
 		var archiveResourcesQuery string
@@ -505,7 +532,10 @@ func StoreResources(ctx *security.RequestContext, accountId string, serviceName 
 		resourceMap[resourceMapKey] = resourceDbData
 	}
 
-	err = storeResourcesInsert(ctx, dbms, accountId, serviceName, resourceMap, regions)
+	// Skipped regions are excluded from the archival scope; if that empties the
+	// list, storeResourcesInsert falls back to the regions actually present in
+	// resourceMap (never to unscoped archival for non-global services).
+	err = storeResourcesInsert(ctx, dbms, accountId, serviceName, resourceMap, archivableRegions(regions, resources.SkippedRegions))
 	if err != nil {
 		ctx.GetLogger().Error("unable to insert resources", "error", err)
 		return StoreResourcesResponse{

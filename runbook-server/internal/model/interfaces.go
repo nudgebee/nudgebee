@@ -53,6 +53,10 @@ type WorkflowStore interface {
 	SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error
 	CountWorkflows(ctx context.Context, tenantID, accountID string, status WorkflowStatus, triggerType string) (int64, error)
 	GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error)
+	// GetUserNames resolves user ids to display names. The execution dashboard
+	// needs it because Temporal only records the triggering user's id.
+	// Unknown ids are simply absent from the result.
+	GetUserNames(ctx context.Context, ids []string) (map[string]string, error)
 	ListWorkflowVersions(ctx context.Context, workflowID string, limit int) ([]WorkflowVersion, error)
 	GetWorkflowVersion(ctx context.Context, workflowID string, versionNumber int) (*WorkflowVersion, error)
 	GetWorkflowVersionByID(ctx context.Context, versionID string) (*WorkflowVersion, error)

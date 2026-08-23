@@ -98,16 +98,14 @@ const PodTitleBox = ({ rightComponent, marginBottom = ds.space[4], pod = {} }) =
             </Box>
             <Box component='span' sx={{ color: ds.brand[500] }}>
               {podData?.last_seen
-                ? new Date(podData.last_seen)
-                    .toLocaleString('en-GB', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      second: '2-digit',
-                      day: '2-digit',
-                      month: 'short',
-                      year: 'numeric',
-                    })
-                    .replace(',', ',')
+                ? new Date(podData.last_seen).toLocaleString('en-GB', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                  })
                 : '-'}
             </Box>
           </Typography>

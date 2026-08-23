@@ -179,7 +179,7 @@ const AddAwsOrgModal = ({ open, onClose }) => {
               disabled={isSubmitting}
             />
             <Box sx={{ mt: ds.space[4] }}>
-              <AccountEnvToggle id='org-account-env' label='Environment:' value={accountEnv} onChange={setAccountEnv} disabled={isSubmitting} />
+              <AccountEnvToggle id='org-account-env' label='Environment' value={accountEnv} onChange={setAccountEnv} disabled={isSubmitting} />
             </Box>
           </Box>
         </Grid>

@@ -214,6 +214,7 @@ func ConvertServiceMapToGraph(
 		node := &core.DbNode{
 			ID:              nodeID,
 			NodeType:        nodeType,
+			SpecificType:    string(nodeType),
 			UniqueKey:       uniqueKey,
 			Properties:      properties,
 			Labels:          extractLabelsForDbNode(labels),
@@ -443,9 +444,10 @@ func convertK8sMetadataToGraph(
 	// Create cluster nodes
 	for _, cluster := range metadata.Clusters {
 		node := &core.DbNode{
-			ID:        uuid.New().String(),
-			NodeType:  core.NodeTypeCluster,
-			UniqueKey: fmt.Sprintf("Cluster:%s:%s", cluster.Name, cluster.Environment),
+			ID:           uuid.New().String(),
+			NodeType:     core.NodeTypeCluster,
+			SpecificType: string(core.NodeTypeCluster),
+			UniqueKey:    fmt.Sprintf("Cluster:%s:%s", cluster.Name, cluster.Environment),
 			Properties: map[string]interface{}{
 				"name":        cluster.Name,
 				"environment": cluster.Environment,
@@ -465,9 +467,10 @@ func convertK8sMetadataToGraph(
 	// Create namespace nodes and edges to clusters
 	for _, ns := range metadata.Namespaces {
 		node := &core.DbNode{
-			ID:        uuid.New().String(),
-			NodeType:  core.NodeTypeNamespace,
-			UniqueKey: fmt.Sprintf("Namespace:%s:%s:%s", ns.Cluster, ns.Name, ns.Environment),
+			ID:           uuid.New().String(),
+			NodeType:     core.NodeTypeNamespace,
+			SpecificType: string(core.NodeTypeNamespace),
+			UniqueKey:    fmt.Sprintf("Namespace:%s:%s:%s", ns.Cluster, ns.Name, ns.Environment),
 			Properties: map[string]interface{}{
 				"name":        ns.Name,
 				"cluster":     ns.Cluster,
@@ -508,9 +511,10 @@ func convertK8sMetadataToGraph(
 	// Create worker node nodes and edges to clusters
 	for _, n := range metadata.Nodes {
 		node := &core.DbNode{
-			ID:        uuid.New().String(),
-			NodeType:  core.NodeTypeNode,
-			UniqueKey: fmt.Sprintf("Node:%s:%s:%s", n.Cluster, n.Name, n.Environment),
+			ID:           uuid.New().String(),
+			NodeType:     core.NodeTypeNode,
+			SpecificType: string(core.NodeTypeNode),
+			UniqueKey:    fmt.Sprintf("Node:%s:%s:%s", n.Cluster, n.Name, n.Environment),
 			Properties: map[string]interface{}{
 				"name":        n.Name,
 				"cluster":     n.Cluster,

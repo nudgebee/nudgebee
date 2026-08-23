@@ -41,6 +41,8 @@ export interface UsageGroupRow {
 export interface UsageFilterOption {
   id: string;
   name: string;
+  /** Accounts only — groups the account dropdown by provider and picks its logo. */
+  cloud_provider?: string;
 }
 
 export interface UsageFilters {
@@ -125,6 +127,8 @@ export interface ConversationCostRow {
   ended_at: string;
   wall_clock_seconds: number;
   total_model_time_seconds: number;
+  /** Total model time ÷ llm calls — what the list's Latency column ranks on. */
+  avg_latency_seconds: number;
   cost_usd: number;
   input_tokens: number;
   output_tokens: number;
@@ -399,7 +403,7 @@ export interface AggregateUsageRequest extends UsageFilterRequest {
 }
 
 export interface ListConversationCostsRequest extends UsageFilterRequest {
-  sortBy?: 'cost' | 'start_time' | 'duration' | 'llm_calls' | 'tokens';
+  sortBy?: 'cost' | 'start_time' | 'duration' | 'llm_calls' | 'tokens' | 'latency';
   sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;

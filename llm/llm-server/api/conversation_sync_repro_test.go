@@ -64,8 +64,8 @@ func TestReproStaleFollowupAfterDeadWorkerCleanup(t *testing.T) {
 
 	humanMsgId, err := dao.SaveConversationMessage("", convId.String(), accountId, userId,
 		core.MessageRoleHuman, core.MessageTypeGeneration,
-		"please pick a repo", "", "agent_code_2", uuid.Nil,
-		nil, "", "", "")
+		"please pick a repo", "", "code_analyzer", uuid.Nil,
+		nil, "", "", "", core.ConversationStatusInProgress)
 	assert.NoError(t, err)
 
 	agentId, err := dao.SaveConversationAgentCall(convId.String(), humanMsgId.String(),
@@ -77,7 +77,7 @@ func TestReproStaleFollowupAfterDeadWorkerCleanup(t *testing.T) {
 		core.MessageRoleAI, core.MessageTypeFollowup,
 		"Which repository?", "", "agent_code_2", agentId,
 		map[string]any{"question": "Which repository?", "followupType": "tool_config"},
-		"", "", "")
+		"", "", "", core.ConversationStatusInProgress)
 	assert.NoError(t, err)
 
 	// Force human message to IN_PROGRESS with a worker that's not in nb_workers.

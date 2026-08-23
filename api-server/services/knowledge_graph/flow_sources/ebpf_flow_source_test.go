@@ -170,6 +170,130 @@ func TestEbpfFlowSource_ParseUpstreamID(t *testing.T) {
 	}
 }
 
+// TestEbpfFlowSource_MatchApplicationToNode_NamespaceScoped guards against
+// nudgebee-enterprise#34639: a namespaced eBPF observation must never match a
+// same-named node in a *different* namespace, even when the correct-namespace
+// node is absent from the candidate pool (simulating k8s_source sync-lag).
+func TestEbpfFlowSource_MatchApplicationToNode_NamespaceScoped(t *testing.T) {
+	logger := slog.Default()
+	source := NewEbpfFlowSource(logger)
+
+	const acctID = "acct-1"
+	nodeA := &core.DbNode{
+		ID:             "node-a",
+		NodeType:       core.NodeTypeWorkload,
+		UniqueKey:      "k8s:acct-1::Workload:ns-a:relay-server",
+		CloudAccountID: acctID,
+		Properties: map[string]interface{}{
+			"name":      "relay-server",
+			"namespace": "ns-a",
+		},
+	}
+	nodeB := &core.DbNode{
+		ID:             "node-b",
+		NodeType:       core.NodeTypeWorkload,
+		UniqueKey:      "k8s:acct-1::Workload:ns-b:relay-server",
+		CloudAccountID: acctID,
+		Properties: map[string]interface{}{
+			"name":      "relay-server",
+			"namespace": "ns-b",
+		},
+	}
+	// Note: nodeA is first in the slice, so it's the tie-break winner if
+	// namespace-agnostic name matching is ever (re)used for a namespaced app.
+	source.InitializeNodeMatcher([]*core.DbNode{nodeA, nodeB})
+
+	t.Run("namespace known and node present matches within that namespace", func(t *testing.T) {
+		app := &core.ServiceApplication{
+			Id: core.ServiceApplicationId{Name: "relay-server", Kind: "Deployment", Namespace: "ns-b"},
+		}
+		node, err := source.matchApplicationToNode(app, acctID)
+		if err != nil {
+			t.Fatalf("expected a match, got error: %v", err)
+		}
+		if node.ID != nodeB.ID {
+			t.Errorf("expected match on %s (ns-b), got %s", nodeB.ID, node.ID)
+		}
+	})
+
+	t.Run("namespace known but node absent must not fall back cross-namespace", func(t *testing.T) {
+		app := &core.ServiceApplication{
+			// ns-c has no corresponding node in the pool — simulates the node
+			// being tombstoned/not-yet-rebuilt when eBPF still observes it.
+			Id: core.ServiceApplicationId{Name: "relay-server", Kind: "Deployment", Namespace: "ns-c"},
+		}
+		node, err := source.matchApplicationToNode(app, acctID)
+		if err == nil {
+			t.Fatalf("expected no match (namespace ns-c has no node), got node %s in namespace %v",
+				node.ID, node.Properties["namespace"])
+		}
+	})
+
+	t.Run("namespace unknown still matches by name", func(t *testing.T) {
+		app := &core.ServiceApplication{
+			Id: core.ServiceApplicationId{Name: "relay-server", Kind: "Deployment", Namespace: ""},
+		}
+		node, err := source.matchApplicationToNode(app, acctID)
+		if err != nil {
+			t.Fatalf("expected name-only match when namespace is unknown, got error: %v", err)
+		}
+		if node.ID != nodeA.ID && node.ID != nodeB.ID {
+			t.Errorf("expected match on nodeA or nodeB, got %s", node.ID)
+		}
+	})
+}
+
+// TestEbpfFlowSource_MatchByApplicationID_NamespaceScoped mirrors the
+// matchApplicationToNode test above for the ServiceApplicationId-only path
+// (used when a downstream/upstream isn't present in the eBPF service map).
+func TestEbpfFlowSource_MatchByApplicationID_NamespaceScoped(t *testing.T) {
+	logger := slog.Default()
+	source := NewEbpfFlowSource(logger)
+
+	const acctID = "acct-1"
+	nodeA := &core.DbNode{
+		ID:             "node-a",
+		NodeType:       core.NodeTypeWorkload,
+		UniqueKey:      "k8s:acct-1::Workload:ns-a:redis-master",
+		CloudAccountID: acctID,
+		Properties: map[string]interface{}{
+			"name":      "redis-master",
+			"namespace": "ns-a",
+		},
+	}
+	nodeB := &core.DbNode{
+		ID:             "node-b",
+		NodeType:       core.NodeTypeWorkload,
+		UniqueKey:      "k8s:acct-1::Workload:ns-b:redis-master",
+		CloudAccountID: acctID,
+		Properties: map[string]interface{}{
+			"name":      "redis-master",
+			"namespace": "ns-b",
+		},
+	}
+	source.InitializeNodeMatcher([]*core.DbNode{nodeA, nodeB})
+
+	t.Run("namespace known but node absent must not fall back cross-namespace", func(t *testing.T) {
+		id := core.ServiceApplicationId{Name: "redis-master", Kind: "StatefulSet", Namespace: "ns-c"}
+		node, err := source.matchByApplicationID(id, acctID)
+		if err == nil {
+			t.Fatalf("expected no match (namespace ns-c has no node), got node %s in namespace %v",
+				node.ID, node.Properties["namespace"])
+		}
+	})
+
+	t.Run("namespace unknown still matches by name", func(t *testing.T) {
+		id := core.ServiceApplicationId{Name: "redis-master", Kind: "StatefulSet", Namespace: ""}
+		node, err := source.matchByApplicationID(id, acctID)
+		if err != nil {
+			t.Fatalf("expected name-only match when namespace is unknown, got error: %v", err)
+		}
+		if node.ID != nodeA.ID && node.ID != nodeB.ID {
+			t.Errorf("expected match on nodeA or nodeB, got %s", node.ID)
+		}
+	})
+}
+
 func TestEbpfFlowSource_GetApplicationName(t *testing.T) {
 	t.Skip("Test needs adjustment for traces.ServiceApplication type")
 
@@ -217,5 +341,33 @@ func TestEbpfFlowSource_GetApplicationName(t *testing.T) {
 			// Let me skip this test for now or adjust it
 			t.Skip("Test needs adjustment for traces.ServiceApplication type")
 		})
+	}
+}
+
+// TestEbpfFlowSource_ResolvesBarePodNameViaSourceNamespace mirrors the eBPF
+// upstream default branch: it resolves a bare pod hostname to its owning
+// Workload using the calling app node's namespace before creating an
+// ExternalService. A namespace miss is fail-safe (refuses -> external).
+func TestEbpfFlowSource_ResolvesBarePodNameViaSourceNamespace(t *testing.T) {
+	redisMaster := makeWorkloadNode("StatefulSet", "redis-master", "redis", "k8s-dev")
+	resolver := resolverWithPodNames([]struct {
+		namespace string
+		name      string
+		node      *core.DbNode
+	}{
+		{"redis", "redis-master-0", redisMaster},
+	})
+
+	// The calling app node (sourceNode) lives in namespace "redis".
+	sourceNode := makeWorkloadNode("Deployment", "checkout", "redis", "k8s-dev")
+	got, ok := resolver.ResolvePodName(stringProp(sourceNode, "namespace"), "redis-master-0")
+	if !ok || got.Properties["name"] != "redis-master" {
+		t.Errorf("eBPF bare pod-name resolution failed: got %v ok=%v", got, ok)
+	}
+
+	// A caller whose namespace has no such pod must refuse -> ExternalService.
+	other := makeWorkloadNode("Deployment", "web", "payments", "k8s-dev")
+	if _, ok := resolver.ResolvePodName(stringProp(other, "namespace"), "redis-master-0"); ok {
+		t.Errorf("eBPF resolution must refuse when the caller namespace has no such pod")
 	}
 }

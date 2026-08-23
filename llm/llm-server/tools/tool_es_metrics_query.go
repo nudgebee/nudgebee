@@ -186,12 +186,19 @@ func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map
 	}
 
 	type resultSummary struct {
-		QueryKey     string          `json:"query_key"`
-		Query        string          `json:"query"`
-		Payload      []seriesSummary `json:"payload"`
-		TotalSeries  int             `json:"total_series"`
-		Error        *string         `json:"error,omitempty"`
-		CappedNotice string          `json:"capped_notice,omitempty"`
+		QueryKey    string          `json:"query_key"`
+		Query       string          `json:"query"`
+		Payload     []seriesSummary `json:"payload"`
+		TotalSeries int             `json:"total_series"`
+		// DocsMatched separates "the query matched nothing" from "the query matched
+		// documents but the projection excluded the numeric paths series are built
+		// from". Both used to surface as total_series: 0, so the agent discarded
+		// correct queries and reformulated — 30 of 35 queries in one customer
+		// conversation came back with zero series and no way to tell which case it was.
+		DocsMatched  *int64  `json:"docs_matched,omitempty"`
+		Note         string  `json:"note,omitempty"`
+		Error        *string `json:"error,omitempty"`
+		CappedNotice string  `json:"capped_notice,omitempty"`
 	}
 
 	out := map[string]any{}
@@ -202,6 +209,8 @@ func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map
 			QueryKey:    r.QueryKey,
 			Query:       r.Query,
 			TotalSeries: len(r.Payload),
+			DocsMatched: r.DocsMatched,
+			Note:        r.Note,
 			Error:       r.Error,
 		}
 

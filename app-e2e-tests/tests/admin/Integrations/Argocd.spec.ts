@@ -90,7 +90,6 @@ test.describe.serial("Argocd Account Integration", () => {
       successToast: locators.argocdSuccessToast,
       testName: "Add Argocd Account Integration",
       operationNames: ["AddIntegrations"],
-      ignoreErrorMessages: ["already exists", "already has"],
     });
   });
 

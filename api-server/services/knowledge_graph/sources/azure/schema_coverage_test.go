@@ -51,6 +51,7 @@ func TestSpecificTypeHasSchema(t *testing.T) {
 		{core.NodeTypeMonitoringService, ""},
 		{core.NodeTypeLogAggregator, ""},
 		{core.NodeTypeServiceIdentity, ""},
+		{core.NodeTypeWorkload, ""},
 	}
 
 	seen := map[string]bool{}
@@ -66,9 +67,9 @@ func TestSpecificTypeHasSchema(t *testing.T) {
 		}
 	}
 
-	// The 26 azureOntology keys are the authoritative label set; make sure the
+	// The 27 azureOntology keys are the authoritative label set; make sure the
 	// switch above actually produced them all (guards against a missed arm).
-	if len(seen) != 26 {
-		t.Errorf("expected 26 distinct Azure specific_type labels, drove %d — a determineSpecificType arm is likely uncovered", len(seen))
+	if len(seen) != 27 {
+		t.Errorf("expected 27 distinct Azure specific_type labels, drove %d — a determineSpecificType arm is likely uncovered", len(seen))
 	}
 }

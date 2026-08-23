@@ -118,15 +118,49 @@ const maxESLabelsInPrompt = 50
 // esLabelPriority lists the most useful ES fields for log querying in priority order.
 // These are always included first (up to maxESLabelsInPrompt), regardless of what the
 // index returns, as long as they exist in the actual label set.
+//
+// Every k8s concept is listed in BOTH shipper conventions, and each with and without
+// the `.keyword` suffix. Fluent-Bit flattens to `kubernetes.namespace_name` while
+// ECS (Beats / Elastic Agent) writes `kubernetes.namespace`, and the same cluster can
+// carry both. This list previously named only the Fluent-Bit + `.keyword` spellings,
+// so on an ECS estate the genuinely queryable fields were the ones NOT promoted — and
+// with a 50-field cap the model was steered toward names its data does not use.
+//
+// Entries absent from the account's real label set are skipped by capESLabels, so
+// listing every spelling costs nothing and lets one list serve both conventions.
 var esLabelPriority = []string{
+	// namespace
+	"kubernetes.namespace",
+	"kubernetes.namespace.keyword",
+	"kubernetes.namespace_name",
 	"kubernetes.namespace_name.keyword",
+	// pod
+	"kubernetes.pod.name",
+	"kubernetes.pod.name.keyword",
+	"kubernetes.pod_name",
 	"kubernetes.pod_name.keyword",
+	// container
+	"kubernetes.container.name",
+	"kubernetes.container.name.keyword",
+	"kubernetes.container_name",
 	"kubernetes.container_name.keyword",
-	"kubernetes.host.keyword",
+	// workload / app labels
+	"kubernetes.deployment.name",
+	"kubernetes.deployment_name",
+	"kubernetes.labels.app",
+	"kubernetes.labels.app.keyword",
+	"kubernetes.labels.app_kubernetes_io/name",
 	"kubernetes.labels.app_kubernetes_io/name.keyword",
+	"kubernetes.labels.app_kubernetes_io/component",
 	"kubernetes.labels.app_kubernetes_io/component.keyword",
+	"kubernetes.labels.app_kubernetes_io/instance",
 	"kubernetes.labels.app_kubernetes_io/instance.keyword",
+	// host / stream / body
+	"kubernetes.host",
+	"kubernetes.host.keyword",
+	"stream",
 	"stream.keyword",
+	"log",
 	"log.keyword",
 	"message",
 }

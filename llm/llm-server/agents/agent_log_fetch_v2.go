@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -74,20 +75,63 @@ func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NB
 	// which stays on its proven facet-syntax path (the v1 datadog executor).
 	var resp core.NBAgentResponse
 	var err error
+	var canonicalQuery string
 	if providerName == "datadog" {
 		resp, err = a.generateDatadogLogQueryAndExecute(ctx, request)
 	} else {
-		resp, err = a.generateCanonicalLogQueryAndExecute(ctx, request, provider)
+		resp, canonicalQuery, err = a.generateCanonicalLogQueryAndExecute(ctx, request, provider)
 	}
 	if err != nil {
 		return resp, err
 	}
 
-	// Fall back to kubectl when services-server errored or returned no logs.
-	if resp.Status == core.ConversationStatusFailed || fetchResponseIsEmpty(resp) {
+	if shouldFallbackToKubectl(resp, canonicalQuery) {
 		return a.kubectlFallback(ctx, request, provider, resp)
 	}
 	return resp, nil
+}
+
+// shouldFallbackToKubectl decides whether Execute should fall back to the
+// kubectl log path after the primary services-server fetch.
+//
+// `kubectl logs --tail` has no time filtering at all — it returns whatever is
+// currently in the pod's log buffer, which can easily be hours or days old.
+// When the primary backend actually SUCCEEDED and authoritatively found zero
+// rows in an explicit historical window (start_time set — e.g. "between
+// 10:00 and 10:05 today"), that is a real, honest answer for that window;
+// replacing it with kubectl's unrelated buffered content misleads the LLM
+// into treating stale logs as if they were the requested window (traced to a
+// live incident where this fed the shell_execute file-ref hallucination
+// class). No such guard is needed when the primary itself errored — kubectl
+// remains the safety net for a genuine backend/config failure — or when no
+// explicit window was given, since a now-anchored default window is a
+// plausible match for kubectl's current-buffer semantics.
+func shouldFallbackToKubectl(resp core.NBAgentResponse, canonicalQuery string) bool {
+	if resp.Status == core.ConversationStatusFailed {
+		return true
+	}
+	if !fetchResponseIsEmpty(resp) {
+		return false
+	}
+	return !queryHasExplicitTimeAnchor(canonicalQuery)
+}
+
+// queryHasExplicitTimeAnchor reports whether the canonical query carries an
+// explicit start_time — an absolute historical anchor that plain `kubectl
+// logs --tail` cannot honor (see shouldFallbackToKubectl). Empty or
+// unparseable input is treated as "no anchor" so callers default to the
+// pre-existing fallback behaviour.
+func queryHasExplicitTimeAnchor(canonicalQuery string) bool {
+	if strings.TrimSpace(canonicalQuery) == "" {
+		return false
+	}
+	var q struct {
+		StartTime string `json:"start_time"`
+	}
+	if err := json.Unmarshal([]byte(canonicalQuery), &q); err != nil {
+		return false
+	}
+	return strings.TrimSpace(q.StartTime) != ""
 }
 
 // kubectlFallback runs the kubectl log path after a services-server fetch errored
@@ -137,27 +181,36 @@ func fetchResponseIsEmpty(resp core.NBAgentResponse) bool {
 	return false
 }
 
-func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
+// The returned string is the canonical (pre-translation) query JSON this
+// agent generated — used by Execute's kubectl-fallback guard to check for an
+// explicit start_time. It is returned even on an error/failure response so
+// callers can inspect it consistently; it is empty when generation itself
+// failed (no query was ever produced).
+func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, string, error) {
 	fields, indices := a.labelsAndIndices(provider)
 	jsonQuery, err := generateCanonicalLogQuery(ctx, request, provider, fields, indices)
 	if err != nil {
-		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), "", nil
 	}
 	if provider.DefaultIndex != "" {
 		jsonQuery = injectDefaultIndexIfMissing(jsonQuery, provider.DefaultIndex)
 	}
 	logs, toolRefs, err := callTool(ctx, a.accountId, request, tools.ToolLogsExecuteV2, jsonQuery)
 	if err != nil {
-		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), jsonQuery, nil
 	}
 	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
-		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), jsonQuery, nil
 	}
 	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
 	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	if err != nil {
+		return core.NBAgentResponse{}, jsonQuery, err
+	}
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
 }
 
 // executedLogQuery pulls the provider query the backend actually ran out of the
@@ -350,7 +403,7 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 	b.WriteString("- Read the caller's ORIGINAL user question (when provided) to classify intent.\n")
 
 	b.WriteString("\n**Examples:**\n")
-	examples := canonicalQueryExamples()
+	examples := canonicalQueryExamples(supportedOperators)
 	if !useCanonical {
 		if pe := providerSpecificQueryExamples(providerName); len(pe) > 0 {
 			examples = pe
@@ -368,9 +421,19 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 
 // defaultLogQueryOperators is the comparison-operator set advertised to the
 // LLM when get_default_provider omits capabilities.supported_operators (older
-// backends, fetch failure). Combinators are added separately by
-// resolveQueryOperators.
-var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_ilike", "_nlike", "_is_null"}
+// backends, fetch failure).
+//
+// It must stay the INTERSECTION of what every backend can execute, because it is
+// used precisely when we do not know which backend we are talking to. `_ilike` is
+// excluded for that reason: it is not universal (Signoz rejects it), and a rejected
+// query costs a full agent iteration to discover. `_like` is the portable spelling.
+//
+// Elasticsearch DOES execute `_ilike` — natively, via a case-insensitive wildcard —
+// and advertises it, so an ES account receives it through capabilities rather than
+// through this fallback. The fallback only applies when the backend told us nothing.
+//
+// Combinators are added separately by resolveQueryOperators.
+var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_nlike", "_is_null"}
 
 // logQueryCombinators are the structural JSON combinators the where-schema
 // relies on. They are not provider comparison operators, so the backend's
@@ -416,7 +479,16 @@ func resolveQueryOperators(providerOperators []string) []string {
 // e.g. a backend whose canonical keys are `app`/`content`). The examples teach
 // query shape (operators, _or, time_range/limit, when to add an error filter);
 // the field list above teaches which name to substitute.
-func canonicalQueryExamples() []core.NBAgentPromptExample {
+func canonicalQueryExamples(supportedOperators []string) []core.NBAgentPromptExample {
+	// The few-shots are the strongest signal in this prompt — stronger than the
+	// operator list a few lines above it. Hardcoding `_ilike` here meant the model
+	// emitted it against Elasticsearch, which rejects it outright, even though the
+	// advertised operator list correctly omitted it. So the examples must be built
+	// from the SAME set the backend advertises.
+	contains := `_ilike`
+	if !slices.Contains(supportedOperators, "_ilike") {
+		contains = `_like`
+	}
 	return []core.NBAgentPromptExample{
 		{
 			Question:    "show me recent logs for the checkout workload",
@@ -425,12 +497,12 @@ func canonicalQueryExamples() []core.NBAgentPromptExample {
 		},
 		{
 			Question:    "errors in the checkout workload in the last hour",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}, "time_range": "1h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}, "time_range": "1h", "limit": 5000}`,
 			Explanation: "Replace <LOG_TEXT_FIELD> with the canonical_name for the log body. The question says 'last hour' → set time_range to \"1h\" EXACTLY; never widen a window the user gave (use the 24h default ONLY when the question gives no window). 'checkout' is illustrative — substitute the real workload name from the question.",
 		},
 		{
 			Question:    "warn or error logs for checkout",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"_ilike": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"` + contains + `": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
 			Explanation: "Multiple values for the same concept → _or over the log-body canonical_name.",
 		},
 		{

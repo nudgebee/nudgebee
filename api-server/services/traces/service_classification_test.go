@@ -178,3 +178,81 @@ func TestIsInternalDomain(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectApplicationType_SpanNameFallbackRequiresInboundSpan guards against a
+// service that merely calls (or consumes from) a message queue/db being
+// misclassified as being that message queue/db itself — the span-name fallback
+// in detectApplicationType must not trust a CLIENT/PRODUCER/CONSUMER span's
+// name, since that name describes the destination/operation being invoked, not
+// the calling service's own identity. CONSUMER is included because consuming
+// from a queue is just as much an outbound interaction as producing to one —
+// e.g. an ordinary webhook/backend service that also drains a RabbitMQ queue
+// as one of several duties must not become a MessageQueue node just because
+// one of its many spans is named "rabbitmq.consume".
+func TestDetectApplicationType_SpanNameFallbackRequiresInboundSpan(t *testing.T) {
+	builder := &TraceServiceMapBuilder{}
+
+	tests := []struct {
+		description  string
+		workloadName string
+		spanKind     string
+		spanName     string
+		expectedType string
+	}{
+		{
+			description:  "CLIENT span calling rabbitmq must not reclassify the calling service as rabbitmq",
+			workloadName: "cloud-collector-server",
+			spanKind:     "CLIENT",
+			spanName:     "rabbitmq.publish",
+			expectedType: "",
+		},
+		{
+			description:  "PRODUCER span calling kafka must not reclassify the calling service as kafka",
+			workloadName: "services-server",
+			spanKind:     "PRODUCER",
+			spanName:     "kafka.send",
+			expectedType: "",
+		},
+		{
+			description:  "CONSUMER span calling rabbitmq must not reclassify the calling service as rabbitmq",
+			workloadName: "services-server",
+			spanKind:     "CONSUMER",
+			spanName:     "rabbitmq.consume",
+			expectedType: "",
+		},
+		{
+			description:  "SERVER span still classifies via span name — this direction means the service itself is being addressed as the broker",
+			workloadName: "worker-3",
+			spanKind:     "SERVER",
+			spanName:     "rabbitmq.process",
+			expectedType: "rabbitmq",
+		},
+		{
+			description:  "unrecognized/missing span kind falls back to trusting the span name, unchanged from pre-fix behavior",
+			workloadName: "worker-4",
+			spanKind:     "",
+			spanName:     "kafka.process",
+			expectedType: "kafka",
+		},
+		{
+			description:  "a service self-named after the broker is still classified regardless of span kind",
+			workloadName: "rabbitmq",
+			spanKind:     "CLIENT",
+			spanName:     "amqp.publish",
+			expectedType: "rabbitmq",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			span := TraceSpan{WorkloadName: tt.workloadName, SpanName: tt.spanName}
+			attrs := &SpanAttributes{SpanKind: tt.spanKind}
+
+			appType, _ := builder.detectApplicationType(span, attrs, map[string]string{}, map[string]string{})
+			if appType != tt.expectedType {
+				t.Errorf("detectApplicationType(workload=%q, kind=%q, span=%q) = %q, expected %q",
+					tt.workloadName, tt.spanKind, tt.spanName, appType, tt.expectedType)
+			}
+		})
+	}
+}

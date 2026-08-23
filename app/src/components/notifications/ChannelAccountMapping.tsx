@@ -119,7 +119,11 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
 
   const loadMessagingPlatform = useCallback(async () => {
     try {
-      const response: any = await apiAccount.getMessagingPlatform(provider);
+      // Union of legacy messaging_platforms and the new integrations storage — the
+      // same source the parent tile gates isConfigured on. Reading the legacy table
+      // alone (getMessagingPlatform) left messagingPlatform null for integration-only
+      // installs, so Save failed with "Messaging platform not loaded".
+      const response: any = await apiAccount.getMessagingInstallations(provider);
       if (response?.data && response.data.length > 0) {
         setMessagingPlatform(response.data[0]);
       }

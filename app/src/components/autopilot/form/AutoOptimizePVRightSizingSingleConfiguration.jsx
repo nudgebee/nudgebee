@@ -2,11 +2,11 @@ import React, { useEffect, useState } from 'react';
 import AutoPilotHeaderCard from '@components/autopilot/card/AutoOptimizeHeaderCard';
 import { Box, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
+import { Select } from '@ui/Select';
 import apiAutoPlaybook from '@api1/autoPlaybook';
 import apiAccount from '@api1/account';
 import k8sApi from '@api1/kubernetes';
 import PropTypes from 'prop-types';
-import { useData } from '@context/DataContext';
 import ActionButtons from './AutoOptimizeActionButtons';
 import NotificationForm from './AutoOptimizeNotificationForm';
 import { Textarea } from '@components/k8s/common/TextArea';
@@ -28,8 +28,16 @@ const PVAutoOptimizeSingleConfiguration = ({
   setIsLoading,
   reviewAutoOptimize = false,
   approvalData = {},
+  accountOptions = [],
+  defaultAccountId = '',
 }) => {
-  const { selectedCluster } = useData();
+  // Account picked in this modal only (K8s-only, matching the outer Auto
+  // Optimize tab's own account filter) — fixed to the existing resource's
+  // account when editing/reviewing, otherwise editable and defaulted from
+  // the tab's currently resolved account.
+  const isExistingConfig = Boolean(autoOptimizeData?.accountId || autoOptimizeData?.account_id);
+  const [selectedAccountId, setSelectedAccountId] = useState(autoOptimizeData?.accountId || autoOptimizeData?.account_id || defaultAccountId || '');
+  const selectedCluster = accountOptions.find((option) => option.value === selectedAccountId) || null;
 
   const [activeButton, setActiveButton] = useState('');
   const [notificationData, setNotificationData] = useState({
@@ -370,6 +378,22 @@ const PVAutoOptimizeSingleConfiguration = ({
 
   return (
     <Box>
+      <Box sx={{ maxWidth: ds.space.mul(0, 115), mb: ds.space[4] }}>
+        <Select
+          id='auto-optimize-pvc-account'
+          label='Account'
+          required
+          value={selectedAccountId}
+          options={accountOptions}
+          onChange={(next) => {
+            setSelectedAccountId(next || '');
+            setResourceFilter([]);
+          }}
+          disabled={isExistingConfig || reviewAutoOptimize}
+          minWidth={ds.space.mul(0, 115)}
+          placeholder='Select account'
+        />
+      </Box>
       <Box sx={{ marginTop: ds.space[5] }}>
         <AutoPilotHeaderCard
           header='Optimization Config'
@@ -378,6 +402,8 @@ const PVAutoOptimizeSingleConfiguration = ({
           isMultiSelect={false}
           reviewAutoOptimize={reviewAutoOptimize}
           type='pvc'
+          accountOptions={accountOptions}
+          defaultAccountId={selectedAccountId}
         />
       </Box>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5], marginTop: ds.space[4] }}>
@@ -481,6 +507,8 @@ PVAutoOptimizeSingleConfiguration.propTypes = {
   setIsLoading: PropTypes.func,
   isMsTeamsLoading: PropTypes.bool,
   isGoogleChannelsLoading: PropTypes.bool,
+  accountOptions: PropTypes.array,
+  defaultAccountId: PropTypes.string,
 };
 
 export default PVAutoOptimizeSingleConfiguration;

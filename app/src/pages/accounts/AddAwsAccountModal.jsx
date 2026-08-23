@@ -1,5 +1,9 @@
-import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Link, Tabs, Tab, Box } from '@mui/material';
-import { Checkbox } from '@ui/Checkbox';
+import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Link, Box, Collapse, IconButton } from '@mui/material';
+import { HelpOutline, ExpandMore, ExpandLess, InfoOutlined } from '@mui/icons-material';
+import Tooltip from '@ui/Tooltip';
+import Tabs from '@shared/navigation/Tabs';
+import { ds } from 'src/utils/colors';
+import { Switch } from '@ui/Switch';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import apiAccount from '@api1/account';
 import { Modal } from '@shared/modal';
@@ -10,7 +14,7 @@ import { Button } from '@ui/Button';
 import { snackbar } from '@shared/snackbarService';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
-import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import { ACCOUNT_ENV_PROD, ACCOUNT_ENV_NON_PROD, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 
 const CF_INSTRUCTIONS = `### Step 1. Give Account Name
   ### Step 2. Click on Connect via AWS Console
@@ -39,8 +43,26 @@ const TAB_CLOUDFORMATION = 0;
 const TAB_ROLE_ARN = 1;
 const TAB_ACCESS_KEYS = 2;
 
+const OPTION_ROW_SX = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: ds.space[4],
+  px: ds.space[4],
+  py: ds.space[3],
+  '&:not(:first-of-type)': { borderTop: `1px solid ${ds.gray[200]}` },
+};
+
+const OPTION_DESC_SX = {
+  fontSize: ds.text.small,
+  color: ds.gray[500],
+  lineHeight: 1.45,
+  maxWidth: '46ch',
+};
+
 const AddAwsAccountModal = ({ open, onClose }) => {
   const [activeTab, setActiveTab] = useState(TAB_CLOUDFORMATION);
+  const [guideExpanded, setGuideExpanded] = useState(false);
   const [accountNameValue, setAccountNameValue] = useState('');
   const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
   const [validationError, setValidationError] = useState({});
@@ -86,6 +108,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     setIsValidating(false);
     setValidationResult(null);
     setActiveTab(TAB_CLOUDFORMATION);
+    setGuideExpanded(false);
     stopPolling();
   }, [stopPolling]);
 
@@ -306,29 +329,18 @@ const AddAwsAccountModal = ({ open, onClose }) => {
   const tabLocked = !!externalId || isSubmitting;
   const accountNameOk = accountNameValue && !validationError.awsAccountName;
 
-  const renderInstructions = () => {
+  const getInstructionsData = () => {
     if (activeTab === TAB_CLOUDFORMATION) {
-      return <MarkDowns data={CF_INSTRUCTIONS} sx={{ width: 'auto' }} />;
+      return CF_INSTRUCTIONS;
     }
     if (activeTab === TAB_ROLE_ARN) {
-      return <MarkDowns data={ROLE_INSTRUCTIONS} sx={{ width: 'auto' }} />;
+      return ROLE_INSTRUCTIONS;
     }
-    return <MarkDowns data={KEYS_INSTRUCTIONS} sx={{ width: 'auto' }} />;
+    return KEYS_INSTRUCTIONS;
   };
 
   const renderCloudFormationTab = () => (
     <Grid container direction='column'>
-      <Button
-        id='connect-aws-console-btn'
-        tone='primary'
-        loading={isFetchingCloudFormationUrl}
-        size='md'
-        disabled={!!externalId || !accountNameOk}
-        onClick={handleNavToAwsConsole}
-      >
-        Connect via AWS Console
-      </Button>
-
       {(isPolling || showManualInput) && (
         <Grid container direction='column' mt={2} mb={2}>
           {isPolling && (
@@ -461,35 +473,8 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     </Grid>
   );
 
-  const renderValidateAndConnect = () => (
-    <Grid container direction='column' sx={{ mt: 2 }}>
-      <Grid container spacing={1}>
-        <Grid item>
-          <Button
-            id='aws-validate-btn'
-            tone='secondary'
-            loading={isValidating}
-            size='md'
-            disabled={!accountNameOk || isValidating || isSubmitting}
-            onClick={handleValidate}
-          >
-            Validate
-          </Button>
-        </Grid>
-        <Grid item>
-          <Button
-            id='aws-connect-btn'
-            tone='primary'
-            loading={isSubmitting}
-            size='md'
-            disabled={!accountNameOk || !validationResult?.success || isSubmitting}
-            onClick={handleConnect}
-          >
-            Connect
-          </Button>
-        </Grid>
-      </Grid>
-
+  const renderValidationResults = () => (
+    <Grid container direction='column' sx={{ mt: 1 }}>
       <ValidationResultBanner result={validationResult} />
 
       {validationResult?.success && validationResult?.cur?.reportName && (
@@ -511,24 +496,77 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       title={'Add AWS Account'}
       loader={isSubmitting}
     >
-      <Tabs
-        value={activeTab}
-        onChange={(_, newValue) => {
-          if (tabLocked) {
-            return;
-          }
-          setActiveTab(newValue);
-        }}
-        variant='fullWidth'
-        sx={{ mb: 1, borderBottom: 1, borderColor: 'divider' }}
-        aria-label='AWS onboarding method'
-      >
-        <Tab id='aws-tab-cloudformation' label='CloudFormation' />
-        <Tab id='aws-tab-role-arn' label='IAM Role ARN' />
-        <Tab id='aws-tab-access-keys' label='Access Keys' />
-      </Tabs>
+      <Box sx={{ mb: 1, '& .MuiTab-root': { flex: 1, maxWidth: 'none' } }}>
+        <Tabs
+          value={activeTab}
+          onChange={(newValue) => {
+            if (tabLocked) {
+              return;
+            }
+            setActiveTab(newValue);
+          }}
+          options={{
+            tabOptions: [
+              { value: TAB_CLOUDFORMATION, text: 'CloudFormation', id: 'aws-tab-cloudformation' },
+              { value: TAB_ROLE_ARN, text: 'IAM Role ARN', id: 'aws-tab-role-arn' },
+              { value: TAB_ACCESS_KEYS, text: 'Access Keys', id: 'aws-tab-access-keys' },
+            ],
+          }}
+          variant='secondary'
+          behavior='filter'
+          ariaLabel='AWS onboarding method'
+        />
+      </Box>
 
-      <Box sx={{ mb: 1 }}>{renderInstructions()}</Box>
+      {/* Collapsible Setup Guide — mirrors AddAzureAccountModal / AddGcpAccountModal */}
+      <Box sx={{ mb: ds.space[2] }}>
+        <Box
+          component='button'
+          type='button'
+          aria-expanded={guideExpanded}
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            cursor: 'pointer',
+            gap: ds.space[1],
+            py: ds.space[2],
+            px: 0,
+            background: 'none',
+            border: 'none',
+            font: 'inherit',
+            color: 'inherit',
+            textAlign: 'left',
+          }}
+          onClick={() => setGuideExpanded(!guideExpanded)}
+        >
+          <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+          <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
+            Setup Guide — How to connect your AWS account
+          </Typography>
+          {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: ds.gray[600] }} /> : <ExpandMore sx={{ fontSize: 18, color: ds.gray[600] }} />}
+        </Box>
+        <Collapse in={guideExpanded}>
+          <Box
+            sx={{
+              mt: ds.space[2],
+              p: ds.space[4],
+              bgcolor: ds.background[200],
+              borderRadius: ds.radius.lg,
+              border: `1px solid ${ds.gray[300]}`,
+            }}
+          >
+            <MarkDowns
+              data={getInstructionsData()}
+              sx={{
+                maxHeight: ds.space.mul(1, 75),
+                overflowY: 'auto',
+                padding: '0px',
+                borderRadius: '0px',
+              }}
+            />
+          </Box>
+        </Collapse>
+      </Box>
 
       <Grid container>
         <Box sx={{ mt: 2, width: '100%' }}>
@@ -545,17 +583,78 @@ const AddAwsAccountModal = ({ open, onClose }) => {
         </Box>
 
         <Grid item xs={12} sx={{ mt: 2, mb: 1 }}>
-          <AccountEnvToggle id='aws-account-env' value={accountEnvValue} onChange={setAccountEnvValue} disabled={!!externalId || isSubmitting} />
-        </Grid>
+          <Box sx={{ border: `1px solid ${ds.gray[200]}`, borderRadius: ds.radius.lg, overflow: 'hidden' }}>
+            <Box sx={OPTION_ROW_SX}>
+              <Box>
+                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                  <Typography variant='subtitle2'>Account Type</Typography>
+                  <Tooltip
+                    title='Determines how NudgeBee prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight. You can change this anytime later.'
+                    placement='right'
+                  >
+                    <IconButton id='aws-account-env-info-btn' size='small' sx={{ p: 0.5 }}>
+                      <InfoOutlined fontSize='small' />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+                <Typography sx={OPTION_DESC_SX}>Production accounts score alerts at full weight in triage.</Typography>
+              </Box>
+              <RadioGroup row id='aws-account-env' value={accountEnvValue} onChange={(e) => setAccountEnvValue(e.target.value)}>
+                <FormControlLabel
+                  value={ACCOUNT_ENV_PROD}
+                  control={<Radio size='small' />}
+                  label='Production'
+                  disabled={!!externalId || isSubmitting}
+                />
+                <FormControlLabel
+                  value={ACCOUNT_ENV_NON_PROD}
+                  control={<Radio size='small' />}
+                  label='Non-production'
+                  disabled={!!externalId || isSubmitting}
+                />
+              </RadioGroup>
+            </Box>
 
-        <Grid item xs={12} id='aws-access-mode' sx={{ mt: 1, mb: 1 }}>
-          <Typography variant='subtitle2' sx={{ mb: 0.5 }}>
-            Access Mode
-          </Typography>
-          <RadioGroup row value={accessMode} onChange={(e) => setAccessMode(e.target.value)}>
-            <FormControlLabel value='readwrite' control={<Radio size='small' />} label='Standard' disabled={!!externalId} />
-            <FormControlLabel value='readonly' control={<Radio size='small' />} label='Read-Only' disabled={!!externalId} />
-          </RadioGroup>
+            <Box sx={OPTION_ROW_SX} id='aws-access-mode'>
+              <Box>
+                <Typography variant='subtitle2'>Access Mode</Typography>
+                <Typography sx={OPTION_DESC_SX}>Read-only skips write permissions; some remediation features stay unavailable.</Typography>
+              </Box>
+              <RadioGroup row value={accessMode} onChange={(e) => setAccessMode(e.target.value)}>
+                <FormControlLabel value='readwrite' control={<Radio size='small' />} label='Standard' disabled={!!externalId} />
+                <FormControlLabel value='readonly' control={<Radio size='small' />} label='Read-Only' disabled={!!externalId} />
+              </RadioGroup>
+            </Box>
+
+            {activeTab === TAB_CLOUDFORMATION && (
+              <Box sx={OPTION_ROW_SX}>
+                <Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                    <Typography variant='subtitle2'>SSM Parameter Store access</Typography>
+                    <Tooltip
+                      title='Allows Nudgebee to read parameter values. Only enable if your parameters do not contain secrets.'
+                      placement='right'
+                    >
+                      <IconButton id='aws-ssm-info-btn' size='small' sx={{ p: 0.5 }}>
+                        <InfoOutlined fontSize='small' />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                  <Typography sx={OPTION_DESC_SX}>
+                    Allows Nudgebee to read parameter values. Only enable if your parameters do not contain secrets.
+                  </Typography>
+                </Box>
+                <Switch
+                  id='aws-ssm-access'
+                  checked={ssmAccess}
+                  onChange={(_e, next) => setSsmAccess(next)}
+                  disabled={!!externalId}
+                  aria-label='Enable SSM Parameter Store access'
+                />
+              </Box>
+            )}
+          </Box>
+
           {accessMode === 'readonly' && (
             <Alert severity='info' sx={{ mt: 1 }}>
               Read-only mode does not grant write permissions to your AWS account. The following features will be unavailable: CloudWatch alarm
@@ -564,34 +663,17 @@ const AddAwsAccountModal = ({ open, onClose }) => {
           )}
         </Grid>
 
-        {activeTab === TAB_CLOUDFORMATION && (
-          <Grid item xs={12} sx={{ mb: 1 }}>
-            <Checkbox
-              size='sm'
-              checked={ssmAccess}
-              onChange={(next) => setSsmAccess(next)}
-              disabled={!!externalId}
-              label={
-                <Typography variant='body2' component='span'>
-                  <strong>Enable SSM Parameter Store access</strong> — allows Nudgebee to read parameter values. Only enable if your parameters do not
-                  contain secrets.
-                </Typography>
-              }
-            />
-          </Grid>
-        )}
-
         {activeTab === TAB_CLOUDFORMATION && renderCloudFormationTab()}
         {activeTab === TAB_ROLE_ARN && (
           <Grid item xs={12}>
             {renderRoleArnTab()}
-            {renderValidateAndConnect()}
+            {renderValidationResults()}
           </Grid>
         )}
         {activeTab === TAB_ACCESS_KEYS && (
           <Grid item xs={12}>
             {renderAccessKeysTab()}
-            {renderValidateAndConnect()}
+            {renderValidationResults()}
           </Grid>
         )}
       </Grid>
@@ -602,6 +684,47 @@ const AddAwsAccountModal = ({ open, onClose }) => {
             Cancel
           </Button>
         </Grid>
+        {activeTab === TAB_CLOUDFORMATION ? (
+          <Grid item>
+            <Button
+              id='connect-aws-console-btn'
+              tone='primary'
+              loading={isFetchingCloudFormationUrl}
+              size='md'
+              disabled={!!externalId || !accountNameOk || isSubmitting}
+              onClick={handleNavToAwsConsole}
+            >
+              Connect via AWS Console
+            </Button>
+          </Grid>
+        ) : (
+          <>
+            <Grid item>
+              <Button
+                id='aws-validate-btn'
+                tone='secondary'
+                loading={isValidating}
+                size='md'
+                disabled={!accountNameOk || isValidating || isSubmitting}
+                onClick={handleValidate}
+              >
+                Validate
+              </Button>
+            </Grid>
+            <Grid item>
+              <Button
+                id='aws-connect-btn'
+                tone='primary'
+                loading={isSubmitting}
+                size='md'
+                disabled={!accountNameOk || !validationResult?.success || isSubmitting || isValidating}
+                onClick={handleConnect}
+              >
+                Connect
+              </Button>
+            </Grid>
+          </>
+        )}
       </Grid>
     </Modal>
   );

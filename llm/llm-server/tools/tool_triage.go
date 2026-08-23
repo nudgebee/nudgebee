@@ -27,6 +27,7 @@ const (
 	ToolTriageDryRun         = "dryrun_triage_rule"
 	ToolEventClassification  = "get_event_classification"
 	ToolTriageRuleEvents     = "get_triage_rule_events"
+	ToolIncidentAssembly     = "get_incident_assembly"
 )
 
 // Bounds on the triage explanation payload. A noisy event can have a very long
@@ -58,6 +59,9 @@ func init() {
 	})
 	core.RegisterNBToolFactory(ToolTriageRuleEvents, func(accountId string) (core.NBTool, error) {
 		return TriageRuleEventsTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolIncidentAssembly, func(accountId string) (core.NBTool, error) {
+		return IncidentAssemblyTool{}, nil
 	})
 }
 
@@ -631,4 +635,179 @@ func (t TriageRuleEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCa
 		return triageErrorResponse(err), nil
 	}
 	return triageResponse(data), nil
+}
+
+// ---------------------------------------------------------------------------
+// get_incident_assembly — what else is going on around this alert?
+// ---------------------------------------------------------------------------
+
+// maxAssemblyTierItems caps each tier of the assembly payload. The chronic tier
+// especially can hold dozens of folded background alerts; the per-item shape is
+// already slim (identity + counts, no labels), so a per-tier cap with explicit
+// shown/total accounting is enough to stay inside the scratchpad observation cap.
+const maxAssemblyTierItems = 10
+
+// assemblyCaveat leads the tool output so every consumer — the automatic
+// analysis pipeline and interactive conversations alike — reads the ground
+// rules before the data.
+const assemblyCaveat = "Alerts grouped around this event by timing and topology. Every entry is a " +
+	"CANDIDATE, not a confirmed relationship — verify against evidence (logs, metrics, deployments) " +
+	"before treating it as related. 'chronic' entries fire at their normal background rate for that " +
+	"subject; never present them as the cause."
+
+// assemblyEmptyCaveat replaces it when the window holds nothing besides the
+// seed, so the model states the absence instead of inventing related alerts.
+const assemblyEmptyCaveat = "No other alerts were recorded around this event in its incident window. " +
+	"Do not invent related alerts. If topology_coverage is 'none' or 'low', an empty cause/impact " +
+	"list means lack of visibility, not proof that nothing is related."
+
+// IncidentAssemblyTool returns the deterministic four-tier incident story the
+// incident panel computes for an event (#34658): the alert's own repeat firings
+// and cross-source copies (same_incident), config changes and upstream alerts
+// shortly before it (cause candidates), dependent services alerting after it
+// (impact candidates), and background noise folded by firing rate (chronic).
+// It exposes that grouping to the analysis agents as *candidates to verify* —
+// the LLM's correlation reasoning lands in the normal analysis narrative
+// (#34659), not in any stored verdict.
+type IncidentAssemblyTool struct{}
+
+func (t IncidentAssemblyTool) Name() string             { return ToolIncidentAssembly }
+func (t IncidentAssemblyTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+
+func (t IncidentAssemblyTool) Description() string {
+	return "Shows what else is going on around one alert event: its own repeat firings and cross-source " +
+		"copies (same_incident), config changes and upstream-dependency alerts shortly before it " +
+		"(cause candidates), downstream-dependent alerts after it (impact candidates), and alerts that " +
+		"are just background noise for their subject (chronic). The grouping is purely by timing and " +
+		"topology — every entry is a candidate to verify against evidence, not a confirmed " +
+		"relationship, and chronic entries must never be presented as the cause. Call this EARLY when " +
+		"analyzing an alert, before concluding a root cause. Input: event_id."
+}
+
+func (t IncidentAssemblyTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"event_id": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "UUID of the event to assemble the incident around (events.id).",
+			},
+		},
+		Required: []string{"event_id"},
+	}
+}
+
+func (t IncidentAssemblyTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeRead, nil
+}
+
+func (t IncidentAssemblyTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	eventID := stringArg(input, "event_id")
+	if eventID == "" {
+		return triageErrorResponse(errors.New("event_id is required")), nil
+	}
+	data, err := doTriageActionRequest(nbCtx, "event_get_impact", map[string]any{"event_id": eventID})
+	if err != nil {
+		nbCtx.Ctx.GetLogger().Error("triage: get_incident_assembly failed", "error", err, "event_id", eventID)
+		return triageErrorResponse(err), nil
+	}
+	return triageResponse(boundIncidentAssembly(data)), nil
+}
+
+// incidentAssemblyPayload is the bounded tool output. A struct rather than a
+// map so json.Marshal preserves field order — the caveat note must be the
+// first thing the model reads.
+type incidentAssemblyPayload struct {
+	Note             string             `json:"note"`
+	EventID          string             `json:"event_id,omitempty"`
+	RootIdentity     string             `json:"root_identity,omitempty"`
+	TopologyCoverage string             `json:"topology_coverage,omitempty"`
+	SameIncident     []any              `json:"same_incident"`
+	Cause            assemblyCauseTiers `json:"cause"`
+	Impact           []any              `json:"impact"`
+	Chronic          []any              `json:"chronic"`
+	Window           any                `json:"window,omitempty"`
+	Truncated        map[string]any     `json:"truncated,omitempty"`
+}
+
+type assemblyCauseTiers struct {
+	ConfigChanges []any `json:"config_changes"`
+	Upstream      []any `json:"upstream"`
+}
+
+// boundIncidentAssembly extracts the assembly block from the event_get_impact
+// response (dropping the legacy impacted[] surface), caps each tier, and leads
+// with the candidates-only caveat. On any unexpected shape it returns the raw
+// data unchanged rather than losing information.
+func boundIncidentAssembly(data string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		return data
+	}
+	assembly, ok := m["assembly"].(map[string]any)
+	if !ok {
+		return data
+	}
+
+	trunc := map[string]any{}
+	out := incidentAssemblyPayload{
+		EventID:          asString(m["event_id"]),
+		RootIdentity:     asString(assembly["root_identity"]),
+		TopologyCoverage: asString(m["coverage_confidence"]),
+		SameIncident:     capTier("same_incident", assembly["same_incident"], trunc),
+		Impact:           capTier("impact", assembly["impact"], trunc),
+		Chronic:          capTier("chronic", assembly["chronic"], trunc),
+		Window:           assembly["window"],
+	}
+	if cause, ok := assembly["cause"].(map[string]any); ok {
+		out.Cause.ConfigChanges = capTier("cause.config_changes", cause["config_changes"], trunc)
+		out.Cause.Upstream = capTier("cause.upstream", cause["upstream"], trunc)
+	}
+	if out.Cause.ConfigChanges == nil {
+		out.Cause.ConfigChanges = []any{}
+	}
+	if out.Cause.Upstream == nil {
+		out.Cause.Upstream = []any{}
+	}
+	// The backend sets assembly.truncated when its window-row cap was hit — the
+	// window itself is incomplete, distinct from the per-tier display caps above.
+	if b, ok := assembly["truncated"].(bool); ok && b {
+		trunc["window_rows"] = "backend window row cap hit; counts may undercount"
+	}
+	if len(trunc) > 0 {
+		out.Truncated = trunc
+	}
+
+	if len(out.SameIncident)+len(out.Cause.ConfigChanges)+len(out.Cause.Upstream)+
+		len(out.Impact)+len(out.Chronic) == 0 {
+		out.Note = assemblyEmptyCaveat
+	} else {
+		out.Note = assemblyCaveat
+	}
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		return data
+	}
+	return string(b)
+}
+
+// capTier bounds one tier list to maxAssemblyTierItems, recording shown/total
+// in trunc when items were dropped. Backend tier order is preserved.
+func capTier(name string, v any, trunc map[string]any) []any {
+	items, ok := v.([]any)
+	if !ok {
+		return []any{}
+	}
+	if len(items) > maxAssemblyTierItems {
+		trunc[name] = map[string]any{"shown": maxAssemblyTierItems, "total": len(items)}
+		items = items[:maxAssemblyTierItems]
+	}
+	return items
+}
+
+// asString reads a string field from decoded JSON ("" if absent or not a string).
+func asString(v any) string {
+	s, _ := v.(string)
+	return s
 }

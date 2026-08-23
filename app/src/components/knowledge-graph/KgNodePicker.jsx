@@ -76,7 +76,8 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
     apiKnowledgeGraph
       .getFilterOptions({ accountIds: [pickedAccountId] })
       .then((res) => {
-        const types = res?.data?.data?.kg_get_filter_options?.data?.node_types ?? [];
+        // node_types is the merged node_type -> specific_types map; its keys are the type list.
+        const types = Object.keys(res?.data?.data?.kg_get_filter_options?.data?.node_types ?? {});
         setNodeTypes(types);
         setLoadedTypesAccount(pickedAccountId);
       })
@@ -98,7 +99,12 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
     apiKnowledgeGraph
       .getFilterOptions({ accountIds: [pickedAccountId], nodeTypes: [pickedNodeType] })
       .then((res) => {
-        const map = res?.data?.data?.kg_get_filter_options?.data?.node_id_map ?? {};
+        // Columnar payload: zip node_keys + node_ids back into { unique_key: id }.
+        const d = res?.data?.data?.kg_get_filter_options?.data ?? {};
+        const keys = d.node_keys ?? [];
+        const ids = d.node_ids ?? [];
+        const map = {};
+        for (let i = 0; i < keys.length; i++) map[keys[i]] = ids[i];
         setNodeIdMap(map);
         setLoadedNodesKey(nodesKey);
       })

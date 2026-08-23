@@ -3833,6 +3833,15 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGT"[exp])
 }
 
+// BuildVPCFlowLogsParsePattern is the exported entry point to the flow-log
+// format→parse-pattern builder. The knowledge-graph aws-vpc-flow flow source
+// reuses it so the graph builder parses the customer's actual configured
+// LogFormat (including custom v3+ fields like pkt-srcaddr/pkt-dstaddr) exactly
+// the way the on-demand cloud_vpc_flowlogs action does.
+func BuildVPCFlowLogsParsePattern(logFormat string) string {
+	return buildVpcFlowLogsParsePattern(logFormat)
+}
+
 // buildVpcFlowLogsParsePattern builds a CloudWatch Logs Insights parse pattern from VPC Flow Logs format
 // Converts format like "${version} ${account-id} ${srcaddr}" to regex pattern
 func buildVpcFlowLogsParsePattern(logFormat string) string {

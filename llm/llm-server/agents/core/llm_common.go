@@ -299,6 +299,7 @@ var newLLMModel = GetLLMModel
 // GenerateAndTrackLLMContent generates content using an LLM and tracks token usage
 func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, accountId string, conversationId string, messageId string, agentId string, trackContent bool, promptMessages []llms.MessageContent, cleanupMarkdown bool, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	t0 := time.Now()
+	options = append([]llms.CallOption(nil), options...)
 	// Validate userid, if it's empty or nil, set to system user
 	if userId == "" {
 		userId = security.GetSystemUserId()
@@ -335,10 +336,19 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 		return nil, ErrLlmUnableToGenerate(err)
 	}
 
-	// Optimize chunk size to reduce continuation attempts
+	// Optimize chunk size to reduce continuation attempts.
+	//
+	// The floor below is a last resort for models we have no ceiling for, and it is
+	// LOWER than most current models support — a model that lands here truncates at
+	// max_tokens and pays the continuation loop on every long response. That is
+	// silent by nature (the loop succeeds), so log it: a Claude 4.x model sat on
+	// this floor unnoticed until a customer investigation was traced call by call.
 	maxOutputTokens := GetLlmMaxOutputTokens(model)
 	if maxOutputTokens <= 0 {
 		maxOutputTokens = 4096
+		ctx.GetLogger().Warn("llm: no max-output-token entry for model, applying the conservative floor — "+
+			"long responses will truncate and drive the continuation loop until an entry is added",
+			"model", model, "provider", provider, "agentName", agentName, "maxOutputTokens", maxOutputTokens)
 	}
 	options = append(options, llms.WithMaxTokens(maxOutputTokens))
 
@@ -373,6 +383,12 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 				options = append(options, WithThinkingLevel(clamped))
 			}
 		}
+	}
+
+	// Temperature safety net: some reasoning models reject an explicit
+	// temperature (Anthropic claude-sonnet-5 / opus-5, OpenAI o1/o3/gpt-5).
+	if !ModelSupportsTemperature(provider, model) {
+		options = append(options, withoutTemperature())
 	}
 
 	// Vision safety net: strip image parts if the resolved model does not support vision
@@ -894,6 +910,23 @@ func WithThinkingBudget(tokens int) llms.CallOption {
 	}
 }
 
+// SentinelOmitTemperature is the sentinel value indicating temperature should be omitted from provider calls.
+const SentinelOmitTemperature = -1.0
+
+// withoutTemperature returns a CallOption that clears Temperature from CallOptions
+// by setting it to SentinelOmitTemperature (-1.0).
+func withoutTemperature() llms.CallOption {
+	return func(o *llms.CallOptions) {
+		o.Temperature = SentinelOmitTemperature
+		metadata := make(map[string]any, len(o.Metadata)+1)
+		for key, value := range o.Metadata {
+			metadata[key] = value
+		}
+		metadata["without_temperature"] = true
+		o.Metadata = metadata
+	}
+}
+
 // resolveThinkingBudget returns the thinking-token ceiling for the given model
 // tier, or -1 if nothing should be applied. The global override wins whenever
 // it's >= 0 (0 means "disable thinking", a real value, not "unset"); an
@@ -1023,7 +1056,10 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	// Apply cache for current model (if enabled)
 	// This ensures cache is always correct for the current model, including fallback models
 	messagesToSend := rc.promptMessages
-	optionsToSend := rc.options
+	optionsToSend := append([]llms.CallOption(nil), rc.options...)
+	if !ModelSupportsTemperature(rc.currentProvider, rc.currentModel) {
+		optionsToSend = append(optionsToSend, withoutTemperature())
+	}
 	rc.lastCacheInfo = nil // Reset cache info
 	rc.lastTTFTMs = nil
 	rc.lastWasStreaming = false
@@ -2513,6 +2549,25 @@ func classifyUserFacingLLMError(err error) error {
 	default:
 		return nil
 	}
+}
+
+// egressBlockedMessage returns the user-safe block message and true when err is
+// (or wraps) an egressfilter enforce block. The message is built inside the
+// egressfilter package specifically to be safe to show verbatim — it never
+// echoes the matched secret or detector internals, only an audit id and a
+// remediation hint. Callers surface it as the assistant's *response text*
+// (not a generic internal error), matching the documented design that a block
+// is persisted as the agent's response. The returned string always contains
+// egressfilter.BlockedMessageMarker, so the executor still classifies the step
+// as a non-answer.
+func egressBlockedMessage(err error) (string, bool) {
+	if se, ok := egressfilter.AsError(err); ok {
+		return se.Error(), true
+	}
+	if errors.Is(err, egressfilter.ErrSecretsBlocked) {
+		return egressfilter.BlockedMessageMarker, true
+	}
+	return "", false
 }
 
 // syncModelWithContextOverrides returns the effective provider and model for an LLM call,

@@ -57,7 +57,9 @@ const WorkloadCriticalityManager: React.FC<WorkloadCriticalityManagerProps> = ({
     }
     setLoading(true);
     try {
-      const res = await apiCriticality.list({ cloud_account_id: accountId, tiered_only: tieredOnly, limit: 500 });
+      // Load the whole inventory (backend caps limit at 1000) so client-side search/namespace/criticality
+      // filtering and the summary counts cover every workload, not just an arbitrary first window.
+      const res = await apiCriticality.list({ cloud_account_id: accountId, tiered_only: tieredOnly, limit: 1000 });
       setItems(res?.items ?? []);
       setTotal(res?.total ?? 0);
     } catch {
@@ -276,7 +278,6 @@ const WorkloadCriticalityManager: React.FC<WorkloadCriticalityManagerProps> = ({
           ) : (
             <KubernetesTable
               id='workloadCriticality'
-              totalRows={shownItems.length}
               data={tableData}
               headers={[
                 { name: 'Namespace', width: '16%' },
@@ -287,10 +288,7 @@ const WorkloadCriticalityManager: React.FC<WorkloadCriticalityManagerProps> = ({
                 { name: 'Why', width: '20%' },
                 { name: '', width: '6%' },
               ]}
-              rowsPerPage={500}
               loading={loading}
-              onPageChange={() => {}}
-              pageNumber={1}
               tableHeadingCenter={['Criticality', 'Source']}
             />
           )}

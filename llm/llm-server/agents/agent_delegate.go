@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"nudgebee/llm/agents/core"
@@ -106,17 +107,31 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 		}, nil
 	}
 
-	// Resolve requested tools with security validation
-	resolvedTools, unresolvedNames := resolveToolsForDelegate(ctx.Ctx, t.accountId, toolNames)
+	// Resolve requested tools with security validation. flattenInstructions carries
+	// the static guidance of any flattenable agent (helm/redis) whose leaf tools were
+	// inlined, so the sub-agent keeps that agent's methodology without the extra hop.
+	resolvedTools, flattenInstructions, unresolvedNames := resolveToolsForDelegate(ctx.Ctx, t.accountId, toolNames)
 	if len(unresolvedNames) > 0 {
 		ctx.Ctx.GetLogger().Warn("delegate_agent: some requested tools could not be resolved",
 			"unresolved", unresolvedNames, "resolved_count", len(resolvedTools))
+	}
+	if len(flattenInstructions) > 0 {
+		prompt += "\n\nGuidelines for the specialist tools above:\n- " + strings.Join(flattenInstructions, "\n- ")
 	}
 
 	// Prevent recursive delegation — remove delegate_agent from the sub-agent's tool list.
 	// Without this, a delegated sub-agent could spawn further delegates, causing unbounded
 	// recursion and cost amplification.
 	resolvedTools = filterOutTool(resolvedTools, DelegateAgentToolName)
+
+	// Enforce the account's allowed_tools/disabled_tools capability filter on the
+	// delegated set. The dispatch auth gate (IsAgentToolAuthorizedToProcessRequest)
+	// only checks membership in the sub-agent's supported tools — it does NOT re-apply
+	// capabilities — so a disabled or non-allow-listed tool named here would otherwise
+	// execute inside the sub-agent, bypassing the account's restriction. Applied before
+	// the mandatory LLM tool is appended, so reasoning is never filtered out. No-op when
+	// no capabilities are set (the common case).
+	resolvedTools = core.FilterTools(resolvedTools, ctx.QueryConfig.Capabilities)
 
 	// Always include the LLM tool so the sub-agent can reason/summarize. The LLM tool
 	// is essential for the ReAct planner — fail fast if it cannot be resolved.
@@ -327,11 +342,96 @@ func parseDelegateInput(input toolcore.NBToolCallRequest) (prompt string, toolNa
 	return prompt, toolNames, maxIter, nil
 }
 
+// flattenableAgent is implemented by "thin" sub-agents whose GetSystemPrompt is fully
+// STATIC — no RAG-retrieved context, skills/KB injection, or per-request/ctx-dependent
+// composition — and whose whole contribution is that prompt plus their leaf tools (and
+// no custom Execute). When such an agent (helm/redis) is named in a delegate_agent call
+// we hand the sub-agent its leaf tools directly and carry its static prompt guidance
+// into the sub-agent's brief, instead of nesting the whole agent (a redundant ReAct-loop
+// hop). Agents with dynamically-composed prompts (postgres/aws/…) must NOT implement this
+// (return false / don't implement): flattening would drop the context that makes them
+// useful, so they are left nested and run as themselves. It is only an opt-in *signal* —
+// the instructions themselves are read from GetSystemPrompt, not duplicated here.
+type flattenableAgent interface {
+	Flattenable() bool
+}
+
+// resolveAgentForDelegate decides how a resolved sub-agent is handed to the delegate
+// sub-agent: flattened to its leaf tools + its full static prompt guidance when it opts
+// in via flattenableAgent, otherwise nested as an agent-tool (today's default). The
+// guidance is read from the agent's own GetSystemPrompt (safe because Flattenable promises
+// a static prompt) — instructions, constraints AND examples — so a thin agent whose value
+// is its examples (e.g. rabbitmq's curl/jq recipes) is flattened losslessly. Crucially the
+// guidance is carried ON-DEMAND into the delegate sub-agent, not folded into the tool
+// description (which would bloat every orchestrator that preloads the tool, e.g. v2/delegate).
+func resolveAgentForDelegate(ctx *security.RequestContext, agent core.NBAgent) (tools []toolcore.NBTool, instructions []string) {
+	if fa, ok := agent.(flattenableAgent); ok && fa.Flattenable() {
+		return agent.GetSupportedTools(ctx), flattenAgentGuidance(agent.GetSystemPrompt(ctx, core.NBAgentRequest{}))
+	}
+	return []toolcore.NBTool{core.NewToolFromAgent(agent)}, nil
+}
+
+// flattenAgentGuidance renders a flattenable agent's static prompt (instructions,
+// constraints, and examples) into plain lines for injection into the delegate sub-agent's
+// brief. Examples carry the agent's real usage recipes — the main value of a thin CLI
+// wrapper (e.g. rabbitmq's management-API curl/jq calls) — so they must survive flattening.
+func flattenAgentGuidance(p core.NBAgentPrompt) []string {
+	guidance := make([]string, 0, len(p.Instructions)+len(p.Constraints)+len(p.Examples))
+	guidance = append(guidance, p.Instructions...)
+	guidance = append(guidance, p.Constraints...)
+	// ToolUsage carries how to drive the leaf tool(s) — including config-gated guidance
+	// (e.g. shell pipes / jq when the shell tool is enabled). Sorted for deterministic
+	// output since ToolUsage is a map.
+	usageKeys := make([]string, 0, len(p.ToolUsage))
+	for k := range p.ToolUsage {
+		usageKeys = append(usageKeys, k)
+	}
+	sort.Strings(usageKeys)
+	for _, k := range usageKeys {
+		guidance = append(guidance, p.ToolUsage[k]...)
+	}
+	for _, ex := range p.Examples {
+		answer := ex.Answer
+		if answer == "" && len(ex.AnswerSteps) > 0 {
+			steps := make([]string, 0, len(ex.AnswerSteps))
+			for _, s := range ex.AnswerSteps {
+				steps = append(steps, s.Input)
+			}
+			answer = strings.Join(steps, " ; ")
+		}
+		line := "Example — " + ex.Question
+		if answer != "" {
+			line += ": " + answer
+		}
+		if ex.Explanation != "" {
+			line += " (" + ex.Explanation + ")"
+		}
+		guidance = append(guidance, line)
+	}
+	return guidance
+}
+
 // resolveToolsForDelegate resolves tool names to NBTool instances, filtering out any
 // that cannot be found. This enforces security: the sub-agent can only access tools
-// that exist in the account's tool registry.
-func resolveToolsForDelegate(ctx *security.RequestContext, accountId string, toolNames []string) (resolved []toolcore.NBTool, unresolved []string) {
-	seen := map[string]bool{}
+// that exist in the account's tool registry. When a name resolves to a flattenable
+// agent, its leaf tools are inlined (single hop) and its static instructions are
+// returned in flattenInstructions for injection into the sub-agent's prompt.
+func resolveToolsForDelegate(ctx *security.RequestContext, accountId string, toolNames []string) (resolved []toolcore.NBTool, flattenInstructions []string, unresolved []string) {
+	seen := map[string]bool{}          // input names already processed
+	resolvedNames := map[string]bool{} // resolved tool names, for dedup across flatten/direct
+	seenAgents := map[string]bool{}    // canonical agent names, so two aliases of one agent don't double its instructions
+	add := func(t toolcore.NBTool) {
+		if t == nil {
+			return
+		}
+		ln := strings.ToLower(t.Name())
+		if resolvedNames[ln] {
+			return
+		}
+		resolvedNames[ln] = true
+		resolved = append(resolved, t)
+	}
+
 	for _, name := range toolNames {
 		lower := strings.ToLower(name)
 		if seen[lower] {
@@ -339,23 +439,34 @@ func resolveToolsForDelegate(ctx *security.RequestContext, accountId string, too
 		}
 		seen[lower] = true
 
-		tool, ok := toolcore.GetNBTool(accountId, name)
-		if ok && tool != nil {
-			resolved = append(resolved, tool)
-		} else {
-			// Try resolving as an agent wrapped as tool
-			agent, found := core.GetNBAgent(ctx, name, accountId, core.AgentStatusEnabled)
-			if found {
-				resolved = append(resolved, core.NewToolFromAgent(agent))
-			} else {
-				unresolved = append(unresolved, name)
-				if ctx != nil {
-					ctx.GetLogger().Warn("delegate_agent: tool not found", "tool", name, "account_id", accountId)
-				}
-			}
+		if tool, ok := toolcore.GetNBTool(accountId, name); ok && tool != nil {
+			add(tool)
+			continue
 		}
+		// Try resolving as an agent — flatten if it opts in, else nest.
+		agent, found := core.GetNBAgent(ctx, name, accountId, core.AgentStatusEnabled)
+		if !found || agent == nil {
+			unresolved = append(unresolved, name)
+			if ctx != nil {
+				ctx.GetLogger().Warn("delegate_agent: tool not found", "tool", name, "account_id", accountId)
+			}
+			continue
+		}
+		// Dedup by canonical agent name: two different aliases resolving to the same
+		// agent must not append its instructions (or re-add its tools) twice.
+		agentName := strings.ToLower(agent.GetName())
+		if seenAgents[agentName] {
+			continue
+		}
+		seenAgents[agentName] = true
+
+		agentTools, instructions := resolveAgentForDelegate(ctx, agent)
+		for _, at := range agentTools {
+			add(at)
+		}
+		flattenInstructions = append(flattenInstructions, instructions...)
 	}
-	return resolved, unresolved
+	return resolved, flattenInstructions, unresolved
 }
 
 // filterOutTool removes a tool by name from a slice, used to prevent recursive delegation.
@@ -492,8 +603,15 @@ func (a *dynamicReActAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
+// GetModelCategory runs the delegated sub-agent on the cheap Retrieval tier, not the
+// orchestrator's Reasoning tier. A delegate is scoped grunt work (run a query, grep
+// logs, check a config) — the same shape the specialist agents (postgres/helm/redis)
+// already run on Retrieval. The expensive Reasoning tier stays with the top-level
+// orchestrator that owns the cross-cutting diagnosis; paying pro rates for a delegated
+// sub-task was cost with no matching quality need. This also makes delegation (and the
+// trimmed orchestrators' on-demand reach-back) cost-competitive with a direct tool call.
 func (a *dynamicReActAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+	return core.ModelTierRetrieval
 }
 
 // GetMaxIterations implements core.NBAgentIterationProvider to cap the sub-agent's

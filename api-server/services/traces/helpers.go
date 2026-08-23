@@ -59,15 +59,17 @@ func (t *TraceServiceMapBuilder) buildServiceLinks(dependencyMap map[string]*Ser
 		}
 
 		link := UpstreamLink{
-			Id:           fmt.Sprintf("%s:%s:%s", targetNamespace, targetKind, targetName),
-			Status:       t.getLinkStatusCode(dep.ErrorRate),
-			Stats:        []string{fmt.Sprintf("%.1f req/min", reqPerMin), fmt.Sprintf("%.1fms", dep.AvgDuration)},
-			Weight:       float64(dep.CallCount),
-			Latency:      dep.AvgDuration,
-			RequestCount: float64(dep.CallCount),
-			FailureCount: float64(dep.ErrorCount),
-			Protocol:     dep.Protocol,
-			DrillDown:    t.createLinkDrillDown(dep, earliestTime, latestTime),
+			Id:             fmt.Sprintf("%s:%s:%s", targetNamespace, targetKind, targetName),
+			Status:         t.getLinkStatusCode(dep.ErrorRate),
+			Stats:          []string{fmt.Sprintf("%.1f req/min", reqPerMin), fmt.Sprintf("%.1fms", dep.AvgDuration)},
+			Weight:         float64(dep.CallCount),
+			Latency:        dep.AvgDuration,
+			RequestCount:   float64(dep.CallCount),
+			FailureCount:   float64(dep.ErrorCount),
+			Protocol:       dep.Protocol,
+			DependencyType: dep.DependencyType,
+			SampleSpanID:   dep.SampleSpanID,
+			DrillDown:      t.createLinkDrillDown(dep, earliestTime, latestTime),
 		}
 
 		if !isUpstream {
@@ -77,15 +79,17 @@ func (t *TraceServiceMapBuilder) buildServiceLinks(dependencyMap map[string]*Ser
 				Namespace: targetNamespace, // Use target service's actual namespace
 			}
 			link := DownstreamLink{
-				Id:           appId,
-				Status:       t.getLinkStatusCode(dep.ErrorRate),
-				Stats:        []string{fmt.Sprintf("%.1f req/min", reqPerMin), fmt.Sprintf("%.1fms", dep.AvgDuration)},
-				Weight:       float64(dep.CallCount),
-				Latency:      dep.AvgDuration,
-				RequestCount: float64(dep.CallCount),
-				FailureCount: float64(dep.ErrorCount),
-				Protocol:     dep.Protocol,
-				DrillDown:    t.createLinkDrillDown(dep, earliestTime, latestTime),
+				Id:             appId,
+				Status:         t.getLinkStatusCode(dep.ErrorRate),
+				Stats:          []string{fmt.Sprintf("%.1f req/min", reqPerMin), fmt.Sprintf("%.1fms", dep.AvgDuration)},
+				Weight:         float64(dep.CallCount),
+				Latency:        dep.AvgDuration,
+				RequestCount:   float64(dep.CallCount),
+				FailureCount:   float64(dep.ErrorCount),
+				Protocol:       dep.Protocol,
+				DependencyType: dep.DependencyType,
+				SampleSpanID:   dep.SampleSpanID,
+				DrillDown:      t.createLinkDrillDown(dep, earliestTime, latestTime),
 			}
 			links = append(links.([]DownstreamLink), link)
 		} else {
@@ -178,6 +182,7 @@ func (t *TraceServiceMapBuilder) createNewDependency(source, target string, span
 		ErrorTypes:     make(map[string]int64),
 		DependencyType: depType,
 		OriginalTarget: target,
+		SampleSpanID:   span.SpanID,
 	}
 
 	dep.Operations[span.SpanName] = 1
@@ -785,10 +790,23 @@ func (t *TraceServiceMapBuilder) filterAndExtractAttributes(rawAttrs map[string]
 	}
 }
 
-// detectApplicationType intelligently detects application type based on telemetry data
-func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *SpanAttributes, rawAttrs map[string]string, labels map[string]string) string {
+// detectApplicationType intelligently detects application type based on telemetry data.
+// The returned TypeEvidence records the span and matched attribute that produced the
+// type, so a misclassification can be traced back to the exact span that caused it.
+func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *SpanAttributes, rawAttrs map[string]string, labels map[string]string) (string, *TypeEvidence) {
 	// NOTE: db.system and messaging.system indicate what the service is CONNECTING TO, not what the service itself is
 	// Prioritize language/runtime detection over infrastructure attributes
+
+	evidence := func(matchedKey, matchedValue string) *TypeEvidence {
+		return &TypeEvidence{
+			TraceID:      span.TraceID,
+			SpanID:       span.SpanID,
+			SpanName:     span.SpanName,
+			Timestamp:    span.Timestamp,
+			MatchedKey:   matchedKey,
+			MatchedValue: matchedValue,
+		}
+	}
 
 	// Service name pattern detection (highest priority for database services)
 	serviceName := strings.ToLower(span.WorkloadName)
@@ -803,19 +821,19 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 	if sdkLang, ok := labels["telemetry.sdk.language"]; ok && sdkLang != "" {
 		switch strings.ToLower(sdkLang) {
 		case "java":
-			return "java"
+			return "java", evidence("telemetry.sdk.language", sdkLang)
 		case "python":
-			return "python"
+			return "python", evidence("telemetry.sdk.language", sdkLang)
 		case "javascript", "nodejs", "node":
-			return "nodejs"
+			return "nodejs", evidence("telemetry.sdk.language", sdkLang)
 		case "go", "golang":
-			return "golang"
+			return "golang", evidence("telemetry.sdk.language", sdkLang)
 		case "dotnet", "csharp", "c#":
-			return "dotnet"
+			return "dotnet", evidence("telemetry.sdk.language", sdkLang)
 		case "php":
-			return "php"
+			return "php", evidence("telemetry.sdk.language", sdkLang)
 		case "ruby":
-			return "ruby"
+			return "ruby", evidence("telemetry.sdk.language", sdkLang)
 		}
 	}
 
@@ -823,19 +841,19 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 	if runtimeName, ok := labels["process.runtime.name"]; ok && runtimeName != "" {
 		switch strings.ToLower(runtimeName) {
 		case "node", "nodejs":
-			return "nodejs"
+			return "nodejs", evidence("process.runtime.name", runtimeName)
 		case "python":
-			return "python"
+			return "python", evidence("process.runtime.name", runtimeName)
 		case "go":
-			return "golang"
+			return "golang", evidence("process.runtime.name", runtimeName)
 		case "java":
-			return "java"
+			return "java", evidence("process.runtime.name", runtimeName)
 		case "dotnet", ".net":
-			return "dotnet"
+			return "dotnet", evidence("process.runtime.name", runtimeName)
 		case "php":
-			return "php"
+			return "php", evidence("process.runtime.name", runtimeName)
 		case "ruby":
-			return "ruby"
+			return "ruby", evidence("process.runtime.name", runtimeName)
 		}
 	}
 
@@ -844,19 +862,19 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 	if language != "" {
 		switch strings.ToLower(language) {
 		case "java":
-			return "java"
+			return "java", evidence("language", language)
 		case "python":
-			return "python"
+			return "python", evidence("language", language)
 		case "javascript", "nodejs", "node":
-			return "nodejs"
+			return "nodejs", evidence("language", language)
 		case "go", "golang":
-			return "golang"
+			return "golang", evidence("language", language)
 		case "dotnet", "csharp", "c#":
-			return "dotnet"
+			return "dotnet", evidence("language", language)
 		case "php":
-			return "php"
+			return "php", evidence("language", language)
 		case "ruby":
-			return "ruby"
+			return "ruby", evidence("language", language)
 		}
 	}
 
@@ -869,17 +887,17 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 		if strings.Contains(serviceName, msgSystem) {
 			switch msgSystem {
 			case "kafka":
-				return "kafka"
+				return "kafka", evidence("messaging.system", msgSystem)
 			case "rabbitmq":
-				return "rabbitmq"
+				return "rabbitmq", evidence("messaging.system", msgSystem)
 			case "activemq":
-				return "activemq"
+				return "activemq", evidence("messaging.system", msgSystem)
 			case "nats":
-				return "nats"
+				return "nats", evidence("messaging.system", msgSystem)
 			case "pulsar":
-				return "pulsar"
+				return "pulsar", evidence("messaging.system", msgSystem)
 			case "rocketmq":
-				return "rocketmq"
+				return "rocketmq", evidence("messaging.system", msgSystem)
 			}
 		}
 	}
@@ -899,7 +917,7 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 
 	for pattern, appType := range dbPatterns {
 		if strings.Contains(serviceName, pattern) {
-			return appType
+			return appType, evidence("service_name", pattern)
 		}
 	}
 
@@ -924,45 +942,67 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 
 	for pattern, appType := range patterns {
 		if strings.Contains(serviceName, pattern) {
-			return appType
+			return appType, evidence("service_name", pattern)
 		}
 	}
 
-	// Check span names for additional clues
+	// Check span names for additional clues — but only for spans where this
+	// service is NOT the one making an outbound call (CLIENT/PRODUCER/CONSUMER).
+	// An outbound span's name describes the operation/destination being invoked
+	// (e.g. "SQS.ReceiveMessage", "rabbitmq.publish", "rabbitmq.consume"), not
+	// this service's own identity — trusting it there is exactly what
+	// misclassifies an ordinary service that merely calls (or consumes from) a
+	// message queue/db as being that queue/db itself. CONSUMER is included
+	// alongside CLIENT/PRODUCER because consuming from a queue is just as much
+	// an outbound interaction with an external system as producing to one —
+	// neither describes the consuming service's own identity.
 	spanName := strings.ToLower(span.SpanName)
-	for pattern, appType := range patterns {
-		if strings.Contains(spanName, pattern) {
-			return appType
+	if !strings.EqualFold(attrs.SpanKind, "CLIENT") && !strings.EqualFold(attrs.SpanKind, "PRODUCER") && !strings.EqualFold(attrs.SpanKind, "CONSUMER") {
+		for pattern, appType := range patterns {
+			if strings.Contains(spanName, pattern) {
+				return appType, evidence("span_name", pattern)
+			}
 		}
 	}
 
 	// AWS Service detection
 	if strings.Contains(serviceName, "rds") || strings.Contains(serviceName, "aws-rds") {
-		return "aws-rds"
+		return "aws-rds", evidence("service_name", "rds")
 	}
 	if strings.Contains(serviceName, "elasticache") || strings.Contains(serviceName, "aws-elasticache") {
-		return "aws-elasticache"
+		return "aws-elasticache", evidence("service_name", "elasticache")
 	}
 
 	// Protocol-based detection as fallback
 	if attrs.HTTPStatusCode > 0 || strings.Contains(spanName, "http") {
 		// This is likely an HTTP service, determine language if possible
-		return t.detectHTTPServiceType(labels, rawAttrs)
+		return t.detectHTTPServiceType(span, labels, rawAttrs)
 	}
 
-	return "" // Unknown
+	return "", nil // Unknown
 }
 
 // detectHTTPServiceType tries to detect the application type for HTTP services
-func (t *TraceServiceMapBuilder) detectHTTPServiceType(labels map[string]string, rawAttrs map[string]string) string {
+func (t *TraceServiceMapBuilder) detectHTTPServiceType(span TraceSpan, labels map[string]string, rawAttrs map[string]string) (string, *TypeEvidence) {
+	evidence := func(matchedKey, matchedValue string) *TypeEvidence {
+		return &TypeEvidence{
+			TraceID:      span.TraceID,
+			SpanID:       span.SpanID,
+			SpanName:     span.SpanName,
+			Timestamp:    span.Timestamp,
+			MatchedKey:   matchedKey,
+			MatchedValue: matchedValue,
+		}
+	}
+
 	// Check for framework-specific attributes
 	if val, ok := rawAttrs["http.server_name"]; ok {
 		serverName := strings.ToLower(val)
 		if strings.Contains(serverName, "nginx") {
-			return "nginx"
+			return "nginx", evidence("http.server_name", serverName)
 		}
 		if strings.Contains(serverName, "envoy") {
-			return "envoy"
+			return "envoy", evidence("http.server_name", serverName)
 		}
 	}
 
@@ -970,23 +1010,23 @@ func (t *TraceServiceMapBuilder) detectHTTPServiceType(labels map[string]string,
 	if lang := labels["language"]; lang != "" {
 		switch strings.ToLower(lang) {
 		case "java":
-			return "java"
+			return "java", evidence("language", lang)
 		case "python":
-			return "python"
+			return "python", evidence("language", lang)
 		case "javascript", "nodejs", "node":
-			return "nodejs"
+			return "nodejs", evidence("language", lang)
 		case "go", "golang":
-			return "golang"
+			return "golang", evidence("language", lang)
 		case "dotnet", "csharp", "c#":
-			return "dotnet"
+			return "dotnet", evidence("language", lang)
 		case "php":
-			return "php"
+			return "php", evidence("language", lang)
 		case "ruby":
-			return "ruby"
+			return "ruby", evidence("language", lang)
 		}
 	}
 
-	return "" // Unknown HTTP service
+	return "", nil // Unknown HTTP service
 }
 
 // trackExternalService tracks external services based on dependency information

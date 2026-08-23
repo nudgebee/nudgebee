@@ -228,7 +228,7 @@ type IConversationDao interface {
 	SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides) (uuid.UUID, error)
 	UpdateConversationStatus(conversationId string, status ConversationStatus) error
 	ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error)
-	SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string) (uuid.UUID, error)
+	SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error)
 	GetConversationMessage(id, accountId, conversationId string) (ConversationMessage, error)
 	CleanupConversationMessage(id, accountId string) error
 	UpdateConversationMessageContext(messageId string, context map[string]any) error
@@ -275,7 +275,7 @@ type IConversationDao interface {
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
 	GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string) (UsageMetrics, error)
-	GetUsageFilters(filter UsageMetricsFilter) (UsageFilters, error)
+	GetUsageFilters(filter UsageMetricsFilter, readableAccountIDs, selectedAccountIDs []string) (UsageFilters, error)
 	ListConversationCosts(filter UsageMetricsFilter, sortBy, sortDir string, limit, offset int) (ConversationCostList, error)
 	GetConversationTree(sessionID, accountID string) (ConversationTree, error)
 	GetConversationAgentDetail(sessionID, accountID, agentID, modelCallID string) (AgentDetail, error)
@@ -433,7 +433,14 @@ func (chat *ConversationDao) ListAgentReferences(accountId, conversationId, mess
 			    CASE
 					WHEN r.reference_type = 'context_state' THEN r.metadata::text
 					WHEN r.reference_type = 'memory' THEN m.content
-					WHEN r.reference_type = 'knowledge_base' THEN k.data
+					-- knowledge_base: prefer the KB's stored body, but fall back to
+					-- the metadata stamped at write time. Integration KBs (Confluence,
+					-- ServiceNow) keep their content in the vector store so k.data is
+					-- empty, and runbook references ('runbook:<hash>' ids) have no KB
+					-- row at all — without the fallback both were silently dropped by
+					-- the empty-content skip below and never reached the Additional
+					-- Contexts panel (#34779).
+					WHEN r.reference_type = 'knowledge_base' THEN COALESCE(NULLIF(k.data,''), NULLIF(r.metadata->>'content',''), NULLIF(r.metadata->>'description',''), r.metadata->>'name')
 					-- COALESCE(joined-projection, metadata->>'subject', '') so a
 					-- memory row deleted/decayed between injection and read still
 					-- surfaces its historical subject (from the metadata stamped
@@ -1446,7 +1453,7 @@ func (chat *ConversationDao) DeleteConversation(conversationId string) error {
 	return nil
 }
 
-func (chat *ConversationDao) SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string) (uuid.UUID, error) {
+func (chat *ConversationDao) SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error) {
 	t0 := time.Now()
 	if id == "" {
 		id = common.GenerateUUID()
@@ -1476,7 +1483,7 @@ func (chat *ConversationDao) SaveConversationMessage(id, conversationId, account
 	query := `INSERT INTO llm_conversation_messages (id, account_id, user_id, conversation_id, role, message, response, message_type, status, worker_name, agent_name, parent_agent_id, message_config, message_context, llm_provider, llm_model) 
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING llm_conversation_messages.id;`
 	var lastId uuid.UUID
-	err := chat.dbManager.Db.QueryRow(query, id, accountID, userIdSql, conversationId, role, message, response, messageType, ConversationStatusInProgress, config.Config.ServerName, agentName, parentAgentId, string(messageConfigJson), messageContext, llmProviderSql, llmModelSql).Scan(&lastId)
+	err := chat.dbManager.Db.QueryRow(query, id, accountID, userIdSql, conversationId, role, message, response, messageType, status, config.Config.ServerName, agentName, parentAgentId, string(messageConfigJson), messageContext, llmProviderSql, llmModelSql).Scan(&lastId)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("history: failed to save message: %w", err)
 	}
@@ -2706,6 +2713,10 @@ type TokenUsageDetailedRecord struct {
 	RequestStatus       string
 	LatencySeconds      sql.NullFloat64
 	CreatedAt           time.Time
+	// Cost persisted at insert time. NULL on legacy rows (and on calls with no
+	// pricing entry then), which fall back to a live recompute — same preference
+	// as GetConversationTokenUsage and usage_analytics.perCallCostExpr.
+	CostUsd sql.NullFloat64
 }
 
 // GetConversationTokenUsageDetailed returns all individual token usage records for detailed analysis
@@ -2725,7 +2736,8 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, a
 			COALESCE(t.thinking_tokens, 0) as ThinkingTokens,
 			t.request_status as RequestStatus,
 			t.latency_seconds as LatencySeconds,
-			t.created_at as CreatedAt
+			t.created_at as CreatedAt,
+			t.cost_usd as CostUsd
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
 		WHERE c.session_id = $1 AND c.account_id = $2::uuid

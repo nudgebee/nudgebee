@@ -125,13 +125,13 @@ const KubernetesLLMRequestResponse = (props) => {
 
       let convertedJson = arrayData.map((row) => {
         const rowData = {};
-        headers.forEach((header, _) => {
+        headers.forEach((header) => {
           rowData[header] = row[header];
         });
         return rowData;
       });
       const convertedJson2 = convertedJson.map((item) => {
-        const components = Object.entries(item).map(([_, value]) => {
+        const components = Object.entries(item).map(([, value]) => {
           let value1 = value;
           if (typeof value === 'object' || Array.isArray(value)) {
             value1 = JSON.stringify(value);

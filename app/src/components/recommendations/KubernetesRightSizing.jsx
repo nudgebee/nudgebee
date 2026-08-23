@@ -18,7 +18,7 @@ import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import apiUser from '@api1/user';
 import CustomTicketLink from '@shared/links/TicketLink';
-import PRLink from '@shared/links/PRLink';
+import PRLink, { resolutionsDeepLink } from '@shared/links/PRLink';
 import { ds } from 'src/utils/colors';
 import apiHome from '@api1/home';
 import useRecommendationExport from '@hooks/useRecommendationExport';
@@ -265,7 +265,14 @@ const KubernetesRightSizing = ({ enabledSummary = true, enabledFilters = true, i
                   </Box>
                 )}
                 {item.ticket && <CustomTicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} />}
-                {item.resolution && <PRLink prURL={item.resolution.type_reference_id} statusMessage={item.resolution.status_message} />}
+                {item.resolution && (
+                  <PRLink
+                    prURL={item.resolution.type_reference_id}
+                    statusMessage={item.resolution.status_message}
+                    status={item.resolution.status}
+                    resolutionHref={resolutionsDeepLink(item.id)}
+                  />
+                )}
               </>
             ),
             drilldownQuery: {

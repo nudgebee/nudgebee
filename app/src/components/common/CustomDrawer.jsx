@@ -389,7 +389,7 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
         right: `${wrapperRight}px`,
         width: `${effectiveWidth}px`,
         maxWidth: '100vw',
-        zIndex: 1401,
+        zIndex: 1250,
         pointerEvents: revealed ? 'auto' : 'none',
       }}
     >

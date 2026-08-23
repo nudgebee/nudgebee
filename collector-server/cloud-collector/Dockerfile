@@ -45,6 +45,13 @@ FROM ${RUNTIME_BASE}
 
 WORKDIR /app
 
+# tini as PID 1: CLI tools invoked by this server (az, gcloud, ...) can spawn
+# background subprocesses they never wait on. Once their parent exits, those
+# subprocesses are reparented to PID 1. Without a real init there, they become
+# permanent zombies until the container hits its process-count ceiling (#36530).
+# tini reaps any orphan regardless of which tool produced it.
+RUN apk add --no-cache tini
+
 # Copy only the compiled binary
 COPY --from=build-stage /app/cloud-collector-server /app/cloud-collector-server
 
@@ -52,4 +59,5 @@ RUN chmod +x /app/cloud-collector-server
 
 EXPOSE 8000
 
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["/app/cloud-collector-server"]

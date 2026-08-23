@@ -217,6 +217,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'solarwinds'} />;
           case 'solarwinds_webhook':
             return <ListIntegrations integrationName={'solarwinds_webhook'} />;
+          case 'elasticsearch_webhook':
+            return <ListIntegrations integrationName={'elasticsearch_webhook'} />;
           case 'dynatrace_webhook':
             return <ListIntegrations integrationName={'dynatrace_webhook'} />;
           case 'gcp_monitoring_webhook':

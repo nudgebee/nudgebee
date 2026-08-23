@@ -1686,6 +1686,41 @@ const apiKubernetes1 = {
       return err;
     }
   },
+  getImpactData: async function (eventId: string) {
+    const GET_EVENT_IMPACT = `
+    mutation GetEventImpact($eventId: String!) {
+      event_get_impact(event_id: $eventId) {
+        event_id
+        resolved
+        seed { node_id name namespace type }
+        impacted { name node_type namespace environment hops_away relationship alerting active_alerts { event_id title priority source starts_at } }
+        depends_on { name node_type namespace hops_away relationship }
+        correlated_count
+        dependent_count
+        production_dependents
+        coverage_confidence
+        truncated
+        assembly {
+          root_identity
+          truncated
+          window { lead_in_s core_s impact_s }
+          same_incident { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+          cause {
+            config_changes { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+            upstream { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+          }
+          impact { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+          chronic { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+        }
+      }
+    }
+    `;
+    try {
+      return await queryGraphQL(GET_EVENT_IMPACT, 'GetEventImpact', { eventId });
+    } catch (err) {
+      return err;
+    }
+  },
   updateEvent: async function (data: any) {
     const UPDATE_EVENT = `
     mutation EventUpdate($eventId: String!, $urgency: String!) {
@@ -1781,7 +1816,17 @@ const apiKubernetes1 = {
           label_keys
           node_types
           last_sync_time
-          node_id_map
+          node_keys
+          node_ids
+          node_account_idx
+          node_specific_type_idx
+          node_cluster_idx
+          node_bucket_idx
+          specific_type_dict
+          cluster_dict
+          filter_buckets
+          label_key_buckets
+          attribute_key_buckets
           node_count
         }
       }

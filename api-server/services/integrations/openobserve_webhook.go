@@ -317,22 +317,6 @@ func mapOpenObserveAlertToEvent(accountId string, raw map[string]any) (*core.Eve
 	return &webhookEvent, fields, nil
 }
 
-// eventRuleSeverity maps an event priority onto the only two values the
-// event_rules.severity column accepts (FK → event_rule_severity: "critical",
-// "warning").
-//
-// The raw payload severity must never be forwarded here: OpenObserve renders
-// whatever the stream carries — the k8s_events stream, for instance, sends a
-// numeric `severity: "0"` — and anything outside those two values fails the
-// foreign key, so the rule upsert is lost and the alert never appears in rule
-// management.
-func eventRuleSeverity(priority event.EventPriority) string {
-	if priority == event.EventPriorityHigh {
-		return "critical"
-	}
-	return "warning"
-}
-
 // eventRuleAlertType maps the OpenObserve stream type onto the only two values
 // the event_rules.alert_type column accepts (FK -> event_rule_alert_type:
 // "metric", "log").

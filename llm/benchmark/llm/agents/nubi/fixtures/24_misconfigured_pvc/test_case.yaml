@@ -1,4 +1,4 @@
-user_prompt: "What is the issue with redis?"
+user_prompt: "What is the issue with redis in namespace app-24?"
 expected_output: The PersistentVolumeClaim (pvc) is misconfigured
 tags:
   - easy # observed failure mode (1/20 runs): agent asked the user for more information instead of investigating first.

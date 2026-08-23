@@ -639,7 +639,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	}
 
 	t.Run("file_ref present: logs previewed, not inlined in full", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "logs_loki_1.txt", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "logs_loki_1.txt", "", nil))
 		assert.Equal(t, "logs_loki_1.txt", env["file_ref"])
 		assert.Less(t, len(env["logs"]), len(bigLogs),
 			"full logs must not be inlined when a file_ref exists")
@@ -648,7 +648,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	})
 
 	t.Run("no file_ref: full logs inlined", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", nil))
 		assert.Equal(t, "", env["file_ref"])
 		assert.Equal(t, bigLogs, env["logs"],
 			"with no file_ref the full logs must remain available inline")
@@ -656,9 +656,116 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 
 	t.Run("file_ref present but logs already small: inlined unchanged", func(t *testing.T) {
 		const small = "tiny log line"
-		env := decode(makeFetchResponse("fetch_logs", "q", small, "logs_loki_2.txt", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", small, "logs_loki_2.txt", "", nil))
 		assert.Equal(t, small, env["logs"])
 	})
+
+	t.Run("bundle_signal present: threaded through envelope verbatim", func(t *testing.T) {
+		const sig = "=== CRASH BUNDLE ===\n[error] 3 hits\n[oom] 1 hit"
+		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", "logs_loki_3.txt", sig, nil))
+		assert.Equal(t, sig, env["bundle_signal"],
+			"bundle_signal must appear verbatim in the envelope so the LLM can read it without a follow-up tool call")
+	})
+}
+
+// TestBuildLogIntentMessages_AccountPromptPropagation pins the contract for
+// account GlobalContext propagation into the query-generator call:
+//   - present  → appended to the SYSTEM message (account-stable, cache-safe)
+//   - absent   → system message is exactly the raw prompt (no empty block)
+//   - stable   → same AccountPrompt across calls yields byte-identical system
+//     messages, preserving the provider prompt-cache prefix
+//   - oversized → truncated via TruncateMiddle so a huge curated context
+//     cannot bloat every intent call
+func TestBuildLogIntentMessages_AccountPromptPropagation_DuplicateGuard(t *testing.T) {
+	const sysPrompt = "Static system prompt. Extract log retrieval parameters."
+	const gc = "Log fields for this deployment: service.name, body, k8s.pod.name."
+
+	textOf := func(m llms.MessageContent) string {
+		var b strings.Builder
+		for _, p := range m.Parts {
+			if tp, ok := p.(llms.TextContent); ok {
+				b.WriteString(tp.Text)
+			}
+		}
+		return b.String()
+	}
+
+	t.Run("account prompt lands in system message only", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for svc", AccountPrompt: gc})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Contains(t, sys, gc)
+		assert.Contains(t, sys, "Account preferences")
+		assert.NotContains(t, human, gc)
+	})
+
+	t.Run("no account prompt leaves system prompt untouched", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for svc"})
+		assert.Equal(t, sysPrompt, textOf(msgs[0]))
+	})
+
+	t.Run("same account prompt is byte-stable across calls", func(t *testing.T) {
+		a := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for svc A", AccountPrompt: gc})
+		b := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "errors in svc B last 1h", OriginalQuery: "why is B failing?", AccountPrompt: gc})
+		assert.Equal(t, textOf(a[0]), textOf(b[0]), "system message must not vary with per-call inputs")
+	})
+
+	t.Run("oversized account prompt is truncated", func(t *testing.T) {
+		huge := strings.Repeat("x", defaultCustomAgentAccountPromptBytes+50_000)
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs", AccountPrompt: huge})
+		sys := textOf(msgs[0])
+		assert.Less(t, len(sys), len(sysPrompt)+defaultCustomAgentAccountPromptBytes+1024)
+	})
+}
+
+// TestDefaultProviderLogFields pins the fallback field vocabulary advertised
+// to the query-generator when backend label discovery fails: Signoz stores
+// logs under OTel attribute names — the generic `_body`/`namespace`/`pod` set
+// matches no Signoz attribute and every query silently returns zero rows.
+func TestDefaultProviderLogFields_DuplicateGuard(t *testing.T) {
+	signozFields := defaultProviderLogFields("signoz")
+	assert.ElementsMatch(t,
+		[]string{"body", "service.name", "k8s.cluster.name", "k8s.namespace.name", "k8s.pod.name", "trace_id"},
+		signozFields)
+	assert.Equal(t, signozFields, defaultProviderLogFields("SigNoz"), "provider match must be case-insensitive")
+	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields("loki"))
+	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields(""))
+}
+
+// TestEffectiveProvider guards the per-request log_provider_override: it must
+// outrank whatever provider the agent resolved at construction, "k8s" must mean
+// "no services-server backend" (empty provider → kubectl path), and — critically
+// — it must NOT be written back onto the agent. fetch_logs instances are shared
+// across requests via the 30-minute tool-list caches, so a mutation would pin the
+// backend for every other request on the account.
+func TestEffectiveProvider(t *testing.T) {
+	cases := []struct {
+		name     string
+		resolved string
+		override string
+		want     string
+	}{
+		{"no override keeps resolved provider", "loki", "", "loki"},
+		{"k8s override routes to kubectl", "loki", "k8s", ""},
+		{"k8s override is case/space tolerant", "loki", " K8S ", ""},
+		{"override pins a backend", "", "loki", "loki"},
+		{"override case is preserved for api-server", "loki", "ES", "ES"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &FetchLogsAgent{
+				accountId: "acc-1",
+				provider:  services_server.ObservabilityProvider{Provider: tc.resolved},
+			}
+			got := a.effectiveProvider(core.NBAgentRequest{
+				QueryConfig: toolcore.NBQueryConfig{LogProviderOverride: tc.override},
+			})
+			assert.Equal(t, tc.want, got.Provider)
+			// The agent itself must be untouched — this is the cross-request leak guard.
+			assert.Equal(t, tc.resolved, a.provider.Provider, "effectiveProvider must not mutate the shared agent")
+		})
+	}
 }
 
 // TestBuildLogIntentMessages_AccountPromptPropagation pins the contract for
@@ -723,40 +830,4 @@ func TestDefaultProviderLogFields(t *testing.T) {
 	assert.Equal(t, signozFields, defaultProviderLogFields("SigNoz"), "provider match must be case-insensitive")
 	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields("loki"))
 	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields(""))
-}
-
-// TestEffectiveProvider guards the per-request log_provider_override: it must
-// outrank whatever provider the agent resolved at construction, "k8s" must mean
-// "no services-server backend" (empty provider → kubectl path), and — critically
-// — it must NOT be written back onto the agent. fetch_logs instances are shared
-// across requests via the 30-minute tool-list caches, so a mutation would pin the
-// backend for every other request on the account.
-func TestEffectiveProvider(t *testing.T) {
-	cases := []struct {
-		name     string
-		resolved string
-		override string
-		want     string
-	}{
-		{"no override keeps resolved provider", "loki", "", "loki"},
-		{"k8s override routes to kubectl", "loki", "k8s", ""},
-		{"k8s override is case/space tolerant", "loki", " K8S ", ""},
-		{"override pins a backend", "", "loki", "loki"},
-		{"override case is preserved for api-server", "loki", "ES", "ES"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := &FetchLogsAgent{
-				accountId: "acc-1",
-				provider:  services_server.ObservabilityProvider{Provider: tc.resolved},
-			}
-			got := a.effectiveProvider(core.NBAgentRequest{
-				QueryConfig: toolcore.NBQueryConfig{LogProviderOverride: tc.override},
-			})
-			assert.Equal(t, tc.want, got.Provider)
-			// The agent itself must be untouched — this is the cross-request leak guard.
-			assert.Equal(t, tc.resolved, a.provider.Provider, "effectiveProvider must not mutate the shared agent")
-		})
-	}
 }

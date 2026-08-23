@@ -1223,7 +1223,8 @@ func processTaskLoop(
 				paramMap[tasks.ParamTenantID] = wf.TenantID
 				paramMap[tasks.ParamAccountID] = wf.AccountID
 				paramMap[tasks.ParamWorkflowID] = wf.ID
-				if eventID := extractEventIDFromInputs(tplCtx.Inputs); eventID != "" {
+				eventID := extractEventIDFromInputs(tplCtx.Inputs)
+				if eventID != "" {
 					paramMap[tasks.ParamEventID] = eventID
 				}
 				paramMap[tasks.ParamUserID] = wf.UpdatedBy
@@ -1285,7 +1286,7 @@ func processTaskLoop(
 							}
 
 							// Create a TaskContext for the inline task
-							taskContext := types.NewTemporalTaskContext(context.TODO(), wf.TenantID, wf.AccountID, wf.ID, wf.UpdatedBy, wf.Name, getUserDisplayName(wf), temporalClient, dataConverter, workflowStore, temporalId, uuid.Nil.String(), logger, wf.DryRun)
+							taskContext := types.NewTemporalTaskContext(context.TODO(), wf.TenantID, wf.AccountID, wf.ID, eventID, wf.UpdatedBy, wf.Name, getUserDisplayName(wf), temporalClient, dataConverter, workflowStore, temporalId, uuid.Nil.String(), logger, wf.DryRun)
 
 							childWfDef, err := inlineTask.GetChildWorkflowDefinition(taskContext, paramMap)
 							if err != nil {
@@ -1364,7 +1365,7 @@ func processTaskLoop(
 								childWfDef = buildRoutingDef(rawResult)
 							} else {
 								// Create a TaskContext for the inline task
-								taskContext := types.NewTemporalTaskContext(context.TODO(), wf.TenantID, wf.AccountID, wf.ID, wf.UpdatedBy, wf.Name, getUserDisplayName(wf), temporalClient, dataConverter, workflowStore, temporalId, uuid.Nil.String(), logger, wf.DryRun)
+								taskContext := types.NewTemporalTaskContext(context.TODO(), wf.TenantID, wf.AccountID, wf.ID, eventID, wf.UpdatedBy, wf.Name, getUserDisplayName(wf), temporalClient, dataConverter, workflowStore, temporalId, uuid.Nil.String(), logger, wf.DryRun)
 
 								def, err := inlineTask.GetChildWorkflowDefinition(taskContext, paramMap)
 								if err != nil {
@@ -1505,7 +1506,7 @@ func processTaskLoop(
 						if len(task.Tasks) > 0 {
 							paramMap["tasks"] = task.Tasks
 						}
-						taskContext := types.NewTemporalTaskContext(context.TODO(), wf.TenantID, wf.AccountID, wf.ID, wf.UpdatedBy, wf.Name, getUserDisplayName(wf), temporalClient, dataConverter, workflowStore, temporalId, uuid.Nil.String(), logger, wf.DryRun)
+						taskContext := types.NewTemporalTaskContext(context.TODO(), wf.TenantID, wf.AccountID, wf.ID, eventID, wf.UpdatedBy, wf.Name, getUserDisplayName(wf), temporalClient, dataConverter, workflowStore, temporalId, uuid.Nil.String(), logger, wf.DryRun)
 
 						loopConfig, err := loopTask.GetLoopConfig(taskContext, paramMap)
 						if err != nil {

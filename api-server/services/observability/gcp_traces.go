@@ -25,8 +25,15 @@ type GcpTraceSource struct{}
 // filter string, a trace-id (routed to GetTrace), the sort, and a limit.
 func (s *GcpTraceSource) buildCloudTracesRequest(req TracesV3Request) cloud.QueryTracesRequest {
 	where := req.QueryRequest.Where
+	// Only a pushable workload becomes ServiceName; QueryTracesList turns a non-empty
+	// ServiceName into a `service.name:<v>` filter, which for a Cloud SQL instance id
+	// matches nothing. Those are scoped in memory by QueryTraces instead.
+	serviceName := ""
+	if w := requestedWorkload(where); pushableAsServiceName(w) {
+		serviceName = w
+	}
 	q := cloud.TracesQuery{
-		ServiceName: extractTraceStringFilter(where, "workload_name", "service_name", "workload_name_1"),
+		ServiceName: serviceName,
 		OrderBy:     gcpTraceOrderBy(req.QueryRequest.OrderBy),
 		// "Search By Trace Id" — route to Cloud Trace GetTrace (single trace) instead of
 		// a window scan; the collector honors Query.TraceId directly.
@@ -55,7 +62,7 @@ func (s *GcpTraceSource) QueryTraces(ctx *security.RequestContext, req TracesV3R
 	if err != nil {
 		return nil, err
 	}
-	return mapCloudSpansToOTelTraces(spans), nil
+	return mapCloudSpansToOTelTraces(scopeUnpushedWorkload(spans, req.QueryRequest.Where)), nil
 }
 
 // gcpTraceOrderBy maps the unified sort request to a Cloud Trace ListTraces
@@ -155,7 +162,7 @@ func (s *GcpTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req
 	if err != nil {
 		return nil, err
 	}
-	return mapCloudSpansToOTelTraces(spans), nil
+	return mapCloudSpansToOTelTraces(scopeUnpushedWorkload(spans, req.QueryRequest.Where)), nil
 }
 
 // CountTracesByTrace returns the distinct-trace count for the "By Traces" view. Cloud Trace
@@ -198,7 +205,7 @@ func (s *GcpTraceSource) GetSupportedOperators() []string { return []string{"_eq
 // not expressible, respectively).
 func gcpCloudTraceFilter(where query.QueryWhereClause) string {
 	var terms []string
-	if v := extractTraceStringFilter(where, "service_name", "workload_name", "workload_name_1"); v != "" {
+	if v := extractTraceStringFilter(where, "service_name", "workload_name", "workload_name_1"); pushableAsServiceName(v) {
 		terms = append(terms, "service.name:"+v)
 	}
 	if v := extractTraceStringFilter(where, "span_name"); v != "" {
@@ -214,45 +221,138 @@ func gcpCloudTraceFilter(where query.QueryWhereClause) string {
 }
 
 // extractTraceStringFilter pulls the first scalar value for any of the given keys out of a
-// binary where clause (handles _eq, _in, and _like — the search boxes send _like with %
-// wildcards, which Cloud Trace matches as a substring, so the wildcards are stripped).
+// where clause, in key order. Keys are searched across the whole clause tree, not just its
+// top level — callers compose predicates under And/Or (the event trace enricher nests every
+// predicate, leaving Where.Binary empty), and a top-level-only lookup reported "no filter"
+// for those, so the query ran unscoped over the whole project.
 func extractTraceStringFilter(where query.QueryWhereClause, keys ...string) string {
-	if len(where.Binary) == 0 {
+	for _, key := range keys {
+		if v := findTraceFilterValue(where, key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// findTraceFilterValue walks Binary + nested And/Or for the first scalar bound to key.
+// A negated (Not) branch is skipped deliberately: "workload is not X" names a workload to
+// exclude, and treating it as the scope would filter to exactly what the caller ruled out.
+func findTraceFilterValue(where query.QueryWhereClause, key string) string {
+	if v := traceFilterScalar(where.Binary[key]); v != "" {
+		return v
+	}
+	for _, clause := range where.And {
+		if v := findTraceFilterValue(clause, key); v != "" {
+			return v
+		}
+	}
+	for _, clause := range where.Or {
+		if v := findTraceFilterValue(clause, key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// traceFilterScalar reads a single string out of one key's operators (handles _eq, _in, and
+// _like — the search boxes send _like with % wildcards, which Cloud Trace matches as a
+// substring, so the wildcards are stripped).
+func traceFilterScalar(ops map[query.BinaryWhereClauseType]any) string {
+	if len(ops) == 0 {
 		return ""
 	}
-	for _, key := range keys {
-		ops, ok := where.Binary[key]
-		if !ok {
-			continue
+	if v, ok := ops[query.Eq]; ok {
+		if str, ok := v.(string); ok && str != "" {
+			return str
 		}
-		if v, ok := ops[query.Eq]; ok {
-			if str, ok := v.(string); ok && str != "" {
-				return str
+	}
+	if v, ok := ops[query.Like]; ok {
+		if str, ok := v.(string); ok {
+			if trimmed := strings.Trim(str, "%"); trimmed != "" {
+				return trimmed
 			}
 		}
-		if v, ok := ops[query.Like]; ok {
-			if str, ok := v.(string); ok {
-				if trimmed := strings.Trim(str, "%"); trimmed != "" {
-					return trimmed
+	}
+	if v, ok := ops[query.In]; ok {
+		switch arr := v.(type) {
+		case []any:
+			for _, e := range arr {
+				if str, ok := e.(string); ok && str != "" {
+					return str
 				}
 			}
-		}
-		if v, ok := ops[query.In]; ok {
-			switch arr := v.(type) {
-			case []any:
-				for _, e := range arr {
-					if str, ok := e.(string); ok && str != "" {
-						return str
-					}
-				}
-			case []string:
-				if len(arr) > 0 {
-					return arr[0]
-				}
+		case []string:
+			if len(arr) > 0 {
+				return arr[0]
 			}
 		}
 	}
 	return ""
+}
+
+// requestedWorkload returns the workload the caller asked to scope to, if any.
+func requestedWorkload(where query.QueryWhereClause) string {
+	return extractTraceStringFilter(where, "workload_name", "service_name", "workload_name_1")
+}
+
+// pushableAsServiceName reports whether a workload can be expressed as a Cloud Trace
+// `service.name:<v>` filter term. A Cloud SQL workload is the instance id `project:instance`,
+// whose colon breaks the LABEL:VALUE grammar — and it would never match anyway, because
+// Cloud SQL Query Insights spans carry the *database* as service.name and the instance only
+// in their `instance` label. Those are scoped in memory instead of pushed down.
+func pushableAsServiceName(workload string) bool {
+	return workload != "" && !strings.Contains(workload, ":")
+}
+
+// scopeUnpushedWorkload narrows project-wide Cloud Trace spans to the requested workload in
+// the one case the filter could not be pushed to Cloud Trace. Paths that do push down are
+// left untouched — the source already scoped those, so their results are unchanged.
+//
+// Strict by design: an unmatched workload yields no spans rather than the whole project
+// window. Returning everything is what attached one Cloud SQL instance's slow queries to
+// another instance's incident, while the evidence still reported itself as scoped.
+func scopeUnpushedWorkload(spans []map[string]any, where query.QueryWhereClause) []map[string]any {
+	workload := requestedWorkload(where)
+	if workload == "" || pushableAsServiceName(workload) {
+		return spans
+	}
+	// Keep matched traces whole: a Cloud SQL query's plan-node children (Seq Scan,
+	// Aggregate, ...) carry no instance label of their own, so matching span-by-span
+	// would strip every child off its `Cloud SQL Query` root and leave a bare timing.
+	matched := map[string]bool{}
+	for _, sp := range spans {
+		if spanMatchesWorkload(sp, workload) {
+			matched[getSpanString(sp, "trace_id")] = true
+		}
+	}
+	out := make([]map[string]any, 0, len(spans))
+	for _, sp := range spans {
+		if matched[getSpanString(sp, "trace_id")] {
+			out = append(out, sp)
+		}
+	}
+	return out
+}
+
+// spanMatchesWorkload reports whether a mapped Cloud Trace span belongs to the workload.
+// Checks the projected identity columns plus the Cloud SQL labels, where `instance` — not
+// service.name — carries the instance identity.
+func spanMatchesWorkload(sp map[string]any, workload string) bool {
+	for _, key := range []string{"service_name", "workload_name"} {
+		if strings.EqualFold(getSpanString(sp, key), workload) {
+			return true
+		}
+	}
+	attrs := map[string]string{}
+	if raw := getSpanString(sp, "span_attributes"); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &attrs)
+	}
+	for _, key := range []string{"instance", "database", "service.name"} {
+		if strings.EqualFold(attrs[key], workload) {
+			return true
+		}
+	}
+	return false
 }
 
 // spanAttrsWithContext parses the cloud span's span_attributes JSON string and augments it

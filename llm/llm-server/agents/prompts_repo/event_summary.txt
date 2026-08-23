@@ -40,8 +40,9 @@ IMPORTANT: Your response must be in pure Markdown format only. Do NOT use XML ta
 - *e.g., Memory usage spiked from 500MiB to 2.5GiB over 5 minutes.*
 - *e.g., CPU utilization remained normal at ~15%.*
 
-### 🎯 Suspected Root Cause
+### Causality Chain (Root Cause)
 *A concise explanation of the most likely root cause. Must cite specific evidence (log line, metric value, trace span, or deployment change) that supports this conclusion. If evidence is insufficient, say so and list what data would be needed.*
+*The header text above is fixed — reproduce it verbatim (plain text, no leading emoji, no methodology tag, no other wording). Downstream consumers pattern-match on the canonical string; any deviation breaks the contract.*
 
 ### 💡 Recommendations & Next Steps
 1.  **Immediate Fix:** *e.g., Revert the recent deployment to restore the previous, more generous memory limit.*

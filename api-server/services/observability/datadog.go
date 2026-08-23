@@ -754,7 +754,7 @@ func buildBinaryClause(binary query.BinaryWhereClause) (string, error) {
 				if ok {
 					var strVals []string
 					for _, v := range arr {
-						strVals = append(strVals, fmt.Sprintf("\"%v\"", v))
+						strVals = append(strVals, strconv.Quote(fmt.Sprint(v)))
 					}
 					parts = append(parts, fmt.Sprintf("(%s:%s)", field, strings.Join(strVals, " OR "+field+":")))
 				}
@@ -766,7 +766,7 @@ func buildBinaryClause(binary query.BinaryWhereClause) (string, error) {
 				arr, ok := val.([]any)
 				if ok {
 					for _, v := range arr {
-						parts = append(parts, fmt.Sprintf("-%s:\"%v\"", field, v))
+						parts = append(parts, fmt.Sprintf("-%s:%s", field, strconv.Quote(fmt.Sprint(v))))
 					}
 				}
 			case Contains:

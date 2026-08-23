@@ -6,20 +6,20 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
 	github.com/Cyprinus12138/otelgin v1.0.3
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/JohannesKaufmann/html-to-markdown/v2 v2.4.0
+	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/PagerDuty/go-pagerduty v1.8.0
 	github.com/agiledragon/gomonkey/v2 v2.14.1
 	github.com/alecthomas/participle/v2 v2.1.4
 	github.com/allegro/bigcache/v3 v3.1.0
 	github.com/andygrunwald/go-jira v1.17.0
-	github.com/aws/aws-sdk-go-v2 v1.42.1
+	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentity v1.35.1
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider v1.65.0
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.307.0
-	github.com/aws/aws-sdk-go-v2/service/pricing v1.42.7
+	github.com/aws/aws-sdk-go-v2/service/pricing v1.44.0
 	github.com/beltran/gohive v1.8.1
-	github.com/eko/gocache/lib/v4 v4.2.3
+	github.com/eko/gocache/lib/v4 v4.2.4
 	github.com/eko/gocache/store/bigcache/v4 v4.2.4
 	github.com/eko/gocache/store/redis/v4 v4.2.6
 	github.com/fatih/structs v1.1.0
@@ -32,7 +32,7 @@ require (
 	github.com/graphql-go/graphql v0.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/michaeldcanady/servicenow-sdk-go v1.7.1
+	github.com/michaeldcanady/servicenow-sdk-go v1.12.0
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/noirbizarre/gonja v0.0.0-20200629003239-4d051fd0be61
 	github.com/nudgebee/logparser v0.0.0-20251218094028-bf4256a63b22
@@ -78,14 +78,14 @@ require (
 )
 
 require (
-	github.com/JohannesKaufmann/dom v0.2.0 // indirect
+	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/alecthomas/repr v0.5.1 // indirect
 	github.com/apache/thrift v0.23.0 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.24 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.29 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.30 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.31 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.31 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.30 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.12 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.29 // indirect
@@ -121,12 +121,13 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jaeyo/go-drain3 v0.1.2 // indirect
-	github.com/microsoft/kiota-abstractions-go v1.9.2 // indirect
-	github.com/microsoft/kiota-http-go v1.5.5 // indirect
-	github.com/microsoft/kiota-serialization-form-go v1.1.2 // indirect
+	github.com/magiconair/properties v1.8.10 // indirect
+	github.com/microsoft/kiota-abstractions-go v1.9.4 // indirect
+	github.com/microsoft/kiota-http-go v1.5.6 // indirect
+	github.com/microsoft/kiota-serialization-form-go v1.1.3 // indirect
 	github.com/microsoft/kiota-serialization-json-go v1.1.2 // indirect
 	github.com/microsoft/kiota-serialization-multipart-go v1.1.2 // indirect
-	github.com/microsoft/kiota-serialization-text-go v1.1.2 // indirect
+	github.com/microsoft/kiota-serialization-text-go v1.1.3 // indirect
 	github.com/mozillazg/go-httpheader v0.4.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -136,8 +137,8 @@ require (
 	github.com/richardlehane/msoleps v1.0.6 // indirect
 	github.com/samber/slog-common v0.21.0 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
-	github.com/std-uritemplate/std-uritemplate/go/v2 v2.0.3 // indirect
-	github.com/stretchr/objx v0.5.2 // indirect
+	github.com/std-uritemplate/std-uritemplate/go/v2 v2.0.8 // indirect
+	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/trivago/tgo v1.0.7 // indirect
 	github.com/xuri/efp v0.0.1 // indirect
@@ -182,8 +183,7 @@ require (
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
-	github.com/magiconair/properties v1.8.10 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/paulmach/orb v0.13.0 // indirect

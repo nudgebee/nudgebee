@@ -178,7 +178,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
     .filter((count) => count > 0)
     .reduce((sum, count) => sum + count, 0);
   const kindArray = Object.entries(clusterSummary?.cluster_data?.workload_type_counts ?? {})
-    .filter(([_, count]) => count > 0)
+    .filter(([, count]) => count > 0)
     .map(([type, count]) => ({
       type,
       count,

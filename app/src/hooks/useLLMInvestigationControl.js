@@ -151,23 +151,19 @@ const parseConversationMessages = (conversationMessages, accountId) => {
       // Pre-pass: collect all sub-agent IDs that should be hidden as separate task cards.
       // Building this upfront ensures correct exclusion regardless of iteration order —
       // previously, a child agent appearing before its parent in the list would not be skipped.
-      // Current "*_orchestrator" names plus the legacy "*_debug" names, so runs stored
-      // under either name are recognized as top-level orchestrators (whose sub-agent
-      // task cards are hidden).
-      const debugAgentNames = [
-        'k8s_orchestrator',
-        'aws_orchestrator',
-        'gcp_orchestrator',
-        'azure_orchestrator',
-        'datadog_orchestrator',
-        'k8s_debug',
-        'aws_debug',
-        'gcp_debug',
-        'azure_debug',
-        'datadog_debug',
-      ];
+      // Any "*_orchestrator" agent (including the `_2` / `_lean` variants) plus the legacy
+      // "*_debug" cloud/k8s orchestrators are treated as top-level orchestrators whose
+      // sub-agent task cards are hoisted. An exact-match list missed the newer
+      // `k8s_orchestrator_lean` / `aws_orchestrator_2` etc., so their sub-agent (which owns
+      // most of the tool calls) was skipped and only the orchestrator's single sub-agent
+      // invocation surfaced in Tool Details. Matching `_orchestrator` as a substring fixes
+      // that; the explicit list stays only for the legacy `_debug` names — other `*_debug`
+      // agents (postgres_debug, mysql_debug, …) are leaf tools, NOT orchestrators.
+      const legacyDebugOrchestratorNames = ['k8s_debug', 'aws_debug', 'gcp_debug', 'azure_debug', 'datadog_debug'];
+      const isOrchestratorAgent = (name) =>
+        typeof name === 'string' && (name.includes('_orchestrator') || legacyDebugOrchestratorNames.includes(name));
       agentsWithoutRouter.forEach((agent) => {
-        if (!debugAgentNames.includes(agent?.agent_name)) {
+        if (!isOrchestratorAgent(agent?.agent_name)) {
           (agent?.llm_conversation_tool_calls || []).forEach((t) => {
             if (t.child_agent_id) {
               childAgentsToSkip.push(t.child_agent_id);
@@ -203,7 +199,7 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           });
         };
 
-        if (debugAgentNames.includes(agent?.agent_name)) {
+        if (isOrchestratorAgent(agent?.agent_name)) {
           (agent?.llm_conversation_tool_calls || []).forEach((t) => {
             if (t.child_agent_id) {
               plannerIdChildMapping[t.child_agent_id] = t.tool_id;
@@ -226,6 +222,10 @@ const parseConversationMessages = (conversationMessages, accountId) => {
                 references: t.references,
                 created_at: t.created_at,
                 updated_at: t.updated_at,
+                // Lineage for the Tasks-drawer tree only (inline stream ignores these):
+                // this tool call belongs to the orchestrator `agent`, so the drawer nests
+                // it under a synthesized collapsible group for that orchestrator.
+                orchestratorParent: { id: agent.id, name: agent.agent_name, created_at: agent.created_at, status: agent.status },
                 response: { type: 'tool_call_response', text: t.response },
               };
               messageSequence.push(t.tool_id);
@@ -295,6 +295,7 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           }
         }
         const parentAgentsList = getParentAgents(agent);
+        const rawParentAgent = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? agentIdMap[agent.parent_agent_id] : null;
         toolRequestResponse[agent.id] = {
           // Map Agent to Message
           response_text: agent.response,
@@ -309,10 +310,15 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           thought: agent.thought,
           query: agent.query,
           parentAgents: parentAgentsList,
-          // Nesting depth for the Tasks timeline — number of ancestor agents in
-          // the display breadcrumb. Drives left-indentation + dot shade in the
-          // Tasks drawer so sub-agents read as nested rather than flat siblings.
-          nestingDepth: parentAgentsList.length,
+          // Raw lineage for the Tasks-drawer tree only (inline stream ignores these).
+          // parentAgentId nests this task under its parent task when that parent is
+          // also rendered; orchestratorParent lets the drawer synthesize a collapsible
+          // group when the (hidden) parent is an orchestrator whose children are hoisted.
+          parentAgentId: rawParentAgent ? rawParentAgent.id : null,
+          orchestratorParent:
+            rawParentAgent && isOrchestratorAgent(rawParentAgent.agent_name)
+              ? { id: rawParentAgent.id, name: rawParentAgent.agent_name, created_at: rawParentAgent.created_at, status: rawParentAgent.status }
+              : undefined,
           plannerId: plannerIdChildMapping[agent.id],
           type: 'tool_call',
           toolParameters: parameters,

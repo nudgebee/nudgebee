@@ -62,14 +62,14 @@ var eventInvestigation string
 //go:embed memory_extractor.txt
 var memoryExtractor string
 
-//go:embed agent_k8s_debug.txt
-var agentK8sDebug string
-
 //go:embed agent_k8s_debug_react.txt
 var agentK8sDebugReact string
 
 //go:embed agent_k8s_lean.txt
 var agentK8sLean string
+
+//go:embed agent_aws_lean.txt
+var agentAwsLean string
 
 //go:embed summarization_security.txt
 var summarizationSecurity string
@@ -129,6 +129,9 @@ var watchCompletionSummary string
 //go:embed tool_remediation_generate.txt
 var toolRemediationGenerate string
 
+//go:embed tool_remediation_generate_json.txt
+var toolRemediationGenerateJson string
+
 // agentFinops is the system prompt for the FinOps cost optimization supervisor agent.
 // It orchestrates spend analysis, recommendation discovery, and resource investigation
 // by delegating to specialized sub-tools and agents.
@@ -187,9 +190,9 @@ const PromptEventSummary = "event_summary"
 const PromptEventGeneralSummary = "event_general_summary"
 const PromptEventInvestigation = "event_investigation"
 const PromptMemoryExtractor = "memory_extractor"
-const PromptAgentK8sDebug = "agent_k8s_debug"
 const PromptAgentK8sDebugReact = "agent_k8s_debug_react"
 const PromptAgentK8sLean = "agent_k8s_lean"
+const PromptAgentAwsLean = "agent_aws_lean"
 const PromptSummarizationSecurity = "summarization_security"
 const PromptUnifiedContextMemory = "unified_context_memory"
 const PromptExecutorResponseFormatterSlack = "executor_response_formatter_slack"
@@ -211,6 +214,12 @@ const PromptWatchCompletionSummary = "watch_completion_summary"
 // PromptToolRemediationGenerate is the system prompt embedded in tool_remediation_generate.txt.
 // Loaded by RemediationGenerateTool.Call() to avoid hardcoding prompts in Go source.
 const PromptToolRemediationGenerate = "tool_remediation_generate"
+
+// PromptToolRemediationGenerateJson is the system prompt embedded in tool_remediation_generate_json.txt.
+// It instructs the model to emit a strict JSON remediation plan (root cause + execute/verify/rollback
+// commands per step) for the structured remediation panel, as opposed to the prose plan the
+// agent-facing PromptToolRemediationGenerate produces.
+const PromptToolRemediationGenerateJson = "tool_remediation_generate_json"
 
 // PromptScratchpadContextSummarizer summarizes a block of older scratchpad context for budget compression.
 const PromptScratchpadContextSummarizer = "scratchpad_context_summarizer"
@@ -269,12 +278,12 @@ func GetPrompt(module string, args ...any) string {
 		data = eventInvestigation
 	case PromptMemoryExtractor:
 		data = memoryExtractor
-	case PromptAgentK8sDebug:
-		data = agentK8sDebug
 	case PromptAgentK8sDebugReact:
 		data = agentK8sDebugReact
 	case PromptAgentK8sLean:
 		data = agentK8sLean
+	case PromptAgentAwsLean:
+		data = agentAwsLean
 	case PromptSummarizationSecurity:
 		data = summarizationSecurity
 	case PromptUnifiedContextMemory:
@@ -311,6 +320,8 @@ func GetPrompt(module string, args ...any) string {
 		data = watchCompletionSummary
 	case PromptToolRemediationGenerate:
 		data = toolRemediationGenerate
+	case PromptToolRemediationGenerateJson:
+		data = toolRemediationGenerateJson
 	case PromptScratchpadSummarizer:
 		data = scratchpadSummarizer
 	case PromptScratchpadContextSummarizer:

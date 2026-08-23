@@ -1,0 +1,31 @@
+-- Backfill pre-existing knowledge_graph_node rows with specific_type = '' —
+-- OSS ordering note: this migration follows the OSS-renumbered migration that
+-- creates specific_type (1785401668101).
+-- Go's zero value for string, persisted literally instead of NULL or a real
+-- value by ConvertServiceMapToGraph's node-literal construction (fixed in the
+-- same PR as this migration; nudgebee-enterprise#34880). core.NewNode's own
+-- documented invariant is "no node is ever blank": when a source doesn't
+-- declare a concrete specific_type, it defaults to the node's own node_type
+-- string. This migration applies that identical fallback to rows the fixed
+-- code path already wrote before the fix shipped.
+--
+-- Deliberately matches on the empty string alone (no node_type/source
+-- scoping): a dev-DB check while writing this migration found 468 rows from
+-- the ExternalService/Service path this PR fixes (ebpf + traces sources),
+-- plus 3 unrelated `Pod`/source=cloud rows hitting the same symptom via a
+-- different, not-yet-diagnosed code path. core.NewNode's fallback (default
+-- specific_type to the node's own node_type) is a universally safe value
+-- regardless of which construction path left it blank, so backfilling all of
+-- them here is correct even though this PR only fixes the write path for the
+-- first group. The `Pod`/cloud root cause is a separate bug, tracked as a
+-- new finding under nudgebee-enterprise#34880 rather than fixed here.
+--
+-- Without this backfill, affected tenants keep seeing a blank, unlabeled,
+-- selectable leaf row in the Knowledge Graph Node Type filter dropdown until
+-- their next flow-source sync happens to re-save the same node (the fixed
+-- code self-heals on write, but only for nodes that get re-synced).
+--
+-- Idempotent: no rows match specific_type = '' once applied.
+UPDATE knowledge_graph_node
+SET specific_type = node_type
+WHERE specific_type = '';

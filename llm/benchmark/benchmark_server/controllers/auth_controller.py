@@ -47,24 +47,23 @@ NOTIFICATION_SERVER_TOKEN = os.environ.get("NOTIFICATION_SERVER_TOKEN", "")
 # 10 minutes mirrors the UI app's NextAuth EmailProvider maxAge.
 MAGIC_LINK_TTL_SECONDS = int(os.environ.get("MAGIC_LINK_TTL_SECONDS", "600"))
 
-# In-process token store: token -> (email, expires_at_unix). Survives until
-# process restart, which is acceptable for an internal tool — the worst
-# outcome of a restart is the user re-requests a link. If/when durability
-# matters, swap for a DB row keyed by token (mirroring NextAuth's
-# ``user_auths`` magic-link rows).
+# Token store lives in Postgres (benchmark_magic_link_tokens table) so any
+# number of uvicorn workers — or replicas — share the same one-shot state.
+# Prior implementation was a per-process dict which silently broke ~50% of
+# logins the moment AutoOptimize (or an operator) bumped UVICORN_WORKERS
+# above 1: the worker handling the click didn't have the entry from the
+# worker that minted it. In-memory dict is kept ONLY as a dev fallback for
+# runs without APP_DATABASE_URL — the module-level guard picks the DB path
+# whenever db_engine is available.
 _magic_tokens: dict[str, tuple[str, float]] = {}
 _magic_lock = threading.Lock()
 
-# Per-email cooldown on /auth/email-login. The endpoint is unauthenticated
-# and triggers a real email send via notifications-server — without a
-# throttle an attacker can mailbox-bomb a known internal user (and burn
-# notifications-server / SES quota). ``EMAIL_LOGIN_COOLDOWN_SEC`` enforces
-# a minimum gap between successive sends to the same address. Tightening
-# at the ingress (limit-rps / limit-rpm in nudgebee-infra#635) catches
-# the per-IP burst case; this catches the per-target case where many IPs
-# all spam the same email. In-memory + UVICORN_WORKERS=1 (set in
-# Dockerfile) — multi-worker would defeat this just like it defeats the
-# token store, and that's already documented there.
+# Per-email cooldown on /auth/email-login. Same design as above — moved
+# to Postgres (benchmark_email_login_cooldown) so N workers can't each
+# send one email per cooldown window (previously they could). Ingress-side
+# per-IP throttles (nudgebee-infra#635) still catch the per-IP burst
+# case; this table catches the per-target case where many IPs all spam
+# the same email. In-memory dict remains ONLY as a dev fallback.
 _EMAIL_LOGIN_COOLDOWN_SEC = int(os.environ.get("EMAIL_LOGIN_COOLDOWN_SEC", "60"))
 _email_login_last: dict[str, float] = {}
 _email_login_lock = threading.Lock()
@@ -169,12 +168,27 @@ def lookup_user_by_email(email: str) -> dict | None:
 # Magic-link helpers
 # ---------------------------------------------------------------------------
 def _purge_expired_tokens() -> None:
-    """Drop expired entries from the in-process magic-link store.
+    """Drop expired entries from the magic-link store.
 
-    Called opportunistically (on each issue / consume) to keep the dict
+    Called opportunistically (on each issue / consume) to keep the table
     bounded; for an internal tool with a handful of logins per day this
-    is enough — no separate timer needed.
+    is enough — no separate timer needed. Runs a single indexed DELETE
+    on Postgres, or trims the in-memory fallback dict.
     """
+    if db_engine is not None:
+        try:
+            with db_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "DELETE FROM benchmark_magic_link_tokens "
+                        "WHERE expires_at <= (NOW() AT TIME ZONE 'utc')"
+                    )
+                )
+            return
+        except Exception as exc:
+            logger.warning(
+                "magic-link: purge failed (falling back to in-memory): %s", exc
+            )
     now = time.time()
     with _magic_lock:
         stale = [t for t, (_, exp) in _magic_tokens.items() if exp <= now]
@@ -186,6 +200,27 @@ def _issue_magic_token(email: str) -> str:
     """Generate a one-time, URL-safe token for ``email`` and remember it."""
     _purge_expired_tokens()
     token = secrets.token_urlsafe(32)
+    if db_engine is not None:
+        try:
+            # Naive UTC to match the schema's DateTime columns (see
+            # models/benchmark_run.py). Consistent with BenchmarkRun etc.
+            expires = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+                seconds=MAGIC_LINK_TTL_SECONDS
+            )
+            with db_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO benchmark_magic_link_tokens "
+                        "(token, email, expires_at) "
+                        "VALUES (:token, :email, :expires_at)"
+                    ),
+                    {"token": token, "email": email, "expires_at": expires},
+                )
+            return token
+        except Exception as exc:
+            logger.warning(
+                "magic-link: DB insert failed (falling back to in-memory): %s", exc
+            )
     expires_at = time.time() + MAGIC_LINK_TTL_SECONDS
     with _magic_lock:
         _magic_tokens[token] = (email, expires_at)
@@ -193,8 +228,31 @@ def _issue_magic_token(email: str) -> str:
 
 
 def _consume_magic_token(token: str) -> str | None:
-    """Pop ``token`` from the store and return the bound email if still
-    valid, else ``None``. One-shot — a token is unusable after first use."""
+    """Consume ``token`` and return the bound email if still valid, else ``None``.
+
+    One-shot: the row is DELETEd in the same statement that reads it, so
+    two concurrent workers racing on the same token both see at most one
+    success — the second gets zero rows and returns None. Expired tokens
+    are rejected by the same WHERE clause.
+    """
+    if db_engine is not None:
+        try:
+            with db_engine.begin() as conn:
+                result = conn.execute(
+                    text(
+                        "DELETE FROM benchmark_magic_link_tokens "
+                        "WHERE token = :token "
+                        "AND expires_at > (NOW() AT TIME ZONE 'utc') "
+                        "RETURNING email"
+                    ),
+                    {"token": token},
+                )
+                row = result.first()
+            return str(row[0]) if row is not None else None
+        except Exception as exc:
+            logger.warning(
+                "magic-link: DB consume failed (falling back to in-memory): %s", exc
+            )
     _purge_expired_tokens()
     with _magic_lock:
         entry = _magic_tokens.pop(token, None)
@@ -204,6 +262,110 @@ def _consume_magic_token(token: str) -> str | None:
     if expires_at <= time.time():
         return None
     return email
+
+
+def _check_and_mark_email_cooldown(email: str) -> bool:
+    """Return True if a fresh email send is allowed (and mark the send time);
+    False if the caller is inside the cooldown window and should be throttled.
+
+    Postgres-backed shared state so all uvicorn workers see the same
+    last-sent-at. Single atomic `INSERT … ON CONFLICT DO UPDATE … WHERE`
+    statement — a row is returned only when either (a) no row existed
+    (inserted fresh) or (b) an existing row's `last_sent_at` was older
+    than the cooldown cutoff (updated). If two workers race on the same
+    non-existent email, Postgres serialises the INSERT via the PK unique
+    constraint — the loser goes to ON CONFLICT DO UPDATE, and the WHERE
+    clause blocks the update because the winner's `last_sent_at` is
+    within the cooldown window → loser gets no RETURNING row → False.
+    """
+    if db_engine is not None:
+        try:
+            # Naive UTC to match the schema's DateTime columns.
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            cutoff = now - timedelta(seconds=_EMAIL_LOGIN_COOLDOWN_SEC)
+            with db_engine.begin() as conn:
+                result = conn.execute(
+                    text(
+                        "INSERT INTO benchmark_email_login_cooldown "
+                        "(email, last_sent_at) VALUES (:email, :now) "
+                        "ON CONFLICT (email) DO UPDATE "
+                        "SET last_sent_at = EXCLUDED.last_sent_at "
+                        "WHERE benchmark_email_login_cooldown.last_sent_at <= :cutoff "
+                        "RETURNING 1"
+                    ),
+                    {"email": email, "now": now, "cutoff": cutoff},
+                )
+                if result.first() is None:
+                    logger.info(
+                        "magic-link cooldown: throttling %s (cooldown=%ds)",
+                        email,
+                        _EMAIL_LOGIN_COOLDOWN_SEC,
+                    )
+                    return False
+            return True
+        except Exception as exc:
+            logger.warning(
+                "magic-link: DB cooldown failed (falling back to in-memory): %s", exc
+            )
+    now_ts = time.time()
+    with _email_login_lock:
+        last = _email_login_last.get(email, 0.0)
+        if now_ts - last < _EMAIL_LOGIN_COOLDOWN_SEC:
+            logger.info(
+                "magic-link cooldown: throttling %s (last=%.0fs ago, cooldown=%ds)",
+                email,
+                now_ts - last,
+                _EMAIL_LOGIN_COOLDOWN_SEC,
+            )
+            return False
+        _email_login_last[email] = now_ts
+    return True
+
+
+def _clear_email_cooldown(email: str) -> None:
+    """Clear the cooldown entry for ``email`` (used on send failure so the
+    user can immediately retry — the failure was on our side, not abuse)."""
+    if db_engine is not None:
+        try:
+            with db_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "DELETE FROM benchmark_email_login_cooldown "
+                        "WHERE email = :email"
+                    ),
+                    {"email": email},
+                )
+            return
+        except Exception as exc:
+            logger.warning(
+                "magic-link: DB cooldown clear failed (falling back to in-memory): %s",
+                exc,
+            )
+    with _email_login_lock:
+        _email_login_last.pop(email, None)
+
+
+def _clear_magic_token(token: str) -> None:
+    """Drop ``token`` from the store (used when the email send fails, so a
+    dangling usable token isn't left floating)."""
+    if db_engine is not None:
+        try:
+            with db_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "DELETE FROM benchmark_magic_link_tokens "
+                        "WHERE token = :token"
+                    ),
+                    {"token": token},
+                )
+            return
+        except Exception as exc:
+            logger.warning(
+                "magic-link: DB clear-token failed (falling back to in-memory): %s",
+                exc,
+            )
+    with _magic_lock:
+        _magic_tokens.pop(token, None)
 
 
 def _send_magic_link_email(email: str, magic_link_url: str) -> bool:
@@ -385,18 +547,8 @@ async def email_login(request: Request, email: str = Form("")):
     # check doesn't leak which emails are registered (timing-equivalent to
     # the unregistered branch below). Returns the same /signin?sent=1 either
     # way: caller can't distinguish "throttled" from "sent" or "unregistered".
-    now = time.time()
-    with _email_login_lock:
-        last = _email_login_last.get(normalized, 0.0)
-        if now - last < _EMAIL_LOGIN_COOLDOWN_SEC:
-            logger.info(
-                "magic-link cooldown: throttling %s (last=%.0fs ago, cooldown=%ds)",
-                normalized,
-                now - last,
-                _EMAIL_LOGIN_COOLDOWN_SEC,
-            )
-            return RedirectResponse("/signin?sent=1", status_code=302)
-        _email_login_last[normalized] = now
+    if not _check_and_mark_email_cooldown(normalized):
+        return RedirectResponse("/signin?sent=1", status_code=302)
 
     user_data = lookup_user_by_email(normalized)
     if user_data is None:
@@ -413,12 +565,10 @@ async def email_login(request: Request, email: str = Form("")):
     if not _send_magic_link_email(normalized, magic_link_url):
         # Drop the token so we don't leave a usable one floating after a
         # send failure (the user will retry; a fresh token will be issued).
-        with _magic_lock:
-            _magic_tokens.pop(token, None)
+        _clear_magic_token(token)
         # Also clear the cooldown entry so the user can immediately retry —
         # the send failure was on our side, not abuse.
-        with _email_login_lock:
-            _email_login_last.pop(normalized, None)
+        _clear_email_cooldown(normalized)
         return RedirectResponse("/signin?err=send_failed", status_code=302)
 
     logger.info("magic-link sent to %s", normalized)

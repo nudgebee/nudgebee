@@ -1,6 +1,6 @@
 """Hybrid finding card: ONE severity-striped legacy attachment with a
 clickable title (title_link), evidence body, two-column fields, and all
-actions inside the card (View Details, Ask Nubi, and the Silence menu).
+actions inside the card (View Details, Ask Nubi, and the Suppress menu).
 Top-level text/blocks stay empty (a non-empty text with no blocks renders as
 a duplicate heading), and no attachment may carry blocks/footer/ts (Slack's
 "Added by {app}" byline triggers)."""
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import notifications_server.services.actions_common as actions_common
 from notifications_server.message_templates.slack.finding import (
     FINDING_CALLBACK_ID,
-    SILENCE_ACTION_NAME,
+    SUPPRESS_ACTION_NAME,
     get_slack_finding_message,
 )
 from notifications_server.services.actions_common import SlackInteractiveActionsService
@@ -106,16 +106,21 @@ class TestHybridCardShape:
         assert body["action_params"]["event_id"] == "find-77"
         assert body["action_params"]["tenant_id"] == "tenant-1"
 
-    def test_silence_menu_offers_both_scopes_with_signed_values(self):
+    def test_suppress_menu_offers_both_scopes_with_signed_values(self):
         _, _, (att,) = _render(_finding())
-        silence = att["actions"][2]
-        assert silence["type"] == "select" and silence["name"] == SILENCE_ACTION_NAME
-        this_group, all_group = silence["option_groups"]
-        assert [o["text"] for o in this_group["options"]] == ["Silence 1h", "Silence 4h", "Silence 24h", "Silence 7d"]
+        suppress = att["actions"][2]
+        assert suppress["type"] == "select" and suppress["name"] == SUPPRESS_ACTION_NAME
+        this_group, all_group = suppress["option_groups"]
+        assert [o["text"] for o in this_group["options"]] == [
+            "Suppress 1h",
+            "Suppress 4h",
+            "Suppress 24h",
+            "Suppress 7d",
+        ]
         assert "report_crash_loop" in all_group["text"]
-        assert [o["text"] for o in all_group["options"]] == ["Silence 4h", "Silence 24h", "Silence 7d"]
+        assert [o["text"] for o in all_group["options"]] == ["Suppress 4h", "Suppress 24h", "Suppress 7d"]
         body = json.loads(this_group["options"][1]["value"])["body"]
-        assert body["action_name"] == SILENCE_ACTION_NAME
+        assert body["action_name"] == SUPPRESS_ACTION_NAME
         params = body["action_params"]
         assert params["scope"] == "fingerprint" and params["duration_hours"] == 4
         assert params["fingerprint"] == "fp-77" and params["alertname"] == "report_crash_loop"
@@ -123,9 +128,9 @@ class TestHybridCardShape:
         all_params = json.loads(all_group["options"][0]["value"])["body"]["action_params"]
         assert all_params["scope"] == "alertname"
         # legacy attachment option values cap at 2000 chars
-        assert all(len(o["value"]) < 2000 for group in silence["option_groups"] for o in group["options"])
+        assert all(len(o["value"]) < 2000 for group in suppress["option_groups"] for o in group["options"])
 
-    def test_silence_menu_degrades_with_missing_identity(self):
+    def test_suppress_menu_degrades_with_missing_identity(self):
         _, _, (att,) = _render({**_finding(), "fingerprint": ""})
         groups = att["actions"][2]["option_groups"]
         assert len(groups) == 1 and "report_crash_loop" in groups[0]["text"]
@@ -169,7 +174,7 @@ class TestLegacyPayloadNormalization:
             "type": "interactive_message",
             "message_ts": "1.2",
             "original_message": {"ts": "1.2"},
-            "actions": [{"type": "select", "name": SILENCE_ACTION_NAME, "selected_options": [{"value": "v1"}]}],
+            "actions": [{"type": "select", "name": SUPPRESS_ACTION_NAME, "selected_options": [{"value": "v1"}]}],
         }
         out = SlackInteractiveActionsService.normalize_legacy_payload(data)
         assert out["actions"][0]["selected_option"] == {"value": "v1"}
@@ -186,7 +191,7 @@ class _FakeResponse:
         return self._body
 
 
-def _silence_click_payload():
+def _suppress_click_payload():
     _, _, (attachment,) = _render(_finding())
     option = attachment["actions"][2]["option_groups"][1]["options"][1]  # all alerts · 24h
     data = {
@@ -196,7 +201,7 @@ def _silence_click_payload():
         "user": {"id": "U1"},
         "message_ts": "111.222",
         "original_message": {"ts": "111.222", "attachments": [json.loads(json.dumps(attachment))]},
-        "actions": [{"type": "select", "name": SILENCE_ACTION_NAME, "selected_options": [{"value": option["value"]}]}],
+        "actions": [{"type": "select", "name": SUPPRESS_ACTION_NAME, "selected_options": [{"value": option["value"]}]}],
     }
     return SlackInteractiveActionsService.normalize_legacy_payload(data)
 
@@ -207,7 +212,7 @@ def _service_with(common_service):
     return service
 
 
-class TestSilenceCallback:
+class TestSuppressCallback:
     def test_click_creates_scoped_rule_and_updates_message(self, monkeypatch):
         posted = []
 
@@ -227,8 +232,8 @@ class TestSilenceCallback:
                 update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
             )
         )
-        data = _silence_click_payload()
-        service.handle_silence_finding("C1", "T1", "u@x.com", data["actions"][0], data)
+        data = _suppress_click_payload()
+        service.handle_suppress_finding("C1", "T1", "u@x.com", data["actions"][0], data)
 
         rule_call = posted[1]["json"]
         assert rule_call["action"] == {"name": "event_create_triage_rule"}
@@ -241,9 +246,19 @@ class TestSilenceCallback:
         assert rule_input["effective_until"].endswith("Z")
 
         (updated,) = calls["update"]
-        assert all(a.get("name") != SILENCE_ACTION_NAME for a in updated["actions"])
-        assert "Silenced" in updated["text"].splitlines()[-1]
-        assert "won't notify" in calls["thread"]
+        assert all(a.get("name") != SUPPRESS_ACTION_NAME for a in updated["actions"])
+        status_line = updated["text"].splitlines()[-1]
+        assert status_line.startswith("Suppressed")
+        assert "🔕" not in status_line
+
+        thread = calls["thread"]
+        assert "won't notify" in thread
+        # Active voice: the person is the subject, not a trailing agent.
+        assert thread.startswith("<@U1> suppressed ")
+        assert "🔕" not in thread
+        # Undo belongs in Triage Rules — not on the event page the alert came from.
+        assert "#events/triage-rules" in thread and "Open Triage Rules" in thread
+        assert "/investigate" not in thread
 
     def test_click_without_permission_creates_nothing(self, monkeypatch):
         posted = []
@@ -262,8 +277,8 @@ class TestSilenceCallback:
                 update_slack_message_attachments=lambda *args: calls.setdefault("update", args),
             )
         )
-        data = _silence_click_payload()
-        service.handle_silence_finding("C1", "T1", "u@x.com", data["actions"][0], data)
+        data = _suppress_click_payload()
+        service.handle_suppress_finding("C1", "T1", "u@x.com", data["actions"][0], data)
 
         assert len(posted) == 1  # authz lookup only, no rule creation
         assert "update" not in calls
@@ -279,12 +294,12 @@ class TestSilenceCallback:
             SimpleNamespace(slack_reply_in_thread=lambda ch, team, ts, msg: calls.setdefault("thread", msg))
         )
         # Swap the account_id in the signed value without re-signing.
-        data = _silence_click_payload()
+        data = _suppress_click_payload()
         value = json.loads(data["actions"][0]["selected_option"]["value"])
         value["body"]["action_params"]["account_id"] = "acc-EVIL"
         data["actions"][0]["selected_option"]["value"] = json.dumps(value)
 
-        service.handle_silence_finding("C1", "T1", "u@x.com", data["actions"][0], data)
+        service.handle_suppress_finding("C1", "T1", "u@x.com", data["actions"][0], data)
 
         assert posted == []  # neither authz nor rule-create was called
         assert calls.get("thread") == actions_common.UNABLE_TO_PROCESS_REQUEST

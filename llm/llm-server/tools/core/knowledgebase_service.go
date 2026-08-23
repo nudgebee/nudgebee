@@ -249,6 +249,20 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 	kb.CreatedBy = sc.GetSecurityContext().GetUserId()
 	kb.UpdatedBy = sc.GetSecurityContext().GetUserId()
 
+	kb.Description = strings.TrimSpace(kb.Description)
+	if kb.Description == "" && kb.Data != "" {
+		for _, line := range strings.Split(kb.Data, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				if len(line) > 200 {
+					line = line[:200]
+				}
+				kb.Description = line
+				break
+			}
+		}
+	}
+
 	nullableCreatedBy := sql.NullString{String: kb.CreatedBy, Valid: kb.CreatedBy != ""}
 	nullableUpdatedBy := sql.NullString{String: kb.UpdatedBy, Valid: kb.UpdatedBy != ""}
 	nullableDescription := sql.NullString{String: kb.Description, Valid: kb.Description != ""}

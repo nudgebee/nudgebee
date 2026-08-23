@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -23,10 +22,11 @@ const WebhookSubjectExtractorAgentName = "webhook_subject_name_extractor"
 // when no running service confidently matches the alert.
 const WebhookSubjectExtractorNotFound = "Not Found"
 
-// webhookHistoricalAttrKeys are the tenant_attrs rows that accumulate learned
-// title→service mappings per webhook source. They are merged (dedup by title) into
-// the agent's cached system prompt so any source's history aids resolution. Order
-// is fixed so the rendered prompt stays byte-stable for prompt-cache hits.
+// webhookHistoricalAttrKeys are the webhook_subject_mappings.attr_key values that
+// accumulate learned title→service mappings per webhook source. They are merged
+// (dedup by title) into the agent's cached system prompt so any source's history
+// aids resolution. Order is fixed so the rendered prompt stays byte-stable for
+// prompt-cache hits.
 var webhookHistoricalAttrKeys = []string{
 	"DATADOG_INCIDENT_TITLE_SERVICE_MAPPING",
 	"PAGERDUTY_INCIDENT_TITLE_SERVICE_MAPPING",
@@ -143,15 +143,19 @@ func (a *WebhookSubjectExtractorAgent) runningServiceNames() []string {
 	return names
 }
 
-// historicalIncident mirrors the api-server tenant_attrs JSON shape for learned
-// title→service mappings.
-type historicalIncident struct {
-	Title   string  `json:"title"`
-	Service *string `json:"service"`
+// historicalMappingRow mirrors the title/services columns of the api-server
+// webhook_subject_mappings table for learned title→service mappings. services
+// is a comma-separated list: the same generic alert title can legitimately
+// resolve to more than one real service over time (it fires for many
+// different pods), so a title isn't collapsed to a single value.
+type historicalMappingRow struct {
+	Title    string `db:"title"`
+	Services string `db:"services"`
 }
 
 // historicalPatterns merges the learned title→service mappings across all webhook
-// sources into a deterministic, deduplicated block for the system prompt.
+// sources into a deterministic, deduplicated block for the system prompt. Each
+// service historically seen for a title gets its own line.
 func (a *WebhookSubjectExtractorAgent) historicalPatterns(ctx *security.RequestContext) string {
 	tenantId, err := security.GetTenantIdFromAccountId(a.accountId)
 	if err != nil {
@@ -167,21 +171,33 @@ func (a *WebhookSubjectExtractorAgent) historicalPatterns(ctx *security.RequestC
 	seen := map[string]bool{}
 	var b strings.Builder
 	for _, key := range webhookHistoricalAttrKeys {
-		var value string
-		if err := dbms.Db.Get(&value, `SELECT value FROM tenant_attrs WHERE tenant_id = $1 AND name = $2 LIMIT 1`, tenantId, key); err != nil {
-			continue // key absent for this tenant is expected
-		}
-		var incidents []historicalIncident
-		if err := json.Unmarshal([]byte(value), &incidents); err != nil {
-			ctx.GetLogger().Warn("webhook_subject_extractor: malformed historical mapping json", "key", key, "error", err)
+		var rows []historicalMappingRow
+		// ORDER BY title keeps the rendered block byte-stable across calls —
+		// a precondition for the account-scoped prompt cache to actually hit.
+		if err := dbms.Db.Select(&rows,
+			`SELECT title, services FROM webhook_subject_mappings WHERE tenant_id = $1 AND attr_key = $2 ORDER BY title`,
+			tenantId, key,
+		); err != nil {
+			ctx.GetLogger().Warn("webhook_subject_extractor: failed to query historical mappings", "key", key, "error", err)
 			continue
 		}
-		for _, inc := range incidents {
-			if inc.Service == nil || *inc.Service == "" || inc.Title == "" || seen[inc.Title] {
+		for _, row := range rows {
+			if row.Title == "" || row.Services == "" {
 				continue
 			}
-			seen[inc.Title] = true
-			fmt.Fprintf(&b, "- %q -> %q\n", inc.Title, *inc.Service)
+			titleKey := strings.ToLower(row.Title)
+			for _, svc := range strings.Split(row.Services, ",") {
+				svc = strings.TrimSpace(svc)
+				if svc == "" {
+					continue
+				}
+				dedupKey := titleKey + "\x00" + svc
+				if seen[dedupKey] {
+					continue
+				}
+				seen[dedupKey] = true
+				fmt.Fprintf(&b, "- %q -> %q\n", row.Title, svc)
+			}
 		}
 	}
 	return b.String()

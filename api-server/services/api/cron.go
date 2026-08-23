@@ -265,6 +265,12 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 					if _, err := kgService.MarkStaleEdgesInactive(); err != nil {
 						ctx.GetLogger().Error("cron: kg stale edge sweep failed", "error", err)
 					}
+					// Deactivate stale ExternalService leaves (non-infra
+					// flow-source nodes markInactiveNodes can't tombstone) before
+					// the deletion cleanup runs.
+					if _, err := kgService.MarkStaleExternalServiceNodesInactive(); err != nil {
+						ctx.GetLogger().Error("cron: kg stale external-service node sweep failed", "error", err)
+					}
 				}
 				nb.CleanupData(ctx)
 			}()
