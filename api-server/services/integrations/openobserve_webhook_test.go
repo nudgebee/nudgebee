@@ -275,6 +275,24 @@ func TestEventRuleSeverity(t *testing.T) {
 	assert.Equal(t, "warning", eventRuleSeverity(got.Investigation.Severity))
 }
 
+func TestEventRuleAlertType(t *testing.T) {
+	// event_rules.alert_type is FK-constrained to exactly {"metric","log"}, and
+	// an empty value silently lands on the column default "metric". A log-stream
+	// alert typed as a metric rule is both wrong in rule management and makes the
+	// metric playbook actions parse the OpenObserve condition as PromQL.
+	assert.Equal(t, "log", eventRuleAlertType("logs"))
+	assert.Equal(t, "log", eventRuleAlertType(" Logs "))
+	assert.Equal(t, "metric", eventRuleAlertType("metrics"))
+	assert.Equal(t, "metric", eventRuleAlertType("traces"))
+	assert.Equal(t, "metric", eventRuleAlertType(""), "unknown stream types keep the historical default")
+
+	// The live payload is a scheduled alert over a log stream.
+	_, fields, err := mapOpenObserveAlertToEvent("acct-1", decodeOpenObservePayload(t, liveOpenObserveBody))
+	require.NoError(t, err)
+	assert.Equal(t, "logs", fields["stream_type"])
+	assert.Equal(t, "log", eventRuleAlertType(fields["stream_type"]))
+}
+
 func TestSplitOpenObserveMultiValue(t *testing.T) {
 	assert.Nil(t, splitOpenObserveMultiValue(""))
 	assert.Equal(t, []string{"one"}, splitOpenObserveMultiValue("one"))

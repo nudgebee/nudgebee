@@ -147,7 +147,8 @@ func (m OpenObserveWebhook) ProcessEventWebook(sc *security.RequestContext, sett
 	if webhookEvent.Investigation.Status != event.EventStatusResolved {
 		createOpenObserveEventRule(sc, accountId, webhookEvent.Investigation.RuleName,
 			webhookEvent.EventTitle, webhookEvent.EventDescription,
-			eventRuleSeverity(webhookEvent.Investigation.Severity), fields)
+			eventRuleSeverity(webhookEvent.Investigation.Severity),
+			eventRuleAlertType(fields["stream_type"]), fields)
 	}
 
 	return []core.EventIncomingWebhook{*webhookEvent}, nil
@@ -332,10 +333,25 @@ func eventRuleSeverity(priority event.EventPriority) string {
 	return "warning"
 }
 
+// eventRuleAlertType maps the OpenObserve stream type onto the only two values
+// the event_rules.alert_type column accepts (FK -> event_rule_alert_type:
+// "metric", "log").
+//
+// Leaving it empty lands the row on the column default, "metric". For an alert
+// over a log stream that is simply the wrong kind: the rule is mis-typed in rule
+// management, and the metric playbook actions then treat the OpenObserve
+// condition ("> 5 over 5") as PromQL and fail to parse it on every investigation.
+func eventRuleAlertType(streamType string) string {
+	if strings.EqualFold(strings.TrimSpace(streamType), "logs") {
+		return "log"
+	}
+	return "metric"
+}
+
 // createOpenObserveEventRule fire-and-forgets the event-rule upsert on a
 // detached context. The inbound request context is cancelled as soon as the
 // webhook handler responds, so reusing it would abort the insert mid-flight.
-func createOpenObserveEventRule(sc *security.RequestContext, accountId, alertName, title, description, severityLabel string, fields map[string]string) {
+func createOpenObserveEventRule(sc *security.RequestContext, accountId, alertName, title, description, severityLabel, alertType string, fields map[string]string) {
 	expr := buildOpenObserveCondition(fields)
 	// Read everything off the request context up front: the handler has already
 	// responded by the time this goroutine runs, so nothing derived from sc
@@ -375,6 +391,7 @@ func createOpenObserveEventRule(sc *security.RequestContext, accountId, alertNam
 			Source:        IntegrationOpenObserveWebhook,
 			Category:      "alert",
 			Severity:      severityLabel,
+			AlertType:     alertType,
 			Enabled:       true,
 			TriggerParams: []map[string]any{},
 			ActionParams:  []map[string]any{},
