@@ -132,6 +132,33 @@ func parseFetchLogConfigs(configs map[string]any) (fetchLogParams, error) {
 	return p, nil
 }
 
+// setRequestIndex puts the resolved index into the free-form `request` bag, which
+// is the ONLY place services-server reads it from. LogQueryRequest.Index is a
+// top-level field with no counterpart on services-server's FetchLogRequest — the
+// struct /rpc/logs decodes into for both logs_query and logs_get_query — so
+// setting it alone drops the index silently on the wire. Elasticsearch is the
+// only provider that consumes an index, and both its sources need this:
+// ElasticSaasSource falls back to the account's cfg.LogIndex (so a caller-chosen
+// index is ignored, and the label/type checks run against the wrong index — ES
+// field types are per-index), while the relay-backed ElasticSource has no
+// fallback at all and the agent rejects the query with "index is required".
+// Copies rather than assigns or mutates in place: the bag already carries
+// provider parameters on some paths, and parseFetchLogConfigs aliases it
+// straight from the caller's configs["request"] — writing through that alias
+// would leak the index back into a configs map the caller may reuse across
+// calls, or race a concurrent reader of it.
+func setRequestIndex(logRequest *services_server.LogQueryRequest, index string) {
+	if index == "" {
+		return
+	}
+	bag := make(map[string]any, len(logRequest.Request)+1)
+	for k, v := range logRequest.Request {
+		bag[k] = v
+	}
+	bag["index"] = index
+	logRequest.Request = bag
+}
+
 func executeFetchLogs(ctx core.NbToolContext, logProvider services_server.ObservabilityProvider, query string, configs map[string]any) (core.ObservabilityLogResponse, error) {
 	if logProvider.Provider == "" {
 		return core.ObservabilityLogResponse{}, errors.New("log_provider is required")
@@ -165,6 +192,8 @@ func executeFetchLogs(ctx core.NbToolContext, logProvider services_server.Observ
 		Request:           p.request,
 		Index:             p.index,
 	}
+	setRequestIndex(&logRequest, p.index)
+
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
 	if err != nil {
 		return core.ObservabilityLogResponse{}, err
@@ -231,6 +260,8 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		logRequest.LogProviderSource = logProvider.IntegrationSource
 	}
 
+	setRequestIndex(&logRequest, idx)
+
 	slog.Info("executeFetchLogsCanonical: sending LogQueryRequest", "account_id", ctx.AccountId, "provider", logProvider.Provider, "where", where, "index", idx)
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
 	if err != nil {
@@ -265,6 +296,7 @@ func GetLogsQueryPreview(ctx *security.RequestContext, accountId string, logProv
 		Index:             p.index,
 		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
 	}
+	setRequestIndex(&logRequest, p.index)
 
 	output, err := services_server.GetLogsQuery(*ctx, logRequest)
 	if err != nil {
