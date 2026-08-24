@@ -135,7 +135,7 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyModelTier, resolveModelTier(agent, request)),
+		context.WithValue(goCtx, ContextKeyModelTier, resolveModelTier(ctx, agent, request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -152,14 +152,47 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 // variant — so tier + prompt variant + (model-keyed) cache slot stay consistent.
 // Investigations and sub-agents (isTopLevelPlainRetrievalTurn == false, or a non-
 // Reasoning base) keep their tier, so this only ever shifts the top-level query case.
-func resolveModelTier(agent NBAgent, request NBAgentRequest) ModelTier {
+// A turn that carries ANY explicit model configuration (hasExplicitModelConfig) is
+// never downshifted: the flag optimizes the default resolution path only, and a
+// user-chosen provider/model, per-tier pick, or config pin must resolve exactly as
+// chosen — same principle as tierPinFor (llm_config.go).
+func resolveModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) ModelTier {
 	base := agentModelCategory(agent)
 	if config.Config.LlmServerReact3QueryModelDownshiftEnabled &&
 		base == ModelTierReasoning &&
-		isTopLevelPlainRetrievalTurn(request) {
+		isTopLevelPlainRetrievalTurn(request) &&
+		!hasExplicitModelConfig(ctx) {
 		return ModelTierSummary
 	}
 	return base
+}
+
+// hasExplicitModelConfig reports whether the request or conversation carries a
+// user-chosen model configuration: a blanket provider+model override, per-tier
+// picks, or a config-source pin. All four keys are stamped on the request context
+// by conversation.go before the executor runs — including the conversation-sticky
+// pin, which falls back to the stored conversation row there.
+func hasExplicitModelConfig(ctx *security.RequestContext) bool {
+	if ctx == nil {
+		return false
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		return false
+	}
+	if p, _ := goCtx.Value(ContextKeyLlmProviderOverride).(string); p != "" {
+		return true
+	}
+	if m, _ := goCtx.Value(ContextKeyLlmModelOverride).(string); m != "" {
+		return true
+	}
+	if v, ok := goCtx.Value(ContextKeyLlmTierModelOverrides).(ConversationTierOverrides); ok && v.HasAny() {
+		return true
+	}
+	if s, _ := goCtx.Value(ContextKeyLlmConfigSourceOverride).(string); s != "" {
+		return true
+	}
+	return false
 }
 
 // promptVariantForRequest returns the prompt/cache variant for a turn. Only a
