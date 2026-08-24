@@ -124,6 +124,10 @@ const DEFAULT_TABLE_COLUMNS = [
   {
     name: 'Triage Score',
     width: '10%',
+    // The cell packs a score, a bar, an info icon and the priority-pin control — ~173px
+    // of content. Without a floor the resize hook happily allots it 10% (~74px) and the
+    // whole group spills over the columns on both sides.
+    minWidth: 175,
     align: 'left',
     defaultVisible: true,
     info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
@@ -355,6 +359,7 @@ const KubernetesEventsTable = ({
       {
         name: 'Triage Score',
         width: '10%',
+        minWidth: 175,
         align: 'left',
         info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
       },
@@ -601,6 +606,14 @@ const KubernetesEventsTable = ({
           info: item?.info,
           infoPlacement: item?.infoPlacement,
           component: item?.component,
+          // `truncate` and `align` have to survive this remap: they're what makes the
+          // table clamp a cell to its own column. Dropping them let a long alert title
+          // render at full width and paint over the Triage Score column beside it.
+          ...(item?.truncate && { truncate: item.truncate }),
+          ...(item?.align && { align: item.align }),
+          ...(item?.size && { size: item.size }),
+          ...(item?.minWidth !== undefined && { minWidth: item.minWidth }),
+          ...(item?.maxWidth !== undefined && { maxWidth: item.maxWidth }),
           ...(item?.mandatory && { mandatory: item.mandatory }),
           ...(item?.defaultVisible !== undefined && { defaultVisible: item.defaultVisible }),
         };
@@ -1064,7 +1077,9 @@ const KubernetesEventsTable = ({
             component: ClusterNameWithRegion({
               name: item.title,
               hideIcon: true,
-              smallScreenWidth: ds.space.mul(0, 60),
+              // No `smallScreenWidth`: the Message column is already percentage-sized by the
+              // table, so pinning it to a fixed 120px under 1100px only squeezed the copy into
+              // a sliver while the cell around it stayed wide.
               maxWidth: '100%',
               showAutoEllipsis: true,
               lineClamp: 3,

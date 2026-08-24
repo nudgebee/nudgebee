@@ -769,6 +769,12 @@ const openSupportChat = () => {
 // Support chat is only available on saas-tier deployments.
 const isSupportChatAvailable = () => getUserSession()?.tier === 'saas';
 
+// The mascot illustrations are declared at their intrinsic size for next/image, but the
+// column that holds them collapses well below 180px on narrow viewports. Without this the
+// fixed-width <img> keeps its declared width and spills over the copy beside it, so scale
+// it down to whatever the column actually offers.
+const MASCOT_IMAGE_STYLE = { maxWidth: '100%', height: 'auto' };
+
 // The Nudgebee mascot illustrations are Nudgebee branding, so they only render on the
 // default (non-white-labeled) deployment. On a partner / white-labeled tenant we drop
 // the left illustration entirely rather than show the bee or the partner's logo (their
@@ -779,11 +785,11 @@ const renderNoDataState = ({ illustrationKey, alt, heading, body, secondary }) =
     <Box maxWidth={'90%'} mx={'auto'} py={2}>
       <Grid container spacing={1}>
         {showMascot && (
-          <Grid item xs={3} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <SafeIcon src={getBrandingAsset(illustrationKey)} alt={alt} width={180} height={180} />
+          <Grid item xs={12} sm={4} md={3} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <SafeIcon src={getBrandingAsset(illustrationKey)} alt={alt} width={180} height={180} style={MASCOT_IMAGE_STYLE} />
           </Grid>
         )}
-        <Grid item xs={showMascot ? 9 : 12} sx={{ display: 'flex', alignItems: 'center' }}>
+        <Grid item xs={12} sm={showMascot ? 8 : 12} md={showMascot ? 9 : 12} sx={{ display: 'flex', alignItems: 'center' }}>
           <Box>
             <Typography
               sx={{
@@ -873,10 +879,16 @@ const renderContent = (title, accountId, cloudProvider, noData = false) => {
       return (
         <Box maxWidth={'90%'} mx={'auto'} py={2}>
           <Grid container spacing={1}>
-            <Grid item xs={3}>
-              <SafeIcon src={getBrandingAsset('troubleshootBee')} alt='Bee with magnifying glass' width={180} height={180} />
+            <Grid item xs={12} sm={4} md={3} sx={{ display: 'flex', justifyContent: 'center' }}>
+              <SafeIcon
+                src={getBrandingAsset('troubleshootBee')}
+                alt='Bee with magnifying glass'
+                width={180}
+                height={180}
+                style={MASCOT_IMAGE_STYLE}
+              />
             </Grid>
-            <Grid item xs={9} sx={{ display: 'flex', alignItems: 'center' }}>
+            <Grid item xs={12} sm={8} md={9} sx={{ display: 'flex', alignItems: 'center' }}>
               <Box>
                 <Typography
                   sx={{
@@ -922,10 +934,20 @@ const renderContent = (title, accountId, cloudProvider, noData = false) => {
       return (
         <Box maxWidth={'90%'} mx={'auto'} py={2}>
           <Grid container spacing={1}>
-            <Grid item xs={3} sx={{ '@media (max-width: 1200px)': { pl: '0px !important', pr: 'var(--ds-space-4) !important' } }}>
-              <SafeIcon src={getBrandingAsset('optimizeBee')} alt='Bee with magnifying glass' width={180} height={180} />
+            <Grid
+              item
+              xs={12}
+              sm={4}
+              md={3}
+              sx={{
+                display: 'flex',
+                justifyContent: 'center',
+                '@media (max-width: 1200px)': { pl: '0px !important', pr: 'var(--ds-space-4) !important' },
+              }}
+            >
+              <SafeIcon src={getBrandingAsset('optimizeBee')} alt='Bee with magnifying glass' width={180} height={180} style={MASCOT_IMAGE_STYLE} />
             </Grid>
-            <Grid item xs={9} sx={{ display: 'flex', alignItems: 'center' }}>
+            <Grid item xs={12} sm={8} md={9} sx={{ display: 'flex', alignItems: 'center' }}>
               <Box>
                 <Typography
                   sx={{
@@ -966,7 +988,7 @@ const renderContent = (title, accountId, cloudProvider, noData = false) => {
       return (
         <Box maxWidth={'90%'} mx={'auto'} py={2}>
           <Grid container spacing={2}>
-            <Grid item xs={9}>
+            <Grid item xs={12} sm={8} md={9}>
               <Typography
                 sx={{
                   mb: 'var(--ds-space-4)',
@@ -998,8 +1020,8 @@ const renderContent = (title, accountId, cloudProvider, noData = false) => {
                 </Box>
               ))}
             </Grid>
-            <Grid item xs={3}>
-              <SafeIcon src={getBrandingAsset('k8sBee')} alt='Bee with magnifying glass' width={150} height={152} />
+            <Grid item xs={12} sm={4} md={3} sx={{ display: 'flex', justifyContent: 'center' }}>
+              <SafeIcon src={getBrandingAsset('k8sBee')} alt='Bee with magnifying glass' width={150} height={152} style={MASCOT_IMAGE_STYLE} />
             </Grid>
           </Grid>
         </Box>
@@ -1009,10 +1031,16 @@ const renderContent = (title, accountId, cloudProvider, noData = false) => {
       return (
         <Box maxWidth={'90%'} mx={'auto'} py={2}>
           <Grid container spacing={1}>
-            <Grid item xs={3}>
-              <SafeIcon src={getBrandingAsset('securityBee')} alt='Bee inspecting for security findings' width={180} height={180} />
+            <Grid item xs={12} sm={4} md={3} sx={{ display: 'flex', justifyContent: 'center' }}>
+              <SafeIcon
+                src={getBrandingAsset('securityBee')}
+                alt='Bee inspecting for security findings'
+                width={180}
+                height={180}
+                style={MASCOT_IMAGE_STYLE}
+              />
             </Grid>
-            <Grid item xs={9} sx={{ display: 'flex', alignItems: 'center' }}>
+            <Grid item xs={12} sm={8} md={9} sx={{ display: 'flex', alignItems: 'center' }}>
               <Box>
                 <Typography
                   sx={{
@@ -2025,7 +2053,7 @@ const Home = () => {
 
   return (
     <Grid container spacing={6} mt='calc(var(--ds-space-0) * 14)'>
-      <Grid item xs={9} sx={{ pt: '0px !important' }}>
+      <Grid item xs={12} lg={9} sx={{ pt: '0px !important' }}>
         <Grid container>
           <K8sAccountModal openModal={showModal} handleClose={closeModal} />
           <Grid item xs={12} sx={{ mr: 'var(--ds-space-5)', pb: 'var(--ds-space-4)' }}>
@@ -2455,7 +2483,8 @@ const Home = () => {
       </Grid>
       <Grid
         item
-        xs={3}
+        xs={12}
+        lg={3}
         sx={{ pl: 'var(--ds-space-4) !important', pt: '0px !important', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}
       >
         <AutomationsCard
