@@ -14,6 +14,13 @@ export interface ConfigRule {
   accountIds: string[];
   countByAccount: Record<string, number>;
   /**
+   * The same split, per band — what the account list reads under a severity
+   * filter, where an account whose findings are all in unselected bands must
+   * drop out rather than being listed with a count from bands the reader
+   * filtered away.
+   */
+  countByAccountSeverity: Record<string, Record<string, number>>;
+  /**
    * Findings per severity band. A rule can span bands — popeye's
    * `misconfigurations` runs Critical through Info — so filtering on the worst
    * band alone would hide a rule from the very band it has findings in.
@@ -55,6 +62,7 @@ export const foldConfigRules = (rows: any[]): ConfigRule[] => {
         count,
         accountIds: accountId ? [accountId] : [],
         countByAccount: accountId ? { [accountId]: count } : {},
+        countByAccountSeverity: accountId ? { [accountId]: { [severity]: count } } : {},
         countBySeverity: { [severity]: count },
       });
       continue;
@@ -64,6 +72,8 @@ export const foldConfigRules = (rows: any[]): ConfigRule[] => {
     if (rankSeverity(severity) > rankSeverity(existing.severity)) existing.severity = severity;
     if (accountId) {
       existing.countByAccount[accountId] = (existing.countByAccount[accountId] || 0) + count;
+      const bands = existing.countByAccountSeverity[accountId] || (existing.countByAccountSeverity[accountId] = {});
+      bands[severity] = (bands[severity] || 0) + count;
       if (!existing.accountIds.includes(accountId)) existing.accountIds.push(accountId);
     }
   }

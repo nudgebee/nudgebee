@@ -396,7 +396,10 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
   // True whenever the list is scoped to Configuration alone — on its own tab, or
   // via the Config card before the tab existed.
   const isConfigurationOnly = filters.category.length === 1 && filters.category[0] === 'Configuration';
-  const showConfigRollup = isConfigurationOnly && filters.rules.length === 0;
+  // A rule selection or a resource search names specific rows, so both flip to
+  // the per-resource list — the rollup groups by check and has no row for "the
+  // resources matching this text".
+  const showConfigRollup = isConfigurationOnly && filters.rules.length === 0 && !filters.search;
 
   // Local search input state — typed value, not yet applied. Mirrors ManualInvestigated pattern.
   const [searchInput, setSearchInput] = useState((router.query.search as string) || '');
@@ -474,10 +477,22 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
   );
 
   // Reset every filter back to empty (the category card tabs return to All).
+  // A locked tab keeps its category: clearing it would silently turn the
+  // Configuration tab into the all-categories list, with no card to lock back.
   const handleClearAll = useCallback(() => {
     setSearchInput('');
-    handleFiltersChange({ severity: [], account: [], category: [], search: '', safety: [], rules: [], status: [], savings: '', lastSeen: '' });
-  }, [handleFiltersChange]);
+    handleFiltersChange({
+      severity: [],
+      account: [],
+      category: lockedCategory ? [lockedCategory] : [],
+      search: '',
+      safety: [],
+      rules: [],
+      status: [],
+      savings: '',
+      lastSeen: '',
+    });
+  }, [handleFiltersChange, lockedCategory]);
 
   // Fetch accounts
   useEffect(() => {
@@ -1832,6 +1847,8 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
               accountId={configRollupAccountIds}
               status={filters.status.length > 0 ? filters.status : DEFAULT_STATUS}
               severity={filters.severity}
+              safety={filters.safety}
+              lastSeen={filters.lastSeen}
               accounts={accounts}
               onSelectRecommendation={handleRowClick}
               rowActions={configRowActions}

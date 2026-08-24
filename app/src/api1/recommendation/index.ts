@@ -71,6 +71,10 @@ export function invalidateOptimisationSummaryRecommendations() {
   cache.delWithSuffix(OPTIMISE_SUMMARY_RECS_CACHE_KEY);
 }
 
+// severity_weight must stay in the selection even though no consumer renders
+// it: the query engine resolves an order_by column against the SELECT list, so
+// callers ordering by severity_weight get an error - and an empty table - the
+// moment it is dropped.
 export const LIST_k8_RECOMMENDATIONS = `
 query list_k8_recommendation($limit:Int, $offset:Int) {
   recommendation: recommendations_list(where: __WHERE__, limit: $limit, offset:$offset,order_by: __ORDER_BY__) {
@@ -82,6 +86,7 @@ query list_k8_recommendation($limit:Int, $offset:Int) {
       resource_id
       resource_cloud_service
       severity
+      severity_weight
       category
       rule_name
       recommendation
@@ -2242,11 +2247,17 @@ const apiRecommendations = {
     category,
     status = ['Open', 'InProgress'],
     excludeRuleNames,
+    safetyBand,
+    updatedAtGte,
+    updatedAtLt,
   }: {
     accountId: string | string[];
     category: string;
     status?: string[];
     excludeRuleNames?: string[];
+    safetyBand?: string[];
+    updatedAtGte?: string;
+    updatedAtLt?: string;
   }) {
     if (!accountId || (Array.isArray(accountId) && accountId.length === 0) || accountId === 'demo') {
       return [];
@@ -2259,6 +2270,7 @@ const apiRecommendations = {
     if (excludeRuleNames?.length) {
       where.rule_name = { _not_in: excludeRuleNames };
     }
+    applyFacetFilters(where, { safetyBand, updatedAtGte, updatedAtLt });
     const response = await queryGraphQL(GET_CLOUD_POSTURE_RULES.replaceAll('__WHERE__', gqlStringify(where)), 'cloud_posture_rules', {});
     return response?.data?.data?.recommendation?.rows || [];
   },
