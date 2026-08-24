@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Typography, Chip } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Chip } from '@ui/Chip';
 import Tooltip from '@ui/Tooltip';
 import { Code, ViewModule, ContentCopy, Check } from '@mui/icons-material';
 import { Button } from '@ui/Button';
@@ -79,13 +80,11 @@ const FieldHeader: React.FC<FieldHeaderProps> = ({
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1.5 }}>
         {presets.map((preset, idx) => (
           <Tooltip key={idx} title={preset.description || ''}>
-            <Chip
-              label={preset.label}
-              size='small'
-              onClick={() => onPresetClick(preset)}
-              disabled={disabled}
-              sx={{ fontSize: 'var(--ds-text-caption)', height: 20 }}
-            />
+            <Box component='span' sx={{ display: 'inline-flex' }}>
+              <Chip size='sm' onClick={() => onPresetClick(preset)} disabled={disabled}>
+                {preset.label}
+              </Chip>
+            </Box>
           </Tooltip>
         ))}
       </Box>

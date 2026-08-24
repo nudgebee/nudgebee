@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Typography, TextField, Chip } from '@mui/material';
+import { Box, Typography, TextField } from '@mui/material';
+import { Chip } from '@ui/Chip';
 import { Button } from '@ui/Button';
 import { Add, Close, GridView } from '@mui/icons-material';
 import { Input } from '@ui/Input';
@@ -123,12 +124,9 @@ const MatrixField: React.FC<MatrixFieldProps> = ({ value, onChange, disabled = f
         disabled={disabled}
         labelExtra={
           totalCombinations > 0 ? (
-            <Chip
-              label={`${totalCombinations} combination${totalCombinations > 1 ? 's' : ''}`}
-              size='small'
-              color='primary'
-              sx={{ height: 20, fontSize: 'var(--ds-text-caption)' }}
-            />
+            <Chip size='sm' tone='info'>
+              {`${totalCombinations} combination${totalCombinations > 1 ? 's' : ''}`}
+            </Chip>
           ) : undefined
         }
       />

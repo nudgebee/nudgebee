@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Box, Typography, Collapse, Badge, Chip } from '@mui/material';
+import { Box, Typography, Collapse, Badge } from '@mui/material';
+import { Chip } from '@ui/Chip';
 import Tooltip from '@ui/Tooltip';
 import { ExpandMore, Settings, Timer, Storage, GridView, ErrorOutline } from '@mui/icons-material';
 
@@ -148,28 +149,11 @@ const AdvancedConfigSection: React.FC<AdvancedConfigSectionProps> = ({
               </Typography>
               {QUICK_NAV_SECTIONS.map((section) => (
                 <Tooltip key={section.id} title={`Go to ${section.label}`}>
-                  <Chip
-                    size='small'
-                    icon={section.icon}
-                    label={section.label}
-                    onClick={() => handleQuickNavClick(section.id)}
-                    sx={{
-                      height: 22,
-                      fontSize: 'var(--ds-text-caption)',
-                      bgcolor: 'white',
-                      border: `1px solid var(--ds-green-200)`,
-                      '&:hover': {
-                        bgcolor: 'primary.light',
-                        color: 'primary.contrastText',
-                        '& .MuiChip-icon': {
-                          color: 'primary.contrastText',
-                        },
-                      },
-                      '& .MuiChip-icon': {
-                        color: 'var(--ds-brand-500)',
-                      },
-                    }}
-                  />
+                  <Box component='span' sx={{ display: 'inline-flex' }}>
+                    <Chip size='sm' icon={section.icon} onClick={() => handleQuickNavClick(section.id)}>
+                      {section.label}
+                    </Chip>
+                  </Box>
                 </Tooltip>
               ))}
             </Box>

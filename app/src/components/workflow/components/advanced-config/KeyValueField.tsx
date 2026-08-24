@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Chip, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Chip } from '@ui/Chip';
 import { Button } from '@ui/Button';
 import { Add, DataObject } from '@mui/icons-material';
 import { Input } from '@ui/Input';
@@ -156,17 +157,13 @@ const KeyValueField: React.FC<KeyValueFieldProps> = ({ label, field, value, onCh
                       {TTL_PRESETS.slice(0, 3).map((preset) => (
                         <Chip
                           key={preset}
-                          label={preset}
-                          size='small'
+                          size='xs'
+                          selected={entry.ttl === preset}
                           onClick={() => handleEntryChange(index, 'ttl', preset)}
                           disabled={disabled}
-                          sx={{
-                            fontSize: 'var(--ds-text-caption)',
-                            height: 16,
-                            bgcolor: entry.ttl === preset ? 'primary.light' : 'var(--ds-green-200)',
-                            color: entry.ttl === preset ? 'primary.contrastText' : 'var(--ds-brand-500)',
-                          }}
-                        />
+                        >
+                          {preset}
+                        </Chip>
                       ))}
                     </Box>
                   </Box>

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Typography, Chip } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Chip } from '@ui/Chip';
 import { Switch } from '@ui/Switch';
 import { Button } from '@ui/Button';
-import { Add, Close } from '@mui/icons-material';
+import { Add } from '@mui/icons-material';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { FAILURE_POLICY_PRESETS, FIELD_HELPER_TEXT } from './advancedConfigPresets';
@@ -196,17 +197,13 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
                     {INTERVAL_PRESETS.slice(0, 3).map((preset) => (
                       <Chip
                         key={preset}
-                        label={preset}
-                        size='small'
+                        size='xs'
+                        selected={retry.initial_interval === preset}
                         onClick={() => handleRetryChange('initial_interval', preset)}
                         disabled={disabled}
-                        sx={{
-                          fontSize: 'var(--ds-text-caption)',
-                          height: 18,
-                          bgcolor: retry.initial_interval === preset ? 'primary.light' : 'var(--ds-green-200)',
-                          color: retry.initial_interval === preset ? 'primary.contrastText' : 'var(--ds-brand-500)',
-                        }}
-                      />
+                      >
+                        {preset}
+                      </Chip>
                     ))}
                   </Box>
                 </Box>
@@ -223,17 +220,13 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
                     {INTERVAL_PRESETS.slice(3).map((preset) => (
                       <Chip
                         key={preset}
-                        label={preset}
-                        size='small'
+                        size='xs'
+                        selected={retry.maximum_interval === preset}
                         onClick={() => handleRetryChange('maximum_interval', preset)}
                         disabled={disabled}
-                        sx={{
-                          fontSize: 'var(--ds-text-caption)',
-                          height: 18,
-                          bgcolor: retry.maximum_interval === preset ? 'primary.light' : 'var(--ds-green-200)',
-                          color: retry.maximum_interval === preset ? 'primary.contrastText' : 'var(--ds-brand-500)',
-                        }}
-                      />
+                      >
+                        {preset}
+                      </Chip>
                     ))}
                   </Box>
                 </Box>
@@ -269,15 +262,9 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
                 </Box>
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                   {(retry.non_retryable_error_types || []).map((errorType) => (
-                    <Chip
-                      key={errorType}
-                      label={errorType}
-                      size='small'
-                      onDelete={() => handleRemoveErrorType(errorType)}
-                      deleteIcon={<Close sx={{ fontSize: 'var(--ds-text-small)' }} />}
-                      disabled={disabled}
-                      sx={{ fontSize: 'var(--ds-text-caption)', height: 22 }}
-                    />
+                    <Chip key={errorType} size='sm' onDismiss={() => handleRemoveErrorType(errorType)} disabled={disabled}>
+                      {errorType}
+                    </Chip>
                   ))}
                   {(retry.non_retryable_error_types || []).length === 0 && (
                     <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)', fontStyle: 'italic' }}>
