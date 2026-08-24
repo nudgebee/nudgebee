@@ -469,6 +469,26 @@ class SlackSettings(BaseSettings):
     thinking_steps_max_pollers: int = Field(
         50, validation_alias=AliasChoices("SLACK_THINKING_STEPS_MAX_POLLERS", "slack_thinking_steps_max_pollers")
     )
+    # "Ask Nubi to Analyse!" poller: re-polls /v1/analyze/event (idempotent
+    # with regenerate=False) until the detailed synthesis stage completes.
+    event_analysis_poll_seconds: float = Field(
+        10.0, validation_alias=AliasChoices("SLACK_EVENT_ANALYSIS_POLL_SECONDS", "slack_event_analysis_poll_seconds")
+    )
+    event_analysis_max_minutes: int = Field(
+        20, validation_alias=AliasChoices("SLACK_EVENT_ANALYSIS_MAX_MINUTES", "slack_event_analysis_max_minutes")
+    )
+    # A poll tick just reads current state, unlike the kickoff call -- must not share its 20min timeout.
+    event_analysis_poll_timeout_seconds: float = Field(
+        30.0,
+        validation_alias=AliasChoices(
+            "SLACK_EVENT_ANALYSIS_POLL_TIMEOUT_SECONDS", "slack_event_analysis_poll_timeout_seconds"
+        ),
+    )
+    # Per-process ceiling on concurrent event-analysis pollers; beyond it a new
+    # click gets its ack but no progressive updates rather than queueing.
+    event_analysis_max_pollers: int = Field(
+        50, validation_alias=AliasChoices("SLACK_EVENT_ANALYSIS_MAX_POLLERS", "slack_event_analysis_max_pollers")
+    )
 
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

@@ -323,6 +323,7 @@ def _run_background(
     analysis_error=None,
     get_message_attachments=None,
     context_kwargs=None,
+    poller_started=True,
 ):
     """Drives _run_event_analysis_background with sensible defaults for the
     user_id lookup / cache write / reaction that now happen inside it (moved
@@ -333,19 +334,29 @@ def _run_background(
         update_slack_message_attachments=lambda ch, team, ts, atts: calls["update"].append(atts)
         or calls.setdefault("update_last", atts),
         get_message_attachments=get_message_attachments or (lambda *a, **k: None),
+        # No token -> _open_event_analysis_stream no-ops (returns None) --
+        # the streaming panel has its own dedicated tests below.
+        get_slack_installation=lambda team_id: None,
         add_slack_reactions=lambda *a, **k: None,
         slack_reply_in_thread=lambda ch, team, ts, msg: calls.setdefault("thread", msg),
         app_id=(context_kwargs or {}).get("app_id", "A0BMNEUDJMA"),
     )
     event_service = SimpleNamespace(
         cache=SimpleNamespace(cache_event_entry=lambda **k: calls.setdefault("cached", k)),
-        send_investigation_result_to_slack=lambda *a, **k: calls.setdefault("sent", True),
     )
     fake_service = SimpleNamespace(
         common_service=common_service, event_service=event_service, close=lambda: calls.setdefault("closed", True)
     )
     monkeypatch.setattr(actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service)
     monkeypatch.setattr(actions_common, "validate_and_get_user_id", lambda email: "user-9")
+    # The poller itself (spawned on IN_PROGRESS/CREATED) is covered by its own
+    # dedicated tests below -- here just record that a poller would have
+    # started, without actually spawning a thread.
+    monkeypatch.setattr(
+        actions_common,
+        "_start_event_analysis_poller",
+        lambda *a, **k: calls.setdefault("poller_started", poller_started),
+    )
     if analysis_error is not None:
         monkeypatch.setattr(
             actions_common.Events,
@@ -374,6 +385,53 @@ def _run_background(
 
     actions_common._run_event_analysis_background(None, None, None, context)
     return calls, common_service
+
+
+def _run_background_with_panel(monkeypatch, *, analysis_result, poller_claims=None):
+    """Like _run_background, but with a real streaming-panel client so the
+    open-before-kickoff / reveal-or-close orchestration in
+    _run_event_analysis_background itself can be asserted on directly.
+    `poller_claims`, when given, lets _start_event_analysis_poller run for
+    real (so its own _reveal_event_analysis_tasks call actually fires)
+    against a fake cache that claims (or doesn't) accordingly, with thread
+    spawning stubbed out."""
+    calls = {"posted": [], "update": None, "stream_start": None, "stream_append": [], "stream_stop": None, "order": []}
+    slack_client = SimpleNamespace(
+        start_stream=lambda **k: calls.__setitem__("stream_start", k)
+        or calls["order"].append("start_stream")
+        or {"ts": "999.111"},
+        append_stream=lambda **k: calls["stream_append"].append(k) or calls["order"].append("append_stream"),
+        stop_stream=lambda **k: calls.__setitem__("stream_stop", k) or calls["order"].append("stop_stream"),
+    )
+    common_service = SimpleNamespace(
+        update_slack_message_attachments=lambda ch, team, ts, atts: calls.__setitem__("update", atts),
+        get_message_attachments=lambda *a, **k: None,
+        get_slack_installation=lambda team_id: SimpleNamespace(token="xoxb-test"),
+        add_slack_reactions=lambda *a, **k: None,
+        slack_reply_in_thread=lambda ch, team, ts, msg: calls["posted"].append(msg),
+        slack_app=SimpleNamespace(client=slack_client),
+        app_id="A0BMNEUDJMA",
+    )
+    cache = SimpleNamespace(
+        cache_event_entry=lambda **k: None,
+        claim_event_analysis_poller=lambda event_id, ttl: bool(poller_claims),
+    )
+    event_service = SimpleNamespace(cache=cache)
+    fake_service = SimpleNamespace(common_service=common_service, event_service=event_service, close=lambda: None)
+    monkeypatch.setattr(actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service)
+    monkeypatch.setattr(actions_common, "validate_and_get_user_id", lambda email: "user-9")
+    monkeypatch.setattr(
+        actions_common.Events,
+        "call_event_analysis_api",
+        staticmethod(lambda **k: calls["order"].append("call_event_analysis_api") or analysis_result),
+    )
+    if poller_claims is not None:
+        # Let the real _start_event_analysis_poller run (claim check, cap
+        # check, reveal) -- just stub the thread it would otherwise spawn.
+        monkeypatch.setattr(actions_common.threading, "Thread", lambda *a, **k: SimpleNamespace(start=lambda: None))
+
+    actions_common._run_event_analysis_background(None, None, None, _poller_context())
+    return calls
 
 
 class TestAskNubiAnalyse:
@@ -505,7 +563,6 @@ class TestAskNubiAnalyse:
         # cache write, reaction) must still actually happen, just later.
         calls, _ = _run_background(monkeypatch, analysis_result={"status": "COMPLETED"})
         assert calls["cached"]["event_entry"]["user_id"] == "user-9"
-        assert calls.get("sent") is True
 
     def test_background_task_recovers_when_user_id_lookup_fails(self, monkeypatch):
         # Regression: the "Analyzing..." stamp is already on the card by the
@@ -520,6 +577,7 @@ class TestAskNubiAnalyse:
         common_service = SimpleNamespace(
             update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
             get_message_attachments=lambda *a, **k: None,  # live fetch unavailable -> falls back to the snapshot
+            get_slack_installation=lambda team_id: None,
             slack_reply_in_thread=lambda ch, team, ts, msg: calls.setdefault("thread", msg),
             app_id="A0BMNEUDJMA",
         )
@@ -567,6 +625,7 @@ class TestAskNubiAnalyse:
         common_service = SimpleNamespace(
             update_slack_message_attachments=lambda ch, team, ts, atts: calls.setdefault("update", atts),
             get_message_attachments=lambda *a, **k: None,
+            get_slack_installation=lambda team_id: None,
             slack_reply_in_thread=lambda ch, team, ts, msg: (_ for _ in ()).throw(RuntimeError("slack unavailable")),
             app_id="A0BMNEUDJMA",
         )
@@ -628,7 +687,6 @@ class TestAskNubiAnalyse:
             context_kwargs={"base_attachments": base_attachments},
         )
 
-        assert calls["sent"] is True
         updated = calls["update_last"][0]
         assert "Analyzed" in updated["text"]
         assert any(a.get("name") == "ask_nubi" for a in updated["actions"])  # button never hidden, even on success
@@ -651,17 +709,11 @@ class TestAskNubiAnalyse:
             },
         )
 
-        assert calls["sent"] is True
+        assert "went sideways" in calls["thread"]
         assert calls["update_last"] == original_attachments  # button restored, not stamped "Analyzed"
 
-    def test_background_task_marks_card_analyzing_again_when_in_progress(self, monkeypatch):
-        # llm-server can genuinely still be working asynchronously (not a
-        # failure) -- there's no follow-up mechanism here to catch the
-        # eventual result (possibly not even in this thread, if the
-        # in-flight run was kicked off elsewhere), so the card just reads
-        # the same as a fresh click rather than stamping "Analyzed" or
-        # resetting to pristine as if nothing happened. The button stays
-        # available so any user can click again to check whether it's done.
+    def test_background_task_does_not_touch_card_when_poller_starts(self, monkeypatch):
+        # The poller owns finalization once started; stamping here too would race it.
         base_attachments = [
             {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}
         ]
@@ -671,7 +723,21 @@ class TestAskNubiAnalyse:
                 analysis_result={"status": status},
                 context_kwargs={"base_attachments": base_attachments},
             )
-            assert calls["sent"] is True
+            assert calls["poller_started"] is True
+            assert "update_last" not in calls
+
+    def test_background_task_marks_card_analyzing_again_when_poller_fails_to_start(self, monkeypatch):
+        base_attachments = [
+            {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}
+        ]
+        for status in ("IN_PROGRESS", "CREATED"):
+            calls, _ = _run_background(
+                monkeypatch,
+                analysis_result={"status": status},
+                context_kwargs={"base_attachments": base_attachments},
+                poller_started=False,
+            )
+            assert calls["poller_started"] is False
             updated = calls["update_last"][0]
             assert "Analyzing" in updated["text"]
             assert "Analyzed" not in updated["text"]
@@ -728,8 +794,7 @@ class TestAskNubiAnalyse:
 
     def test_background_task_keeps_button_on_in_progress_via_live_fetch(self, monkeypatch):
         # Same button-availability guarantee as the failure path above, but
-        # on the in_progress outcome and via the live-refetch branch
-        # specifically (not just the click-time-snapshot fallback).
+        # via the live-refetch branch specifically, not the snapshot fallback.
         analyzing_line = actions_common._analyzing_status_line()
         live_attachments = [
             {
@@ -742,6 +807,7 @@ class TestAskNubiAnalyse:
             monkeypatch,
             analysis_result={"status": "IN_PROGRESS"},
             get_message_attachments=lambda ch, team, thread_ts, ts: live_attachments,
+            poller_started=False,
         )
 
         updated = calls["update_last"][0]
@@ -788,6 +854,369 @@ class TestAskNubiAnalyse:
         assert actions_common._has_finding_attachment([{"callback_id": "other"}]) is False
         assert actions_common._has_finding_attachment(None) is False
         assert actions_common._has_finding_attachment([]) is False
+
+
+def _poller_context(**overrides):
+    card = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}]
+    defaults = dict(
+        event_id="find-77",
+        account_id="acc-1",
+        user_email="u@x.com",
+        tenant_id="tenant-1",
+        channel_id="C1",
+        team_id="T1",
+        thread_ts="111.222",
+        message_ts="111.222",
+        slack_user_id="U1",
+        # Live fetch is stubbed to return None in _run_poller, so
+        # _finalize_card_after_analysis falls back to these click-time
+        # snapshots -- both set (matching what a real click captures) so
+        # either the "completed"/"in_progress" or the "failed" fallback
+        # branch (which reads original_attachments, not base_attachments)
+        # has something to update.
+        original_attachments=card,
+        base_attachments=card,
+        app_id="A0BMNEUDJMA",
+    )
+    defaults.update(overrides)
+    return actions_common.EventAnalysisContext(**defaults)
+
+
+_TEST_STREAM_TS = "999.111"
+
+
+def _run_poller(monkeypatch, poll_results, context=None):
+    """Runs _poll_event_analysis synchronously (no real thread/sleep) against
+    a scripted sequence of /v1/analyze/event responses -- one per poll tick.
+    Simulates the panel already having been opened and revealed by the
+    caller (_run_event_analysis_background), which is what actually happens
+    in production -- _poll_event_analysis itself only advances/closes it.
+    Returns the list of thread messages posted (in order), the final card
+    attachments update if any, and the panel's append/stop calls."""
+    calls = {"posted": [], "update": None, "stream_append": [], "stream_stop": None, "released": None}
+    slack_client = SimpleNamespace(
+        append_stream=lambda **k: calls["stream_append"].append(k),
+        stop_stream=lambda **k: calls.__setitem__("stream_stop", k),
+    )
+    common_service = SimpleNamespace(
+        get_message_attachments=lambda *a, **k: None,
+        update_slack_message_attachments=lambda ch, team, ts, atts: calls.__setitem__("update", atts),
+        slack_reply_in_thread=lambda ch, team, ts, msg: calls["posted"].append(msg),
+        slack_app=SimpleNamespace(client=slack_client),
+        app_id="A0BMNEUDJMA",
+    )
+    fake_service = SimpleNamespace(
+        common_service=common_service, event_service=None, close=lambda: calls.setdefault("closed", True)
+    )
+    monkeypatch.setattr(actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service)
+    monkeypatch.setattr(actions_common.time, "sleep", lambda seconds: None)
+    # Release goes through the module-level singleton, not service.event_service.cache.
+    monkeypatch.setattr(
+        actions_common,
+        "event_cache",
+        SimpleNamespace(release_event_analysis_poller=lambda event_id: calls.__setitem__("released", event_id)),
+    )
+
+    results = iter(poll_results)
+    monkeypatch.setattr(actions_common.Events, "call_event_analysis_api", staticmethod(lambda **k: next(results)))
+
+    actions_common._poll_event_analysis(
+        None, None, None, context or _poller_context(), user_id="user-9", token="xoxb-test", stream_ts=_TEST_STREAM_TS
+    )
+    return calls
+
+
+class TestEventAnalysisPoller:
+    """Coverage for the "Ask Nubi to Analyse!" poller: re-polls the same
+    idempotent /v1/analyze/event endpoint and posts summary/investigation/
+    detailed_response progressively as each stage completes, instead of
+    relying on llm-server's per-stage webhook posts (which fire independently
+    per pipeline stage and duplicate content -- see the investigation that
+    motivated this)."""
+
+    def test_posts_all_three_sections_and_finalizes_analyzed_in_one_tick(self, monkeypatch):
+        calls = _run_poller(
+            monkeypatch,
+            [
+                {
+                    "status": "COMPLETED",
+                    "task_statuses": {
+                        "summary": "COMPLETED",
+                        "investigation": "COMPLETED",
+                        "detailed_response": "COMPLETED",
+                    },
+                    "summary": "Pods are crash-looping.",
+                    "investigation": "Root cause: OOMKilled.",
+                    "detailed_response": "Full write-up: OOMKilled due to a memory limit regression.",
+                }
+            ],
+        )
+
+        assert len(calls["posted"]) == 3
+        assert "Pods are crash-looping." in calls["posted"][0]
+        assert "Root cause: OOMKilled." in calls["posted"][1]
+        assert "Full write-up: OOMKilled due to a memory limit regression." in calls["posted"][2]
+        assert "<@U1>" in calls["posted"][2]  # only the final message pings the user
+        assert "<@U1>" not in calls["posted"][0] and "<@U1>" not in calls["posted"][1]
+        assert "Analyzed" in calls["update"][0]["text"]
+
+        # The "Thinking"-style panel (already opened+revealed by the caller,
+        # per the dedicated _run_event_analysis_background tests below)
+        # advanced as each task completed, and settled everything complete on
+        # close -- visible progress, not just the thread messages.
+        advanced = [{c["id"]: c["status"] for c in call["chunks"]} for call in calls["stream_append"]]
+        assert advanced == [
+            {"summary": "complete", "investigation": "in_progress"},
+            {"investigation": "complete", "log_analysis": "in_progress"},
+        ]
+        closed_tasks = {c["id"]: c["status"] for c in calls["stream_stop"]["chunks"]}
+        assert closed_tasks == {
+            "summary": "complete",
+            "investigation": "complete",
+            "log_analysis": "complete",
+            "detailed_response": "complete",
+        }
+        assert calls["released"] == _poller_context().event_id
+
+    def test_releases_the_claim_on_every_exit_path(self, monkeypatch):
+        # Regression: the Redis claim only ever clears itself after the full
+        # event_analysis_max_minutes TTL, so any exit path that skips
+        # releasing it blocks a retry on this event for that whole window.
+        for poll_results in (
+            [{"status": "FAILED", "task_statuses": {}}],
+            [None, None, None],  # gives up after repeated fetch failures
+        ):
+            calls = _run_poller(monkeypatch, poll_results)
+            assert calls["released"] == _poller_context().event_id
+
+    def test_does_not_repost_a_section_already_sent(self, monkeypatch):
+        # summary completes on tick 1; investigation + detailed_response
+        # complete on tick 2 -- summary must not be posted twice.
+        calls = _run_poller(
+            monkeypatch,
+            [
+                {
+                    "status": "IN_PROGRESS",
+                    "task_statuses": {"summary": "COMPLETED", "investigation": "IN_PROGRESS"},
+                    "summary": "Pods are crash-looping.",
+                },
+                {
+                    "status": "COMPLETED",
+                    "task_statuses": {
+                        "summary": "COMPLETED",
+                        "investigation": "COMPLETED",
+                        "detailed_response": "COMPLETED",
+                    },
+                    "summary": "Pods are crash-looping.",
+                    "investigation": "Root cause: OOMKilled.",
+                    "detailed_response": "Full write-up.",
+                },
+            ],
+        )
+
+        assert len(calls["posted"]) == 3  # summary once, investigation once, detailed_response once
+        assert sum("Pods are crash-looping." in m for m in calls["posted"]) == 1
+
+    def test_explicit_failed_status_posts_apology_and_clears_card(self, monkeypatch):
+        calls = _run_poller(monkeypatch, [{"status": "FAILED", "task_statuses": {}}])
+
+        assert any("something went wrong" in m for m in calls["posted"])
+        assert calls["update"][0]["text"] == "orig"  # status line dropped, not stamped Analyzed
+        # The panel must not hang on "in_progress"/"pending" -- every task
+        # settles to "error" so the user isn't left staring at a stuck panel.
+        closed_tasks = {c["id"]: c["status"] for c in calls["stream_stop"]["chunks"]}
+        assert closed_tasks == {
+            "summary": "error",
+            "investigation": "error",
+            "log_analysis": "error",
+            "detailed_response": "error",
+        }
+
+    def test_gives_up_silently_after_repeated_fetch_failures(self, monkeypatch):
+        # A malformed/None response (not a reported FAILED from llm-server)
+        # gives up quietly -- no alarming message, and the card keeps its
+        # "Analyzing" stamp since llm-server may still be working.
+        calls = _run_poller(monkeypatch, [None, None, None])
+
+        assert calls["posted"] == []
+        assert "Analyzing" in calls["update"][0]["text"]
+
+    def test_panel_failure_does_not_break_content_posting_or_card_flip(self, monkeypatch):
+        # The panel is a visual layer on top of the plain-text messages, never
+        # a dependency for them -- if opening/updating/closing it fails (e.g.
+        # this Slack app's plan is missing the streaming feature), the poller
+        # must still post content and flip the card.
+        context = _poller_context()
+        calls = {"posted": [], "update": None}
+
+        def _boom(**k):
+            raise RuntimeError("streaming not available")
+
+        slack_client = SimpleNamespace(append_stream=_boom, stop_stream=_boom)
+        common_service = SimpleNamespace(
+            get_message_attachments=lambda *a, **k: None,
+            update_slack_message_attachments=lambda ch, team, ts, atts: calls.__setitem__("update", atts),
+            slack_reply_in_thread=lambda ch, team, ts, msg: calls["posted"].append(msg),
+            slack_app=SimpleNamespace(client=slack_client),
+            app_id="A0BMNEUDJMA",
+        )
+        event_service = SimpleNamespace(cache=SimpleNamespace(release_event_analysis_poller=lambda event_id: None))
+        fake_service = SimpleNamespace(common_service=common_service, event_service=event_service, close=lambda: None)
+        monkeypatch.setattr(
+            actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service
+        )
+        monkeypatch.setattr(actions_common.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(
+            actions_common.Events,
+            "call_event_analysis_api",
+            staticmethod(
+                lambda **k: {
+                    "status": "COMPLETED",
+                    "task_statuses": {
+                        "summary": "COMPLETED",
+                        "investigation": "COMPLETED",
+                        "detailed_response": "COMPLETED",
+                    },
+                    "summary": "S",
+                    "investigation": "I",
+                    "detailed_response": "D",
+                }
+            ),
+        )
+
+        actions_common._poll_event_analysis(
+            None, None, None, context, user_id="user-9", token="xoxb-test", stream_ts=_TEST_STREAM_TS
+        )
+
+        assert len(calls["posted"]) == 3
+        assert "Analyzed" in calls["update"][0]["text"]
+
+    def test_background_opens_placeholder_panel_before_the_kickoff_call(self, monkeypatch):
+        # Regression: the panel used to only open once the background poller
+        # thread got around to it -- after the (potentially slow, up to a
+        # minute) synchronous llm-server kickoff call already returned. That
+        # left the click showing plain "Thinking..." text for that whole
+        # window. It must now open first, with just the placeholder task.
+        calls = _run_background_with_panel(monkeypatch, analysis_result={"status": "COMPLETED"})
+
+        assert calls["order"][0] == "start_stream"
+        assert calls["order"][1] == "call_event_analysis_api"
+        opened_tasks = {c["id"]: c["status"] for c in calls["stream_start"]["chunks"] if c["type"] == "task_update"}
+        assert opened_tasks == {actions_common._EVENT_ANALYSIS_PLACEHOLDER_TASK_ID: "in_progress"}
+
+    def test_background_closes_placeholder_when_already_completed_on_click(self, monkeypatch):
+        # A repeat click that finds the analysis already done never had
+        # anything to wait through -- only the placeholder needs closing,
+        # not the (never-revealed) real 3-task list.
+        calls = _run_background_with_panel(
+            monkeypatch, analysis_result={"status": "COMPLETED", "detailed_response": "Full write-up."}
+        )
+
+        assert calls["stream_append"] == []  # never revealed
+        closed = {c["id"]: c["status"] for c in calls["stream_stop"]["chunks"]}
+        assert closed == {actions_common._EVENT_ANALYSIS_PLACEHOLDER_TASK_ID: "complete"}
+
+    def test_background_reveals_real_tasks_when_poller_starts(self, monkeypatch):
+        # The real _start_event_analysis_poller increments the process-wide
+        # counter but -- since the spawned Thread is stubbed here and never
+        # actually runs _run_event_analysis_poller's decrement-on-exit -- it
+        # would otherwise never come back down and leak into later tests.
+        # monkeypatch.setattr's revert-to-original-on-teardown undoes exactly
+        # that increment.
+        monkeypatch.setattr(actions_common, "_active_event_analysis_pollers", 0)
+        calls = _run_background_with_panel(monkeypatch, analysis_result={"status": "IN_PROGRESS"}, poller_claims=True)
+
+        assert calls["stream_stop"] is None  # the poller now owns closing it
+        revealed = {c["id"]: c["status"] for c in calls["stream_append"][0]["chunks"]}
+        assert revealed == {
+            actions_common._EVENT_ANALYSIS_PLACEHOLDER_TASK_ID: "complete",
+            "summary": "in_progress",
+            "investigation": "pending",
+            "log_analysis": "pending",
+            "detailed_response": "pending",
+        }
+
+    def test_background_closes_placeholder_when_poller_fails_to_start(self, monkeypatch):
+        # Two overlapping clicks on the same event (or the process-wide cap)
+        # can mean _start_event_analysis_poller declines to start -- nothing
+        # else will ever drive this click's own panel forward, so it must be
+        # closed here instead of left stuck on "in_progress".
+        calls = _run_background_with_panel(monkeypatch, analysis_result={"status": "IN_PROGRESS"}, poller_claims=False)
+
+        closed = {c["id"]: c["status"] for c in calls["stream_stop"]["chunks"]}
+        assert closed == {actions_common._EVENT_ANALYSIS_PLACEHOLDER_TASK_ID: "complete"}
+
+    def test_post_investigation_content_treats_blank_content_as_settled(self):
+        # Nothing to post is settled, not a failure -- must not retry forever.
+        context = _poller_context()
+        service = SimpleNamespace(common_service=SimpleNamespace(slack_reply_in_thread=lambda *a, **k: None))
+        assert actions_common._post_investigation_content(service, context, "   ", "preamble") is True
+        assert actions_common._post_investigation_content(service, context, None, "preamble") is True
+
+    def test_post_investigation_content_returns_false_on_slack_failure(self):
+        context = _poller_context()
+
+        def _boom(*a, **k):
+            raise RuntimeError("rate limited")
+
+        service = SimpleNamespace(common_service=SimpleNamespace(slack_reply_in_thread=_boom))
+        assert actions_common._post_investigation_content(service, context, "some content", "preamble") is False
+
+    def test_start_poller_skips_when_already_claimed_by_another_click(self, monkeypatch):
+        started = {}
+        monkeypatch.setattr(
+            actions_common.threading,
+            "Thread",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not construct a Thread")),
+        )
+        cache = SimpleNamespace(claim_event_analysis_poller=lambda event_id, ttl: started.setdefault("claimed", False))
+        fake_service = SimpleNamespace(common_service=SimpleNamespace(slack_app=None))
+        started_poller = actions_common._start_event_analysis_poller(
+            None, None, None, _poller_context(), "user-9", cache, fake_service, "xoxb-test", _TEST_STREAM_TS
+        )
+        assert started == {"claimed": False}
+        assert started_poller is False
+
+    def test_start_poller_respects_the_process_wide_cap(self, monkeypatch):
+        # Mirrors slack_progress.py's thinking_steps_max_pollers cap: even a
+        # freshly-claimed event must not spawn a thread once the process is
+        # already at the concurrency limit.
+        monkeypatch.setattr(actions_common.settings.slack, "event_analysis_max_pollers", 0)
+        monkeypatch.setattr(
+            actions_common.threading,
+            "Thread",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not construct a Thread")),
+        )
+        released = {}
+        cache = SimpleNamespace(
+            claim_event_analysis_poller=lambda event_id, ttl: True,
+            release_event_analysis_poller=lambda event_id: released.setdefault("event_id", event_id),
+        )
+        fake_service = SimpleNamespace(common_service=SimpleNamespace(slack_app=None))
+        started_poller = actions_common._start_event_analysis_poller(
+            None, None, None, _poller_context(), "user-9", cache, fake_service, "xoxb-test", _TEST_STREAM_TS
+        )
+        assert actions_common._active_event_analysis_pollers == 0
+        # Regression: a cap hit used to leave the claim taken, blocking any
+        # retry on this event for the full TTL even though no poller runs.
+        assert released == {"event_id": _poller_context().event_id}
+        assert started_poller is False
+
+    def test_run_poller_wrapper_logs_and_decrements_counter_on_death(self, monkeypatch):
+        # _run_event_analysis_poller is the actual threading.Thread target
+        # (not _poll_event_analysis directly) precisely so an unhandled
+        # exception is caught and logged instead of dying silently in the
+        # background thread with nothing to show for it.
+        actions_common._active_event_analysis_pollers = 1
+
+        def _boom(*a, **k):
+            raise RuntimeError("llm-server unreachable")
+
+        monkeypatch.setattr(actions_common, "_poll_event_analysis", _boom)
+        actions_common._run_event_analysis_poller(
+            None, None, None, _poller_context(), "user-9", "xoxb-test", _TEST_STREAM_TS
+        )
+        assert actions_common._active_event_analysis_pollers == 0
 
     def test_with_status_line_appends_when_none_present(self):
         base = [{"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig"}]

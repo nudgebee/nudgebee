@@ -86,8 +86,10 @@ class _FakeCommonService:
 
 
 class _Payload:
-    def __init__(self, response):
+    def __init__(self, response, conversation_id="C123-1779952241.483549", reply_ref=None):
         self.response = response
+        self.conversation_id = conversation_id
+        self.reply_ref = reply_ref
 
 
 def _svc(monkeypatch, common_service=None):
@@ -387,6 +389,36 @@ class TestHandleFinalResponseBatching:
         svc.handle_final_response(_Payload("hello"), {}, "C123", "1779952241.483549", "T123")
 
         assert len(reply_calls) == 1
+
+
+class TestHandleFinalResponseEventPipelineStageGating:
+    """llm-server's per-stage webhooks (no reply_ref) must be a no-op here --
+    the actions_common poller already owns posting that content."""
+
+    def test_event_prefixed_conversation_with_no_reply_ref_is_skipped(self, monkeypatch):
+        common_service = _FakeCommonService()
+        svc = _svc(monkeypatch, common_service)
+
+        svc.handle_final_response(
+            _Payload("hello", conversation_id="event-abc123", reply_ref=None), {}, "C123", "1779952241.483549", "T123"
+        )
+
+        assert common_service.slack_messages == []
+        assert common_service.call_count == 0
+
+    def test_event_prefixed_conversation_with_reply_ref_still_posts(self, monkeypatch):
+        common_service = _FakeCommonService()
+        svc = _svc(monkeypatch, common_service)
+
+        svc.handle_final_response(
+            _Payload("hello", conversation_id="event-abc123", reply_ref="C123-1779952241.483549"),
+            {},
+            "C123",
+            "1779952241.483549",
+            "T123",
+        )
+
+        assert len(common_service.slack_messages) == 1
 
 
 class TestHandleFinalResponseImageUpload:
