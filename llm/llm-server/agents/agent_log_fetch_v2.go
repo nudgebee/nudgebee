@@ -671,8 +671,7 @@ func providerFromLogs(logs string) string {
 // failing loudly — so the downgrade needs the same validation those callers'
 // own tasks don't: confirm real canonical-query output stays correct across
 // providers before trusting this in production (see
-// TestGenerateCanonicalLogQuery_SummaryTier_StillProducesValidQuery and the
-// logs-v3-agent-investigation doc for the manual validation run).
+// TestGenerateCanonicalLogQuery_SummaryTier_StillProducesValidQuery).
 func generateCanonicalLogQuery(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider, fields []string, indices map[string]string) (string, error) {
 	prompt := buildCanonicalLogQueryPrompt(provider, fields, indices)
 	messages := buildLogIntentMessages(prompt, request)
