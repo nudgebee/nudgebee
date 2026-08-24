@@ -130,15 +130,11 @@ func isRawWorkflowJSON(content string) bool {
 }
 
 // workflowSnapshot returns a deterministic marshal of the working workflow for
-// change detection ("" when uninitialized). It coerces types first — the same
-// idempotent normalization validate/dry_run/finalize apply to the shared state —
-// so a read-only turn whose tools merely coerced the loaded definition compares
-// equal to the pre-loop snapshot instead of registering as a change.
+// change detection ("" when uninitialized).
 func (a *WorkflowBuilderAgent) workflowSnapshot() string {
 	if a.state.WorkingWorkflow == nil {
 		return ""
 	}
-	coerceWorkflowTypes(a.state.WorkingWorkflow)
 	b, err := json.Marshal(a.state.WorkingWorkflow)
 	if err != nil {
 		return ""
@@ -283,9 +279,12 @@ func init() {
 const WorkflowBuilderAgentName = "automation_builder"
 
 type WorkflowBuilderAgent struct {
-	accountId       string
-	state           WorkflowBuilderState
-	cachedTaskTypes string // Cached task type registry JSON for schema-driven validation
+	accountId string
+	state     WorkflowBuilderState
+	// cachedTaskTypes is the runbook task-type registry JSON, fetched at most once per turn by
+	// fetchTaskRegistry and reused by every phase (intent → plan → build) plus schema-driven
+	// validation. Transient per-request; the agent is built fresh per turn.
+	cachedTaskTypes string
 
 	// Transient per-request context (set at the top of Execute, not persisted in state): the
 	// cluster/cloud-account the user is currently viewing, so prompts can default to it instead
@@ -2501,17 +2500,31 @@ func (a *WorkflowBuilderAgent) ownAccountName(ctx *security.RequestContext) stri
 	return ""
 }
 
-// fetchTaskTypeNames fetches registered task type names from the runbook server.
-func (a *WorkflowBuilderAgent) fetchTaskTypeNames(ctx *security.RequestContext) string {
+// fetchTaskRegistry returns the runbook task-type registry JSON, fetching it at most once per
+// turn. Intent extraction, planning, re-planning and the build loop all need the same registry;
+// each used to issue its own GET /tasks. Only a successful fetch is memoized, so a transient
+// runbook error does not poison the later phases (#31500).
+func (a *WorkflowBuilderAgent) fetchTaskRegistry(ctx *security.RequestContext) string {
+	if a.cachedTaskTypes != "" {
+		return a.cachedTaskTypes
+	}
 	tasksResp, err := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId,
 		ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
 	if err != nil {
 		ctx.GetLogger().Warn("workflow_builder: failed to fetch task types from runbook server", "error", err)
 		return ""
 	}
-	if len(tasksResp) == 0 {
+	a.cachedTaskTypes = string(tasksResp)
+	return a.cachedTaskTypes
+}
+
+// fetchTaskTypeNames returns the registered task type names as a prompt fragment.
+func (a *WorkflowBuilderAgent) fetchTaskTypeNames(ctx *security.RequestContext) string {
+	registry := a.fetchTaskRegistry(ctx)
+	if registry == "" {
 		return ""
 	}
+	tasksResp := []byte(registry)
 	// Peek at first non-whitespace byte to determine response shape without double-unmarshaling.
 	var wrapped struct {
 		Tasks []struct {
@@ -2732,11 +2745,8 @@ AVAILABLE CONFIGS ON THIS ACCOUNT (use {{ Configs.<key> }} to reference these in
 // generatePlan creates a human-readable workflow plan for user approval.
 // clarificationContext contains user's answers to clarifying questions (empty if none were asked).
 func (a *WorkflowBuilderAgent) generatePlan(ctx *security.RequestContext, request core.NBAgentRequest, intent string, clarificationContext string) (string, error) {
-	tasksResp, err := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
-	var taskTypesInfo string
-	if err == nil {
-		taskTypesInfo = string(tasksResp)
-	} else {
+	taskTypesInfo := a.fetchTaskRegistry(ctx)
+	if taskTypesInfo == "" {
 		taskTypesInfo = "Task types not available"
 	}
 
@@ -2873,11 +2883,8 @@ NOTE: In all user-facing text, refer to these as "automations" (not "workflows")
 
 // regeneratePlan creates an updated plan incorporating user feedback.
 func (a *WorkflowBuilderAgent) regeneratePlan(ctx *security.RequestContext, request core.NBAgentRequest, intent string, previousPlan string, feedback string) (string, error) {
-	tasksResp, err := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
-	var taskTypesInfo string
-	if err == nil {
-		taskTypesInfo = string(tasksResp)
-	} else {
+	taskTypesInfo := a.fetchTaskRegistry(ctx)
+	if taskTypesInfo == "" {
 		taskTypesInfo = "Task types not available"
 	}
 
@@ -2935,35 +2942,6 @@ RULES:
 	}
 
 	return safePlanContent(completion)
-}
-
-// coerceWorkflowTypes walks the workflow JSON map and converts float64 values
-// that are whole numbers to int. Go's json.Unmarshal into map[string]interface{}
-// always produces float64 for JSON numbers, but the validation API expects
-// integer types for fields like concurrency, max_retries, etc.
-func coerceWorkflowTypes(data map[string]interface{}) {
-	for key, val := range data {
-		switch v := val.(type) {
-		case float64:
-			// Convert whole-number floats to int (e.g., 5.0 → 5)
-			if v == float64(int(v)) {
-				data[key] = int(v)
-			}
-		case map[string]interface{}:
-			coerceWorkflowTypes(v)
-		case []interface{}:
-			for i, item := range v {
-				switch itemVal := item.(type) {
-				case float64:
-					if itemVal == float64(int(itemVal)) {
-						v[i] = int(itemVal)
-					}
-				case map[string]interface{}:
-					coerceWorkflowTypes(itemVal)
-				}
-			}
-		}
-	}
 }
 
 // ==================== AGENTIC TOOL-BASED BUILD/FIX ====================
@@ -4040,9 +4018,6 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 		return "Error: automation not initialized."
 	}
 
-	// Apply type coercion before validation
-	coerceWorkflowTypes(a.state.WorkingWorkflow)
-
 	// Resolve cloud-account display names → UUIDs BEFORE the server sees the definition.
 	// This same swap runs again at save time, but the save is too late to help the loop: the
 	// runbook server validates account_id as a Postgres uuid, so a display name reaches
@@ -4128,7 +4103,6 @@ func (a *WorkflowBuilderAgent) toolDryRun(ctx *security.RequestContext) string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized."
 	}
-	coerceWorkflowTypes(a.state.WorkingWorkflow)
 
 	// WorkingWorkflow is the full workflow object ({name, definition, ...}); the
 	// dry-run endpoint expects {definition: <inner>}. Fall back to sending the whole
@@ -4201,9 +4175,6 @@ func (a *WorkflowBuilderAgent) toolFinalize() string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized."
 	}
-
-	// Apply type coercion before finalizing
-	coerceWorkflowTypes(a.state.WorkingWorkflow)
 
 	result, err := json.MarshalIndent(a.state.WorkingWorkflow, "", "  ")
 	if err != nil {
@@ -4398,6 +4369,52 @@ func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext
 	}
 }
 
+// observationHistoryWindow is how many of the most recent tool observations stay verbatim in the
+// tool-loop history. The loop re-sends its whole message slice on every iteration, so a task
+// schema or workflow dump left verbatim in an early observation is paid for again on each of the
+// remaining iterations — input cost quadratic in loop length (#31500). Older observations are
+// shrunk to a head snippet: the model needs to remember that it ran the tool and roughly what came
+// back, not the full payload.
+const observationHistoryWindow = 3
+
+// trimmedObservationHeadBytes is how much of an older observation survives trimming. Sized so the
+// informative head of the biggest observations survives — the leading fields of a task schema, the
+// status and first failing task of an execution blob, a whole validate report — while still cutting
+// a typical schema by well over 80%. What the model concluded from the full payload is not lost
+// either way: its own reasoning rides in the assistant turns, which are never trimmed.
+const trimmedObservationHeadBytes = 1000
+
+// loopObservation records where a tool observation landed in the tool-loop message history and
+// what it contained, so trimStaleObservations can rewrite that message in place later.
+type loopObservation struct {
+	msgIdx  int
+	tool    string
+	body    string
+	trimmed bool
+}
+
+// trimStaleObservations shrinks every observation that has fallen out of the recent window to a
+// head snippet, rewriting its message in place. Trimming is one-way and idempotent — an already
+// trimmed observation is skipped — so the whole loop costs one pass per observation. Any
+// anti-thrash nudge appended to a trimmed observation goes with it; the nudge was a signal for the
+// iteration it was delivered on, and the live ones are all inside the window.
+func trimStaleObservations(messages []llms.MessageContent, observations []loopObservation) {
+	for i := 0; i < len(observations)-observationHistoryWindow; i++ {
+		o := &observations[i]
+		if o.trimmed {
+			continue
+		}
+		o.trimmed = true
+		if len(o.body) <= trimmedObservationHeadBytes {
+			continue
+		}
+		head := core.TruncateHead(o.body, trimmedObservationHeadBytes)
+		messages[o.msgIdx] = llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf(
+			"<observation>%s\n[earlier %s result truncated to save context — %d of %d characters shown]</observation>",
+			head, o.tool, len(head), len(o.body)))
+	}
+}
+
 // runToolLoop runs an agentic tool-calling loop where the LLM reasons step-by-step
 // and calls workflow manipulation tools. This follows the same XML format as the ReAct planner.
 func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
@@ -4407,10 +4424,9 @@ func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request
 	// Fresh correction budget per loop, so an edit turn is not penalised by a build turn.
 	a.triggerShapeRejections = 0
 
-	// Fetch task types once for all get_task_schema calls and schema-driven validation
-	tasksResp, _ := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
-	cachedTaskTypes := string(tasksResp)
-	a.cachedTaskTypes = cachedTaskTypes
+	// Task types back every get_task_schema call and the schema-driven validation hints. Shared
+	// with the intent/planning phases through the per-turn memo.
+	cachedTaskTypes := a.fetchTaskRegistry(ctx)
 
 	toolDescriptions := getWorkflowToolDescriptions()
 
@@ -4453,6 +4469,9 @@ RULES:
 	// the model decisively toward acting (mutate → validate → finalize) or finishing.
 	toolCallSeen := map[string]int{}
 	readOnlyToolStreak := 0
+
+	// Observation history, oldest first — see trimStaleObservations.
+	var observations []loopObservation
 
 	const maxIterations = 20
 	for i := 0; i < maxIterations; i++ {
@@ -4573,6 +4592,8 @@ RULES:
 			llms.TextParts(llms.ChatMessageTypeAI, trimmedContent),
 			llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("<observation>%s</observation>%s", observation, nudge)),
 		)
+		observations = append(observations, loopObservation{msgIdx: len(messages) - 1, tool: toolName, body: observation})
+		trimStaleObservations(messages, observations)
 	}
 
 	// If we exhausted iterations, try to finalize whatever we have
