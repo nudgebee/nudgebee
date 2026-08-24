@@ -74,6 +74,9 @@ export interface EgressFilterConfig {
   pii_ner_enabled: boolean | null;
   /** Categories whose tokens the wrapper un-scrubs before egress. Empty = scrub all. */
   pii_disabled_categories: PIICategory[];
+  /** Agents skipping detection. Excludes by producer, not rule -> e.g.
+   * websearch, whose payload is a fetched public page. */
+  disabled_agents: string[];
 
   // Read-only platform context (from llm-server env).
   master_enabled: boolean; // whole egress subsystem on/off at the platform level
@@ -118,6 +121,7 @@ export interface UpdateEgressFilterInput {
   pii_mode?: PIIMode | null;
   pii_ner_enabled?: boolean | null;
   pii_disabled_categories?: PIICategory[] | null;
+  disabled_agents?: string[] | null;
 }
 export async function updateEgressFilterConfig(input: UpdateEgressFilterInput, signal?: AbortSignal): Promise<EgressFilterConfig | null> {
   const query = `mutation UpdateEgressFilterConfig($request: json!) {

@@ -1,11 +1,13 @@
 package api
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/stretchr/testify/require"
 	"nudgebee/llm/security/egressfilter"
 )
 
@@ -118,4 +120,48 @@ func TestSetCustomRulesAndPatternsRoundTrip(t *testing.T) {
 	assert.NoError(t, setCustomRules(cfg, rules))
 	got := patternsFromCfg(cfg)
 	assert.Equal(t, rules, got)
+}
+
+// Names are not a closed set -> trim/dedupe/cap IS the whole contract.
+func TestParseEgressDisabledAgents(t *testing.T) {
+	t.Run("normalises", func(t *testing.T) {
+		got, err := parseEgressDisabledAgents([]string{"  websearch  ", "", "memory_compose", "WebSearch", "   "})
+		require.NoError(t, err)
+		// Dedupe keeps the FIRST spelling -> operator's casing survives.
+		assert.Equal(t, []string{"websearch", "memory_compose"}, got)
+	})
+
+	t.Run("empty input yields nil, not an empty slice", func(t *testing.T) {
+		got, err := parseEgressDisabledAgents(nil)
+		require.NoError(t, err)
+		assert.Nil(t, got, "nil lets the DAO write the column default rather than an explicit []")
+	})
+
+	t.Run("all-blank input yields nil", func(t *testing.T) {
+		got, err := parseEgressDisabledAgents([]string{"  ", ""})
+		require.NoError(t, err)
+		// Nil, not Empty -> Empty passes for []string{} too, so it would not
+		// verify what the name claims.
+		assert.Nil(t, got)
+	})
+
+	t.Run("rejects over the cap", func(t *testing.T) {
+		many := make([]string, 0, maxDisabledAgentsEntries+1)
+		for i := 0; i <= maxDisabledAgentsEntries; i++ {
+			many = append(many, fmt.Sprintf("agent_%d", i))
+		}
+		_, err := parseEgressDisabledAgents(many)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "disabled_agents")
+	})
+
+	t.Run("at the cap is allowed", func(t *testing.T) {
+		many := make([]string, 0, maxDisabledAgentsEntries)
+		for i := 0; i < maxDisabledAgentsEntries; i++ {
+			many = append(many, fmt.Sprintf("agent_%d", i))
+		}
+		got, err := parseEgressDisabledAgents(many)
+		require.NoError(t, err)
+		assert.Len(t, got, maxDisabledAgentsEntries)
+	})
 }
