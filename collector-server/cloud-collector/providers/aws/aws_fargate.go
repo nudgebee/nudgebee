@@ -18,6 +18,33 @@ import (
 )
 
 // Helper function to map Fargate task status strings to provider status
+// isFargateCapacityProvider reports whether an ECS capacity provider name is one
+// of the AWS-managed Fargate providers.
+func isFargateCapacityProvider(name *string) bool {
+	return name != nil && (*name == "FARGATE" || *name == "FARGATE_SPOT")
+}
+
+// isFargateTask reports whether a task runs on Fargate. A task launched through a
+// capacity provider strategy carries an empty LaunchType — the provider name is
+// the only signal — so LaunchType alone would silently drop it.
+func isFargateTask(task types.Task) bool {
+	return task.LaunchType == types.LaunchTypeFargate || isFargateCapacityProvider(task.CapacityProviderName)
+}
+
+// isFargateService reports whether a service places its tasks on Fargate, by
+// launch type or by a capacity provider strategy naming a Fargate provider.
+func isFargateService(service types.Service) bool {
+	if service.LaunchType == types.LaunchTypeFargate {
+		return true
+	}
+	for _, item := range service.CapacityProviderStrategy {
+		if isFargateCapacityProvider(item.CapacityProvider) {
+			return true
+		}
+	}
+	return false
+}
+
 func fargateTaskStatusToNbStatus(lastStatus *string) providers.ResourceStatus {
 	if lastStatus == nil {
 		return providers.ResourceStatusUnknown
@@ -122,9 +149,14 @@ func (a *amazonFargate) GetResources(ctx providers.CloudProviderContext, account
 			}
 
 			// List services in the cluster and filter for Fargate launch type
+			// Populated while walking the cluster's services so tasks enumerated
+			// below can be attributed back to the service that launched them.
+			serviceArnByName := map[string]string{}
+			// Deliberately unfiltered: ListServices' LaunchType filter matches on the
+			// service's LaunchType field, which is empty for services placed through a
+			// capacity provider strategy. Those are filtered in below instead.
 			servicesPaginator := ecs.NewListServicesPaginator(svc, &ecs.ListServicesInput{
-				Cluster:    cluster.ClusterArn,
-				LaunchType: types.LaunchTypeFargate,
+				Cluster: cluster.ClusterArn,
 			})
 
 			for servicesPaginator.HasMorePages() {
@@ -149,7 +181,7 @@ func (a *amazonFargate) GetResources(ctx providers.CloudProviderContext, account
 
 					for _, service := range describedServicesOutput.Services {
 						// Filter to only Fargate services
-						if service.LaunchType != types.LaunchTypeFargate {
+						if !isFargateService(service) {
 							continue
 						}
 
@@ -182,73 +214,81 @@ func (a *amazonFargate) GetResources(ctx providers.CloudProviderContext, account
 							Type:        getAwsServiceResourceType(ServiceNameFargate, "service"),
 						}
 						resources = append(resources, serviceResource)
+						serviceArnByName[*service.ServiceName] = *service.ServiceArn
+					}
+				}
+			}
 
-						// Get tasks for this Fargate service
-						tasksPaginator := ecs.NewListTasksPaginator(svc, &ecs.ListTasksInput{
-							Cluster:     cluster.ClusterArn,
-							ServiceName: service.ServiceName,
-							LaunchType:  types.LaunchTypeFargate,
-						})
+			// Tasks are enumerated per cluster, not per service: ListTasks filtered
+			// by ServiceName only returns service-launched tasks, so standalone
+			// tasks (RunTask, scheduled tasks) were never collected at all.
+			// Also unfiltered, for the same reason as ListServices above: a task
+			// launched through a capacity provider strategy has no LaunchType, so
+			// the API-side filter would never return it.
+			tasksPaginator := ecs.NewListTasksPaginator(svc, &ecs.ListTasksInput{
+				Cluster: cluster.ClusterArn,
+			})
 
-						for tasksPaginator.HasMorePages() {
-							tasksOutput, err := tasksPaginator.NextPage(ctx.GetContext())
-							if err != nil {
-								ctx.GetLogger().Error("failed to list fargate tasks for service", "error", err, "serviceArn", *service.ServiceArn, "clusterArn", *cluster.ClusterArn)
-								break
-							}
+			for tasksPaginator.HasMorePages() {
+				tasksOutput, err := tasksPaginator.NextPage(ctx.GetContext())
+				if err != nil {
+					ctx.GetLogger().Error("failed to list fargate tasks for cluster", "error", err, "clusterArn", *cluster.ClusterArn, "region", regionName)
+					break
+				}
 
-							taskChunks := lo.Chunk(tasksOutput.TaskArns, 100)
-							for _, taskChunk := range taskChunks {
-								describeTasksInput := &ecs.DescribeTasksInput{
-									Cluster: cluster.ClusterArn,
-									Tasks:   taskChunk,
-									Include: []types.TaskField{types.TaskFieldTags},
-								}
-								describedTasksOutput, err := svc.DescribeTasks(ctx.GetContext(), describeTasksInput)
-								if err != nil {
-									ctx.GetLogger().Error("failed to describe fargate tasks", "error", err, "clusterArn", *cluster.ClusterArn)
-									continue
-								}
+				taskChunks := lo.Chunk(tasksOutput.TaskArns, 100)
+				for _, taskChunk := range taskChunks {
+					describeTasksInput := &ecs.DescribeTasksInput{
+						Cluster: cluster.ClusterArn,
+						Tasks:   taskChunk,
+						Include: []types.TaskField{types.TaskFieldTags},
+					}
+					describedTasksOutput, err := svc.DescribeTasks(ctx.GetContext(), describeTasksInput)
+					if err != nil {
+						ctx.GetLogger().Error("failed to describe fargate tasks", "error", err, "clusterArn", *cluster.ClusterArn)
+						continue
+					}
 
-								for _, task := range describedTasksOutput.Tasks {
-									// Filter to only Fargate tasks
-									if task.LaunchType != types.LaunchTypeFargate {
-										continue
-									}
+					for _, task := range describedTasksOutput.Tasks {
+						// Filter to only Fargate tasks
+						if !isFargateTask(task) {
+							continue
+						}
 
-									if task.TaskArn == nil || task.LastStatus == nil || task.CreatedAt == nil {
-										ctx.GetLogger().Warn("Skipping Fargate task due to missing essential fields", "task", task)
-										continue
-									}
+						if task.TaskArn == nil || task.LastStatus == nil || task.CreatedAt == nil {
+							ctx.GetLogger().Warn("Skipping Fargate task due to missing essential fields", "task", task)
+							continue
+						}
 
-									taskArnSplits := strings.Split(*task.TaskArn, "/")
-									taskID := taskArnSplits[len(taskArnSplits)-1]
-									taskTags := make(map[string][]string)
-									for _, tag := range task.Tags {
-										if tag.Key != nil && tag.Value != nil {
-											taskTags[*tag.Key] = append(taskTags[*tag.Key], *tag.Value)
-										}
-									}
-									taskMeta := structToMap(task)
-									taskMeta["ClusterArn"] = *cluster.ClusterArn
-									taskMeta["ServiceArn"] = *service.ServiceArn
-
-									taskResource := providers.Resource{
-										Id:          taskID,
-										ServiceName: ServiceNameFargate,
-										Name:        taskID,
-										Status:      fargateTaskStatusToNbStatus(task.LastStatus),
-										Region:      regionName,
-										Tags:        taskTags,
-										Meta:        taskMeta,
-										Arn:         *task.TaskArn,
-										CreatedAt:   *task.CreatedAt,
-										Type:        getAwsServiceResourceType(ServiceNameFargate, "task"),
-									}
-									resources = append(resources, taskResource)
-								}
+						taskArnSplits := strings.Split(*task.TaskArn, "/")
+						taskID := taskArnSplits[len(taskArnSplits)-1]
+						taskTags := make(map[string][]string)
+						for _, tag := range task.Tags {
+							if tag.Key != nil && tag.Value != nil {
+								taskTags[*tag.Key] = append(taskTags[*tag.Key], *tag.Value)
 							}
 						}
+						taskMeta := structToMap(task)
+						taskMeta["ClusterArn"] = *cluster.ClusterArn
+						if serviceName, ok := ecsServiceNameFromTaskGroup(task.Group); ok {
+							if serviceArn, ok := serviceArnByName[serviceName]; ok {
+								taskMeta["ServiceArn"] = serviceArn
+							}
+						}
+
+						taskResource := providers.Resource{
+							Id:          taskID,
+							ServiceName: ServiceNameFargate,
+							Name:        taskID,
+							Status:      fargateTaskStatusToNbStatus(task.LastStatus),
+							Region:      regionName,
+							Tags:        taskTags,
+							Meta:        taskMeta,
+							Arn:         *task.TaskArn,
+							CreatedAt:   *task.CreatedAt,
+							Type:        getAwsServiceResourceType(ServiceNameFargate, "task"),
+						}
+						resources = append(resources, taskResource)
 					}
 				}
 			}

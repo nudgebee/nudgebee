@@ -325,3 +325,34 @@ func TestStateTransitionMetaProgression(t *testing.T) {
 	assert.Empty(t, runningMeta["StoppedReason"], "RUNNING: no stop reason yet")
 	assert.Equal(t, "User stopped task", stoppedMeta["StoppedReason"])
 }
+
+// ── Task → service attribution ───────────────────────────────────────────────
+// Tasks are enumerated per cluster (so standalone RunTask/scheduled tasks are
+// collected at all), which means the owning service can only come from the
+// task's Group field.
+func TestEcsServiceNameFromTaskGroup(t *testing.T) {
+	group := func(s string) *string { return &s }
+
+	tests := []struct {
+		name      string
+		group     *string
+		wantName  string
+		wantFound bool
+	}{
+		{"service-launched task", group("service:my-api-svc"), "my-api-svc", true},
+		{"standalone task (family)", group("family:batch-job"), "", false},
+		{"empty service name", group("service:"), "", false},
+		{"empty group", group(""), "", false},
+		{"nil group", nil, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotName, gotFound := ecsServiceNameFromTaskGroup(tt.group)
+			if gotName != tt.wantName || gotFound != tt.wantFound {
+				t.Errorf("ecsServiceNameFromTaskGroup() = (%q, %v), want (%q, %v)",
+					gotName, gotFound, tt.wantName, tt.wantFound)
+			}
+		})
+	}
+}
