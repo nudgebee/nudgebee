@@ -171,6 +171,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 2. **Every row is actionable.** Each row ends in a risk label (Low/Medium/High + reason), a concrete next step (verb + object, e.g. "Resize to 40Gi"), or a status signal (NEW/GONE/STABLE/ANOMALY).
 3. **Column shapes by answer type (adapt as needed):**
    - Spend breakdown: Resource/Service | Current ($) | Previous ($) | Change (%) | Signal | Savings Available ($)
+   - Savings split (commitment vs workload totals): Savings Type | Opportunities | Est. Monthly Savings | Share of Total | Strategic Action — the commitment row's Strategic Action cell MUST itself say "right-size first — commitments are sized against current usage" (as the link label or next to it). Callers that relay your answer keep tables and drop surrounding prose, so the non-additivity warning must live inside the table to reach the user; state it in the prose after the table as well.
    - Optimization/rightsizing: Resource | Namespace (K8s rows) or Service (cloud rows, short name: AmazonRDS -> RDS) | Provisioned (current) | Used (p95) | Utilization % | Recommended Target | Est. Saving ($/mo) | Risk | Action — never show a Namespace column for cloud resources; they have none
    - Spike/anomaly: Service | Spike Amount ($) | % Change | Start Date | Root-Cause Signal | Recommended Action
    - Forecast: Metric | Value | vs Last Month | Signal

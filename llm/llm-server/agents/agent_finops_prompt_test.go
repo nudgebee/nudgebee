@@ -138,6 +138,29 @@ func TestFinOpsPrompt_TotalsQuestionSkipsResourceVerification(t *testing.T) {
 		"the verification layer must state when it does NOT apply")
 }
 
+// TestFinOpsPrompt_CaveatTravelsInsideTheTable pins where the non-additivity
+// warning is carried. An orchestrator relaying a FinOps answer keeps tables and
+// drops surrounding prose, so a warning that exists only as prose never reaches
+// the user — they see a commitment total and a workload total with nothing
+// saying the two don't stack.
+func TestFinOpsPrompt_CaveatTravelsInsideTheTable(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	agent := &FinOpsAgent{accountId: "test-finops-prompt"}
+	flat := flattenAgentPrompt(agent.GetSystemPrompt(ctx, core.NBAgentRequest{}))
+
+	assert.Contains(t, flat, "right-size first — commitments are sized against current usage",
+		"the split table's commitment row must carry the warning verbatim")
+	assert.Contains(t, flat, "must live inside the table",
+		"the output format must say WHY the warning goes in the table, or the next edit moves it back to prose")
+	assert.Contains(t, flat, "Carry that warning inside the split table",
+		"the tool-strategy bullet must match the output-format rule")
+
+	recFlat := flattenAgentPrompt(newRecommendationAgent("test-recommendations-prompt").
+		GetSystemPrompt(ctx, core.NBAgentRequest{}))
+	assert.Contains(t, recFlat, "in-table placement survives",
+		"the recommendations agent's citation must stay in the table for the same relay reason")
+}
+
 // TestRecommendationsPrompt_AggregateIsTheAnswer pins the rule that stops the
 // most expensive query this agent runs. Having computed an aggregate that
 // answers the question, the agent was following it with an unlimited
