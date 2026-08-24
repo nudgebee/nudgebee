@@ -43,9 +43,12 @@ func TestOpenObserveTraceSource_BuildSQLWhere(t *testing.T) {
 func TestOpenObserveTraceSource_BuildSQL(t *testing.T) {
 	s := &OpenObserveTraceSource{}
 	assert.Equal(t, map[string]string{
-		"workload_namespace":        "service_k8s_namespace_name",
-		"workload_name":             "service_name",
-		"destination_workload_name": "service_peer_name",
+		"workload_namespace": "service_k8s_namespace_name",
+		"workload_name":      "service_name",
+		// net_peer_name, not service_peer_name: the latter is a display-only spelling
+		// (still tolerated by openObserveTraceFieldCandidates) that exists in no
+		// OpenObserve trace stream, so filtering on it returned HTTP 400.
+		"destination_workload_name": "net_peer_name",
 		"http_status_code":          "http_status_code",
 		"span_name":                 "operation_name",
 		"resource":                  "http_target",
@@ -326,4 +329,75 @@ func TestOpenObserveHeatmapWindow(t *testing.T) {
 	pad := (5 * time.Minute).Microseconds()
 	assert.Equal(t, startMs*1000-pad, start)
 	assert.Equal(t, endMs*1000+pad, end)
+}
+
+// TestOpenObserveTrace_WorkloadErrorSpanShape covers the exact where clause
+// queryErrorSpansForWorkload builds: an OR of a destination side and a source side.
+// Before the destination_workload_namespace drop and the net_peer_name remap, this
+// produced SQL naming two columns no trace stream has, so OpenObserve answered HTTP 400
+// and the investigate page got no trace evidence at all.
+func TestOpenObserveTrace_WorkloadErrorSpanShape(t *testing.T) {
+	where := query.QueryWhereClause{
+		Or: []query.QueryWhereClause{
+			{Binary: query.BinaryWhereClause{
+				"destination_workload_name":      {query.Eq: "cart"},
+				"destination_workload_namespace": {query.Eq: "prod"},
+			}},
+			{Binary: query.BinaryWhereClause{
+				"workload_name":      {query.Eq: "cart"},
+				"workload_namespace": {query.Eq: "prod"},
+			}},
+		},
+	}
+
+	clause, err := buildOpenObserveTraceWhereClause(where)
+	require.NoError(t, err)
+
+	// Destination side survives, mapped onto the column that actually exists.
+	assert.Contains(t, clause, "net_peer_name = 'cart'")
+	// Source side keeps both of its predicates.
+	assert.Contains(t, clause, "service_name = 'cart'")
+	assert.Contains(t, clause, "service_k8s_namespace_name = 'prod'")
+	// The inexpressible field never reaches the SQL, under either spelling.
+	assert.NotContains(t, clause, "destination_workload_namespace")
+	assert.NotContains(t, clause, "service_peer_name")
+	assert.Contains(t, clause, " OR ")
+}
+
+// A group whose every predicate is inexpressible must error, never render as "".
+// An empty clause would read as "no restriction": harmless in an OR, but silently
+// matching every span inside an AND.
+func TestOpenObserveTrace_AllFieldsUnsupportedErrors(t *testing.T) {
+	_, err := buildOpenObserveTraceWhereClause(query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{
+			"destination_workload_namespace": {query.Eq: "prod"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no field this span schema can express")
+}
+
+// Dropping is confined to the named set: an unknown field must still fail loudly rather
+// than be silently ignored, so a mistyped filter is never quietly discarded.
+func TestOpenObserveTrace_UnknownFieldStillErrors(t *testing.T) {
+	_, err := buildOpenObserveTraceWhereClause(query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{
+			"totally bogus field": {query.Eq: "x"},
+		},
+	})
+	require.Error(t, err)
+}
+
+// stripOpenObserveUnsupportedFields must not mutate the caller's map — the same request
+// can be handed to other providers in a multi-provider fan-out.
+func TestStripOpenObserveUnsupportedFields_DoesNotMutateInput(t *testing.T) {
+	original := query.BinaryWhereClause{
+		"destination_workload_name":      {query.Eq: "cart"},
+		"destination_workload_namespace": {query.Eq: "prod"},
+	}
+	kept, dropped := stripOpenObserveUnsupportedFields(original)
+	assert.Equal(t, 1, dropped)
+	assert.Len(t, kept, 1)
+	assert.Len(t, original, 2, "input map must be left intact")
+	assert.Contains(t, original, "destination_workload_namespace")
 }

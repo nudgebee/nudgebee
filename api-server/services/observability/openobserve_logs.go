@@ -188,6 +188,14 @@ func buildOpenObserveBinaryClause(binary query.BinaryWhereClause, mapping map[st
 				parts = append(parts, fmt.Sprintf("str_match(%s, '%s')", col, escapeOpenObserveString(strVal)))
 			case query.ILike:
 				parts = append(parts, fmt.Sprintf("str_match_ignore_case(%s, '%s')", col, escapeOpenObserveString(strVal)))
+			case query.Like:
+				// SQL LIKE, so the caller's % / _ stay wildcards — that is the whole point
+				// of the operator (callers pass patterns like "5%" to select 5xx statuses).
+				// Only the quote is escaped, which is what would otherwise break out of the
+				// literal. Without this case the builder rejected the operator outright and
+				// took the entire query down, so a workload trace search that filtered on an
+				// HTTP status class returned nothing at all.
+				parts = append(parts, fmt.Sprintf("%s LIKE '%s'", col, escapeOpenObserveString(strVal)))
 			default:
 				return "", fmt.Errorf("unsupported binary operator for OpenObserve: %s", op)
 			}
