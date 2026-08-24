@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"nudgebee/code-analysis-agent/common"
 	"nudgebee/code-analysis-agent/config"
@@ -43,6 +44,20 @@ type PRFollowupAgent struct {
 	provider     gitprovider.GitProvider
 }
 
+// AddressedComment is one PR comment a followup run has already answered
+// (#36865). It travels both ways: in on the request as the durable record of
+// what earlier runs did, and out on the result as what this run just did.
+//
+// Source is part of the identity alongside CommentID because issue comments and
+// review submissions are separate GitHub id spaces and can collide — the same
+// reason answeredCommentKey already keys on both.
+type AddressedComment struct {
+	Source      string    `json:"source"`     // "inline" | "issue_comment" | "review_body"
+	CommentID   int64     `json:"comment_id"` // GitHub's numeric comment id
+	Action      string    `json:"action"`     // "fixed" | "acknowledged" | "wont_fix"
+	AddressedAt time.Time `json:"addressed_at"`
+}
+
 // PRFollowupRequest contains all info needed for a followup.
 type PRFollowupRequest struct {
 	RepoURL  string
@@ -50,6 +65,12 @@ type PRFollowupRequest struct {
 	PRNumber int
 	PRURL    string
 	Provider string // "github" or "gitlab"
+	// AddressedComments is what previous runs already answered on this PR, read
+	// from pr_followup.addressed_comments by api-server. A FALLBACK skip source
+	// only — GitHub's resolved-thread and reply-marker state is checked first and
+	// stays authoritative. Empty for a PR with no followup history, or when an
+	// older api-server does not send it.
+	AddressedComments []AddressedComment
 }
 
 // PRFollowupResult is the structured output from a followup execution.
@@ -61,7 +82,12 @@ type PRFollowupResult struct {
 	CommentPosted    bool     `json:"comment_posted"`
 	CIIssuesFixed    []string `json:"ci_issues_fixed"`
 	ReviewsAddressed []string `json:"reviews_addressed"`
-	Error            string   `json:"error,omitempty"`
+	// AddressedComments is the structured counterpart of ReviewsAddressed
+	// (which is display text), recorded so api-server can persist it on
+	// pr_followup (#36865). Appended only after a reply actually landed on
+	// GitHub, so it records what happened rather than what the agent claimed.
+	AddressedComments []AddressedComment `json:"addressed_comments,omitempty"`
+	Error             string             `json:"error,omitempty"`
 	// NoOp signals that the run found nothing actionable (no unaddressed
 	// comments, no CI failures) or the planner ran but produced no observable
 	// change (no commit, no metadata edit, no comment reply sent). The cron
@@ -153,9 +179,22 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	// --- Step 1: Gather PR/MR context ---
 	a.logger.Log(common.EventStepStart, fmt.Sprintf("Gathering %s context", mrTerm), map[string]any{"repo": repoInfo.FullPath, "pr_number": req.PRNumber, "branch": req.Branch})
 
+	// What earlier runs already answered, per our own durable record (#36865).
+	// A fallback only: each gatherer still consults GitHub's reply markers and
+	// resolved-thread state first, and those remain authoritative — so a human
+	// who un-resolves a thread gets the comment re-raised, and this set only
+	// covers what GitHub could not tell us (markers past the per_page=100
+	// window, or a lookup that failed open).
+	dbAddressed := addressedCommentKeys(req.AddressedComments)
+	if len(dbAddressed) > 0 {
+		a.logger.Log(common.EventStepStart, "Loaded previously-addressed comments", map[string]any{
+			"count": len(dbAddressed),
+		})
+	}
+
 	prDetails := a.gatherPRDetails(ctx, repoInfo, prNumber)
-	inlineComments, inlineText := a.gatherInlineComments(ctx, repoInfo, prNumber)
-	issueComments, issueText, answeredComments := a.gatherIssueComments(ctx, repoInfo, prNumber)
+	inlineComments, inlineText := a.gatherInlineComments(ctx, repoInfo, prNumber, dbAddressed)
+	issueComments, issueText, answeredComments := a.gatherIssueComments(ctx, repoInfo, prNumber, dbAddressed)
 	reviewBodyComments, reviewBodyText := a.gatherReviewBodyComments(ctx, repoInfo, prNumber, answeredComments)
 	prDiff := a.gatherDiff(ctx, repoInfo, prNumber)
 	ciFailureLogs := a.gatherCIFailureLogs(ctx, repoInfo, prNumber, req.Branch)
@@ -451,6 +490,19 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 			} else {
 				repliedCount++
 				result.ReviewsAddressed = append(result.ReviewsAddressed, fmt.Sprintf("#%d: %s", resp.CommentID, resp.Action))
+				// Record it durably (#36865). Deliberately inside the success
+				// branch: a reply that failed to post leaves the comment genuinely
+				// unanswered, and recording it would suppress the retry. Skipped
+				// for a comment we never gathered (empty source) — an entry with no
+				// source cannot be matched back to anything on a later run.
+				if source := commentSource[resp.CommentID]; source != "" {
+					result.AddressedComments = append(result.AddressedComments, AddressedComment{
+						Source:      source,
+						CommentID:   resp.CommentID,
+						Action:      resp.Action,
+						AddressedAt: time.Now().UTC(),
+					})
+				}
 			}
 		}
 		a.logger.Log(common.EventStepComplete, "Posted replies", map[string]any{
@@ -813,7 +865,10 @@ func (a *PRFollowupAgent) gatherPRDetails(_ context.Context, repoInfo *gitprovid
 
 // gatherInlineComments fetches review comments and returns unaddressed ones.
 // Returns structured comments for reply tracking and formatted text for the LLM prompt.
-func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) ([]reviewComment, string) {
+// dbAddressed is the fallback skip set from pr_followup.addressed_comments
+// (#36865), applied alongside — never instead of — the reply-marker and
+// resolved-thread checks below, both of which stay authoritative.
+func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, dbAddressed map[string]bool) ([]reviewComment, string) {
 	var out string
 	var err error
 	if a.provider == gitprovider.GitProviderGitLab {
@@ -873,8 +928,9 @@ func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitp
 		if c.InReplyToID != nil {
 			continue
 		}
-		// Skip comments we've already replied to, or whose thread is resolved.
-		if repliedCommentIDs[c.ID] || resolvedThreadCommentIDs[c.ID] {
+		// Skip comments we've already replied to, whose thread is resolved, or
+		// that our own durable record says a previous run answered.
+		if inlineCommentAddressed(c.ID, repliedCommentIDs, resolvedThreadCommentIDs, dbAddressed) {
 			continue
 		}
 		// Do not filter by author (e.g. "[bot]" suffix): useful review bots like
@@ -1089,6 +1145,43 @@ func followupReplyMarker(source string, commentID int64) string {
 	return fmt.Sprintf("%s%s:%d -->", followupReplyMarkerPrefix, source, commentID)
 }
 
+// inlineCommentAddressed decides whether one inline review comment has already
+// been dealt with, from the three independent sources that can say so.
+//
+// The ORDER of sources is not the point — any one of them is sufficient — but
+// their RELATIONSHIP is: replied and resolved come from GitHub and are
+// authoritative, while dbAddressed is our own record and is purely additive.
+// It can only cause more skipping, never less, so a comment GitHub reports as
+// open and unanswered still comes back as pending. That is what stops a human
+// un-resolving a thread from being met with permanent silence (#36625).
+//
+// Split out from gatherInlineComments so this invariant is testable without
+// shelling out to gh.
+func inlineCommentAddressed(id int64, replied, resolved map[int64]bool, dbAddressed map[string]bool) bool {
+	return replied[id] || resolved[id] || dbAddressed[answeredCommentKey("inline", id)]
+}
+
+// addressedCommentKeys turns the durable record carried on the request into the
+// lookup the gatherers skip against, keyed exactly like the GitHub-derived
+// answered set so the two compose (#36865).
+//
+// Returns nil for an empty record — a nil map reads as all-false, so every
+// gatherer's skip check is a no-op when there is no history, and behaviour is
+// byte-for-byte what it was before this existed.
+func addressedCommentKeys(addressed []AddressedComment) map[string]bool {
+	if len(addressed) == 0 {
+		return nil
+	}
+	keys := make(map[string]bool, len(addressed))
+	for _, a := range addressed {
+		if a.Source == "" || a.CommentID == 0 {
+			continue
+		}
+		keys[answeredCommentKey(a.Source, a.CommentID)] = true
+	}
+	return keys
+}
+
 // answeredCommentKey is the map key identifying one already-answered comment.
 // Source is part of the key because issue comments and review submissions are
 // separate id spaces on GitHub and can collide.
@@ -1161,8 +1254,17 @@ func (a *PRFollowupAgent) automationCommentMarkers() []string {
 // The third return value is the set of comment keys this PR already has a reply
 // for, extracted from our own comments in the same listing. gatherReviewBodyComments
 // reuses it rather than re-listing, since its replies land here too.
-func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) ([]reviewComment, string, map[string]bool) {
-	answered := make(map[string]bool)
+// dbAddressed seeds the answered set from pr_followup.addressed_comments
+// (#36865) — the fallback for what the marker scan below cannot see, because
+// the markers have scrolled past this endpoint's per_page=100 window or the
+// lookup failed. It is a pure addition: GitHub-derived markers are still read
+// and still win where they exist, and the returned map (which
+// gatherReviewBodyComments consumes) carries both sources.
+func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, dbAddressed map[string]bool) ([]reviewComment, string, map[string]bool) {
+	answered := make(map[string]bool, len(dbAddressed))
+	for k := range dbAddressed {
+		answered[k] = true
+	}
 
 	if a.provider == gitprovider.GitProviderGitLab {
 		// GitLab MR notes are a single API; inline comments are already covered

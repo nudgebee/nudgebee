@@ -1252,6 +1252,12 @@ type CodeAgent2Request struct {
 	Followup bool   `json:"followup"`
 	PRURL    string `json:"pr_url"`
 	PRBranch string `json:"pr_branch"`
+	// AddressedComments is the set of PR comments a previous followup already
+	// answered, read from pr_followup.addressed_comments by api-server and passed
+	// straight through to code-analysis (#36865). Kept as raw JSON because this
+	// hop only forwards it — llm-server never inspects the entries. Absent for an
+	// older api-server, which simply means no fallback skip set.
+	AddressedComments json.RawMessage `json:"addressed_comments,omitempty"`
 }
 
 func (l CodeAgent2) GetPlannerType() core.AgentPlannerType {
@@ -3051,6 +3057,16 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		"followup":  true,
 		"pr_url":    request.PRURL,
 		"pr_branch": request.PRBranch,
+	}
+
+	// Forward the already-addressed comment set (#36865) so code-analysis can use
+	// it as a fallback skip source. Omitted when empty so the payload is
+	// unchanged for a PR with no followup history. Trimmed before comparing:
+	// the value is always compact JSON from encoding/json in practice, but the
+	// comparison itself costs nothing extra and shouldn't depend on that.
+	trimmedComments := strings.TrimSpace(string(request.AddressedComments))
+	if trimmedComments != "" && trimmedComments != "[]" && trimmedComments != "null" {
+		analyzeRequest["addressed_comments"] = request.AddressedComments
 	}
 
 	if gitToken != "" {

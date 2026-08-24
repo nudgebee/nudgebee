@@ -311,6 +311,7 @@ func TestFindOrCreatePRFollowupInTable_DB(t *testing.T) {
 		last_pr_check_at timestamptz,
 		pr_followup_pending boolean NOT NULL DEFAULT false,
 		status_message text,
+		addressed_comments jsonb NOT NULL DEFAULT '[]'::jsonb,
 		created_at timestamptz NOT NULL DEFAULT now(),
 		updated_at timestamptz NOT NULL DEFAULT now()
 	)`, tbl))
@@ -318,7 +319,7 @@ func TestFindOrCreatePRFollowupInTable_DB(t *testing.T) {
 
 	const prURL = "https://github.com/acme/infra/pull/99"
 
-	id1, err := findOrCreatePRFollowupInTable(dbms, tbl, prURL, "tenant-a", time.Time{})
+	id1, _, err := findOrCreatePRFollowupInTable(dbms, tbl, prURL, "tenant-a", time.Time{})
 	require.NoError(t, err)
 	assert.NotEmpty(t, id1)
 
@@ -332,7 +333,7 @@ func TestFindOrCreatePRFollowupInTable_DB(t *testing.T) {
 
 	// A second sighting for the same PR URL — from a duplicate resolution row,
 	// or a later cron sweep — must return the SAME id, not create a sibling.
-	id2, err := findOrCreatePRFollowupInTable(dbms, tbl, prURL, "tenant-a", time.Time{})
+	id2, _, err := findOrCreatePRFollowupInTable(dbms, tbl, prURL, "tenant-a", time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, id1, id2, "duplicate candidates for one PR URL collapse onto one row")
 

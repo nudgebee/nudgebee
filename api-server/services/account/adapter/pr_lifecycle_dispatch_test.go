@@ -46,6 +46,7 @@ func TestPRLifecycleDispatchSQL_DB(t *testing.T) {
 		pr_iteration_count int NOT NULL DEFAULT 0,
 		pr_followup_pending boolean NOT NULL DEFAULT false,
 		status_message text,
+		addressed_comments jsonb NOT NULL DEFAULT '[]'::jsonb,
 		last_pr_check_at timestamp without time zone
 	)`, tbl))
 	t.Cleanup(func() { _, _ = dbms.Db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tbl)) })

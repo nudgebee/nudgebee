@@ -1,0 +1,25 @@
+-- Fixes #36865: which PR comments the followup agent has already handled is not
+-- recorded anywhere in our data. That state lives entirely on GitHub and is
+-- re-derived on every run — resolved review threads via GraphQL, plus
+-- "<!-- nb-followup-reply-to:source:id -->" markers parsed back out of our own
+-- comments. The marker scan reads per_page=100, so on a busy PR the markers
+-- scroll out of the window and the agent re-answers comments it already
+-- answered, burning its ReAct budget re-litigating them before reaching a
+-- genuinely new one.
+--
+-- This column is the durable record, and a FALLBACK skip source only: GitHub's
+-- resolved-thread state stays authoritative, so a human who un-resolves a
+-- thread still gets the comment re-raised (see #36625 for why making this
+-- authoritative would be wrong).
+--
+-- Element shape, one object per addressed comment:
+--   {"source": "inline", "comment_id": 123, "action": "fixed",
+--    "addressed_at": "2026-08-24T10:00:00Z"}
+-- `source` is part of the identity because issue comments and review
+-- submissions are separate GitHub id spaces and can collide.
+--
+-- ADD COLUMN with a constant default is metadata-only on Postgres 11+ — no
+-- table rewrite, no backfill, effectively instant. No index: the column is only
+-- ever read on a row already located by the pr_followup_url_unique constraint.
+ALTER TABLE "public"."pr_followup"
+    ADD COLUMN IF NOT EXISTS "addressed_comments" jsonb NOT NULL DEFAULT '[]'::jsonb;
