@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import KubernetesTable from '@components/k8s/common/KubernetesTable';
-import { Box, Typography, ToggleButtonGroup, ToggleButton } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Switch } from '@ui/Switch';
 import { Divider } from '@ui/Divider';
 import { Checkbox } from '@ui/Checkbox';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import ListingLayout from '@ui/ListingLayout';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import DownloadButton from '@shared/buttons/DownloadButton';
@@ -473,12 +474,6 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
     });
   };
 
-  const handleChange = (_event: any, value: string | null) => {
-    if (value !== null) {
-      setQLEditor(value);
-    }
-  };
-
   return (
     <div>
       <ListingLayout id='query-logs' sx={{ mb: 'var(--ds-space-2)' }}>
@@ -528,49 +523,18 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
           }
         >
           {showQueryBox && (
-            <ToggleButtonGroup
-              color='primary'
-              exclusive
+            <ToggleGroup
+              selection='single'
               value={qLEditor}
-              onChange={handleChange}
-              sx={{
-                minHeight: 0,
-                minWidth: 0,
-                '& button': {
-                  padding: 'var(--ds-space-2) var(--ds-space-4)',
-                  minHeight: 0,
-                  minWidth: 0,
-                  lineHeight: '14px',
-                  height: ds.space.mul(0, 17),
-                  fontSize: 'var(--ds-text-small)',
-                  color: 'var(--ds-gray-600)',
-                  fontWeight: 'var(--ds-font-weight-regular)',
-                  borderColor: 'var(--ds-gray-300)',
-                  borderWidth: 0.5,
-                  backgroundColor: 'transparent',
-                  '&:hover': {
-                    borderColor: 'var(--ds-gray-400)',
-                    borderWidth: 1,
-                  },
-                  '&.Mui-selected': {
-                    backgroundColor: 'transparent !important',
-                    borderColor: 'var(--ds-blue-300)',
-                    borderWidth: '0.5px',
-                    color: 'var(--ds-blue-500)',
-                  },
-                  '&.selected': {
-                    fontWeight: 'var(--ds-font-weight-medium)',
-                    borderBottom: '2px solid var(--ds-gray-700)',
-                    borderBottomLeftRadius: 0,
-                    borderBottomRightRadius: 0,
-                  },
-                },
-              }}
-            >
-              <ToggleButton value='build'>Builder</ToggleButton>
-              <ToggleButton value='code'>Code</ToggleButton>
-              <ToggleButton value='ai'>AI</ToggleButton>
-            </ToggleButtonGroup>
+              onChange={setQLEditor}
+              size='md'
+              ariaLabel='Query mode'
+              options={[
+                { value: 'build', label: 'Builder' },
+                { value: 'code', label: 'Code' },
+                { value: 'ai', label: 'AI' },
+              ]}
+            />
           )}
         </ListingLayout.Toolbar>
         <ListingLayout.Body>

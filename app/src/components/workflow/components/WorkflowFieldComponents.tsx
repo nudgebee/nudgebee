@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, Typography, TextField, Chip, ToggleButtonGroup, ToggleButton, Autocomplete } from '@mui/material';
+import { Box, Typography, TextField, Chip, Autocomplete } from '@mui/material';
 import { Switch } from '@ui/Switch';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import { Add, Delete, DragIndicator, Visibility, VisibilityOff, ExpandMore, ExpandLess, Code, ViewList } from '@mui/icons-material';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
@@ -1496,8 +1497,8 @@ export const KeyValueHybridField: React.FC<KeyValueHybridFieldProps> = ({
     }
   }, [value, mode]);
 
-  const handleModeChange = (_event: React.MouseEvent<HTMLElement>, newMode: KeyValueFieldMode | null) => {
-    if (!newMode || newMode === mode) return;
+  const handleModeChange = (newMode: KeyValueFieldMode) => {
+    if (newMode === mode) return;
     userToggledRef.current = true;
     setMode(newMode);
     // Clear value when switching modes to avoid mixing shapes. Storing {} in keyvalue mode
@@ -1513,46 +1514,17 @@ export const KeyValueHybridField: React.FC<KeyValueHybridFieldProps> = ({
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75 }}>
-        <ToggleButtonGroup value={mode} exclusive onChange={handleModeChange} size='small' disabled={disabled}>
-          <ToggleButton
-            value='keyvalue'
-            sx={{
-              px: 1.5,
-              py: 0.25,
-              fontSize: 'var(--ds-text-caption)',
-              textTransform: 'none',
-              borderColor: 'var(--ds-gray-300)',
-              '&.Mui-selected': {
-                backgroundColor: 'var(--ds-blue-200)',
-                color: 'var(--ds-purple-600)',
-                borderColor: 'var(--ds-brand-200)',
-                '&:hover': { backgroundColor: 'var(--ds-brand-200)' },
-              },
-            }}
-          >
-            <ViewList sx={{ fontSize: ds.text.bodyLg, mr: 0.5 }} />
-            Key / Value
-          </ToggleButton>
-          <ToggleButton
-            value='expression'
-            sx={{
-              px: 1.5,
-              py: 0.25,
-              fontSize: 'var(--ds-text-caption)',
-              textTransform: 'none',
-              borderColor: 'var(--ds-gray-300)',
-              '&.Mui-selected': {
-                backgroundColor: 'var(--ds-red-100)',
-                color: 'var(--ds-red-600)',
-                borderColor: 'var(--ds-red-300)',
-                '&:hover': { backgroundColor: 'var(--ds-red-200)' },
-              },
-            }}
-          >
-            <Code sx={{ fontSize: ds.text.bodyLg, mr: 0.5 }} />
-            {'{{ }} Expression'}
-          </ToggleButton>
-        </ToggleButtonGroup>
+        <ToggleGroup
+          selection='single'
+          size='sm'
+          value={mode}
+          onChange={handleModeChange}
+          ariaLabel='Key/value field mode'
+          options={[
+            { value: 'keyvalue', label: 'Key / Value', icon: <ViewList fontSize='inherit' />, disabled },
+            { value: 'expression', label: '{{ }} Expression', icon: <Code fontSize='inherit' />, disabled },
+          ]}
+        />
       </Box>
 
       {mode === 'keyvalue' ? (
