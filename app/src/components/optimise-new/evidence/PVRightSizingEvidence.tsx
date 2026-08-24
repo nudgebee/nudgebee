@@ -1,4 +1,5 @@
-import { Box, Typography, LinearProgress } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { ProgressBar } from '@ui/ProgressBar';
 import { ds } from 'src/utils/colors';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import { formatMemory } from '@lib/formatter';
@@ -12,31 +13,14 @@ interface PVRightSizingEvidenceProps {
   cloudResource?: any;
 }
 
-const getUtilizationColor = (pct: number): string => {
-  if (pct > 90) return ds.red[600];
-  if (pct > 70) return ds.amber[500];
-  return ds.green[600];
-};
-
 const UtilizationBar = ({ pct }: { pct: number }) => (
   <Box sx={{ mb: ds.space[3] }}>
     <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: ds.space[1] }}>
       <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>Storage Utilization</Typography>
       <Typography sx={{ fontSize: ds.text.caption, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>{pct.toFixed(1)}%</Typography>
     </Box>
-    <LinearProgress
-      variant='determinate'
-      value={Math.min(pct, 100)}
-      sx={{
-        height: ds.space[2],
-        borderRadius: ds.radius.sm,
-        backgroundColor: ds.gray[200],
-        '& .MuiLinearProgress-bar': {
-          borderRadius: ds.radius.sm,
-          backgroundColor: getUtilizationColor(pct),
-        },
-      }}
-    />
+    {/* ≤70 % success, ≤90 % warning, above that critical — same buckets the local colour helper used. */}
+    <ProgressBar value={Math.min(pct, 100)} size='md' thresholds={{ success: 70, warning: 90 }} showValue={false} />
   </Box>
 );
 

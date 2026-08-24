@@ -1,4 +1,5 @@
-import { Box, Typography, LinearProgress } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { ProgressBar } from '@ui/ProgressBar';
 import { ds } from 'src/utils/colors';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
@@ -121,19 +122,11 @@ const AbandonedResourceEvidence = ({ recommendation, estimatedSavings, cloudReso
                     {trafficPct.toFixed(1)}%
                   </Typography>
                 </Box>
-                <LinearProgress
-                  variant='determinate'
-                  value={Math.min(trafficPct, 100)}
-                  sx={{
-                    height: '6px',
-                    borderRadius: ds.radius.sm,
-                    backgroundColor: ds.gray[200],
-                    '& .MuiLinearProgress-bar': {
-                      borderRadius: ds.radius.sm,
-                      backgroundColor: trafficPct < 10 ? ds.red[600] : ds.amber[500],
-                    },
-                  }}
-                />
+                {/*
+                  Low traffic is the *bad* end here — that's what makes the resource abandoned —
+                  so the tone can't be derived from `thresholds`, which read high as bad.
+                */}
+                <ProgressBar value={Math.min(trafficPct, 100)} size='md' tone={trafficPct < 10 ? 'critical' : 'warning'} showValue={false} />
               </Box>
             )}
           </Box>
