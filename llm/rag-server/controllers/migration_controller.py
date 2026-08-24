@@ -11,6 +11,7 @@ import threading
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from qdrant_client.models import CreateAlias, CreateAliasOperation
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +309,9 @@ async def rename_rag_collections(request: RAGCollectionRenameRequest):
                     # Create alias pointing to old collection
                     qdrant_client.update_collection_aliases(
                         change_aliases_operations=[
-                            {"create_alias": {"collection_name": old_name, "alias_name": new_name}}
+                            CreateAliasOperation(
+                                create_alias=CreateAlias(collection_name=old_name, alias_name=new_name)
+                            )
                         ]
                     )
 

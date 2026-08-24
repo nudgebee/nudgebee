@@ -642,6 +642,17 @@ func init() {
 // provider falls through to a fresh lookup on the next call rather than pinning
 // a degraded result for the whole TTL — a transient services-server blip must
 // not silently route an account down the kubectl path for half an hour.
+// EffectiveLogProvider returns the provider for one call: request override,
+// otherwise the account-resolved provider. Keep the result local because tool
+// instances are shared between requests.
+func EffectiveLogProvider(resolved services_server.ObservabilityProvider, requestOverride string) services_server.ObservabilityProvider {
+	override := strings.TrimSpace(requestOverride)
+	if override == "" || strings.EqualFold(override, resolved.Provider) {
+		return resolved
+	}
+	return services_server.ObservabilityProvider{Provider: override}
+}
+
 func GetLogProvider(accountId string) (services_server.ObservabilityProvider, error) {
 	if accountId == "" {
 		return getLogProviderUncached(accountId)

@@ -734,7 +734,7 @@ func TestEvaluateConditionsConditionLLM(t *testing.T) {
 	}
 }
 
-func TestDoActionToolNotFound(t *testing.T) {
+func TestDoActionToolNotFound_LegacySkipped(t *testing.T) {
 	t.Skip("Skipping test due to missing DB environment causing panic")
 	const toolNotFoundMessage = "Tool not found"
 	// Setup test environment

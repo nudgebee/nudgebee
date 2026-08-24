@@ -55,17 +55,16 @@ apply_oss_patches
 
 echo "→ Asserting no residual ee/ imports in snapshot"
 # Match import statements only — skip comments, path aliases in build configs,
-# and string occurrences in docs/source. The boundary check already ensured
-# OSS code doesn't import @ee/* or nudgebee/services/ee/*; this is a paranoia
-# check that the strip + patches didn't miss anything.
-RESIDUAL=$(grep -rnE '^[[:space:]]*(import[[:space:]]|_[[:space:]]).*(["'\''])(nudgebee/services/ee/|@ee/)' \
+# and string occurrences in docs/source. Cover every Go module so llm/ee and
+# future module-local EE trees cannot survive a supposedly verified snapshot.
+RESIDUAL=$(grep -rnE '^[[:space:]]*(import[[:space:]]|_[[:space:]]).*(["'\''])([^"'\'']*/ee/|@ee/)' \
             --include='*.go' --include='*.ts' --include='*.tsx' \
             --include='*.js' --include='*.jsx' \
-            api-server app 2>/dev/null || true)
-# Also catch `from '@ee/...'` / `from "nudgebee/services/ee/..."`
-RESIDUAL_FROM=$(grep -rnE "from[[:space:]]+(['\"])(@ee/|nudgebee/services/ee/)" \
+            api-server app llm collector-server notifications-server ticket-server ml-k8s-server 2>/dev/null || true)
+# Also catch frontend from-imports of @ee or module-local EE paths.
+RESIDUAL_FROM=$(grep -rnE "from[[:space:]]+(['\"])(@ee/|[^'\"]*/ee/)" \
             --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
-            api-server app 2>/dev/null || true)
+            api-server app llm collector-server notifications-server ticket-server ml-k8s-server 2>/dev/null || true)
 ALL_RESIDUAL="$RESIDUAL"$'\n'"$RESIDUAL_FROM"
 if [[ -n "$(echo "$ALL_RESIDUAL" | tr -d '[:space:]')" ]]; then
   echo "❌ Snapshot still imports ee/ paths:"

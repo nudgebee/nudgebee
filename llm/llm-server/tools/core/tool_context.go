@@ -63,12 +63,14 @@ type NBQueryConfig struct {
 	// Query filtering labels (e.g. nb_cloud_account_id for AWS timeseries)
 	Labels map[string]any `json:"labels,omitempty"`
 
-	// K8sOrchestratorMode selects a K8s orchestrator variant per-request:
-	// "native" routes to k8s_orchestrator_native (kubectl-first, lean tool set).
-	// Empty defers to config.Config.K8sOrchestratorMode (boot-time default).
-	// Case-insensitive at read time. Sticky within a conversation via
-	// MergeFrom's fill-if-zero, like LlmProvider.
+	// K8sOrchestratorMode selects a K8s orchestrator variant per-request.
+	// Empty defers to the service-level default.
 	K8sOrchestratorMode string `json:"k8s_orchestrator_mode,omitempty"`
+
+	// Log provider override: outranks LLM_SERVER_LOG_PROVIDER_OVERRIDE and account
+	// routing ("k8s" = kubectl path). Case-sensitive — api-server spells ES "ES".
+	// Sticky within a conversation via MergeFrom's fill-if-zero, like LlmProvider.
+	LogProviderOverride string `json:"log_provider_override,omitempty"`
 
 	// LLM provider overrides (per-request)
 	LlmProvider  string `json:"llm_provider,omitempty"`
@@ -118,7 +120,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0
+		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == ""
 }
 
 // MergeFrom copies fields from src into q only when q's field is the zero value.
@@ -163,6 +165,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	if q.K8sOrchestratorMode == "" {
 		q.K8sOrchestratorMode = src.K8sOrchestratorMode
 	}
+	if q.LogProviderOverride == "" {
+		q.LogProviderOverride = src.LogProviderOverride
+	}
 	// Blanket (provider+model) and per-tier picks are mutually exclusive: the
 	// conversation row enforces it by nulling one when the other is written
 	// (UpdateConversationModelBlanket / UpdateConversationTierOverrides). Fill-
@@ -194,6 +199,11 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 		if q.LlmConfigSource == "" {
 			q.LlmConfigSource = src.LlmConfigSource
 		}
+	}
+	// The log provider override selects which log backend the turn reads from, so
+	// it is independent of the LLM model config above and of a reset turn.
+	if q.LogProviderOverride == "" {
+		q.LogProviderOverride = src.LogProviderOverride
 	}
 	if src.ToolConfigs != nil {
 		q.ToolConfigs = lo.Assign(src.ToolConfigs, q.ToolConfigs)
@@ -227,7 +237,7 @@ type NbToolContext struct {
 	ToolCallId     string
 	AccountPrompt  string
 	// SessionId is the top-level conversation session ID. Propagated from parent
-	// agents so sub-agents (e.g. code_analyzer) can pass it to external services
+	// agents so sub-agents (e.g. agent_code_2) can pass it to external services
 	// like the workspace pod for conversation linking.
 	SessionId string
 	// InheritSkillsFromAgents is the chain of ancestor agent names whose mapped KBs

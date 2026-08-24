@@ -2086,7 +2086,7 @@ func resolveGitToken(ctx *security.RequestContext, creds []GitCredentials, repoU
 				} else {
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), cred.Url, installationID)
 					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err)
 					} else {
 						gitToken = token
 					}

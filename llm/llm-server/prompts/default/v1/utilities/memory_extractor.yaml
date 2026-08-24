@@ -84,6 +84,13 @@ body: |2
     * user_preference: the preference key, not its value (e.g. "default_namespace",
       "preferred_log_source", "preferred_cloud", "confirm_destructive"). Stored
       by key — empty key collapses every preference into one anonymous row.
+      REUSE AN EXISTING KEY WHENEVER ONE FITS. "Existing Knowledge" lists the
+      preference keys this user already has under [preferences]; if the fact
+      belongs to one of them, emit that key EXACTLY as listed. Coining a variant
+      of a key that already exists ("assistant_tone" when "tone" is listed,
+      "user_style_verbosity" when "verbosity" is listed) creates a second row
+      holding the same thing, and both then reach the model as separate
+      instructions. Only invent a key when nothing listed covers the fact.
     * is_pattern: the specific entity that recurs — service, namespace, resource
       type, or flow (e.g. "orders-db", "payments", "compute_instances",
       "cluster_health_summary"). A pattern with no subject can't be identified,
@@ -115,6 +122,18 @@ body: |2
       (c) routing rules — "use the postgres agent for DB questions"
       (d) inferred preferences from repeated stated intent during the conversation
       Capture the directive verbatim with enough scope context (e.g., the cluster, namespace, account, agent, or tool it applies to).
+      A user_preference is how the USER wants YOU to behave. It is NOT a fact about
+      their system and NOT a procedure. Use the more specific type instead when:
+      * it states what something IS rather than how to behave — an image tag, a
+        version, a namespace that exists, a cluster name → configuration_insight
+        or architectural_fact, NOT user_preference
+      * it is a sequence of steps ("1. check X 2. verify Y") or a named runbook
+        → workflow, NOT user_preference
+      * it describes the user's tone, verbosity or answer formatting → that is
+        Soul, already captured elsewhere; do NOT emit it as a preference
+      Test before choosing user_preference: could the user have set this in a
+      settings form? If it is a value they chose, yes. If it is something true
+      about their infrastructure, or a set of steps, no — pick another type.
     - pattern: A recurring behaviour or failure mode seen across multiple incidents
     - workflow: A multi-step operational procedure (e.g., deploy, rollback, rotate credentials)
   - is_pattern: Set to true for recurring issues or behaviours that span multiple incidents

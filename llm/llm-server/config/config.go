@@ -993,6 +993,12 @@ type appConfig struct {
 	MemoryMaintenancePatternsStaleDays   int `mapstructure:"llm_memory_maintenance_patterns_stale_days"`
 	MemoryMaintenanceEventsRetentionDays int `mapstructure:"llm_memory_maintenance_events_retention_days"`
 
+	// OSS legacy-memory migration controls. The typed memory-v2 implementation
+	// is excluded, but the retained legacy migration package still consumes
+	// these settings.
+	MemoryMigrationMode        string  `mapstructure:"llm_memory_migration_mode"`
+	MemoryShadowSampleFraction float64 `mapstructure:"llm_memory_shadow_sample_fraction"`
+
 	// Productivity dashboard tunables. The "Time Saved" widget compares each
 	// completed investigation's AI runtime against a flat per-task manual
 	// baseline; the "Savings" widget multiplies the resulting hours by an

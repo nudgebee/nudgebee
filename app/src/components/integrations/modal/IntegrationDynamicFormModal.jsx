@@ -260,7 +260,7 @@ const IntegrationDynamicFormModal = ({
               setProviderFields(extractedProviderFields);
             }
             const filteredProperties = Object.fromEntries(
-              Object.entries(configs.properties || {}).filter(([_, prop]) => {
+              Object.entries(configs.properties || {}).filter(([_key, prop]) => {
                 // If it's true, filter it out.
                 // If it's undefined, null, or false, keep it.
                 return prop.avoid_to_show !== true;

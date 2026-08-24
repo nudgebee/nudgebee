@@ -296,13 +296,14 @@ type IConversationDao interface {
 	GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error)
 	GetImageSupportCatalog() (map[string]bool, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
+	GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error)
+	ResolveSessionId(idOrSessionId string) string
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
 	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
-	GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error)
-	ResolveSessionId(idOrSessionId string) string
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
 	GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error)
+	GetAiCostAccountReport(accountIDs []string, referenceDate time.Time) (AiCostAccountReport, error)
 	GetUsageFilters(filter UsageMetricsFilter, readableAccountIDs, selectedAccountIDs []string) (UsageFilters, error)
 	ListConversationCosts(filter UsageMetricsFilter, sortBy, sortDir string, limit, offset int) (ConversationCostList, error)
 	GetConversationTree(sessionID, accountID string) (ConversationTree, error)
@@ -351,6 +352,13 @@ const (
 	AgentReferenceTypeMemory       AgentReferenceType = "memory"
 	AgentReferenceTypeKB           AgentReferenceType = "knowledge_base"
 	AgentReferenceTypeContextState AgentReferenceType = "context_state"
+
+	// AgentReferenceTypeChannelContext is the provenance of a watched-channel
+	// context block: which channel and which retained messages a Slack answer
+	// drew on. Metadata is self-contained (channel, span, per-message
+	// author/preview/permalink snapshotted at write time) so the citation still
+	// renders after the retention sweep deletes the source rows.
+	AgentReferenceTypeChannelContext AgentReferenceType = "channel_context"
 
 	// Memory-v2 injection reference types. Written by the memory bridge for
 	// every item that made it into the composed slab; the hydration SELECT in
@@ -463,6 +471,10 @@ func (chat *ConversationDao) ListAgentReferences(accountId, conversationId strin
 	query := `SELECT r.id, r.account_id, r.conversation_id, r.message_id, r.agent_id, r.reference_id, r.reference_type, r.metadata::text, r.created_at,
 			    CASE
 					WHEN r.reference_type = 'context_state' THEN r.metadata::text
+					-- channel_context is fully self-contained: the display value is
+					-- the channel name stamped at write time. Without a non-empty
+					-- projection the empty-content skip below would drop the row.
+					WHEN r.reference_type = 'channel_context' THEN COALESCE(NULLIF(r.metadata->>'channel_name',''), r.metadata->>'channel_id')
 					WHEN r.reference_type = 'memory' THEN m.content
 					-- knowledge_base: prefer the KB's stored body, but fall back to
 					-- the metadata stamped at write time. Integration KBs (Confluence,
@@ -1716,23 +1728,22 @@ func (chat *ConversationDao) UpdateConversationMessage(id, response string, stat
 	return nil
 }
 
-// UpdateConversationMessageMetadata merges the supplied keys into the
-// metadata jsonb column on the llm_conversation_messages row. The column
-// is a generic per-message attachment slot — first consumer is the
-// outbound egressfilter (writes under the "egressfilter" key); future
-// per-message subsystems (e.g. PII tokenization) write under their own
-// top-level keys. The column was added in migration V761
-// (1781680308449_V761_add_metadata_to_llm_conversation_messages).
-//
-// We MERGE rather than overwrite (`COALESCE(metadata, '{}') || $2::jsonb`)
-// because multiple subsystems can each write independently for the same
-// message; a `SET metadata = $2` would let a later writer wipe an earlier
-// writer's namespace. The merge is shallow (top-level keys), which matches
-// the convention: each subsystem owns one top-level key and the value
-// underneath is opaque to other subsystems.
-//
-// An empty or nil metadata is treated as a no-op so callers can call
-// unconditionally without an empty-check at the call site.
+var (
+	conversationStatusUpdateWorkerPool *common.WorkerPool
+	onceStatusUpdateWorkerPool         sync.Once
+)
+
+func getStatusUpdateWorkerPool() *common.WorkerPool {
+	onceStatusUpdateWorkerPool.Do(func() {
+		// Dedicated pool for fast DB I/O (status updates).
+		// We use a high queue size (500) as these are non-blocking, quick operations.
+		conversationStatusUpdateWorkerPool = common.NewWorkerPool("conversation_status_updates", config.Config.AsyncPlanExecutionWorkerCount, 500)
+	})
+	return conversationStatusUpdateWorkerPool
+}
+
+// UpdateConversationMessageMetadata merges subsystem-owned top-level keys into
+// the message metadata without overwriting metadata written by another subsystem.
 func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metadata map[string]any) error {
 	if id == "" || len(metadata) == 0 {
 		return nil
@@ -1749,20 +1760,6 @@ func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metada
 		return fmt.Errorf("history: failed to update message metadata: %w", err)
 	}
 	return nil
-}
-
-var (
-	conversationStatusUpdateWorkerPool *common.WorkerPool
-	onceStatusUpdateWorkerPool         sync.Once
-)
-
-func getStatusUpdateWorkerPool() *common.WorkerPool {
-	onceStatusUpdateWorkerPool.Do(func() {
-		// Dedicated pool for fast DB I/O (status updates).
-		// We use a high queue size (500) as these are non-blocking, quick operations.
-		conversationStatusUpdateWorkerPool = common.NewWorkerPool("conversation_status_updates", config.Config.AsyncPlanExecutionWorkerCount, 500)
-	})
-	return conversationStatusUpdateWorkerPool
 }
 
 func (chat *ConversationDao) UpdateConversationMessageAsync(id, response string, status ConversationStatus) {
@@ -3201,7 +3198,7 @@ func (chat *ConversationDao) ResolveSessionId(idOrSessionId string) string {
 // GetConversationToolCallAgents returns the tool_call_id, agent_id and created_at for
 // each tool call in a conversation (looked up by session_id, matching the other
 // usage-metric queries), ordered chronologically for time-based reasoning attribution.
-func (chat *ConversationDao) GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error) {
+func (chat *ConversationDao) GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error) {
 	query := `
 		SELECT tc.id::text as ToolCallID, tc.agent_id::text as AgentID, tc.created_at as CreatedAt
 		FROM llm_conversation_tool_calls tc
@@ -3210,7 +3207,7 @@ func (chat *ConversationDao) GetConversationToolCallAgents(conversationId, accou
 		  AND tc.metadata->>'parent_tool_call_id' IS NULL
 		ORDER BY tc.created_at ASC;`
 
-	rows, err := chat.dbManager.Db.Queryx(query, conversationId, accountId)
+	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
 	if err != nil {
 		slog.Error("executing tool call agents query", "error", err)
 		return nil, err
@@ -3573,19 +3570,9 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		)
 	`
 
-	// Background-job rows (memory consolidators, maintenance) have no owning
-	// conversation or account — they're system cost, not customer-billable.
-	// Pass NULL for those columns so the insert succeeds; V760 made both
-	// nullable on llm_conversation_token_usage. Budget rollups that INNER
-	// JOIN llm_conversations naturally exclude these rows.
-	convID := nullableUUID(record.ConversationID)
-	acctID := nullableUUID(record.AccountID)
-	msgID := nullableUUID(record.MessageID)
-	usrID := nullableUUID(record.UserID)
-
 	_, err := chat.dbManager.Db.Exec(query,
-		convID, msgID, record.AgentID, record.AgentName,
-		acctID, usrID,
+		record.ConversationID, record.MessageID, record.AgentID, record.AgentName,
+		record.AccountID, record.UserID,
 		record.LLMProvider, record.LLMModel,
 		record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheCreationTokens,
 		record.IsCacheHit, record.CacheHitRate,
@@ -3606,8 +3593,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			slog.Warn("InsertTokenUsage: agent_id FK violation, retrying with NULL agent_id", "agent_id", *record.AgentID, "agent_name", record.AgentName)
 			record.AgentID = nil
 			_, retryErr := chat.dbManager.Db.Exec(query,
-				convID, msgID, record.AgentID, record.AgentName,
-				acctID, usrID,
+				record.ConversationID, record.MessageID, record.AgentID, record.AgentName,
+				record.AccountID, record.UserID,
 				record.LLMProvider, record.LLMModel,
 				record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheCreationTokens,
 				record.IsCacheHit, record.CacheHitRate,
@@ -3629,16 +3616,6 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 	}
 
 	return nil
-}
-
-// nullableUUID converts an empty string to a nil interface so the postgres
-// driver inserts SQL NULL instead of trying to parse "" as a uuid.
-// Returns the original string when non-empty.
-func nullableUUID(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 func (chat *ConversationDao) GetLatestConversationBySessionID(sessionID string, accountId string) (Conversation, error) {

@@ -61,23 +61,13 @@ const MemoryTab = dynamic(() => import('@components/llm/MemoryTab'), {
 // the marker-delimited block below with a () => null stub, mirroring the memory2
 // tabs). Dynamic so its api1 client + CodeMirror-backed advanced editor don't load
 // for the common Agents view.
-// OSS-STRIP-BEGIN-GATEWAY-CONFIG-DYNAMIC-IMPORT
-const GatewayConfigTab = dynamic(() => import('@ee/components/gateway-config/GatewayConfigTab'), {
-  ssr: false,
-  loading: () => <Loader style={{ position: 'static', height: '60vh', width: '100%' }} />,
-});
-// OSS-STRIP-END-GATEWAY-CONFIG-DYNAMIC-IMPORT
+const GatewayConfigTab = () => null;
 // Egress-filter admin config (LLM secret-DLP mode) is an ENTERPRISE surface —
 // it lives under @ee/ and is stripped from the OSS snapshot (oss-patches.sh
 // replaces the marker-delimited block below with a () => null stub, mirroring
 // the gateway/memory2 tabs). Dynamic so its api1 client doesn't load for the
 // common Agents view.
-// OSS-STRIP-BEGIN-EGRESS-FILTER-DYNAMIC-IMPORT
-const EgressFilterTab = dynamic(() => import('@ee/components/egress-filter/EgressFilterTab'), {
-  ssr: false,
-  loading: () => <Loader style={{ position: 'static', height: '60vh', width: '100%' }} />,
-});
-// OSS-STRIP-END-EGRESS-FILTER-DYNAMIC-IMPORT
+const EgressFilterTab = () => null;
 // PreferencesTab / SoulTab / PrivacyTab live under llm/memory2/ which is
 // stripped from the OSS snapshot via .oss-exclude. The marker-delimited
 // block below is range-deleted and replaced with () => null stubs by
@@ -88,20 +78,9 @@ const EgressFilterTab = dynamic(() => import('@ee/components/egress-filter/Egres
 // Turbopack also requires the { ssr, loading } options to be an INLINE
 // object literal, so the block is repeated per call site rather than
 // hoisted to a variable.
-// OSS-STRIP-BEGIN-MEMORY-DYNAMIC-IMPORTS
-const PreferencesTab = dynamic(() => import('@ee/components/memory2/PreferencesTab'), {
-  ssr: false,
-  loading: () => <Loader style={{ position: 'static', height: '60vh', width: '100%' }} />,
-});
-const SoulTab = dynamic(() => import('@ee/components/memory2/SoulTab'), {
-  ssr: false,
-  loading: () => <Loader style={{ position: 'static', height: '60vh', width: '100%' }} />,
-});
-const PrivacyTab = dynamic(() => import('@ee/components/memory2/PrivacyTab'), {
-  ssr: false,
-  loading: () => <Loader style={{ position: 'static', height: '60vh', width: '100%' }} />,
-});
-// OSS-STRIP-END-MEMORY-DYNAMIC-IMPORTS
+const PreferencesTab = () => null;
+const SoulTab = () => null;
+const PrivacyTab = () => null;
 
 const MemoryRedirectPanel = ({ onOpenBCortex }) => (
   <Box sx={{ py: ds.space[8] }}>

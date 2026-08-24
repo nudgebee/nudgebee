@@ -37,9 +37,7 @@ const SettingsModal = dynamic(() => import('@components/llm/SettingsModal'), { s
 // stub by scripts/oss-patches.sh — Turbopack's static analysis rejects
 // dynamic imports of missing modules at build time, so a runtime
 // .catch() fallback isn't enough.
-// OSS-STRIP-BEGIN-BCORTEX-MODAL-IMPORT
-const BCortexModal = dynamic(() => import('@ee/components/BCortexModal'), { ssr: false });
-// OSS-STRIP-END-BCORTEX-MODAL-IMPORT
+const BCortexModal = () => null;
 
 const RailButton = ({ label, testId, iconComponent, iconSx, color, onClick }) => (
   <ButtonBase

@@ -35,6 +35,7 @@ function InvestigateSidebar({
   isK8s,
   isCloud,
   onPodClick,
+  onRowChange,
   onCreateTicket,
   onResetState,
   collapsed,
@@ -283,8 +284,11 @@ function InvestigateSidebar({
                 <NBStatusBadge
                   eventId={row?.id}
                   currentStatus={row?.nb_status || 'OPEN'}
-                  onStatusChange={() => onPriorityChanged(row?.id)}
-                  onCreateTicket={() => onCreateTicket(row)}
+                  snoozedUntil={row?.snoozed_until}
+                  onStatusChange={(newStatus, snoozedUntil) => {
+                    onRowChange((prev) => ({ ...prev, nb_status: newStatus, snoozed_until: snoozedUntil ?? null }));
+                  }}
+                  onCreateTicket={!row?.ticket_id ? () => onCreateTicket(row) : undefined}
                 />
               </Box>
             </Box>
@@ -863,6 +867,7 @@ InvestigateSidebar.propTypes = {
   isK8s: PropTypes.bool,
   isCloud: PropTypes.bool,
   onPodClick: PropTypes.func,
+  onRowChange: PropTypes.func,
   onCreateTicket: PropTypes.func,
   onResetState: PropTypes.func,
   collapsed: PropTypes.bool,

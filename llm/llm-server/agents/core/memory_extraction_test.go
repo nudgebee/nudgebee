@@ -113,7 +113,7 @@ func TestIsAcceptableMemoryFact(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ok, reason := isAcceptableMemoryFact(tt.content)
+			ok, reason := isAcceptableMemoryFact(MemoryFact{Content: tt.content})
 			assert.Equal(t, tt.expectOK, ok, "acceptance verdict for %q", tt.content)
 			assert.Equal(t, tt.expectedReason, reason, "rejection reason for %q", tt.content)
 		})

@@ -630,3 +630,31 @@ func TestPrometheusNoDataMessage_RoutesEachDiscoveryShape(t *testing.T) {
 	assert.Contains(t, msg, "do NOT guess another label name",
 		"must explicitly forbid the observed guess-loop")
 }
+
+// TestESNumericFieldTypes_DistinguishMetricsFromDimensions pins the type split that
+// replaced the old identity-field guess. For Beats-family indices the metric identity is
+// the numeric FIELD PATH — the same path the backend flattens into `__name__` on every
+// series — so numeric types are metric candidates and everything else is a dimension.
+func TestESNumericFieldTypes_DistinguishMetricsFromDimensions(t *testing.T) {
+	for _, ty := range []string{"long", "integer", "double", "float", "scaled_float", "unsigned_long"} {
+		assert.True(t, esNumericFieldTypes[ty], "%s is a metric value type", ty)
+	}
+	// Dimensions and metadata must never be offered as metric names.
+	for _, ty := range []string{"keyword", "text", "date", "boolean", "ip", "object", ""} {
+		assert.False(t, esNumericFieldTypes[ty], "%s is not a metric value type", ty)
+	}
+	// An unfamiliar type is treated as a dimension rather than guessed into a metric.
+	assert.False(t, esNumericFieldTypes["some_future_type"])
+	assert.Equal(t, "name", esMetricNameField, "the OTel metric-name field")
+}
+
+// TestMetricsListTool_DescriptionMatchesAcceptedInput guards the input-shape gap: the
+// description promised a keyword only, while the implementation also accepts an index
+// pattern, and silently ignored the keyword for ES. A caller told one contract and given
+// another emits calls that look successful and return nothing (see #33876).
+func TestMetricsListTool_DescriptionMatchesAcceptedInput(t *testing.T) {
+	desc := MetricsListTool{}.Description()
+	assert.Contains(t, desc, "keyword", "keyword form must stay documented")
+	assert.Contains(t, desc, "wildcard", "the index-pattern form must be documented too")
+	assert.Contains(t, desc, "index pattern")
+}

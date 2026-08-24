@@ -1,0 +1,66 @@
+name: OSS / EE Boundary
+
+on:
+  pull_request:
+    # Cover every OSS tree with an ee/ subtree — keep in sync with .oss-exclude.
+    paths:
+      - 'api-server/services/**'
+      - 'app/src/**'
+      - 'llm/llm-server/**'
+      - 'llm/gateway/**'
+      - 'ml-k8s-server/**'
+      - '.oss-exclude'
+      - 'scripts/check-oss-boundary.sh'
+      - 'scripts/build-oss-snapshot.sh'
+      - '.github/workflows/oss-boundary.yaml'
+  push:
+    branches:
+      - main
+      - test
+      - prod
+
+permissions:
+  contents: read
+
+jobs:
+  oss-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify OSS code doesn't import EE paths
+        run: ./scripts/check-oss-boundary.sh
+
+  oss-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+      # Snapshot stripping removes EE-only migrations, so the patch step
+      # regenerates atlas.sum before compiling the OSS tree.
+      - name: Install atlas (community v0.36.0)
+        env:
+          ATLAS_VERSION: v0.36.0
+          ATLAS_SHA256: 31df223059700191b80032906590bb6030f864ba202dfbc57ba90e593292301a
+        run: |
+          curl -fsSL --connect-timeout 30 --max-time 300 --retry 5 \
+            "https://release.ariga.io/atlas/atlas-community-linux-amd64-${ATLAS_VERSION}" \
+            -o /usr/local/bin/atlas
+          echo "${ATLAS_SHA256}  /usr/local/bin/atlas" | sha256sum --check --status
+          chmod +x /usr/local/bin/atlas
+          atlas version
+      - name: Build OSS snapshot and verify it compiles
+        # Snapshot script runs `npm ci` inside the stripped tree (no
+        # node_modules carry-over since EE deps could differ from OSS).
+        run: ./scripts/build-oss-snapshot.sh /tmp/oss-snap --verify
+      - name: Runtime smoke against stripped tree
+        # Boots the /v1/license/me + /v1/license/bootstrap-check handlers
+        # in-process (no DB, no docker) against the OSS-stripped tree and
+        # asserts they return tier=oss with the right shape. Catches
+        # regressions where the OSS code compiles but crashes/wrong-answers
+        # at request time.
+        run: cd /tmp/oss-snap/api-server/services && go test ./license/...

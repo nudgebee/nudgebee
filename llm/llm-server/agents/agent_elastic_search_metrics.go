@@ -600,12 +600,18 @@ func (e ElasticSearchMetricsAgent) buildSystemPrompt(
 		"NEVER use `size:0` or `aggs` in queries — use filter queries only.",
 		"NEVER return the generated DSL as the final answer — users want metric values.",
 		"NEVER query log-specific indices for metric data.",
-		// Schema-agnostic on purpose. `__name__` is a Prometheus convention the model
-		// brings with it, not something our prompt taught: it kept emitting `__name__`
-		// term filters on an Elastic Agent index even after the OTel discovery hint was
-		// removed. The counter-instruction used to live in the OTel-only constraints, so
-		// every non-OTel account got neither the hint nor the warning.
-		"NEVER filter on `__name__` — no Elasticsearch metric index has that field. Identify the metric either by its metric-name field (`name.keyword`) or by an `exists` filter on the value path, whichever this account's schema uses.",
+		// `__name__` is OURS, not the model's invention: for Beats-family indices the
+		// backend flattens each numeric field into a series and labels it `__name__` with
+		// that field's path. So results advertise `__name__` while no such field is
+		// queryable, and a `term` filter on it silently matches nothing — 13 times in one
+		// traced investigation. Forbidding it outright (the previous wording) stopped
+		// nothing, because it named no replacement. Explain the translation instead.
+		"`__name__` in a RESULT is not a queryable field — it is the metric's fully-qualified field path. To select that metric, use an `exists` filter on the path itself (e.g. `{\"exists\":{\"field\":\"kubernetes.pod.cpu.usage.nanocores\"}}`), never `{\"term\":{\"__name__\":...}}`. On OTel indices, which do have a real metric-name field, filter `name.keyword` instead.",
+		// Sampling first is cheaper and more reliable than any built-in field list: it
+		// returns only fields this account actually populates. Measured on a customer
+		// estate: one sampled document is ~4KB and names every metric in its dataset,
+		// against ~400KB for the full mapping, most of which is unpopulated template.
+		"When you do not know an index's fields, FETCH A SAMPLE FIRST: `{\"query\":{\"match_all\":{}},\"size\":2}` with a recent time range. The `__name__` values in the result are this environment's real metric paths and the label keys are its real dimensions. Prefer them over any field name you assume.",
 		"Do not ask the user for clarification — make the best assumption and proceed.",
 	}
 	if schemas[schemaOTel] {

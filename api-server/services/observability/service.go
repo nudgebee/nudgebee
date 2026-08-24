@@ -251,6 +251,8 @@ func getLogSource(provider, integrationSource string) (LogSource, error) {
 		return &PinotSaasSource{}, nil
 	case provider == "hive" && integrationSource == "user":
 		return &HiveSaasSource{}, nil
+	case provider == "openobserve" && integrationSource == "user":
+		return &OpenObserveLogSource{}, nil
 		// hive:agent is intentionally NOT wired here yet — the relay-mode
 		// `HiveSource` is implemented but the matching `hive_query` /
 		// `hive_schema` actions don't exist in nudgebee-agent yet. Returning

@@ -10,6 +10,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -624,7 +625,7 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 	b.WriteString("- Read the caller's ORIGINAL user question (when provided) to classify intent.\n")
 
 	b.WriteString("\n**Examples:**\n")
-	examples := canonicalQueryExamples()
+	examples := canonicalQueryExamples(supportedOperators)
 	if !useCanonical {
 		if pe := providerSpecificQueryExamples(providerName); len(pe) > 0 {
 			examples = pe
@@ -642,9 +643,19 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 
 // defaultLogQueryOperators is the comparison-operator set advertised to the
 // LLM when get_default_provider omits capabilities.supported_operators (older
-// backends, fetch failure). Combinators are added separately by
-// resolveQueryOperators.
-var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_ilike", "_nlike", "_is_null"}
+// backends, fetch failure).
+//
+// It must stay the INTERSECTION of what every backend can execute, because it is
+// used precisely when we do not know which backend we are talking to. `_ilike` is
+// excluded for that reason: it is not universal (Signoz rejects it), and a rejected
+// query costs a full agent iteration to discover. `_like` is the portable spelling.
+//
+// Elasticsearch DOES execute `_ilike` — natively, via a case-insensitive wildcard —
+// and advertises it, so an ES account receives it through capabilities rather than
+// through this fallback. The fallback only applies when the backend told us nothing.
+//
+// Combinators are added separately by resolveQueryOperators.
+var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_nlike", "_is_null"}
 
 // logQueryCombinators are the structural JSON combinators the where-schema
 // relies on. They are not provider comparison operators, so the backend's
@@ -690,7 +701,16 @@ func resolveQueryOperators(providerOperators []string) []string {
 // e.g. a backend whose canonical keys are `app`/`content`). The examples teach
 // query shape (operators, _or, time_range/limit, when to add an error filter);
 // the field list above teaches which name to substitute.
-func canonicalQueryExamples() []core.NBAgentPromptExample {
+func canonicalQueryExamples(supportedOperators []string) []core.NBAgentPromptExample {
+	// The few-shots are the strongest signal in this prompt — stronger than the
+	// operator list a few lines above it. Hardcoding `_ilike` here meant the model
+	// emitted it against Elasticsearch, which rejects it outright, even though the
+	// advertised operator list correctly omitted it. So the examples must be built
+	// from the SAME set the backend advertises.
+	contains := `_ilike`
+	if !slices.Contains(supportedOperators, "_ilike") {
+		contains = `_like`
+	}
 	return []core.NBAgentPromptExample{
 		{
 			Question:    "show me recent logs for the checkout workload",
@@ -699,12 +719,12 @@ func canonicalQueryExamples() []core.NBAgentPromptExample {
 		},
 		{
 			Question:    "errors in the checkout workload in the last hour",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}, "time_range": "1h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}, "time_range": "1h", "limit": 5000}`,
 			Explanation: "Replace <LOG_TEXT_FIELD> with the canonical_name for the log body. The question says 'last hour' → set time_range to \"1h\" EXACTLY; never widen a window the user gave (use the 24h default ONLY when the question gives no window). 'checkout' is illustrative — substitute the real workload name from the question.",
 		},
 		{
 			Question:    "warn or error logs for checkout",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"_ilike": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"` + contains + `": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
 			Explanation: "Multiple values for the same concept → _or over the log-body canonical_name.",
 		},
 		{

@@ -44,6 +44,8 @@ export interface EmptyStateProps {
   /** Override the preset illustration with a custom React node */
   icon?: React.ReactNode;
   tone?: EmptyStateTone;
+  /** Render the state as a full-width, subtle-gray boxed panel instead of a bare, transparent block */
+  surface?: boolean;
   action?: EmptyStateAction;
   /** Optional secondary content rendered below the action */
   children?: React.ReactNode;
@@ -117,6 +119,7 @@ export function EmptyState({
   illustration = 'none',
   icon,
   tone = 'neutral',
+  surface = false,
   action,
   children,
   id,
@@ -126,6 +129,8 @@ export function EmptyState({
   const palette = TONE_PALETTE[tone];
   const iconNode = icon ?? defaultIconForIllustration(illustration, size);
   const isInline = size === 'inline';
+  const containerBg = surface && palette.bg === 'transparent' ? 'var(--ds-background-200)' : palette.bg;
+  const containerBorder = surface && palette.border === 'transparent' ? 'var(--ds-gray-200)' : palette.border;
 
   return (
     <Box
@@ -141,8 +146,10 @@ export function EmptyState({
         padding: dims.padding,
         minHeight: dims.minHeight,
         borderRadius: 'var(--ds-radius-md)',
-        backgroundColor: palette.bg,
-        border: `1px solid ${palette.border}`,
+        backgroundColor: containerBg,
+        border: `1px solid ${containerBorder}`,
+        boxSizing: 'border-box',
+        ...(surface ? { width: '100%', maxWidth: '100%' } : {}),
         ...sx,
       }}
     >

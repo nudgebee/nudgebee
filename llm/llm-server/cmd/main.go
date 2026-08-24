@@ -23,11 +23,6 @@ import (
 	toolscore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 
-	// Enterprise-Edition packages register their hooks in init(). Blank-import
-	// triggers registration; absent these imports the corresponding OSS hooks
-	// stay nil and behavior matches the OSS edition.
-	_ "nudgebee/llm/ee/scrubbing" // installs core.LLMModelDecorator (PII scrub)
-
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
 	"go.opentelemetry.io/otel"
@@ -256,6 +251,11 @@ func main() {
 
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)
+
+	// Optional memory-v2 maintenance and projection implementations register
+	// through hooks. In OSS builds these remain safe no-ops.
+	core.RegisterMemoryMaintenanceJobsFn()
+	core.StartMemoryRagProjectorsFn(syncCtx)
 
 	// Wire the watch package against the LLM + security stack and register
 	// the leader-elected dispatcher. No-op when LLM_SERVER_WATCH_ENABLED=false.

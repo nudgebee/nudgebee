@@ -2381,6 +2381,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 				"data_protection_rules",
 				"code_analysis_rules",
 				"security_rules",
+				"memory_consumption_rules",
 				"async_completion_rules",
 			},
 		),

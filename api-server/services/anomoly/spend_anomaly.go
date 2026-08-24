@@ -233,11 +233,6 @@ func ExecuteSpendAnomaly(ctx *security.RequestContext) error {
 		return err
 	}
 
-	if err := rows.Err(); err != nil {
-		slog.Error("spend-anomaly: error iterating cloud accounts", "error", err)
-		return err
-	}
-
 	slog.Info("spend-anomaly: found cloud accounts", "count", len(accounts))
 
 	for _, acc := range accounts {

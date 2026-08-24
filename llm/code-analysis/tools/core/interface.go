@@ -115,7 +115,7 @@ func ParseInput(input map[string]any, target any) error {
 // type error still surfaces as one.
 func coerceScalarStrings(input map[string]any, target any) map[string]any {
 	t := reflect.TypeOf(target)
-	for t != nil && t.Kind() == reflect.Ptr {
+	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == nil || t.Kind() != reflect.Struct {
@@ -162,7 +162,7 @@ func coerceScalarStrings(input map[string]any, target any) map[string]any {
 
 // coerceString parses raw into the kind ft declares, reporting whether it applies.
 func coerceString(raw string, ft reflect.Type) (any, bool) {
-	for ft.Kind() == reflect.Ptr {
+	for ft.Kind() == reflect.Pointer {
 		ft = ft.Elem()
 	}
 	switch ft.Kind() {

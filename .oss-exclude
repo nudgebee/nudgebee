@@ -20,11 +20,12 @@
 # ─── Backend (Go) ────────────────────────────────────────────────────
 api-server/services/ee/
 
-# llm-server EE extension bundle (egress filter, etc.) + the build-tag-
-# guarded bridge that blank-imports it. The bridge file lives next to
-# cmd/main.go because Go requires the registration init() to be in the
-# same package; the .go file is excluded from the OSS snapshot and the
-# imported tree comes out with it.
+# llm-server EE extension bundle (egress filter, etc.) + the bridge file that
+# blank-imports it. The bridge lives next to cmd/main.go because Go requires the
+# registration init() to be in the same package. Gated by FILE-REMOVAL only (no
+# build tag) — matching the gateway bridge below: the .go file is excluded from
+# the OSS snapshot and the imported ee/ tree comes out with it, leaving an OSS
+# build with baseline rules only and enforce/redact degrading to detect.
 llm/llm-server/ee/
 llm/llm-server/cmd/imports_enterprise.go
 
@@ -39,6 +40,17 @@ llm/llm-server/cmd/imports_enterprise.go
 llm/gateway/ee/
 llm/gateway/cmd/gateway/imports_enterprise.go
 llm/gateway/docs/
+
+# ─── Backend (Python) ────────────────────────────────────────────────
+# ml-k8s-server EE data-scrubbing feature (Presidio + spaCy PII tokenizer).
+# server/app.py auto-discovers the blueprint by presence (glob over ee/), so
+# no OSS file names this path — but the tree itself is EE-only and must be
+# stripped from the OSS snapshot.
+ml-k8s-server/server/ee/
+# EE-only benchmark: imports the scrubber controller directly to measure its
+# end-to-end latency. Static import is fine because this file is stripped with
+# the ee/ tree above and the boundary check skips anything listed here.
+ml-k8s-server/tests/bench_e2e.py
 
 # ─── Frontend (TS / React) ───────────────────────────────────────────
 app/src/ee/
@@ -80,6 +92,226 @@ deploy/kubernetes/nudgebee/values-enterprise.yaml
 # how feature_flag works, etc.).
 docs/ee/
 
+# ─── Memory v2 module (llm-server) ───────────────────────────────────
+# The typed-memory / b-Cortex module (Soul, Preferences, Patterns,
+# Decisions, Collective, Session, Consent, Events) — every store,
+# extractor, compose/observe path, admin API, migration, and UI tab
+# that reads/writes those tables. Legacy long-term memory
+# (llm_conversation_memory + LoadLongTermMemories/FindSimilarMemories
+# on ConversationDao + api/memory.go legacy CRUD + MemoryTab.jsx) is
+# left in OSS as-is. The typed-memory store package moved under the
+# EE namespace at llm/llm-server/ee/memory/ (already covered by the
+# broad `llm/llm-server/ee/` entry above); the agents/core bridge
+# files below stay in place and are listed individually because they
+# use unexported core-package identifiers that would need to be
+# exported before they could move to a separate package. Post-hotfix
+# follow-up: fully hoist them under ee/ with a registry indirection.
+
+# Backend (Go) — memory-v2 HTTP API surface + tests
+llm/llm-server/api/memory_v2.go
+llm/llm-server/api/memory_v2_admin.go
+llm/llm-server/api/memory_v2_admin_recover_test.go
+llm/llm-server/api/memory_v2_admin_test.go
+llm/llm-server/api/memory_v2_layers.go
+llm/llm-server/api/memory_v2_phase3.go
+llm/llm-server/api/memory_v2_findings.go
+llm/llm-server/api/memory_v2_findings_test.go
+
+# Backend (Go) — agents/core bridge into memory-v2. Split from the
+# original memory.go / executor.go via `//go:build enterprise` tag so
+# the OSS build compiles without any memory-v2 import. cmd/main.go's
+# call to maintenance.Register + RegisterMemoryMaintenanceLLMJobs
+# moves into imports_enterprise.go alongside the egressfilter bundle.
+llm/llm-server/agents/core/maintenance_llm.go
+llm/llm-server/agents/core/maintenance_llm_e2e_test.go
+llm/llm-server/agents/core/memory_v2_bridge.go
+llm/llm-server/agents/core/memory_v2_bridge_integration_e2e_test.go
+llm/llm-server/agents/core/memory_v2_bridge_sanitize_test.go
+llm/llm-server/agents/core/memory_v2_bridge_scope_test.go
+llm/llm-server/agents/core/memory_v2_bridge_test.go
+llm/llm-server/agents/core/memory_v2.go
+
+# Tests for the typed-memory stores import the EE memory implementation
+# directly and cannot compile in the stripped OSS tree.
+llm/llm-server/memory/decisions_vote_test.go
+llm/llm-server/memory/dedup_stores_test.go
+llm/llm-server/memory/preferences_confirm_test.go
+
+# memory-v3 `memory` tool + reranker (import ee/memory). ToolMemory name const
+# is split into OSS file tool_memory_name.go.
+llm/llm-server/agents/core/tool_memory.go
+llm/llm-server/agents/core/tool_memory_e2e_test.go
+llm/llm-server/agents/core/tool_memory_latency_e2e_test.go
+llm/llm-server/agents/core/memory_rerank.go
+llm/llm-server/agents/core/memory_rerank_test.go
+llm/llm-server/agents/core/memory_rerank_e2e_test.go
+
+
+# Agent-level e2e tests that exercise the typed-memory bridge end-to-
+# end. Same reasoning as the individual layer stores: they import the
+# memory package directly and would fail to compile without it.
+llm/llm-server/agents/agent_memory_e2e_test.go
+llm/llm-server/agents/agent_memory_e2e_scenarios_e2e_test.go
+llm/llm-server/agents/agent_memory_e2e_investigation_e2e_test.go
+llm/llm-server/agents/agent_memory_e2e_layer_gates_e2e_test.go
+
+# Release manifests for the migration-gap gate. Derived data: they map every
+# migration to the CHART RELEASE TAG that first shipped it, so between them they
+# enumerate every release ever cut (226 tags incl. every rc) and date each
+# migration against one. That is EE release history, and the OSS repo carries
+# none of those tags — it cannot regenerate or verify the files it would be
+# shipping.
+#
+# Cost of stripping, measured against a real 1.4.0 customer: the OSS build finds
+# 14 of 19 stranded migrations instead of 19. The 5 it loses are exactly the
+# data-only ones (V788 freshdesk, V790-792 pricing, V797 kb-agent repoint) --
+# they create no schema object, so the release diff is the only engine that can
+# see them. detect_migration_gap.py says so plainly rather than degrading
+# quietly: "release diff = unavailable (no release-manifests/)", and falls back
+# to the tracker diff and the object probe.
+#
+# Regeneration is already safe everywhere: --generate-release-manifests dies
+# with "no chart release tags found" rather than writing an empty manifest, so a
+# contributor cannot produce a silently under-reporting file.
+api-server/migrations/release-manifests/
+
+# Postgres migrations for memory-v2 tables (V707 → V712 typed layer
+# tables, V765 phases 2-8 combined incl. session/consent, V775
+# resource-scope + TTL columns). Already applied on prod/test/main —
+# stripping from the OSS snapshot leaves the deployed schema
+# untouched; it just prevents future OSS installs from ever creating
+# these tables.
+api-server/migrations/migrations/app/1776538847669_V707_memory_events_table.up.sql
+api-server/migrations/migrations/app/1776538847669_V707_memory_events_table.down.sql
+api-server/migrations/migrations/app/1776539028499_V708_memory_soul_table.up.sql
+api-server/migrations/migrations/app/1776539028499_V708_memory_soul_table.down.sql
+api-server/migrations/migrations/app/1776539114306_V709_memory_preferences_table.up.sql
+api-server/migrations/migrations/app/1776539114306_V709_memory_preferences_table.down.sql
+api-server/migrations/migrations/app/1776540865372_V710_memory_patterns_table.up.sql
+api-server/migrations/migrations/app/1776540865372_V710_memory_patterns_table.down.sql
+api-server/migrations/migrations/app/1776540953730_V711_memory_decisions_table.up.sql
+api-server/migrations/migrations/app/1776540953730_V711_memory_decisions_table.down.sql
+api-server/migrations/migrations/app/1776541039952_V712_memory_collective_table.up.sql
+api-server/migrations/migrations/app/1776541039952_V712_memory_collective_table.down.sql
+api-server/migrations/migrations/app/1781685799681_V765_memory_module_phase_2_through_8_combined.up.sql
+api-server/migrations/migrations/app/1781685799681_V765_memory_module_phase_2_through_8_combined.down.sql
+api-server/migrations/migrations/app/1782899238539_V775_add_memory_resource_scope.up.sql
+api-server/migrations/migrations/app/1782899238539_V775_add_memory_resource_scope.down.sql
+
+# V717 registers the MEMORY_MODULE feature flag in public.feature_flag.
+# Excluding this migration means an OSS install never provisions the
+# flag row, so any downstream OSS caller of hasFeatureAccess('MEMORY_MODULE')
+# resolves to false — matching the no-op state of isMemoryV2ActiveFn.
+api-server/migrations/migrations/app/1776574228902_V717_memory_module_feature_flag.up.sql
+api-server/migrations/migrations/app/1776574228902_V717_memory_module_feature_flag.down.sql
+api-server/migrations/migrations/app/1783446274094_V778_add_memory_preferences_evidence.up.sql
+api-server/migrations/migrations/app/1783446274094_V778_add_memory_preferences_evidence.down.sql
+api-server/migrations/migrations/app/1784097400000_V794_add_memory_rag_projection_columns.up.sql
+api-server/migrations/migrations/app/1784097400000_V794_add_memory_rag_projection_columns.down.sql
+api-server/migrations/migrations/app/1785846046269_V845_confirmed_inferred_preferences.up.sql
+api-server/migrations/migrations/app/1785846046269_V845_confirmed_inferred_preferences.down.sql
+
+# Frontend (React) — b-Cortex modal + typed-memory tabs. Only the
+# UI-heavy pieces are stripped. Two intentionally-kept exceptions live
+# in OSS:
+#
+#   app/src/hooks/useBCortexEnabled.jsx  — a 3-line hook around
+#      hasFeatureAccess('MEMORY_MODULE'). OSS installs never provision
+#      the flag row (V717 is excluded), so the hook resolves to `false`
+#      and all consumers gracefully take the disabled path. No
+#      memory-v2 semantics leak.
+#   app/src/api1/memory/                 — thin GraphQL/RPC wrappers.
+#      OSS installs don't mount the /rpc/ai_memory_* routes (see the
+#      handleMemoryV2ApisFn seam), so calls resolve to 404 which the
+#      few OSS consumers (KubernetesLLMRequestResponseV2,
+#      AutoOptimizeVerticalRightSizing form) handle silently.
+#
+# SettingsModal's three static imports from memory2/ become dynamic
+# imports with a null-render fallback in OSS. NubiBrainNav already
+# dynamic-imports BCortexModal — we just add the same .catch fallback
+# so the OSS strip doesn't crash when the file is missing.
+
++
+# EE-internal operational skills and deployment/promotion workflows.
+# These depend on private environments, runners, credentials, and naming.
+# OSS keeps only public validation workflows.
+.claude/skills/loki-logs/SKILL.md
+.gemini/skills/loki-logs/SKILL.md
+.github/workflows/app-dev-gke.yaml
+.github/workflows/app-e2e-tests-dev.yaml
+.github/workflows/app-e2e-tests-hourly.yaml
+.github/workflows/app-e2e-tests.yaml
+.github/workflows/app-merge-dev-test.yaml
+.github/workflows/app-merge-prod-test.yaml
+.github/workflows/app-merge-test-main.yaml
+.github/workflows/app-merge-test-prod.yaml
+.github/workflows/app-prod.yaml
+.github/workflows/app-test-gke.yaml
+.github/workflows/app-version-update.yaml
+.github/workflows/aws-cf-templates-upload.yaml
+.github/workflows/benchmark-server-dev-gke.yaml
+.github/workflows/benchmark-server-prod.yaml
+.github/workflows/benchmark-server-test-gke.yaml
+.github/workflows/cloud-collector-base-image-prod.yaml
+.github/workflows/cloud-collector-server-dev-gke.yaml
+.github/workflows/cloud-collector-server-prod.yaml
+.github/workflows/cloud-collector-server-test-gke.yaml
+.github/workflows/code-analysis-dev-gke.yaml
+.github/workflows/code-analysis-prod.yaml
+.github/workflows/code-analysis-test-gke.yaml
+.github/workflows/cost-server-dev-gke.yaml
+.github/workflows/cost-server-prod.yaml
+.github/workflows/cost-server-test-gke.yaml
+.github/workflows/debugger-image-push-prod.yml
+.github/workflows/debugger-image-push.yml
+.github/workflows/k8s-collector-server-dev-gke.yaml
+.github/workflows/k8s-collector-server-prod.yaml
+.github/workflows/k8s-collector-server-test-gke.yaml
+.github/workflows/llm-gateway-dev-gke.yaml
+.github/workflows/llm-gateway-prod.yaml
+.github/workflows/llm-gateway-test-gke.yaml
+.github/workflows/llm-server-dev-gke.yaml
+.github/workflows/llm-server-prod.yaml
+.github/workflows/llm-server-test-gke.yaml
+.github/workflows/migrations-prod.yaml
+.github/workflows/migrations-test-gke.yaml
+.github/workflows/ml-base-image-deploy-prod.yaml
+.github/workflows/ml-base-image-deploy.yaml
+.github/workflows/ml-k8s-server-dev-gke.yaml
+.github/workflows/ml-k8s-server-prod.yaml
+.github/workflows/ml-k8s-server-test-gke.yaml
+.github/workflows/notifications-dev-gke.yaml
+.github/workflows/notifications-prod.yaml
+.github/workflows/notifications-test-gke.yaml
+.github/workflows/nudgebee-build-dev.yaml
+.github/workflows/nudgebee-build-prod.yaml
+.github/workflows/nudgebee-build-test-ci.yaml
+.github/workflows/nudgebee-build-test.yaml
+.github/workflows/nudgebee-tag-dev.yaml
+.github/workflows/nudgebee-tag-prod.yaml
+.github/workflows/nudgebee-tag-test.yaml
+.github/workflows/ops-auto-label.yaml
+.github/workflows/ops-enforce-story-points.yaml
+.github/workflows/rag-server-dev-gke.yaml
+.github/workflows/rag-server-prod.yaml
+.github/workflows/rag-server-test-gke.yaml
+.github/workflows/relay-server-dev-gke.yaml
+.github/workflows/relay-server-prod.yaml
+.github/workflows/relay-server-test-gke.yaml
+.github/workflows/scanner-images-mirror.yaml
+.github/workflows/services-server-dev-gke.yaml
+.github/workflows/services-server-prod.yaml
+.github/workflows/services-server-test-gke.yaml
+.github/workflows/ticket-server-dev-gke.yaml
+.github/workflows/ticket-server-prod.yaml
+.github/workflows/ticket-server-test-gke.yaml
+.github/workflows/vulnerability-server-dev-gke.yaml
+.github/workflows/vulnerability-server-prod.yaml
+.github/workflows/vulnerability-server-test-gke.yaml
+.github/workflows/workflow-server-dev-gke.yaml
+.github/workflows/workflow-server-prod.yaml
+.github/workflows/workflow-server-test-gke.yaml
+
 # ─── Companion patches (executable contract) ─────────────────────────
 # Path stripping alone is not sufficient. Every consumer of
 # .oss-exclude (the in-repo `scripts/build-oss-snapshot.sh` AND the
@@ -96,6 +328,8 @@ docs/ee/
 #   1. Remove every path listed above this section.
 #   2. `source scripts/oss-patches.sh && apply_oss_patches`
 #      (or `scripts/oss-patches.sh apply`).
+#      This requires Atlas and regenerates migrations/app/atlas.sum after
+#      EE-only migrations are removed.
 #   3. (Recommended) run `scripts/check-oss-boundary.sh`,
 #      `go build ./...`, `tsc --noEmit` on the post-strip tree.
 #
