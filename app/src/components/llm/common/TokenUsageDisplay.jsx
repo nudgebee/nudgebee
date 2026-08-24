@@ -65,7 +65,7 @@ const tooltipStyles = {
   padding: 0,
   border: '1px solid var(--ds-blue-400)',
   borderRadius: ds.radius.lg,
-  maxWidth: ds.space.mul(1, 105),
+  maxWidth: ds.space.mul(1, 135),
   maxHeight: 'none',
   overflow: 'visible',
 };
@@ -134,6 +134,85 @@ const modelInfoStyles = {
   padding: `${ds.space[1]} ${ds.space[2]}`,
   backgroundColor: 'var(--ds-background-200)',
   borderRadius: ds.radius.sm,
+};
+
+/**
+ * Tier chip colours. The three tiers are a fixed set, so they get stable hues
+ * rather than one neutral grey — at a glance the point is which agents ran on
+ * the expensive tier.
+ */
+const TIER_CHIP_COLORS = {
+  reasoning: { bg: 'var(--ds-purple-100)', fg: 'var(--ds-purple-700)' },
+  retrieval: { bg: 'var(--ds-blue-100)', fg: 'var(--ds-blue-700)' },
+  summary: { bg: 'var(--ds-gray-200)', fg: 'var(--ds-gray-600)' },
+};
+
+const TierChip = ({ tier }) => {
+  const c = TIER_CHIP_COLORS[tier] || { bg: 'var(--ds-gray-200)', fg: 'var(--ds-gray-600)' };
+  return (
+    <Box
+      component='span'
+      sx={{
+        display: 'inline-block',
+        fontSize: '10px',
+        lineHeight: 1.4,
+        padding: '0 6px',
+        borderRadius: ds.radius.lg,
+        backgroundColor: c.bg,
+        color: c.fg,
+        fontWeight: 'var(--ds-font-weight-semibold)',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {tier}
+    </Box>
+  );
+};
+
+TierChip.propTypes = { tier: PropTypes.string.isRequired };
+
+/**
+ * Metric label with an explanatory tooltip. The Performance and Interaction
+ * Summary figures are unintuitive on their own — API Time exceeding 100% is the
+ * usual question — so each label carries what it measures.
+ */
+const METRIC_HELP = {
+  'Success Rate': 'Share of AI model calls that completed without an error.',
+  'Tool Calls': 'Number of data-fetch operations run, with the successful count in brackets.',
+  'Wall Time':
+    'Total elapsed from your question until the conversation fully settles. Includes background work that runs after the answer appears, so it is a little longer than the answer time on the message.',
+  'Agent Active': 'How long agents were actually running, excluding time spent waiting between turns.',
+  'API Time':
+    'Time spent waiting on the AI models, added up across agents that ran at the same time. Because agents run in parallel this can exceed Agent Active — over 100% means the work was parallelised, not that something went wrong. Shown as a share of Agent Active.',
+  'Avg per Call': 'Average round-trip time of a single AI model call in this conversation.',
+  'Time to First Token':
+    'Average wait before the model starts responding. High here means slow to start; if this is low but the turn is long, the model was slow to generate.',
+  'Between Tokens': 'Average gap between generated tokens. Multiplied by response length, this is what makes a long answer slow.',
+  'Tool Time':
+    'Time spent fetching data — logs, traces, metrics and cluster queries. Overlapping and nested calls are counted once. Shown as a share of Agent Active.',
+};
+
+const MetricLabel = ({ label, text }) => (
+  <Tooltip title={METRIC_HELP[label]} placement='left' maxWidth='280px'>
+    <Typography
+      sx={{
+        fontSize: 'var(--ds-text-caption)',
+        color: 'var(--ds-gray-500)',
+        cursor: 'help',
+        textDecoration: 'underline dotted',
+        textDecorationColor: 'var(--ds-gray-400)',
+        textUnderlineOffset: '2px',
+        width: 'fit-content',
+      }}
+    >
+      {text || `${label}:`}
+    </Typography>
+  </Tooltip>
+);
+
+MetricLabel.propTypes = {
+  label: PropTypes.oneOf(Object.keys(METRIC_HELP)).isRequired,
+  text: PropTypes.string,
 };
 
 /**
@@ -274,6 +353,8 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
     successful_tool_calls = 0,
     total_latency_seconds: _total_latency_seconds = null,
     average_latency_seconds = null,
+    avg_ttft_ms = null,
+    avg_itl_ms = null,
     wall_time_seconds = null,
     agent_active_time_seconds = null,
     tool_time_seconds = null,
@@ -362,7 +443,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
           </Typography>
           {total_requests > 0 && (
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4], marginBottom: ds.space[0] }}>
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Success Rate:</Typography>
+              <MetricLabel label='Success Rate' />
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 {success_rate_percentage !== null ? `${success_rate_percentage.toFixed(1)}%` : 'N/A'}
               </Typography>
@@ -370,7 +451,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
           )}
           {total_tool_calls > 0 && (
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4] }}>
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Tool Calls:</Typography>
+              <MetricLabel label='Tool Calls' />
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 {total_tool_calls} (✓ {successful_tool_calls})
               </Typography>
@@ -394,7 +475,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
           </Typography>
           {wall_time_seconds !== null && (
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4], marginBottom: ds.space[0] }}>
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Wall Time:</Typography>
+              <MetricLabel label='Wall Time' />
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 {formatTime(wall_time_seconds)}
               </Typography>
@@ -402,7 +483,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
           )}
           {agent_active_time_seconds !== null && (
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4], marginBottom: ds.space[0] }}>
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Agent Active:</Typography>
+              <MetricLabel label='Agent Active' />
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 {formatTime(agent_active_time_seconds)}
               </Typography>
@@ -412,7 +493,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
             <Box
               sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4], marginBottom: ds.space[0], paddingLeft: ds.space[2] }}
             >
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>» API Time:</Typography>
+              <MetricLabel label='API Time' text='» API Time:' />
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>
                 {formatTime(api_time_seconds)} ({api_time_percentage.toFixed(1)}%)
               </Typography>
@@ -420,10 +501,28 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
           )}
           {tool_time_seconds !== null && tool_time_percentage !== null && (
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4], paddingLeft: ds.space[2] }}>
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>» Tool Time:</Typography>
+              <MetricLabel label='Tool Time' text='» Tool Time:' />
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>
                 {formatTime(tool_time_seconds)} ({tool_time_percentage.toFixed(1)}%)
               </Typography>
+            </Box>
+          )}
+          {average_latency_seconds !== null && (
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4], marginBottom: ds.space[0] }}>
+              <MetricLabel label='Avg per Call' />
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>{formatTime(average_latency_seconds)}</Typography>
+            </Box>
+          )}
+          {avg_ttft_ms !== null && (
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4], marginBottom: ds.space[0] }}>
+              <MetricLabel label='Time to First Token' />
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>{Math.round(avg_ttft_ms)} ms</Typography>
+            </Box>
+          )}
+          {avg_itl_ms !== null && (
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4] }}>
+              <MetricLabel label='Between Tokens' />
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>{avg_itl_ms.toFixed(1)} ms/token</Typography>
             </Box>
           )}
         </Box>
@@ -445,8 +544,9 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 0.8fr',
-              gap: ds.space[0],
+              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr',
+              rowGap: ds.space[0],
+              columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
               fontFamily: 'monospace',
             }}
@@ -459,6 +559,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
                 color: 'var(--ds-gray-700)',
                 paddingBottom: ds.space[1],
                 borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                whiteSpace: 'nowrap',
               }}
             >
               Model
@@ -527,9 +628,12 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
             {/* Table Rows */}
             {model_usage.map((model, idx) => (
               <React.Fragment key={idx}>
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', paddingTop: ds.space[1] }}>
-                  {model.model_name?.toLowerCase()}
-                </Typography>
+                <Box sx={{ paddingTop: ds.space[1] }}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>{model.model_name?.toLowerCase()}</Typography>
+                  {model.model_provider && (
+                    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)' }}>{model.model_provider}</Typography>
+                  )}
+                </Box>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                   {model.requests}
                 </Typography>
@@ -809,9 +913,12 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
 
   const hasCacheData = message_cached_input_tokens > 0 || (message_cache_hit_rate_percentage !== null && message_cache_hit_rate_percentage > 0);
 
-  // Filter agents with valid data
+  // A failed call spends no tokens, so a 0/0 row is real work that did not
+  // complete — not an empty row. Filtering on tokens hid those entirely, so a
+  // model could appear in the conversation totals and be absent from the message
+  // that attempted it. Keep them; they render as failed below.
   const validAgents = agents.filter(
-    (agent) => (agent.input_tokens > 0 || agent.output_tokens > 0) && agent.model_name?.Valid && agent.model_name?.String
+    (agent) => (agent.input_tokens > 0 || agent.output_tokens > 0 || agent.failed_requests > 0) && agent.model_name?.Valid && agent.model_name?.String
   );
 
   // Aggregate by model
@@ -863,7 +970,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
   }
 
   const tooltipContent = (
-    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 95) }}>
+    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 130) }}>
       <Typography sx={{ ...tooltipTitleStyles, fontSize: 'var(--ds-text-body)', marginBottom: ds.space[2] }}>Message Metrics</Typography>
 
       {/* Model Usage Table */}
@@ -882,8 +989,9 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 0.8fr',
-              gap: ds.space[0],
+              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr',
+              rowGap: ds.space[0],
+              columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
               fontFamily: 'monospace',
             }}
@@ -896,6 +1004,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                 color: 'var(--ds-gray-700)',
                 paddingBottom: ds.space[1],
                 borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                whiteSpace: 'nowrap',
               }}
             >
               Model
@@ -1011,8 +1120,9 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2fr 1fr 1fr 1fr 0.8fr',
-              gap: ds.space[0],
+              gridTemplateColumns: '2.6fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr',
+              rowGap: ds.space[0],
+              columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
               fontFamily: 'monospace',
             }}
@@ -1025,9 +1135,22 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                 color: 'var(--ds-gray-700)',
                 paddingBottom: ds.space[1],
                 borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                whiteSpace: 'nowrap',
               }}
             >
               Agent
+            </Typography>
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                paddingBottom: ds.space[1],
+                borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Tier
             </Typography>
             <Typography
               sx={{
@@ -1094,16 +1217,72 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                 : agentIdStr || '(unknown)';
               const tooltipText = hasAgentName ? `${agent.agent_name} (${agentIdStr})` : agentIdStr || '(unknown agent)';
 
+              // Every call failed: no tokens were spent, so a numeric 0 would read as
+              // "ran for free" instead of "never ran".
+              const allFailed = agent.failed_requests > 0 && agent.failed_requests >= (agent.requests || agent.failed_requests);
+              const cell = (v) => (allFailed ? '—' : v);
+
               return (
                 <React.Fragment key={idx}>
-                  <Typography
-                    sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', paddingTop: ds.space[1] }}
-                    title={tooltipText} // Show full info on hover
-                  >
-                    {displayName}
-                  </Typography>
+                  {/* A grid item defaults to min-width:auto, which would widen the
+                      column instead of ellipsising the config name below. */}
+                  <Box sx={{ paddingTop: ds.space[1], minWidth: 0 }}>
+                    <Typography
+                      sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}
+                      title={tooltipText} // Show full info on hover
+                    >
+                      {displayName}
+                    </Typography>
+                    {agent.llm_config_name && (
+                      <Typography
+                        sx={{
+                          fontSize: 'var(--ds-text-caption)',
+                          color: 'var(--ds-gray-400)',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                        // A config name often contains a model (e.g. "hsundar-gemini-3.6-flash"),
+                        // so the prefix stops it reading as the model. When nothing was pinned the
+                        // server sends the resolution layer instead, which is not a config — say
+                        // "via" so it is not mistaken for one. Raw source ids stay hidden either way.
+                        title={
+                          agent.llm_config_is_slot
+                            ? `LLM config: ${agent.llm_config_name}`
+                            : `Resolved via ${agent.llm_config_name} — no specific config was pinned`
+                        }
+                      >
+                        <Box component='span' sx={{ color: 'var(--ds-gray-500)' }}>
+                          {agent.llm_config_is_slot ? 'config: ' : 'via: '}
+                        </Box>
+                        {agent.llm_config_name}
+                      </Typography>
+                    )}
+                  </Box>
+                  <Box sx={{ paddingTop: ds.space[1], display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>
+                    {agent.model_tier && <TierChip tier={agent.model_tier} />}
+                    {agent.failed_requests > 0 && (
+                      <Box
+                        component='span'
+                        title={`${agent.failed_requests} of ${agent.requests || agent.failed_requests} call(s) failed — no tokens were spent`}
+                        sx={{
+                          display: 'inline-block',
+                          fontSize: '10px',
+                          lineHeight: 1.4,
+                          padding: '0 6px',
+                          borderRadius: ds.radius.lg,
+                          backgroundColor: 'var(--ds-red-100)',
+                          color: 'var(--ds-red-700)',
+                          fontWeight: 'var(--ds-font-weight-semibold)',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        failed
+                      </Box>
+                    )}
+                  </Box>
                   <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                    {formatTokens(agent.input_tokens)}
+                    {cell(formatTokens(agent.input_tokens))}
                   </Typography>
                   <Typography
                     sx={{
@@ -1113,13 +1292,13 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                       textAlign: 'right',
                     }}
                   >
-                    {formatTokens(agent.cached_input_tokens)}
+                    {cell(formatTokens(agent.cached_input_tokens))}
                   </Typography>
                   <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                    {formatTokens(agent.output_tokens)}
+                    {cell(formatTokens(agent.output_tokens))}
                   </Typography>
                   <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                    {formatCost(agent.cost_usd)}
+                    {cell(formatCost(agent.cost_usd))}
                   </Typography>
                 </React.Fragment>
               );

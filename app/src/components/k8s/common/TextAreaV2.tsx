@@ -378,10 +378,12 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
       onConfigSelect?.(null);
       onModelSelect?.(staged);
     } else if (mode === 'tier') {
+      // A pick is usable when it names a config source or a complete provider+model
+      // pair; requiring both silently dropped a config chosen without a model.
       const cleaned: TierModelMap = {};
       for (const t of PICKER_TIER_KEYS) {
         const p = stagedTier[t];
-        if (p && p.provider && p.model) cleaned[t] = p;
+        if (p && (p.configSource || (p.provider && p.model))) cleaned[t] = p;
       }
       onModelSelect?.(null);
       onConfigSelect?.(null);
@@ -484,6 +486,20 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   };
 
   const isRowSelected = (row: ModelRow): boolean => isSameModelOption(currentPick, optionForRow(row));
+
+  // A pick may name only a config, meaning "use that config's own model", so read
+  // the model off the slot the server resolves through — matching on isFallback,
+  // since a slot lists its primary alongside its fallbacks.
+  const tierPickLabel = (pick: ModelOption): string => {
+    const cfg = configEntries.find((c) => c.key === configKeyForSource(pick.configSource));
+    const name = pick.configName || cfg?.name;
+    const primaryOf = (source?: string) => (source ? cfg?.entries.find((e) => e.configSource === source && !e.isFallback)?.model : undefined);
+    const resolved = primaryOf(pick.configSource) || (cfg ? primaryOf(baseConfigSourceFor(cfg.key)) : undefined) || '';
+    // Naming a config without a model runs that config's default model, not its
+    // per-task one — so the qualifier belongs on the model.
+    const model = pick.model || (resolved && `${resolved} (config default)`);
+    return [model, name].filter(Boolean).join(' · ') || 'Config default';
+  };
 
   // Lets the left pane mark which config holds the current pick, so the user
   // doesn't have to open each one to find it. Selections restored from older
@@ -881,7 +897,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                               {/* The config is named too: two configs can serve
                                   the same model name, so the model alone doesn't
                                   say which credential the tier will use. */}
-                              {cur ? `${cur.model}${cur.configName ? ` · ${cur.configName}` : ''}` : 'Inherit default'}
+                              {cur ? tierPickLabel(cur) : 'Inherit default'}
                             </Typography>
                             {cur && (
                               <MuiButtonBase

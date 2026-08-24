@@ -255,6 +255,33 @@ describe('ModelPickerPopover', () => {
     expect(onTierModelsSelect).toHaveBeenCalledWith(null);
   });
 
+  it('By task: a pick naming only a config shows the model that will actually run', () => {
+    renderPicker({
+      selectedTierModels: {
+        reasoning: { configSource: 'db:182f5d24', configName: 'piyush-llm' },
+      },
+    });
+    openPicker();
+
+    // Interpolating the pick's empty model rendered a blank row. The model is
+    // read off the slot instead, and qualified: naming a config runs its default
+    // model, not its per-task one, which applies only to a whole-config pin.
+    expect(screen.getByText('gemini-3-flash-preview (config default) · piyush-llm')).toBeInTheDocument();
+  });
+
+  it('By task: a slot holding only a fallback resolves to the base model, not the fallback', () => {
+    renderPicker({
+      selectedTierModels: {
+        summary: { configSource: 'db:9a1b2c3d:tier:summary', configName: 'hsundar-gemini' },
+      },
+    });
+    openPicker();
+
+    // db:9a1b2c3d:tier:summary has a fallback row and no primary, so the label
+    // falls through to the base slot rather than naming the fallback.
+    expect(screen.getByText('gemini-3.1-pro-preview (config default) · hsundar-gemini')).toBeInTheDocument();
+  });
+
   it('Reopening lands in the mode the conversation is already in', () => {
     renderPicker({
       selectedTierModels: {

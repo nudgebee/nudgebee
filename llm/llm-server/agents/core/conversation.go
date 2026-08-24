@@ -825,6 +825,40 @@ func applyConversationModelConfig(ctx *security.RequestContext, dao IConversatio
 	}
 }
 
+// droppedTierPick records a per-tier pick that could not be used, so the caller
+// can log it. Silent discards are what let a benchmark run report the filters a
+// user chose while executing something else entirely.
+type droppedTierPick struct {
+	Tier     string
+	Provider string
+	Model    string
+}
+
+// tierOverridesFromPicks converts the wire shape into the resolver's, keeping a
+// pick that names a config source OR a complete provider+model pair.
+//
+// A source alone is sufficient: resolveFromPinnedSource reads provider, model,
+// endpoint and key off the slot, and tierPinFor tolerates an empty model. That
+// is exactly how "use this config's own model" is encoded — requiring
+// provider AND model discarded it, so those tiers silently fell back to account
+// defaults. Guessing a provider from the config's first model is not a fix: on a
+// mixed config that row can belong to a different provider than the base slot.
+func tierOverridesFromPicks(picks map[string]toolcore.TierModelPick) (ConversationTierOverrides, []droppedTierPick) {
+	var overrides ConversationTierOverrides
+	var dropped []droppedTierPick
+	for tier, p := range picks {
+		if p.ConfigSource == "" && (p.Provider == "" || p.Model == "") {
+			dropped = append(dropped, droppedTierPick{Tier: tier, Provider: p.Provider, Model: p.Model})
+			continue
+		}
+		if overrides.Picks == nil {
+			overrides.Picks = make(map[string]TierModelPick)
+		}
+		overrides.Picks[tier] = TierModelPick{Provider: p.Provider, Model: p.Model, ConfigSource: p.ConfigSource}
+	}
+	return overrides, dropped
+}
+
 func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, sessionId string, source ConversationSource) (NBAgentResponse, error) {
 	err := common.ValidateStruct(request)
 	if err != nil {
@@ -947,16 +981,10 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		llmModel = request.QueryConfig.LlmModelName
 	}
 
-	// Drop half-set entries; convert wire shape → DAO/resolver struct.
-	var llmTierOverrides ConversationTierOverrides
-	for tier, p := range request.QueryConfig.LlmTierModels {
-		if p.Provider == "" || p.Model == "" {
-			continue
-		}
-		if llmTierOverrides.Picks == nil {
-			llmTierOverrides.Picks = make(map[string]TierModelPick)
-		}
-		llmTierOverrides.Picks[tier] = TierModelPick{Provider: p.Provider, Model: p.Model, ConfigSource: p.ConfigSource}
+	llmTierOverrides, droppedTiers := tierOverridesFromPicks(request.QueryConfig.LlmTierModels)
+	for _, d := range droppedTiers {
+		ctx.GetLogger().Warn("conversation: ignoring incomplete per-tier LLM pick — needs a config source, or both provider and model",
+			"tier", d.Tier, "provider", d.Provider, "model", d.Model)
 	}
 	if llmTierOverrides.HasAny() {
 		ctx.GetLogger().Info("conversation: overriding per-tier models from request config", "tier_count", len(llmTierOverrides.Picks))

@@ -77,26 +77,36 @@ type ConversationTierOverrides struct {
 	Picks map[string]TierModelPick `json:"picks,omitempty"`
 }
 
+// usableTierPick reports whether a pick carries an instruction the resolver can
+// act on: a config source (the slot supplies provider and model), or a complete
+// provider+model pair. Requiring provider AND model made source-only picks —
+// "use this config's own model" — invisible here, so they were neither persisted
+// nor returned, and the tier silently fell back to a lower-precedence layer.
+func usableTierPick(p TierModelPick) bool {
+	return p.ConfigSource != "" || (p.Provider != "" && p.Model != "")
+}
+
 func (c *ConversationTierOverrides) HasAny() bool {
 	if c == nil {
 		return false
 	}
 	for _, p := range c.Picks {
-		if p.Provider != "" && p.Model != "" {
+		if usableTierPick(p) {
 			return true
 		}
 	}
 	return false
 }
 
-// Half-set picks (only provider OR only model) fall through to lower
-// precedence layers — never returned as present.
+// Half-set picks (a provider or model alone, with no config source) carry no
+// usable instruction and fall through to lower precedence layers — never
+// returned as present.
 func (c *ConversationTierOverrides) Get(tier string) (TierModelPick, bool) {
 	if c == nil {
 		return TierModelPick{}, false
 	}
 	p, ok := c.Picks[tier]
-	if !ok || p.Provider == "" || p.Model == "" {
+	if !ok || !usableTierPick(p) {
 		return TierModelPick{}, false
 	}
 	return p, true
@@ -466,6 +476,8 @@ type TokenUsageRecord struct {
 	ITLMsAvg        *float64 // Average inter-token latency in ms ((latency_ms - ttft_ms) / output_tokens). float to preserve sub-ms precision on fast models.
 	TokensPerSecond *float64 // Steady-state output throughput.
 	WasStreaming    *bool    // Whether the call streamed (≥1 chunk observed).
+	// Configured LLM slot this call resolved through (V887). NULL on legacy rows.
+	LLMConfigSource *string
 	// Tier-experiment attribution (V836). Both NULL on legacy rows.
 	ModelTier *string // Resolved ModelTier this call ran on (reasoning/retrieval/summary). NULL when unstamped.
 	TaskType  *string // Top-level turn classification (query/investigation). NULL for sub-agent calls.
@@ -2703,6 +2715,10 @@ type TokenMetrics struct {
 	Cost                 float64         `json:"cost"`
 	ModelProviderName    sql.NullString  `json:"model_provider_name"`
 	ModelName            sql.NullString  `json:"model_name"`
+	ModelTier            string          `json:"model_tier"` // reasoning / retrieval / summary; empty when the call was not tier-tagged
+	LLMConfigSource      string          `json:"llm_config_source"`
+	Requests             int             `json:"requests"`        // calls in this group
+	FailedRequests       int             `json:"failed_requests"` // of which failed — a failure spends no tokens, so 0/0 rows are real work, not noise
 	MessageId            string          `json:"message_id"`
 	ConversationId       string          `json:"conversation_id"`
 }
@@ -3043,6 +3059,9 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 			COALESCE(t.thinking_tokens, 0) as ThinkingTokens,
 			t.llm_model as ModelName,
 			t.llm_provider as ModelProviderName,
+			COALESCE(t.model_tier, '') as ModelTier,
+			COALESCE(t.llm_config_source, '') as LLMConfigSource,
+			COALESCE(t.request_status, '') as RequestStatus,
 			COALESCE(t.message_id::text, '') as MessageId,
 			t.conversation_id::text as ConversationId,
 			t.cost_usd as CostUsd
@@ -3071,13 +3090,22 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		ThinkingTokens      int
 		ModelName           sql.NullString
 		ModelProviderName   sql.NullString
+		ModelTier           string
+		LLMConfigSource     string
+		RequestStatus       string
 		MessageId           string
 		ConversationId      string
 		CostUsd             sql.NullFloat64
 	}
 
-	groups := make(map[string]*TokenMetrics)
-	var order []string
+	// A comparable struct rather than a delimiter-joined string: model names reach
+	// us from provider APIs, so a separator appearing in one would silently merge
+	// two distinct groups.
+	type groupKeyT struct {
+		AgentName, ModelName, ModelProviderName, ModelTier, LLMConfigSource, MessageId, ConversationId string
+	}
+	groups := make(map[groupKeyT]*TokenMetrics)
+	var order []groupKeyT
 	for rows.Next() {
 		var call rawCall
 		if err := rows.StructScan(&call); err != nil {
@@ -3111,18 +3139,32 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 			}
 		}
 
-		groupKey := call.AgentName + "|" + call.ModelName.String + "|" + call.ModelProviderName.String + "|" + call.MessageId + "|" + call.ConversationId
+		groupKey := groupKeyT{
+			AgentName:         call.AgentName,
+			ModelName:         call.ModelName.String,
+			ModelProviderName: call.ModelProviderName.String,
+			ModelTier:         call.ModelTier,
+			LLMConfigSource:   call.LLMConfigSource,
+			MessageId:         call.MessageId,
+			ConversationId:    call.ConversationId,
+		}
 		stat := groups[groupKey]
 		if stat == nil {
 			stat = &TokenMetrics{
 				AgentName:         call.AgentName,
 				ModelName:         call.ModelName,
 				ModelProviderName: call.ModelProviderName,
+				ModelTier:         call.ModelTier,
+				LLMConfigSource:   call.LLMConfigSource,
 				MessageId:         call.MessageId,
 				ConversationId:    call.ConversationId,
 			}
 			groups[groupKey] = stat
 			order = append(order, groupKey)
+		}
+		stat.Requests++
+		if call.RequestStatus == "failure" {
+			stat.FailedRequests++
 		}
 		stat.InputTokens += call.InputTokens
 		stat.OutputTokens += call.OutputTokens
@@ -3195,6 +3237,8 @@ type TokenUsageDetailedRecord struct {
 	CachedInputTokens   int
 	CacheCreationTokens int
 	ThinkingTokens      int
+	TTFTMs              sql.NullInt64
+	ITLMsAvg            sql.NullFloat64
 	RequestStatus       string
 	LatencySeconds      sql.NullFloat64
 	CreatedAt           time.Time
@@ -3221,6 +3265,8 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, a
 			COALESCE(t.thinking_tokens, 0) as ThinkingTokens,
 			t.request_status as RequestStatus,
 			t.latency_seconds as LatencySeconds,
+			t.ttft_ms as TTFTMs,
+			t.itl_ms_avg as ITLMsAvg,
 			t.created_at as CreatedAt,
 			t.cost_usd as CostUsd
 		FROM llm_conversation_token_usage t
@@ -3463,15 +3509,33 @@ func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId, accoun
 				AND created_at IS NOT NULL
 				AND (parent_agent_id IS NULL OR parent_agent_id = '00000000-0000-0000-0000-000000000000')
 		),
-		tool_time AS (
-			SELECT
-				COALESCE(SUM(EXTRACT(EPOCH FROM (updated_at - created_at))), 0) as seconds
+		-- Union of tool-call intervals, not their sum: an agent-type call encloses
+		-- the tool-type calls its sub-agent makes, and parallel calls overlap, so
+		-- summing double-counts. The containment is only visible in the timestamps
+		-- (parent_tool_call_id is NULL on both sides), hence a gaps-and-islands merge
+		-- rather than a structural filter.
+		tool_spans AS (
+			SELECT created_at, updated_at,
+				CASE WHEN created_at > MAX(updated_at) OVER (
+						ORDER BY created_at, updated_at
+						ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+					THEN 1 ELSE 0 END as is_new_span
 			FROM llm_conversation_tool_calls
 			WHERE conversation_id IN (SELECT id FROM conversation_ids)
-				AND metadata->>'parent_tool_call_id' IS NULL
-				AND tool_type = 'tool'
 				AND updated_at IS NOT NULL
 				AND created_at IS NOT NULL
+		),
+		tool_islands AS (
+			SELECT created_at, updated_at,
+				SUM(is_new_span) OVER (ORDER BY created_at, updated_at) as island
+			FROM tool_spans
+		),
+		tool_time AS (
+			SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (span_end - span_start))), 0) as seconds
+			FROM (
+				SELECT MIN(created_at) as span_start, MAX(updated_at) as span_end
+				FROM tool_islands GROUP BY island
+			) merged
 		)
 		SELECT
 			COALESCE((SELECT seconds FROM wall_time), 0) as wall_time,
@@ -3645,7 +3709,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			thinking_tokens,
 			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming,
 			cost_usd,
-			model_tier, task_type
+			model_tier, task_type,
+			llm_config_source
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8,
@@ -3658,7 +3723,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			$26,
 			$27, $28, $29, $30,
 			$31,
-			$32, $33
+			$32, $33,
+			$34
 		)
 	`
 
@@ -3676,6 +3742,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
 		record.CostUsd,
 		record.ModelTier, record.TaskType,
+		record.LLMConfigSource,
 	)
 
 	if err != nil {
@@ -3698,6 +3765,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 				record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
 				record.CostUsd,
 				record.ModelTier, record.TaskType,
+				record.LLMConfigSource,
 			)
 			if retryErr != nil {
 				return fmt.Errorf("failed to insert token usage (retry without agent_id): %w", retryErr)
