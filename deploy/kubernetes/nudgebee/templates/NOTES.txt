@@ -22,6 +22,30 @@ To retrieve the password from the secret, run the following command:
 kubectl get secret nudgebee -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 --decode
 {{- end }}
 
+{{- if .Values.admin.email }}
+
+Sign in as {{ .Values.admin.email }} — the admin and its organisation were created
+during install, so there is nothing to set up on first login.
+{{- end }}
+
+{{- if .Values.agent.enabled }}
+
+This install bundles the NudgeBee agent, so the cluster hosting the server
+connects itself and needs no second install.
+
+  kubectl get pods -n {{ .Release.Namespace }} -l app={{ .Release.Name }}-nudgebee-agent-runner
+
+The cluster appears under Kubernetes as "{{ .Values.agent.clusterName | default "nb-control-plane-k8s" }}".
+If it does not, check services-server for the reason:
+
+  kubectl logs -n {{ .Release.Namespace }} deploy/services-server | grep -iE 'first run|local agent'
+
+Two things worth knowing. The agent shares this release, so `helm uninstall`
+removes it too. And its credential lives in the nudgebee-bootstrap Secret — if
+you render offline (Argo CD, Flux), set agent.accessKey and agent.accessSecret
+explicitly or upgrades will refuse rather than silently re-issue it.
+{{- end }}
+
 {{- /* The chart has no local/dev/prod environment marker, so this warns on
        every install/upgrade with dummy creds enabled — imprecise but with no
        false negatives. */}}

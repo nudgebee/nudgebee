@@ -360,7 +360,7 @@ func init() {
 	viper.SetDefault("admin_email", "")
 	viper.SetDefault("local_agent_access_key", "")
 	viper.SetDefault("local_agent_access_secret", "")
-	viper.SetDefault("local_agent_cluster_name", "in-cluster")
+	viper.SetDefault("local_agent_cluster_name", "nb-control-plane-k8s")
 
 	// viper requires default values or bind.. else Unmarshal skips fields with no default values
 	viper.SetDefault("action_api_server_token", "")

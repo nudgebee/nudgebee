@@ -1,3 +1,6 @@
+# Extra Secret to load env from, in addition to the main nudgebee Secret.
+# Referenced optionally, so a missing Secret does not block startup.
+extraEnvFromSecret: ''
 # Default values for services-server-server.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.

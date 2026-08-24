@@ -104,7 +104,7 @@ func configured() bool {
 func clusterName() string {
 	name := strings.TrimSpace(config.Config.LocalAgentClusterName)
 	if name == "" {
-		return "in-cluster"
+		return "nb-control-plane-k8s"
 	}
 	return name
 }

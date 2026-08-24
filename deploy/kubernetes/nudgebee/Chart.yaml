@@ -76,4 +76,7 @@ dependencies:
     version: '0.1.0'
     condition: llm-gateway.enabled
     repository: file://../llm-gateway/
-
+  - name: nudgebee-agent
+    version: '0.1.20'
+    condition: agent.enabled
+    repository: https://nudgebee.github.io/k8s-agent/

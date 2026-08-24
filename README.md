@@ -164,8 +164,23 @@ echo "Save this key: $NUDGEBEE_ENC_KEY"
 helm install nudgebee oci://ghcr.io/nudgebee/charts/nudgebee \
   --namespace nudgebee --create-namespace \
   --set nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY="$NUDGEBEE_ENC_KEY" \
+  --set admin.email="you@example.com" \
+  --set agent.enabled=true \
   --wait --timeout 20m
 ```
+
+`admin.email` creates the admin and its organisation during install, so the first
+login has nothing to set up. `agent.enabled` installs the NudgeBee agent alongside
+the server and connects the cluster hosting it — without it, that first cluster
+needs a separate agent install and an auth key copied out of the UI. Both are
+optional; leave them out and the deployment provisions itself when you first sign
+in, exactly as before. Additional clusters always use the normal agent install.
+
+Two caveats for `agent.enabled`. The agent shares this Helm release, so
+`helm uninstall` removes it too. And if you render offline (Argo CD, Flux), set
+`agent.accessKey` and `agent.accessSecret` explicitly — the chart cannot read the
+existing credential back and refuses to re-issue it on upgrade rather than
+silently breaking the agent.
 
 To pin a specific version, pass `--version <X.Y.Z>` (latest is used by default). To install from source instead — useful when iterating on chart changes — clone the repo, run `helm dep update deploy/kubernetes/nudgebee`, and point `helm install` at the local path.
 

@@ -44,8 +44,8 @@ func TestClusterNameDefaultsAndTrims(t *testing.T) {
 		configured string
 		want       string
 	}{
-		{"empty falls back to the default", "", "in-cluster"},
-		{"whitespace-only falls back to the default", "   ", "in-cluster"},
+		{"empty falls back to the default", "", "nb-control-plane-k8s"},
+		{"whitespace-only falls back to the default", "   ", "nb-control-plane-k8s"},
 		{"explicit value is used", "prod-east", "prod-east"},
 		{"surrounding whitespace is trimmed", "  prod-east  ", "prod-east"},
 	}
@@ -68,7 +68,7 @@ func TestValidateClusterName(t *testing.T) {
 		clusterName string
 		wantErr     string
 	}{
-		{"the default is valid", "in-cluster", ""},
+		{"the default is valid", "nb-control-plane-k8s", ""},
 		{"ordinary name", "prod-east", ""},
 		{"too short — would violate account_name_check", "abc", "too short"},
 		{"exactly the floor is still too short", "abcd", ""},
