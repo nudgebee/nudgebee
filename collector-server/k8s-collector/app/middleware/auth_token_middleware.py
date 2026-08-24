@@ -143,7 +143,17 @@ class AuthTokenMiddleware(BaseController):
             raise BadRequestError("Authorization header missing")
 
         api_secret = request.headers.get("Authorization")
-        api_secret = api_secret.lstrip("Basic ").strip()
+        # removeprefix, NOT lstrip: str.lstrip(chars) strips a character SET, so
+        # lstrip("Basic ") ate any leading B/a/s/i/c/space from the credential
+        # itself. Five of those are in the base64 alphabet, so roughly 1 in 13
+        # agents enrolled with a credential that silently lost its first
+        # character and could never authenticate -- while the relay, which parses
+        # independently, accepted the same credential and reported the agent
+        # CONNECTED. Confirmed live: the same credential returned 401, and 200
+        # when prefixed with a byte lstrip would not eat.
+        # .strip() first so a header with leading whitespace still matches the
+        # prefix -- the old lstrip tolerated that because space was in its set.
+        api_secret = api_secret.strip().removeprefix("Basic ").strip()
         try:
             # Decode the base64-encoded credentials
             decoded_credentials = base64.b64decode(api_secret).decode("utf-8")
@@ -173,7 +183,16 @@ class AuthTokenMiddleware(BaseController):
             request.cloud_account_id = value["id"]
             request.tenant = value["tenant"]
             request.agent_id = value["agent_id"]
+        except UnauthorizedError:
+            raise
         except Exception:
+            # Log the real cause before flattening it. Every auth failure used to
+            # surface as "Invalid secret" regardless of what actually went wrong --
+            # a malformed header, a decode error, a database outage -- which is why
+            # the lstrip bug above went unnoticed: operators saw "Invalid secret"
+            # for credentials that were provably correct. The response is
+            # unchanged; only the server-side log gains the reason.
+            logging.exception("agent auth failed while parsing or verifying credentials")
             raise UnauthorizedError(INVALID_SECRET)
         return self.func(*args, **kwargs)
 
