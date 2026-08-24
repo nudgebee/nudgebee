@@ -1256,10 +1256,10 @@ func validateReferencedLabelValues(ctx *security.RequestContext, source LogSourc
 
 // validateReferencedTraceLabels is the trace counterpart of validateReferencedLabels.
 // It validates against the same authoritative label set FetchTraceLabels exposes — the
-// canonical trace fields unioned with the merged label mapping and any backend-discovered
-// keys — because raw QueryLabels omits the canonical columns (service_name, span_name, …)
-// and would false-positive on them. mergedMapping is the caller's merged trace label
-// mapping. Fails open when live label discovery errors.
+// resolvable canonical trace fields unioned with the merged label mapping and any
+// backend-discovered keys — because raw QueryLabels omits the canonical columns
+// (service_name, span_name, …) and would false-positive on them. mergedMapping is the
+// caller's merged trace label mapping. Fails open when live label discovery errors.
 func validateReferencedTraceLabels(ctx *security.RequestContext, source TraceSource, fetchTracesRequest TracesV3Request, referenced map[string]struct{}, mergedMapping map[string]string) error {
 	if len(referenced) == 0 {
 		return nil
@@ -1275,7 +1275,7 @@ func validateReferencedTraceLabels(ctx *security.RequestContext, source TraceSou
 		// Live discovery failed — can't confirm the backend label set; don't block.
 		return nil
 	}
-	authoritative := buildTraceLabels(mergedMapping, discovered)
+	authoritative := buildTraceLabels(mergedMapping, providerDeclaresTraceFields(source), discovered)
 	names := make([]string, len(authoritative))
 	for i, l := range authoritative {
 		names[i] = l.Label
@@ -2020,12 +2020,26 @@ var canonicalTraceFields = []canonicalTraceField{
 	{"destination_workload_namespace", "string"},
 }
 
+// providerDeclaresTraceFields reports whether the source publishes a static label
+// mapping. An empty mapping means the provider has declared nothing about which
+// canonical fields it resolves, so the full canonical set stays advertised for it —
+// passthrough backends (ClickHouse, Jaeger, Application Insights) consume the canonical
+// names unchanged and have nothing to rename.
+//
+// Deliberately reads the STATIC mapping, never the merged one. getMergedTraceLabelMapping
+// folds in tenant/account trace_labels overrides, which are additive everywhere else;
+// testing the merged map would let a single override flip a passthrough provider into
+// "declared" mode and collapse its advertised list to that one key.
+func providerDeclaresTraceFields(source TraceSource) bool {
+	return len(source.GetLabelMapping()) > 0
+}
+
 // FetchTraceLabels returns the trace labels usable for the account's resolved trace
-// provider: the always-available canonical trace field set (typed) unioned with the
-// merged label mapping keys (static ∪ tenant ∪ account ∪ dynamic) and, when the source
-// supports it (TraceLabelKeysSource, e.g. otel_clickhouse), the label keys actually
-// present in the backend for the time window. Deduped, canonical-first. Live discovery
-// failures degrade gracefully to the derived set.
+// provider: the canonical trace fields this provider can actually resolve (typed)
+// unioned with the merged label mapping keys (static ∪ tenant ∪ account ∪ dynamic) and,
+// when the source supports it (TraceLabelKeysSource, e.g. otel_clickhouse), the label
+// keys actually present in the backend for the time window. Deduped, canonical-first.
+// Live discovery failures degrade gracefully to the derived set.
 func FetchTraceLabels(context *security.RequestContext, request FetchTraceLabelRequest) (TraceLabelsResponse, error) {
 	if request.AccountId == "" {
 		return TraceLabelsResponse{}, fmt.Errorf("account_id is required")
@@ -2053,16 +2067,44 @@ func FetchTraceLabels(context *security.RequestContext, request FetchTraceLabelR
 	}
 
 	merged := getMergedTraceLabelMapping(context, request.AccountId, source)
-	return TraceLabelsResponse{Labels: buildTraceLabels(merged, discovered)}, nil
+	return TraceLabelsResponse{Labels: buildTraceLabels(merged, providerDeclaresTraceFields(source), discovered)}, nil
 }
 
-// buildTraceLabels returns the canonical trace field set unioned with the keys of the
+// buildTraceLabels returns the trace field set the caller may filter on for this
+// provider: the canonical fields it can actually RESOLVE, unioned with the keys of the
 // merged label mapping and any backend-discovered labels, deduped and canonical-first.
 // Canonical fields carry their value type in attributes; mapping/discovered keys carry
 // an empty (non-null) attributes object. Pure helper (no I/O) so the union/dedup
 // behaviour is unit-testable.
-func buildTraceLabels(mergedMapping map[string]string, discovered []OutputTraceLabel) []OutputTraceLabel {
+//
+// providerDeclares says whether this provider publishes a static label mapping (see
+// providerDeclaresTraceFields). When it does, that mapping is taken as its statement of
+// what it can resolve and a canonical field is advertised only if the merged mapping
+// contains it or the backend reported it live. When it does not, the provider has said
+// nothing and the full canonical set is advertised as before.
+//
+// Advertising the full vocabulary unconditionally told the trace agent it could filter on
+// fields the backend has never heard of; those filters match nothing and return no error,
+// so "this provider cannot answer that" was reported as "there are no such traces".
+func buildTraceLabels(mergedMapping map[string]string, providerDeclares bool, discovered []OutputTraceLabel) []OutputTraceLabel {
 	seen := make(map[string]struct{})
+	// A provider that publishes no mapping has declared nothing, so every canonical field
+	// stays advertised for it; one that does publish a mapping is taken at its word. The
+	// lookup set is only built in the second case.
+	advertiseCanonical := func(string) bool { return true }
+	if providerDeclares {
+		resolvable := make(map[string]struct{}, len(mergedMapping)+len(discovered))
+		for key := range mergedMapping {
+			resolvable[key] = struct{}{}
+		}
+		for _, d := range discovered {
+			resolvable[d.Label] = struct{}{}
+		}
+		advertiseCanonical = func(name string) bool {
+			_, ok := resolvable[name]
+			return ok
+		}
+	}
 	labels := make([]OutputTraceLabel, 0, len(canonicalTraceFields)+len(mergedMapping)+len(discovered))
 	appendLabel := func(key, typ string) {
 		if key == "" {
@@ -2082,6 +2124,9 @@ func buildTraceLabels(mergedMapping map[string]string, discovered []OutputTraceL
 	}
 
 	for _, field := range canonicalTraceFields {
+		if !advertiseCanonical(field.name) {
+			continue
+		}
 		appendLabel(field.name, field.typ)
 	}
 	// Mapping + discovered keys have no known type — attributes stay {}.
