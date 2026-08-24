@@ -1398,7 +1398,7 @@ CLOUD ACCOUNT IDs (account_id parameter):
 // debugging a failure and changing/extending the automation; the agent decides which from the user's
 // request. It generalizes the former fix prompt (evidence-first debugging) and folds in the build
 // rules needed when adding/modifying tasks.
-func getEditSystemPrompt(errorContext, targetExecutionId, schema string) string {
+func getEditSystemPrompt(errorContext, targetExecutionId, lastExecutionError, schema string) string {
 	var targetSection string
 	if targetExecutionId != "" {
 		targetSection = fmt.Sprintf(`
@@ -1413,6 +1413,13 @@ If the user is debugging a failure, call get_execution(execution_id="%s") direct
 ERROR CONTEXT (provided by user / UI):
 %s
 `, errorContext)
+	} else if targetExecutionId == "" && strings.TrimSpace(lastExecutionError) != "" {
+		// Only as a fallback: an explicit error context or a target run is more specific than the
+		// workflow's last recorded failure, which may predate the change the user is asking about.
+		errorSection = fmt.Sprintf(`
+LAST RECORDED FAILURE (already on the automation record — no call needed to retrieve it):
+%s
+`, lastExecutionError)
 	}
 
 	return fmt.Sprintf(`You are a Nudgebee automation editor. You modify an EXISTING automation that is already loaded. The user's request may be either (A) DEBUG a failure or (B) CHANGE/EXTEND the automation. Decide which from the request, then act.
@@ -1421,13 +1428,13 @@ AUTOMATION SCHEMA REFERENCE:
 %s
 
 FIRST, DECIDE THE INTENT:
-- DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT or TARGET EXECUTION ID above.
+- DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT, LAST RECORDED FAILURE or TARGET EXECUTION ID above.
 - CHANGE signals: "add", "also", "include", "remove", "rename", "change", "update", "instead", "as well", a new capability.
 - VERIFY signals: the user asks to run, test, try, or dry-run the automation without changing it. If the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run and report the overall result and any failing task's id + error in your <final_answer>. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — answer that a dry-run executes those effects for real and ask the user to confirm. Either way make NO modifications, and do NOT claim the automation "has no dry-run mode".
 - If the request is purely a question with no change asked, briefly answer in <final_answer> and make no modifications.
 
 IF DEBUGGING (gather evidence FIRST, then fix):
-1. If a TARGET EXECUTION ID is given, get_execution on it. Otherwise list_executions(status="FAILED", limit=10) and pick the most recent failed run, then get_execution on it.
+1. If a TARGET EXECUTION ID is given, get_execution on it. Otherwise, if a LAST RECORDED FAILURE is shown above and it already tells you what broke, act on it and skip straight to step 3 — call list_executions/get_execution only when you need the failing task's id, rendered_params or output. If neither is available, list_executions(status="FAILED", limit=10), pick the most recent failed run, then get_execution on it.
 2. Read the real error: workflow-level "error", per-task "error"/"status", and the failing task's "rendered_params" + "output". Quote it.
 3. list_tasks, then get_task on the failing task and its upstream dependencies.
 4. Apply the MINIMAL change that addresses the observed error via modify_task (or add_task/delete_task if required). Do not change unrelated tasks.
@@ -2261,6 +2268,30 @@ func workflowSessionId(wf map[string]interface{}) string {
 	if def, ok := wf["definition"].(map[string]interface{}); ok {
 		if sid, ok := def["created_from_session_id"].(string); ok && sid != "" {
 			return sid
+		}
+	}
+	return ""
+}
+
+// maxLastExecutionError caps the workflow-level error string lifted from the automation record
+// before it goes into the edit prompt. It is deliberately far more generous than the 200-rune cap
+// tools.projectWorkflowListResponse applies: that one trims one field across a whole listing,
+// whereas this is a single message that has to stay diagnosable on its own.
+const maxLastExecutionError = 2000
+
+// workflowLastExecutionError reads last_execution_status_message from a workflow object, tolerating
+// it being stored either at the top level or nested under "definition". The runbook server already
+// records the most recent failure there (workflows.last_execution_status_message, V604), so the edit
+// loop gets the error for free from the definition it has already fetched — no list_executions +
+// get_execution round-trip needed just to learn what went wrong. It is empty on a successful or
+// never-run automation, and reconciliation can blank it, so callers must keep the RPC fallback.
+func workflowLastExecutionError(wf map[string]interface{}) string {
+	if msg, ok := wf["last_execution_status_message"].(string); ok && strings.TrimSpace(msg) != "" {
+		return truncateForPrompt(msg, maxLastExecutionError)
+	}
+	if def, ok := wf["definition"].(map[string]interface{}); ok {
+		if msg, ok := def["last_execution_status_message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return truncateForPrompt(msg, maxLastExecutionError)
 		}
 	}
 	return ""
@@ -4700,7 +4731,12 @@ func (a *WorkflowBuilderAgent) runEditToolLoop(ctx *security.RequestContext, req
 	}
 
 	schema := getWorkflowSchema()
-	systemPrompt := getEditSystemPrompt(a.state.ExecutionError, a.state.ExecutionId, schema)
+	// Fast path for the common "fix it" turn that arrives with no error context and no target run:
+	// the workflow record already carries the last failure message, so hand it to the prompt instead
+	// of making the model spend list_executions + get_execution to rediscover it. Deliberately NOT
+	// written back to a.state.ExecutionError — that field means "the user is debugging a specific
+	// failure" and gates the ambiguity check in handleEditEntry.
+	systemPrompt := getEditSystemPrompt(a.state.ExecutionError, a.state.ExecutionId, workflowLastExecutionError(a.state.WorkingWorkflow), schema)
 	// Use OriginalQuery (the change request), not request.Query — on a clarification resume the latter
 	// is the user's option answer, not the original instruction.
 	userMessage := fmt.Sprintf("Apply the user's request to the existing automation: %s", a.state.OriginalQuery)
