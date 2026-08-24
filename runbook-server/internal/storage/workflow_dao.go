@@ -881,7 +881,7 @@ func (s *WorkflowDao) FindEventTriggers(ctx context.Context) ([]model.WorkflowEv
 		// Skip rows that produce no filter (missing/empty params) — registering an
 		// unfiltered optimization rule would match every recommendation event.
 		if rule.TriggerType == model.WorkflowTriggerOptimization {
-			rule.Filter = buildOptimizationFilter(rule.Filter)
+			rule.Filter = BuildOptimizationFilter(rule.Filter)
 			if rule.Filter == "" {
 				continue
 			}
@@ -894,8 +894,10 @@ func (s *WorkflowDao) FindEventTriggers(ctx context.Context) ([]model.WorkflowEv
 	return rules, nil
 }
 
-// buildOptimizationFilter converts optimization trigger params JSON into a Jinja filter expression.
-func buildOptimizationFilter(paramsJSON string) string {
+// BuildOptimizationFilter converts optimization trigger params JSON into a Jinja
+// filter. Exported so the trigger simulator builds the exact expression the
+// registry evaluates, rather than a second copy that could disagree.
+func BuildOptimizationFilter(paramsJSON string) string {
 	if paramsJSON == "" {
 		return ""
 	}

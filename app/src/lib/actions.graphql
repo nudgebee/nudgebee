@@ -2505,6 +2505,12 @@ type Mutation {
   ): WorkflowValidateResponse
 }
 
+type Query {
+  workflow_check_trigger_match(
+    request: WorkflowCheckTriggerMatchRequest!
+  ): WorkflowCheckTriggerMatchResponse
+}
+
 enum QuerySortOrderRequest {
   asc
   desc
@@ -4936,6 +4942,13 @@ input WorkflowDryrunRequest {
   definition: WorkflowDefinitionRequest!
   inputs: jsonb
   name: String
+}
+
+input WorkflowCheckTriggerMatchRequest {
+  account_id: String!
+  trigger_type: String!
+  params: jsonb
+  payload: jsonb!
 }
 
 input WorkflowExecutionListRequest {
@@ -9437,6 +9450,14 @@ type Error {
 
 type WorkflowValidateResponse {
   message: String
+}
+
+type WorkflowCheckTriggerMatchResponse {
+  matched: Boolean
+  gate: String
+  reason: String
+  error: String
+  filter: String
 }
 
 type WorkflowDryrunResponse {

@@ -2740,6 +2740,21 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     [prepareDryRunRequest, startPollingDryRun]
   );
 
+  // Trigger simulator: dry-run the automation against the payload the user
+  // assembled in the trigger sidebar. Skips the inputs modal — the simulator
+  // panel already is the inputs editor.
+  const handleSimulateTriggerRun = useCallback(
+    (inputs: Record<string, any>) => {
+      const validationError = validateBeforeExecution('dryrun');
+      if (validationError) {
+        snackbar.error(validationError);
+        return;
+      }
+      executeDryRun(inputs);
+    },
+    [validateBeforeExecution, executeDryRun]
+  );
+
   // Handle trigger from modal: execute with user-provided inputs
   const handleTriggerFromModal = useCallback(
     async (inputs: any) => {
@@ -4688,6 +4703,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     }}
                     pendingConfig={pendingTriggerDiscard?.pendingConfig ?? null}
                     onPendingConfigConsumed={() => setPendingTriggerDiscard(null)}
+                    onSimulateRun={handleSimulateTriggerRun}
                   />
                 </Suspense>
               )}

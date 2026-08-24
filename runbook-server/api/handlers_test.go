@@ -180,6 +180,11 @@ func (m *MockWorkflowService) DryRunWorkflowAsync(ctx *security.RequestContext, 
 	return args.String(0), args.String(1), args.Error(2)
 }
 
+func (m *MockWorkflowService) CheckTriggerMatch(ctx *security.RequestContext, accountId string, request model.CheckTriggerMatchRequest) (model.CheckTriggerMatchResponse, error) {
+	args := m.Called(ctx, accountId, request)
+	return args.Get(0).(model.CheckTriggerMatchResponse), args.Error(1)
+}
+
 func (m *MockWorkflowService) CountWorkflowExecutions(ctx *security.RequestContext, req model.WorkflowExecutionCountRequest) (model.WorkflowExecutionCountResponse, error) {
 	args := m.Called(ctx, req)
 	return args.Get(0).(model.WorkflowExecutionCountResponse), args.Error(1)

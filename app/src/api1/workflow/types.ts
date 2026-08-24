@@ -300,6 +300,26 @@ export interface WorkflowDryRunResponse {
   tasks?: WorkflowDryRunTaskResult[];
 }
 
+export interface CheckTriggerMatchRequest {
+  account_id: string;
+  /** 'event' or 'optimization' — other trigger types have nothing to match. */
+  trigger_type: string;
+  /** Trigger params as they would be saved: event -> filter/event_type/on, optimization -> categories/rule_names/clusters/filter. */
+  params?: Record<string, any>;
+  payload: Record<string, any>;
+}
+
+export interface CheckTriggerMatchResponse {
+  matched: boolean;
+  /** Which stage decided it: 'event_type' | 'lifecycle_phase' | 'filter'. */
+  gate?: string;
+  reason?: string;
+  /** Set when the filter could not be evaluated at all — distinct from a filter that returned false. */
+  error?: string;
+  /** The expression that was evaluated. For optimization triggers this is built from the dropdowns. */
+  filter?: string;
+}
+
 export interface WorkflowRetriggerRequest {
   account_id: string;
   workflow_id: string;

@@ -849,6 +849,40 @@ type WorkflowEventTriggerRule struct {
 	LifecyclePhase string          `db:"lifecycle_phase"`
 }
 
+// CheckTriggerMatchRequest asks whether a payload would fire a trigger. The trigger
+// is passed in full, not looked up: the builder's copy may not be saved yet.
+type CheckTriggerMatchRequest struct {
+	TriggerType WorkflowTrigger `json:"trigger_type" validate:"required"`
+	// Params as persisted: event -> filter/event_type/on;
+	// optimization -> categories/rule_names/clusters/filter.
+	Params  map[string]any `json:"params"`
+	Payload map[string]any `json:"payload" validate:"required"`
+}
+
+// CheckTriggerMatchGate names the stage that decided the result, so the UI can say
+// which part of the configuration rejected the event.
+type CheckTriggerMatchGate string
+
+const (
+	CheckTriggerGateEventType CheckTriggerMatchGate = "event_type"
+	CheckTriggerGatePhase     CheckTriggerMatchGate = "lifecycle_phase"
+	CheckTriggerGateFilter    CheckTriggerMatchGate = "filter"
+)
+
+// CheckTriggerMatchResponse reports whether the payload matched. Error is set
+// when the filter could not be evaluated at all (bad syntax, a filter that
+// panics) — distinct from a filter that evaluated cleanly to false.
+type CheckTriggerMatchResponse struct {
+	Matched bool                  `json:"matched"`
+	Gate    CheckTriggerMatchGate `json:"gate,omitempty"`
+	Reason  string                `json:"reason,omitempty"`
+	Error   string                `json:"error,omitempty"`
+	// Filter is the expression that was evaluated. For optimization triggers
+	// this is the expression built from the dropdowns, which the user never sees
+	// otherwise.
+	Filter string `json:"filter,omitempty"`
+}
+
 // DryRunWorkflowRequest defines the input for a workflow dry-run.
 type DryRunWorkflowRequest struct {
 	Definition WorkflowDefinition `json:"definition" validate:"required"`

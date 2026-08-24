@@ -142,55 +142,71 @@ func (r *EventRegistry) evaluateRules(candidates []CompiledRule, accountID strin
 			continue
 		}
 
-		if c.Query == nil {
-			matches = append(matches, c.Rule)
-			continue
-		}
-
-		// Jinja context uses map[string]any. Inject the built-in date/time vars (now,
-		// datetime, timestamp_iso, …) — mirroring workflow task rendering — so trigger
-		// filters can do date-based logic, e.g.
-		// {{ now() | tz("Asia/Kolkata") | strftime("%H") | int >= 9 }}.
-		nowUTC := time.Now().UTC()
-		ctx := exec.NewContext(map[string]any{
-			"event":         payload,
-			"now":           func() time.Time { return time.Now().UTC() },
-			"date":          nowUTC.Format("02012006"),
-			"date_iso":      nowUTC.Format("2006-01-02"),
-			"date_us":       nowUTC.Format("01/02/2006"),
-			"time":          nowUTC.Format("1504"),
-			"time_hms":      nowUTC.Format("15:04:05"),
-			"datetime":      nowUTC.Format("02012006_1504"),
-			"timestamp_iso": nowUTC.Format(time.RFC3339),
-		})
-
-		var buf bytes.Buffer
-		// Recover from filter panics (e.g. tz with an invalid zone, time_add with a
-		// bad duration) so a single malformed filter skips its rule instead of
-		// crashing the evaluator.
-		err := func() (err error) {
-			defer func() {
-				if rec := recover(); rec != nil {
-					if e, ok := rec.(error); ok {
-						err = e
-					} else {
-						err = fmt.Errorf("filter panic: %v", rec)
-					}
-				}
-			}()
-			return c.Query.Execute(&buf, ctx)
-		}()
+		matched, err := EvaluateFilter(c.Query, payload)
 		if err != nil {
 			r.logger.Warn("failed to evaluate gonja filter", "workflow_id", c.Rule.WorkflowID, "filter", c.Rule.Filter, "error", err)
 			continue
 		}
-
-		// Interpret the template output as a boolean
-		// For consistency with task 'if' conditions, assume 'true' or '1' as positive matches.
-		resultStr := buf.String()
-		if resultStr == "true" || resultStr == "True" || resultStr == "1" {
+		if matched {
 			matches = append(matches, c.Rule)
 		}
 	}
 	return matches
+}
+
+// CompileFilter compiles a filter the same way Refresh does, so callers outside the
+// registry report the same syntax errors the live evaluator would.
+func CompileFilter(filter string) (*exec.Template, error) {
+	return gonja.FromString(filter)
+}
+
+// EvaluateFilter renders a compiled filter against a payload. A nil query means
+// "no filter", matching everything. Single evaluator behind both the live registry
+// and the trigger simulator — a second copy would drift.
+func EvaluateFilter(query *exec.Template, payload any) (bool, error) {
+	if query == nil {
+		return true, nil
+	}
+
+	// Jinja context uses map[string]any. Inject the built-in date/time vars (now,
+	// datetime, timestamp_iso, …) — mirroring workflow task rendering — so trigger
+	// filters can do date-based logic, e.g.
+	// {{ now() | tz("Asia/Kolkata") | strftime("%H") | int >= 9 }}.
+	nowUTC := time.Now().UTC()
+	ctx := exec.NewContext(map[string]any{
+		"event":         payload,
+		"now":           func() time.Time { return time.Now().UTC() },
+		"date":          nowUTC.Format("02012006"),
+		"date_iso":      nowUTC.Format("2006-01-02"),
+		"date_us":       nowUTC.Format("01/02/2006"),
+		"time":          nowUTC.Format("1504"),
+		"time_hms":      nowUTC.Format("15:04:05"),
+		"datetime":      nowUTC.Format("02012006_1504"),
+		"timestamp_iso": nowUTC.Format(time.RFC3339),
+	})
+
+	var buf bytes.Buffer
+	// Recover from filter panics (e.g. tz with an invalid zone, time_add with a
+	// bad duration) so a single malformed filter skips its rule instead of
+	// crashing the evaluator.
+	err := func() (err error) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				if e, ok := rec.(error); ok {
+					err = e
+				} else {
+					err = fmt.Errorf("filter panic: %v", rec)
+				}
+			}
+		}()
+		return query.Execute(&buf, ctx)
+	}()
+	if err != nil {
+		return false, err
+	}
+
+	// Interpret the template output as a boolean
+	// For consistency with task 'if' conditions, assume 'true' or '1' as positive matches.
+	resultStr := buf.String()
+	return resultStr == "true" || resultStr == "True" || resultStr == "1", nil
 }

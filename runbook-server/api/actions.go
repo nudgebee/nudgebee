@@ -79,6 +79,8 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleValidateWorkflow(c, sc, args)
 	case "workflow_trigger_dryrun", "workflow_dryrun_execute":
 		s.handleDryRunWorkflow(c, sc, args)
+	case "workflow_check_trigger_match":
+		s.handleCheckTriggerMatch(c, sc, args)
 	case "workflow_list_taskdefinitions":
 		s.handleListTasks(c, sc)
 	case "workflow_trigger_task", "workflow_execute_task":
@@ -762,6 +764,33 @@ func (s *Server) handleDryRunWorkflow(c *gin.Context, sc *security.RequestContex
 		"dryrun_id":    dryRunID,
 		"execution_id": executionID,
 	})
+}
+
+// handleCheckTriggerMatch answers "would this event fire this trigger?" for the
+// automation builder's trigger simulator. Read-only, and the trigger comes from
+// the request because the user is usually still editing it.
+func (s *Server) handleCheckTriggerMatch(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	accountID, ok := args["account_id"].(string)
+	if !ok || accountID == "" {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
+		return
+	}
+
+	var req model.CheckTriggerMatchRequest
+	if err := common.DecodeMapToStruct(args, &req); err != nil {
+		s.logger.Warn("invalid trigger-match request from RPC", "error", err)
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{errors.New("invalid trigger match request payload")}))
+		return
+	}
+
+	resp, err := s.workflowService.CheckTriggerMatch(sc, accountID, req)
+	if err != nil {
+		s.logger.Warn("trigger match check failed from RPC", "error", err)
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) handleListTasks(c *gin.Context, sc *security.RequestContext) {

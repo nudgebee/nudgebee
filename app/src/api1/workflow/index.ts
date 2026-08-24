@@ -4,6 +4,7 @@ import type {
   WorkflowTriggerRequest,
   WorkflowUpdateRequest,
   WorkflowDryRunRequest,
+  CheckTriggerMatchRequest,
   WorkflowRetriggerRequest,
   WorkflowCancelRequest,
   WorkflowCompleteApprovalRequest,
@@ -484,6 +485,18 @@ mutation triggerWorkflowDryrun($request: WorkflowDryrunRequest!) {
       status
       type
     }
+  }
+}
+`;
+
+export const CHECK_TRIGGER_MATCH = `
+query checkTriggerMatch($request: WorkflowCheckTriggerMatchRequest!) {
+  workflow_check_trigger_match(request: $request) {
+    matched
+    gate
+    reason
+    error
+    filter
   }
 }
 `;
@@ -1001,6 +1014,21 @@ const apiWorkflow = {
       };
     } catch (error) {
       console.error('Failed to dry-run workflow:', error);
+      return error;
+    }
+  },
+  async checkTriggerMatch(request: CheckTriggerMatchRequest) {
+    try {
+      const query = CHECK_TRIGGER_MATCH;
+      const variables = { request };
+
+      const response = await queryGraphQL(query, 'checkTriggerMatch', variables);
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+      };
+    } catch (error) {
+      console.error('Failed to check trigger match:', error);
       return error;
     }
   },

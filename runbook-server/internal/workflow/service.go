@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/config"
+	"nudgebee/runbook/internal/events"
 	"nudgebee/runbook/internal/model" // Updated import
+	"nudgebee/runbook/internal/storage"
 	"nudgebee/runbook/internal/tasks"
 	aiTasks "nudgebee/runbook/internal/tasks/ai"
 	"nudgebee/runbook/internal/tasks/types"
@@ -68,6 +70,7 @@ type WorkflowService interface {
 	GetWorkflowState(ctx *security.RequestContext, accountId, id string) ([]model.WorkflowStateItem, error)
 	DryRunWorkflow(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (model.DryRunWorkflowResponse, error)
 	DryRunWorkflowAsync(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (string, string, error)
+	CheckTriggerMatch(ctx *security.RequestContext, accountId string, request model.CheckTriggerMatchRequest) (model.CheckTriggerMatchResponse, error)
 	CountWorkflows(ctx *security.RequestContext, req model.WorkflowCountRequest) (model.WorkflowCountResponse, error)
 	CountWorkflowExecutions(ctx *security.RequestContext, req model.WorkflowExecutionCountRequest) (model.WorkflowExecutionCountResponse, error)
 	// Cross-automation execution dashboard (see execution_dashboard.go)
@@ -1575,6 +1578,121 @@ func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string,
 	}
 
 	return response, nil
+}
+
+// The event type optimization triggers are registered under — hardcoded in
+// WorkflowDao.FindEventTriggers and published by the recommendation poller.
+const optimizationEventType = "optimization.recommendation"
+
+// CheckTriggerMatch reports whether a payload would fire the given trigger. Replays
+// the gates EventRegistry.Match applies, in order, with the same evaluator. Read-only:
+// nothing stored, no run, no tenant data read. Tenancy is checked here instead.
+func (s *Service) CheckTriggerMatch(ctx *security.RequestContext, accountId string, request model.CheckTriggerMatchRequest) (model.CheckTriggerMatchResponse, error) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		return model.CheckTriggerMatchResponse{}, common.ErrorUnauthorized("account not accessible")
+	}
+	if request.Payload == nil {
+		return model.CheckTriggerMatchResponse{}, fmt.Errorf("payload is required")
+	}
+
+	var filter string
+	switch request.TriggerType {
+	case model.WorkflowTriggerEvent:
+		if resp, done := checkEventTriggerGates(request); done {
+			return resp, nil
+		}
+		filter, _ = request.Params["filter"].(string)
+		if filter == "" {
+			if eventType, _ := request.Params["event_type"].(string); eventType == "" {
+				// Registry.Refresh drops these — an unfiltered wildcard would match
+				// every event in the account, so it is never registered.
+				return model.CheckTriggerMatchResponse{
+					Gate:   model.CheckTriggerGateFilter,
+					Reason: "this trigger has neither an event type nor a filter, so it is never registered and fires on nothing",
+				}, nil
+			}
+		}
+
+	case model.WorkflowTriggerOptimization:
+		// Registered under a fixed event type, so other types never reach them.
+		if payloadType, _ := request.Payload["event_type"].(string); payloadType != "" && payloadType != optimizationEventType {
+			return model.CheckTriggerMatchResponse{
+				Gate:   model.CheckTriggerGateEventType,
+				Reason: fmt.Sprintf("this payload's type is '%s', but optimization triggers only receive '%s' events", payloadType, optimizationEventType),
+			}, nil
+		}
+
+		// Dropdowns become one Jinja expression when the registry loads the rule.
+		paramsJSON, err := json.Marshal(request.Params)
+		if err != nil {
+			return model.CheckTriggerMatchResponse{}, fmt.Errorf("invalid trigger params: %w", err)
+		}
+		filter = storage.BuildOptimizationFilter(string(paramsJSON))
+		if filter == "" {
+			return model.CheckTriggerMatchResponse{
+				Gate:   model.CheckTriggerGateFilter,
+				Reason: "this trigger has no category, rule, cluster or filter set, so it is never registered and fires on nothing",
+			}, nil
+		}
+
+	default:
+		return model.CheckTriggerMatchResponse{}, fmt.Errorf("trigger type '%s' cannot be checked against a payload", request.TriggerType)
+	}
+
+	if filter == "" {
+		return model.CheckTriggerMatchResponse{Matched: true, Gate: model.CheckTriggerGateFilter, Reason: "no filter is set, so every event of this type matches"}, nil
+	}
+
+	query, err := events.CompileFilter(filter)
+	if err != nil {
+		return model.CheckTriggerMatchResponse{Gate: model.CheckTriggerGateFilter, Filter: filter, Error: err.Error()}, nil
+	}
+	matched, err := events.EvaluateFilter(query, request.Payload)
+	if err != nil {
+		return model.CheckTriggerMatchResponse{Gate: model.CheckTriggerGateFilter, Filter: filter, Error: err.Error()}, nil
+	}
+
+	resp := model.CheckTriggerMatchResponse{Matched: matched, Filter: filter}
+	if !matched {
+		resp.Gate = model.CheckTriggerGateFilter
+		resp.Reason = "the filter did not evaluate to true for this payload"
+	}
+	return resp, nil
+}
+
+// checkEventTriggerGates applies the event-type and lifecycle-phase gates, returning
+// done=true with the rejection when one fails.
+func checkEventTriggerGates(request model.CheckTriggerMatchRequest) (model.CheckTriggerMatchResponse, bool) {
+	// The consumer falls back to aggregation_key when event_type is absent.
+	payloadType, _ := request.Payload["event_type"].(string)
+	if payloadType == "" {
+		payloadType, _ = request.Payload["aggregation_key"].(string)
+	}
+	// An empty params.event_type is a wildcard rule: evaluated against every event.
+	if triggerType, _ := request.Params["event_type"].(string); triggerType != "" && triggerType != payloadType {
+		return model.CheckTriggerMatchResponse{
+			Gate:   model.CheckTriggerGateEventType,
+			Reason: fmt.Sprintf("this event's type is '%s', but the trigger listens for '%s'", payloadType, triggerType),
+		}, true
+	}
+
+	// Lifecycle phase — exact match, both sides defaulting to event.created.
+	triggerPhase := string(model.DefaultLifecyclePhase)
+	if p, ok := request.Params["on"].(string); ok && p != "" {
+		triggerPhase = p
+	}
+	payloadPhase := string(model.DefaultLifecyclePhase)
+	if p, ok := request.Payload["lifecycle_phase"].(string); ok && p != "" {
+		payloadPhase = p
+	}
+	if triggerPhase != payloadPhase {
+		return model.CheckTriggerMatchResponse{
+			Gate:   model.CheckTriggerGatePhase,
+			Reason: fmt.Sprintf("this payload is at lifecycle phase '%s', but the trigger fires at '%s'", payloadPhase, triggerPhase),
+		}, true
+	}
+
+	return model.CheckTriggerMatchResponse{}, false
 }
 
 // DryRunWorkflowAsync starts a dry-run workflow in Temporal and returns immediately
