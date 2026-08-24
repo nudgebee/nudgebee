@@ -486,6 +486,14 @@ jobs:
         with:
           files: dist/*.tgz
           generate_release_notes: true
+          # Any version carrying a pre-release suffix (1.5.1-rc.1) is a
+          # pre-release and must not take the Latest badge. The action defaults
+          # to prerelease=false / make_latest=true, so without this every RC
+          # publishes as a stable release and steals Latest from the actual
+          # stable one (v1.5.0-rc.2, -rc.3 and v1.5.1-rc.1 all landed that way
+          # and were corrected by hand afterwards).
+          prerelease: ${{ contains(env.VERSION, '-') }}
+          make_latest: ${{ !contains(env.VERSION, '-') }}
           body: |
             ## Container images
 
