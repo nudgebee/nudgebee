@@ -226,6 +226,7 @@ const ServiceRecommendations: React.FC<ServiceRecommendationsProps> = ({ account
                 <DsDropdownMenu
                   align='end'
                   size='sm'
+                  disablePortal={false}
                   items={menuItems}
                   trigger={<DsButton tone='ghost' size='xs' composition='icon-only' aria-label='More actions' icon={<MoreVertIcon />} />}
                 />
