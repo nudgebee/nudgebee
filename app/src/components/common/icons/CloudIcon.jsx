@@ -136,7 +136,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = SignozIcon;
   } else if (cloud_provider.toUpperCase() === 'OBSERVE') {
     Icon = ObserveIcon;
-  } else if (cloud_provider.toUpperCase() === 'OPENOBSERVE') {
+  } else if (cloud_provider.toUpperCase() === 'OPENOBSERVE' || cloud_provider.toUpperCase() === 'OPENOBSERVE_WEBHOOK') {
     Icon = OpenObserveIcon;
   } else if (cloud_provider.toUpperCase() === 'AZURE_APP_INSIGHTS') {
     Icon = AzureAppInsightIcon;

@@ -34,6 +34,33 @@ const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={
 // (always-apply where-clause filters injected into every log query for the account).
 const LOG_FILTER_INTEGRATIONS = new Set(['pinot', 'ES', 'loki', 'signoz', 'openobserve', 'datadog', 'dynatrace', 'chronosphere']);
 
+// Alert Template body NudgeBee expects from OpenObserve. Every `{variable}` is
+// substituted by OpenObserve at delivery; the k8s_* keys resolve from the
+// matching stream row and are simply dropped when the stream has no such field,
+// so the same template works for log, metric and trace alerts.
+const OPENOBSERVE_ALERT_TEMPLATE = `{
+  "alert_name": "{alert_name}",
+  "alert_type": "{alert_type}",
+  "stream_name": "{stream_name}",
+  "stream_type": "{stream_type}",
+  "org_name": "{org_name}",
+  "alert_period": "{alert_period}",
+  "alert_operator": "{alert_operator}",
+  "alert_threshold": "{alert_threshold}",
+  "alert_count": "{alert_count}",
+  "alert_agg_value": "{alert_agg_value}",
+  "alert_start_time": "{alert_start_time}",
+  "alert_end_time": "{alert_end_time}",
+  "alert_url": "{alert_url}",
+  "severity": "{severity}",
+  "k8s_cluster_name": "{k8s_cluster_name}",
+  "k8s_namespace_name": "{k8s_namespace_name}",
+  "k8s_pod_name": "{k8s_pod_name}",
+  "k8s_deployment_name": "{k8s_deployment_name}",
+  "k8s_node_name": "{k8s_node_name}",
+  "service_name": "{service_name}"
+}`;
+
 // Display labels for enum values whose stored form doesn't title-case into
 // something readable. Values not listed here fall back to snakeToTitleCase.
 const ENUM_VALUE_LABELS = {
@@ -1450,6 +1477,17 @@ const IntegrationDynamicFormModal = ({
         text: 'how to configure SolarWinds Observability Webhook',
       },
     },
+    openobserve_webhook: {
+      endpoint: 'openobserve',
+      message: 'Configure the following URL as a Webhook destination in OpenObserve (Management → Alert Destinations)',
+      // OpenObserve delivers whatever the alert Template renders — there is no
+      // fixed payload schema — so the destination is only half the setup. The
+      // template below is what NudgeBee parses best; it is shown inline because
+      // a user who skips it gets an event with no severity, subject or link.
+      template: OPENOBSERVE_ALERT_TEMPLATE,
+      templateMessage:
+        'OpenObserve has no fixed webhook payload — the body is whatever the alert Template renders. Create a Template (Management → Templates, type: Webhook) with the JSON below and select it on the destination above.',
+    },
     elasticsearch_webhook: {
       endpoint: 'elasticsearch',
       message: 'Configure the following URL in a Kibana Webhook connector (Stack Management \u2192 Connectors)',
@@ -1500,6 +1538,45 @@ const IntegrationDynamicFormModal = ({
           </Typography>
           <CopyButton text={url} />
         </Box>
+
+        {config.template && (
+          <>
+            <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
+              {config.templateMessage}
+            </Typography>
+            <Box
+              sx={{
+                mt: 'var(--ds-space-4)',
+                mb: 'var(--ds-space-4)',
+                p: 2,
+                borderRadius: ds.radius.lg,
+                border: `1px solid ${ds.brand[200]}`,
+                backgroundColor: ds.gray[100],
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: ds.space[2],
+              }}
+            >
+              <Typography
+                component='pre'
+                sx={{
+                  color: ds.gray[600],
+                  fontSize: 'var(--ds-text-body)',
+                  fontFamily: 'monospace',
+                  lineHeight: 1.6,
+                  flex: 1,
+                  m: 0,
+                  maxHeight: ds.space.mul(0, 160),
+                  overflow: 'auto',
+                }}
+                id={`${config.endpoint}-template`}
+              >
+                {config.template}
+              </Typography>
+              <CopyButton text={config.template} />
+            </Box>
+          </>
+        )}
 
         {integrationName === 'workflow_webhook' ? (
           <Box
@@ -1617,6 +1694,7 @@ const IntegrationDynamicFormModal = ({
             'splunk_webhook',
             'grafana_webhook',
             'solarwinds_webhook',
+            'openobserve_webhook',
             'elasticsearch_webhook',
             'workflow_webhook',
           ].includes(integrationName)

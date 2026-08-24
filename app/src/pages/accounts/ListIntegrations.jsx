@@ -117,6 +117,7 @@ const ListIntegrations = ({ integrationName }) => {
     'gcp_monitoring_webhook',
     'dynatrace_webhook',
     'solarwinds_webhook',
+    'openobserve_webhook',
     'elasticsearch_webhook',
   ];
   const integrationWebhooks = [
@@ -132,6 +133,7 @@ const ListIntegrations = ({ integrationName }) => {
     'dynatrace_webhook',
     'solarwinds',
     'solarwinds_webhook',
+    'openobserve_webhook',
     'elasticsearch_webhook',
   ];
   const agentManagedIntegrations = ['ES', 'loki', 'prometheus', 'otel_clickhouse', 'jaeger'];

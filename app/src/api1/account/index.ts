@@ -495,6 +495,7 @@ const apiAccount = {
         'gcp_monitoring_webhook',
         'solarwinds',
         'solarwinds_webhook',
+        'openobserve_webhook',
         'elasticsearch_webhook',
         'workflow_webhook',
         'google_chat_space',

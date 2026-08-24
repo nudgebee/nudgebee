@@ -1,4 +1,4 @@
-h1:29W2lTA6AMicJqMVoKpmROE/EU/GAWlFRRkIy9/rjJs=
+h1:vaef27G65wA2aMqFJZSqO2VqbRMJWqrtM/TJcOUJUq4=
 1665080411172_V0.up.sql h1:u69osJjPb3FctiXmgk+fpiFMTDQTnGpqDRH45K0pUdc=
 1665211266851_V1.up.sql h1:AGUExFXk9BDw9lpD7Cu1Bu5wn3mQA/Ul+5/jny32xYc=
 1665218608952_V2.up.sql h1:dWrFXuJESbVByq7iXDF7tFbOc1bgbwgCc0Fd8QETHwo=
@@ -1047,3 +1047,4 @@ h1:29W2lTA6AMicJqMVoKpmROE/EU/GAWlFRRkIy9/rjJs=
 1785956799949_V849_token_usage_message_id_nullable.up.sql h1:ffSOrbpd/VC9NYrIl3v3H+Uzcf+8TxKffvp3YNF7SdA=
 1786685368750_V870_elasticsearch_webhook_integration.up.sql h1:qj/dkqG0CdaA6CPtBf20E4j5aVWBTUhuo/hQqQactJo=
 1786965554770_V876_llm_analyser_feature_flag.up.sql h1:mRcZhKLRrjhLD00XGjnbRFQd+gZ3+dfon/UrkDtVIvY=
+1786997559724_V851_openobserve_webhook_integration.up.sql h1:ROPGPokTCtgrVMZOWQUxR1tEyoRKtwzK9Y/dV9AaL2A=

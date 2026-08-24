@@ -211,6 +211,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'OPENOBSERVE':
       label = 'OpenObserve';
       break;
+    case 'OPENOBSERVE_WEBHOOK':
+      label = 'OpenObserve Webhook';
+      break;
     case 'OBSERVE':
       label = 'Observe';
       break;
