@@ -1,5 +1,6 @@
 import { Box } from '@mui/material';
 import { useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import PropTypes from 'prop-types';
 import { Modal } from '@ui/Modal';
 import CustomTabs from '@shared/CustomTabs';
@@ -12,13 +13,29 @@ import GlobalContextTab from '@components/llm/GlobalContextTab';
 import KnowledgeBaseTab from '@components/llm/KnowledgeBaseTab';
 import MemoryTab from '@components/llm/MemoryTab';
 import RCAFormatTab from '@components/llm/RCAFormatTab';
-import { hasFeatureAccess } from '@lib/auth';
-import { AgentIcon, ToolsIcon, LLMFunctionIcon, LLMConsumptionIcon, InMemoryIcon, DataBaseDark, DocumentationIcon, FileOutlineIcon } from '@assets';
+import UserFeedbackTab from '@components/llm/UserFeedbackTab';
+import { hasFeatureAccess, isTenantWideRole, getSessionAccountIds } from '@lib/auth';
+import {
+  AgentIcon,
+  ToolsIcon,
+  LLMFunctionIcon,
+  LLMConsumptionIcon,
+  InMemoryIcon,
+  DataBaseDark,
+  DocumentationIcon,
+  FileOutlineIcon,
+  FeedbackBlueIcon,
+} from '@assets';
 import { ds } from '@utils/colors';
 
 const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListing, loadingAgents }) => {
   const [tabsConfig, setTabsConfig] = useState([]);
   const [typeSelected, setTypeSelected] = useState('agents');
+  // The User Feedback gate below reads session-derived roles/account ids
+  // (isTenantWideRole / getSessionAccountIds), which are backed by module-level
+  // session data. Subscribe to the session so the tab-init effect re-runs once
+  // the session resolves, otherwise the tab can stay hidden on first open.
+  const { data: session } = useSession();
 
   useEffect(() => {
     const initializeTabs = async () => {
@@ -45,12 +62,22 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
       baseTabsConfig.push({ id: 'memory', icon: InMemoryIcon, label: 'Memory', alt: 'memory', size: 16 });
       baseTabsConfig.push({ id: 'rca-format', icon: FileOutlineIcon, label: 'RCA Format', alt: 'rca-format', size: 16 });
 
+      // User Feedback is authorized server-side for tenant + account
+      // admins/readonly (ai_list_conversation_feedback in actions.yaml) and
+      // scopes its rows by account ACL. Show it to any tenant-wide role or
+      // account-scoped user; the tab handles the tenant-wide (no accountId) open.
+      // hasReadAccess is avoided here because accountId is empty when Settings
+      // opens from the global sidebar, which would wrongly deny account users.
+      if (isTenantWideRole() || getSessionAccountIds().length > 0) {
+        baseTabsConfig.push({ id: 'user-feedback', icon: FeedbackBlueIcon, label: 'User Feedback', alt: 'user-feedback', size: 16 });
+      }
+
       setTabsConfig(baseTabsConfig);
     };
     if (open) {
       initializeTabs();
     }
-  }, [open]);
+  }, [open, session]);
 
   const handleClose = () => {
     onClose();
@@ -116,6 +143,8 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
           <MemoryTab accountId={accountId} />
         ) : typeSelected == 'rca-format' ? (
           <RCAFormatTab accountId={accountId} />
+        ) : typeSelected == 'user-feedback' ? (
+          <UserFeedbackTab accountId={accountId} stickyTable />
         ) : (
           <ListFunctions accountId={accountId} />
         )}
