@@ -62,7 +62,7 @@ func mergeSystemMessageContents(messages []llms.MessageContent) []llms.MessageCo
 	merged := make([]llms.MessageContent, 0, len(messages)-systemCount+1)
 	var texts []string
 	var otherParts []llms.ContentPart
-	placed := false
+	placeholderIdx := -1
 	for _, mc := range messages {
 		if mc.Role != llms.ChatMessageTypeSystem {
 			merged = append(merged, mc)
@@ -70,27 +70,31 @@ func mergeSystemMessageContents(messages []llms.MessageContent) []llms.MessageCo
 		}
 		for _, part := range mc.Parts {
 			if tc, ok := part.(llms.TextContent); ok {
-				texts = append(texts, tc.Text)
+				if tc.Text != "" {
+					texts = append(texts, tc.Text)
+				}
 			} else {
 				otherParts = append(otherParts, part)
 			}
 		}
-		if !placed {
+		if placeholderIdx == -1 {
 			// Reserve this message's position; filled in below once all system
 			// parts across the whole slice have been collected.
+			placeholderIdx = len(merged)
 			merged = append(merged, llms.MessageContent{Role: llms.ChatMessageTypeSystem})
-			placed = true
 		}
 	}
 
 	parts := make([]llms.ContentPart, 0, 1+len(otherParts))
-	parts = append(parts, llms.TextContent{Text: strings.Join(texts, "\n\n")})
-	parts = append(parts, otherParts...)
-	for i := range merged {
-		if merged[i].Role == llms.ChatMessageTypeSystem {
-			merged[i].Parts = parts
-			break
-		}
+	if len(texts) > 0 {
+		parts = append(parts, llms.TextContent{Text: strings.Join(texts, "\n\n")})
+	} else if len(otherParts) == 0 {
+		// Every merged system message was empty text with no other parts. Keep one
+		// empty TextContent rather than leaving Parts empty — some providers reject
+		// a message with zero content parts outright.
+		parts = append(parts, llms.TextContent{Text: ""})
 	}
+	parts = append(parts, otherParts...)
+	merged[placeholderIdx].Parts = parts
 	return merged
 }
