@@ -28,9 +28,13 @@ type OpenObserveTraceSource struct{}
 // nothing. Display tolerates every spelling via openObserveTraceFieldCandidates; only
 // filtering is limited to one.
 var openObserveTraceLabelMapping = map[string]string{
-	"workload_namespace":        "service_k8s_namespace_name",
-	"workload_name":             "service_name",
-	"destination_workload_name": "service_peer_name",
+	"workload_namespace": "service_k8s_namespace_name",
+	"workload_name":      "service_name",
+	// The callee of a client span. OpenTelemetry writes this as net.peer.name /
+	// peer.service; OpenObserve flattens those to net_peer_name / peer_service. This
+	// previously pointed at service_peer_name, a column no OpenObserve trace stream
+	// has, so every destination-side filter failed with "field not found".
+	"destination_workload_name": "net_peer_name",
 	"http_status_code":          "http_status_code",
 	"span_name":                 "operation_name",
 	"resource":                  "http_target",
@@ -126,9 +130,64 @@ func (s *OpenObserveTraceSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_contains", "_ilike"}
 }
 
+// openObserveTraceUnsupportedFields are canonical filter fields an OpenObserve span
+// simply cannot express, so no column mapping exists for them.
+//
+// A span is service-centric: it carries its own service's Kubernetes attributes plus a
+// bare peer NAME for whatever it called. There is no peer NAMESPACE anywhere in the
+// schema, so destination_workload_namespace has nothing to map onto.
+//
+// These are dropped rather than passed through, because passing an unmapped name through
+// as a column name is what made the whole query fail with HTTP 400 — taking the
+// destination side of a caller-OR-callee search down with it, and with it any trace
+// evidence at all. DatadogTraceSource.QueryTraces drops the same field for the same
+// reason. Dropping is confined to this named set: an unrecognised field still reaches
+// the column check and still errors, so a typo'd or genuinely wrong filter fails loudly
+// instead of being silently ignored.
+//
+// Trade-off: dropping the namespace leaves the destination side matching a peer NAME in
+// any namespace, so two same-named services in different namespaces are indistinguishable
+// on that side. That is accepted because the alternative is no destination side at all,
+// and OTel service names are conventionally cluster-unique. The source side of the same
+// query still carries its namespace and is unaffected.
+var openObserveTraceUnsupportedFields = map[string]bool{
+	"destination_workload_namespace": true,
+}
+
+// stripOpenObserveUnsupportedFields returns binary without the fields OpenObserve cannot
+// express, plus how many were removed. The input map is never mutated — it belongs to the
+// caller's request, which other providers in a multi-provider fan-out may still read.
+func stripOpenObserveUnsupportedFields(binary query.BinaryWhereClause) (query.BinaryWhereClause, int) {
+	dropped := 0
+	for field := range binary {
+		if openObserveTraceUnsupportedFields[field] {
+			dropped++
+		}
+	}
+	if dropped == 0 {
+		return binary, 0
+	}
+	kept := make(query.BinaryWhereClause, len(binary)-dropped)
+	for field, ops := range binary {
+		if !openObserveTraceUnsupportedFields[field] {
+			kept[field] = ops
+		}
+	}
+	return kept, dropped
+}
+
 func buildOpenObserveTraceWhereClause(where query.QueryWhereClause) (string, error) {
 	if len(where.Binary) > 0 {
-		return buildOpenObserveBinaryClause(where.Binary, openObserveTraceLabelMapping)
+		binary, dropped := stripOpenObserveUnsupportedFields(where.Binary)
+		if len(binary) == 0 {
+			// Every predicate in this group was inexpressible. Returning "" here would
+			// render the group as no restriction at all: harmless inside an OR (the
+			// branch is skipped) but silently matching everything inside an AND. Refuse
+			// instead — a filter that cannot be honoured must not widen the result set.
+			return "", fmt.Errorf(
+				"openobserve: trace filter group has no field this span schema can express (dropped %d)", dropped)
+		}
+		return buildOpenObserveBinaryClause(binary, openObserveTraceLabelMapping)
 	}
 
 	if len(where.And) > 0 {
