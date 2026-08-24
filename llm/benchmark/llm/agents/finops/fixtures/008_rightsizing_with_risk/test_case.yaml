@@ -1,15 +1,19 @@
-user_prompt: "Can I rightsize the checkout-api deployment in the prod namespace?"
+user_prompt: "Find the workload with the largest pod rightsizing saving on this account and tell me whether it is safe to apply."
 expected_output:
   - |
-    The agent should run a parallel batch covering: recommendations (for the
-    rightsizing recommendation on prod/checkout-api), metrics (CPU and memory
-    p50 AND p95 over the last 7-14 days to assess burstiness), and
-    kubectl_execute (HPA presence, deployment requests/limits, replica count).
-    The answer should include: current configuration, observed utilization
-    (p50 and p95), HPA/autoscaling status, the recommended change with dollar
-    savings, and a risk rating (Low/Medium/High) with explicit reasoning
-    (e.g. "Medium: bursty workload, p95 reaches 80% — leave headroom"). Cite
-    [metrics] and [kubectl_execute] for utilization claims.
+    The agent should find the pod rightsizing recommendation with the
+    largest positive estimated saving from the recommendations data (not
+    invent a workload), name that workload and namespace from the data, and
+    quote the estimated monthly saving in dollars with the recommendation
+    id. It should then assess whether applying is safe using evidence, not
+    vibes: the recommendation's safety data (safety_band with its reason,
+    dependent_count / production_dependents — when the band is NULL it must
+    say impact analysis has not run rather than inventing a rating) and,
+    where it strengthens the answer, observed utilization (p50/p95) or
+    HPA/autoscaling status for that workload. The answer ends with a risk
+    rating tied to that evidence and a concrete next step matched to the
+    band (apply via the platform flow, or review first). Cite the source
+    tools for the claims.
 tags:
   - rightsizing
   - drilldown

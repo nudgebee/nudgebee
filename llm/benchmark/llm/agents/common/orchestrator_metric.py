@@ -50,6 +50,14 @@ Score based on these criteria:
 5. **Coverage**: Did it check multiple signals appropriate for the problem?
    - Good: Checked logs + events + describe + metrics for a crash issue
    - Bad: Only checked pod status and nothing else
+
+6. **Economy is not a defect**: Coverage means signals APPROPRIATE for the
+   question, not many calls. A follow-up whose answer is already in the
+   conversation, or a question fully served by one correct tool call,
+   deserves a HIGH score with a minimal trace — padding the trace with extra
+   calls to look thorough is the defect, not answering economically.
+   - Good: "the second one?" answered from data already retrieved, zero or one call
+   - Bad: re-running the same query three ways to decorate the trace
 """
 
     rubric = {

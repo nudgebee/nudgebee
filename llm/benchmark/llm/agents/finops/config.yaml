@@ -5,24 +5,12 @@
 # not a tool output, so tool_names is empty (we score the response text via
 # RAGAS, not a single tool's payload).
 #
-# extra_tool_confirmations: the agent calls delegate_agent which can spawn
-# aws / gcp / azure sub-agents and their tools. Auto-approve so benchmarks
-# don't stall on confirmation prompts.
+# Write safety: the orchestrator answers tool-confirmation followups with an
+# explicit "no" (auto_deny_write_confirmations, default true), so a benchmark
+# can never approve a mutation and write fixtures score the denial handling.
+# A fixture exercising a real apply flow sets
+# auto_deny_write_confirmations: false in its test_case.yaml.
 agent: finops
 tool_names: []
 max_retries: 2
-extra_tool_confirmations:
-  delegate_agent: "yes"
-  recommendations: "yes"
-  aws: "yes"
-  aws_observability: "yes"
-  gcp: "yes"
-  azure: "yes"
-  spend_summary: "yes"
-  spend_forecast: "yes"
-  spend_allocation: "yes"
-  metrics: "yes"
-  kubectl_execute: "yes"
-  anomaly_execute: "yes"
-  cloud_resource_search_execute: "yes"
-  propose_recommendation_apply: "yes"
+auto_deny_write_confirmations: true

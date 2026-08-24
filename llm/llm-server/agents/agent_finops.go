@@ -164,6 +164,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 	// recommendations agent renders, so the two paths cannot drift apart.
 	schema = append(schema, tools.RecommendationExecuteTool{}.ToolPrompt()...)
 	schema = append(schema, tools.RecommendationResolutionExecuteTool{}.ToolPrompt()...)
+	schema = append(schema, tools.RecommendationCliTool{}.ToolPrompt()...)
 
 	outputFormat := `Lead with the headline, not the methodology. A Markdown TABLE is the primary carrier of every multi-data-point answer; prose is supplementary.
 

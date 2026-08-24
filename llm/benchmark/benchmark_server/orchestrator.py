@@ -501,6 +501,53 @@ def _run_test_core(
     elapsed = round(time.time() - llm_start, 2)
     docs = extractor(llm_result.data, session.account_id, tool_names, db_tool_name)
 
+    # A benchmark must never approve a mutation, and a write confirmation must
+    # never stall an unattended run: answer tool-confirmation followups with an
+    # explicit denial so the agent finishes with the denial handled and the
+    # final text stays scoreable. Fixtures that exercise a real apply flow opt
+    # out with ``auto_deny_write_confirmations: false``.
+    auto_deny = test_case.get(
+        "auto_deny_write_confirmations",
+        config.get("auto_deny_write_confirmations", True),
+    )
+    deny_rounds = 0
+    while (
+        auto_deny
+        and llm_result.status == "WAITING"
+        and deny_rounds < 3
+        and llm_result.followups
+        and all(
+            str(f.get("followup_type") or "") == "tool_confirmation"
+            for f in llm_result.followups
+        )
+    ):
+        deny_rounds += 1
+        fu = llm_result.followups[0]
+        deny_cid = extract_conversation_id(llm_result.data) if llm_result.data else None
+        logger.info(
+            "[%s] auto-denying write confirmation (round %d): %s",
+            test_id,
+            deny_rounds,
+            str(fu.get("question") or "")[:120],
+        )
+        llm_result = call_llm(
+            "no",
+            session.account_id,
+            session.tenant_id,
+            session.user_id,
+            config=llm_config,
+            conversation_id=deny_cid or "",
+            agent_id=str(fu.get("agent_id") or ""),
+            message_id=str(fu.get("message_id") or ""),
+            k8s_orchestrator_mode=config.get("k8s_orchestrator_mode"),
+            llm_config_source=config.get("llm_config_source"),
+            llm_provider=config.get("llm_provider"),
+            llm_model_name=config.get("llm_model_name"),
+            llm_tier_models=config.get("llm_tier_models"),
+        )
+        elapsed = round(time.time() - llm_start, 2)
+        docs = extractor(llm_result.data, session.account_id, tool_names, db_tool_name)
+
     # Handle WAITING status
     if llm_result.status == "WAITING":
         convo_id = extract_conversation_id(llm_result.data) if llm_result.data else None
