@@ -91,6 +91,7 @@ export const buildDrawerTasks = (agents, message) => {
 
   const tasks = [];
 
+  // Turn record, not a task -> chip/drawer filter it via `actionableTasks`. Never count unfiltered.
   if (message?.ack_message?.trim()) {
     tasks.push({
       id: message.id + '-acknowledgment',
