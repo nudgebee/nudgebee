@@ -18,6 +18,25 @@ function a11yProps(index, customId) {
   };
 }
 
+/**
+ * A tab's count badge.
+ *
+ * Was a flat "99+" above 99, which is fine while the only callers count saved
+ * conversations or knowledge bases. The Security sub-tabs count findings — every
+ * one of the four is in the thousands, so all four rendered "99+" and the badge
+ * said nothing about where to look first. Compact notation keeps the badge the
+ * same width while staying comparable; anything under a thousand is unchanged.
+ *
+ * Non-numeric values pass through: one caller seeds `count: ''` for a badge it
+ * fills in later.
+ */
+export const formatTabCount = (count) => {
+  if (typeof count !== 'number' || !Number.isFinite(count)) return count;
+  if (count < 1000) return count;
+  if (count < 1_000_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}k`;
+  return `${(count / 1_000_000).toFixed(1)}M`;
+};
+
 const Tabs = ({
   value,
   onChange,
@@ -370,7 +389,7 @@ const Tabs = ({
                     icon={
                       opt.count ? (
                         <Chip variant='count' size='2xs' tone={opt.value === value ? 'info' : 'neutral'}>
-                          {opt.count > 99 ? '99+' : opt.count}
+                          {formatTabCount(opt.count)}
                         </Chip>
                       ) : null
                     }

@@ -17,6 +17,7 @@ import {
 } from '@assets';
 import { hasFeatureAccess, hasPermission, hasReadAccess, hasWriteAccess, withAuth } from '@lib/auth';
 import { useData } from '@context/DataContext';
+import { useSecurityTabCounts } from '@hooks/useSecurityTabCounts';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
@@ -54,6 +55,9 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
   const [activeTab, setActiveTab] = useState(null);
+  // 3 is the Security tab. Its sub-tab strip is the only place these counts
+  // render, so nothing fetches them until the reader is actually looking at it.
+  const securityCounts = useSecurityTabCounts(activeTab === 3);
   const [subTab, setSubTab] = useState(0);
   const [openCreateAutoOptimize, setOpenCreateAutoOptimize] = useState(false);
   const [openCreateAutoOptimizeType, setOpenCreateAutoOptimizeType] = useState(null);
@@ -96,11 +100,20 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
           fragment: 'security',
           value: 3,
           icon: SecuritytoolsBlue,
+          // `count` renders as a Chip beside the label (Tabs.jsx). Undefined
+          // until the counts resolve, which is what keeps the strip from
+          // flashing a row of zeroes on first paint.
           tabOptions: [
-            { id: 'image-scan', text: 'Image Scan', value: 0, fragment: 'image-scan' },
-            { id: 'cis-scan', text: 'CIS Scan', value: 1, fragment: 'cis-scan' },
-            { id: 'vm-vulnerabilities', text: 'VM Vulnerabilities', value: 2, fragment: 'vm-vulnerabilities' },
-            { id: 'cloud-posture', text: 'Cloud Posture', value: 3, fragment: 'cloud-posture' },
+            { id: 'image-scan', text: 'Image Scan', value: 0, fragment: 'image-scan', count: securityCounts?.imageScan },
+            { id: 'cis-scan', text: 'CIS Scan', value: 1, fragment: 'cis-scan', count: securityCounts?.cisScan },
+            {
+              id: 'vm-vulnerabilities',
+              text: 'VM Vulnerabilities',
+              value: 2,
+              fragment: 'vm-vulnerabilities',
+              count: securityCounts?.vmVulnerabilities,
+            },
+            { id: 'cloud-posture', text: 'Cloud Posture', value: 3, fragment: 'cloud-posture', count: securityCounts?.cloudPosture },
           ],
         },
         // Resolutions sits after the three finding tabs because it is the record of
@@ -154,7 +167,7 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
             iconSize: 18,
           },
       ].filter(Boolean),
-    [isMounted, llmAnalyserEnabled, enableLlmGateway, selectedCluster?.value]
+    [isMounted, llmAnalyserEnabled, enableLlmGateway, selectedCluster?.value, securityCounts]
   );
 
   useEffect(() => {

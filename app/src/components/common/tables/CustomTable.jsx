@@ -275,20 +275,27 @@ export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = f
       sx={{
         // Redesigned Table: the expanded panel shares its background with the
         // expanded row above (gray-300, no top rule) and continues the brand
-        // left rail so the pair reads as a single selected section.
+        // left rail so the pair reads as a single selected section. The left
+        // corner stays square — the rail is a straight line from the row's top
+        // edge to the panel's bottom edge, not a curve; only the outer right
+        // corner keeps the section's rounding.
         p: 'var(--ds-space-2) var(--ds-space-6)',
         backgroundColor: ds.background[200],
         boxShadow: `inset 3px 0 0 0 ${ds.brand[500]}`,
-        borderBottomLeftRadius: ds.radius.lg,
         borderBottomRightRadius: ds.radius.lg,
         '@media (max-width: 1350px)': {
           p: 'var(--ds-space-3)',
         },
       }}
     >
-      <Box mb={ds.space[3]}>
-        <Tabs padding={tabPadding} options={tabOptions} value={tab} onChange={handleChangeTab} />
-      </Box>
+      {/* A strip exists to switch tabs; with one tab there is nothing to
+          switch, so it renders only when a choice exists. Most expandable
+          tables pass a single tab, where the strip was ~50px of dead chrome. */}
+      {tabOptions.length > 1 && (
+        <Box mb={ds.space[3]}>
+          <Tabs padding={tabPadding} options={tabOptions} value={tab} onChange={handleChangeTab} />
+        </Box>
+      )}
       {tabOptions.map((option, tabIndex) => {
         // Prefer the tab option's own `value` (semantic slug like 'evidence')
         // for both the React key and the TabPanel identity — falling back to
@@ -371,14 +378,15 @@ const ExpandableTableRowBase = ({
             transition: 'background-color 220ms ease, box-shadow 220ms ease, border-radius 220ms ease',
             // Redesigned Table: an expanded row tints to gray-300 (matching the
             // panel below) and drops its divider so the row + panel read as one
-            // selected unit, accented by a brand-navy left rail.
+            // selected unit, accented by a brand-navy left rail. The rail's
+            // corner is square — rounding it bent the 3px line where it meets
+            // the row's top edge; only the outer right corner keeps rounding.
             ...(isExpandable && collapsedObj[itemNo]
               ? {
                   backgroundColor: ds.background[200],
                   borderBottom: '0 !important',
                   '&:first-of-type': {
                     boxShadow: `inset 3px 0 0 0 ${ds.brand[500]}`,
-                    borderTopLeftRadius: ds.radius.lg,
                   },
                   '&:last-of-type': {
                     borderTopRightRadius: ds.radius.lg,

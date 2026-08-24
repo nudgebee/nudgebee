@@ -62,7 +62,12 @@ export type ToggleGroupProps<V extends string = string> = ToggleGroupSingleProps
 
 const SIZE_TOKENS: Record<ToggleGroupSize, { height: string; fontSize: string; padX: string; iconSize: number; radius: string }> = {
   sm: { height: '24px', fontSize: 'var(--ds-text-caption)', padX: '8px', iconSize: 12, radius: 'var(--ds-radius-sm)' },
-  md: { height: '32px', fontSize: 'var(--ds-text-body)', padX: '12px', iconSize: 14, radius: 'var(--ds-radius-md)' },
+  // `--ds-text-small`, not `--ds-text-body`: an md group almost always sits in a
+  // ListingLayout toolbar beside FilterDropdown, which is 12px, and beneath tab
+  // strips at 12px (page) and 11px (sub-tab). At 13px it was the largest text of
+  // the four while being the most deeply nested control on screen — the type
+  // scale ran backwards. Height stays 32px so it still lines up with the row.
+  md: { height: '32px', fontSize: 'var(--ds-text-small)', padX: '12px', iconSize: 14, radius: 'var(--ds-radius-md)' },
 };
 
 export function ToggleGroup<V extends string = string>(props: ToggleGroupProps<V>) {

@@ -8,7 +8,7 @@ import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Chip } from '@ui/Chip';
 import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
-import Tabs from '@shared/navigation/Tabs';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { Button as DsButton } from '@ui/Button';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -57,8 +57,12 @@ const SEVERITY_OPTIONS = SEVERITY_ORDER.map((severity) => ({ label: severity, va
 /** Cap on the VM / Package filter lists. Both dropdowns search their options. */
 const FILTER_OPTION_LIMIT = 200;
 
-/** Grouping tabs. `all` is the flat finding list; the rest roll it up server-side. */
-const GROUP_TABS = [
+/**
+ * How the findings are pivoted. `all` is the flat finding list; the rest roll it
+ * up server-side into a different column set (see GROUP_HEADERS) — these are not
+ * filters, which is why the control that selects them says "group by".
+ */
+const GROUP_TABS: Array<{ text: string; value: VmVulnerabilityGrouping | 'all'; id: string }> = [
   { text: 'All', value: 'all', id: 'vm-vulnerability-tab-all' },
   { text: 'Vulnerability', value: 'vulnerability', id: 'vm-vulnerability-tab-vulnerability' },
   { text: 'Package', value: 'package', id: 'vm-vulnerability-tab-package' },
@@ -464,22 +468,31 @@ const VmVulnerabilities = ({
 
   return (
     <Box sx={{ px: hidePageInset ? 0 : ds.space[5], pb: ds.space[5] }}>
-      {/* Grouping selector — an outer tab bar above the card, so the toolbar
-          below keeps carrying only the filters that apply to every tab. */}
-      <Box sx={{ pb: ds.space[3] }}>
-        <Tabs
-          value={grouping}
-          onChange={(next: VmVulnerabilityGrouping | 'all') => {
-            setPage(0);
-            setGrouping(next);
-          }}
-          options={{ tabOptions: GROUP_TABS }}
-          behavior='filter'
-          ariaLabel='Group vulnerabilities by'
-        />
-      </Box>
       <ListingLayout id='vm-vulnerabilities'>
-        <ListingLayout.Toolbar actions={<DownloadButton id={`${tableId}-download`} onClick={() => ({ tableId })} />}>
+        {/* The grouping selector sits in the toolbar, as a ToggleGroup, because
+            Image Scan's Apps/Images/CVE/Details is the same control over the
+            same kind of data and that is where it lives. It used to be an outer
+            Tabs bar above the card, which put a second full-width strip
+            directly under the Security sub-tab strip. */}
+        <ListingLayout.Toolbar
+          actions={
+            <>
+              {/* No size prop, matching Image Scan's — both take the 'md' default. */}
+              <ToggleGroup
+                id='vm-vulnerability-grouping'
+                selection='single'
+                value={grouping}
+                onChange={(next: VmVulnerabilityGrouping | 'all') => {
+                  setPage(0);
+                  setGrouping(next);
+                }}
+                options={GROUP_TABS.map((t) => ({ value: t.value, label: t.text }))}
+                ariaLabel='Group vulnerabilities by'
+              />
+              <DownloadButton id={`${tableId}-download`} onClick={() => ({ tableId })} />
+            </>
+          }
+        >
           {leadingFilters}
           <FilterDropdown
             id='vm-vulnerability-severity'

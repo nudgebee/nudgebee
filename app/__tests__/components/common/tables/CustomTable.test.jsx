@@ -364,6 +364,28 @@ describe('CustomTable', () => {
       render(<CustomTable headers={HEADERS} tableData={makeRows(1)} expandable={expandable} />);
       expect(screen.getByLabelText('Expand row')).toBeInTheDocument();
     });
+
+    it('renders no tab strip when a drawer has a single tab, but still renders its content', () => {
+      const expandable = { tabs: [{ label: 'Details', value: 0, componentFn: () => <div>Detail</div> }] };
+      render(<CustomTable headers={HEADERS} tableData={makeRows(1)} expandable={expandable} />);
+      fireEvent.click(screen.getByLabelText('Expand row'));
+      expect(screen.queryByTestId('custom-tabs')).not.toBeInTheDocument();
+      expect(screen.getByText('Detail')).toBeInTheDocument();
+    });
+
+    it('renders the tab strip when a drawer has more than one tab', () => {
+      const expandable = {
+        tabs: [
+          { label: 'Details', value: 0, componentFn: () => <div>Detail</div> },
+          { label: 'Events', value: 1, componentFn: () => <div>Events body</div> },
+        ],
+      };
+      render(<CustomTable headers={HEADERS} tableData={makeRows(1)} expandable={expandable} />);
+      fireEvent.click(screen.getByLabelText('Expand row'));
+      expect(screen.getByTestId('custom-tabs')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('tab-option-1'));
+      expect(screen.getByText('Events body')).toBeInTheDocument();
+    });
   });
 
   // ─── pagination ───────────────────────────────────────────────────────────────

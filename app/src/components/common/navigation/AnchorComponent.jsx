@@ -7,7 +7,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import PropTypes from 'prop-types';
 import { Chip } from '@ui/Chip';
 import { ds } from '@utils/colors';
-import Tabs from './Tabs';
+import Tabs, { formatTabCount } from './Tabs';
 import Tooltip from '@ui/Tooltip';
 import Link from 'next/link';
 
@@ -584,9 +584,14 @@ const AnchorComponent = ({
                         />
                         <Box display={'inline-flex'} alignItems={'center'} gap={'var(--ds-space-2)'}>
                           <span>{opt.name}</span>
+                          {/* Same formatter and same chip size as Tabs.jsx. This
+                              strip and the sub-tab strip below it are rendered by
+                              two different code paths, so a count formatted only
+                              in one of them shows "99+" above and "3.4k" below on
+                              the same page. */}
                           {opt.count && (
-                            <Chip variant='count' size='xs' tone={selected ? 'info' : 'neutral'}>
-                              {opt.count > 99 ? '99+' : opt.count}
+                            <Chip variant='count' size='2xs' tone={selected ? 'info' : 'neutral'}>
+                              {formatTabCount(opt.count)}
                             </Chip>
                           )}
                         </Box>

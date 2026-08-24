@@ -1,18 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box } from '@mui/material';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomTable from '@shared/tables/CustomTable';
+import InfographicList from '@shared/widgets/InfographicList';
 import Text from '@shared/format/Text';
 import { SeverityIcon } from '@ui/SeverityIcon';
-import { toSeverityLevel } from '@utils/common';
+import { toSeverityLevel, safeJSONParse } from '@utils/common';
 import { ds } from '@utils/colors';
 import recommendationApi from '@api1/recommendation';
 import { useLatestRequest } from '@components/vm/common';
 import { normalizeSeverity } from './securityFinding';
 import { type CloudPostureRule, cloudRuleTitle, foldCloudPostureRules } from './cloudPosture';
-import CloudRulePanel from './CloudRulePanel';
+import CloudRuleResources from './CloudRuleResources';
+import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
+import { toast as snackbar } from '@ui/Toast';
+
+/** What a posture ticket says, from the resource the reader acted on. */
+const ticketDescription = (target: { rule: CloudPostureRule; resource: any } | null) => {
+  if (!target) return '';
+  const { rule, resource } = target;
+  const payload = typeof resource?.recommendation === 'string' ? safeJSONParse(resource.recommendation) || {} : resource?.recommendation || {};
+  return [
+    `**Check**: ${rule.ruleName}`,
+    `**Resource**: ${resource?.resource_name || payload.repository_name || resource?.resource_id || '-'}`,
+    `**Severity**: ${normalizeSeverity(resource?.severity)}`,
+    `**Provider**: ${rule.provider || '-'}`,
+    payload?.reason ? `**Reason**: ${payload.reason}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+};
 
 const TABLE_ID = 'cloud-posture-rules';
 
@@ -48,8 +67,23 @@ const CloudPostureView = ({ accountId, accountsById, providerById, leadingFilter
   const [rules, setRules] = useState<CloudPostureRule[]>([]);
   const [loading, setLoading] = useState(false);
   const [severity, setSeverity] = useState<string | null>(null);
-  const [panelRule, setPanelRule] = useState<CloudPostureRule | null>(null);
+  const [isTicketFormOpen, setIsTicketFormOpen] = useState(false);
+  const [ticketTarget, setTicketTarget] = useState<{ rule: CloudPostureRule; resource: any } | null>(null);
   const beginRequest = useLatestRequest();
+
+  const closeTicketForm = useCallback(() => setIsTicketFormOpen(false), []);
+
+  // Memoised: CloudRuleResources lists this in a dependency array, so an inline
+  // object would rebuild every resource table on each render of the rollup.
+  const resourceRowActions = useMemo(
+    () => ({
+      onCreateTicket: (rule: CloudPostureRule, resource: any) => {
+        setTicketTarget({ rule, resource });
+        setIsTicketFormOpen(true);
+      },
+    }),
+    []
+  );
 
   const providerOf = useCallback((id: string) => providerById?.[id], [providerById]);
 
@@ -78,6 +112,9 @@ const CloudPostureView = ({ accountId, accountsById, providerById, leadingFilter
   }, [load]);
 
   const visible = useMemo(() => (severity ? rules.filter((r) => normalizeSeverity(r.severity) === severity) : rules), [rules, severity]);
+  // Resources failing the checks currently in view — the same total the tab
+  // strip's badge shows, so a severity filter narrows both together.
+  const failingResources = useMemo(() => visible.reduce((total, rule) => total + (Number(rule.count) || 0), 0), [visible]);
 
   const tableData = useMemo(
     () =>
@@ -112,12 +149,19 @@ const CloudPostureView = ({ accountId, accountsById, providerById, leadingFilter
 
   return (
     <>
-      <CloudRulePanel
-        open={Boolean(panelRule)}
-        onClose={() => setPanelRule(null)}
-        rule={panelRule}
-        accountsById={accountsById}
-        scopeAccountId={accountId}
+      <TicketCreatePopupForm
+        open={isTicketFormOpen}
+        handleClose={closeTicketForm}
+        onClose={closeTicketForm}
+        onSuccess={({ ticketId }: any = {}) => snackbar.success(`Ticket ${ticketId || ''} created`)}
+        onFailure={(res: any) => snackbar.error(`Failed! ${res}.`)}
+        ticketData={{
+          subject: `Cloud Posture - ${cloudRuleTitle(ticketTarget?.rule?.ruleName || '', undefined)}`,
+          description: ticketDescription(ticketTarget),
+          accountId: ticketTarget?.resource?.account_id,
+        }}
+        ticketUrl={{}}
+        reference={{ id: ticketTarget?.resource?.id, type: 'cloud' }}
       />
       <ListingLayout id='cloud-posture'>
         <ListingLayout.Toolbar actions={<DownloadButton id={`${TABLE_ID}-download`} onClick={() => ({ tableId: TABLE_ID })} />}>
@@ -129,11 +173,22 @@ const CloudPostureView = ({ accountId, accountsById, providerById, leadingFilter
             options={SEVERITY_OPTIONS}
             onSelect={(event: any) => setSeverity(event?.target?.value || null)}
           />
-          <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], alignSelf: 'center' }}>
-            {visible.length} {visible.length === 1 ? 'check' : 'checks'} failing
-          </Typography>
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
+          {/* Below the filter row, inside the card — the same slot and the same
+              InfographicList the Image Scan tab uses for its Images/Apps pair.
+              These totals were 11px grey text trailing the filters: output
+              sitting in the input row, in the most de-emphasised text the app
+              has, while the sibling Security tab gave identical information a
+              block of its own. */}
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: ds.space[3] }}>
+            <InfographicList
+              sequence={[
+                { text: 'Checks', value: visible.length },
+                { text: 'Resources', value: failingResources.toLocaleString() },
+              ]}
+            />
+          </Box>
           <CustomTable
             id={TABLE_ID}
             headers={HEADERS}
@@ -142,7 +197,25 @@ const CloudPostureView = ({ accountId, accountsById, providerById, leadingFilter
             rowsPerPage={tableData.length}
             totalRows={tableData.length}
             tableHeadingCenter={['Severity']}
-            onRowClick={(query: any) => query?.rule && setPanelRule(query.rule)}
+            showExpandable
+            expandable={{
+              tabs: [
+                {
+                  text: 'Resources',
+                  value: 0,
+                  key: 'cloud-posture-rule-resources',
+                  componentFn: (_option: any, drilldownQuery: any) =>
+                    drilldownQuery?.rule ? (
+                      <CloudRuleResources
+                        rule={drilldownQuery.rule}
+                        scopeAccountId={accountId}
+                        accountsById={accountsById}
+                        rowActions={resourceRowActions}
+                      />
+                    ) : null,
+                },
+              ],
+            }}
             showUpdatedEmptyData={tableData.length === 0}
             emptyHeading='No cloud posture findings'
             emptySubHeading='Checks appear here after a cloud account is scanned.'
