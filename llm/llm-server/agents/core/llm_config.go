@@ -1688,12 +1688,19 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 		return nil, err
 	}
 	slog.Info("Using OpenAI LLM", "model", modelName, "agentName", agentName, "apiType", apiType)
+	var wrapped llms.Model = llm
+	if strings.EqualFold(provider, ProviderCustom) {
+		// Self-hosted/gateway models behind `custom` (vLLM, SGLang, ...) often serve a strict
+		// chat template (e.g. Qwen's) that rejects more than one system message. planner_react_3.go
+		// sends several. See openai_system_message_merge.go.
+		wrapped = wrapMergeSystemMessages(wrapped)
+	}
 	// Strip llm-server-internal thinking keys (ThinkingBudget/ThinkingLevel) from Metadata so
 	// they never serialize into the outbound OpenAI `metadata` field — the langchaingo openai
 	// client only filters "openai:"-prefixed keys, and strict OpenAI-compatible providers (Vertex
 	// via the NB AI Gateway) reject non-string metadata. Covers `custom` too (getCustomLLM
 	// delegates here). See openai_thinking_metadata.go.
-	return wrapStripInternalThinkingMetadata(llm), nil
+	return wrapStripInternalThinkingMetadata(wrapped), nil
 }
 
 // getCustomLLM serves any provider exposing OpenAI's Chat Completions
