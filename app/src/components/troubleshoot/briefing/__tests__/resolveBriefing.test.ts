@@ -1,7 +1,6 @@
 import { BACKLOG_THRESHOLD, FLAGGED_CAP, INCIDENT_P1_THRESHOLD, resolveBriefing, type BriefingPayload } from '../resolveBriefing';
 
 const NOW = Date.parse('2026-08-05T00:00:00Z');
-const daysAgo = (days: number) => new Date(NOW - days * 86400000).toISOString();
 
 /**
  * The approved prototype's dataset, reconstructed. Every assertion below that
@@ -35,11 +34,6 @@ const prototypePayload = (): BriefingPayload => ({
     { aggregation_key: 'SLOViolation', event_count: 91 },
   ],
   firingNow: 32,
-  stuckFiring: [
-    { created_at: daysAgo(40), event_count: 10 },
-    { created_at: daysAgo(25), event_count: 61 },
-    { created_at: daysAgo(10), event_count: 10 },
-  ],
   thresholdSuggestions: [
     {
       alert_name: 'OtelDemoHighLatency',
@@ -51,7 +45,6 @@ const prototypePayload = (): BriefingPayload => ({
   investigations: { total: 54, completed: 48 },
   windowStartMs: NOW - 86400000,
   windowEndMs: NOW,
-  nowMs: NOW,
 });
 
 const byKey = (items: { key: string }[], key: string) => items.find((item) => item.key === key) as any;
@@ -163,9 +156,9 @@ describe('resolveBriefing — reproduces the approved prototype', () => {
   });
 
   it('renders column D — kind, entity and measurement per finding', () => {
-    expect(model.findings.map((finding) => finding.kind)).toEqual(['NOISE SOURCE', 'TUNING AVAILABLE', 'DATA INTEGRITY']);
-    expect(model.callouts.map((entry) => entry.key)).toEqual(['noise-source', 'tuning', 'data-integrity']);
-    expect(model.flaggedMeta).toBe('3 fired');
+    expect(model.findings.map((finding) => finding.kind)).toEqual(['NOISE SOURCE', 'TUNING AVAILABLE']);
+    expect(model.callouts.map((entry) => entry.key)).toEqual(['noise-source', 'tuning']);
+    expect(model.flaggedMeta).toBe('2 fired');
 
     const noise = callout(model, 'noise-source');
     expect(noise.kind).toBe('NOISE SOURCE');
@@ -182,11 +175,6 @@ describe('resolveBriefing — reproduces the approved prototype', () => {
       drill: { status: 'ALL', eventAggregationKey: 'image_pull_backoff_reporter' },
     });
     expect(callout(model, 'tuning').action).toEqual({ text: 'review the fix →', href: '/troubleshoot#all-events/threshold-suggestions' });
-
-    // Data integrity is a danger-toned finding, so it reads red rather than amber.
-    expect(callout(model, 'data-integrity').title).toBe('81 events stuck firing');
-    expect(callout(model, 'data-integrity').detail).toBe('median age 25 days — never closed');
-    expect(callout(model, 'data-integrity').tone).toBe('critical');
   });
 
   it('notes the trigger that did not fire, without turning it into a finding', () => {
@@ -202,7 +190,7 @@ describe('resolveBriefing — reproduces the approved prototype', () => {
 
   it('resolves NORMAL mode', () => {
     expect(model.mode).toBe('NORMAL');
-    expect(model.flags).toEqual({ degraded: true, coverageGap: false, backlog: false });
+    expect(model.flags).toEqual({ coverageGap: false, backlog: false });
   });
 });
 
@@ -269,8 +257,8 @@ describe('resolveBriefing — mode resolution is exclusive', () => {
     const model = resolveBriefing(payload);
 
     expect(model.mode).toBe('INCIDENT');
-    expect(model.findings.map((finding) => finding.kind)).toEqual(['NOISE SOURCE', 'TUNING AVAILABLE', 'DATA INTEGRITY']);
-    expect(model.flaggedMeta).toBe('3 fired');
+    expect(model.findings.map((finding) => finding.kind)).toEqual(['NOISE SOURCE', 'TUNING AVAILABLE']);
+    expect(model.flaggedMeta).toBe('2 fired');
     expect(model.callouts.map((entry) => entry.key)).not.toContain('flagged-status');
   });
 
@@ -311,14 +299,6 @@ describe('resolveBriefing — flags fire independently', () => {
     const model = resolveBriefing(payload);
     expect(model.flags.coverageGap).toBe(true);
     expect(model.flags.backlog).toBe(false);
-  });
-
-  it('clears degraded when nothing is stuck', () => {
-    const payload = prototypePayload();
-    payload.stuckFiring = [];
-    const model = resolveBriefing(payload);
-    expect(model.flags.degraded).toBe(false);
-    expect(model.findings.map((finding) => finding.kind)).not.toContain('DATA INTEGRITY');
   });
 });
 
@@ -363,12 +343,10 @@ describe('resolveBriefing — degenerate inputs', () => {
     disagreement: [],
     bySignalClass: [],
     firingNow: 0,
-    stuckFiring: [],
     thresholdSuggestions: [],
     investigations: null,
     windowStartMs: NOW - 86400000,
     windowEndMs: NOW,
-    nowMs: NOW,
   };
 
   it('renders an empty window without dividing by zero', () => {

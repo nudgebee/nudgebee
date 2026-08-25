@@ -1942,14 +1942,7 @@ const apiKubernetes1 = {
   //   - EVENTS (raw count(*))          — "events ingested", the correlation splits
   //   - ISSUES (distinct fingerprints) — everything the user acts on
   // Blocks that count issues carry the distinct-over-fingerprint transformation.
-  briefingAggregates: async function (data: {
-    startDate: string;
-    endDate: string;
-    bandStartDate: string;
-    stuckBeforeDate: string;
-    stuckAfterDate: string;
-    accountId?: string[] | string;
-  }) {
+  briefingAggregates: async function (data: { startDate: string; endDate: string; bandStartDate: string; accountId?: string[] | string }) {
     const DISTINCT_ISSUES = '[{name: "event_count", expr: "distinct", args: ["fingerprint"]}]';
     const BRIEFING_AGGREGATES = `
     query NubiBriefingAggregates {
@@ -1976,6 +1969,11 @@ const apiKubernetes1 = {
         }
       }
 
+      # P0-only on purpose. The briefing reads exactly one number off this block
+      # (the P0 trailing count); grouping the whole 30-day band by rank made the
+      # engine sort every issue in the band to disk to produce four rows we throw
+      # away, and it was the slowest query in the briefing by an order of
+      # magnitude. Keeping group_by means the shape still matches by_rank.
       by_rank_30d: event_groupings_v2(
         where: __WHERE_BAND__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
       ) {
@@ -2011,15 +2009,6 @@ const apiKubernetes1 = {
           event_count
         }
       }
-
-      stuck_firing: event_groupings_v2(
-        where: __WHERE_STUCK__, group_by: ["created_at"], column_transformations: [{name: "created_at", expr: "date_unit", args: ["day"]}], columns: ["created_at", "event_count"]
-      ) {
-        rows {
-          created_at
-          event_count
-        }
-      }
     }
     `;
 
@@ -2036,23 +2025,17 @@ const apiKubernetes1 = {
     // derived from the window itself would compare a number to itself. That is
     // why by_rank_30d doesn't reuse __WHERE__.
     const bandRange = [{ created_at: { _gte: data.bandStartDate } }, { created_at: { _lte: data.endDate } }];
-    // "Stuck firing" is a standing integrity check, not a window metric: alerts
-    // still FIRING long after they arrived. Bounded below so the scan can't walk
-    // the whole table on a large tenant.
-    const stuckRange = [{ created_at: { _gte: data.stuckAfterDate } }, { created_at: { _lte: data.stuckBeforeDate } }];
 
     const base: any = { ...accountFilter, ...excludeKeys };
     const request = { _and: windowRange, ...base };
-    const requestBand = { _and: bandRange, ...base };
+    const requestBand = { _and: bandRange, computed_priority: { _eq: 'P0' }, ...base };
     const requestFiring = { _and: windowRange, status: { _eq: 'FIRING' }, ...base };
-    const requestStuck = { _and: stuckRange, status: { _eq: 'FIRING' }, ...base };
 
     try {
       return await queryGraphQL(
         BRIEFING_AGGREGATES.replaceAll('__WHERE__', gqlStringify(request))
           .replaceAll('__WHERE_BAND__', gqlStringify(requestBand))
-          .replace('__WHERE_FIRING__', gqlStringify(requestFiring))
-          .replace('__WHERE_STUCK__', gqlStringify(requestStuck)),
+          .replace('__WHERE_FIRING__', gqlStringify(requestFiring)),
         'NubiBriefingAggregates',
         {}
       );

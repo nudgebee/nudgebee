@@ -1,30 +1,4 @@
-import { formatDays, formatDuration, formatPercent, formatShare, formatWindowLength, weightedMedian } from '../format';
-
-describe('weightedMedian', () => {
-  it('returns the bucket where cumulative weight crosses half', () => {
-    expect(
-      weightedMedian([
-        { value: 1, weight: 1 },
-        { value: 25, weight: 100 },
-        { value: 90, weight: 2 },
-      ])
-    ).toBe(25);
-  });
-
-  it('returns 0 when there is no weight', () => {
-    expect(weightedMedian([])).toBe(0);
-    expect(weightedMedian([{ value: 10, weight: 0 }])).toBe(0);
-  });
-
-  it('is order-independent', () => {
-    const buckets = [
-      { value: 90, weight: 2 },
-      { value: 1, weight: 1 },
-      { value: 25, weight: 100 },
-    ];
-    expect(weightedMedian(buckets)).toBe(25);
-  });
-});
+import { formatDuration, formatPercent, formatShare, formatWindowLength } from '../format';
 
 describe('share and percent', () => {
   it('shows one decimal only when it carries information', () => {
@@ -54,12 +28,6 @@ describe('durations', () => {
   it('drops minutes once days are in play', () => {
     expect(formatDuration((3 * 24 * 60 + 4 * 60 + 30) * 60000)).toBe('3d 4h');
     expect(formatDuration(2 * 24 * 60 * 60000)).toBe('2d');
-  });
-
-  it('pluralises days', () => {
-    expect(formatDays(1)).toBe('1 day');
-    expect(formatDays(25)).toBe('25 days');
-    expect(formatDays(0)).toBe('0 days');
   });
 });
 
