@@ -73,16 +73,23 @@ Playwright picks the env file via `E2E_ENVIRONMENT`:
 |-------------------|-------------|----------------------------------------|
 | _unset_ / `test`  | `.env`      | Runs against the staging (`test`) env  |
 | `dev`             | `.env.dev`  | Runs against the dev env               |
+| `oss`             | `.env.oss`  | Runs against the hosted OSS deployment |
 
-In CI the env vars are injected from GitHub secrets — no file is needed.
+**[`.env.example`](.env.example) is the full list** of variables the suite reads —
+what each one is for, which are required, and which specs self-skip without them.
+Copy it to the file for your environment and fill in the values.
 
-A typical `.env` looks like:
+The minimum for any run:
 
 ```ini
-BASE_URL=https://test.example.com
-USER_EMAIL=qa-bot@example.com
-USER_PASSWORD=...
+BASE_URL=https://app.example.com
+LDAP_USERNAME=qa-bot
+LDAP_PASSWORD=...
+CLUSTER=iteration-1
 ```
+
+In CI no file is checked in: `.github/workflows/e2e-oss.yaml` writes `.env.oss`
+from the `E2E_OSS_ENV` GitHub Actions secret, whose value is an entire env file.
 
 ## Writing a new test
 

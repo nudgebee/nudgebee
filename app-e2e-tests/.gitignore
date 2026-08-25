@@ -24,6 +24,8 @@ user.json
 .env.*
 # .env.oss holds real hosted secrets for local OSS runs — must NOT be committed
 .env.oss
+# ...but the placeholder template is committed
+!.env.example
 users.ts
 
 # --- OS & IDE Settings ---
