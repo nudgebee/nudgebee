@@ -1,5 +1,5 @@
 install:
-	pip install -e ".[dev,test]"
+	pip3 install -e ".[dev,test]"
 
 fmt:
 	black .

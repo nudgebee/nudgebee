@@ -168,7 +168,7 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
         }
       })
       .catch((error) => {
-        console.error(`Error fetching ECS metrics for ${resourceId || 'account ' + accountId}:`, error);
+        console.error('Error fetching ECS metrics', { resourceId, accountId, error });
         setRenderMetricsData({});
       })
       .finally(() => setLoadingMetrics(false));

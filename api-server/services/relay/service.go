@@ -842,7 +842,7 @@ func pushProxyConfigAsync(accountID string, datasources []ProxyDatasourceConfig)
 // The proxy agent returns a flat {data: "<json-string>"} response, unlike the k8s
 // agent's nested findings/evidence envelope.
 func ExecuteProxy(accountID string, action string, datasourceID string, params map[string]any, timeoutSeconds int) (map[string]any, error) {
-	proxyParams := make(map[string]any, len(params)+1)
+	proxyParams := make(map[string]any)
 	for k, v := range params {
 		proxyParams[k] = v
 	}

@@ -37,6 +37,16 @@ export interface LinkProps {
   maxWidth?: string;
 }
 
+const SAFE_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
+export const isSafeLinkHref = (href: string): boolean => {
+  try {
+    return SAFE_LINK_PROTOCOLS.has(new URL(href, 'https://nudgebee.invalid').protocol);
+  } catch {
+    return false;
+  }
+};
+
 export function Link({
   href,
   children,
@@ -49,19 +59,27 @@ export function Link({
   OpenInNewIconSx = {},
   maxWidth,
 }: LinkProps) {
+  const hasSafeHref = isSafeLinkHref(href);
+  const safeHref = hasSafeHref ? href : '#';
+
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.stopPropagation();
+    if (!hasSafeHref) {
+      e.preventDefault();
+      return;
+    }
     onClick?.(e);
   };
 
   const link = (
     <NextLink
       passHref
-      href={href}
+      href={safeHref}
       onClick={handleClick}
       // @ts-expect-error legacy passthrough — preserved for any callers that depended on it
       prop={prop}
       target={openInNew ? '_blank' : target}
+      rel={openInNew || target === '_blank' ? 'noopener noreferrer' : undefined}
       style={{
         display: 'inline-flex',
         alignItems: 'center',

@@ -20,7 +20,7 @@ import (
 // the idiomatic way to reach the API and omits the host entirely.
 var foreignPRLookupPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\brepos/([\w.-]+)/([\w.-]+)/(?:pulls|issues)\b`),
-	regexp.MustCompile(`(?i)https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/\d+`),
+	regexp.MustCompile(`(?i)(?:^|[\s"'])https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/\d+`),
 	// `gh pr view 123 --repo owner/name` / `-R owner/name`. The flag alone is not
 	// enough — `gh repo view --repo o/r` is fine — so require a pr/issue command.
 	regexp.MustCompile(`(?i)\bgh\s+(?:pr|issue)\b[^|;&]*?(?:--repo|-R)[= ]+([\w.-]+)/([\w.-]+)`),
@@ -48,8 +48,7 @@ var ghContentFlags = map[string]bool{
 // would be refused and the orchestrator could not open a PR at all. The target
 // of a gh command is always a positional argument or --repo, never body text.
 func ghCommandForScopeCheck(args []string) string {
-	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, "gh")
+	parts := []string{"gh"}
 	for i := 0; i < len(args); i++ {
 		if ghContentFlags[args[i]] {
 			i++ // skip the flag's value too

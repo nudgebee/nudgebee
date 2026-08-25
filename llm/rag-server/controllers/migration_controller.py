@@ -217,9 +217,9 @@ async def get_rag_collection_mappings():
 
         return {"success": True, "count": len(mappings), "mappings": mappings}
 
-    except Exception as e:
-        logger.error(f"Error fetching RAG collection mappings: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error fetching RAG collection mappings")
+        raise HTTPException(status_code=500, detail="Failed to fetch RAG collection mappings")
 
 
 @router.post("/rag-collections/rename")
@@ -353,9 +353,9 @@ async def rename_rag_collections(request: RAGCollectionRenameRequest):
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error renaming RAG collections: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error renaming RAG collections")
+        raise HTTPException(status_code=500, detail="Failed to rename RAG collections")
 
 
 @router.get("/rag-collections/verify")
@@ -424,9 +424,9 @@ async def verify_rag_collections():
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error verifying RAG collections: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error verifying RAG collections")
+        raise HTTPException(status_code=500, detail="Failed to verify RAG collections")
 
 
 @router.post("/rag-collections/cleanup")
@@ -511,6 +511,6 @@ async def cleanup_old_rag_collections(confirm: bool = False):
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error cleaning up old RAG collections: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error cleaning up old RAG collections")
+        raise HTTPException(status_code=500, detail="Failed to clean up old RAG collections")

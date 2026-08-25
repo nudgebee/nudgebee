@@ -205,7 +205,9 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
         const annotations = workload.meta?.config?.annotations || {};
         const labels = workload.meta?.config?.labels || {};
         setGitOpsInfo(detectGitOpsManager(annotations, labels));
-        const filteredKeys = Object.keys(annotations).filter((key) => key.startsWith(CI_PREFIX) || key.startsWith('argocd.argoproj.io'));
+        const filteredKeys = Object.keys(annotations).filter(
+          (key) => key.startsWith(CI_PREFIX) || key === 'argocd.argoproj.io' || key.startsWith('argocd.argoproj.io/')
+        );
         if (filteredKeys.length > 0) {
           const filteredObject: Record<string, string> = {};
           filteredKeys.forEach((key) => {
@@ -241,8 +243,8 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
   const detectGitProvider = (repoUrl: string | undefined) => {
     if (!repoUrl) return null;
     const url = repoUrl.toLowerCase();
-    if (url.includes('github.com')) return 'github';
-    if (url.includes('gitlab')) return 'gitlab';
+    if (/(?:^|\.)github\.com(?:\/|:|$)/.test(url)) return 'github';
+    if (/(?:^|\.)gitlab\.com(?:\/|:|$)/.test(url) || url.includes('gitlab')) return 'gitlab';
     return null;
   };
 

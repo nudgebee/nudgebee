@@ -44,6 +44,9 @@ interface DropdownOption {
   value: string;
 }
 
+const isSafeObjectKey = (key: unknown): key is string =>
+  typeof key === 'string' && key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
+
 const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   accountId,
   alertManagerObject,
@@ -192,12 +195,14 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   );
 
   const validateFormData = () => {
-    const errors: any = {};
+    const errors: any = Object.create(null);
 
     selectedActions.forEach((action: any) => {
+      if (!isSafeObjectKey(action.id) || !isSafeObjectKey(action.value)) return;
       const actionConfig = actionsMap[action.value];
       if (actionConfig?.params) {
         Object.entries(actionConfig.params).forEach(([paramName, paramConfig]: any) => {
+          if (!isSafeObjectKey(paramName)) return;
           const fieldValue = formData[action.id]?.[paramName];
           const isArrayType = paramConfig.type === 'string[]' || paramConfig.type === 'object[]' || paramConfig.type === 'list'; // Include 'list' if it can be multi-select array
 
@@ -424,8 +429,9 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   }, [actions]);
 
   const clearFormError = (actionId: string, paramName: string) => {
+    if (!isSafeObjectKey(actionId) || !isSafeObjectKey(paramName)) return;
     setFormErrors((prevErrors) => {
-      const newErrors = { ...prevErrors };
+      const newErrors = Object.assign(Object.create(null), prevErrors);
       if (newErrors[actionId]) {
         delete newErrors[actionId][paramName];
         if (Object.keys(newErrors[actionId]).length === 0) {

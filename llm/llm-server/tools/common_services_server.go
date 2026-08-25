@@ -151,7 +151,7 @@ func setRequestIndex(logRequest *services_server.LogQueryRequest, index string) 
 	if index == "" {
 		return
 	}
-	bag := make(map[string]any, len(logRequest.Request)+1)
+	bag := make(map[string]any)
 	for k, v := range logRequest.Request {
 		bag[k] = v
 	}
