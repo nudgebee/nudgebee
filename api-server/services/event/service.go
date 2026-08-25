@@ -2900,7 +2900,12 @@ func linkCloudResourceId(webhookEvent *Event, evidenceResponse []eventrule.Playb
 		}
 		var cloudResourceUUID string
 		err = dbms.Db.QueryRowx(
-			"SELECT id FROM cloud_resourses WHERE account = $1 AND (resourse_id = $2 OR arn = $3) LIMIT 1",
+			// Both the bulk sync and the realtime EventBridge path store the real ARN in
+			// arn, so a resource that historically got a row from each matches twice here.
+			// Order so a live row always wins over an archived one before LIMIT 1 picks,
+			// otherwise the event can be attached to a tombstone at random.
+			"SELECT id FROM cloud_resourses WHERE account = $1 AND (resourse_id = $2 OR arn = $3) "+
+				"ORDER BY is_active DESC, last_seen DESC LIMIT 1",
 			webhookEvent.AccountId, resourceId, resourceArn,
 		).Scan(&cloudResourceUUID)
 		if err == nil && cloudResourceUUID != "" {
