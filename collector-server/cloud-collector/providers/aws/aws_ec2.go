@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"sort"
@@ -592,6 +593,59 @@ func (a *amazonEc2) fetchVolumesAndSnapshots(ctx providers.CloudProviderContext,
 }
 
 // https://www.trendmicro.com/cloudoneconformity-staging/knowledge-base/aws/EC2/
+// gp3 baseline performance is included free in the per-GB price (AWS EBS docs).
+// gp2 performance instead scales with volume size, so gp3 at these defaults is a
+// downgrade for larger gp2 volumes unless matching IOPS/throughput are provisioned.
+//
+// gp2 IOPS = clamp(3*GiB, 100, 16000); baseline exceeds gp3's 3000 above ~1000 GiB.
+// gp2 throughput = up to 128 MiB/s at <=170 GiB (within noise of gp3's 125), and up to
+// 250 MiB/s above 170 GiB (bursting from 171-333 GiB, sustained from 334 GiB) — above
+// gp3's flat 125 default, so every gp2 volume larger than 170 GiB needs gp3 throughput
+// provisioned to avoid a silent downgrade.
+const (
+	gp3DefaultIOPS       = 3000
+	gp3DefaultThroughput = 125 // MiB/s
+	gp2MaxThroughput     = 250 // MiB/s, gp2's ceiling above gp2ThroughputTierSizeGiB
+	gp2MinIOPS           = 100
+	gp2MaxIOPS           = 16000
+
+	// gp2 volumes larger than 170 GiB can deliver more than gp3's 125 MiB/s default
+	// (up to 250 MiB/s), so from here up gp3 needs throughput provisioned to match.
+	gp2ThroughputTierSizeGiB = 170
+)
+
+// gp3MatchConfig describes the gp3 IOPS/throughput needed to match a gp2 volume's
+// size-derived performance. Zero values mean gp3's free defaults already suffice.
+type gp3MatchConfig struct {
+	RecommendIOPS       int
+	RecommendThroughput int
+	NeedsProvisioning   bool // true => gp3 at defaults would be a downgrade
+}
+
+// gp2ToGp3Match computes, from a gp2 volume's size in GiB, whether upgrading to gp3
+// at default settings would lose performance and, if so, the gp3 IOPS/throughput that
+// keep parity. Pure function of size — see aws_ec2_test.go for the boundary table.
+func gp2ToGp3Match(sizeGiB float64) gp3MatchConfig {
+	gp2IOPS := int(math.Round(3 * sizeGiB))
+	if gp2IOPS < gp2MinIOPS {
+		gp2IOPS = gp2MinIOPS
+	}
+	if gp2IOPS > gp2MaxIOPS {
+		gp2IOPS = gp2MaxIOPS
+	}
+
+	cfg := gp3MatchConfig{}
+	if gp2IOPS > gp3DefaultIOPS { // size > ~1000 GiB
+		cfg.RecommendIOPS = gp2IOPS
+		cfg.NeedsProvisioning = true
+	}
+	if sizeGiB > gp2ThroughputTierSizeGiB { // gp2 above 170 GiB can exceed gp3's 125 MiB/s
+		cfg.RecommendThroughput = gp2MaxThroughput
+		cfg.NeedsProvisioning = true
+	}
+	return cfg
+}
+
 func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
@@ -682,20 +736,36 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 
 			// check for gp2 volumes and recommend to upgrade to gp3
 			if volumeType, ok := resource.Meta["VolumeType"].(string); ok && volumeType == "gp2" {
+				data := map[string]any{
+					"volume_id":                resource.Id,
+					"volume_arn":               resource.Arn,
+					"volume_type":              resource.Meta["VolumeType"],
+					"volume_region":            resource.Region,
+					"volume_size":              size,
+					"recommendded_volume_type": "gp3",
+					"volume_state":             resource.Meta["State"],
+				}
+
+				// gp3 at its free defaults (3000 IOPS / 125 MiB/s) is a downgrade for larger
+				// gp2 volumes, whose performance scales with size. When so, carry the gp3
+				// IOPS/throughput needed to match the gp2 so the upgrade is never a silent
+				// downgrade, and disclose that matching performance is billed separately.
+				if match := gp2ToGp3Match(size); match.NeedsProvisioning {
+					if match.RecommendIOPS > 0 {
+						data["recommended_iops"] = match.RecommendIOPS
+					}
+					if match.RecommendThroughput > 0 {
+						data["recommended_throughput"] = match.RecommendThroughput
+					}
+					data["note"] = "To preserve current performance, gp3 must be provisioned with the recommended IOPS/throughput (billed separately). The saving shown reflects storage cost only."
+				}
+
 				recommendation := providers.Recommendation{
-					CategoryName: providers.RecommendationCategoryInfraUpgrade,
-					RuleName:     "aws_ec2_ebs_generation_upgrade",
-					Severity:     providers.RecommendationSeverityMedium,
-					Savings:      size * 0.02,
-					Data: map[string]any{
-						"volume_id":                resource.Id,
-						"volume_arn":               resource.Arn,
-						"volume_type":              resource.Meta["VolumeType"],
-						"volume_region":            resource.Region,
-						"volume_size":              size,
-						"recommendded_volume_type": "gp3",
-						"volume_state":             resource.Meta["State"],
-					},
+					CategoryName:        providers.RecommendationCategoryInfraUpgrade,
+					RuleName:            "aws_ec2_ebs_generation_upgrade",
+					Severity:            providers.RecommendationSeverityMedium,
+					Savings:             size * 0.02,
+					Data:                data,
 					Action:              providers.RecommendationActionModify,
 					ResourceServiceName: resource.ServiceName,
 					ResourceId:          resource.Id,
