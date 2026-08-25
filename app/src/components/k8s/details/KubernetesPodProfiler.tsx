@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Box, Dialog, DialogActions, DialogContent, DialogTitle, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Modal } from '@ui/Modal';
 import { Input } from '@ui/Input';
 import Loader from '@shared/Loader';
 import ListingLayout from '@ui/ListingLayout';
@@ -632,30 +633,25 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           {!readOnlyMode && (
-            <Dialog
+            <Modal
               open={showTrendChart}
-              maxWidth='md'
-              fullWidth
+              width='md'
               onClose={() => setShowTrendChart(false)}
-              aria-labelledby='alert-dialog-title'
-              aria-describedby='alert-dialog-description'
-            >
-              <DialogTitle id='alert-dialog-title'>Pod Profile</DialogTitle>
-              <DialogContent>
-                <KubernetesPodProfilerHistory
-                  accountId={accountId}
-                  query={{
-                    podName: query.pod_name,
-                    namespaceName: query.namespace_name,
-                  }}
-                />
-              </DialogContent>
-              <DialogActions sx={{ mx: 'var(--ds-space-6)', button: { minWidth: ds.space.mul(0, 70) } }}>
+              title='Pod Profile'
+              actionButtons={
                 <DsButton tone='secondary' size='md' onClick={() => setShowTrendChart(false)}>
                   Close
                 </DsButton>
-              </DialogActions>
-            </Dialog>
+              }
+            >
+              <KubernetesPodProfilerHistory
+                accountId={accountId}
+                query={{
+                  podName: query.pod_name,
+                  namespaceName: query.namespace_name,
+                }}
+              />
+            </Modal>
           )}
           {!readOnlyMode && !selectLang && (
             <Typography sx={{ color: 'var(--ds-red-500)', pt: 'var(--ds-space-2)' }}>Please select a language first and click submit.</Typography>
