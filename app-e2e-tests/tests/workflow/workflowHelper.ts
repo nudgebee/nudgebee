@@ -1,4 +1,4 @@
-import { Page, expect, test } from "@playwright/test";
+import { Locator, Page, expect, test } from "@playwright/test";
 import { LoginPage } from "../../pages/LoginPage";
 import { WorkflowLocators } from "./workflowlocators";
 import { waitForGraphQLAndValidate } from "../utils/GraphQLNetworkWatcher";
@@ -15,7 +15,7 @@ export async function deleteCreatedWorkflow(
 ): Promise<void> {
   let workflowId: string | undefined;
   try {
-    workflowId = new URL(page.url()).pathname.match(/\/workflow\/([0-9a-fA-F-]{36})/)?.[1];
+    workflowId = new URL(page.url()).pathname.match(/\/automation\/([0-9a-fA-F-]{36})/)?.[1];
   } catch {
     workflowId = undefined;
   }
@@ -53,6 +53,78 @@ export async function deleteCreatedWorkflow(
 }
 
 
+// The Create Automation modal needs an account before any card is clickable, so skipping this makes the card click a silent no-op.
+export async function selectAutomationAccount(
+  page: Page,
+  locators: WorkflowLocators,
+  accountName: string
+): Promise<void> {
+  // Callers pass process.env.CLUSTER!, which is undefined when the env file omits it — fail with a readable message.
+  if (!accountName) {
+    throw new Error("selectAutomationAccount needs an account name; set CLUSTER in the env file.");
+  }
+
+  // Fall back to the placeholder text if the select keeps its id but the app renames it.
+  const trigger = locators.createAccountSelect;
+  const openTarget = (await trigger.isVisible().catch(() => false))
+    ? trigger
+    : page.locator("div.MuiDialog-container").getByText("Select an account").first();
+  await openTarget.waitFor({ state: "visible", timeout: 15000 });
+  await openTarget.click();
+
+  const listbox = page.locator('[role="listbox"]');
+  await listbox.waitFor({ state: "visible", timeout: 10000 });
+
+  // The menu renders inside the aria-hidden dialog, so getByRole finds nothing here — CSS role selectors still work.
+  const options = listbox.locator('[role="option"]');
+
+  // The select is grouped: accounts live under collapsed provider headers (K8S/AWS/…), so no option
+  // exists in the DOM until a search auto-expands the matching group. Search first, wait after.
+  // Search only narrows the list; the exact match below does the picking so k8s-dev can't select k8s-dev-oss.
+  const search = listbox.getByPlaceholder(/Search/i);
+  const searchable = await search.isVisible().catch(() => false);
+  if (searchable) {
+    await search.fill(accountName);
+  }
+
+  // Wait for the filtered list to settle on the match instead of sleeping a fixed interval that CI load can outrun.
+  const escaped = accountName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exactMatch = () => options.filter({ hasText: new RegExp(`^${escaped}$`) });
+  const appears = (locator: Locator) =>
+    locator.first().waitFor({ state: "visible", timeout: 5000 }).then(() => true).catch(() => false);
+
+  let option = exactMatch();
+  let found = await appears(option);
+
+  // Fall back to expanding every group by hand, then to a loose match before giving up.
+  if (!found) {
+    if (searchable) {
+      await search.fill("");
+    }
+    const groupHeaders = listbox.locator('[role="button"]');
+    const headerCount = await groupHeaders.count();
+    for (let i = 0; i < headerCount; i++) {
+      await groupHeaders.nth(i).click().catch(() => {});
+    }
+    option = exactMatch();
+    found = await appears(option);
+    if (!found) {
+      option = options.filter({ hasText: accountName });
+      found = await appears(option);
+    }
+  }
+
+  if (!found) {
+    const available = await options.allTextContents();
+    throw new Error(
+      `Account "${accountName}" not found in the Create Automation account list. Available: ${available.join(", ") || "(none)"}`
+    );
+  }
+  await option.first().click();
+  await listbox.waitFor({ state: "hidden", timeout: 10000 }).catch(() => {});
+  console.log(`Selected automation account: ${accountName}`);
+}
+
 export async function loginAndNavigateToNewWorkflow(
   page: Page,
   locators: WorkflowLocators
@@ -69,14 +141,36 @@ export async function loginAndNavigateToNewWorkflow(
     .catch(() => page.waitForURL(/\/(auto-pilot|automation)/, { timeout: 15000 }));
   await locators.createAutomationBtn.click();
   await locators.createNewAutomationModal.waitFor({ state: "visible", timeout: 15000 });
+  await selectAutomationAccount(page, locators, process.env.CLUSTER!);
   await locators.makeAnAutomationCard.waitFor({ state: "visible", timeout: 10000 });
   await locators.makeAnAutomationCard.click();
 
-  await page.waitForURL(/.*\/workflow\/new.*/, { timeout: 30000 });
+  await page.waitForURL(/\/automation\/new/, { timeout: 30000 });
   await page.getByText("How should your Automation begin?").waitFor({ state: "visible", timeout: 30000 });
 
+  // Pick Manual Trigger in the "How should your Automation begin?" window.
+  const triggerPicker = page.getByText("How should your Automation begin?");
   await locators.manualTriggerOption.waitFor({ state: "visible", timeout: 15000 });
   await locators.manualTriggerOption.click();
+
+  // The picker only renders while the canvas is empty, so it hiding proves the trigger node was really added.
+  let triggerSelected = await triggerPicker
+    .waitFor({ state: "hidden", timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+
+  // Fall back to re-clicking, then to the card id, since a click that never registers otherwise passes silently.
+  if (!triggerSelected) {
+    await locators.manualTriggerOption.click();
+    triggerSelected = await triggerPicker
+      .waitFor({ state: "hidden", timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+  }
+  if (!triggerSelected) {
+    await page.locator("#wf-builder-trigger-option-manual-card").click();
+    await triggerPicker.waitFor({ state: "hidden", timeout: 10000 });
+  }
   console.log("Selected Manual Trigger");
 }
 
@@ -90,15 +184,40 @@ export async function pasteAndApplyWorkflowJson(
   await locators.codeMirrorEditor.waitFor({ state: "visible", timeout: 15000 });
 
   const jsonContent = JSON.stringify(workflowJson, null, 2);
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.evaluate(async (text) => {
-    await navigator.clipboard.writeText(text);
-  }, jsonContent);
+  // insertText instead of a clipboard paste: the clipboard is one OS-wide resource, so parallel workers overwrite each other.
   await locators.codeMirrorEditor.click();
   await page.keyboard.press("ControlOrMeta+A");
-  await page.keyboard.press("ControlOrMeta+V");
+  await page.keyboard.insertText(jsonContent);
 
-  await locators.applyJsonBtn.waitFor({ state: "visible", timeout: 15000 });
+  // CodeMirror virtualizes long documents, so assert on the name only — it sits on the first line of the JSON.
+  const pastedName = (workflowJson as { name?: string }).name;
+  const contentLanded = async () =>
+    !pastedName || (await locators.codeMirrorEditor.textContent().catch(() => ""))?.includes(pastedName) === true;
+
+  // Fall back to retyping, since Apply on a stale editor closes the panel and leaves the canvas empty.
+  if (!(await contentLanded())) {
+    await locators.codeMirrorEditor.click();
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.insertText(jsonContent);
+  }
+  if (pastedName) {
+    await expect(locators.codeMirrorEditor).toContainText(pastedName, { timeout: 15000 });
+  }
+
+  // Fall back to reopening the panel if Apply never appears, which happens when the editor renders only partially.
+  const applyVisible = await locators.applyJsonBtn
+    .waitFor({ state: "visible", timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!applyVisible) {
+    await locators.jsonPanelToggleBtn.click();
+    await locators.codeMirrorEditor.waitFor({ state: "visible", timeout: 15000 });
+    await locators.codeMirrorEditor.click();
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.insertText(jsonContent);
+    await locators.applyJsonBtn.waitFor({ state: "visible", timeout: 15000 });
+    console.log("Reopened JSON panel after Apply failed to render");
+  }
   await locators.applyJsonBtn.click();
   console.log("Applied workflow JSON");
 
@@ -111,7 +230,22 @@ export async function pasteAndApplyWorkflowJson(
     await jsonHeading.waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
   }
 
-  await page.locator(".react-flow__node").first().waitFor({ state: "visible", timeout: 15000 });
+  // Fall back to reopening the panel and applying again if the first Apply produced no nodes.
+  const firstNode = page.locator(".react-flow__node").first();
+  const nodesRendered = await firstNode
+    .waitFor({ state: "visible", timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!nodesRendered) {
+    await locators.jsonPanelToggleBtn.click();
+    await locators.codeMirrorEditor.waitFor({ state: "visible", timeout: 15000 });
+    await locators.codeMirrorEditor.click();
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.insertText(jsonContent);
+    await locators.applyJsonBtn.click();
+    await firstNode.waitFor({ state: "visible", timeout: 15000 });
+    console.log("Re-applied workflow JSON after empty canvas");
+  }
 }
 
 export async function saveNewWorkflow(
@@ -125,7 +259,7 @@ export async function saveNewWorkflow(
   await expect(locators.getSuccessMessage(workflowName)).toBeVisible({ timeout: 15000 });
   console.log(`Workflow '${workflowName}' created successfully`);
 
-  await page.waitForURL(/.*\/workflow\/(?!new).*/, { timeout: 30000 });
+  await page.waitForURL(/\/automation\/[0-9a-fA-F-]{36}/, { timeout: 30000 });
   await locators.saveBtn.waitFor({ state: "visible", timeout: 30000 });
 
   try {

@@ -185,3 +185,21 @@ def get_channel_settings(
     except Exception as e:
         LOG.error("Failed to read channel settings for %s/%s: %s", team_id, channel_id, e)
         return None
+
+
+def get_channel_name(session: Session, *, tenant_id, platform: str, team_id: str, channel_id: str) -> Optional[str]:
+    try:
+        row = (
+            session.query(MessagingChannelWatch.channel_name)
+            .filter(
+                MessagingChannelWatch.tenant_id == _to_uuid(tenant_id),
+                MessagingChannelWatch.platform == platform,
+                MessagingChannelWatch.team_id == team_id,
+                MessagingChannelWatch.channel_id == channel_id,
+            )
+            .first()
+        )
+        return row[0] if row else None
+    except Exception as e:
+        LOG.error("Failed to read channel name for %s/%s: %s", team_id, channel_id, e)
+        return None

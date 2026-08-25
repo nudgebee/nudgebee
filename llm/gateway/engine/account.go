@@ -5,6 +5,8 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+
+	"nudgebee/llm-gateway/config"
 )
 
 // nbAccount is the Bifrost Account backing the embedded core. It resolves the
@@ -73,6 +75,9 @@ func defaultProviderConfig(endpoint string) *schemas.ProviderConfig {
 	if endpoint != "" {
 		nc.BaseURL = endpoint
 	}
+	// Operator opt-in to reach RFC1918 private IPs (self-hosted / internal endpoints). Off
+	// by default; link-local/metadata stays blocked by Bifrost's dialer regardless.
+	nc.AllowPrivateNetwork = config.Config.AllowPrivateEndpoints
 	return &schemas.ProviderConfig{
 		NetworkConfig:            nc,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,

@@ -7,6 +7,8 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 func init() {
@@ -17,10 +19,10 @@ type knowledgeGraphServiceMapAction struct{}
 
 // KnowledgeGraphServiceMapResponse holds the KG neighborhood data for a service.
 type KnowledgeGraphServiceMapResponse struct {
-	Nodes          []KgNode `json:"nodes"`
-	Edges          []KgEdge `json:"edges"`
-	TargetService  string   `json:"target_service"`
-	Namespace      string   `json:"namespace"`
+	Nodes          []KgEvidenceNode `json:"nodes"`
+	Edges          []KgEdge         `json:"edges"`
+	TargetService  string           `json:"target_service"`
+	Namespace      string           `json:"namespace"`
 	additionalInfo map[string]any
 	insights       []playbooks.PlaybookActionResponseInsight
 }
@@ -99,6 +101,23 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	if err != nil || len(nodeIDs) == 0 {
 		// Fall back to tenant-wide search
 		nodeIDs, err = findServiceNodes(dbManager, ctx.GetTenantId(), "", serviceName, namespace)
+	}
+	if err != nil || len(nodeIDs) == 0 {
+		// Last resort: drop the namespace. A cloud event carries the provider's
+		// service code there (AmazonRDS, AWSELB) and cloud nodes carry no
+		// namespace, so the filtered attempts above could never match one. Only
+		// reached when the namespaced lookups found nothing, so a Kubernetes
+		// subject that does exist is still matched with its namespace first.
+		nodeIDs, err = findServiceNodes(dbManager, ctx.GetTenantId(), ctx.GetAccountId(), serviceName, "")
+	}
+	if err != nil || len(nodeIDs) == 0 {
+		// A load-balancer alarm identifies its subject by the CloudWatch
+		// dimension ("app/my-lb/1a2b3c"); the node is named "my-lb". Recover the
+		// name and retry. Returns "" for anything that is not such a dimension,
+		// so this is a no-op for every other subject.
+		if lbName := ELBV2LoadBalancerName(serviceName); lbName != "" {
+			nodeIDs, err = findServiceNodes(dbManager, ctx.GetTenantId(), ctx.GetAccountId(), lbName, "")
+		}
 		if err != nil || len(nodeIDs) == 0 {
 			logger.Info("knowledge_graph_service_map: no matching service nodes found",
 				"service", serviceName, "namespace", namespace)
@@ -110,12 +129,21 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	// focused. Storage is included so collapsed CALLS edges pointing at
 	// Storage nodes (S3, Cloud Storage buckets, etc.) surface in the
 	// neighborhood after core.CollapseEnrichedExternalServices runs.
-	serviceNodeTypes := []NodeType{
-		NodeTypeService, NodeTypeExternalService, NodeTypeDatabase,
-		NodeTypeMessageQueue, NodeTypeCache, NodeTypeStorage,
-		NodeTypeWorkload, NodeTypeK8sService,
-	}
-	graph, err := kgService.GetMultipleNodeNeighbors(reqCtx, nodeIDs, 1, serviceNodeTypes, true)
+	//
+	// ComputeInstance, LoadBalancer and ServerlessFunction are here because on a
+	// VM or serverless deployment they ARE the application — there is no Workload
+	// or Pod layer above them. Without them the neighbourhood of an AWS resource
+	// came back with the resource alone and no edges, even when the graph held
+	// `api instance --CALLS--> database`, because the only node that could sit on
+	// the other end of that edge was filtered out. An empty neighbourhood also
+	// starves event correlation, which walks this evidence: with no edges to
+	// traverse, dependency_distance is always 0 and no cross-tier correlation can
+	// ever be produced.
+	//
+	// Plumbing (VPC, Subnet, SecurityGroup) stays out on purpose: an AWS resource
+	// is attached to several of them, and they would crowd out the services an
+	// operator is looking for while adding no dependency information.
+	graph, err := kgService.GetMultipleNodeNeighbors(reqCtx, nodeIDs, 1, serviceMapNeighbourTypes, true)
 	if err != nil {
 		logger.Warn("knowledge_graph_service_map: failed to get neighbors", "error", err)
 		return nil, nil
@@ -141,7 +169,7 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	}
 
 	return &KnowledgeGraphServiceMapResponse{
-		Nodes:          graph.Nodes,
+		Nodes:          toEvidenceNodes(graph.Nodes),
 		Edges:          graph.Edges,
 		TargetService:  serviceName,
 		Namespace:      namespace,
@@ -150,18 +178,105 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	}, nil
 }
 
+// KgEvidenceNode is the projection of KgNode carried in the
+// knowledge_graph_service_map evidence block. A full KgNode is a copy of the
+// stored graph row — every property a source wrote, including the k8s
+// annotations map, which alone accounted for ~31% of one measured block
+// (22,539 of 72,671 bytes) via kubectl's last-applied-configuration. None of
+// the consumers of this evidence read those fields: the investigate UI renders
+// id / node_type / properties.name / properties.namespace (unique_key as the
+// name fallback), and triage's dependency parser needs the same set plus the
+// edges. Projecting here keeps the evidence to what is read instead of
+// filtering noisy keys one at a time.
+type KgEvidenceNode struct {
+	ID           string         `json:"id"`
+	NodeType     NodeType       `json:"node_type"`
+	SpecificType string         `json:"specific_type,omitempty"`
+	UniqueKey    string         `json:"unique_key"`
+	Properties   map[string]any `json:"properties"`
+}
+
+// evidenceNodeProperties is the property allowlist for KgEvidenceNode: what
+// the node is (name, namespace, cluster, kind, engine, role, region) and
+// whether it is healthy (phase, status, state, ready). Everything a service
+// map is asked — which neighbours surround the alerting resource, of what
+// kind, in what shape — is answerable from these; the rest (annotations,
+// container images, resource requests/limits, ARNs, timestamps) is reachable
+// from the KG APIs when an investigation actually needs it.
+var evidenceNodeProperties = []string{
+	"name", "namespace", "cluster",
+	"kind", "engine", "role", "region",
+	"phase", "status", "state", "ready",
+}
+
+// toEvidenceNodes projects each node onto KgEvidenceNode. Absent and nil
+// properties are skipped rather than emitted as nulls, so a node contributes
+// only the keys its source actually populated.
+func toEvidenceNodes(nodes []KgNode) []KgEvidenceNode {
+	evidenceNodes := make([]KgEvidenceNode, 0, len(nodes))
+	for i := range nodes {
+		properties := make(map[string]any, len(evidenceNodeProperties))
+		for _, key := range evidenceNodeProperties {
+			if value, present := nodes[i].Properties[key]; present && value != nil {
+				properties[key] = value
+			}
+		}
+		evidenceNodes = append(evidenceNodes, KgEvidenceNode{
+			ID:           nodes[i].ID,
+			NodeType:     nodes[i].NodeType,
+			SpecificType: nodes[i].SpecificType,
+			UniqueKey:    nodes[i].UniqueKey,
+			Properties:   properties,
+		})
+	}
+	return evidenceNodes
+}
+
+// seedNodeTypeNames is the SQL-facing form of ImpactSeedNodeTypes, built once
+// because the set is static and findServiceNodes runs per event.
+var seedNodeTypeNames = func() []string {
+	seedTypes := ImpactSeedNodeTypes()
+	names := make([]string, 0, len(seedTypes))
+	for _, nodeType := range seedTypes {
+		names = append(names, string(nodeType))
+	}
+	return names
+}()
+
+// serviceMapNeighbourTypes are the node types worth showing around an alerting
+// resource: things that carry or serve traffic, not the infrastructure a
+// resource merely sits in.
+var serviceMapNeighbourTypes = []NodeType{
+	NodeTypeService, NodeTypeExternalService, NodeTypeDatabase,
+	NodeTypeMessageQueue, NodeTypeCache, NodeTypeStorage,
+	NodeTypeWorkload, NodeTypeK8sService,
+	NodeTypeComputeInstance, NodeTypeLoadBalancer, NodeTypeServerlessFunction,
+}
+
 // findServiceNodes queries the KG for nodes matching a service name and namespace.
+//
+// The node types accepted are those the graph defines a blast-radius traversal
+// for (ImpactSeedNodeTypes) rather than a fixed list, so a cloud resource — a
+// Database, ComputeInstance or LoadBalancer — resolves as readily as a Workload.
+// Restricting to that set still excludes plumbing (SecurityGroup, Subnet, VPC),
+// which shares names with real resources and would otherwise match first.
+//
+// namespace is only applied when the caller supplies one, and cloud events
+// should not: they carry the provider's service code there (AmazonRDS, AWSELB)
+// while cloud nodes carry no namespace at all, so filtering on it can only ever
+// fail. Kubernetes callers must keep passing it — a workload name is unique only
+// within its namespace.
 func findServiceNodes(dbManager *database.DatabaseManager, tenantID, accountID, name, namespace string) ([]string, error) {
 	query := `
 		SELECT id FROM knowledge_graph_node
 		WHERE tenant_id = $1
 		  AND query_attributes->>'name' = $2
-		  AND node_type IN ('Service', 'Workload', 'K8sService')
+		  AND node_type = ANY($3)
 		  AND level = 'Tenant'
 		  AND is_active = true
 	`
-	args := []interface{}{tenantID, name}
-	argIdx := 3
+	args := []interface{}{tenantID, name, pq.Array(seedNodeTypeNames)}
+	argIdx := 4
 
 	if namespace != "" {
 		query += fmt.Sprintf(" AND query_attributes->>'namespace' = $%d", argIdx)

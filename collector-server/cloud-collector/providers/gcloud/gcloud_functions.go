@@ -189,9 +189,65 @@ func functionToResource(function *functionspb.Function, projectId string) provid
 func (s *cloudFunctionsService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
+	// Load GCP alarm templates for Cloud Functions
+	functionAlarmTemplates, err := LoadGCPAlarmTemplates(ServiceNameFunctions)
+	if err != nil {
+		ctx.GetLogger().Warn("Failed to load GCP Cloud Functions alarm templates", "error", err)
+		functionAlarmTemplates = []providers.AlarmTemplate{} // Continue with other recommendations
+	}
+
 	for _, resource := range existingResources {
 		if resource.ServiceName != ServiceNameFunctions {
 			continue
+		}
+
+		// Check for missing Cloud Monitoring alert policies. resource.Id is the
+		// plain function name, matching GCP Monitoring's function_name label.
+		resourceFilter := GetResourceFilterForService(ServiceNameFunctions, resource.Id)
+		for _, template := range functionAlarmTemplates {
+			isMissing, err := IsAlarmMissing(resource, template, resourceFilter)
+			if err != nil {
+				ctx.GetLogger().Warn("Failed to check if alarm is missing", "error", err, "template", template.Name)
+				continue
+			}
+
+			if !isMissing {
+				// Alarm already exists, skip
+				continue
+			}
+
+			// All Cloud Functions thresholds are static
+			threshold := template.ThresholdRules.Default
+
+			alarmConfig := buildGCPAlarmConfig(resource, template, threshold, []providers.AlarmDimension{
+				{Name: "function_name", Value: resource.Id},
+			})
+
+			recommendations = append(recommendations, providers.Recommendation{
+				CategoryName: providers.RecommendationCategoryConfiguration,
+				RuleName:     template.Name,
+				Severity:     providers.RecommendationSeverityFromString(template.Severity),
+				Savings:      0,
+				Data: map[string]any{
+					"function_id":     resource.Id,
+					"function_name":   resource.Name,
+					"function_region": resource.Region,
+					"runtime":         resource.Meta["runtime"],
+					"environment":     resource.Meta["environment"],
+					"metric_name":     template.Configuration.MetricName,
+					"threshold":       threshold,
+					"alarm_config":    alarmConfig,
+					"alarm_type":      template.AlarmType,
+					"reason":          template.Description,
+					"metric_type":     template.MetricType,
+					"project_id":      account.AccountNumber,
+				},
+				Action:              providers.RecommendationActionModify,
+				ResourceServiceName: resource.ServiceName,
+				ResourceId:          resource.Id,
+				ResourceType:        resource.Type,
+				ResourceRegion:      resource.Region,
+			})
 		}
 
 		// Recommendation 1: Check if function has no labels

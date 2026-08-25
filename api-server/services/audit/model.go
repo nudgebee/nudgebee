@@ -28,10 +28,13 @@ const (
 	EventAlertEvent                EventCategory = "EVENTS"
 	EventCategoryNotificationRules EventCategory = "NOTIFICATION_RULES"
 	EventChatActions               EventCategory = "NOTIFICATIONS_CHAT_ACTIONS"
-	EventAgentToken                EventCategory = "AGENT_TOKEN"
-	EventCategoryIntegration       EventCategory = "INTEGRATIONS"
-	EventCategoryTriage            EventCategory = "TRIAGE"
-	EventCategoryOwnership         EventCategory = "OWNERSHIP"
+	// EventCategoryChatActions buckets in-app ("Nubi") web chat interactions (follow-up answers, delete); distinct from EventChatActions ("NOTIFICATIONS_CHAT_ACTIONS"), the messaging-platform transport layer.
+	EventCategoryChatActions EventCategory = "CHAT_ACTIONS"
+	EventAgentToken          EventCategory = "AGENT_TOKEN"
+	EventCategoryIntegration EventCategory = "INTEGRATIONS"
+	EventCategoryTriage      EventCategory = "TRIAGE"
+	EventCategoryOwnership   EventCategory = "OWNERSHIP"
+	EventCategoryDashboard   EventCategory = "DASHBOARDS"
 )
 
 type EventType string
@@ -63,6 +66,12 @@ const (
 	EventTypeRoleAccountCreate EventType = "ROLE_ACCOUNT_CREATE"
 	EventTypeRoleAccountUpdate EventType = "ROLE_ACCOUNT_UPDATE"
 	EventTypeRoleAccountDelete EventType = "ROLE_ACCOUNT_DELETE"
+
+	// Dynamic-RBAC custom roles (tenant-defined permission bundles).
+	EventTypeCustomRoleCreate EventType = "CUSTOM_ROLE_CREATE"
+	EventTypeCustomRoleUpdate EventType = "CUSTOM_ROLE_UPDATE"
+	EventTypeCustomRoleDelete EventType = "CUSTOM_ROLE_DELETE"
+	EventTypeCustomRoleAssign EventType = "CUSTOM_ROLE_ASSIGN"
 
 	EventTypeUserLogin       EventType = "USER_AUTH_LOGIN"
 	EventTypeUserLoginCreate EventType = "USER_AUTH_CREATE"
@@ -192,6 +201,10 @@ const (
 	EventTypeSLOUpdate EventType = "SLO_UPDATE"
 	EventTypeSLODelete EventType = "SLO_DELETE"
 
+	EventTypeDashboardCreate EventType = "DASHBOARD_CREATE"
+	EventTypeDashboardUpdate EventType = "DASHBOARD_UPDATE"
+	EventTypeDashboardDelete EventType = "DASHBOARD_DELETE"
+
 	EventTypeSlackCommand     EventType = "NOTIFICATIONS_SLACK_COMMAND"
 	EventTypeSlackEvent       EventType = "NOTIFICATIONS_SLACK_EVENT"
 	EventTypeSlackInteraction EventType = "NOTIFICATIONS_SLACK_INTERACTION"
@@ -214,6 +227,9 @@ const (
 	EventTypeTenantOnboardingCreate EventType = "TENANT_ONBOARDING_CREATE"
 	EventTypeTenantOnboardingUpdate EventType = "TENANT_ONBOARDING_UPDATE"
 	EventTypeTenantOnboardingDelete EventType = "TENANT_ONBOARDING_DELETE"
+
+	// Chat Actions (EventCategoryChatActions) — follow-up answers are emitted by llm-server; conversation delete is emitted by api-server's feedback handler.
+	EventTypeChatConversationDelete EventType = "CHAT_CONVERSATION_DELETE"
 )
 
 type EventActor string

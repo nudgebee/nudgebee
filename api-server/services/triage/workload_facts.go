@@ -36,59 +36,74 @@ type workloadFacts struct {
 	criticalityRationale string
 }
 
-// fetchWorkloadFacts resolves the workload an event is about and returns its observed facts.
-// Keyed on cloud_resource_id when the event carries it (reliable, ~77% of events) and falling back
-// to (namespace, subject_owner). Best-effort throughout — any lookup miss returns what was gathered
-// so far rather than an error, because facts only enrich the classifier prompt; they never gate it.
-func fetchWorkloadFacts(ctx context.Context, db *sqlx.DB, event *models.Event) workloadFacts {
-	var f workloadFacts
+// resolveEventWorkload resolves the k8s workload an event is about, returning its cloud_resource_id
+// and the facts readable straight off the inventory row (kind + labels).
+//
+// The event's own cloud_resource_id is the reliable key but only ~70% of events carry one; the rest
+// are resolved by (namespace, subject_owner). Crucially the fallback branch reads the id back out of
+// the matched row, so the ~30% of events that arrive without one still get a usable key. Previously
+// that branch left the id empty, which silently skipped BOTH the knowledge-graph lookup and the
+// criticality lookup for every one of those events.
+//
+// Best-effort: a miss returns ok=false rather than an error, because these facts only enrich a prompt
+// and adjust a score — they never gate either.
+func resolveEventWorkload(ctx context.Context, db *sqlx.DB, event *models.Event) (crid string, f workloadFacts) {
 	if db == nil || event == nil || event.CloudAccountId == nil {
-		return f
+		return "", f
 	}
 	account := *event.CloudAccountId
 
-	// 1. Workload row (kind + labels) from k8s_workloads.
 	var row struct {
-		Kind   string `db:"kind"`
-		Labels string `db:"labels"`
+		CloudResourceID string `db:"cloud_resource_id"`
+		Kind            string `db:"kind"`
+		Labels          string `db:"labels"`
 	}
 	var err error
-	if event.CloudResourceId != nil && *event.CloudResourceId != "" {
+	switch {
+	case event.CloudResourceId != nil && *event.CloudResourceId != "":
 		err = db.GetContext(ctx, &row, `
-			SELECT kind, COALESCE(labels::text, '{}') AS labels
+			SELECT cloud_resource_id::text AS cloud_resource_id, kind, COALESCE(labels::text, '{}') AS labels
 			FROM k8s_workloads
 			WHERE is_active AND cloud_account_id = $1 AND cloud_resource_id::text = $2
 			LIMIT 1`, account, *event.CloudResourceId)
-	} else if event.SubjectOwner != nil && *event.SubjectOwner != "" && event.SubjectNamespace != nil {
+	case event.SubjectOwner != nil && *event.SubjectOwner != "" && event.SubjectNamespace != nil:
 		err = db.GetContext(ctx, &row, `
-			SELECT kind, COALESCE(labels::text, '{}') AS labels
+			SELECT cloud_resource_id::text AS cloud_resource_id, kind, COALESCE(labels::text, '{}') AS labels
 			FROM k8s_workloads
 			WHERE is_active AND cloud_account_id = $1 AND namespace = $2 AND name = $3
 			LIMIT 1`, account, *event.SubjectNamespace, *event.SubjectOwner)
-	} else {
-		return f
+	default:
+		return "", f
 	}
 	if err != nil {
-		return f // cloud/non-k8s event, or workload not yet inventoried
+		return "", f // cloud/non-k8s event, or workload not yet inventoried
 	}
 	f.found = true
 	f.kind = row.Kind
 	parseWorkloadLabels(row.Labels, &f)
+	return row.CloudResourceID, f
+}
 
-	// 2. Topology facts from the knowledge graph — only when we have the reliable join key.
-	if event.CloudResourceId != nil && *event.CloudResourceId != "" {
-		fetchGraphFacts(ctx, db, account, *event.CloudResourceId, &f)
+// fetchWorkloadFacts resolves the workload an event is about and returns its observed facts.
+// Best-effort throughout — any lookup miss returns what was gathered so far rather than an error,
+// because facts only enrich the classifier prompt; they never gate it.
+func fetchWorkloadFacts(ctx context.Context, db *sqlx.DB, event *models.Event) workloadFacts {
+	crid, f := resolveEventWorkload(ctx, db, event)
+	if !f.found {
+		return f
+	}
+	account := *event.CloudAccountId
+
+	// Topology facts from the knowledge graph, keyed on the resolved resource id.
+	if crid != "" {
+		fetchGraphFacts(ctx, db, account, crid, &f)
 	}
 
-	// 3. Derive criticality from the facts, and let an operator override win for the prompt.
+	// Derive criticality from the facts, and let an operator override win for the prompt.
 	if lvl, _, rat, ok := deriveCriticalityFromFacts(f); ok {
 		f.criticality, f.criticalitySource, f.criticalityRationale = lvl, CriticalitySourceFact, rat
 	}
 	// An operator-declared override (source='user') is authoritative — it replaces the derived level.
-	crid := ""
-	if event.CloudResourceId != nil {
-		crid = *event.CloudResourceId
-	}
 	if wc, found := resolveWorkloadCriticality(ctx, db, account, crid); found && wc.Source == CriticalitySourceUser {
 		f.criticality, f.criticalitySource, f.criticalityRationale = wc.Criticality, wc.Source, wc.Rationale
 	}
@@ -198,7 +213,9 @@ func renderWorkloadFacts(b *strings.Builder, f workloadFacts) {
 		fmt.Fprintf(b, "- customer_facing(observed ingress/LB-backed): %t\n", f.customerFacing)
 		fmt.Fprintf(b, "- dependency_fan_in(observed services depending on it): %d\n", f.fanIn)
 	}
-	if f.criticality != "" {
-		fmt.Fprintf(b, "- workload_criticality: %s (source=%s): %s\n", f.criticality, f.criticalitySource, f.criticalityRationale)
-	}
+	// workload_criticality is deliberately NOT rendered. The verdict this prompt produces is cached
+	// per signal class and shared tenant-wide across every workload with the same name, so a
+	// per-workload tier baked in here was served to the wrong workloads and could never be
+	// invalidated when an operator changed it. Criticality is now applied deterministically at score
+	// time (see criticalityAdj in llm_scoring.go); rendering it here too would double-count it.
 }

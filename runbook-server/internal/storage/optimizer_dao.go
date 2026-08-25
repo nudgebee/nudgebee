@@ -590,20 +590,22 @@ func (d *OptimizerDao) GetRecommendations(ctx context.Context, accountID, tenant
 func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Context, accountID uuid.UUID, category string) ([]model.RecommendationWithResource, error) {
 
 	recommendationRuleName := category
-	recommendationCategory := category
+	recommendationCategories := []string{category}
 	switch category {
 	case "vertical_rightsize":
 		recommendationRuleName = "pod_right_sizing"
-		recommendationCategory = "RightSizing"
+		// requests-unset pod recs are stored under Configuration but remain
+		// vertical-rightsize targets
+		recommendationCategories = []string{"RightSizing", "Configuration"}
 	case "horizontal_rightsize":
 		recommendationRuleName = "replica_right_sizing"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	case "pvc_rightsize":
 		recommendationRuleName = "pv_rightsize"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	case "continuous_rightsize":
 		recommendationRuleName = "continuous_rightsize"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	}
 
 	query := `
@@ -617,7 +619,7 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 			LEFT JOIN cloud_resourses cr ON r.resource_id = cr.id
 			WHERE r.cloud_account_id = $1
 			AND cr.status = 'Active'
-			AND r.category = $2
+			AND r.category = ANY($2)
 			AND r.rule_name = $3
 			AND r.status = 'Open'
 			AND r.is_dismissed = false
@@ -650,7 +652,7 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 		UpdatedBy            *uuid.UUID `db:"updated_by"`
 	}
 
-	if err := d.db.SelectContext(ctx, &dbRecs, query, accountID, recommendationCategory, recommendationRuleName); err != nil {
+	if err := d.db.SelectContext(ctx, &dbRecs, query, accountID, pq.Array(recommendationCategories), recommendationRuleName); err != nil {
 		return nil, err
 	}
 
@@ -1095,22 +1097,35 @@ func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, rec
 }
 
 // GetActiveResolutionsForRecommendations returns the resolutions that make a
-// recommendation ineligible for a fresh run: either the resolution is still
-// InProgress, or it is a PR resolution the api-server's open-PR guard would
-// still consider open (see model.PRLifecycleTerminalStates).
+// recommendation ineligible for a fresh run. A resolution blocks when either:
 //
-// The second arm is deliberately a superset of the first. A PR that is open on
-// the provider but whose row has been flipped to Failed — by the stale sweep, or
-// by a transient provider auth error — used to fall through this check, letting
-// the run execute and then abort on a duplicate resolution (#34943). Erring
-// towards skipping is safe: the run retries on the next tick.
+//   - it is still InProgress with no pull request URL — creation is genuinely in
+//     flight, so there is nothing to compare against yet; or
+//   - it is an open pull request that the auto optimize does not own. The
+//     api-server's open-PR guard would return it rather than raise a second one
+//     (see model.PRLifecycleTerminalStates), and we do not rewrite a pull request
+//     a person raised by hand.
+//
+// An open pull request the auto optimize raised itself deliberately does *not*
+// block. The run proceeds, recomputes the values, and the api-server guard decides
+// whether they have moved far enough to rewrite that pull request in place
+// (#34959). Raising a second pull request is still prevented — by the guard, which
+// is where that check belongs.
+//
+// Relaxing this is safe only because the trap it used to guard against is gone:
+// the run no longer aborts on a duplicate resolution id (the UNIQUE constraint was
+// dropped in V818), the task now always records a terminal status, and a stale
+// Scheduled task no longer blocks its recommendation — all of #34943.
 func (d *OptimizerDao) GetActiveResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error) {
 	return d.getResolutions(ctx, recommendationIDs,
-		`(status = $2 OR (type = $3 AND type_reference_id LIKE 'http%'
-			AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state <> ALL($4))))`,
+		`((status = $2 AND type_reference_id NOT LIKE 'http%')
+			OR (type = $3 AND type_reference_id LIKE 'http%'
+				AND resolver_type <> $5
+				AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state <> ALL($4))))`,
 		string(model.RecommendationResolutionStatusInProgress),
 		string(model.RecommendationResolutionTypePullRequest),
-		pq.Array(model.PRLifecycleTerminalStates))
+		pq.Array(model.PRLifecycleTerminalStates),
+		string(model.RecommendationResolutionResolverTypeAutoOptimize))
 }
 
 // GetResolutionsForRecommendations returns resolutions that are either still

@@ -12,6 +12,7 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,24 +85,55 @@ func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.Datab
 	}
 	defer database.LogRollback(tx)
 
+	// Every measured column is refreshed on conflict. Updating only gap/status/
+	// burn_rate left the counts and error-budget figures frozen at whatever the
+	// first run of the hour saw, and slo_report_observation_v2 aggregates
+	// exactly those columns.
+	//
+	// The WHERE guard keeps a NO_DATA re-run from erasing a measurement already
+	// recorded for that hour: an invalid report carries zeroed counts and SLI,
+	// so without it a single unmeasurable sample would blank the bucket. Only
+	// matters once more than one run lands in an hour — harmless at the current
+	// hourly cadence, load-bearing if SLO Execute ever moves to */5.
 	query = `INSERT INTO slo_report (config_id, gap, error_budget_target, error_budget_measurement, error_budget_burn_rate,
 			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes, error_minutes, error_budget_consumed_ratio,
-			status, bad_events_count, good_events_count, events_count, sli_measurement, tenant_id, cloud_account_id, workload_name, workload_namespace, timestamp)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+			status, bad_events_count, good_events_count, events_count, sli_measurement, tenant_id, cloud_account_id, workload_name, workload_namespace, timestamp,
+			severity, burn_rates)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 			ON CONFLICT (tenant_id, cloud_account_id, config_id, workload_name, workload_namespace, timestamp)
-			DO UPDATE SET gap = EXCLUDED.gap, status = EXCLUDED.status, error_budget_burn_rate = EXCLUDED.error_budget_burn_rate`
+			DO UPDATE SET gap = EXCLUDED.gap,
+				status = EXCLUDED.status,
+				error_budget_target = EXCLUDED.error_budget_target,
+				error_budget_measurement = EXCLUDED.error_budget_measurement,
+				error_budget_burn_rate = EXCLUDED.error_budget_burn_rate,
+				error_budget_burn_rate_threshold = EXCLUDED.error_budget_burn_rate_threshold,
+				error_budget_minutes = EXCLUDED.error_budget_minutes,
+				error_budget_remaining_minutes = EXCLUDED.error_budget_remaining_minutes,
+				error_minutes = EXCLUDED.error_minutes,
+				error_budget_consumed_ratio = EXCLUDED.error_budget_consumed_ratio,
+				bad_events_count = EXCLUDED.bad_events_count,
+				good_events_count = EXCLUDED.good_events_count,
+				events_count = EXCLUDED.events_count,
+				sli_measurement = EXCLUDED.sli_measurement,
+				severity = EXCLUDED.severity,
+				burn_rates = EXCLUDED.burn_rates,
+				updated_at = now()
+			WHERE EXCLUDED.status <> 'NO_DATA' OR slo_report.status = 'NO_DATA'`
 
 	alertingReports := make([]SLOReport, 0)
 	for _, report := range reports {
-		status := "OK"
-		if report.Alert {
-			status = "FIRING"
+		status := statusForReport(report)
+		if status == SLOStatusFiring {
 			alertingReports = append(alertingReports, report)
+		}
+		burnRates, mErr := marshalBurnRates(report.BurnRates)
+		if mErr != nil {
+			slog.Error("slo: error marshalling burn rates", "error", mErr, "configId", config.Id, "workload", report.Workload)
 		}
 		timestamp := timestampToPostgresFormat(report.EndTime)
 		_, err = tx.Exec(query, config.Id, report.Gap, report.ErrorBudgetTarget, report.ErrorBudgetMeasurement, report.ErrorBudgetBurnRate, report.ErrorBudgetBurnRateThreshold,
 			report.ErrorBudgetMinutes, report.ErrorBudgetRemainingMinutes, report.ErrorMinutes, report.ErrorBudgetConsumedRatio, status, report.BadEventsCount, report.GoodEventsCount, report.EventsCount,
-			report.SLIMeasurement, config.TenantId, config.CloudAccountId, report.Workload, report.Namespace, timestamp)
+			report.SLIMeasurement, config.TenantId, config.CloudAccountId, report.Workload, report.Namespace, timestamp, nullableSeverity(report), burnRates)
 		if err != nil {
 			return err
 		}
@@ -127,15 +159,113 @@ func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.Datab
 	return nil
 }
 
+// FailedRequestStatusRe matches the statuses that count against an availability
+// SLO, mirroring coroot's model.IsRequestStatusFailed: 5xx, the synthetic
+// "failed" status the agent emits for requests that never got a response, and
+// any non-OK gRPC code.
+//
+// Prometheus regexes are fully anchored, so `grpc:OK` is excluded by requiring
+// the character after `grpc:O` to be something other than `K`.
+const FailedRequestStatusRe = `5..|failed|grpc:[^O].*|grpc:O[^K].*`
+
+// AvailabilityGoodQuery and AvailabilityBadQuery partition every inbound
+// request into good and bad, so good+bad is the true total and the SLI works
+// out to 1 - failed/total.
+//
+// The previous pair matched `status=~"2.."` and `status=~"5.."`, which made the
+// SLI 2xx/(2xx+5xx): 3xx and 4xx were counted in neither the numerator nor the
+// denominator and vanished from the measurement entirely, and gRPC errors and
+// the "failed" status were never counted as bad at all.
+func AvailabilityGoodQuery(namespace, workload string) string {
+	return fmt.Sprintf(`container_http_requests_total{destination_workload_namespace="%s", destination_workload_name="%s", status!~"%s"}`,
+		namespace, workload, FailedRequestStatusRe)
+}
+
+func AvailabilityBadQuery(namespace, workload string) string {
+	return fmt.Sprintf(`container_http_requests_total{destination_workload_namespace="%s", destination_workload_name="%s", status=~"%s"}`,
+		namespace, workload, FailedRequestStatusRe)
+}
+
+// LatencyHistogramQuery drops the old `destination_workload_namespace!="external"`
+// matcher, which was dead — the same label is already pinned to an exact
+// namespace on the preceding matcher — and which made the latency and
+// availability SLIs look like they measured different request populations.
+func LatencyHistogramQuery(namespace, workload string) string {
+	return fmt.Sprintf(`container_http_requests_duration_seconds_total_bucket{destination_workload_namespace="%s", destination_workload_name="%s"}`,
+		namespace, workload)
+}
+
 func timestampToPostgresFormat(timestamp float64) string {
 	// Convert timestamp to a time.Time object
 	t := time.Unix(int64(timestamp), int64((timestamp-float64(int64(timestamp)))*1e9))
-	// Round to nearest hour
-	roundedTime := t.Round(time.Hour)
+	// Truncate to the containing hour. Rounding to the NEAREST hour stamped a
+	// run at 10:31 into the 11:00 bucket, so a cron drifting across the
+	// half-hour boundary wrote into the next hour and collided with it.
+	//
+	// UTC first: Truncate is a multiple of the duration since the zero time, so
+	// on a host in a half-hour offset zone (IST) truncating a local-zone time
+	// and then formatting it yields :30 buckets. The agent stamps end_time in
+	// UTC, so the bucket is UTC too.
+	bucket := t.UTC().Truncate(time.Hour)
 	// Format to PostgreSQL datetime format
-	postgresFormat := roundedTime.Format("2006-01-02 15:04:05")
+	postgresFormat := bucket.Format("2006-01-02 15:04:05")
 
 	return postgresFormat
+}
+
+// statusForReport maps an agent report onto a slo_report.status.
+//
+// A report the agent marked invalid — no data, fewer than MIN_VALID_EVENTS, or
+// an SLI outside [0,1] — is NO_DATA, never OK. An untrafficked workload is not
+// a healthy one, and recording it as OK silently inflates the 30-day
+// attainment aggregate that slo_report_observation_v2 feeds.
+//
+// Otherwise the multi-window burn-rate severity decides. Agents that predate
+// burn_rates send only the single-window `alert` flag, so fall back to it —
+// a cluster running an older agent keeps reporting rather than going dark.
+func statusForReport(r SLOReport) string {
+	if !r.Valid {
+		return SLOStatusNoData
+	}
+	if len(r.BurnRates) > 0 {
+		if r.Severity != "" && r.Severity != SeverityOK {
+			return SLOStatusFiring
+		}
+		return SLOStatusOK
+	}
+	if r.Alert {
+		return SLOStatusFiring
+	}
+	return SLOStatusOK
+}
+
+// firingBurnRate returns the burn rate that pushed the report into FIRING, so
+// notifications can name the window that actually breached.
+func firingBurnRate(r SLOReport) (BurnRate, bool) {
+	for _, br := range r.BurnRates {
+		if br.Severity != "" && br.Severity != SeverityOK {
+			return br, true
+		}
+	}
+	return BurnRate{}, false
+}
+
+func marshalBurnRates(rates []BurnRate) (any, error) {
+	if len(rates) == 0 {
+		return nil, nil
+	}
+	b, err := common.MarshalJson(rates)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+func nullableSeverity(r SLOReport) any {
+	if r.Severity == "" {
+		return nil
+	}
+	return r.Severity
 }
 
 func executeSlo(config DBSLOConfig, accountId string) ([]SLOReport, error) {
@@ -209,25 +339,92 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 		histogramQuery := ""
 		window := 60 * 60
 		if strings.ToLower(config.Name) == "latency" {
-			histogramQuery = fmt.Sprintf("container_http_requests_duration_seconds_total_bucket{destination_workload_namespace=\"%s\", destination_workload_name=\"%s\", destination_workload_namespace!=\"external\"}", sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
+			histogramQuery = LatencyHistogramQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			method = "distribution_cut"
 		} else if strings.ToLower(config.Name) == "availability" {
-			filterGoodQuery = fmt.Sprintf("container_http_requests_total{destination_workload_namespace=\"%s\",destination_workload_name=\"%s\" , status=~\"2..\"}", sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
-			filterBadQuery = fmt.Sprintf("container_http_requests_total{destination_workload_namespace=\"%s\", destination_workload_name=\"%s\", status=~\"5..\"}", sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
+			filterGoodQuery = AvailabilityGoodQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
+			filterBadQuery = AvailabilityBadQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			method = "good_bad_ratio"
 		} else {
 			return data, fmt.Errorf("invalid config provided %s", config.Name)
 		}
 		query := `INSERT INTO slo_config ("name", schedule, description, created_by, updated_by, filter_good_query, filter_bad_query, threshold, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, enabled, goal) 
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) 
-			ON CONFLICT (tenant_id, cloud_account_id, workload_name, workload_namespace, name) 
-			DO UPDATE SET threshold = EXCLUDED.threshold, goal = EXCLUDED.goal`
+			ON CONFLICT (tenant_id, cloud_account_id, workload_name, workload_namespace, name)
+			DO UPDATE SET threshold = EXCLUDED.threshold,
+				goal = EXCLUDED.goal,
+				enabled = EXCLUDED.enabled,
+				updated_by = EXCLUDED.updated_by,
+				updated_at = now()`
 		_, err = dbms.Db.Exec(query, config.Name, "", "", context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetUserId(), filterGoodQuery, filterBadQuery, config.Threshold, method, histogramQuery, sloConfigRequest.AccountId, context.GetSecurityContext().GetTenantId(), window, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, config.Enabled, config.Goal)
 		if err != nil {
 			return data, err
 		}
 		data["success"] = true
 	}
+	return data, nil
+}
+
+// DeleteSLOConfig removes a workload's SLO configs and the reports they own.
+//
+// There was no delete path at all: the only write action was an upsert, so a
+// config created by mistake stayed and kept evaluating forever.
+func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest) (map[string]bool, error) {
+	data := make(map[string]bool)
+	sc := context.GetSecurityContext()
+	if sc.GetUserId() == "" || sc.GetTenantId() == "" {
+		return data, fmt.Errorf("unauthorized")
+	}
+	if !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+		return data, fmt.Errorf("unauthorized")
+	}
+	if request.WorkloadName == "" || request.Namespace == "" {
+		return data, fmt.Errorf("workload_name and namespace are required")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return data, err
+	}
+
+	tx, err := dbms.BeginTx()
+	if err != nil {
+		return data, err
+	}
+	defer database.LogRollback(tx)
+
+	args := []any{sc.GetTenantId(), request.AccountId, request.WorkloadName, request.Namespace}
+	nameFilter := ""
+	if request.Name != "" {
+		nameFilter = ` AND lower("name") = lower($5)`
+		args = append(args, request.Name)
+	}
+
+	// slo_report.config_id is ON DELETE restrict, so the reports have to go
+	// first or the config delete is rejected.
+	selectIds := fmt.Sprintf(`SELECT id FROM slo_config
+		WHERE tenant_id=$1 AND cloud_account_id=$2 AND workload_name=$3 AND workload_namespace=$4%s`, nameFilter)
+	if _, err = tx.Exec(fmt.Sprintf(`DELETE FROM slo_report WHERE config_id IN (%s)`, selectIds), args...); err != nil {
+		return data, err
+	}
+	res, err := tx.Exec(fmt.Sprintf(`DELETE FROM slo_config
+		WHERE tenant_id=$1 AND cloud_account_id=$2 AND workload_name=$3 AND workload_namespace=$4%s`, nameFilter), args...)
+	if err != nil {
+		return data, err
+	}
+	if err = tx.Commit(); err != nil {
+		return data, err
+	}
+
+	deleted, err := res.RowsAffected()
+	if err != nil {
+		// The delete already committed; report success rather than failing on a
+		// driver that cannot count rows.
+		context.GetLogger().Warn("slo: could not read rows affected for delete", "error", err)
+		data["success"] = true
+		return data, nil
+	}
+	data["success"] = deleted > 0
 	return data, nil
 }
 
@@ -321,6 +518,18 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 	}
 
 	currentGap := fmt.Sprintf("%.2f", sloReport.Gap)
+	// Prefer the window that actually breached over the legacy single-window
+	// figure, so the alert says which burn-rate rule fired. The fallbacks are
+	// the figures the legacy path actually judged against — not zero, which
+	// would render as a threshold nobody could breach.
+	burnRate := math.Round(sloReport.ErrorBudgetBurnRate)
+	burnRateWindow := sloConfig.Window
+	burnRateThreshold := sloReport.ErrorBudgetBurnRateThreshold
+	if br, ok := firingBurnRate(sloReport); ok {
+		burnRate = math.Round(br.LongWindowBurnRate)
+		burnRateWindow = br.LongWindow
+		burnRateThreshold = br.Threshold
+	}
 	message := map[string]any{
 		"kind":      "notification",
 		"source":    "slo",
@@ -337,7 +546,9 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 			"slo_target":             sloConfig.Goal,
 			"current_value":          currentGap,
 			"firing_since":           failingSince,
-			"burn_rate":              math.Round(sloReport.ErrorBudgetBurnRate),
+			"burn_rate":              burnRate,
+			"burn_rate_window":       burnRateWindow,
+			"burn_rate_threshold":    burnRateThreshold,
 			"error_budget_remaining": math.Round(sloReport.ErrorBudgetRemainingMinutes),
 			"account_name":           accountName,
 			"threshold":              sloConfig.ThresholdBucket,
@@ -375,7 +586,7 @@ func getPreviousSLOReport(configId string, workload string, namespace string) (D
 			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes,
 			error_minutes, error_budget_consumed_ratio, status, bad_events_count, good_events_count,
 			events_count, sli_measurement, tenant_id, cloud_account_id, workload_name,
-			workload_namespace, timestamp, created_at, updated_at
+			workload_namespace, severity, burn_rates, timestamp, created_at, updated_at
 		FROM slo_report
 		WHERE config_id=$1 AND workload_name=$2 AND workload_namespace=$3 AND status='FIRING'
 		ORDER BY timestamp DESC LIMIT 1`, configId, workload, namespace).StructScan(&report); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -404,7 +615,7 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes,
 			error_minutes, error_budget_consumed_ratio, status, bad_events_count, good_events_count,
 			events_count, sli_measurement, tenant_id, cloud_account_id, workload_name,
-			workload_namespace, timestamp, created_at, updated_at
+			workload_namespace, severity, burn_rates, timestamp, created_at, updated_at
 		FROM slo_report
 		WHERE config_id=$1 AND workload_name=$2 AND workload_namespace=$3 AND status='FIRING'
 		ORDER BY timestamp DESC LIMIT 1`, sloConfig.Id, sloConfig.WorkloadName, sloConfig.Namespace).StructScan(&slo); err != nil {
@@ -435,7 +646,7 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		FindingId:        slo.Id,
 		AggregationKey:   "SLOViolation",
 		Description:      fmt.Sprintf("%s SLO violation for %s in namespace %s", sloConfig.Name, slo.WorkloadName, slo.WorkloadNamespace),
-		SubjectType:      "deployment",
+		SubjectType:      resolveSubjectType(dbms, sloConfig),
 		SubjectNode:      "",
 		Status:           "FIRING",
 		StartsAt:         slo.Timestamp,
@@ -448,6 +659,33 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		return err
 	}
 	return err
+}
+
+// resolveSubjectType returns the workload's real kind, lower-cased to match the
+// subject_type convention used elsewhere ("deployment", "statefulset", …).
+//
+// SLO events hardcoded "deployment", which mislabelled every StatefulSet,
+// DaemonSet and Rollout and broke drilldown and correlation by subject type.
+// Falls back to the old value when the workload cannot be resolved, so an event
+// is still emitted rather than dropped.
+func resolveSubjectType(dbms *database.DatabaseManager, sloConfig DBSLOConfig) string {
+	const fallback = "deployment"
+	var kind string
+	err := dbms.Db.Get(&kind, `SELECT kind FROM k8s_workloads
+		WHERE tenant_id=$1 AND cloud_account_id=$2 AND "name"=$3 AND namespace=$4
+		ORDER BY is_active DESC LIMIT 1`,
+		sloConfig.TenantId, sloConfig.CloudAccountId, sloConfig.WorkloadName, sloConfig.Namespace)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("slo: error resolving workload kind", "error", err,
+				"workload", sloConfig.WorkloadName, "namespace", sloConfig.Namespace)
+		}
+		return fallback
+	}
+	if kind == "" {
+		return fallback
+	}
+	return strings.ToLower(kind)
 }
 
 func collectEvidences(slo DBSLOReport, sloConfig DBSLOConfig) ([]any, error) {
@@ -639,17 +877,38 @@ func CheckTracesEvidence(evidence map[string]any, sloConfig DBSLOConfig) ([]map[
 	return insights, nil
 }
 
+// traceDurationNs reads a trace's Duration cell. otel_traces.Duration is a
+// ClickHouse Int64 and the relay serves rows as `FORMAT JSON`, which quotes
+// 64-bit integers by default — so the cell arrives as a string on the
+// ClickHouse-backed path and as a float64 only when the agent decoded it
+// natively. A strict float64 assertion silently dropped every row on the
+// former.
+func traceDurationNs(raw any) (float64, bool) {
+	switch v := raw.(type) {
+	case float64:
+		return v, true
+	case string:
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
 func FilterLongTracesByWorkload(traces []map[string]any, threshold float64, workloadName string, workloadNamespace string) []map[string]any {
 	result := make([]map[string]any, 0)
 
 	for _, trace := range traces {
-		// Type assertion for duration_ns
-		duration, ok := trace["Duration"].(float64)
+		duration, ok := traceDurationNs(trace["Duration"])
 		if !ok {
-			continue // skip if duration is not a float64
+			continue // skip if duration is neither a number nor a numeric string
 		}
-		// convert nanoseconds to seconds
-		duration /= 1e+9
+		// Convert nanoseconds to milliseconds. threshold is the configured
+		// latency objective bucket, which slo_config stores in milliseconds —
+		// converting to seconds here compared seconds against milliseconds, so
+		// a 500ms objective only flagged traces slower than 500 SECONDS and the
+		// insight effectively never fired.
+		duration /= 1e+6
 		if trace["workload_name"] == workloadName && trace["workload_namespace"] == workloadNamespace && duration > (threshold) {
 			result = append(result, trace)
 		}

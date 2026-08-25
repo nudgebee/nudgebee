@@ -2,9 +2,9 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
-const mockHasWriteAccess = jest.fn();
+const mockCanManage = jest.fn();
 jest.mock('@lib/auth', () => ({
-  hasWriteAccess: (...args: any[]) => mockHasWriteAccess(...args),
+  canManage: (...args: any[]) => mockCanManage(...args),
 }));
 
 jest.mock('@api1/notification', () => ({
@@ -184,7 +184,7 @@ const sampleMappings = [
 describe('ChannelAccountMapping (integration)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockHasWriteAccess.mockReturnValue(true);
+    mockCanManage.mockReturnValue(true);
     apiDashboard.getCloudAccounts.mockResolvedValue(sampleAccounts);
     apiAccount.getNotificationChannelList.mockResolvedValue({ data: { data: sampleSlackChannels } });
     apiAccount.getMessagingPlatform.mockResolvedValue({ data: [{ id: 'mp-1', team_id: 'workspace-1' }] });
@@ -253,7 +253,7 @@ describe('ChannelAccountMapping (integration)', () => {
   });
 
   it('shows Add Mapping button only with write access', async () => {
-    mockHasWriteAccess.mockReturnValue(false);
+    mockCanManage.mockReturnValue(false);
     render(<ChannelAccountMapping provider='slack' displayName='Slack' isConfigured={true} />);
     await waitFor(() => expect(apiNotifications.listChannelAccountMappings).toHaveBeenCalled());
     expect(screen.queryByTestId('add-mapping-btn')).not.toBeInTheDocument();
@@ -373,7 +373,7 @@ describe('ChannelAccountMapping (integration)', () => {
   });
 
   it('does not include menu items without write access', async () => {
-    mockHasWriteAccess.mockReturnValue(false);
+    mockCanManage.mockReturnValue(false);
     render(<ChannelAccountMapping provider='slack' displayName='Slack' isConfigured={true} />);
     await waitFor(() => expect(apiNotifications.listChannelAccountMappings).toHaveBeenCalled());
     expect(screen.queryByTestId('menu-Edit-map-1')).not.toBeInTheDocument();

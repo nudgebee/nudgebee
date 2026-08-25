@@ -187,6 +187,7 @@ func tierBAssertFilterOptions(t *testing.T, svc *core.Service) {
 	}
 	if opts == nil {
 		t.Fatal("GetFilterOptions returned nil")
+		return
 	}
 	// The concurrent fetch must populate every field correctly (guards against a
 	// goroutine writing the wrong variable). The Tier-B graph is a k8s topology, so

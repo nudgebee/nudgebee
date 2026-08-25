@@ -12,6 +12,7 @@ import (
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/tools"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/andygrunwald/go-jira"
@@ -158,14 +159,20 @@ func fetchConfigurationList() ([]models.TicketConfigurations, error) {
 	return configurations, nil
 }
 
-func ListTickets(configurationId string) ([]models.Ticket, error) {
+// ListTickets returns the tickets still worth polling upstream for a config.
+// Tickets already in a terminal status are excluded — the list mirrors the
+// statuses api-server's ticketOutcomeForStatus settles on, so anything past
+// that point can no longer change a resolution. A non-zero updatedBefore
+// additionally skips rows written since the previous sync run (the tickets
+// updated_at trigger bumps on every write, so freshly written-through or
+// just-synced rows are already current).
+func ListTickets(configurationId string, updatedBefore time.Time) ([]models.Ticket, error) {
 	dbManager, err := database.GetDatabaseManager()
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable: %v", err)
 	}
 
-	var tickets []models.Ticket
-	err = dbManager.Select(&tickets, `
+	query := `
 		SELECT id, integration_id,
 		       COALESCE(assignee, '') as assignee,
 		       COALESCE(severity, '') as severity,
@@ -173,7 +180,18 @@ func ListTickets(configurationId string) ([]models.Ticket, error) {
 		       ticket_id,
 		       COALESCE(url, '') as url
 		FROM tickets
-		WHERE integration_id = $1`, configurationId)
+		WHERE integration_id = $1
+		  AND LOWER(TRIM(COALESCE(status, ''))) NOT IN
+		      ('resolved', 'closed', 'done', 'complete', 'completed',
+		       'rejected', 'cancelled', 'canceled', 'declined')`
+	args := []interface{}{configurationId}
+	if !updatedBefore.IsZero() {
+		query += ` AND (updated_at IS NULL OR updated_at < $2)`
+		args = append(args, updatedBefore)
+	}
+
+	var tickets []models.Ticket
+	err = dbManager.Select(&tickets, query, args...)
 	if err != nil {
 		slog.Error("Error querying tickets", "integrationID", configurationId, "error", err)
 		return nil, err
@@ -181,7 +199,21 @@ func ListTickets(configurationId string) ([]models.Ticket, error) {
 	return tickets, nil
 }
 
+// lastTicketSyncAt is the start time (unix seconds) of the previous
+// SyncTickets run; zero until the first run after process start.
+var lastTicketSyncAt atomic.Int64
+
+// consecutiveFetchFailureLimit aborts a config's sync for the run once this
+// many upstream fetches fail in a row — correlated failures (bad credentials,
+// unreachable host) would otherwise error-log once per ticket every run.
+const consecutiveFetchFailureLimit = 3
+
 func SyncTickets() {
+	var updatedBefore time.Time
+	if prev := lastTicketSyncAt.Swap(time.Now().Unix()); prev > 0 {
+		updatedBefore = time.Unix(prev, 0).UTC()
+	}
+
 	configurations, err := fetchConfigurationList()
 	if err != nil {
 		slog.Error("Unable to fetch configuration list:", "error", slog.AnyValue(err))
@@ -199,7 +231,12 @@ func SyncTickets() {
 			continue
 		}
 
-		tickets, err := ListTickets(configuration.ID)
+		if configuration.URL == "" || configuration.Password == "" {
+			slog.Debug("Skipping ticket sync for incompletely configured integration", "configuration_id", configuration.ID)
+			continue
+		}
+
+		tickets, err := ListTickets(configuration.ID, updatedBefore)
 		if err != nil {
 			slog.Error("Unable to list tickets", "error", err, "configuration_id", configuration.ID)
 			continue
@@ -215,6 +252,7 @@ func SyncTickets() {
 			continue
 		}
 
+		consecutiveFailures := 0
 		for _, ticket := range tickets {
 			issue, err := tools.FetchFullIssueDetails(jiraClient, ticket.TicketID)
 			if err != nil {
@@ -223,9 +261,15 @@ func SyncTickets() {
 					slog.Debug("Ticket not found or inaccessible, skipping", "ticketID", ticket.TicketID)
 					continue
 				}
-				slog.Error("Error:", "error", slog.AnyValue(err))
+				consecutiveFailures++
+				if consecutiveFailures >= consecutiveFetchFailureLimit {
+					slog.Warn("Aborting ticket sync for integration after repeated fetch failures", "configuration_id", configuration.ID, "error", slog.AnyValue(err))
+					break
+				}
+				slog.Error("Error fetching ticket details", "ticketID", ticket.TicketID, "error", slog.AnyValue(err))
 				continue
 			}
+			consecutiveFailures = 0
 
 			if issue == nil || issue.Fields == nil {
 				slog.Error("Issue or its fields are empty", "ticketID", ticket.TicketID)

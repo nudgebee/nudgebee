@@ -165,8 +165,63 @@ async def list_accounts(tenant_id: str, authz=Depends(get_authz)):
         return {"accounts": [], "error": str(e)}
 
 
+def _resolve_tenant_for_account(account_id: str, tenant_id: Optional[str], authz):
+    """Resolve the tenant to proxy as, rejecting cross-tenant reads.
+
+    Shared by every LLM-server proxy below. Kept in one place because the
+    tenant check closed an IDOR (Gemini review 3068257362) — a second copy
+    would be a second place for that to regress.
+    """
+    if tenant_id:
+        if not authz.is_super_admin and not authz.has_tenant(tenant_id):
+            raise HTTPException(
+                status_code=403, detail="You do not have access to this tenant."
+            )
+        effective_tenant_id = tenant_id
+    else:
+        # Fall back to the caller's only / first tenant (the typical
+        # single-tenant user case). Super_admin without an explicit
+        # tenant gets an error — they must specify which tenant.
+        if authz.is_super_admin:
+            raise HTTPException(
+                status_code=400,
+                detail="tenant_id is required for super_admin callers.",
+            )
+        if not authz.tenants:
+            raise HTTPException(status_code=403, detail="No tenant memberships.")
+        effective_tenant_id = authz.tenants[0].tenant_id
+
+    if not authz.is_super_admin:
+        ta = authz.tenant(effective_tenant_id)
+        if ta is None:
+            raise HTTPException(
+                status_code=403, detail="You do not have access to this tenant."
+            )
+        if ta.account_ids and account_id not in ta.account_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="You do not have access to the selected account.",
+            )
+    return effective_tenant_id
+
+
+def _llm_server_headers(tenant_id: str, user_id: str) -> dict:
+    """Auth headers for an LLM-server proxy call.
+
+    user_id is always the authenticated caller — never a query param — so a
+    tenant_admin can't impersonate another user through these proxies.
+    """
+    headers = {"x-tenant-id": tenant_id, "x-user-id": user_id}
+    action_token = os.environ.get("LLM_SERVER_TOKEN", "")
+    if action_token:
+        headers["x-action-token"] = action_token
+    return headers
+
+
 @router.get("/tool-configs")
-async def get_tool_configs(
+# Sync def for the same reason as get_models below: the body blocks on
+# requests.post, which would stall the event loop in an async route.
+def get_tool_configs(
     account_id: str,
     tenant_id: Optional[str] = None,
     user: AuthUser = Depends(get_current_user),
@@ -187,47 +242,10 @@ async def get_tool_configs(
     authenticated user, full stop, so a tenant_admin can't impersonate
     another user via this proxy.
     """
-    # Resolve target tenant.
-    if tenant_id:
-        if not authz.is_super_admin and not authz.has_tenant(tenant_id):
-            raise HTTPException(
-                status_code=403, detail="You do not have access to this tenant."
-            )
-        effective_tenant_id = tenant_id
-    else:
-        # Fall back to the caller's only / first tenant (the typical
-        # single-tenant user case). Super_admin without an explicit
-        # tenant gets an error — they must specify which tenant.
-        if authz.is_super_admin:
-            raise HTTPException(
-                status_code=400,
-                detail="tenant_id is required for super_admin callers.",
-            )
-        if not authz.tenants:
-            raise HTTPException(status_code=403, detail="No tenant memberships.")
-        effective_tenant_id = authz.tenants[0].tenant_id
-
-    # Validate account access for non-super-admin callers.
-    if not authz.is_super_admin:
-        ta = authz.tenant(effective_tenant_id)
-        if ta is None:
-            raise HTTPException(
-                status_code=403, detail="You do not have access to this tenant."
-            )
-        if ta.account_ids and account_id not in ta.account_ids:
-            raise HTTPException(
-                status_code=403,
-                detail="You do not have access to the selected account.",
-            )
+    effective_tenant_id = _resolve_tenant_for_account(account_id, tenant_id, authz)
 
     try:
-        headers = {
-            "x-tenant-id": effective_tenant_id,
-            "x-user-id": user.user_id,
-        }
-        action_token = os.environ.get("LLM_SERVER_TOKEN", "")
-        if action_token:
-            headers["x-action-token"] = action_token
+        headers = _llm_server_headers(effective_tenant_id, user.user_id)
         r = requests.post(
             f"{LLM_SERVER_URL}/v1/tools/configs",
             json={"account_id": account_id},
@@ -241,6 +259,52 @@ async def get_tool_configs(
     except Exception as e:
         logger.error("get_tool_configs failed: %s", e)
         return {"configs": [], "error": str(e)}
+
+
+@router.get("/models")
+# Sync def on purpose: the body does a blocking requests.post, which in an
+# async route would stall the event loop for every other caller. FastAPI runs
+# sync handlers in a threadpool instead.
+def get_models(
+    account_id: str,
+    tenant_id: Optional[str] = None,
+    user: AuthUser = Depends(get_current_user),
+    authz=Depends(get_authz),
+):
+    """Proxy the account's configured LLM slots from the LLM server.
+
+    Returns two views of the same data:
+
+    ``models`` — one entry per configured slot, each keeping its own config's
+    name and ``llm_config_source``. This is what the run form lists, because it
+    is the only view where two configs that happen to share an API key stay
+    distinguishable.
+
+    ``credentials`` — the same slots folded by destination (provider + endpoint
+    + key + region + ...). Kept because a stored pin naming a slot that has
+    since been folded still resolves through it. The grouping is the LLM
+    server's to compute; endpoints and api keys are never serialized, so it
+    cannot be done here.
+    """
+    effective_tenant_id = _resolve_tenant_for_account(account_id, tenant_id, authz)
+
+    try:
+        r = requests.post(
+            f"{LLM_SERVER_URL}/v1/conversations/ai_list_models",
+            json={"input": {"account_id": account_id}},
+            headers=_llm_server_headers(effective_tenant_id, user.user_id),
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json().get("data", {}) or {}
+        return {
+            "models": data.get("models", []),
+            "credentials": data.get("credentials", []),
+            "default": data.get("default"),
+        }
+    except Exception as e:
+        logger.error("get_models failed: %s", e)
+        return {"models": [], "credentials": [], "error": str(e)}
 
 
 @router.get("/resolve/tenant/{tenant_id}")

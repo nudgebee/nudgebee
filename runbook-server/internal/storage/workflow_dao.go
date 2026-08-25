@@ -84,9 +84,9 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 		status = model.WorkflowStatusPaused
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO workflows (id, tenant_id, account_id, name, definition, tags, status, created_by, updated_by, created_from_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, id, tenantID, accountID, wf.Name, wfBytes, tagBytes, status, wf.CreatedBy, wf.UpdatedBy, createdFromSessionID)
+		INSERT INTO workflows (id, tenant_id, account_id, name, description, definition, tags, status, ai_invocable, created_by, updated_by, created_from_session_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, id, tenantID, accountID, wf.Name, nullableString(wf.Description), wfBytes, tagBytes, status, wf.AIInvocable, wf.CreatedBy, wf.UpdatedBy, createdFromSessionID)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to save workflow: %w", err)
 	}
@@ -127,14 +127,25 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 	return id, version, nil
 }
 
-func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, request model.ListWorkflowRequest) ([]model.Workflow, int, error) {
+// List returns the workflows for `accountIDs` within `tenantID`. The listing is
+// tenant-level with an account filter (see #35113), so callers pass the set of
+// accounts the requester may read rather than a single account. `accountIDs`
+// must never be empty: `account_id = ANY('{}')` matches nothing but still costs
+// a scan, and an accidentally-blank scope is a bug worth surfacing rather than
+// answering with an empty page (same reasoning as the blank-id guards in
+// ListCallers and UpdateWorkflowStatus).
+func (s *WorkflowDao) List(ctx context.Context, tenantID string, accountIDs []string, request model.ListWorkflowRequest) ([]model.Workflow, int, error) {
 	var workflows []model.Workflow
+
+	if tenantID == "" || len(accountIDs) == 0 {
+		return nil, 0, fmt.Errorf("List: tenantID and at least one accountID are required")
+	}
 
 	// Build the base WHERE clause with filters (shared by both queries)
 	// Note: Main query uses 'w.' prefix, count query uses no prefix
-	whereClause := "WHERE tenant_id = $1 AND account_id = $2"
-	whereClauseWithAlias := "WHERE w.tenant_id = $1 AND w.account_id = $2"
-	baseArgs := []any{tenantID, accountID}
+	whereClause := "WHERE tenant_id = $1 AND account_id = ANY($2)"
+	whereClauseWithAlias := "WHERE w.tenant_id = $1 AND w.account_id = ANY($2)"
+	baseArgs := []any{tenantID, pq.Array(accountIDs)}
 	argId := 3
 
 	if request.Name != "" {
@@ -155,6 +166,13 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		whereClause += fmt.Sprintf(" AND last_execution_status = $%d", argId)
 		whereClauseWithAlias += fmt.Sprintf(" AND w.last_execution_status = $%d", argId)
 		baseArgs = append(baseArgs, request.LastExecutionStatus)
+		argId++
+	}
+
+	if request.AIInvocable != nil {
+		whereClause += fmt.Sprintf(" AND ai_invocable = $%d", argId)
+		whereClauseWithAlias += fmt.Sprintf(" AND w.ai_invocable = $%d", argId)
+		baseArgs = append(baseArgs, *request.AIInvocable)
 		argId++
 	}
 
@@ -235,7 +253,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 	// Build main query (with all filters + LIMIT/OFFSET)
 	// Join with users table to get user details for created_by and updated_by
 	mainQuery := `
-		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
+		SELECT w.id::text, w.account_id::text, w.name, w.description, w.ai_invocable, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 			cu.id::text as created_by_user_id, cu.display_name as created_by_display_name,
 			uu.id::text as updated_by_user_id, uu.display_name as updated_by_display_name,
 			w.live_version_id::text, lv.version_number, lv.name, lv.status,
@@ -278,7 +296,10 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 
 	for rows.Next() {
 		var wfID string
+		var wfAccountID string
 		var wfName string
+		var wfDescription sql.NullString
+		var aiInvocable bool
 		var wfBytes []byte
 		var tagBytes []byte
 		var status model.WorkflowStatus
@@ -300,7 +321,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		var draftVersionNumber sql.NullInt64
 		var draftVersionName sql.NullString
 
-		if err := rows.Scan(&wfID, &wfName, &wfBytes, &tagBytes, &status, &lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion, &createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
+		if err := rows.Scan(&wfID, &wfAccountID, &wfName, &wfDescription, &aiInvocable, &wfBytes, &tagBytes, &status, &lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion, &createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 			&createdByUserID, &createdByDisplayName, &updatedByUserID, &updatedByDisplayName,
 			&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 			&draftVersionID, &draftVersionNumber, &draftVersionName); err != nil {
@@ -316,6 +337,10 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		}
 		wf.ID = wfID
 		wf.Name = wfName
+		if wfDescription.Valid {
+			wf.Description = &wfDescription.String
+		}
+		wf.AIInvocable = aiInvocable
 		wf.Status = status
 		if lastExecutionStatus.Valid {
 			wf.LastExecutionStatus = model.WorkflowExecutionStatus(lastExecutionStatus.String)
@@ -330,7 +355,9 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 			v := int(lastExecutionVersion.Int64)
 			wf.LastExecutionVersion = &v
 		}
-		wf.AccountID = accountID
+		// Read the account off the row, not off the request — a page can now
+		// span several accounts.
+		wf.AccountID = wfAccountID
 		wf.TenantID = tenantID
 		wf.CreatedBy = createdBy
 		wf.UpdatedBy = updatedBy
@@ -368,6 +395,8 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id string) (*model.Workflow, error) {
 	var wfID string
 	var wfName string
+	var wfDescription sql.NullString
+	var aiInvocable bool
 	var wfBytes []byte
 	var tagBytes []byte
 	var status model.WorkflowStatus
@@ -392,7 +421,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	// live version (lv.definition NULL) count as "differs", so never-published
 	// workflows stay publishable.
 	query := `
-		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
+		SELECT w.id::text, w.name, w.description, w.ai_invocable, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
 		       w.draft_version_id::text, dv.version_number, dv.name,
 		       (w.definition IS DISTINCT FROM lv.definition) AS draft_differs_from_live
@@ -402,7 +431,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		WHERE w.tenant_id = $1 AND w.account_id = $2 AND w.id = $3
 	`
 	err := s.db.QueryRowContext(ctx, query, tenantID, accountID, id).Scan(
-		&wfID, &wfName, &wfBytes, &tagBytes, &status,
+		&wfID, &wfName, &wfDescription, &aiInvocable, &wfBytes, &tagBytes, &status,
 		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion,
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
@@ -422,6 +451,10 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	}
 	wf.ID = wfID
 	wf.Name = wfName
+	if wfDescription.Valid {
+		wf.Description = &wfDescription.String
+	}
+	wf.AIInvocable = aiInvocable
 	wf.Status = status
 	if lastExecutionStatus.Valid {
 		wf.LastExecutionStatus = model.WorkflowExecutionStatus(lastExecutionStatus.String)
@@ -453,19 +486,54 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	return &wf, nil
 }
 
-func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
+func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if tenantID == "" || accountID == "" {
-		return nil, fmt.Errorf("tenantID and accountID are required")
+	if tenantID == "" || len(accountIDs) == 0 {
+		return nil, fmt.Errorf("tenantID and at least one accountID are required")
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = $2 AND id = ANY($3::uuid[])`,
-		tenantID, accountID, pq.Array(ids))
+		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND id = ANY($3::uuid[])`,
+		tenantID, pq.Array(accountIDs), pq.Array(ids))
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch workflow names: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("workflow_dao: failed to close rows: %v", cerr)
+		}
+	}()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("failed to scan workflow name row: %w", err)
+		}
+		out[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed iterating workflow name rows: %w", err)
+	}
+	return out, nil
+}
+
+// ListWorkflowIDNames returns id -> name for every workflow in scope, capped at
+// limit rows. Callers pass one more than they can handle so an overflow is
+// detectable from the result size alone.
+func (s *WorkflowDao) ListWorkflowIDNames(ctx context.Context, tenantID string, accountIDs []string, limit int) (map[string]string, error) {
+	out := map[string]string{}
+	if limit <= 0 {
+		return out, nil
+	}
+	if tenantID == "" || len(accountIDs) == 0 {
+		return nil, fmt.Errorf("tenantID and at least one accountID are required")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) ORDER BY id LIMIT $3`,
+		tenantID, pq.Array(accountIDs), limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workflow names: %w", err)
 	}
 	defer func() {
 		if cerr := rows.Close(); cerr != nil {
@@ -533,6 +601,77 @@ func (s *WorkflowDao) GetUserNames(ctx context.Context, ids []string) (map[strin
 	return out, nil
 }
 
+// ListAIInvocableWorkflows returns the automations an AI caller may run for an
+// account, each with its LIVE version definition.
+//
+// INNER JOIN on live_version_id is deliberate: a workflow with no published
+// version has nothing an execution could run, so it is not a candidate. The
+// ai_invocable + ACTIVE predicates mirror the run-time gate, so search cannot
+// surface something the gate would then refuse.
+func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]model.AIInvocableWorkflow, error) {
+	if tenantID == "" || accountID == "" {
+		return nil, fmt.Errorf("tenantID and accountID must not be empty")
+	}
+
+	const query = `
+		SELECT w.id::text, w.name, w.description, lv.definition
+		FROM workflows w
+		JOIN workflow_versions lv ON lv.id = w.live_version_id
+		WHERE w.tenant_id = $1 AND w.account_id = $2
+		  AND w.ai_invocable
+		  AND w.status = $3
+		ORDER BY w.name
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, tenantID, accountID, model.WorkflowStatusActive)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list AI-invocable workflows: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("failed to close rows: %v", err)
+		}
+	}()
+
+	var out []model.AIInvocableWorkflow
+	for rows.Next() {
+		var (
+			id, name string
+			desc     sql.NullString
+			defBytes []byte
+		)
+		if err := rows.Scan(&id, &name, &desc, &defBytes); err != nil {
+			return nil, fmt.Errorf("failed to scan AI-invocable workflow: %w", err)
+		}
+		var def model.WorkflowDefinition
+		if err := json.Unmarshal(defBytes, &def); err != nil {
+			// One unreadable definition should not blind the AI to every other
+			// automation in the account.
+			log.Printf("skipping AI-invocable workflow %s: failed to unmarshal live definition: %v", id, err)
+			continue
+		}
+		out = append(out, model.AIInvocableWorkflow{
+			ID:          id,
+			Name:        name,
+			Description: desc.String,
+			Definition:  def,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate AI-invocable workflows: %w", err)
+	}
+	return out, nil
+}
+
+// nullableString maps an optional string field to a NULL-able column value, so
+// "not set" round-trips as SQL NULL rather than an empty string.
+func nullableString(s *string) sql.NullString {
+	if s == nil || *s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *s, Valid: true}
+}
+
 // applyVersionRefs copies the joined live + draft version columns onto wf if
 // present. Centralized so List / Find / FindByName / FindByIntegrationName stay
 // consistent. liveStatus is mirrored to workflows.status by the DAO, but kept as
@@ -575,6 +714,8 @@ func applyVersionRefs(
 func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name string) (*model.Workflow, error) {
 	var id string
 	var wfName string
+	var wfDescription sql.NullString
+	var aiInvocable bool
 	var wfBytes []byte
 	var tagBytes []byte
 	var status model.WorkflowStatus
@@ -594,7 +735,7 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	var draftVersionName sql.NullString
 
 	query := `
-		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
+		SELECT w.id::text, w.name, w.description, w.ai_invocable, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
 		       w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
@@ -603,7 +744,7 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 		WHERE w.tenant_id = $1 AND w.account_id = $2 AND w.name = $3
 	`
 	err := s.db.QueryRowContext(ctx, query, tenantID, accountID, name).Scan(
-		&id, &wfName, &wfBytes, &tagBytes, &status,
+		&id, &wfName, &wfDescription, &aiInvocable, &wfBytes, &tagBytes, &status,
 		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion,
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
@@ -622,6 +763,10 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	}
 	wf.ID = id
 	wf.Name = wfName
+	if wfDescription.Valid {
+		wf.Description = &wfDescription.String
+	}
+	wf.AIInvocable = aiInvocable
 	wf.Status = status
 	if lastExecutionStatus.Valid {
 		wf.LastExecutionStatus = model.WorkflowExecutionStatus(lastExecutionStatus.String)
@@ -944,10 +1089,10 @@ func (s *WorkflowDao) Update(ctx context.Context, tenantID, accountID, id string
 	// user edits bump it; internal/system writes leave it untouched.
 	query := `
 		UPDATE workflows
-		SET name = $1, definition = $2, tags = $3, status = $4, last_execution_status = $5, updated_by = $6, updated_at = now()
-		WHERE id = $7 AND tenant_id = $8 AND account_id = $9
+		SET name = $1, description = $2, definition = $3, tags = $4, status = $5, ai_invocable = $6, last_execution_status = $7, updated_by = $8, updated_at = now()
+		WHERE id = $9 AND tenant_id = $10 AND account_id = $11
 	`
-	_, err = tx.ExecContext(ctx, query, wf.Name, wfBytes, tagBytes, wf.Status, wf.LastExecutionStatus, wf.UpdatedBy, id, tenantID, accountID)
+	_, err = tx.ExecContext(ctx, query, wf.Name, nullableString(wf.Description), wfBytes, tagBytes, wf.Status, wf.AIInvocable, wf.LastExecutionStatus, wf.UpdatedBy, id, tenantID, accountID)
 	if err != nil {
 		return fmt.Errorf("failed to update workflow: %w", err)
 	}
@@ -1128,6 +1273,8 @@ func (s *WorkflowDao) FindByIntegrationName(ctx context.Context, tenantID, accou
 	var lastExecutionTime sql.NullTime
 	var createdBy, updatedBy string
 	var createdAt, updatedAt time.Time
+	var wfDescription sql.NullString
+	var aiInvocable bool
 	var liveVersionID sql.NullString
 	var liveVersionNumber sql.NullInt64
 	var liveVersionName sql.NullString
@@ -1139,7 +1286,7 @@ func (s *WorkflowDao) FindByIntegrationName(ctx context.Context, tenantID, accou
 	// Query to find a workflow that has a webhook trigger with the specific integration_name
 	// Assuming definition is JSONB
 	query := `
-		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at,
+		SELECT w.id::text, w.name, w.description, w.ai_invocable, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
 		       w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
@@ -1154,7 +1301,7 @@ func (s *WorkflowDao) FindByIntegrationName(ctx context.Context, tenantID, accou
 		LIMIT 1
 	`
 	err := s.db.QueryRowContext(ctx, query, tenantID, accountID, integrationName).Scan(
-		&id, &wfName, &wfBytes, &tagBytes, &status,
+		&id, &wfName, &wfDescription, &aiInvocable, &wfBytes, &tagBytes, &status,
 		&lastExecutionStatus, &lastExecutionTime,
 		&createdBy, &updatedBy, &createdAt, &updatedAt,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
@@ -1173,6 +1320,10 @@ func (s *WorkflowDao) FindByIntegrationName(ctx context.Context, tenantID, accou
 	}
 	wf.ID = id
 	wf.Name = wfName
+	if wfDescription.Valid {
+		wf.Description = &wfDescription.String
+	}
+	wf.AIInvocable = aiInvocable
 	wf.Status = status
 	if lastExecutionStatus.Valid {
 		wf.LastExecutionStatus = model.WorkflowExecutionStatus(lastExecutionStatus.String)
@@ -1352,10 +1503,16 @@ func (s *WorkflowDao) ListCallers(ctx context.Context, tenantID, accountID, call
 }
 
 // CountWorkflows counts workflows with optional filters for status and trigger type.
-func (s *WorkflowDao) CountWorkflows(ctx context.Context, tenantID, accountID string, status model.WorkflowStatus, triggerType string) (int64, error) {
+// Like List, it counts across the set of accounts the caller may read; an empty
+// set is rejected rather than silently counted as zero.
+func (s *WorkflowDao) CountWorkflows(ctx context.Context, tenantID string, accountIDs []string, status model.WorkflowStatus, triggerType string) (int64, error) {
+	if tenantID == "" || len(accountIDs) == 0 {
+		return 0, fmt.Errorf("CountWorkflows: tenantID and at least one accountID are required")
+	}
+
 	// Build the query with dynamic filters
-	query := `SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = $2`
-	args := []any{tenantID, accountID}
+	query := `SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2)`
+	args := []any{tenantID, pq.Array(accountIDs)}
 	argID := 3
 
 	if status != "" {

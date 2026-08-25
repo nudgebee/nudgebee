@@ -26,6 +26,9 @@ import FilterDropdown from '@ui/FilterDropdown';
 import { toast as snackbar } from '@ui/Toast';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import { ds } from 'src/utils/colors';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedLabel, cloudAccounts, onAccountChange, onNodeTypeChange, onPick }) => {
   const [nodeTypes, setNodeTypes] = useState([]);
@@ -46,6 +49,7 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
       cloudAccounts.map((acc) => ({
         value: acc.id,
         label: [acc.account_name || acc.account_number || acc.id, acc.cloud_provider, acc.account_number].filter(Boolean).join(' · '),
+        group: acc.cloud_provider || 'Other',
       })),
     [cloudAccounts]
   );
@@ -190,6 +194,8 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
         label='Account *'
         placeholder='Pick an account'
         options={accountOptions}
+        grouped
+        groupIcon={renderAccountGroupIcon}
         value={pickedAccountId || null}
         onSelect={(e, v) => onAccountChange(typeof v === 'string' ? v : v?.value || '')}
         size='sm'

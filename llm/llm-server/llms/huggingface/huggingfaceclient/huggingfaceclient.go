@@ -12,7 +12,25 @@ import (
 var (
 	ErrInvalidToken  = errors.New("invalid token")
 	ErrEmptyResponse = errors.New("empty response")
+	// ErrCircuitOpen / ErrCircuitTripped mark breaker-originated failures so callers can
+	// detect them with errors.Is and skip re-recording the failure (avoids double-tripping).
+	ErrCircuitOpen    = errors.New("huggingface endpoint circuit open")
+	ErrCircuitTripped = errors.New("huggingface endpoint circuit tripped")
 )
+
+// Circuit-breaker hooks, wired by agents/core at init (kept as vars to avoid a
+// circular import — agents/core imports this client). No-ops when unset (e.g. tests).
+var (
+	// IsCircuitOpen reports whether the breaker for (huggingface, model) is open.
+	IsCircuitOpen func(model string) bool
+	// RecordUnavailable trips the breaker after repeated endpoint-unavailable errors.
+	RecordUnavailable func(model string)
+)
+
+// circuitTripThreshold is the number of consecutive retryable (endpoint-unavailable)
+// responses after which we trip the breaker and bail, rather than retrying for the
+// full budget (~2 min) and letting every request hang independently.
+const circuitTripThreshold = 3
 
 type Client struct {
 	Token   string
@@ -94,6 +112,13 @@ func (c *Client) RunInference(ctx context.Context, request *InferenceRequest) (*
 	maxRetryDuration := time.Duration(config.Config.LlmServerGlobalRetryBudgetMinutes) * time.Minute
 	individualTimeout := time.Duration(config.Config.LlmServerMaxIndividualCallTimeoutMinutes) * time.Minute
 
+	// Fail fast if the shared breaker is already open — the endpoint is known down,
+	// so don't spend the retry budget on it.
+	if IsCircuitOpen != nil && IsCircuitOpen(c.Model) {
+		return nil, fmt.Errorf("%w (service unavailable) for model %s", ErrCircuitOpen, c.Model)
+	}
+
+	unavailableStreak := 0
 	for time.Since(startTime) < maxRetryDuration {
 		// Create a per-call context with timeout
 		callCtx, cancel := context.WithTimeout(ctx, individualTimeout)
@@ -114,6 +139,16 @@ func (c *Client) RunInference(ctx context.Context, request *InferenceRequest) (*
 		// which does not cancel the parent — still retries as intended.
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("HuggingFace inference aborted: %w", ctx.Err())
+		}
+		// After a few consecutive unavailable responses, trip the shared breaker and
+		// bail instead of burning the full retry budget — every pod/service then backs
+		// off via the breaker rather than each hanging for ~2 min independently.
+		unavailableStreak++
+		if RecordUnavailable != nil && unavailableStreak >= circuitTripThreshold {
+			RecordUnavailable(c.Model)
+			slog.Warn("HuggingFace endpoint unavailable — tripping circuit breaker and bailing",
+				"model", c.Model, "consecutiveFailures", unavailableStreak, "elapsed", time.Since(startTime))
+			return nil, fmt.Errorf("%w after %d attempts: %w", ErrCircuitTripped, unavailableStreak, hfErr)
 		}
 		slog.Warn("Service unavailable, retrying...", "elapsed", time.Since(startTime), "error", hfErr)
 		if time.Since(startTime) > maxRetryDuration {

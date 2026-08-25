@@ -1,2524 +1,1597 @@
-# Nudgebee Typography Design System
+# Component Usage & Composition Guide
 
-> **Version:** 2.0 (CSS Utility Classes)
-> **Last Updated:** January 2026
-> **Import:** `@import 'src/styles/globaltext.css';`
-
----
-
-## Overview
-
-This typography system provides CSS utility classes extracted from and recommended for the Nudgebee observability platform. All classes follow the naming convention `nb-text-[category]-[variant]`.
-
----
-
-## Typography Coverage Summary
-
-### Extracted from Codebase ✅
-
-| Category            | Classes Count | Instances Found |
-| ------------------- | ------------- | --------------- |
-| Body Text           | 4             | ~880            |
-| Headings (H1)       | 3             | ~160            |
-| Headings (H2)       | 3             | ~150            |
-| Headings (H3)       | 3             | ~770            |
-| Subtext             | 3             | ~340            |
-| Table               | 5             | ~200            |
-| Labels              | 4             | ~150            |
-| **Total Extracted** | **25**        | **~2,650**      |
-
-### Recommended Additions 🆕
-
-| Category              | Classes Count | Priority | Rationale                    |
-| --------------------- | ------------- | -------- | ---------------------------- |
-| Metrics & Numbers     | 6             | High     | Core dashboard functionality |
-| Status & Alerts       | 5             | High     | Alert management essential   |
-| Timestamps            | 3             | High     | Time-series data display     |
-| Code & Technical      | 6             | Medium   | Log/trace viewing            |
-| Charts & Legends      | 5             | Medium   | Data visualization           |
-| Navigation            | 5             | Medium   | UI consistency               |
-| Badges & Tags         | 3             | Medium   | Visual polish                |
-| Tooltips & Hints      | 4             | Low      | UX enhancement               |
-| Empty & Error States  | 4             | Low      | Edge case handling           |
-| **Total Recommended** | **41**        |          |                              |
+**Audience:** developers and AI agents building or redesigning pages with the `components/` library.
+**What this doc is:** two layers — (1) the **"when & how"** layer (which component to reach for in a
+given UI situation, and how components compose into complete views), and (2) a **per-component API
+reference** for every design-system primitive in `src/components/common/ds/` (§4).
+**Source of truth for props:** §4 below is harvested from each component's JSDoc + `Props` interface.
+Deeper detail (anatomy diagrams, "Don't" rules, interaction states) lives in each file's JSDoc header
+(e.g. [`ds/ListingLayout.tsx`](src/components/common/ds/ListingLayout.tsx)) and in the per-primitive
+pages of the design-system viewer (`app/design-system/primitives/**`).
 
 ---
 
-## Implementation Priority Guide
+## 0. Why this doc exists, and how it's kept current
 
-1. **High Priority:** Implement immediately - core observability features depend on these
-2. **Medium Priority:** Implement in next sprint - improves data visualization and navigation
-3. **Low Priority:** Implement when polishing UI - enhances overall user experience
+The design-system viewer and `manifest.json` already answer **"what components exist."** They do
+not answer **"which ones do I use for a table view, and how do they fit together."** That gap is
+what §1–§3 of this doc fills; §4 adds the per-component prop/variant reference so an agent can pick
+the right component **and** call it correctly without opening every file.
 
----
+**Where components live:**
 
-## Body Text
+- `@ui/*` → `src/components/common/ds/*` — the **design-system primitives** (the in-scope set; §4
+  documents all 45).
+- `@shared/*` → `src/components/common/*` — **domain compositions** built from primitives
+  (`CustomTable`, `MarkDowns`, `Form`, `CustomDropdown`, …). Referenced here where a decision rule
+  needs them; not part of the §4 primitive reference.
 
-### Body Primary ⭐ RECOMMENDED
-
-**Status:** ✅ Extracted from codebase
-**Usage Frequency:** ~880 instances found
-**CSS Class:** `nb-text-body-primary`
-**When to Use:** Main content, articles, descriptions, paragraphs
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 13px |
-| Font Weight | 400 (normal) |
-| Line Height | 1.4 |
-| Default Color | #374151 |
-
-**Color Variations:**
-| Modifier Class | Color | Use Case |
-|----------------|-------|----------|
-| (none/default) | #374151 | Standard text |
-| `nb-text-color-muted` | #9F9F9F | Secondary information |
-| `nb-text-color-accent` | #3B82F6 | Emphasized text |
-
-**Usage Examples:**
-
-```html
-<p class="nb-text-body-primary">Default body text content</p>
-<p class="nb-text-body-primary nb-text-color-muted">Muted secondary text</p>
-<span class="nb-text-body-primary nb-text-color-accent">Highlighted text</span>
-```
-
-**When NOT to Use:** Headers, labels, metric values, table headers
+**Keeping it in sync:** when you change a `ds/*` primitive's public props, variants, or "Don't"
+rules, update its entry in §4 **and** its `app/design-system/primitives/**` spec in the same commit
+(see [`app/CLAUDE.md`](CLAUDE.md) → "Keeping the spec in sync"). When a new recurring composition
+appears, add a recipe (§2). When two components overlap, add a decision rule (§3).
 
 ---
 
-### Body Compact
-
-**Status:** ✅ Extracted from codebase
-**Usage Frequency:** ~685 instances found
-**CSS Class:** `nb-text-body-compact`
-**When to Use:** Dense UI areas, sidebars, compact lists
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 12px |
-| Font Weight | 400 |
-| Line Height | 1.4 |
-| Default Color | #374151 |
-
-**Usage Examples:**
-
-```html
-<p class="nb-text-body-compact">Compact body text for dense layouts</p>
-```
-
----
-
-### Body Large
-
-**Status:** ✅ Extracted from codebase
-**Usage Frequency:** ~635 instances found
-**CSS Class:** `nb-text-body-large`
-**When to Use:** Emphasized content, introductions, callouts
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 14px |
-| Font Weight | 400 |
-| Line Height | 1.4 |
-| Default Color | #374151 |
-
----
-
-## Headings
-
-### H1 - Page Header ⭐ RECOMMENDED
-
-**Status:** ✅ Extracted from codebase
-**Usage Frequency:** ~164 instances found
-**CSS Class:** `nb-text-h1-page`
-**When to Use:** Main page titles (use once per page)
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 20px |
-| Font Weight | 600 (semibold) |
-| Line Height | 1.2 |
-| Default Color | #374151 |
-
-**Variants:**
-| Class | Description |
-|-------|-------------|
-| `nb-text-h1-page` | Standard page header |
-| `nb-text-h1-page-alt` | Bold variant with title color (#22304B) |
-| `nb-text-h1-sub` | 18px sub-header |
-
-**Usage Examples:**
-
-```html
-<h1 class="nb-text-h1-page">Dashboard Overview</h1>
-<h1 class="nb-text-h1-page-alt">Important Page Title</h1>
-<h2 class="nb-text-h1-sub">Page subtitle or description</h2>
-```
-
----
-
-### H2 - Section Header
-
-**Status:** ✅ Extracted from codebase
-**Usage Frequency:** ~146 instances found
-**CSS Class:** `nb-text-h2-section`
-**When to Use:** Major content sections within a page
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 16px |
-| Font Weight | 600 |
-| Line Height | 1.3 |
-| Default Color | #374151 |
-
-**Variants:**
-| Class | Description |
-|-------|-------------|
-| `nb-text-h2-section` | Standard section header |
-| `nb-text-h2-section-alt` | Bold with title color |
-| `nb-text-h2-sub` | 14px sub-header |
-
----
-
-### H3 - Widget Header ⭐ MOST COMMON
-
-**Status:** ✅ Extracted from codebase
-**Usage Frequency:** ~770 instances found (most common header)
-**CSS Class:** `nb-text-h3-widget`
-**When to Use:** Card/widget headers, compact headers
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 14px |
-| Font Weight | 600 |
-| Line Height | 1.4 |
-| Default Color | #374151 |
-
----
-
-## Subtext
-
-### Subtext Primary
-
-**Status:** ✅ Extracted from codebase
-**Usage Frequency:** ~340 instances found
-**CSS Class:** `nb-text-subtext-primary`
-**When to Use:** Captions, helper text, metadata
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 12px |
-| Font Weight | 400 |
-| Line Height | 1.4 |
-| Default Color | #737373 |
-
-**Variants:**
-| Class | Size | Color |
-|-------|------|-------|
-| `nb-text-subtext-primary` | 12px | #737373 |
-| `nb-text-subtext-secondary` | 11px | #9F9F9F |
-| `nb-text-subtext-tertiary` | 10px | #B9B9B9 |
-
----
-
-## Table Text
-
-### Table Header
-
-**Status:** ✅ Extracted from codebase
-**Usage Frequency:** ~200 instances found
-**CSS Class:** `nb-text-table-header`
-**When to Use:** Column headers in data tables
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 12px |
-| Font Weight | 600 |
-| Line Height | 1.4 |
-| Default Color | #737373 |
-
-**Variants:**
-| Class | Description |
-|-------|-------------|
-| `nb-text-table-header` | Standard header |
-| `nb-text-table-header-caps` | Uppercase with letter spacing |
-
----
-
-### Table Row Primary ⭐ RECOMMENDED
-
-**Status:** ✅ Extracted from codebase
-**CSS Class:** `nb-text-table-row-primary`
-**When to Use:** Main table cell content
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 13px |
-| Font Weight | 400 |
-| Line Height | 1.4 |
-| Default Color | #374151 |
-
-**Usage Examples:**
-
-```html
-<table>
-  <thead>
-    <tr>
-      <th class="nb-text-table-header">Service</th>
-      <th class="nb-text-table-header nb-text-align-right">Latency</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td class="nb-text-table-row-primary">api-gateway</td>
-      <td class="nb-text-table-row-primary nb-text-align-right">142ms</td>
-    </tr>
-  </tbody>
-</table>
-```
-
----
-
-## Labels
-
-### Label Key
-
-**Status:** ✅ Extracted from codebase
-**CSS Class:** `nb-text-label-key`
-**When to Use:** Form labels, key-value pair labels
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 12px |
-| Font Weight | 500 |
-| Line Height | 1.4 |
-| Default Color | #737373 |
-
-### Label Value
-
-**Status:** ✅ Extracted from codebase
-**CSS Class:** `nb-text-label-value`
-**When to Use:** Data values in key-value displays
-
-**Usage Examples:**
-
-```html
-<div class="key-value-pair">
-  <span class="nb-text-label-key">Status:</span>
-  <span class="nb-text-label-value">Active</span>
-</div>
-```
-
----
-
-## Metrics & Numbers 🆕
-
-### Metric Value
-
-**Status:** 🆕 Recommended addition
-**CSS Class:** `nb-text-metric-value`
-**When to Use:** Large numeric values on dashboards, KPI cards
-
-**Recommended Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 24px |
-| Font Weight | 600 |
-| Line Height | 1.2 |
-| Default Color | #374151 |
-
-**Variants:**
-| Class | Size | Use Case |
-|-------|------|----------|
-| `nb-text-metric-value-sm` | 14px | Compact metrics |
-| `nb-text-metric-value` | 24px | Standard metrics |
-| `nb-text-metric-value-lg` | 28px | Hero/featured metrics |
-
-**Color Variations:**
-| Modifier Class | Color | Use Case |
-|----------------|-------|----------|
-| (none/default) | #374151 | Neutral metric |
-| `nb-text-color-positive` | #16A34A | Positive change (+12.5%) |
-| `nb-text-color-negative` | #DC2626 | Negative change (-8.3%) |
-| `nb-text-color-currency` | #22C55E | Dollar amounts |
-
-**Rationale:** Essential for observability dashboards displaying request counts, error rates, latency percentiles, throughput metrics.
-
-**Usage Examples:**
-
-```html
-<div class="metric-card">
-  <span class="nb-text-metric-label">Requests/sec</span>
-  <span class="nb-text-metric-value">1,234,567</span>
-  <span class="nb-text-metric-unit nb-text-color-muted">/s</span>
-</div>
-
-<div class="metric-card">
-  <span class="nb-text-metric-label">Change</span>
-  <span class="nb-text-metric-delta nb-text-color-positive">+12.5%</span>
-</div>
-
-<div class="metric-card">
-  <span class="nb-text-metric-label">Savings</span>
-  <span class="nb-text-metric-currency-lg">$24,500</span>
-</div>
-```
-
-**Related Classes:** `nb-text-metric-label`, `nb-text-metric-unit`, `nb-text-metric-delta`, `nb-text-metric-currency`
-
----
-
-## Status & Alerts 🆕
-
-### Status Critical
-
-**Status:** 🆕 Recommended addition
-**CSS Class:** `nb-text-status-critical`
-**When to Use:** Critical alerts, error states, failures
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 12px |
-| Font Weight | 600 |
-| Line Height | 1.4 |
-| Default Color | #EF4444 |
-
-**All Status Classes:**
-| Class | Color | Use Case |
-|-------|-------|----------|
-| `nb-text-status-critical` | #EF4444 | Critical/Error |
-| `nb-text-status-warning` | #EAB308 | Warning |
-| `nb-text-status-healthy` | #16A34A | OK/Success |
-| `nb-text-status-info` | #3B82F6 | Informational |
-| `nb-text-status-unknown` | #9F9F9F | Unknown/Pending |
-
-**Usage Examples:**
-
-```html
-<div class="alert-row">
-  <span class="nb-text-status-critical">CRITICAL</span>
-  <span class="nb-text-body-primary">Database connection timeout</span>
-</div>
-```
-
----
-
-## Code & Technical 🆕
-
-### Code Inline
-
-**Status:** 🆕 Recommended addition
-**CSS Class:** `nb-text-code-inline`
-**When to Use:** Inline code snippets, technical values
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto Mono, monospace |
-| Font Size | 13px |
-| Font Weight | 400 |
-| Line Height | 1.4 |
-| Default Color | #313131 |
-| Background | #f5f5f5 |
-| Padding | 2px 6px |
-| Border Radius | 4px |
-
-**All Code Classes:**
-| Class | Use Case |
-|-------|----------|
-| `nb-text-code-inline` | Inline code in sentences |
-| `nb-text-code-block` | Multi-line code blocks |
-| `nb-text-log-entry` | Log viewer lines |
-| `nb-text-trace-id` | Distributed trace IDs |
-| `nb-text-span-name` | Trace span names |
-| `nb-text-query` | Database/API queries |
-
-**Usage Examples:**
-
-```html
-<p>
-  Set the environment variable
-  <code class="nb-text-code-inline">NODE_ENV=production</code>
-</p>
-
-<div class="log-line">
-  <span class="nb-text-timestamp-compact">14:32:01.234</span>
-  <span class="nb-text-status-warning">WARN</span>
-  <span class="nb-text-log-entry">Connection pool exhausted</span>
-</div>
-```
-
----
-
-## Timestamps 🆕
-
-### Timestamp Primary
-
-**Status:** 🆕 Recommended addition
-**CSS Class:** `nb-text-timestamp-primary`
-**When to Use:** Full timestamps, event times
-
-**Specifications:**
-| Property | Value |
-|----------|-------|
-| Font Family | Roboto, sans-serif |
-| Font Size | 12px |
-| Font Weight | 400 |
-| Line Height | 1.4 |
-| Default Color | #B9B9B9 |
-
-**All Timestamp Classes:**
-| Class | Use Case | Example |
-|-------|----------|---------|
-| `nb-text-timestamp-primary` | Full timestamp | "Jan 15, 2025, 14:32:01" |
-| `nb-text-timestamp-relative` | Relative time | "5 mins ago" |
-| `nb-text-timestamp-compact` | Log timestamp | "14:32:01.234" |
-
----
-
-## Charts & Legends 🆕
-
-### Chart Title
-
-**Status:** 🆕 Recommended addition
-**CSS Class:** `nb-text-chart-title`
-**When to Use:** Graph/chart headings
-
-**All Chart Classes:**
-| Class | Size | Use Case |
-|-------|------|----------|
-| `nb-text-chart-title` | 16px | Chart headings |
-| `nb-text-chart-axis` | 11px | X/Y axis labels |
-| `nb-text-chart-legend` | 12px | Legend items |
-| `nb-text-chart-annotation` | 10px | Annotations |
-| `nb-text-chart-data` | 11px | Data point labels |
-
----
-
-## Empty & Error States 🆕
-
-### Empty Title
-
-**Status:** 🆕 Recommended addition
-**CSS Class:** `nb-text-empty-title`
-**When to Use:** "No data" headings, empty state titles
-
-**All State Classes:**
-| Class | Use Case |
-|-------|----------|
-| `nb-text-empty-title` | Empty state headings |
-| `nb-text-empty-description` | Empty state explanations |
-| `nb-text-error-title` | Error headings |
-| `nb-text-error-message` | Error descriptions |
-
-**Usage Examples:**
-
-```html
-<div class="empty-state">
-  <h3 class="nb-text-empty-title">No data available</h3>
-  <p class="nb-text-empty-description">Data will appear here once services start reporting metrics.</p>
-</div>
-```
-
----
-
-## Color Modifier Classes
-
-Apply these as additional classes to change text color:
-
-| Modifier | Class                    | Hex     | Use Case                  |
-| -------- | ------------------------ | ------- | ------------------------- |
-| Default  | `nb-text-color-default`  | #374151 | Standard text             |
-| Muted    | `nb-text-color-muted`    | #9F9F9F | Secondary, less important |
-| Accent   | `nb-text-color-accent`   | #3B82F6 | Highlighted, links        |
-| Positive | `nb-text-color-positive` | #16A34A | Success, improvements     |
-| Negative | `nb-text-color-negative` | #DC2626 | Errors, declines          |
-| Warning  | `nb-text-color-warning`  | #EAB308 | Caution states            |
-| Info     | `nb-text-color-info`     | #3B82F6 | Informational             |
-| White    | `nb-text-color-white`    | #FFFFFF | On dark backgrounds       |
-| Title    | `nb-text-color-title`    | #22304B | Dark title color          |
-| Currency | `nb-text-color-currency` | #22C55E | Money/savings             |
-
----
-
-## Weight Modifier Classes
-
-| Modifier | Class                     | Value |
-| -------- | ------------------------- | ----- |
-| Light    | `nb-text-weight-light`    | 300   |
-| Normal   | `nb-text-weight-normal`   | 400   |
-| Medium   | `nb-text-weight-medium`   | 500   |
-| Semibold | `nb-text-weight-semibold` | 600   |
-| Bold     | `nb-text-weight-bold`     | 700   |
-
----
-
-## Utility Classes
-
-| Class                   | Effect                  |
-| ----------------------- | ----------------------- |
-| `nb-text-truncate`      | Truncate with ellipsis  |
-| `nb-text-nowrap`        | Prevent text wrapping   |
-| `nb-text-uppercase`     | Transform to uppercase  |
-| `nb-text-capitalize`    | Capitalize first letter |
-| `nb-text-align-left`    | Left align text         |
-| `nb-text-align-center`  | Center align text       |
-| `nb-text-align-right`   | Right align text        |
-| `nb-text-underline`     | Add underline           |
-| `nb-text-no-decoration` | Remove decoration       |
-
----
-
-## CSS Variables Reference
-
-All typography classes use CSS custom properties for consistency:
-
-```css
-:root {
-  /* Font Families */
-  --nb-font-primary: 'Roboto', sans-serif;
-  --nb-font-secondary: 'Poppins', sans-serif;
-  --nb-font-mono: 'Roboto Mono', monospace;
-
-  /* Font Sizes */
-  --nb-text-xs: 10px;
-  --nb-text-sm: 11px;
-  --nb-text-base: 12px;
-  --nb-text-md: 13px;
-  --nb-text-lg: 14px;
-  --nb-text-xl: 16px;
-  --nb-text-2xl: 18px;
-  --nb-text-3xl: 20px;
-  --nb-text-4xl: 24px;
-  --nb-text-5xl: 28px;
-
-  /* Font Weights */
-  --nb-font-light: 300;
-  --nb-font-normal: 400;
-  --nb-font-medium: 500;
-  --nb-font-semibold: 600;
-  --nb-font-bold: 700;
-}
-```
-
----
-
-## Migration from Components
-
-If migrating from the previous component-based system:
-
-| Old Component       | New CSS Class               |
-| ------------------- | --------------------------- |
-| `<NbBodyText>`      | `nb-text-body-primary`      |
-| `<NbBodyTextLarge>` | `nb-text-body-large`        |
-| `<NbHeaderH1>`      | `nb-text-h1-page`           |
-| `<NbHeaderH2>`      | `nb-text-h2-section`        |
-| `<NbHeaderH3>`      | `nb-text-h3-widget`         |
-| `<NbSubText>`       | `nb-text-subtext-primary`   |
-| `<NbTableHeader>`   | `nb-text-table-header`      |
-| `<NbTableCell>`     | `nb-text-table-row-primary` |
-| `<NbLabel>`         | `nb-text-label-key`         |
-| `<NbValue>`         | `nb-text-label-value`       |
-| `<NbCurrency>`      | `nb-text-metric-currency`   |
-
----
-
-## Components
-
-> **Source:** `app/src/components1/common/` > **Total Files:** 110+ across root and subdirectories
-> **Last Audited:** February 2026
-
-### Complete File Inventory
-
-Before documenting, every file in the `common/` folder was scanned. Here is the full list of files found:
-
-<details>
-<summary>Click to expand full file list (110+ files)</summary>
-
-**Root .tsx files (27):** AccordionSmall, AutoRefreshControls, ButtonTabs, ConsoleLogOutput, CustomDropdownIcon, CustomListWithShowMore, CustomMultiDropdown, CustomStepper, CustomTextField, CustomTooltip, DevOpsTimelineMUI, DownloadTarFile, FieldRenderer, FilterGroup, LazyLoadComponent, Loader, NSnackbar, NewVerticalStepper, NubiChatSidebar, SnackbarComponent, SvgRenderer, TimePickerButtonsGroup, ValueWithHeading, VerticalStepNavigation
-
-**Root .jsx files (76):** AnchorComponent, ApiTokens, ArgoCDAccountModal, BoxLayout2, ButtonMenu, ChartSwitcher, CloudIcon, CloudProviderIcon, ClusterDropDown, ClusterStatusIndicator, CopyButton, CopyableText, CostView, CreateTicketButton, CustomAccordion, CustomAutocomplete, CustomBackButton, CustomBorderCard, CustomButton, CustomButtonsGroup, CustomCheckbox, CustomCollapseable, CustomDivider, CustomDropdown, CustomIcon, CustomLink, CustomPill, CustomSearch, CustomSelectDropdown, CustomSwiperCarousel, CustomSwitch, CustomTableFilters, CustomTabs, CustomTabsForDrilldown, CustomTicketLink, DatadogAccountModal, DiffViewer, DownloadButton, DynamicForm, DynamicTitle, EmptyData, ExpandButton, ExpandableText, GithubAccountModal, InfographicList, IntegrationDynamicFormModal, InvestigateButton, JiraAccountModal, K8sAccountModal, LangTypeIcon, MarkDowns, NewCustomButton, NewReusabeFormComponents, NewShimmerloading, OptionMenu, PagerDutyAccountModal, PrimaryLink, ResolveButton, SecondaryLink, ServiceNowAccountModal, ShareButton, ShimmerLoading, SmallScreenBackdrop, SummarySkeletonLoader, TenantAccountCommonSettings, TenantSettings, TextWithBorder, TextWithToolTip, TextWithTooltipAndCopy, ThreeDotsMenu, ThumpsUpAndDown, Title, UpdateDataContext, UserHistory, WidgetCard, index
-
-**Root .js files (4):** ThreeDotLoader, TitleBox, ScrollToTopBottom, ServiceNowAccountModal
-
-**Root .ts files (1):** snackbarService
-
-**Root .d.ts files (1):** BoxLayout2.d.ts
-
-**Subdirectory files:**
-
-- `charts/` (7): BarChart, ChartComponent, CustomHeatMap, DoughnutChart, DoughnutChartK8s, LineCharts, ShowPrometheusLineChart
-- `format/` (5): Currency, Datetime, Memory, Number, Text
-- `widgets/` (7): ColorDots, CustomDateTimePicker, CustomLabels, HighLights, ProgressBar, SummaryLabels, TrendArrowPercentage
-- `modal/` (3): NDialog, style, welcomeModal
-- `tables/` (1): TableCellValueWithHeading
-- `header/` (1): Header1
-- `layout/` (2): AskNudgebeeLayoutV2, UserMenuItems
-- `inputs/` (1): AutoCompleteInput
-
-</details>
-
----
-
-### Barrel Exports (index.jsx)
-
-The `index.jsx` re-exports these components for convenient importing:
-
-```js
-export { default as FilterGroup } from './FilterGroup';
-export { default as NSnackbar } from './NSnackbar';
-export { default as BoxLayout2 } from './BoxLayout2';
-export { default as CustomButton } from './CustomButton';
-export { default as ThreeDotsMenu } from './ThreeDotsMenu';
-export { default as LineChart } from './charts/LineCharts';
-export { default as Text } from './format/Text';
-```
-
----
-
-### Layout
-
-#### BoxLayout2
-
-- **Path:** `src/components1/common/BoxLayout2.jsx`
-- **Description:** Complex layout container with optional heading, filters, date-time picker, sharing/download buttons, toggle buttons, refresh control, and side filter panel.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | id | string | No | - | Element ID |
-  | showBorder | bool | No | `true` | Show card border |
-  | heading | string | No | `''` | Section heading text |
-  | marginTop | number \| string | No | `0` | Top margin |
-  | marginBottom | number \| string | No | `'24px'` | Bottom margin |
-  | children | ReactNode | No | - | Content |
-  | filterOptions | FilterOption[] | No | `[]` | Array of filter configs |
-  | dateTimeRange | DateTimeRange | No | `{enabled:false}` | Date-time range picker config |
-  | sharingOptions | SharingOptions | No | `{sharing:{enabled:true}, download:{enabled:true}}` | Share/download buttons config |
-  | toggleButtons | ToggleButtons | No | `{options:[]}` | Toggle button group config |
-  | displaySideFilters | bool | No | `false` | Show side filter panel |
-  | onRefresh | OnRefresh | No | `{enabled:false}` | Refresh button config |
-  | sx | object | No | `{}` | Style overrides |
-- **When to use:** Primary layout wrapper for dashboard sections. Use whenever you need a section with a heading, filters, and/or date range controls.
-- **Dependencies:** Wraps many common components internally (CustomSearch, CustomButtonsGroup, DownloadButton, ShareButton, etc.)
-- **Example:**
+## 1. Component index — by purpose
+
+`ds/` = design-system primitive (`@ui/*`). `common/` = domain composition (`@shared/*`) — an
+app-specific component built from primitives.
+
+### Layout & page shell
+
+| Component                         | Where | Use when                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ListingLayout`                   | ds/   | The card shell for any table/listing screen — `Toolbar` + `Body` + `Footer` slots.                                                                                                                                                                                                                                                                               |
+| `Card`                            | ds/   | **Canonical content card** — `variant` (elevated/outlined/accent/**tinted**) × `size` (sm/md/lg) × `elevation` (raised/flat). Slots: `header` / `footer` / `children`. Use for all new card surfaces. **`variant='tinted'` + `tone`** gives a coloured-background panel (neutral→gray-100, info→blue-100, success→green-100, warning→amber-100, danger→red-100). |
+| `WidgetCard` · `CustomBorderCard` | ds/   | Legacy plain content cards — consolidated into `Card`. Co-exist; **don't introduce new uses.**                                                                                                                                                                                                                                                                   |
+| `CollapsableCard`                 | ds/   | A single collapsible card (one unit — _not_ an accordion). Composes `Card` for the surface.                                                                                                                                                                                                                                                                      |
+| `Accordion`                       | ds/   | 3+ sibling collapsibles as one group. For a single collapsible unit use `CollapsableCard`.                                                                                                                                                                                                                                                                       |
+| `Divider` · `List`                | ds/   | Rules and simple item lists.                                                                                                                                                                                                                                                                                                                                     |
+
+### Tables & data display
+
+| Component                                             | Where   | Use when                                                                                                                                                                                                                                                     |
+| ----------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CustomTable`                                         | common/ | **The table** for this app — `@shared/tables/CustomTable` (grouped headers, expandable rows, resizable/sticky columns, column selector, built-in pagination via `CustomTablePagination`). There is no `ds/Table` primitive today.                            |
+| `Stat` · `Trend` · `CostCallout` · `Comparison`       | ds/     | Metric / KPI / cost / before-after display.                                                                                                                                                                                                                  |
+| `ProgressBar` · `ProgressLinear`                      | ds/     | Utilisation gauge (known max) vs indeterminate/determinate "something is happening" progress.                                                                                                                                                                |
+| `Chart`                                               | ds/     | Line / series / time-series / bar / doughnut charts via the `Chart.*` namespace.                                                                                                                                                                             |
+| `Label` · `Chip` · `StatusIndicator` · `SeverityIcon` | ds/     | Tags, status pills, resource-state read-outs, severity markers. `Chip` has 7 variants, 5 sizes (`micro`→`md`), 9 tones and 8 categorical `hue` values for tag chips — use exported `hashHue(key)` for a stable string→hue mapping. See §3 for Chip-vs-Label. |
+
+**Deprecated — labels & status:**
+
+- `common/CustomLabels` — **removed** (no longer in the tree). Use `ds/Label`. `CustomLabels` auto-derived tone from text content; `ds/Label` requires an explicit `tone` (`neutral`/`info`/`success`/`warning`/`critical`).
+- `common/NBStatusBadge` (`@shared/widgets/NBStatusBadge`) — still in use for the K8s status-badge pattern; prefer `ds/StatusIndicator` / `ds/Label` for new code.
+
+### Content & formatting
+
+| Component    | Where   | Use when                                                                                                                                                                                                                                                                 |
+| ------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Markdown`   | common/ | Prose / markdown that _contains_ fenced code. Import `@shared/viewers/MarkDowns`. (No `ds/Markdown` primitive.)                                                                                                                                                          |
+| `CodeBlock`  | ds/     | **Display** a static code snippet, shell command, or config fragment with a copy button. `code` (required), `language`/`title` header, `inline` chip, `tone` (`light`/`dark`), `showLineNumbers`, `prompt`, `wrap`, `maxHeight`.                                         |
+| `CodeEditor` | ds/     | **Edit** code, or display **read-only** code with syntax highlighting / line numbers / folding. CodeMirror wrapper sharing `CodeBlock`'s surface. `value` (required), `onChange`, `language`, `readOnly`, `tone`, `height`, `extensions` (escape hatch for PromQL/lint). |
+| `DiffViewer` | ds/     | Show **what changed** between two versions. Engine inferred from input: `gitDiff` (unified string) → unified rows; `originalCode`+`newCode` → split side-by-side. `mode='unified'\|'split'` overrides.                                                                   |
+
+### Forms & inputs
+
+| Component                                        | Where   | Use when                                                                                                                                                                                                                                                   |
+| ------------------------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Form` (+ `.Section`/`.Field`/`.Row`/`.Actions`) | common/ | **Layout primitive for any form-shaped UI** — modals, settings pages, side panels. Import `@shared/forms/Form`. Container-agnostic; controls label placement (stacked vs split), field gap, section structure, related-field rows. See §2.3.               |
+| `Input`                                          | ds/     | All text entry — single line, textarea, password, email, URL, number. Supports `prefix`/`suffix`/`leadingIcon`/`trailingIcon`. Replaces the legacy `CustomTextField`.                                                                                      |
+| `SearchInput`                                    | ds/     | Search-style toolbar input (Enter to search, X to clear). Thin wrapper over `ds/Input` — preserves the `onEnterPress` / `onClear` contract for its 15+ consumers.                                                                                          |
+| `Checkbox` · `Switch` · `ToggleGroup`            | ds/     | Boolean / segmented controls.                                                                                                                                                                                                                              |
+| `Select`                                         | ds/     | Value picker for a **form field** — single by default, multi via `multiple`. Built-in search auto-shows at >8 options. Field-shaped trigger matching `Input` chrome.                                                                                       |
+| `FilterDropdown`                                 | ds/     | Value picker for a **toolbar / filter bar** — inline pill trigger with clear-X. See §1.6 for "form vs filter". An option's `icon` renders as a 16px leading `SafeIcon`. Panel width defaults to the trigger width (220px floor); `popoverWidth` overrides. |
+| `FilterGroup`                                    | ds/     | A row of removable filter Chips with a leading "Filters" affordance. Composes `Chip` + `DropdownMenu`.                                                                                                                                                     |
+| `CustomDateTimePicker`                           | common/ | Single date + time picker with DS-matched `Input` chrome. Import `@shared/widgets/CustomDateTimePicker`. Use for single datetime fields. (No `ds/DateRangePicker` primitive exists today.)                                                                 |
+
+**Deprecated / removed (form-primitive consolidation):**
+
+- `ds/TextField`, `ds/SearchInput` stubs, `ds/MultiSelect`, `ds/Autocomplete`, `ds/DateRangePicker` — **not present** in `ds/`. Use `Input` / `<Input leadingIcon>` / `<Select multiple>` / `Select` (searchable) / `common/CustomDateTimePicker`.
+- `common/CustomTextField` (`@shared/forms/CustomTextField`) — still in use; migrate to `Input` opportunistically.
+- `common/CustomDropdown` (`@shared/CustomDropdown`) — **stays** as the cluster / cloud-account picker domain composition. Don't use for new generic dropdowns.
+
+### Navigation & filtering
+
+| Component         | Where   | Use when                                                                                                                                                                                                                                                         |
+| ----------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Tabs`            | ds/     | DS tabs primitive (`@ui/Tabs`). `navigation='state'` for in-page toggles, `navigation='router'` (+ `routerMode='query'\|'hash'`) for URL-driven nav. Emits `onChange`; pages render content. **There is no `ds/PageTabs` or `CustomTabs`** — those were removed. |
+| `Tabs` (shared)   | common/ | `@shared/navigation/Tabs` — the legacy tabs widget still used across most pages (and `TabsForDrilldown`). New work should prefer `ds/Tabs`.                                                                                                                      |
+| `AnchorComponent` | common/ | Top-of-page **2-level** nav — parent tabs with optional hover-popover dropdowns of subtabs, hash-driven routing. Import `@shared/navigation/AnchorComponent`.                                                                                                    |
+| `Toggle`          | ds/     | Compact button-row switcher — 2-4 narrow choices visible at once (e.g. "Yours" / "Team"). State-only, not a form input. Sizes: `default` / `large` / `sm`.                                                                                                       |
+| `Stepper`         | ds/     | Multi-step progress indicator (vertical / horizontal).                                                                                                                                                                                                           |
+| `Link`            | ds/     | Inline navigation link. `openInNew` opens in a new tab + external-link icon. `secondaryText` for dense/caption contexts. `maxWidth` truncates with a hover tooltip. Don't use for actions — use `<Button tone='link'>`.                                          |
+
+### Actions, feedback, overlays
+
+| Component                                                    | Where   | Use when                                                                                                                                                                                                                              |
+| ------------------------------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Button`                                                     | ds/     | All actions. `tone` primary/secondary/ghost/danger/link, `size` xs–lg. `trailingAccent` reserved for _the_ page CTA.                                                                                                                  |
+| `DropdownMenu` · `ThreeDotsMenu`                             | ds/     | Action menus. `ThreeDotsMenu` is the kebab/overflow wrapper (`<DropdownMenu trigger={icon-only Button}>`). Per spec there is no separate `ButtonMenu` primitive — compose `DropdownMenu` with a labelled trigger.                     |
+| `CopyButton` · `DownloadButton`                              | common/ | Icon-only copy-to-clipboard (`@shared/buttons/CopyButton`) and download trigger (`@shared/buttons/DownloadButton`, wraps `ds/Button` + `file-saver`). Prefer these over wiring `saveAs` manually.                                     |
+| `Banner` · `Toast`                                           | ds/     | Inline page banners / transient toast notifications. **Toast is imperative** — `import { toast } from '@ui/Toast'`, mount `<Toast />` once in `_app.tsx`, then `toast.success('…')`. See the Toast note below.                        |
+| `EmptyState` · `Skeleton` · `ProgressBar` · `ProgressLinear` | ds/     | Empty / loading / progress states. Error boundaries: `@shared/ErrorBoundary` (no `ds/ErrorBoundary`).                                                                                                                                 |
+| `Modal`                                                      | ds/     | Centered overlay — plain shell **or** confirm/cancel decision dialog (pick the footer mode). The unified `Modal` absorbed the legacy `Dialog`/`NDialog`. There is no separate `ds/Dialog`, `ds/Popover`, or `ds/Inspector` primitive. |
+| `Tooltip`                                                    | ds/     | Hover text / explainer / interactive tooltip. `variant` (`default`/`explainer`/`interactive`), `title`, `desc`, `placement`, `linkUrl`/`linkText`.                                                                                    |
+| `SourceCitation` · `FeedbackVote`                            | ds/     | AI / agentic surfaces — inline source attribution and thumbs-up/down feedback.                                                                                                                                                        |
+
+**Toast — imperative notifications (`@ui/Toast`):**
+
+Fire transient feedback from anywhere — no JSX at the call site. `<Toast />` is mounted once in
+`_app.tsx`; just call the singleton:
+
+- **Severities:** `toast.default` (plain white card, no icon) · `toast.success` · `toast.info` · `toast.warning` · `toast.error`. Auto-dismiss timers: success 3000ms · info 4000ms · warning 5000ms · error 6000ms; **hover pauses**.
+- **Options bag** — 2nd arg `{ … }`, or a bare number as a `duration` shorthand:
+  - `description` — a smaller, gray sub-line under the message.
+  - `action` — `{ label, onClick }` renders a `Button` before the close; clicking runs `onClick` **and then dismisses**.
+  - `duration` — override the per-severity default (ms).
+- Stacks **top-right**, newest on top, **max 3 visible**, fixed width. Motion respects `prefers-reduced-motion`.
 
 ```tsx
-<BoxLayout2
-  id='metrics-section'
-  heading='Service Metrics'
-  dateTimeRange={{ enabled: true, onChange: handleDateChange }}
-  filterOptions={[{ type: 'search', onChange: handleSearch }]}
->
-  <MetricsChart />
-</BoxLayout2>
+import { toast } from '@ui/Toast';
+
+toast.success('Cluster saved.');
+toast.default('Link copied.', { action: { label: 'Undo', onClick: restore } });
+toast.warning('Rate-limited. Retrying in 30 s.', { duration: 5000 });
+toast.error('Could not save.', { description: 'Name already in use.', action: { label: 'Retry', onClick: retry } });
 ```
 
-#### AskNudgebeeLayoutV2
+**Don't** put the only copy of critical info in a Toast — it vanishes whether or not it's read (use
+`Banner` / the notification centre).
 
-- **Path:** `src/components1/common/layout/AskNudgebeeLayoutV2.jsx`
-- **Description:** Full-page layout for the "Ask Nudgebee" AI chat interface with side drawer navigation, user menu, settings, and tenant switching.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | node | Yes | - | Page content |
-  | handleNewChat | func | No | - | New chat callback |
-  | handleHomePage | func | No | - | Home navigation callback |
-  | handleRecentChat | func | No | - | Recent chat callback |
-  | handleToggle | func | No | - | Drawer toggle callback |
-  | onAgentsRefreshed | func | No | - | Agent refresh callback |
-- **When to use:** Layout wrapper for the AI assistant pages only.
-- **Dependencies:** Wraps with `withAuth` HOC. Uses `TenantSettings`, `ApiTokens`, `CustomButton`.
+**Deprecated / removed — overlays & misc:**
 
-#### SmallScreenBackdrop
-
-- **Path:** `src/components1/common/SmallScreenBackdrop.jsx`
-- **Description:** Fullscreen blurred backdrop warning when viewport is below 968px.
-- **Props:** None
-- **When to use:** Include in the root layout to warn users on small screens.
-- **Dependencies:** MUI `Backdrop`, `useMediaQuery`
-
-#### CustomDivider
-
-- **Path:** `src/components1/common/CustomDivider.jsx`
-- **Description:** Configurable horizontal divider line.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | margin | string | No | `'10px 0px'` | CSS margin |
-  | borderWidth | string | No | `'0.5px'` | Border thickness |
-  | borderType | string | No | `'solid'` | Border style |
-  | maxWidth | string | No | `'auto'` | Max width |
-  | borderColor | string | No | `'#EBEBEB'` | Border color |
-- **When to use:** Use instead of raw `<hr>` or MUI `<Divider>` for consistent styling.
-- **Example:**
-
-```tsx
-<CustomDivider margin='16px 0' borderColor='#D1D5DB' />
-```
+- `common/CustomTooltip` — **removed**. Use `ds/Tooltip` (identical prop API: `title`, `desc`, `variant`, `placement`, `linkUrl`, `linkText`).
+- `common/CustomTicketLink`, `common/BoxLayout2`, `common/NewCustomButton`, `common/CustomTabs` — **removed**. Use, respectively: an inline `<Link>` for the "Ticket - {id}" pattern; `ds/ListingLayout` for filter-bar + content shells; `ds/Button`; `ds/Tabs` (or the still-present `@shared/navigation/Tabs`).
 
 ---
 
-### Typography & Text Display
+## 1.5 Typography conventions
 
-#### Title
+Two font families, picked by purpose:
 
-- **Path:** `src/components1/common/Title.jsx`
-- **Description:** Section title text with an optional colored underline bar.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | title | any | No | - | Title text |
-  | isUnderline | bool | No | `true` | Show underline bar |
-  | lightVariant | bool | No | `false` | Lighter, larger style |
-  | sx | any | No | - | Style overrides |
-- **Variants:** `lightVariant` toggles between bold dark and lighter larger text.
+| Use for                                              | Token                                            | Resolves to               |
+| ---------------------------------------------------- | ------------------------------------------------ | ------------------------- |
+| **Labels, headings, section titles**                 | `var(--ds-font-display)` _(explicit)_            | Poppins                   |
+| **Body text, input values, table cells, paragraphs** | _inherit body default_ — set **no** `fontFamily` | Roboto (via MUI body)     |
+| **Code, kbd, numeric monospace**                     | `var(--ds-font-mono)` _(explicit)_               | JetBrains Mono / Consolas |
 
-#### TitleBox
+Why split: a Poppins label above a Roboto input produces the "field has a clear label" affordance
+users expect. Setting a single font on everything makes form fields, headings, and body text blur
+into the same visual weight — that's the failure mode we're moving away from.
 
-- **Path:** `src/components1/common/TitleBox.js`
-- **Description:** Styled card header with title, optional icon, subtitle key-value pairs, and a right-side component.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | title | string | No | `''` | Header title |
-  | originalTitle | string | No | - | Full title for tooltip |
-  | startIcon | node | No | - | Icon before title |
-  | rightComponent | node | No | - | Right-side content |
-  | subTitleOptions | array | No | - | Array of {key, value, valueColor?, action?} |
-
-#### DynamicTitle
-
-- **Path:** `src/components1/common/DynamicTitle.jsx`
-- **Description:** Sets the page `<title>` and favicon dynamically based on the tenant name from user session.
-- **Props:** None
-- **When to use:** Include once in the app layout for dynamic browser tab titles.
-
-#### TextWithToolTip
-
-- **Path:** `src/components1/common/TextWithToolTip.jsx`
-- **Description:** Truncated text with a MUI Tooltip showing full text on hover.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | text | string | No | - | Text content |
-  | size | number | No | `30` | Character limit before truncation |
-  | enableTooltip | bool | No | `true` | Enable/disable tooltip |
-
-#### TextWithTooltipAndCopy
-
-- **Path:** `src/components1/common/TextWithTooltipAndCopy.jsx`
-- **Description:** Truncated text with tooltip and copy-to-clipboard icon.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | string | No | - | Text to display |
-  | maxSize | number | No | `30` | Truncation limit |
-  | showCopyIcon | bool | No | `true` | Show copy icon |
-  | tooltipPlacement | string | No | `'top'` | Tooltip position |
-  | copyIconSize | number | No | `12` | Copy icon size |
-
-#### TextWithBorder
-
-- **Path:** `src/components1/common/TextWithBorder.jsx`
-- **Description:** Displays text with a left colored border, optional release icon badge.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | string | No | `''` | Text content |
-  | borderColor | string | No | `''` | Left border color |
-  | borderWidth | string | No | `''` | Left border width |
-  | padding | string | No | `'0px 10px'` | Padding |
-  | fontSx | object | No | `{fontSize:'20px', fontWeight:'700'}` | Font styling |
-
-#### ExpandableText
-
-- **Path:** `src/components1/common/ExpandableText.jsx`
-- **Description:** Text block that clamps to N lines with a "Show More/Less" toggle, auto-detecting overflow via ResizeObserver.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | text | string | No | `''` | Text content |
-  | maxLines | number | No | `1` | Lines before clamping |
-  | sx | object | No | `{}` | Style overrides |
-  | secondaryText | bool | No | - | Lighter text style |
-  | color | string | No | - | Text color |
-
-#### MarkDowns
-
-- **Path:** `src/components1/common/MarkDowns.jsx`
-- **Description:** Renders markdown content as sanitized HTML with mermaid diagram support, copy-to-clipboard on code blocks, and optional run-code buttons.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | data | string | No | - | Markdown string |
-  | sx | object | No | - | Style overrides |
-  | allowExecutable | func | No | - | Callback for run-code |
-  | canRunCode | bool | No | `true` | Show run-code buttons |
-- **Dependencies:** `marked`, `dompurify`, `mermaid`
-
-#### ValueWithHeading
-
-- **Path:** `src/components1/common/ValueWithHeading.tsx`
-- **Description:** Labeled value display with optional color dot icon, used for cost summaries and workload stats.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | iconColor | string | No | - | Color dot indicator |
-  | heading | string | Yes | `''` | Label text |
-  | value | string \| number | No | `''` | Value to display |
-  | forCostSummary | bool | No | - | Cost summary layout mode |
-  | forWorkload | bool | No | - | Workload layout mode |
-  | hideLogo | bool | No | `false` | Hide the color dot |
+This is built into the new DS form primitives — `ds/Input`, `ds/Select`, `ds/FilterDropdown` —
+their labels render in `--ds-font-display` automatically, their values inherit. If you build a new
+field-shaped primitive, follow the same rule: **explicit display font on the label, inherit on
+the value.** Don't set `fontFamily: var(--ds-font-sans)` on input elements — that forces Inter and
+breaks the convention.
 
 ---
 
-### Navigation
+## 1.6 Form fields vs toolbar filters
 
-#### AnchorComponent
+`Select` and `FilterDropdown` look similar (both pick from a list) but they're different
+affordances answering different user questions:
 
-- **Path:** `src/components1/common/AnchorComponent.jsx`
-- **Description:** Top-level navigation bar with tabbed buttons, dropdown sub-tabs via popover, and URL routing.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | filterOptions | array | No | `[]` | Tab filter options |
-  | onChangeFilter | func | No | - | Filter change callback |
-  | buttonTitle | string | No | `''` | Action button text |
-  | handleButtonAction | func | No | - | Button click handler |
-  | showGroupedTabs | bool | No | `false` | Enable grouped tab layout |
-  | p | string | No | `'8px 32px 0px 32px'` | Padding |
-- **When to use:** Use for page-level tab navigation with URL routing.
-- **Dependencies:** Uses `CustomTabs`, `CustomPill`, `CustomIconButton`.
+|                        | `Select` (form field)                                                | `FilterDropdown` (toolbar filter)                                                         |
+| ---------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **The question**       | "What value goes here?"                                              | "Narrow what I'm seeing"                                                                  |
+| **User intent**        | Commit a value to a form                                             | Adjust the current view                                                                   |
+| **What "empty" means** | "You haven't filled this in yet" (potentially an error)              | "No filter applied — showing everything" (valid)                                          |
+| **Trigger shape**      | Field — full-width, label above, error below, matches `Input` chrome | Pill — inline-flex, content-width, blue-300 border when applied, clear-X visible when set |
+| **Where it lives**     | Inside a `<form>` (UserModal, settings panels)                       | Inside a toolbar above a table (`ListingLayout.Toolbar`)                                  |
+| **Value lifecycle**    | Form state — submitted with the form                                 | URL query params / view preferences — survives reload                                     |
 
-#### CustomTabs
-
-- **Path:** `src/components1/common/CustomTabs.jsx`
-- **Description:** Styled tab navigation bar with router-based or filter-based behavior, pill counts, icons, and grouped tabs.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | any | No | - | Active tab value |
-  | onChange | func | Yes | - | Tab change handler |
-  | options | object | Yes | `{}` | Tab definitions |
-  | variant | `'primary'` \| `'secondary'` | No | `'secondary'` | Visual style |
-  | behavior | `'router'` \| `'filter'` | No | `'router'` | Navigation mode |
-  | smallSize | bool | No | `false` | Compact tabs |
-  | blueVariant | bool | No | `false` | Blue indicator color |
-  | showGroupedTabs | bool | No | `false` | Grouped tabs layout |
-- **Variants:** `primary` (filled active tab), `secondary` (underline). Behavior: `router` (Link navigation), `filter` (callback only).
-- **Example:**
-
-```tsx
-<CustomTabs
-  value={activeTab}
-  onChange={handleTabChange}
-  options={{ overview: { text: 'Overview' }, metrics: { text: 'Metrics', count: 5 } }}
-  variant='primary'
-  behavior='filter'
-/>
-```
-
-#### CustomTabsForDrilldown
-
-- **Path:** `src/components1/common/CustomTabsForDrilldown.jsx`
-- **Description:** Scrollable tab bar with pill counts, alpha/beta icons, and optional right-side action button.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | number \| string | No | - | Active tab |
-  | onChange | func | Yes | - | Tab change handler |
-  | options | array | No | `[]` | Tab configs with text, count, icon, disabled |
-  | rightButton | object | No | - | Right-side action button config |
-  | smallSize | bool | No | `false` | Compact mode |
-  | blueVariant | bool | No | `false` | Blue indicator |
-
-#### ButtonTabs
-
-- **Path:** `src/components1/common/ButtonTabs.tsx`
-- **Description:** Horizontal toggle button group (tab-like) with customizable styles and active state tracking.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | buttons | ButtonConfig[] | Yes | - | Array of {id, label, value?} |
-  | callBack | func | Yes | - | Selection callback |
-  | selectedButton | string \| number | No | - | Active button ID |
-  | fontSize | string | No | `'14px'` | Font size |
-  | height | string \| number | No | `'31px'` | Button height |
-  | borderRadius | string | No | `'6px'` | Corner radius |
-- **Example:**
-
-```tsx
-<ButtonTabs
-  buttons={[
-    { id: 'day', label: 'Day' },
-    { id: 'week', label: 'Week' },
-  ]}
-  selectedButton='day'
-  callBack={(id) => setTimeRange(id)}
-/>
-```
-
-#### CustomBackButton
-
-- **Path:** `src/components1/common/CustomBackButton.jsx`
-- **Description:** Back navigation button with optional new icon style; supports custom onClick, path, or browser back.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | onClick | func | No | - | Custom click handler |
-  | useNewIcon | bool | No | `false` | New styled icon variant |
-  | backButtonPath | string | No | - | Explicit back path |
-
-#### ScrollToTopBottom
-
-- **Path:** `src/components1/common/ScrollToTopBottom.js`
-- **Description:** Fixed floating buttons to scroll the page to top or bottom.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | alwaysShowBottomArrow | bool | No | `false` | Always show down arrow |
-- **Dependencies:** `react-icons/fa` (FaArrowUp, FaArrowDown)
-
-#### Header1
-
-- **Path:** `src/components1/common/header/Header1.jsx`
-- **Description:** Main application header bar with dynamic page title, cluster dropdown, agent version alerts, connect-account menus, and Nubi AI assistant button.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | showBorder | bool | No | `false` | Show bottom border |
-- **When to use:** Main app header. Included once in the root layout.
+**Same popup chrome** — both render their option list through the shared `OverlaySurface` /
+`OverlayItem` primitives, so the radius, shadow, item-row geometry, hover wash, and animation are
+byte-identical. Only the **trigger** differs. Picking between them is a UX call, not a code call.
 
 ---
 
-### Data Display
+## 1.7 Overlay primitives — what's shared
 
-#### CustomLabels
+When a new component needs a popup / menu / dropdown surface, **reach for these instead of
+re-styling MUI's Menu or Popover**:
 
-- **Path:** `src/components1/common/widgets/CustomLabels.tsx`
-- **Description:** Status/tag label chip that auto-selects color based on text content (e.g., "error" → red, "active" → green) or explicit variant.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | text | string | Yes | - | Label text |
-  | variant | string | No | `''` | Force color: `'red'` \| `'green'` \| `'grey'` \| `'yellow'` \| `'orange'` \| `'criticalRed'` \| `'blue'` |
-  | height | string | No | `'20px'` | Label height |
-  | textTransform | string | No | `'capitalize'` | CSS text-transform |
-  | maxWidth | string | No | `'350px'` | Max width |
-  | displayTooltip | bool | No | `false` | Show tooltip on truncation |
-  | tooltipCharLimit | number | No | - | Chars before truncation |
-  | showDropdownArrow | bool | No | `false` | Show dropdown arrow |
-- **Auto-color mapping:** `error/firing/failed` → red, `active/resolved/success` → green, `pending/in progress` → yellow, `critical` → criticalRed, `low` → blue, else → grey
-- **Example:**
+- **`OverlaySurface`** — the popover surface (10px radius, layered shadow, anchor positioning, slide-in animation). Backed by MUI Menu.
+- **`OverlayItem`** — one row inside a surface. `size` (`sm`/`md`), `tone` (`default`/`danger`), `selected`, `icon`/`kbd`/`badge` slots.
+- **`OverlaySection`** / **`OverlaySeparator`** — section headers and dividers.
+- **`OverlayCheckbox`** — the 16×16 blue-when-checked square used in multi-select rows.
+- **`OverlayScrollBox`** — max-height + styled scrollbar wrapper for the items list.
+- **`OverlaySearch`** — search input row pinned at the top of a surface.
+- **`OverlaySelectAll`** — "Select All" / "Clear All" row for multi-select lists.
 
-```tsx
-<CustomLabels text="Active" />           {/* auto: green */}
-<CustomLabels text="Error" />            {/* auto: red */}
-<CustomLabels text="Custom" variant="blue" />
-```
-
-#### CustomPill
-
-- **Path:** `src/components1/common/CustomPill.jsx`
-- **Description:** Small badge/pill label with customizable colors, border, and tooltip; caps display at "99+".
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | node | Yes | - | Badge content |
-  | bgColor | string | No | primaryLightest | Background color |
-  | borderRadius | string | No | `'4px'` | Corner radius |
-  | font | string | No | `'12px'` | Font size |
-  | showBorder | bool | No | `false` | Show border |
-  | tooltip | string | No | `''` | Tooltip text |
-- **Example:**
-
-```tsx
-<CustomPill value={42} bgColor='#EFF6FF' color='#3B82F6' />
-```
-
-#### CopyableText
-
-- **Path:** `src/components1/common/CopyableText.jsx`
-- **Description:** Wraps content with a click-to-copy icon, supports markdown format and hover-reveal icon.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | any | No | - | Display content |
-  | copyableText | string | No | `''` | Text to copy |
-  | iconPosition | `'start'` \| `'end'` | No | `'start'` | Icon placement |
-  | format | string | No | `'text'` | `'text'` or `'markdown'` |
-  | showCopyIconOnHover | bool | No | `false` | Show icon only on hover |
-
-#### InfographicList
-
-- **Path:** `src/components1/common/InfographicList.jsx`
-- **Description:** Horizontal bar displaying a sequence of label-value pairs separated by dividers.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | sequence | array | No | - | Array of {text, value} |
-
-#### CostView
-
-- **Path:** `src/components1/common/CostView.jsx`
-- **Description:** Displays a row of cost entries with currency formatting and trend arrow for forecast.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | data | array | No | - | Array of {name, cost} |
-- **Composition:** Uses `TrendArrowPercentage`, `Currency`.
-
-#### ClusterStatusIndicator
-
-- **Path:** `src/components1/common/ClusterStatusIndicator.jsx`
-- **Description:** Colored dot indicator (green/yellow/red) for cluster connection status.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | clusterData | any | No | `{}` | Cluster connection data |
-  | showBorder | bool | No | `false` | Show border ring |
-- **Variants:** Green (fully connected), Yellow (partially), Red (not connected).
-
-#### ColorDots
-
-- **Path:** `src/components1/common/widgets/ColorDots.jsx`
-- **Description:** Small colored vertical bar indicator based on severity/status level.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | severity | string | Yes | - | `'highest'` \| `'high'` \| `'medium'` \| `'low'` \| `'lowest'` \| `'critical'` \| `'open'` \| `'done'` etc. |
-
-#### TrendArrowPercentage
-
-- **Path:** `src/components1/common/widgets/TrendArrowPercentage.jsx`
-- **Description:** Percentage value with an up/down arrow indicating positive or negative trend.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | any | No | - | Percentage value |
-  | sign | number | No | `1` | Trend direction multiplier |
-  | width | string | No | `'50px'` | Container width |
-
-#### SummaryLabels
-
-- **Path:** `src/components1/common/widgets/SummaryLabels.jsx`
-- **Description:** Colored badge/label with optional gray description text.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | variant | `'critical'` \| `'info'` \| `'savings'` | No | `'info'` | Color variant |
-  | label | string | Yes | - | Badge text |
-  | grayText | string | No | - | Secondary description |
-
-#### CustomListWithShowMore
-
-- **Path:** `src/components1/common/CustomListWithShowMore.tsx`
-- **Description:** Bulleted string list with "Show more/less" toggle.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | data | string[] | Yes | - | List items |
-  | initialCount | number | No | `5` | Items shown initially |
-  | onItemClick | func | No | - | Item click handler |
-
-#### HighLights
-
-- **Path:** `src/components1/common/widgets/HighLights.jsx`
-- **Description:** Renders highlighted text or custom component inside a padded box.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | text | any | No | - | Text content |
-  | component | any | No | `null` | Custom component |
-
-#### FieldRenderer
-
-- **Path:** `src/components1/common/FieldRenderer.tsx`
-- **Description:** Renders input/output fields of a task according to a schema definition, with type badges and copy-to-clipboard.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | data | any | Yes | - | Field data |
-  | schema | any | Yes | - | Schema definition |
-  | fieldType | `'input'` \| `'output'` | Yes | - | Field direction |
-  | taskDefinitions | any[] | Yes | - | Task definitions |
-  | copyToClipboard | func | Yes | - | Copy callback |
-
-#### ConsoleLogOutput
-
-- **Path:** `src/components1/common/ConsoleLogOutput.tsx`
-- **Description:** Renders console/log output text with ANSI color stripping and red error highlighting.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | data | string | Yes | - | Log text |
-  | sx | CSSProperties | No | - | Style overrides |
-
-#### DevOpsTimelineMUI
-
-- **Path:** `src/components1/common/DevOpsTimelineMUI.tsx`
-- **Description:** Fetches and renders a vertical DevOps event timeline (alerts, commits, workloads) for a given event ID.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | eventId | string | Yes | - | Event identifier |
+All live in `ds/internal/Overlay.tsx`. They're **not for app code** — only consumed by other `ds/*`
+components (`DropdownMenu`, `Select`, `FilterDropdown`). The visual tokens that drive them live in
+`--ds-overlay-*` (see `app/src/styles/theme-tokens.css`).
 
 ---
 
-### Data Input / Forms
+## 1.8 Design system tokens (`--ds-*`)
 
-#### CustomButton (NewCustomButton) ⭐ PRIMARY
+All visual tokens live in [`app/src/styles/theme-tokens.css`](src/styles/theme-tokens.css) as CSS
+custom properties. Use them — never hardcode a hex value, px size, or radius that has a token
+equivalent.
 
-- **Path:** `src/components1/common/NewCustomButton.jsx`
-- **Description:** Primary styled button with three visual variants, five sizes, optional tooltip, loading spinner, and start/end icons.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | text | any | No | - | Button label |
-  | variant | `'primary'` \| `'secondary'` \| `'tertiary'` | No | `'primary'` | Visual style |
-  | size | `'xSmall'` \| `'Small'` \| `'Medium'` \| `'Large'` \| `'xLarge'` | No | `'Small'` | Button size |
-  | onClick | func | No | - | Click handler |
-  | disabled | bool | No | `false` | Disabled state |
-  | loading | bool | No | `false` | Show spinner |
-  | startIcon | any | No | - | Icon before text |
-  | endIcon | any | No | - | Icon after text |
-  | showTooltip | bool | No | `false` | Show tooltip |
-  | toolTipTitle | string | No | `''` | Tooltip text |
-  | type | string | No | `''` | HTML button type |
-- **Sizes:** `xSmall` (28px), `Small` (32px), `Medium` (36px), `Large` (40px), `xLarge` (44px)
-- **When to use:** Use for all primary, secondary, and tertiary button actions. This is the preferred button component.
-- **Example:**
+### Token categories
+
+| Category       | Prefix                                                                           | Scale                                                                                        |
+| -------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Background     | `--ds-background-*`                                                              | `100` (#fff) · `200` · `300`                                                                 |
+| Brand          | `--ds-brand-*`                                                                   | `100`–`700` (light → dark navy)                                                              |
+| Gray           | `--ds-gray-*`                                                                    | `100`–`700` + `alpha-100`–`alpha-700` (rgba steps)                                           |
+| Semantic color | `--ds-blue-*` · `--ds-red-*` · `--ds-green-*` · `--ds-amber-*` · `--ds-yellow-*` | `100`–`700` per hue                                                                          |
+| Spacing        | `--ds-space-*`                                                                   | `0`=2px · `1`=4px · `2`=8px · `3`=12px · `4`=16px · `5`=24px · `6`=32px · `7`=48px           |
+| Radius         | `--ds-radius-*`                                                                  | `sm`=4px · `md`=6px · `lg`=8px · `xl`=12px · `pill`=999px                                    |
+| Font size      | `--ds-text-*`                                                                    | `caption`=11px · `small`=12px · `body`=13px · `body-lg`=14px · `title`=16px · `heading`=20px |
+| Font weight    | `--ds-font-weight-*`                                                             | `regular`=400 · `medium`=500 · `semibold`=600                                                |
+| Font family    | `--ds-font-*`                                                                    | `sans` (Inter) · `display` (Poppins) · `mono` (JetBrains Mono)                               |
+| Overlay        | `--ds-overlay-*`                                                                 | Shadow, radius, padding, animation for all popover surfaces                                  |
+| Motion         | `--ds-motion-*`                                                                  | `micro` · `panel` · `ease`                                                                   |
+
+### Using tokens in code
+
+**Option A — raw CSS variable** (anywhere a CSS value is accepted):
 
 ```tsx
-<CustomButton text="Save" variant="primary" size="Medium" onClick={handleSave} />
-<CustomButton text="Cancel" variant="secondary" />
-<CustomButton text="Saving..." variant="primary" loading={true} />
+<Box sx={{ backgroundColor: 'var(--ds-background-100)', borderRadius: 'var(--ds-radius-lg)', padding: 'var(--ds-space-3) var(--ds-space-4)' }} />
 ```
 
-#### CustomButton (Legacy)
-
-- **Path:** `src/components1/common/CustomButton.jsx`
-- **Description:** Older button component with more variant options. Prefer `NewCustomButton` for new code.
-- **Variants:** `primary`, `secondary`, `iconButton`, `link`, `link2`, `blueButton`, `cancelButton`, `lightButton`, `blueOutlineButton`
-
-#### CustomTextField
-
-- **Path:** `src/components1/common/CustomTextField.tsx`
-- **Description:** Styled text field wrapper around MUI TextField with label, instruction text, focus/active states, and error handling.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | label | string | No | - | Field label |
-  | instructionText | string | No | - | Helper instruction |
-  | placeholder | string | No | - | Placeholder text |
-  | value | string | No | - | Field value |
-  | onChange | func | No | - | Change handler |
-  | error | bool | No | `false` | Error state |
-  | helperText | string | No | - | Error/helper text |
-  | multiline | bool | No | `false` | Multiline mode |
-  | size | `'small'` \| `'medium'` | No | `'small'` | Field size |
-  | variant | `'outlined'` \| `'filled'` \| `'standard'` | No | `'outlined'` | Field variant |
-  | required | bool | No | `false` | Required indicator |
-  | showActiveState | bool | No | `true` | Show active border |
-- **When to use:** Use for all text input fields. Wraps MUI TextField with consistent styling.
-- **Dependencies:** Wraps MUI `TextField`.
-
-#### CustomDropdown
-
-- **Path:** `src/components1/common/CustomDropdown.jsx`
-- **Description:** Full-featured autocomplete dropdown with cluster status indicator, cloud provider grouping, loading state, and extensive style customization.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | options | array | Yes | `[]` | Dropdown options |
-  | value | any | No | - | Selected value |
-  | onChange | func | No | - | Change handler |
-  | label | string | No | `''` | Label text |
-  | minWidth | string | No | `'180px'` | Minimum width |
-  | isDisabled | bool | No | `false` | Disabled state |
-  | isLoading | bool | No | `false` | Loading state |
-  | groupByCloudProvider | bool | No | `false` | Group options by cloud |
-  | openDirection | `'up'` \| `'down'` | No | `'down'` | Dropdown direction |
-- **When to use:** Standard single-select dropdown. Use for most dropdown needs.
-- **Dependencies:** Wraps MUI `Autocomplete`.
-
-#### CustomSelectDropdown
-
-- **Path:** `src/components1/common/CustomSelectDropdown.jsx`
-- **Description:** MUI Select-based dropdown with optional "All" option.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | any | Yes | - | Selected value |
-  | onChange | func | Yes | - | Change handler |
-  | options | array | Yes | - | Options list |
-  | label | string | No | `''` | Label |
-  | showAll | bool | No | `false` | Add "All" option |
-  | noBorder | bool | No | `false` | Borderless variant |
-- **When to use:** Use when you need a native Select (not autocomplete). Prefer `CustomDropdown` for most cases.
-
-#### CustomMultiDropdown
-
-- **Path:** `src/components1/common/CustomMultiDropdown.tsx`
-- **Description:** Multi-select dropdown with chip display, optional search filter, loading state, tag limiting, and clear-all.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | Value[] | Yes | - | Selected values |
-  | onChange | func | Yes | - | Change handler |
-  | options | Value[] | Yes | - | Available options |
-  | handleCloseIcon | func | Yes | - | Chip remove handler |
-  | label | string | No | `''` | Label |
-  | enableSearch | bool | No | `false` | Enable search filter |
-  | limitTags | number | No | `1` | Max visible chips |
-  | isLoading | bool | No | `false` | Loading state |
-  | isRequired | bool | No | `false` | Required indicator |
-- **When to use:** Use for multi-select scenarios. Wraps MUI `Select` with chips.
-
-#### CustomAutocomplete
-
-- **Path:** `src/components1/common/CustomAutocomplete.jsx`
-- **Description:** Feature-rich autocomplete supporting single/multi-select, grouped options, loading state, and custom chips.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | options | array | No | `[]` | Options list |
-  | value | any | No | - | Selected value(s) |
-  | onSelect | func | No | - | Selection handler |
-  | multiple | bool | No | `false` | Multi-select mode |
-  | grouped | bool | No | `false` | Grouped options |
-  | label | string | No | - | Label text |
-  | width | number \| string | No | `200` | Component width |
-  | limitTags | number | No | `1` | Visible tag limit |
-  | isOptionsLoading | bool | No | `false` | Loading state |
-
-#### AutoCompleteInput
-
-- **Path:** `src/components1/common/inputs/AutoCompleteInput.tsx`
-- **Description:** Styled autocomplete input field with loading indicator and custom dropdown icon.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | label | string | Yes | - | Field label |
-  | options | string[] | Yes | - | Options |
-  | value | string \| null | Yes | - | Selected value |
-  | onChange | func | Yes | - | Change handler |
-  | toShowNoOption | bool | Yes | - | Show "no options" text |
-  | width | number | Yes | - | Component width |
-  | isLoading | bool | No | `false` | Loading state |
-
-#### CustomCheckBox
-
-- **Path:** `src/components1/common/CustomCheckbox.jsx`
-- **Description:** Branded checkbox with optional label, start/end elements, and indeterminate state.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | checked | bool | No | - | Checked state |
-  | onChange | func | No | - | Change handler |
-  | text | string \| node | No | - | Label text |
-  | disabled | bool | No | - | Disabled state |
-  | indeterminate | bool | No | - | Indeterminate state |
-  | startElement | node | No | - | Element before checkbox |
-  | endElement | node | No | - | Element after label |
-
-#### CustomSwitch
-
-- **Path:** `src/components1/common/CustomSwitch.jsx`
-- **Description:** Styled toggle switch (ant-style) wrapping MUI Switch.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | id | string | No | - | Element ID |
-  | onChange | func | No | - | Toggle handler |
-  | checked | bool | No | - | Checked state |
-  | disabled | bool | No | `false` | Disabled state |
-
-#### CustomSearch
-
-- **Path:** `src/components1/common/CustomSearch.jsx`
-- **Description:** Search input field with search icon, clear button, and Enter key support.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | label | string | No | `''` | Placeholder text |
-  | onChange | func | No | - | Input change handler |
-  | onEnterPress | func | No | - | Enter key handler |
-  | onClear | func | No | - | Clear button handler |
-  | value | string | No | - | Input value |
-  | minWidth | string | No | `'150px'` | Minimum width |
-  | maxWidth | string | No | `'260px'` | Maximum width |
-  | disabled | bool | No | `false` | Disabled state |
-
-#### CustomButtonsGroup
-
-- **Path:** `src/components1/common/CustomButtonsGroup.jsx`
-- **Description:** Segmented button group (tab-like selector) built on MUI ButtonGroup.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | selected | any | No | - | Selected value |
-  | onClick | func | No | - | Selection handler |
-  | options | array | No | `[]` | Array of {value, text, disabled?} |
-  | borderColor | string | No | `'#97DCE4'` | Border color |
-  | tabType | bool | No | - | Tab-like styling |
-
-#### CustomDateTimePicker
-
-- **Path:** `src/components1/common/widgets/CustomDateTimePicker.jsx`
-- **Description:** Labeled date-time picker wrapping MUI X DateTimePicker with dayjs adapter.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | label | any | No | - | Label text |
-  | value | any | No | - | Selected date-time |
-  | onChange | func | No | - | Change handler |
-  | views | array | No | `['day', 'hours', 'minutes']` | Visible views |
-  | format | string | No | `'MM/DD/YYYY hh:mm A'` | Display format |
-- **Dependencies:** Wraps MUI X `DateTimePicker`.
-
-#### DynamicForm
-
-- **Path:** `src/components1/common/DynamicForm.jsx`
-- **Description:** Renders a dynamic form from a schema definition, supporting nested objects, arrays, maps, autocomplete, checkboxes, and conditional visibility.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | actionDetails | object | No | `{}` | Schema definition with params |
-  | onChange | func | No | - | Form change handler |
-  | errors | object | No | `{}` | Field errors |
-  | initialValues | object | No | `{}` | Initial form values |
-
-#### FormCard / FormField / FormBuilder (NewReusabeFormComponents)
-
-- **Path:** `src/components1/common/NewReusabeFormComponents.jsx`
-- **Description:** Reusable form building blocks — a card container, a polymorphic field component, and a declarative form builder.
-- **Composition:** Three named exports:
-
-**FormCard** — Container with title, description, and grid layout.
-| Prop | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| title | string | No | - | Card title |
-| children | node | Yes | - | Card content |
-| columns | `1` \| `2` | No | `2` | Grid columns |
-| expand | bool | No | `false` | Expandable |
-
-**FormField** — Polymorphic form field.
-| Prop | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| fieldType | `'textfield'` \| `'textarea'` \| `'dropdown'` \| `'autocomplete'` \| `'checkbox'` \| `'custom'` | No | `'textfield'` | Field type |
-| label | string | No | - | Field label |
-| value | any | No | - | Field value |
-| onChange | func | No | - | Change handler |
-| required | bool | No | `false` | Required |
-| error | string | No | `''` | Error message |
-
-**FormBuilder** — Declarative form from sections array.
-| Prop | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| sections | array | Yes | - | Array of section configs |
-
-#### FilterGroup
-
-- **Path:** `src/components1/common/FilterGroup.tsx`
-- **Description:** Configurable filter bar supporting dropdown, search, button group, custom component, and date-time range filters.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | filterOptions | any[] | No | `[]` | Filter configurations |
-  | dateTimeRange | any | No | `{enabled:false}` | Date range config |
-- **Filter types:** `'buttons'`, `'dropdown'`, `'search'`, `'custom'`
-
-#### CustomTableFilters
-
-- **Path:** `src/components1/common/CustomTableFilters.jsx`
-- **Description:** Side panel filter system with accordion-based filter groups supporting multiple filter types.
-- **Filter types:** `buttons`, `dropdown`, `multi-dropdown`, `multi-select`, `single-select`, `search`, `textfield`, `custom`, `switch`
-- **When to use:** Use within `BoxLayout2` when `displaySideFilters={true}`.
-
-#### TimePickerButtonsGroups
-
-- **Path:** `src/components1/common/TimePickerButtonsGroup.tsx`
-- **Description:** Button group for selecting time intervals with a selected state highlight.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | options | Option[] | Yes | - | Time options |
-  | selected | string | Yes | - | Selected value |
-  | onClick | func | Yes | - | Selection handler |
-
-#### AutoRefreshControls
-
-- **Path:** `src/components1/common/AutoRefreshControls.tsx`
-- **Description:** Dropdown control for setting an auto-refresh interval (Off, 5s, 10s, 15s, 30s, 45s, 60s).
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | callBack | func | Yes | - | Interval change handler |
-
-#### ClusterDropDown
-
-- **Path:** `src/components1/common/ClusterDropDown.jsx`
-- **Description:** Global cluster selector dropdown that syncs with URL, user preferences, and DataContext.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | onChange | func | No | - | Selection handler |
-  | disableRouteChanges | bool | No | `false` | Disable URL updates |
-  | noLabel | bool | No | `false` | Hide label |
-  | ...dropdownProps | any | No | - | Passed to CustomDropdown |
-
-#### OptionMenu
-
-- **Path:** `src/components1/common/OptionMenu.jsx`
-- **Description:** Autocomplete dropdown for selecting from a list of account-like options, auto-selects first option.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | options | array | Yes | - | Options list |
-  | callback | func | Yes | - | Selection handler |
-  | labelValue | string | No | `'Select Account'` | Label |
-
----
-
-### Feedback
-
-#### SnackbarComponent
-
-- **Path:** `src/components1/common/SnackbarComponent.tsx`
-- **Description:** Global snackbar notification listener that subscribes to the snackbar service and displays alerts.
-- **Props:** None (subscribes internally to `snackbar` service).
-- **Severity:** success, info, warning, error. Auto-hides after 5000ms.
-- **When to use:** Include once in the app root. Use `snackbar.success()` / `snackbar.error()` to trigger.
-
-#### NSnackbar
-
-- **Path:** `src/components1/common/NSnackbar.tsx`
-- **Description:** Controlled snackbar notification component with configurable severity and message.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | message | any | Yes | - | Notification message |
-  | severity | string | Yes | - | success \| info \| warning \| error |
-  | open | bool | Yes | - | Visibility state |
-  | handleClose | func | Yes | - | Close handler |
-- **When to use:** Use when you need controlled (prop-driven) snackbar behavior. For fire-and-forget, use the `snackbar` service instead.
-
-#### Loader
-
-- **Path:** `src/components1/common/Loader.tsx`
-- **Description:** Full-viewport loading spinner displaying an animated GIF.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | style | CSSProperties | No | - | Style overrides |
-
-#### ThreeDotLoader
-
-- **Path:** `src/components1/common/ThreeDotLoader.js`
-- **Description:** Animated loading indicators — a CSS pulse dot and an animated "..." text.
-- **Exports:** `ThreeDotLoader` (default), `ThreeDotsLoaderText` (named)
-- **Props:** None
-
-#### ShimmerLoading
-
-- **Path:** `src/components1/common/ShimmerLoading.jsx`
-- **Description:** Conditional shimmer/skeleton loading wrapper; renders animated shimmer lines or a single block while loading, then renders children.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | isLoading | bool | Yes | - | Loading state |
-  | height | string | No | `'280px'` | Shimmer height |
-  | width | string | No | `'100%'` | Shimmer width |
-  | children | node | No | - | Content to show when loaded |
-  | lines | number | No | - | Number of shimmer lines (multi-line mode) |
-  | lineHeight | string | No | `'24px'` | Per-line height |
-  | lineSpacing | string | No | `'12px'` | Spacing between lines |
-- **Example:**
+**Option B — `ds` object from `@utils/colors`** (typed, autocomplete-friendly — preferred in `.tsx`/`.ts`):
 
 ```tsx
-<ShimmerLoading isLoading={loading} lines={3}>
-  <ActualContent />
-</ShimmerLoading>
-```
-
-#### NewShimmerLoading
-
-- **Path:** `src/components1/common/NewShimmerloading.jsx`
-- **Description:** Animated shimmer/skeleton loader with pulsing icon and wave skeleton bar.
-- **Props:** None
-
-#### SummarySkeletonLoader
-
-- **Path:** `src/components1/common/SummarySkeletonLoader.jsx`
-- **Description:** Full-page skeleton loader for a 3-column summary layout.
-- **Props:** None
-
-#### ProgressBar
-
-- **Path:** `src/components1/common/widgets/ProgressBar.jsx`
-- **Description:** Linear progress bar showing usage percentage with optional detailed tooltip.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | any | No | `0` | Percentage value |
-  | blueVarient | bool | No | `false` | Blue vs green color |
-  | capacity | any | No | `''` | Total capacity label |
-  | tooltipRequired | bool | No | `false` | Show detailed tooltip |
-  | showCapacity | bool | No | `true` | Show capacity text |
-- **Variants:** `blueVarient`: blue (#60A5FA) vs green (#4caf50); turns red when usage > 90%.
-
-#### EmptyData
-
-- **Path:** `src/components1/common/EmptyData.jsx`
-- **Description:** Empty state placeholder with optional image, heading, subheading, and children.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | img | any | No | - | Illustration image |
-  | heading | string | No | - | Title text |
-  | subHeading | string | No | - | Description text |
-  | height | any | No | `'308px'` | Container height |
-  | children | any | No | - | Custom content |
-
-#### FeedbackComponent (ThumpsUpAndDown)
-
-- **Path:** `src/components1/common/ThumpsUpAndDown.jsx`
-- **Description:** Thumbs up/down feedback UI with a detailed feedback dialog for negative responses.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | onFeedbackSubmit | func | Yes | - | Submit callback |
-  | sentFeedback | object | No | `{}` | Previous feedback state |
-
----
-
-### Overlay / Modals
-
-#### NDialog
-
-- **Path:** `src/components1/common/modal/NDialog.tsx`
-- **Description:** Reusable modal dialog with title, content, additional component slot, loading indicator, and submit/cancel buttons.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | open | bool | Yes | - | Visibility |
-  | dialogTitle | ReactNode | Yes | - | Dialog title |
-  | dialogContent | ReactNode | Yes | - | Dialog body |
-  | handleClose | func | No | - | Close handler |
-  | handleSubmit | func | No | - | Submit handler |
-  | buttonText | string | No | - | Submit button text |
-  | loading | bool | No | `false` | Loading state |
-  | isSubmitRequired | bool | No | `true` | Show submit button |
-  | isCancelRequired | bool | No | `true` | Show cancel button |
-  | additionalComponent | any | Yes | - | Extra slot above actions |
-- **When to use:** Use for confirmation dialogs, form modals, and info dialogs.
-
-#### WelcomeModal
-
-- **Path:** `src/components1/common/modal/welcomeModal.jsx`
-- **Description:** Welcome dialog shown to new users, offering options to add a K8s account or start with a demo cluster.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | open | any | No | - | Visibility |
-  | handleClose | func | No | - | Close handler |
-  | handleAddK8sAccount | func | No | - | Add account action |
-
-#### ButtonMenu
-
-- **Path:** `src/components1/common/ButtonMenu.jsx`
-- **Description:** Dropdown button that opens a styled MUI Menu with selectable items.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | title | string | No | `'Options'` | Button text |
-  | items | array | No | - | Menu items with {text, icon, onClick, disabled} |
-  | variant | `'primary'` \| `'tertiary'` | No | - | Color variant |
-  | size | `'small'` \| `'medium'` \| `'large'` \| `'xSmall'` | No | - | Button size |
-  | sx | object | No | - | Style overrides |
-- **When to use:** Use for buttons with dropdown menus (e.g., "Create → K8s Account / Jira Account").
-
-#### ThreeDotsMenu
-
-- **Path:** `src/components1/common/ThreeDotsMenu.jsx`
-- **Description:** Vertical three-dot icon button that opens a dropdown menu with optional sub-menus.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | menuItems | array | No | `[]` | Items with {label, icon, disabled, subMenu} |
-  | onMenuClick | func | No | - | Item click handler |
-  | data | any | No | - | Context data passed to handler |
-  | menuWidth | string \| number | No | - | Menu width |
-- **When to use:** Use for context menus on cards, table rows, etc.
-
-#### NubiChatSidebar
-
-- **Path:** `src/components1/common/NubiChatSidebar.tsx`
-- **Description:** Slide-in chat sidebar for the NuBi AI assistant, supporting overlay/fixed modes.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | isVisible | bool | Yes | - | Show/hide sidebar |
-  | onClose | func | No | - | Close handler |
-  | accountId | string | Yes | - | User account ID |
-  | context | object | No | - | Chat context (type, data) |
-  | position | `'left'` \| `'right'` | No | `'right'` | Side placement |
-  | mode | `'overlay'` \| `'fixed'` | No | `'overlay'` | Display mode |
-  | width | string | No | `'500px'` | Sidebar width |
-
----
-
-### Actions
-
-#### CopyButton
-
-- **Path:** `src/components1/common/CopyButton.jsx`
-- **Description:** Small icon button with a copy (FileCopy) icon.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | onClick | func | No | - | Click handler |
-  | sx | object | No | - | Style overrides |
-
-#### DownloadButton
-
-- **Path:** `src/components1/common/DownloadButton.jsx`
-- **Description:** Icon button that downloads data as file (blob, canvas image, CSV from table).
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | onClick | func | No | - | Async handler returning download options |
-  | width | any | No | `'32px'` | Button width |
-  | height | any | No | `'32px'` | Button height |
-- **Dependencies:** `file-saver` (saveAs)
-
-#### ShareButton
-
-- **Path:** `src/components1/common/ShareButton.jsx`
-- **Description:** Placeholder share button (tooltip says "Coming Soon").
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | onClick | func | No | - | Click handler |
-
-#### CreateTicketButton
-
-- **Path:** `src/components1/common/CreateTicketButton.jsx`
-- **Description:** Icon button with a ticket icon and tooltip for creating tickets.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | onClick | func | No | - | Click handler |
-
-#### InvestigateButton
-
-- **Path:** `src/components1/common/InvestigateButton.jsx`
-- **Description:** Icon button linking to a troubleshooting/investigation page.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | url | string | No | - | Navigation URL |
-  | onClick | func | No | - | Click handler |
-  | text | string | No | `'Investigate'` | Button text |
-  | displayText | bool | No | `false` | Show text label |
-
-#### ResolveButton
-
-- **Path:** `src/components1/common/ResolveButton.jsx`
-- **Description:** Icon button for triggering resolution actions, with an autopilot-configured state indicator.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | onClick | func | No | - | Click handler |
-  | displayText | bool | No | `false` | Show text label |
-  | isResolvedConfigured | bool | No | `false` | Autopilot indicator |
-
-#### ExpandButton
-
-- **Path:** `src/components1/common/ExpandButton.jsx`
-- **Description:** Icon button with a rotating arrow to indicate expand/collapse state.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | expanded | bool | No | - | Expansion state |
-  | onClick | func | No | - | Toggle handler |
-  | isSmallSize | bool | No | - | Small variant (20x20 vs 28x28) |
-
-#### PrimaryLink
-
-- **Path:** `src/components1/common/PrimaryLink.jsx`
-- **Description:** Inline clickable text styled as a primary (blue) link.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | node | Yes | - | Link content |
-  | onClick | func | No | - | Click handler |
-
-#### SecondaryLink
-
-- **Path:** `src/components1/common/SecondaryLink.jsx`
-- **Description:** Inline clickable text styled as a secondary (gray, hover-to-blue) link.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | node | Yes | - | Link content |
-  | onClick | func | No | - | Click handler |
-
-#### CustomLink
-
-- **Path:** `src/components1/common/CustomLink.jsx`
-- **Description:** Styled Next.js Link with optional "open in new tab" icon.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | href | string | Yes | - | Link URL |
-  | children | node | Yes | - | Link content |
-  | target | string | No | `'_self'` | Link target |
-  | secondaryText | bool | No | `false` | Smaller text style |
-  | openInNew | bool | No | `false` | Show external link icon |
-
-#### CustomTicketLink
-
-- **Path:** `src/components1/common/CustomTicketLink.jsx`
-- **Description:** Displays a "Ticket - <ID>" label with an optional external link.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | ticketURL | string | Yes | - | Ticket URL |
-  | ticketID | string | Yes | - | Ticket identifier |
-
----
-
-### Media & Icons
-
-#### CloudProviderIcon
-
-- **Path:** `src/components1/common/CloudProviderIcon.jsx`
-- **Description:** Displays icons for 30+ cloud providers and integrations (AWS, Azure, GCP, K8s, Datadog, ArgoCD, etc.).
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | cloud_provider | string | No | - | Provider name |
-  | width | string | No | `'30px'` | Icon width |
-  | height | string | No | `'24px'` | Icon height |
-
-#### CloudIcon (compact)
-
-- **Path:** `src/components1/common/CloudIcon.jsx`
-- **Description:** Smaller set of cloud/integration provider icons (AWS, GCP, Azure, K8s, Snowflake, etc.).
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | cloud_provider | string | Yes | - | Provider name |
-  | height | string | No | `'28px'` | Icon height |
-  | width | string | No | `'28px'` | Icon width |
-
-#### LangTypeIcon
-
-- **Path:** `src/components1/common/LangTypeIcon.jsx`
-- **Description:** Colored icon for a given programming language, database, messaging system, or cloud service name.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | appLang | string \| string[] | No | - | Language/service name |
-  | size | number | No | `25` | Icon size |
-- **Dependencies:** `react-icons/fa6`, `react-icons/si`, `react-icons/di`, etc.
-
-#### CustomIcon
-
-- **Path:** `src/components1/common/CustomIcon.jsx`
-- **Description:** Displays an icon image inside a small rounded blue-tinted square badge.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | icon | any | No | - | Icon source |
-
-#### CustomDropdownIcon
-
-- **Path:** `src/components1/common/CustomDropdownIcon.tsx`
-- **Description:** Wrapper around MUI KeyboardArrowDownIcon with customizable color.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | color | string | Yes | - | Icon color |
-
-#### GetInsightIcon
-
-- **Path:** `src/components1/common/GetInsightIcon.jsx`
-- **Description:** Returns an appropriate icon asset based on insight source type.
-- **Export:** Named export (utility function, not a component).
-- **Usage:** `GetInsightIcon(item)` where `item.source` is `'Event'`, `'Recommendation'`, or `'Metric'`.
-
-#### SvgRenderer
-
-- **Path:** `src/components1/common/SvgRenderer.tsx`
-- **Description:** Renders a raw SVG string into the DOM.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | svg | string | Yes | - | SVG markup string |
-  | style | CSSProperties | No | - | Container style |
-
-#### ChartSwitcher
-
-- **Path:** `src/components1/common/ChartSwitcher.jsx`
-- **Description:** Toggle button pair to switch between line chart and bar chart views.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | isBarChart | bool | Yes | - | Current chart type |
-  | leftButtonClick | func | Yes | - | Line chart handler |
-  | rightButtonClick | func | Yes | - | Bar chart handler |
-
----
-
-### Charts
-
-#### LineChart (Charts)
-
-- **Path:** `src/components1/common/charts/LineCharts.jsx`
-- **Description:** Feature-rich line chart with custom HTML tooltip, HTML legend with min/max/p99/avg metrics, dynamic height, data-point click handling.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | data | array | No | `[]` | Chart data arrays |
-  | labels | array | No | `[]` | X-axis labels |
-  | colors | array | No | `[]` | Line colors |
-  | chartLabel | string \| array | No | `''` | Dataset labels |
-  | id | string | No | `''` | Chart element ID |
-  | loading | bool | No | `false` | Loading state |
-  | onDataPointClick | func | No | - | Click handler |
-  | dynamicHeight | bool | No | `true` | Auto-adjust height |
-- **Dependencies:** `react-chartjs-2` (Line), `chart.js`
-
-#### BarChart
-
-- **Path:** `src/components1/common/charts/BarChart.jsx`
-- **Description:** Stacked bar chart with auto-generated datasets, loading shimmer.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | data | array | No | `[[]]` | Chart data |
-  | labels | array | No | `[]` | X-axis labels |
-  | colors | string \| array | No | - | Bar colors |
-  | chartLabel | string \| array | No | `''` | Dataset labels |
-  | loading | bool | No | `false` | Loading state |
-- **Dependencies:** `react-chartjs-2` (Bar), `chart.js`
-
-#### DoughnutChart
-
-- **Path:** `src/components1/common/charts/DoughnutChart.jsx`
-- **Description:** Doughnut chart with center value display, custom legend, click handling.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | values | array | No | `[]` | Chart values |
-  | labels | array | No | - | Segment labels |
-  | size | number | No | `77` | Chart size in px |
-  | colors | string \| array | No | `['#778899']` | Segment colors |
-  | displayLegend | bool | No | `false` | Show legend |
-  | displayValue | bool \| string \| number | No | `false` | Center value |
-  | onItemClick | func | No | - | Segment click handler |
-- **Dependencies:** `react-chartjs-2` (Doughnut), `chart.js`
-
-#### DoughnutChartK8s
-
-- **Path:** `src/components1/common/charts/DoughnutChartK8s.jsx`
-- **Description:** Simple percentage doughnut chart for K8s metrics with center percentage display.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | any | No | `20` | Percentage value |
-  | size | any | No | `'77px'` | Chart size |
-  | color | string | No | `'#81D97F'` | Fill color |
-
-#### ChartComponent
-
-- **Path:** `src/components1/common/charts/ChartComponent.jsx`
-- **Description:** Generic chart wrapper that renders Bar, Pie, or Line chart by type prop.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | type | `'bar'` \| `'pie'` \| `'line'` | Yes | - | Chart type |
-  | data | object | Yes | - | Chart.js data object |
-  | options | object | No | - | Chart.js options |
-  | maxHeight | number | No | `200` | Max chart height |
-  | loading | bool | Yes | - | Loading state |
-
-#### CustomHeatMap
-
-- **Path:** `src/components1/common/charts/CustomHeatMap.jsx`
-- **Description:** Day-by-hour heatmap grid with color-coded cells and tooltips.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | data | array | No | `[]` | Heatmap data grid |
-  | xAxisLabels | array | No | last 7 days | X-axis labels |
-  | yAxisLabels | array | No | 24 hours | Y-axis labels |
-  | showTooltip | bool | No | `true` | Show cell tooltips |
-  | loading | bool | No | `true` | Loading state |
-
-#### ShowPrometheusLineChart
-
-- **Path:** `src/components1/common/charts/ShowPrometheusLineChart.jsx`
-- **Description:** Fetches Prometheus query results from the API and renders them as line charts inside a BoxLayout.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | accountId | any | No | - | Account identifier |
-  | query | string | No | `''` | Prometheus query |
-  | selectedDateRange | object | No | `{startDate: 1h ago, endDate: now}` | Time range |
-
----
-
-### Format Components
-
-#### Text
-
-- **Path:** `src/components1/common/format/Text.jsx`
-- **Description:** Text display with auto-ellipsis (overflow detection via ResizeObserver), copyable tooltip, and optional markdown rendering.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | any | No | - | Text content |
-  | showAutoEllipsis | bool | No | `false` | Enable auto-truncation |
-  | copyableTooltip | bool | No | `false` | Copyable tooltip |
-  | format | string | No | `'text'` | `'text'` or `'markdown'` |
-  | defaultVal | any | No | `'-'` | Fallback value |
-  | secondaryText | bool | No | - | Lighter style |
-
-#### Currency
-
-- **Path:** `src/components1/common/format/Currency.jsx`
-- **Description:** Formats and displays a currency value with prefix/suffix, tooltip, and variant-based coloring.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | number \| string | No | - | Amount |
-  | prefix | string | No | `'$'` | Currency prefix |
-  | suffix | string | No | `''` | Suffix text |
-  | varient | string | No | `'default'` | `'default'` \| `'savings'` (green) \| `'expense'` (red) |
-  | withTooltip | bool | No | `true` | Show tooltip |
-  | precison | number | No | `0` | Decimal places |
-- **Also exports:** `formatCurrency` (named, utility function).
-
-#### Memory
-
-- **Path:** `src/components1/common/format/Memory.jsx`
-- **Description:** Formats and displays a memory value with unit conversion and tooltip.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | any | No | - | Memory value |
-  | sourceUnit | string | No | `'bytes'` | Input unit |
-  | targetUnit | string | No | `'gb'` | Display unit |
-  | suffix | bool | No | `true` | Show unit suffix |
-
-#### NumberComponent
-
-- **Path:** `src/components1/common/format/Number.jsx`
-- **Description:** Formats and displays a number with configurable fraction digits, suffix, and tooltip.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | any | No | - | Number value |
-  | minimumFractionDigits | number | No | `0` | Min decimals |
-  | maximumFractionDigits | number | No | `2` | Max decimals |
-  | suffix | string | No | `''` | Suffix text |
-
-#### Datetime
-
-- **Path:** `src/components1/common/format/Datetime.jsx`
-- **Description:** Displays a relative time difference (e.g. "3h ago" or "in 2D") with configurable granularity.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | value | string \| Date \| number | No | - | Date/time value |
-  | maxLevel | number | No | `1` | Granularity levels |
-  | showTooltip | bool | No | `true` | Show full date tooltip |
-  | prefix | string | No | `''` | Text prefix |
-  | suffix | string | No | `''` | Text suffix |
-
----
-
-### Chips
-
-> **Component:** `src/components1/common/Chip.tsx`
-
-The chip primitive. **One component, seven variants.** Use it anywhere you'd reach for a pill, badge, tag, status indicator, filter toggle, or count. Do **not** roll your own MUI `Chip` with custom `sx` — every existing pattern is covered by the variants below.
-
-Import:
-
-```tsx
-import Chip from '@components1/common/Chip';
-```
-
-#### Variant overview
-
-| Variant  | Purpose                         | Interactive?        | Examples                             |
-| -------- | ------------------------------- | ------------------- | ------------------------------------ |
-| `filter` | Toggleable filter selection     | ✅ click + keyboard | provider chips, severity facets      |
-| `status` | Read-only state indicator       | ❌                  | "Healthy", "Failed", severity counts |
-| `tag`    | Static categorical label        | ❌                  | resource types, owner labels         |
-| `input`  | User-added value with ×         | ✅ click ×          | applied filters, multi-select tokens |
-| `action` | Triggers an action when clicked | ✅ click + keyboard | "Add filter", "Retry"                |
-| `count`  | Number-first display            | ❌                  | "23", "+3", "12 open"                |
-| `avatar` | Entity (user/team/repo)         | ✅ click            | "AK Alice Kim"                       |
-
-#### Sizes (3, fixed)
-
-```tsx
-<Chip variant='status' size='xs'>Healthy</Chip>  {/* 16px tall, dense rows */}
-<Chip variant='status' size='sm'>Healthy</Chip>  {/* 20px tall, default */}
-<Chip variant='status' size='md'>Healthy</Chip>  {/* 24px tall, hero surfaces */}
-```
-
-#### Tones (6 semantic)
-
-`neutral` (default), `info`, `success`, `warning`, `danger`, `pending`. Each has its own pastel pill bg + dot color.
-
-```tsx
-<Chip variant='status' tone='success' leadingDot label='Resolved' />
-<Chip variant='status' tone='warning' leadingDot label='Degraded' />
-<Chip variant='status' tone='danger' leadingDot label='Failed' />
-```
-
-#### Common patterns
-
-**Filter row with leading icon** (provider chips on the Cost tab):
-
-```tsx
-<Chip
-  variant='filter'
-  size='sm'
-  leadingIcon={<CloudProviderIcon cloud_provider='aws' width='14px' height='14px' />}
-  label='AWS'
-  selected={provider === 'aws'}
-  onClick={() => setProvider('aws')}
-/>
-```
-
-Selection always renders as **indigo** (the spec's filter palette) regardless of `tone`. The `tone` prop is honored only for the leading dot color.
-
-**Severity filter with leading dot** (severity facets):
-
-```tsx
-<Chip
-  variant='filter'
-  size='sm'
-  tone='danger'
-  leadingDot
-  label={`Critical ${count}`}
-  selected={severity === 'Critical'}
-  onClick={() => setSeverity('Critical')}
-/>
-```
-
-**Inline severity count with hollow-zero state** (subcategory rows):
-
-```tsx
-<Chip variant='status' size='xs' tone='danger'  leadingDot label='1 critical' />
-<Chip variant='status' size='xs' tone='warning' leadingDot label='7 high' />
-<Chip variant='status' size='xs' tone='neutral' label='16 open' />
-```
-
-For zero counts, pair `dotVariant='hollow'` with `disabled` to dim the chip without removing it:
-
-```tsx
-<Chip
-  variant='status'
-  size='xs'
-  tone='danger'
-  leadingDot
-  dotVariant={count === 0 ? 'hollow' : 'filled'}
-  disabled={count === 0}
-  label={`${count} critical`}
-/>
-```
-
-**Trend delta** (cost-up / cost-down):
-
-```tsx
-import TrendingUpIcon from '@mui/icons-material/TrendingUp';
-import TrendingDownIcon from '@mui/icons-material/TrendingDown';
-
-<Chip
-  variant='status'
-  size='xs'
-  tone={delta > 0 ? 'danger' : 'success'}
-  leadingIcon={delta > 0 ? <TrendingUpIcon /> : <TrendingDownIcon />}
-  label={`${Math.abs(delta)}%`}
+import { ds } from '@utils/colors';
+
+<Box
+  sx={{
+    backgroundColor: ds.background[100],
+    color: ds.brand[600],
+    borderRadius: ds.radius.lg,
+    padding: `${ds.space[3]} ${ds.space[4]}`,
+    fontSize: ds.text.body,
+  }}
 />;
 ```
 
-**Tag chip with categorical hue** (8-hue palette, hashable):
+`ds.space.mul(step, multiplier)` returns a `calc()` string for multiplied spacing, e.g.
+`ds.space.mul(2, 3)` → `'calc(var(--ds-space-2) * 3)'` (24px). `step` is typed `0 | 1 | … | 7`.
 
-```tsx
-import Chip, { hashHue } from '@components1/common/Chip';
+### Rules
 
-<Chip variant='tag' size='xs' hue='blue' label='frontend' />
-<Chip variant='tag' size='xs' hue={hashHue(tag.id)} label={tag.name} />
+- **Never hardcode** a color, spacing, radius, or font size that has a `--ds-*` token.
+- **Prefer Option B** (`ds.*`) in `.tsx`/`.ts`; use raw `var(--ds-*)` in `.css` / Emotion literals.
+- Do **not** use `--nb-*` legacy tokens in new DS components — reference only `--ds-*`.
+
+---
+
+## 2. Composition recipes
+
+### 2.1 Recipe — Table / listing view ⭐ worked example
+
+The standard table screen (recommendations, inventory, audit lists). Built from a **shell**
+(`ListingLayout`) with primitives slotted in, plus a **table** in the body.
+
+**Anatomy** (from [`ds/ListingLayout.tsx`](src/components/common/ds/ListingLayout.tsx) — read its JSDoc):
+
+```
+ListingLayout                     ← card chrome
+├── ListingLayout.Toolbar         ← header: title + filters (left) + actions (right)
+│     ├── FilterDropdown / SearchInput / Chip   (left, filter widgets)
+│     ├── ListingLayout.ToolbarSpacer           (pushes the rest right)
+│     └── Button / DropdownMenu                 (right, action cluster)
+├── ListingLayout.Body            ← the table
+│     └── CustomTable
+└── ListingLayout.Footer          ← optional; omit when CustomTable paginates itself
 ```
 
-**Removable input chip** (applied filter pill):
+**Code skeleton:**
 
 ```tsx
-<Chip variant='input' size='sm' leadingIcon={<PersonIcon />} label='Owner: alice' onDismiss={() => removeFilter('owner')} />
+import { ListingLayout } from '@ui/ListingLayout';
+import { Button } from '@ui/Button';
+import FilterDropdownButton from '@ui/FilterDropdown';
+import CustomTable from '@shared/tables/CustomTable';
+
+<ListingLayout id="recommendations">
+  <ListingLayout.Toolbar title="Recommendations" actions={<Button>Export</Button>}>
+    <FilterDropdownButton ... />
+    <FilterDropdownButton ... />
+  </ListingLayout.Toolbar>
+
+  <ListingLayout.Body>
+    <CustomTable headers={...} tableData={...} loading={...} />
+  </ListingLayout.Body>
+</ListingLayout>;
 ```
 
-**Count chip nested in a tab/button** (use `shape='rect'`):
+`CustomTable` (`@shared/tables/CustomTable`) brings its **own** pagination (`CustomTablePagination`),
+empty-state and tabs, so put it in `Body` and **omit `ListingLayout.Footer`**. There is no `ds/Table`
+primitive today.
+
+**Don'ts** (from `ListingLayout`'s JSDoc):
+
+- Don't put page-level `Stat` summary cards inside `ListingLayout` — they are siblings _above_ it.
+- Don't grow `ListingLayout`'s prop API — compose primitives into the slots instead.
+
+### 2.2 Recipe — Modal dialog ⭐ worked example
+
+The unified `Modal` ([`ds/Modal.tsx`](src/components/common/ds/Modal.tsx)) covers both shapes the
+legacy `Modal` + `NDialog` used to split: a plain modal shell (form, editor, settings panel) **and**
+a decision dialog (confirm / cancel). Pick the **footer mode** based on the shape of the action —
+the header chrome, loader behaviour, success state, backdrop guard, and a11y are identical either way.
+
+**Footer mode A — `confirmText` preset (the default for decisions):**
 
 ```tsx
-<Chip variant='count' size='xs' shape='rect' label='23' />
+import { Modal } from '@ui/Modal';
+
+<Modal
+  open={open}
+  handleClose={onClose}
+  title='Delete workflow?'
+  confirmText='Delete'
+  onConfirm={handleDelete}
+  confirmDisabled={!isAuthorized}
+  loader={isDeleting}
+  backdropClickClose={false} // block backdrop + Escape mid-submit
+>
+  This action cannot be undone.
+</Modal>;
 ```
 
-**Avatar chip** (entity reference):
+What you get for free: DS `Button` rendering (primary Confirm + secondary Cancel), 140px min-width,
+right-aligned actions, `loader` auto-disables both buttons. Knobs: `confirmDisabled`,
+`isConfirmRequired` / `isCancelRequired` (hide one button), `loader`, `backdropClickClose`.
+
+**Footer mode B — `actionButtons` (freeform):**
 
 ```tsx
-<Chip variant='avatar' size='sm' leadingAvatar={<Avatar>AK</Avatar>} label='Alice Kim' />
+import { Modal } from '@ui/Modal';
+import { Button } from '@ui/Button';
+import Stack from '@mui/material/Stack';
+
+<Modal
+  open={open}
+  handleClose={handleClose}
+  title='Create Ticket'
+  width='md'
+  loader={isSubmitting}
+  actionButtons={
+    <Stack direction='row' gap='12px' sx={{ button: { minWidth: '140px' } }}>
+      <Button tone='secondary' onClick={handleCancel} disabled={isSubmitting}>Cancel</Button>
+      <Button onClick={handleSubmit} disabled={isSubmitting}>Create Ticket</Button>
+    </Stack>
+  }
+>
+  <TicketFormSection ... />
+</Modal>;
 ```
 
-#### Don'ts
+Use `actionButtons` whenever the preset can't express what you need: 3+ buttons, ghost / danger /
+link tones, non-button content, split close paths, or custom layout. Render footer buttons through
+`ds/Button` so the freeform footer matches the preset's chrome.
 
-- ❌ Don't use raw MUI `<Chip>` with custom `sx` — every variant maps to one of the 7 above.
-- ❌ Don't add background/border to a chip via `sx` to "make it match" — change the `tone` instead.
-- ❌ Don't pass `tone` to `tag` chips — use `hue` for categorical color (8-hue palette).
-- ❌ Don't pass `selected` to anything but `filter` chips.
-- ❌ Don't pass `onClick` / `onDismiss` to `status` or `tag` chips — they're read-only.
-- ❌ Don't use `leadingDot` on `tag` / `count` / `action` / `avatar` — only `status` and `filter`.
-- ❌ Don't hardcode hex colors for chip backgrounds. Use `tone` (semantic) or `hue` (categorical).
-- ❌ Don't reduce `xs` size below the 16px minimum to fit something — use a smaller surface or different layout.
+**Pick the footer:**
 
-#### Migrating from existing patterns
+| Footer shape                                             | Use                                                            |
+| -------------------------------------------------------- | -------------------------------------------------------------- |
+| Cancel + one verb, single close path                     | `confirmText` preset                                           |
+| Single "Close" button (informational modal)              | `confirmText='Close'` with `isCancelRequired={false}`          |
+| Cancel needs cleanup the X / backdrop shouldn't run      | `actionButtons` (two close paths can't be expressed in preset) |
+| 3+ buttons, or ghost / danger / link tones in the footer | `actionButtons`                                                |
+| No footer at all (dismissible only via X)                | omit both props                                                |
 
-| If you currently use…                                 | Replace with                                                                         |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| MUI `<Chip variant='filled'>` for status              | `<Chip variant='status' tone='…'>`                                                   |
-| MUI `<Chip variant='outlined' clickable>` for filters | `<Chip variant='filter' selected={…} onClick={…}>`                                   |
-| Custom Box with dot + count text                      | `<Chip variant='status' size='xs' leadingDot tone='…' label='…'>`                    |
-| `TrendArrowPercentage` component                      | `<Chip variant='status' tone='success'\|'danger' leadingIcon={<TrendingUp\|Down/>}>` |
-| Custom severity badge                                 | `<Chip variant='status' tone='danger\|warning\|info\|success' leadingDot>`           |
+**Other useful modal patterns:**
 
-#### Tests
+- **Loader** — `loader={isSubmitting}` renders a top progress bar, blurs the body, and (preset mode) disables both footer buttons.
+- **Backdrop / Escape guard** — `backdropClickClose={false}` blocks backdrop clicks AND Escape. Default `true`.
+- **Full-bleed footer** — `actionButtonsFullBleed={true}` drops `DialogActions` padding so freeform `actionButtons` can extend edge-to-edge. The inner Box needs `boxSizing: 'border-box'`.
+- **`ds/Select` inside a Modal** — works by default (`disablePortal={false}` so the popup escapes the Modal Paper's transformed subtree).
+- **Success state** — `onSuccess={true}` + `message='…'` + optional `icon`. `type='PASSWORD_CHANGE'` swaps to the key icon.
+- **Tall content** — `maxHeight='600px'` clamps the Paper + inner content for internal scroll.
+- **Right-side header slot** — `rightComponentOnTitle={<HelpLink />}`. **NDialog-parity extra panel** — `additionalComponent={<OptionsList />}` renders below the body, outside `DialogContent`.
 
-Smoke tests live at `app/__tests__/components1/common/Chip.test.tsx` (44 tests covering variants, sizes, tones, hues, hollow-dot, leadingDot-on-filter, click + keyboard, dismiss, disabled).
+**Don'ts:** don't pass both `actionButtons` and `confirmText` (`actionButtons` wins); render footer
+buttons through `ds/Button`; one primary per footer; use `Modal` for trigger-anchored popups
+(there is no `ds/Popover` — use `ds/Tooltip` for text or `DropdownMenu` for menus) or side-drawer
+detail views.
 
----
+### 2.3 Recipe — Form layout ⭐ worked example
 
-### Cards & Containers
+`Form` ([`@shared/forms/Form`](src/components/common/forms/Form.tsx)) is the layout primitive for
+**any** form-shaped UI — inside a `Modal` body, inside a `Card`, on a settings page, or standalone.
+The container owns outer padding; `Form` owns internal layout (section spacing, field spacing, label
+placement, row layout). _(It lives under `@shared/`, not `@ui/`, but is the canonical form layout.)_
 
-#### WidgetCard
+**Anatomy:**
 
-- **Path:** `src/components1/common/WidgetCard.jsx`
-- **Description:** Reusable white elevated card container with consistent shadow, border, and padding.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | node | No | - | Card content |
-  | sx | object | No | `{}` | Style overrides |
-- **When to use:** Use as a standard card wrapper for dashboard widgets.
-- **Example:**
+```
+Form                                  ← OPTIONAL wrapper: only for a real <form onSubmit>
+├── Form.Section                      ← labeled group: title + description + optional divider
+│     ├── Form.Field                  ← label + description + control + helperText/error
+│     └── Form.Row                    ← side-by-side related fields
+│           ├── Form.Field
+│           └── Form.Field
+└── Form.Actions                      ← submit/cancel — omit when inside a Modal (Modal owns footer)
+```
+
+**Variant A — `stacked` (default):** label above the control, full-width. Modal forms, create flows.
 
 ```tsx
-<WidgetCard sx={{ p: 2 }}>
-  <h3>Widget Title</h3>
-  <p>Widget content</p>
-</WidgetCard>
+import { Form } from '@shared/forms/Form';
+import { Input } from '@ui/Input';
+import { Select } from '@ui/Select';
+
+<Form variant='stacked' density='default'>
+  <Form.Field label='Title' required>
+    <Input value={title} onChange={setTitle} />
+  </Form.Field>
+  <Form.Row ratio={[1, 1]}>
+    <Form.Field label='Project'><Select ... /></Form.Field>
+    <Form.Field label='Priority'><Select ... /></Form.Field>
+  </Form.Row>
+</Form>;
 ```
 
-#### CustomBorderCard
+**Variant B — `split`:** label + description on the left (35%), control on the right (65%). Settings
+pages, configuration screens.
 
-- **Path:** `src/components1/common/CustomBorderCard.jsx`
-- **Description:** Card container with configurable borders (bottom + optional left) and rounded corners.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | any | No | - | Card content |
-  | borderColor | any | No | `'#BFDBFE'` | Bottom border color |
-  | borderLeftColor | any | No | - | Left border color |
-  | showLeftBorder | bool | No | `true` | Show left border |
-  | padding | any | No | `'16px 25px 16px 16px'` | Card padding |
+**Density** — same layout, different rhythm: `comfortable` (24/48/16px), `default` (16/32/12px),
+`compact` (12/24/8px).
 
-#### CustomCollapseable
+**Canonical labeling — `Form.Field` owns the label.** Inside `Form.Field`, the wrapped control must
+**not** set its own `label` prop (a dev-mode `console.warn` fires when a child does). DS controls
+like `Input`/`Select` accept a `label` for standalone use, but omit it inside `Form.Field`.
 
-- **Path:** `src/components1/common/CustomCollapseable.jsx`
-- **Description:** Collapsible/expandable section using MUI Accordion.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | title | string | Yes | - | Section title |
-  | children | node | No | - | Collapsible content |
-  | icon | any | No | - | Custom expand icon |
-  | defaultExpand | bool | No | `false` | Initial expanded state |
+**Don'ts:**
 
-#### CustomAccordion
+- **Don't set `label` on a control wrapped in `Form.Field`** — move it to `Form.Field label='…'`.
+- **Don't use `FilterDropdown` inside a Form** — those are toolbar-filter affordances. Inside a Form, use `ds/Select` (single or multi via `multiple`); for many options it auto-shows search. See §1.6.
+- Don't pair `Form.Actions` with a Modal's `confirmText` / `actionButtons` — the Modal owns the footer.
+- Don't expose 3+ column layouts at the `Form` level — `Form.Row` is for related pairs/triples.
 
-- **Path:** `src/components1/common/CustomAccordion.jsx`
-- **Description:** Styled MUI accordion with optional icon, title, description, and custom style overrides.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | title | string | No | - | Accordion title |
-  | description | string | No | - | Subtitle |
-  | icon | any | No | - | Title icon |
-  | children | any | No | - | Expandable content |
-  | expanded | bool | No | - | Controlled expand state |
-  | onChange | func | No | - | Expand toggle handler |
+### 2.4 Other recipes — to be filled in
 
-#### AccordionSmall
+Add each as the pattern is first built in a real redesign:
 
-- **Path:** `src/components1/common/AccordionSmall.tsx`
-- **Description:** Compact collapsible accordion with optional status label or status dropdown.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | ReactNode | Yes | - | Content |
-  | header | ReactNode \| string | Yes | - | Header content |
-  | status | string | No | - | Status label text |
-  | enableStatusDropdown | bool | No | `false` | Show status dropdown |
-  | onStatusChange | func | No | - | Status change handler |
-  | expanded | bool | No | - | Controlled expand state |
-  | onExpandedChange | func | No | - | Expand toggle |
+| Recipe                 | Likely components                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------- |
+| Dashboard summary row  | `Stat` / `CostCallout` / `Trend` as siblings above a `ListingLayout`                          |
+| Filter bar             | `FilterGroup` / `FilterDropdown` + `<Input leadingIcon={<SearchIcon/>} />` (or `SearchInput`) |
+| Empty & loading states | `Skeleton` (loading) · `EmptyState` (no data) · `@shared/ErrorBoundary` (error)               |
+| Tabbed page            | `Tabs` with `navigation='router'` wrapping per-tab content                                    |
+| AI / agentic surface   | `SourceCitation` + `FeedbackVote` + `Markdown` (`@shared/viewers/MarkDowns`) + `DiffViewer`   |
 
 ---
 
-### Steppers
+## 3. Decision rules — overlapping components
 
-#### CustomStepper
+When two components could fit, this is which to pick.
 
-- **Path:** `src/components1/common/CustomStepper.tsx`
-- **Description:** Horizontal multi-step wizard with navigation buttons, error states, and access control.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | steps | string[] | Yes | - | Step labels |
-  | activeStep | number | Yes | - | Current step |
-  | onStepChange | func | Yes | - | Step change handler |
-  | onNext | func | Yes | - | Next button handler |
-  | onBack | func | Yes | - | Back button handler |
-  | children | ReactNode | Yes | - | Step content |
-  | onSubmit | func | No | - | Final submit handler |
-  | stepErrors | boolean[] | No | `[]` | Error states per step |
-  | submitButtonText | string | No | `'Submit'` | Final button text |
-
-#### NewVerticalStepper
-
-- **Path:** `src/components1/common/NewVerticalStepper.tsx`
-- **Description:** Vertical step navigation sidebar with collapsible task lists per step, status icons, and pending task counts.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | steps | Step[] | Yes | - | Step definitions with tasks |
-  | activeStep | number | Yes | - | Current step |
-  | onStepChange | func | Yes | - | Step change handler |
-  | showTasks | bool | No | `false` | Show task sub-list |
-
-#### VerticalStepNavigation
-
-- **Path:** `src/components1/common/VerticalStepNavigation.tsx`
-- **Description:** Simple vertical step navigation sidebar with numbered step circles, tooltips, and active state highlighting.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | steps | any[] | Yes | - | Step definitions |
-  | activeStep | number | Yes | - | Current step |
-  | onStepChange | func | Yes | - | Step change handler |
-  | title | string | No | `'Upgrade Steps'` | Section title |
-
----
-
-### Carousel
-
-#### CustomSwiperCarousel
-
-- **Path:** `src/components1/common/CustomSwiperCarousel.jsx`
-- **Description:** Responsive carousel/slider wrapping Swiper.js with custom navigation arrows and pagination bullets.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | node | No | - | Slide content |
-  | slidesToShow | number | No | `1` | Visible slides |
-  | showArrows | bool | No | `true` | Show navigation arrows |
-  | showBullets | bool | No | `false` | Show pagination dots |
-  | breakpoints | object | No | `{}` | Responsive breakpoints |
-- **Dependencies:** `swiper` (Swiper, Navigation, Pagination)
+| Situation                                                                                          | Use                                                                | Not                                                                        |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| Read-only status pill in a table cell (`Active` / `Failed` / `Pending`) — 5 status tones, no click | `ds/Label`                                                         | `ds/Chip` (Chip is for interactive / categorical use)                      |
+| Interactive or categorical pill — filter, dismissible tag, count, categorical hue, avatar          | `ds/Chip`                                                          | `ds/Label` (Label is read-only Status-axis only)                           |
+| Resource-state read-out in a header / drawer / chat preamble (dot + text + subtext)                | `ds/StatusIndicator`                                               | `ds/Label` (Label is the inline cell tag)                                  |
+| Any tabular data (this app)                                                                        | `@shared/tables/CustomTable`                                       | a hand-rolled `<table>` — there is no `ds/Table` primitive                 |
+| One collapsible unit                                                                               | `ds/CollapsableCard`                                               | `ds/Accordion` ("Don't use Accordion for < 3 rows")                        |
+| 3+ sibling collapsibles                                                                            | `ds/Accordion`                                                     | stacking `CollapsableCard`s                                                |
+| In-page tab switch (state only) — modals, panels, in-component toggles                             | `ds/Tabs` with `navigation='state'` (or `@shared/navigation/Tabs`) | a hand-rolled toggle row                                                   |
+| Tabs that drive the URL / route                                                                    | `ds/Tabs` with `navigation='router'`                               | `CustomTabs` / `ds/PageTabs` (both removed)                                |
+| Top-of-page **2-level** nav — parent tabs with hover-dropdown subtabs, URL-hash driven             | `@shared/navigation/AnchorComponent`                               | `ds/Tabs` (single-level only)                                              |
+| Transient confirmation message                                                                     | `ds/Toast`                                                         | `ds/Banner`                                                                |
+| Persistent inline page-level message                                                               | `ds/Banner`                                                        | `ds/Toast`                                                                 |
+| Small overlay anchored to an element                                                               | `ds/Tooltip` (text/explainer) · `DropdownMenu` (menu)              | `ds/Modal` (there is no `ds/Popover`)                                      |
+| Centered blocking task / decision                                                                  | `ds/Modal`                                                         | a side-drawer (there is no `ds/Inspector`)                                 |
+| Pick one value in a **form**                                                                       | `ds/Select`                                                        | `DropdownMenu` (action menu) · `FilterDropdown` (toolbar pill)             |
+| Pick **multiple** values in a form                                                                 | `<Select multiple>`                                                | a hand-rolled multi-select (no `ds/MultiSelect`)                           |
+| Pick value(s) for a **toolbar filter**                                                             | `ds/FilterDropdown`                                                | `ds/Select` (wrong context — full-width field chrome, no clear-X)          |
+| Many options needing search / free-typing                                                          | `ds/Select` (auto-search > 8 options)                              | a hand-rolled autocomplete (no `ds/Autocomplete`)                          |
+| Trigger an action from a menu                                                                      | `DropdownMenu` / `ThreeDotsMenu`                                   | `ds/Select`                                                                |
+| Single-line text input (text/email/password/url/textarea/number)                                   | `ds/Input`                                                         | MUI `<TextField>` · `@shared/forms/CustomTextField` (legacy)               |
+| Search-style toolbar input                                                                         | `ds/SearchInput` or `<Input leadingIcon={<SearchIcon/>} />`        | a raw input + manual clear/Enter wiring                                    |
+| Generic value picker with cluster / cloud-account chrome                                           | `@shared/CustomDropdown`                                           | `ds/Select` (doesn't model `groupByCloudProvider` / status indicators)     |
+| Content-shaped loading placeholder                                                                 | `ds/Skeleton`                                                      | `ds/ProgressLinear`                                                        |
+| Determinate progress against a known max (utilisation)                                             | `ds/ProgressBar`                                                   | `ds/ProgressLinear` (unknown max)                                          |
+| Indeterminate "something is happening"                                                             | `ds/ProgressLinear`                                                | `ds/Skeleton`                                                              |
+| Plain content card on any new screen                                                               | `ds/Card`                                                          | `ds/WidgetCard` / `ds/CustomBorderCard` (legacy; consolidated into `Card`) |
+| Card needs a coloured left-edge for tone                                                           | `ds/Card variant="accent" + tone`                                  | a hand-rolled `borderLeft` on a `WidgetCard`                               |
+| Subtle bg grouping inside a modal/Card                                                             | `ds/Card variant="tinted" + tone`                                  | a hand-rolled `<Box sx={{ backgroundColor }}>`                             |
+| Card needs disclosure (open / closed body)                                                         | `ds/CollapsableCard`                                               | `ds/Card` with manual state                                                |
+| Clickable card row (picker, drillable surface)                                                     | `ds/Card interactive + onClick`                                    | a raw `<Box onClick>` (loses focus ring + a11y role)                       |
+| 2-4 narrow choices, all visible, switching a view (not a form value)                               | `ds/Toggle`                                                        | `ds/Tabs` (heavier) · `ds/Select` (hides choices)                          |
+| Segmented multi/single-select form input                                                           | `ds/ToggleGroup`                                                   | `ds/Toggle` (state-only view switcher, not a form input)                   |
+| Picking a value to submit in a form                                                                | `ds/Select`                                                        | `ds/Toggle`                                                                |
+| Single date + time field in a form                                                                 | `@shared/widgets/CustomDateTimePicker`                             | (no `ds/DateRangePicker` exists)                                           |
+| Inline navigation link                                                                             | `ds/Link`                                                          | a raw `<a>` (loses DS color/font token + external-icon)                    |
+| "Ticket - {id}" inline link pattern                                                                | inline `<Link href={url} openInNew>{id}</Link>`                    | `common/CustomTicketLink` (removed)                                        |
+| Download action button                                                                             | `@shared/buttons/DownloadButton`                                   | a raw `ds/Button` + manual `saveAs`                                        |
+| Copy-to-clipboard icon button                                                                      | `@shared/buttons/CopyButton`                                       | a raw `ds/Button` + manual clipboard wiring                                |
+| Show a static code snippet / shell command with copy (read-only)                                   | `ds/CodeBlock`                                                     | a hand-rolled `<pre>` + copy button                                        |
+| Inline `code` chip inside a sentence                                                               | `<CodeBlock inline code='…' />`                                    | a raw `<code>` tag                                                         |
+| Prose / markdown that _contains_ fenced code blocks                                                | `Markdown` (`@shared/viewers/MarkDowns`)                           | `ds/CodeBlock` (shows one snippet; doesn't parse markdown)                 |
+| Editable / language-aware code (YAML/JSON/SQL/JS/Shell/MD)                                         | `ds/CodeEditor`                                                    | a raw `<CodeMirror>` · `ds/CodeBlock` (display-only)                       |
+| Read-only code needing syntax highlighting / line numbers / folding                                | `ds/CodeEditor` with `readOnly`                                    | `ds/CodeBlock` (structural mono only, no highlighting)                     |
+| Show **what changed** between two versions                                                         | `ds/DiffViewer`                                                    | `ds/CodeBlock` (single version)                                            |
+| New DS-clean button                                                                                | `ds/Button`                                                        | `common/NewCustomButton` (removed)                                         |
 
 ---
 
-### Diff Viewer
+## 4. Component API reference (`ds/` primitives)
 
-#### CodeMirrorDiffViewer
+Per-component reference for all 45 primitives in `src/components/common/ds/`, harvested from each
+file's JSDoc + `Props` interface. **Conventions for the tables below:**
 
-- **Path:** `src/components1/common/DiffViewer.jsx`
-- **Description:** Side-by-side code diff viewer using CodeMirror MergeView.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | originalCode | string | No | - | Original code |
-  | newCode | string | No | - | Modified code |
-- **Dependencies:** `codemirror` (basicSetup, EditorView), `@codemirror/merge`, `@codemirror/lang-javascript`
+- **Req** column: `✓` = required, `—` = optional.
+- Every primitive also accepts standard passthroughs where its source declares them — `id`,
+  `className`, `data-testid`, `sx`/`style`, and the relevant `aria-*`. The tables list the
+  **semantic** props; trivial passthroughs are omitted unless behaviourally significant.
+- Import path is `@ui/<Name>` unless noted. Default export vs named export matches the import shown.
 
----
+### Layout & containers
 
-### Tooltip
+#### `Card` — `import { Card } from '@ui/Card'`
 
-#### CustomTooltip
-
-- **Path:** `src/components1/common/CustomTooltip.tsx`
-- **Description:** Styled MUI Tooltip wrapper with custom scrollable max-height and optional CSS class.
-- **Props:** Extends `Omit<TooltipProps, 'children'>` plus:
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | children | ReactElement | Yes | - | Trigger element |
-  | title | TooltipProps['title'] | Yes | - | Tooltip content |
-  | tooltipStyle | CSSProperties | No | `{}` | Custom styles |
-  | tooltipClassName | string | No | `''` | Custom CSS class |
-  | placement | string | No | `'top'` | Tooltip position |
-- **When to use:** Use instead of raw MUI Tooltip for consistent styling.
-- **Dependencies:** Wraps MUI `Tooltip`.
-
----
-
-### Utility
-
-#### LazyLoadComponent
-
-- **Path:** `src/components1/common/LazyLoadComponent.tsx`
-- **Description:** Lazy-loads a React component when it becomes visible in the viewport using IntersectionObserver.
-- **Props:**
-  | Prop | Type | Required | Default | Description |
-  |------|------|----------|---------|-------------|
-  | component | () => Promise<{default: ComponentType}> | Yes | - | Dynamic import |
-  | fallback | ReactNode | No | `<div>Loading...</div>` | Loading fallback |
-  | props | Record<string, any> | No | `{}` | Props to pass to component |
-  | threshold | number | No | `0.1` | Visibility threshold |
-- **Example:**
+Canonical content-card surface (consolidates `WidgetCard` + `CustomBorderCard`). Slots: `header`,
+`footer`, `children`. **Use** for all new card surfaces; **not** for tinting message panels (use `Banner`).
 
 ```tsx
-<LazyLoadComponent component={() => import('./HeavyChart')} props={{ data: chartData }} />
+<Card variant='outlined' size='md' header={<b>Spend</b>}>
+  Body content
+</Card>
 ```
 
-#### DownloadTarFile
+**Variants:** `variant` `elevated`·`outlined`·`accent`·`tinted` · `size` `sm`·`md`·`lg` · `elevation` `raised`·`flat` · `tone` `neutral`·`info`·`success`·`warning`·`danger`.
 
-- **Path:** `src/components1/common/DownloadTarFile.tsx`
-- **Description:** Utility function (not a component) that downloads a base64-encoded string as a `.tar` file.
-- **Usage:** `DownloadTarFile(base64String, filename)`
+| Prop                             | Type                                                        | Default      | Req                                                   |
+| -------------------------------- | ----------------------------------------------------------- | ------------ | ----------------------------------------------------- |
+| `variant`                        | `'elevated' \| 'outlined' \| 'accent' \| 'tinted'`          | `'elevated'` | —                                                     |
+| `size`                           | `'sm' \| 'md' \| 'lg'`                                      | `'md'`       | —                                                     |
+| `elevation`                      | `'raised' \| 'flat'`                                        | `'raised'`   | —                                                     |
+| `tone`                           | `'neutral' \| 'info' \| 'success' \| 'warning' \| 'danger'` | `'neutral'`  | — (meaningful only with `variant='accent'\|'tinted'`) |
+| `interactive`                    | `boolean`                                                   | `false`      | — (required when `onClick` is set)                    |
+| `selected`                       | `boolean`                                                   | `false`      | —                                                     |
+| `header` / `footer` / `children` | `ReactNode`                                                 | —            | —                                                     |
+| `onClick`                        | `(e) => void`                                               | —            | —                                                     |
 
-#### UserHistory
+**Don't:** tint bg by hand (use `variant='tinted'`); nest Cards >1 deep; use `sx` for padding/shadow (use `size`/`elevation`); pass `tone` without `accent`/`tinted`; pass `onClick` without `interactive`.
 
-- **Path:** `src/components1/common/UserHistory.jsx`
-- **Description:** Displays paginated user query history in a table, with popup and button trigger variants.
-- **Exports:** `UserHistory` (named), `UserHistoryPopup` (named), `UserHistoryButton` (default)
-- **Composition:** `UserHistoryButton` → `UserHistoryPopup` → `UserHistory`
+#### `WidgetCard` — `import WidgetCard from '@ui/WidgetCard'` (legacy)
+
+Plain white elevated container (`Box` passthrough). **Consolidated into `Card`** — don't introduce
+new uses. Props: `children`, `sx`, plus any MUI `BoxProps`.
+
+```tsx
+<WidgetCard>Body content</WidgetCard>
+```
+
+#### `CustomBorderCard` — `import { CustomBorderCard } from '@ui/CustomBorderCard'` (legacy)
+
+Lightweight surface with a bottom hairline + optional coloured left accent. Prefer `Card`; reach
+here only for that specific look.
+
+```tsx
+<CustomBorderCard showLeftBorder borderLeftColor={ds.red[500]}>
+  Row
+</CustomBorderCard>
+```
+
+| Prop              | Type               | Default          | Req                      |
+| ----------------- | ------------------ | ---------------- | ------------------------ |
+| `borderColor`     | `string`           | hairline default | —                        |
+| `borderLeftColor` | `string`           | —                | —                        |
+| `borderLeftWidth` | `string \| number` | —                | —                        |
+| `showLeftBorder`  | `boolean`          | `true`           | —                        |
+| `padding`         | `string \| number` | default          | —                        |
+| `onClick`         | `(e) => void`      | —                | — (makes it interactive) |
+
+#### `CollapsableCard` — `import { CollapsableCard } from '@ui/CollapsableCard'`
+
+A single standalone collapsible card. Composes `Card` for the surface. For 3+ siblings use `Accordion`.
+
+```tsx
+<CollapsableCard header={<b>Details</b>} persist='local' id='details'>
+  Body
+</CollapsableCard>
+```
+
+**Variants:** `composition` `header+body`·`header+meta+body` · `persist` `none`·`local`·`url` · `elevation` `raised`·`flat`.
+
+| Prop           | Type                                  | Default         | Req                              |
+| -------------- | ------------------------------------- | --------------- | -------------------------------- |
+| `header`       | `ReactNode`                           | —               | ✓                                |
+| `children`     | `ReactNode`                           | —               | ✓                                |
+| `meta`         | `ReactNode` (only `header+meta+body`) | —               | —                                |
+| `footer`       | `ReactNode`                           | —               | —                                |
+| `defaultOpen`  | `boolean`                             | `true`          | —                                |
+| `composition`  | `'header+body' \| 'header+meta+body'` | `'header+body'` | —                                |
+| `persist`      | `'none' \| 'local' \| 'url'`          | `'none'`        | — (needs `id` for `local`/`url`) |
+| `elevation`    | `'raised' \| 'flat'`                  | `'raised'`      | —                                |
+| `onOpenChange` | `(open: boolean) => void`             | —               | —                                |
+
+#### `Accordion` — `import { Accordion } from '@ui/Accordion'`
+
+Group of sibling collapsibles. **Use** for 3+ rows; **not** for < 3 (those are just Cards) or a critical closed-by-default setting.
+
+```tsx
+<Accordion selection='single' items={[{ id: 'cpu', label: 'CPU', body: <Metrics /> }]} />
+```
+
+**Variants:** `selection` `single`·`multi` · `density` `sm`·`md`.
+
+| Prop                 | Type                       | Default | Req |
+| -------------------- | -------------------------- | ------- | --- |
+| `items`              | `AccordionItem[]`          | —       | ✓   |
+| `selection`          | `'single' \| 'multi'`      | —       | —   |
+| `density`            | `'sm' \| 'md'`             | —       | —   |
+| `defaultExpandedIds` | `string[]` (uncontrolled)  | —       | —   |
+| `expandedIds`        | `string[]` (controlled)    | —       | —   |
+| `onExpandedChange`   | `(next: string[]) => void` | —       | —   |
+
+`AccordionItem`: `{ id, label, body, description?, meta?, icon?, disabled? }`.
+
+#### `ListingLayout` — `import { ListingLayout } from '@ui/ListingLayout'`
+
+Shell for table-listing screens. Slots only — composes primitives, no filter/action/pagination
+knowledge. Sub-components: `.Toolbar`, `.ToolbarSpacer`, `.Body`, `.Footer`.
+
+```tsx
+<ListingLayout id='recs'>
+  <ListingLayout.Toolbar title='Recommendations' actions={<Button>Export</Button>} />
+  <ListingLayout.Body>
+    <CustomTable headers={headers} tableData={rows} />
+  </ListingLayout.Body>
+</ListingLayout>
+```
+
+| Component       | Key props                                                               |
+| --------------- | ----------------------------------------------------------------------- |
+| `ListingLayout` | `id?`, `children` (✓), `sx?`                                            |
+| `.Toolbar`      | `title?`, `children?` (left filters), `actions?` (right cluster), `sx?` |
+| `.Body`         | `children` (✓), `padding?` (default `0 ds.space[5]`), `sx?`             |
+| `.Footer`       | `children` (✓), `align?` `start`·`end`·`between` (default `end`), `sx?` |
+
+**Don't:** put page-level `Stat` cards inside (siblings above); paginate inside `Body`.
+
+#### `Divider` — `import { Divider } from '@ui/Divider'`
+
+Thin visual separator. **Variants:** `orientation` `horizontal`·`vertical` · `style` `solid`·`dashed`.
+
+```tsx
+<Divider label='or' />
+```
+
+| Prop          | Type                          | Default              | Req |
+| ------------- | ----------------------------- | -------------------- | --- |
+| `orientation` | `'horizontal' \| 'vertical'`  | `'horizontal'`       | —   |
+| `style`       | `'solid' \| 'dashed'`         | `'solid'`            | —   |
+| `label`       | `ReactNode` (horizontal only) | —                    | —   |
+| `color`       | `string`                      | `var(--ds-gray-200)` | —   |
+| `thickness`   | `number`                      | `1`                  | —   |
+
+#### `List` — `import { List } from '@ui/List'`
+
+Vertical list of label rows with optional "show N / show all" truncation. Generic over item type `T`.
+
+```tsx
+<List items={names} bullet maxItemLength={40} truncate={{ show: 5 }} />
+```
+
+| Prop            | Type                                       | Default     | Req                                         |
+| --------------- | ------------------------------------------ | ----------- | ------------------------------------------- |
+| `items`         | `T[]`                                      | —           | ✓                                           |
+| `renderItem`    | `(item: T, i: number) => ReactNode`        | —           | — (omit to use built-in bullet composition) |
+| `keyFor`        | `(item: T, i: number) => React.Key`        | index       | —                                           |
+| `truncate`      | `{ show: number, label?, collapseLabel? }` | —           | —                                           |
+| `divider`       | `'none' \| 'between'`                      | `'between'` | —                                           |
+| `bordered`      | `boolean`                                  | `true`      | —                                           |
+| `empty`         | `ReactNode`                                | —           | —                                           |
+| `bullet`        | `boolean` (built-in composition)           | —           | —                                           |
+| `maxItemLength` | `number` (truncate string items + tooltip) | —           | —                                           |
+| `onItemClick`   | `(item: T, i: number) => void`             | —           | —                                           |
+
+### Data display
+
+#### `Stat` — `import { Stat } from '@ui/Stat'`
+
+KPI / metric tile (label + value + optional delta/sub/icon). **Use** one `hero` per page max.
+
+```tsx
+<Stat label='Monthly spend' value='$1,240' delta={{ value: -12, period: 'vs last mo', tone: 'savings' }} />
+```
+
+**Variants:** `size` `sm`·`md`·`hero` · `align` `start`·`center` · delta `tone` `high-savings`·`savings`·`neutral`·`waste`·`high-waste`.
+
+| Prop             | Type                                 | Default   | Req |
+| ---------------- | ------------------------------------ | --------- | --- |
+| `label`          | `string`                             | —         | ✓   |
+| `value`          | `string \| number \| ReactNode`      | —         | ✓   |
+| `size`           | `'sm' \| 'md' \| 'hero'`             | `'md'`    | —   |
+| `align`          | `'start' \| 'center'`                | `'start'` | —   |
+| `delta`          | `StatDelta`                          | —         | —   |
+| `sub`            | `ReactNode`                          | —         | —   |
+| `icon`           | `ReactNode`                          | —         | —   |
+| `iconPlacement`  | `'rail' \| 'inline'`                 | `'rail'`  | —   |
+| `deltaPlacement` | `'below' \| 'inline'`                | `'below'` | —   |
+| `info`           | `{ tooltip, position? }`             | —         | —   |
+| `headerRight`    | `ReactNode`                          | —         | —   |
+| `format`         | `'plain' \| 'percent' \| 'currency'` | `'plain'` | —   |
+| `onClick`        | `() => void`                         | —         | —   |
+
+`StatDelta`: `{ value: number\|string, period: string (✓), tone?, direction?: 'up'\|'down'\|'flat' }`.
+**Don't:** tone the value (tone goes on the delta); render a delta without a comparison anchor.
+
+#### `Trend` — `import { Trend } from '@ui/Trend'`
+
+Percentage trend arrow. Convention: `value*sign > 0` → down arrow + green (improvement); negative → up arrow + red.
+
+```tsx
+<Trend value={12} sign={-1} variant='chip' />
+```
+
+**Variants:** `variant` `inline`·`chip` · `size` `xs`·`sm`·`md`·`lg` (`'default'` accepted as alias for `md`).
+
+| Prop      | Type                           | Default    | Req |
+| --------- | ------------------------------ | ---------- | --- |
+| `value`   | `number`                       | —          | ✓   |
+| `sign`    | `1 \| -1`                      | `1`        | —   |
+| `size`    | `'xs' \| 'sm' \| 'md' \| 'lg'` | —          | —   |
+| `variant` | `'inline' \| 'chip'`           | `'inline'` | —   |
+| `width`   | `string`                       | —          | —   |
+
+#### `Comparison` — `import { Comparison, ComparisonGroup } from '@ui/Comparison'`
+
+Compact "before → after, with delta" for dense cells. Pairs with `ComparisonGroup` for spacing rhythm.
+
+```tsx
+<Comparison before={{ value: '1.2 Core' }} after={{ value: '0.5 Core' }} polarity='lower-is-better' />
+```
+
+**Variants:** `size` `sm`·`md` · `layout` `stacked`·`inline` · `polarity` `lower-is-better`·`higher-is-better`·`neutral` · `deltaFormat` `percent`·`absolute`·`auto`.
+
+| Prop            | Type                                                   | Default             | Req |
+| --------------- | ------------------------------------------------------ | ------------------- | --- |
+| `before`        | `ComparisonValue`                                      | —                   | ✓   |
+| `after`         | `ComparisonValue`                                      | —                   | ✓   |
+| `label`         | `ReactNode`                                            | —                   | —   |
+| `polarity`      | `'lower-is-better' \| 'higher-is-better' \| 'neutral'` | `'lower-is-better'` | —   |
+| `deltaFormat`   | `'percent' \| 'absolute' \| 'auto'`                    | `'auto'`            | —   |
+| `size`          | `'sm' \| 'md'`                                         | `'sm'`              | —   |
+| `layout`        | `'stacked' \| 'inline'`                                | `'stacked'`         | —   |
+| `deltaOverride` | `ReactNode`                                            | —                   | —   |
+| `showZeroDelta` | `boolean`                                              | `true`              | —   |
+
+`ComparisonValue`: `{ value: number\|string\|null, unit? }`. `ComparisonGroup`: `{ children, spacing?: 'xs'\|'sm'\|'md', dividers? }`.
+**Don't:** pick delta colour manually (use `polarity`); use `size='md'` in table cells.
+
+#### `CostCallout` — `import { CostCallout } from '@ui/CostCallout'`
+
+Inline currency figure + optional delta arrow + period. Always tabular-nums, locale-aware.
+
+```tsx
+<CostCallout value={890} arrow='down' tone='high-savings' period='/ mo' />
+```
+
+**Variants:** `tone` `high-savings`·`medium-savings`·`low-savings`·`neutral`·`waste` · `size` `sm`·`md`·`lg`·`display` · `arrow` `down`·`up`·`flat`·`none`.
+
+| Prop             | Type                                 | Default     | Req |
+| ---------------- | ------------------------------------ | ----------- | --- |
+| `value`          | `number`                             | —           | ✓   |
+| `currency`       | `string` (ISO)                       | `'USD'`     | —   |
+| `locale`         | `string`                             | session     | —   |
+| `tone`           | `CostTone`                           | `'neutral'` | —   |
+| `size`           | `'sm' \| 'md' \| 'lg' \| 'display'`  | `'md'`      | —   |
+| `period`         | `ReactNode` (e.g. "/ mo")            | —           | —   |
+| `arrow`          | `'down' \| 'up' \| 'flat' \| 'none'` | `'none'`    | —   |
+| `fractionDigits` | `number`                             | `0`         | —   |
+
+**Don't:** pick tone manually; show an arrow without a comparison reference; use `size='display'` twice per page.
+
+#### `ProgressBar` — `import { ProgressBar } from '@ui/ProgressBar'`
+
+Utilisation gauge against a known max. Tone auto-resolves from `thresholds` + `value`.
+
+```tsx
+<ProgressBar value={72} thresholds={{ success: 60, warning: 80 }} showValue />
+```
+
+**Variants:** `size` `sm`·`md` · `tone` `neutral`·`success`·`warning`·`critical`.
+
+| Prop          | Type                                              | Default   | Req |
+| ------------- | ------------------------------------------------- | --------- | --- |
+| `value`       | `number`                                          | —         | ✓   |
+| `max`         | `number`                                          | `100`     | —   |
+| `label`       | `ReactNode`                                       | —         | —   |
+| `showValue`   | `boolean`                                         | —         | —   |
+| `formatValue` | `(value, max, pct) => string`                     | `${pct}%` | —   |
+| `thresholds`  | `{ success?, warning?, critical? }` (percentages) | —         | —   |
+| `tone`        | `ProgressBarTone` (override)                      | auto      | —   |
+| `size`        | `'sm' \| 'md'`                                    | `'sm'`    | —   |
+
+**Don't:** pick tone manually (use `thresholds`); use for unknown maximums (that's `ProgressLinear`).
+
+#### `ProgressLinear` — `import { ProgressLinear } from '@ui/ProgressLinear'`
+
+Indeterminate or determinate horizontal progress at the top of a region.
+
+```tsx
+<ProgressLinear surface='page-top' />
+```
+
+**Variants:** `mode` `indeterminate`·`determinate` (auto-determinate when `value` set) · `tone` `neutral`·`info` · `surface` `page-top`·`section`·`inline`.
+
+| Prop      | Type                                  | Default     | Req |
+| --------- | ------------------------------------- | ----------- | --- |
+| `mode`    | `'indeterminate' \| 'determinate'`    | auto        | —   |
+| `value`   | `number` (→ determinate)              | —           | —   |
+| `total`   | `number`                              | `100`       | —   |
+| `tone`    | `'neutral' \| 'info'`                 | `'info'`    | —   |
+| `surface` | `'page-top' \| 'section' \| 'inline'` | `'section'` | —   |
+
+**Don't:** show for < 200ms actions; combine with a `Skeleton` on the same region.
+
+#### `Chart` — `import Chart from '@ui/Chart'`
+
+Namespace wrapper around the chart family. Members:
+
+```tsx
+<Chart.TimeSeries labels={labels} series={series} />
+```
+
+- `Chart.Line` — feature-rich Prometheus line chart (pinned points, Ask-Nubi, own tooltip).
+- `Chart.Series` — lean line/area passthrough (caller supplies datasets + options).
+- `Chart.TimeSeries` — multi-series bar/area/line from `{ labels, series }` + totals legend.
+- `Chart.Bar` · `Chart.Doughnut` — bar / doughnut charts.
+
+Legacy default-import paths (e.g. `@shared/charts/LineCharts`) resolve to the same instance.
+Per-chart props are chart-specific data/options passthroughs — read the source for the exact shape.
+
+#### `SeverityIcon` — `import { SeverityIcon } from '@ui/SeverityIcon'`
+
+Letter-badge severity marker (C/H/M/L/I, fixed per level). Always pair with an accessible label.
+
+```tsx
+<SeverityIcon level='critical' label='3 critical' />
+```
+
+**Variants:** `level` `critical`·`high`·`medium`·`low`·`info` · `variant` `bar`·`square` · `size` `12`·`14`·`16`·`20`.
+
+| Prop         | Type                                          | Default | Req                         |
+| ------------ | --------------------------------------------- | ------- | --------------------------- |
+| `level`      | `'critical'\|'high'\|'medium'\|'low'\|'info'` | —       | ✓                           |
+| `variant`    | `'bar' \| 'square'`                           | `'bar'` | —                           |
+| `size`       | `12 \| 14 \| 16 \| 20`                        | —       | —                           |
+| `label`      | `ReactNode`                                   | —       | —                           |
+| `count`      | `number`                                      | —       | —                           |
+| `aria-label` | `string`                                      | —       | — (required when icon-only) |
+
+**Don't:** override the letter/colour; use Severity to communicate Status.
+
+#### `StatusIndicator` — `import { StatusIndicator } from '@ui/StatusIndicator'`
+
+Resource-state read-out (dot/icon + text + optional subtext) for headers, drawers, chat preambles.
+
+```tsx
+<StatusIndicator tone='healthy' label='Running' subtext='12 nodes · 12s ago' />
+```
+
+**Variants:** `tone` `healthy`·`degraded`·`failed`·`pending`·`unknown` · `size` `sm`·`md`.
+
+| Prop      | Type                                                    | Default | Req |
+| --------- | ------------------------------------------------------- | ------- | --- |
+| `tone`    | `'healthy'\|'degraded'\|'failed'\|'pending'\|'unknown'` | —       | ✓   |
+| `label`   | `ReactNode`                                             | —       | —   |
+| `subtext` | `ReactNode`                                             | —       | —   |
+| `icon`    | `ReactNode` (incompatible with default dot)             | —       | —   |
+| `size`    | `'sm' \| 'md'`                                          | —       | —   |
+
+**Don't:** use inside a table cell (that's `Label`); put actions in the subtext; combine icon+dot.
+
+### Labels & status
+
+#### `Label` — `import { Label } from '@ui/Label'`
+
+Read-only status-axis pill for table cells. No click (if interactive, use `Chip`).
+
+```tsx
+<Label tone='success'>Active</Label>
+```
+
+**Variants:** `tone` `neutral`·`info`·`success`·`warning`·`critical` · `size` `sm`·`md` · composition auto from `icon`/`dot`.
+
+| Prop               | Type                                                  | Default     | Req           |
+| ------------------ | ----------------------------------------------------- | ----------- | ------------- |
+| `children`         | `ReactNode` (preferred)                               | —           | — (or `text`) |
+| `text`             | `string` (legacy; feeds auto-tone + tooltip)          | —           | —             |
+| `tone`             | `'neutral'\|'info'\|'success'\|'warning'\|'critical'` | auto-detect | —             |
+| `size`             | `'sm' \| 'md'`                                        | `'sm'`      | —             |
+| `icon`             | `ReactNode` (mutually exclusive with `dot`)           | —           | —             |
+| `dot`              | `boolean`                                             | `false`     | —             |
+| `displayTooltip`   | `boolean`                                             | `false`     | —             |
+| `tooltipCharLimit` | `number`                                              | —           | —             |
+| `tooltipPosition`  | `'top'\|'bottom'\|'left'\|'right'`                    | `'top'`     | —             |
+| `maxWidth`         | `string`                                              | `'350px'`   | —             |
+
+Tone precedence: explicit `tone` → legacy `variant` → auto-detect from `text`.
+**Don't:** add a click handler; pick a tone outside the Status axis; combine `dot` + `icon`.
+
+#### `Chip` — `import { Chip } from '@ui/Chip'`. Also exports `hashHue(key)`.
+
+Interactive or categorical pill (filters, dismissible tags, counts, hues, avatars).
+
+```tsx
+<Chip tone='info' onDismiss={() => remove('prod')}>
+  env: prod
+</Chip>
+```
+
+**Variants:** `variant` `filter`·`tag`·`status`·`input`·`action`·`count`·`avatar` (auto from props) · `size` `micro`·`2xs`·`xs`·`sm`·`md` · `tone` `neutral`·`subtle`·`info`·`success`·`warning`·`critical`·`savings`·`waste`·`agent` · `shape` `pill`·`rect` · `hue` `slate`·`green`·`amber`·`red`·`blue`·`violet`·`pink`·`teal` (tag chips only).
+
+| Prop                                  | Type                                    | Default | Req |
+| ------------------------------------- | --------------------------------------- | ------- | --- |
+| `children`                            | `ReactNode`                             | —       | —   |
+| `variant` / `size` / `tone` / `shape` | unions above                            | derived | —   |
+| `hue`                                 | `ChipHue` (tag chips; overrides tone)   | —       | —   |
+| `icon` / `leadingAvatar`              | `ReactNode` (mutually exclusive)        | —       | —   |
+| `count`                               | `number`                                | —       | —   |
+| `dot` / `dotVariant`                  | `boolean` / `'filled'\|'hollow'`        | —       | —   |
+| `trailingIcon` / `trailingChevron`    | `ReactNode` / `boolean`                 | —       | —   |
+| `solid`                               | `boolean` (P0/critical only)            | —       | —   |
+| `onClick`                             | `(e) => void` (⇒ clickable)             | —       | —   |
+| `onDismiss`                           | `(e) => void` (⇒ dismissible, × button) | —       | —   |
+| `pressed` / `selected`                | `boolean` (toggle/filter state)         | —       | —   |
+| `loading` / `disabled`                | `boolean`                               | —       | —   |
+| `displayTooltip` / `tooltipCharLimit` | `boolean` / `number` (default 30)       | —       | —   |
+
+**Don't:** invent a tone; `solid` on non-critical/warning tones; `icon`-only at `size='md'` (that's a Button); `hue` on non-tag variants.
+
+### Content & code
+
+#### `CodeBlock` — `import { CodeBlock } from '@ui/CodeBlock'`
+
+Display a static snippet/command with a copy affordance. **Variants:** `inline` `false`·`true` · `tone` `light`·`dark`.
+
+```tsx
+<CodeBlock code='kubectl get pods' language='bash' prompt='$' />
+```
+
+| Prop              | Type                | Default   | Req |
+| ----------------- | ------------------- | --------- | --- |
+| `code`            | `string`            | —         | ✓   |
+| `language`        | `string` (header)   | —         | —   |
+| `title`           | `string` (header)   | —         | —   |
+| `inline`          | `boolean`           | `false`   | —   |
+| `tone`            | `'light' \| 'dark'` | `'light'` | —   |
+| `showLineNumbers` | `boolean`           | `false`   | —   |
+| `showCopy`        | `boolean`           | `true`    | —   |
+| `wrap`            | `boolean`           | `false`   | —   |
+| `prompt`          | `string` (e.g. `$`) | —         | —   |
+| `maxHeight`       | `number \| string`  | —         | —   |
+| `copyToast`       | `string`            | —         | —   |
+
+**Don't:** render markdown prose (that's `Markdown`); use as an editor (that's `CodeEditor`); bake the prompt char into `code`.
+
+#### `CodeEditor` — `import { CodeEditor } from '@ui/CodeEditor'`
+
+Editable / language-aware code (CodeMirror), or read-only viewer with highlighting. **Variants:** `tone` `light`·`dark` · `readOnly` `false`·`true`.
+
+```tsx
+<CodeEditor value={yaml} onChange={setYaml} language='yaml' />
+```
+
+| Prop                                            | Type                                                               | Default     | Req |
+| ----------------------------------------------- | ------------------------------------------------------------------ | ----------- | --- |
+| `value`                                         | `string`                                                           | —           | ✓   |
+| `onChange`                                      | `(value: string) => void`                                          | —           | —   |
+| `language`                                      | `'yaml'\|'json'\|'sql'\|'javascript'\|'shell'\|'markdown'\|'text'` | `'text'`    | —   |
+| `readOnly`                                      | `boolean`                                                          | `false`     | —   |
+| `tone`                                          | `'light' \| 'dark'`                                                | `'light'`   | —   |
+| `height`                                        | `number \| string`                                                 | `'300px'`   | —   |
+| `minHeight` / `maxHeight`                       | `number \| string`                                                 | —           | —   |
+| `title` / `languageLabel` / `showLanguageLabel` | header controls                                                    | —           | —   |
+| `showCopy`                                      | `boolean`                                                          | `=readOnly` | —   |
+| `lineNumbers` / `foldGutter`                    | `boolean`                                                          | `true`      | —   |
+| `error`                                         | `string \| boolean`                                                | —           | —   |
+| `extensions`                                    | `Extension[]` (PromQL/lint escape hatch)                           | —           | —   |
+
+**Don't:** use just to display a snippet (that's `CodeBlock`); pass markdown prose (that's `Markdown`).
+
+#### `DiffViewer` — `import { DiffViewer } from '@ui/DiffViewer'`
+
+Show what changed between two versions. Engine inferred from input (override with `mode`).
+
+```tsx
+<DiffViewer originalCode={prev} newCode={next} language='yaml' />
+```
+
+| Prop                              | Type                        | Default                     | Req              |
+| --------------------------------- | --------------------------- | --------------------------- | ---------------- |
+| `gitDiff`                         | `string` (→ unified)        | —                           | — (one of these) |
+| `originalCode` + `newCode`        | `string` (→ split)          | —                           | —                |
+| `mode`                            | `'unified' \| 'split'`      | inferred                    | —                |
+| `language`                        | `CodeEditorLanguage`        | `'text'`                    | —                |
+| `tone`                            | `'light' \| 'dark'`         | `'light'`                   | —                |
+| `title` / `fileName`              | `string`                    | `'Code Changes'` / `'code'` | —                |
+| `showHeader`                      | `boolean`                   | `true`                      | —                |
+| `collapsible` / `defaultExpanded` | `boolean`                   | `true`                      | —                |
+| `leftLabel` / `rightLabel`        | `ReactNode` (split columns) | —                           | —                |
+| `maxHeight`                       | `number \| string`          | `400`                       | —                |
+
+**Don't:** use for a single version (that's `CodeBlock`/`CodeEditor`); hand-roll diff colouring.
+
+### Forms & inputs
+
+#### `Input` — `import { Input } from '@ui/Input'`
+
+Unified text-entry primitive. **Variants:** `size` `sm`·`md`·`lg` · `type` `text`·`number`·`email`·`password`·`url`·`textarea`.
+
+```tsx
+<Input label='Name' value={name} onChange={setName} required />
+```
+
+| Prop                                 | Type                                          | Default        | Req |
+| ------------------------------------ | --------------------------------------------- | -------------- | --- |
+| `value`                              | `string`                                      | —              | ✓   |
+| `onChange`                           | `(next: string) => void`                      | —              | ✓   |
+| `label`                              | `ReactNode`                                   | —              | —   |
+| `instructionText`                    | `ReactNode` (between label and input)         | —              | —   |
+| `help`                               | `ReactNode` (hidden when `error` set)         | —              | —   |
+| `error`                              | `string` (presence ⇒ error; message required) | —              | —   |
+| `prefix` / `suffix`                  | `ReactNode` (outside the input bounds)        | —              | —   |
+| `leadingIcon` / `trailingIcon`       | `ReactNode` (inside bounds)                   | —              | —   |
+| `size`                               | `'sm' \| 'md' \| 'lg'`                        | `'md'`         | —   |
+| `type`                               | `InputType`                                   | `'text'`       | —   |
+| `placeholder`                        | `string`                                      | —              | —   |
+| `animatePlaceholder`                 | `boolean` / `typingSpeed` (ms/char)           | `false` / `60` | —   |
+| `required` / `disabled` / `readOnly` | `boolean`                                     | —              | —   |
+| `rows` / `minRows` / `maxRows`       | `number` (textarea)                           | — / `3` / `20` | —   |
+| `onBlur` / `onFocus` / `onKeyDown`   | handlers                                      | —              | —   |
+| `data-testid`                        | `string` (forwarded to the native input)      | —              | —   |
+
+**Don't:** pass a boolean to `error`; combine `leadingIcon`+`prefix` (or `trailingIcon`+`suffix`) on the same side; combine `readOnly`+`disabled`.
+
+#### `SearchInput` — `import SearchInput from '@ui/SearchInput'` (default export, `.jsx`)
+
+Search-style toolbar input (Enter to search, X to clear). Thin wrapper over `ds/Input`.
+
+```tsx
+<SearchInput value={q} onChange={setQ} onEnterPress={runSearch} onClear={clear} />
+```
+
+| Prop                                                | Type                                        | Default | Req |
+| --------------------------------------------------- | ------------------------------------------- | ------- | --- |
+| `value`                                             | `string`                                    | —       | ✓   |
+| `onChange`                                          | `(newValue) => void`                        | —       | ✓   |
+| `label`                                             | `string` (placeholder)                      | `''`    | —   |
+| `onEnterPress`                                      | `() => void`                                | —       | —   |
+| `onClear`                                           | `() => void` (also re-fires `onEnterPress`) | —       | —   |
+| `disabled`                                          | `boolean`                                   | `false` | —   |
+| `minWidth` / `maxWidth` / `ml` / `mr` / `sx` / `id` | layout passthroughs                         | —       | —   |
+
+#### `Select` — `import { Select } from '@ui/Select'`
+
+Form-field value picker. Single by default; `multiple` discriminates a union. Built-in search auto-shows > 8 options. **Variants:** `size` `sm`·`md`·`lg`.
+
+```tsx
+<Select label='Project' options={projects} value={project} onChange={setProject} />
+```
+
+**Common props (both modes):**
+
+| Prop                       | Type                         | Default               | Req                                                     |
+| -------------------------- | ---------------------------- | --------------------- | ------------------------------------------------------- |
+| `options`                  | `(string \| SelectOption)[]` | —                     | ✓                                                       |
+| `label`                    | `ReactNode`                  | —                     | —                                                       |
+| `instructionText` / `help` | `ReactNode`                  | —                     | —                                                       |
+| `error`                    | `string`                     | —                     | —                                                       |
+| `placeholder`              | `string`                     | —                     | —                                                       |
+| `required`                 | `boolean`                    | —                     | —                                                       |
+| `clearable`                | `boolean`                    | `true`                | — (suppressed when `required`)                          |
+| `disabled`                 | `boolean`                    | —                     | —                                                       |
+| `size`                     | `'sm' \| 'md' \| 'lg'`       | —                     | —                                                       |
+| `minWidth`                 | `string \| number`           | —                     | —                                                       |
+| `popoverWidth`             | `string \| number`           | trigger width         | — (widen panel for long labels under a compact trigger) |
+| `searchable`               | `boolean`                    | `true` if > 8 options | —                                                       |
+| `searchPlaceholder`        | `string`                     | `'Search…'`           | —                                                       |
+| `loading`                  | `boolean`                    | —                     | —                                                       |
+| `disablePortal`            | `boolean`                    | —                     | —                                                       |
+
+**Single** (`multiple` omitted/`false`): `value: string \| null` (✓), `onChange: (next: string) => void` (✓).
+**Multi** (`multiple: true`): `value: string[]` (✓), `onChange: (next: string[]) => void` (✓), `maxChips?` (default 2), `hideOptionCheckbox?`.
+`SelectOption`: `{ value (✓), label?, icon?, disabled? }`.
+**Don't:** use for actions (use `DropdownMenu`); inside a toolbar filter (use `FilterDropdown`); for binary choices (use `Switch`/`ToggleGroup`).
+
+#### `Checkbox` — `import { Checkbox } from '@ui/Checkbox'`
+
+Tri-state on/off/indeterminate. Always labelled. **Variants:** `size` `sm`·`md`.
+
+```tsx
+<Checkbox checked={on} onChange={setOn} label='Enable notifications' />
+```
+
+| Prop            | Type                      | Default | Req                                  |
+| --------------- | ------------------------- | ------- | ------------------------------------ |
+| `checked`       | `boolean`                 | —       | ✓                                    |
+| `onChange`      | `(next: boolean) => void` | —       | ✓                                    |
+| `label`         | `ReactNode`               | —       | —                                    |
+| `description`   | `ReactNode`               | —       | —                                    |
+| `indeterminate` | `boolean`                 | —       | —                                    |
+| `disabled`      | `boolean`                 | —       | —                                    |
+| `size`          | `'sm' \| 'md'`            | `'md'`  | —                                    |
+| `aria-label`    | `string`                  | —       | — (required when no visible `label`) |
+| `data-testid`   | `string`                  | —       | — (forwarded to the native `input`)  |
+
+**Don't:** use for immediate "enable/disable" (that's `Switch`); render label-less in lists; use indeterminate for loading.
+
+#### `Switch` — `import { Switch } from '@ui/Switch'`
+
+Immediate on/off toggle (no submit step). Label always on the LEFT. **Variants:** `size` `sm`·`md`.
+
+```tsx
+<Switch checked={on} onChange={(_, c) => setOn(c)} label='Auto-refresh' />
+```
+
+| Prop                   | Type                                | Default | Req |
+| ---------------------- | ----------------------------------- | ------- | --- |
+| `checked`              | `boolean`                           | —       | ✓   |
+| `onChange`             | `(event, checked: boolean) => void` | —       | ✓   |
+| `label`                | `ReactNode` (left of switch)        | —       | —   |
+| `description`          | `ReactNode`                         | —       | —   |
+| `size`                 | `'sm' \| 'md'` (sm 28×16, md 36×20) | `'md'`  | —   |
+| `disabled` / `loading` | `boolean`                           | `false` | —   |
+
+**Don't:** use in a form with a submit button (use `Checkbox`); put the label on the right; pair with a confirmation Dialog for non-destructive changes.
+
+#### `Toggle` — `import { Toggle } from '@ui/Toggle'`
+
+Compact button-row view switcher (state-only). **Variants:** `size` `default`·`large`·`sm`.
+
+```tsx
+<Toggle
+  options={[
+    { value: 'mine', label: 'Yours' },
+    { value: 'team', label: 'Team' },
+  ]}
+  activeValue={view}
+  onChange={setView}
+/>
+```
+
+| Prop          | Type                           | Default | Req |
+| ------------- | ------------------------------ | ------- | --- |
+| `options`     | `ToggleOption[]`               | —       | ✓   |
+| `activeValue` | `string`                       | —       | ✓   |
+| `onChange`    | `(value: string) => void`      | —       | ✓   |
+| `width`       | `string`                       | —       | —   |
+| `size`        | `'default' \| 'large' \| 'sm'` | —       | —   |
+| `noShadow`    | `boolean`                      | —       | —   |
+
+`ToggleOption`: `{ value, label, icon?, disabled? }` (`icon` accepts a SafeIcon src or a React element).
+**Don't:** use as a form-value picker (use `Select`/`ToggleGroup`); disable the active option; pass > 4 options.
+
+#### `ToggleGroup` — `import { ToggleGroup } from '@ui/ToggleGroup'`
+
+Segmented single/multi-select form input. **Variants:** `selection` `single`·`multiple` · `size` `sm`·`md`.
+
+```tsx
+<ToggleGroup selection='single' options={units} value={unit} onChange={setUnit} />
+```
+
+| Prop        | Type                            | Default | Req |
+| ----------- | ------------------------------- | ------- | --- |
+| `options`   | `ToggleGroupOption<V>[]`        | —       | ✓   |
+| `selection` | `'single' \| 'multiple'`        | —       | ✓   |
+| `value`     | `V` (single) / `V[]` (multiple) | —       | ✓   |
+| `onChange`  | `(next: V \| V[]) => void`      | —       | ✓   |
+| `size`      | `'sm' \| 'md'`                  | —       | —   |
+| `ariaLabel` | `string`                        | —       | —   |
+
+`ToggleGroupOption`: `{ value (✓), label?, icon?, ariaLabel?, tooltip?, disabled? }`.
+**Don't:** > 5 options (use `Select`); mix icon-only and icon+text in one group.
+
+#### `FilterDropdown` — `import FilterDropdownButton from '@ui/FilterDropdown'` (default export, `.jsx`)
+
+Toolbar/filter value picker (pill trigger, clear-X). **Variants:** `multiple`, `grouped`, `freeSolo` (booleans).
+
+```tsx
+<FilterDropdownButton options={severities} value={selected} onChange={setSelected} multiple />
+```
+
+| Prop                   | Type                       | Default                     | Req |
+| ---------------------- | -------------------------- | --------------------------- | --- |
+| `options`              | `array`                    | `[]`                        | —   |
+| `value` / `onChange`   | controlled value + handler | —                           | —   |
+| `multiple`             | `boolean`                  | `false`                     | —   |
+| `grouped`              | `boolean`                  | `false`                     | —   |
+| `selectionWithinGroup` | `boolean`                  | `false`                     | —   |
+| `freeSolo`             | `boolean`                  | `false`                     | —   |
+| `popoverAlign`         | `'left' \| 'right'`        | `'left'`                    | —   |
+| `popoverWidth`         | `number \| string`         | trigger width (220px floor) | —   |
+| `limitTag`             | `number`                   | `1`                         | —   |
+| `size`                 | `string`                   | `'sm'`                      | —   |
+| `required`             | `boolean`                  | `false`                     | —   |
+| `disabled`             | `boolean`                  | `false`                     | —   |
+| `isOptionsLoading`     | `boolean`                  | `false`                     | —   |
+
+API preserved verbatim from the legacy component (see `__tests__/components/common/FilterDropdownButton.test.jsx`). An option's `icon` renders as a 16px leading `SafeIcon`.
+**Don't:** use for form inputs (use `Select`); render single-select when the user must always pick exactly one (use `Select`).
+
+#### `FilterGroup` — `import { FilterGroup } from '@ui/FilterGroup'`
+
+A row of removable filter Chips with a leading "Filters" affordance. **Variants:** `overflow` `wrap`·`more-menu` · `size` `sm`·`md`.
+
+```tsx
+<FilterGroup filters={chips} onRemove={remove} onClear={clearAll} />
+```
+
+| Prop               | Type                           | Default  | Req                                   |
+| ------------------ | ------------------------------ | -------- | ------------------------------------- |
+| `filters`          | `FilterGroupChip[]`            | —        | ✓                                     |
+| `onRemove`         | `(chip) => void`               | —        | ✓                                     |
+| `onAdd`            | `(filter) => void`             | —        | — (required for `add+…` compositions) |
+| `onClear`          | `() => void`                   | —        | — (required for `add+chips+clear`)    |
+| `availableFilters` | `FilterGroupAvailableFilter[]` | —        | —                                     |
+| `overflow`         | `'wrap' \| 'more-menu'`        | `'wrap'` | —                                     |
+| `maxInline`        | `number`                       | `6`      | —                                     |
+| `size`             | `'sm' \| 'md'`                 | `'md'`   | —                                     |
+
+`FilterGroupChip`: `{ id, label }`. `FilterGroupAvailableFilter`: `{ id, label, disabled? }`.
+
+### Navigation
+
+#### `Tabs` — `import { Tabs } from '@ui/Tabs'`
+
+DS tabs primitive — emits `onChange`; pages render content. **Variants:** `size` `sm`·`md` · `navigation` `state`·`router` · `routerMode` `query`·`hash` · `overflow` `scroll`·`more-menu`.
+
+```tsx
+<Tabs tabs={tabs} value={tab} onChange={setTab} navigation='router' />
+```
+
+| Prop              | Type                       | Default    | Req |
+| ----------------- | -------------------------- | ---------- | --- |
+| `tabs`            | `TabItem[]`                | —          | ✓   |
+| `value`           | `TabId` (string)           | —          | ✓   |
+| `onChange`        | `(next: TabId) => void`    | —          | ✓   |
+| `size`            | `'sm' \| 'md'`             | `'md'`     | —   |
+| `navigation`      | `'state' \| 'router'`      | `'state'`  | —   |
+| `routerMode`      | `'query' \| 'hash'`        | `'query'`  | —   |
+| `routerParam`     | `string`                   | `'tab'`    | —   |
+| `overflow`        | `'scroll' \| 'more-menu'`  | `'scroll'` | —   |
+| `visibleTabCount` | `number` (for `more-menu`) | —          | —   |
+| `rightSlot`       | `ReactNode`                | —          | —   |
+
+`TabItem`: `{ id, label, icon?, iconPosition?: 'start'\|'end', count?, countTone?, beta?, disabled?, hidden? }`.
+**Don't:** tone the whole tab (only the count via `TabItem.countTone`); render tab content inside `Tabs`.
+
+#### `Link` — `import { Link } from '@ui/Link'`
+
+Inline navigation link (Next.js wrapper). For actions use `<Button tone='link'>`.
+
+```tsx
+<Link href={ticketUrl} openInNew>
+  View ticket
+</Link>
+```
+
+| Prop            | Type                          | Default   | Req |
+| --------------- | ----------------------------- | --------- | --- |
+| `href`          | `string`                      | —         | ✓   |
+| `children`      | `ReactNode`                   | —         | ✓   |
+| `target`        | `string`                      | `'_self'` | —   |
+| `openInNew`     | `boolean` (new tab + icon)    | `false`   | —   |
+| `secondaryText` | `boolean` (caption size)      | `false`   | —   |
+| `maxWidth`      | `string` (truncate + tooltip) | —         | —   |
+| `onClick`       | `(e) => void`                 | —         | —   |
+
+**Don't:** use for actions; use with `onClick` alone and no `href` (use a `tone='link'` Button); add custom underline styles.
+
+#### `Stepper` — `import { Stepper } from '@ui/Stepper'`
+
+Multi-step progress indicator. **Variants:** `orientation` `vertical`·`horizontal` · `interactivity` `static`·`clickable-done`·`all-clickable`.
+
+```tsx
+<Stepper steps={steps} current={1} orientation='vertical' />
+```
+
+| Prop            | Type                                          | Default | Req |
+| --------------- | --------------------------------------------- | ------- | --- |
+| `steps`         | `StepperStep[]`                               | —       | ✓   |
+| `current`       | `number` (0-based active step)                | —       | ✓   |
+| `orientation`   | `'vertical' \| 'horizontal'`                  | —       | —   |
+| `interactivity` | `'static'\|'clickable-done'\|'all-clickable'` | —       | —   |
+| `onStepClick`   | `(id, index) => void`                         | —       | —   |
+
+`StepperStep`: `{ id, label, sub?, meta?, state?: 'upcoming'\|'current'\|'done'\|'failed'\|'skipped' }`.
+**Don't:** use for long-running task stages (use `ProgressLinear`); allow clicking into upcoming required steps.
+
+### Actions
+
+#### `Button` — `import { Button } from '@ui/Button'`
+
+All actions. **Variants:** `size` `xs`·`sm`·`md`·`lg` · `tone` `primary`·`secondary`·`ghost`·`danger`·`link` · composition auto.
+
+```tsx
+<Button tone='primary' onClick={save}>
+  Save
+</Button>
+```
+
+| Prop                                 | Type                                                | Default     | Req                                         |
+| ------------------------------------ | --------------------------------------------------- | ----------- | ------------------------------------------- |
+| `tone`                               | `'primary'\|'secondary'\|'ghost'\|'danger'\|'link'` | `'primary'` | —                                           |
+| `size`                               | `'xs' \| 'sm' \| 'md' \| 'lg'`                      | `'md'`      | —                                           |
+| `composition`                        | `'text'\|'icon+text'\|'text+icon'\|'icon-only'`     | derived     | —                                           |
+| `icon`                               | `ReactNode`                                         | —           | —                                           |
+| `iconPlacement`                      | `'start' \| 'end'`                                  | `'start'`   | —                                           |
+| `trailingAccent`                     | `ReactNode` (yellow-tile; _the_ page CTA only)      | —           | —                                           |
+| `tooltip`                            | `ReactNode` (renders a `ds/Tooltip`)                | —           | —                                           |
+| `tooltipPlacement`                   | `'top'\|'bottom'\|'left'\|'right'`                  | `'top'`     | —                                           |
+| `loading` / `disabled` / `fullWidth` | `boolean`                                           | `false`     | —                                           |
+| `type`                               | `'button' \| 'submit' \| 'reset'`                   | `'button'`  | —                                           |
+| `href` / `target`                    | `string` (renders as a link)                        | —           | —                                           |
+| `onClick`                            | `(e) => void`                                       | —           | —                                           |
+| `aria-label`                         | `string`                                            | —           | — (required when `composition='icon-only'`) |
+
+**Don't:** two primaries per surface; `danger` for cancel; introduce a "warning" tone; icon-only without `aria-label`; `link` tone for submit/destructive flows; `trailingAccent` with icon-only or link tone.
+
+#### `DropdownMenu` — `import { DropdownMenu } from '@ui/DropdownMenu'`
+
+Action menu (composes the shared overlay primitives). **Variants:** `align` `start`·`end` · `side` `bottom`·`top`·`left`·`right` · `size` `sm`·`md` · item `tone` `default`·`danger`.
+
+```tsx
+<DropdownMenu
+  trigger={<Button tone='secondary'>Actions</Button>}
+  items={[{ label: 'Edit', onSelect: edit }, { type: 'separator' }, { label: 'Delete', tone: 'danger', onSelect: del }]}
+/>
+```
+
+| Prop                         | Type                               | Default         | Req |
+| ---------------------------- | ---------------------------------- | --------------- | --- |
+| `trigger`                    | `ReactElement`                     | —               | ✓   |
+| `items`                      | `DropdownMenuItem[]`               | —               | ✓   |
+| `align`                      | `'start' \| 'end'`                 | `'start'`       | —   |
+| `side`                       | `'bottom'\|'top'\|'left'\|'right'` | `'bottom'`      | —   |
+| `size`                       | `'sm' \| 'md'`                     | `'md'`          | —   |
+| `minWidth`                   | `string \| number`                 | `200`           | —   |
+| `itemsMaxHeight`             | `string \| number`                 | `'260px'`       | —   |
+| `searchable`                 | `boolean`                          | `false`         | —   |
+| `searchPlaceholder`          | `string`                           | `'Search…'`     | —   |
+| `loading`                    | `boolean`                          | `false`         | —   |
+| `onRefresh` / `refreshLabel` | `() => void` / `string`            | — / `'Refresh'` | —   |
+| `headerActions`              | `ReactNode`                        | —               | —   |
+| `onClose`                    | `() => void`                       | —               | —   |
+| `className`                  | `string` (→ overlay root)          | —               | —   |
+| `disablePortal`              | `boolean`                          | `false`         | —   |
+
+`DropdownMenuItem` = action `{ label, onSelect (✓), icon?, description?, kbd?, tone?, disabled?, searchText? }` · `{ type: 'section', label }` · `{ type: 'separator' }`. `description` renders a dimmed second line under the label (two-line item) — e.g. a preset value or a short "what this does" hint.
+**Don't:** > 7 items without sections; multi-step action behind an item (open a Modal); nest > 1 level.
+
+#### `ThreeDotsMenu` — `import ThreeDotsMenu from '@ui/ThreeDotsMenu'` (default export, `.jsx`)
+
+Kebab/overflow trigger backed by `DropdownMenu`. Preserves the legacy `menuItems[]` / `onMenuClick(item, data)` contract.
+
+```tsx
+<ThreeDotsMenu menuItems={menuItems} onMenuClick={(item, data) => handle(item, data)} />
+```
+
+| Prop          | Type                                            | Default | Req |
+| ------------- | ----------------------------------------------- | ------- | --- |
+| `menuItems`   | `{ id, label, icon?, disabled?, reactIcon? }[]` | `[]`    | —   |
+| `onMenuClick` | `(item, data) => void`                          | —       | —   |
+
+Submenus (legacy `subMenu`) are intentionally not carried over (DS caps nesting at one level).
+
+### Feedback & overlays
+
+#### `Banner` — `import { Banner } from '@ui/Banner'`
+
+Page/section-level persistent message (one per surface, max). **Variants:** `tone` `info`·`success`·`warning`·`critical` · `surface` `page`·`section` · `actionsPlacement` `inline`·`below`.
+
+```tsx
+<Banner tone='warning' title='Quota almost full' message="You're at 90% of your node quota." />
+```
+
+| Prop               | Type                                       | Default   | Req |
+| ------------------ | ------------------------------------------ | --------- | --- |
+| `tone`             | `'info'\|'success'\|'warning'\|'critical'` | —         | ✓   |
+| `message`          | `ReactNode`                                | —         | ✓   |
+| `title`            | `ReactNode`                                | —         | —   |
+| `actions`          | `BannerAction[]` (≤ 2)                     | —         | —   |
+| `actionsPlacement` | `'inline' \| 'below'`                      | `'below'` | —   |
+| `dismissible`      | `boolean`                                  | —         | —   |
+| `onDismiss`        | `() => void`                               | —         | —   |
+| `surface`          | `'page' \| 'section'`                      | `'page'`  | —   |
+
+`BannerAction`: `{ label, onClick, tone?: 'secondary'\|'link' }`.
+**Don't:** stack two banners on one surface; make a critical banner dismissible; > 2 actions; use for transient confirmations (that's `Toast`).
+
+#### `Toast` — `import { toast } from '@ui/Toast'` (singleton) · `import Toast from '@ui/Toast'` (mount once)
+
+Imperative transient notifications. Mount `<Toast />` once in `_app.tsx`. `toast` is also exported as `snackbar`.
+
+```tsx
+import { toast } from '@ui/Toast';
+
+toast.success('Cluster saved.', { description: 'Changes applied.' });
+```
+
+**Methods:** `toast.default` · `toast.success` · `toast.info` · `toast.warning` · `toast.error`. Each: `(message, options?)` where `options` = `{ description?, action?: { label, onClick }, duration? }` (or a bare number = `duration`). Default durations: success 3000 · info 4000 · warning 5000 · error 6000 ms. See §1.6 / the Toast note in §1.
+
+#### `Modal` — `import { Modal } from '@ui/Modal'`
+
+Unified centered overlay — plain shell or confirm/cancel dialog. **Variants:** `width` `xs`·`sm`·`md`·`lg`·`xl`.
+
+```tsx
+<Modal open={open} handleClose={close} title='Delete workflow?' confirmText='Delete' onConfirm={del}>
+  This action cannot be undone.
+</Modal>
+```
+
+| Prop                                      | Type                                            | Default                  | Req |
+| ----------------------------------------- | ----------------------------------------------- | ------------------------ | --- |
+| `open`                                    | `boolean`                                       | —                        | ✓   |
+| `handleClose` / `onClose`                 | `(event?, reason?) => void`                     | —                        | —   |
+| `backdropClickClose`                      | `boolean` (blocks backdrop + Escape when false) | `true`                   | —   |
+| `width`                                   | `'xs'\|'sm'\|'md'\|'lg'\|'xl'`                  | `'sm'`                   | —   |
+| `maxHeight`                               | `string`                                        | —                        | —   |
+| `title` / `subtitle`                      | `ReactNode` / `string`                          | —                        | —   |
+| `rightComponentOnTitle`                   | `ReactNode`                                     | —                        | —   |
+| `hideTitleBackground`                     | `boolean`                                       | `false`                  | —   |
+| `children`                                | `ReactNode` (body)                              | —                        | —   |
+| `additionalComponent`                     | `ReactNode` (outside DialogContent)             | —                        | —   |
+| `loader`                                  | `boolean` (top bar + body blur)                 | `false`                  | —   |
+| `onSuccess` / `message` / `icon` / `type` | success-state layout                            | `false` / `''` / — / `1` | —   |
+| `actionButtons`                           | `ReactNode` (freeform footer)                   | —                        | —   |
+| `actionButtonsFullBleed`                  | `boolean`                                       | `false`                  | —   |
+| `confirmText`                             | `string` (renders Cancel + Confirm)             | —                        | —   |
+| `onConfirm`                               | `() => void`                                    | —                        | —   |
+| `confirmDisabled`                         | `boolean`                                       | `false`                  | —   |
+| `isConfirmRequired` / `isCancelRequired`  | `boolean`                                       | `true`                   | —   |
+
+See §2.2 for footer-mode selection and patterns. **Don't:** pass both `actionButtons` and `confirmText` (`actionButtons` wins); two primaries in the footer.
+
+#### `Tooltip` — `import Tooltip from '@ui/Tooltip'` (default export)
+
+Hover tooltip (V1 API preserved). **Variants:** `variant` `default`·`explainer`·`interactive`.
+
+```tsx
+<Tooltip title='Refresh interval' variant='explainer' desc='How often metrics reload.'>
+  <InfoIcon />
+</Tooltip>
+```
+
+| Prop                   | Type                                    | Default     | Req |
+| ---------------------- | --------------------------------------- | ----------- | --- |
+| `children`             | `ReactElement` (the trigger)            | —           | ✓   |
+| `title`                | `ReactNode` (content / title)           | —           | ✓   |
+| `variant`              | `'default'\|'explainer'\|'interactive'` | `'default'` | —   |
+| `desc`                 | `ReactNode` (explainer/interactive)     | —           | —   |
+| `placement`            | MUI placement                           | `'top'`     | —   |
+| `linkUrl` / `linkText` | `string` (interactive variant)          | —           | —   |
+| `disableFlip`          | `boolean`                               | `false`     | —   |
+
+#### `EmptyState` — `import { EmptyState } from '@ui/EmptyState'`
+
+Empty / no-data state. **Variants:** `size` `inline`·`section`·`page` · `illustration` `none`·`first-time`·`no-results`·`no-permissions`·`clear-skies` · `tone` `neutral`·`success` · `surface` `false`·`true`.
+
+`surface` wraps the state in a **full-width, subtle-gray boxed panel** (`--ds-background-200` fill, hairline border) so it reads as a deliberate section rather than a gap — use it for a tab or section body's empty state (b-Cortex tabs, settings panels). Leave it off for empty states already inside a bordered `Card` or a table cell. When `action` is set it renders a **primary** `ds/Button`; pass `action.icon` for a leading glyph.
+
+```tsx
+<EmptyState title='No incidents in the last 7 days' illustration='clear-skies' tone='success' />
+
+// Full-width panel with a primary CTA — e.g. a b-Cortex tab body
+<EmptyState
+  surface
+  size='section'
+  illustration='first-time'
+  title='No knowledge bases found'
+  description='Create a knowledge base to give the AI account-specific context.'
+  action={{ label: 'Create Knowledge Base', onClick: handleCreate }}
+/>
+```
+
+| Prop           | Type                                        | Default     | Req |
+| -------------- | ------------------------------------------- | ----------- | --- |
+| `title`        | `string`                                    | —           | ✓   |
+| `description`  | `ReactNode`                                 | —           | —   |
+| `size`         | `'inline' \| 'section' \| 'page'`           | `'section'` | —   |
+| `illustration` | `EmptyStateIllustration`                    | `'none'`    | —   |
+| `icon`         | `ReactNode` (overrides preset illustration) | —           | —   |
+| `tone`         | `'neutral' \| 'success'`                    | `'neutral'` | —   |
+| `surface`      | `boolean`                                   | `false`     | —   |
+| `action`       | `{ label, onClick, icon? }`                 | —           | —   |
+
+**Don't:** say "Empty"/"No data" — state what is empty and why; put two actions; render while loading (use `Skeleton`).
+
+#### `Skeleton` — `import { Skeleton } from '@ui/Skeleton'`
+
+Content-shaped loading placeholder. Presets: `Skeleton.TableRow`, `Skeleton.Card`, `Skeleton.ChatMessage`. **Variants:** `shape` `text`·`rect`·`circle` · `size` `caption`·`text`·`title`·`heading` (text only) · `animation` `shimmer`·`none`.
+
+```tsx
+<Skeleton.TableRow columns={5} />
+```
+
+| Prop               | Type                                                 | Default | Req |
+| ------------------ | ---------------------------------------------------- | ------- | --- |
+| `shape`            | `'text' \| 'rect' \| 'circle'`                       | —       | —   |
+| `size`             | `'caption'\|'text'\|'title'\|'heading'` (text shape) | —       | —   |
+| `width` / `height` | `number \| string`                                   | —       | —   |
+| `animation`        | `'shimmer' \| 'none'`                                | —       | —   |
+
+Presets: `Skeleton.TableRow { columns (✓), columnWidths?, rowHeight?, animation? }` · `Skeleton.Card { width?, height?, lines? }` · `Skeleton.ChatMessage { width?, lines? }`.
+**Don't:** mismatch eventual content dimensions; render > 10 rows; use for slow operations (use `ProgressLinear`).
+
+### AI / agentic
+
+#### `SourceCitation` — `import { SourceCitation } from '@ui/SourceCitation'`
+
+Inline attribution for an agent-generated claim. Always clickable, never dismissible. **Variants:** `source` registry (open-ended) · `composition` `name`·`name+timestamp`·`icon+name`·`icon+name+timestamp`·`number` · `size` `xs`·`sm`.
+
+```tsx
+<SourceCitation source='prometheus' timestamp={Date.now() - 120000} number={1} />
+```
+
+| Prop               | Type                                                          | Default | Req |
+| ------------------ | ------------------------------------------------------------- | ------- | --- |
+| `source`           | `SourceKey` (`prometheus`/`loki`/`k8s`/`aws`/… or any string) | —       | ✓   |
+| `label`            | `string` (overrides registry label)                           | —       | —   |
+| `timestamp`        | `Date \| number \| string`                                    | —       | —   |
+| `number`           | `number` (footnote, for `composition='number'`)               | —       | —   |
+| `composition`      | `SourceCitationComposition`                                   | auto    | —   |
+| `size`             | `'xs' \| 'sm'`                                                | —       | —   |
+| `href` / `onClick` | click target                                                  | —       | —   |
+
+**Don't:** render an unsourced claim; tone by source health; deduplicate citations across a response.
+
+#### `FeedbackVote` — `import FeedbackVote from '@ui/FeedbackVote'` (default export, `.jsx`)
+
+Thumbs up/down feedback control.
+
+```tsx
+<FeedbackVote onFeedbackSubmit={submitFeedback} iconOnly />
+```
+
+| Prop               | Type                                           | Default | Req |
+| ------------------ | ---------------------------------------------- | ------- | --- |
+| `onFeedbackSubmit` | `(feedback) => void`                           | —       | ✓   |
+| `sentFeedback`     | `{ submitted?, isPositive?, message? }`        | `{}`    | —   |
+| `iconOnly`         | `boolean` (icon-only thumbs; aria-labels kept) | `false` | —   |
+
+### `@shared` compositions referenced above (not `ds/` primitives)
+
+These live under `@shared/*` and are kept here because §1–§3 reference them. Correct import paths:
+
+| Component                | Import                                 | Note                                                                     |
+| ------------------------ | -------------------------------------- | ------------------------------------------------------------------------ |
+| `CustomTable`            | `@shared/tables/CustomTable`           | The app's table (own pagination via `CustomTablePagination`).            |
+| `Tabs` (legacy)          | `@shared/navigation/Tabs`              | Widely-used tabs widget; prefer `ds/Tabs` for new work.                  |
+| `AnchorComponent`        | `@shared/navigation/AnchorComponent`   | 2-level top-of-page nav.                                                 |
+| `Form`                   | `@shared/forms/Form`                   | Form layout primitive (`.Section`/`.Field`/`.Row`/`.Actions`). See §2.3. |
+| `Markdown` (`MarkDowns`) | `@shared/viewers/MarkDowns`            | Markdown/prose with fenced code.                                         |
+| `CustomDropdown`         | `@shared/CustomDropdown`               | Cluster / cloud-account picker.                                          |
+| `CustomDateTimePicker`   | `@shared/widgets/CustomDateTimePicker` | Single date+time field.                                                  |
+| `CopyButton`             | `@shared/buttons/CopyButton`           | Copy-to-clipboard icon button.                                           |
+| `DownloadButton`         | `@shared/buttons/DownloadButton`       | Download trigger (wraps `ds/Button` + `file-saver`).                     |
+| `NBStatusBadge`          | `@shared/widgets/NBStatusBadge`        | K8s status badge; prefer `ds/StatusIndicator`/`ds/Label`.                |
+| `CustomTextField`        | `@shared/forms/CustomTextField`        | **Legacy** → `ds/Input`.                                                 |
+| `ErrorBoundary`          | `@shared/ErrorBoundary`                | Error boundary (no `ds/ErrorBoundary`).                                  |
+
+**Removed (do not reach for these):** `CustomTabs`, `CustomTicketLink`, `BoxLayout2`, `NewCustomButton`,
+`CustomTooltip`, `CustomTable2`, `CustomLabels`, and the never-shipped `ds/` placeholders `Table`/`TableCell`/`Pagination`/
+`Autocomplete`/`DateRangePicker`/`Dialog`/`Popover`/`Inspector`/`DiffCard`/`StreamingIndicator`/
+`ConfidenceIndicator`/`IntegrationBadge`/`Format`/`PageTabs`/`ConsoleOutput`/`MultiSelect`/`TextField`.
 
 ---
 
-### Integration Account Modals
+## 5. Maintenance
 
-These modals follow a common pattern: form dialog for adding/editing integration accounts.
-
-| Component                   | Path                                                                | Integration                    |
-| --------------------------- | ------------------------------------------------------------------- | ------------------------------ |
-| K8sAccountModal             | `src/components/integrations/modal/K8sAccountModal.jsx`             | Kubernetes (multi-step wizard) |
-| JiraAccountModal            | `src/components/integrations/modal/JiraAccountModal.jsx`            | Jira                           |
-| GithubAccountModal          | `src/components/integrations/modal/GithubAccountModal.jsx`          | GitHub (App OAuth or token)    |
-| ServiceNowAccountModal      | `src/components/integrations/modal/ServiceNowAccountModal.js`       | ServiceNow                     |
-| DatadogAccountModal         | `src/components1/common/DatadogAccountModal.jsx`                    | Datadog                        |
-| ArgoCDAccountModal          | `src/components1/common/ArgoCDAccountModal.jsx`                     | ArgoCD                         |
-| PagerDutyAccountModal       | `src/components/integrations/modal/PagerDutyAccountModal.jsx`       | PagerDuty                      |
-| IntegrationDynamicFormModal | `src/components/integrations/modal/IntegrationDynamicFormModal.jsx` | Generic (schema-driven)        |
-
-**Common props pattern:**
-| Prop | Type | Description |
-|------|------|-------------|
-| openModal | bool | Modal visibility |
-| handleClose | func | Close handler |
-| editConfig | object | Edit mode data (optional) |
+- §1–§3 track **patterns / decisions**; §4 tracks **per-component API**.
+- When you change a `ds/*` primitive's public props/variants/Don't rules, update its §4 entry **and** its `app/design-system/primitives/**` spec in the same commit.
+- Add a recipe to §2 the first time a multi-component view is built in a redesign PR.
+- Add a row to §3 whenever a redesign surfaces a "which one do I use?" question.
+- Each `ds/*` file keeps an "Anatomy" / "Don't" JSDoc block — that block is the deepest per-component source of truth this guide points at.
 
 ---
 
-### Settings Components
-
-#### TenantSettings
-
-- **Path:** `src/components1/common/TenantSettings.jsx`
-- **Description:** Full tenant settings modal with Loki config, feature flags, domain login, and tenant name editing.
-
-#### TenantAccountCommonSettings
-
-- **Path:** `src/components1/common/TenantAccountCommonSettings.jsx`
-- **Description:** Form section for editing Loki label mapper settings.
-
-#### ApiTokens
-
-- **Path:** `src/components1/common/ApiTokens.jsx`
-- **Description:** Modal UI for creating, listing, and deleting user API tokens with usage instructions.
-
----
-
-## Common Hooks
-
-#### useUpdateAllClusterOption
-
-- **Path:** `src/components1/common/UpdateDataContext.jsx`
-- **Description:** Hook that fetches cloud accounts and updates the global cluster list in DataContext.
-- **Also exports:** `transformClusters` (utility function for transforming cluster data).
-
----
-
-## Utilities & Services
-
-#### snackbarService
-
-- **Path:** `src/components1/common/snackbarService.ts`
-- **Description:** Pub/sub singleton service for showing snackbar notifications without requiring React context.
-- **API:**
-
-  ```ts
-  import { snackbar } from '@components1/common/snackbarService';
-
-  snackbar.success('Saved successfully');
-  snackbar.error('Something went wrong');
-  snackbar.warning('Approaching limit');
-  snackbar.info('Update available');
-  snackbar.show(message, severity, duration);
-  ```
-
-- **Type:** `SnackbarOptions = { message: string, severity: 'success' | 'info' | 'warning' | 'error', duration?: number }`
-- **When to use:** Use for fire-and-forget notifications from anywhere (including non-React code). Pair with `SnackbarComponent` in the app root.
-
-#### GetInsightIcon (utility function)
-
-- **Path:** `src/components1/common/GetInsightIcon.jsx`
-- **Description:** Returns an appropriate icon asset based on insight source type (`'Event'`, `'Recommendation'`, `'Metric'`).
-
-#### UserMenuItems (factory functions)
-
-- **Path:** `src/components1/common/layout/UserMenuItems.jsx`
-- **Description:** Factory functions for generating user account menu items.
-- **Exports:** `createGetMenuItem(handlers)`, `generateMenuItems({ switchAccountEnabled })`
+_End of guide._

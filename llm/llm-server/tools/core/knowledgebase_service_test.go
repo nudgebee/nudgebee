@@ -4,6 +4,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"nudgebee/llm/common"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -213,6 +216,12 @@ func TestFallbackDescriptionFromContent(t *testing.T) {
 			data:        strings.Repeat("a", 250),
 			wantDesc:    strings.Repeat("a", 200),
 		},
+		{
+			name:        "long first line with multi-byte utf8 at 200-byte boundary does not split rune",
+			description: "",
+			data:        strings.Repeat("a", 199) + "é" + " tail",
+			wantDesc:    strings.Repeat("a", 199),
+		},
 	}
 
 	for _, tt := range cases {
@@ -222,15 +231,13 @@ func TestFallbackDescriptionFromContent(t *testing.T) {
 				for _, line := range strings.Split(tt.data, "\n") {
 					line = strings.TrimSpace(line)
 					if line != "" {
-						if len(line) > 200 {
-							line = line[:200]
-						}
-						desc = line
+						desc = common.TruncateHead(line, 200)
 						break
 					}
 				}
 			}
 			assert.Equal(t, tt.wantDesc, desc)
+			assert.True(t, utf8.ValidString(desc), "description must be valid UTF-8")
 		})
 	}
 }

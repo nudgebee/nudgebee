@@ -28,7 +28,17 @@ import { EmptyState } from '@ui/EmptyState';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import Tooltip from '@ui/Tooltip';
 import HeaderLabel from './HeaderLabel';
-import { fmtCost, fmtDuration, fmtTokens, runCallCount, runModelBreakdown, stepModelBreakdown, triggerLabel, type ModelStat } from '../format';
+import {
+  avgLatencyMs,
+  fmtCost,
+  fmtDuration,
+  fmtTokens,
+  runCallCount,
+  runModelBreakdown,
+  stepModelBreakdown,
+  triggerLabel,
+  type ModelStat,
+} from '../format';
 import { makeSeverity, SeverityCell } from './severity';
 import type { Run, RunStatus, Step } from '../types';
 
@@ -107,15 +117,8 @@ export const HEADER_TO_KEY: Record<string, ConvSortKey> = {
   Calls: 'calls',
 };
 
-// Per-conversation latency shown in the table = AVERAGE model response time per
-// call (SUM of per-call latencies ÷ call count), NOT the sum. The sum double-
-// counts calls that run in parallel (ReWOO parallel exec) and can exceed the
-// conversation's wall-clock Duration; the average is a per-call figure that
-// stays ≤ Duration and matches the detail panel's "Avg latency / call" stat.
-const avgLatencyMs = (r: Run): number => {
-  const n = runCallCount(r);
-  return n > 0 ? r.totalModelLatencyMs / n : 0;
-};
+// `avgLatencyMs` (average model response time per call) is shared with the CSV
+// export — see its definition and rationale in ../format.
 const KEY_TO_HEADER: Record<ConvSortKey, string> = {
   start: 'Start time',
   trigger: 'Trigger',

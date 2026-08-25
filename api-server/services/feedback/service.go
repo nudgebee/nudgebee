@@ -6,8 +6,41 @@ import (
 	"nudgebee/services/security"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 )
+
+// GetConversationAccountAndSession resolves the owning cloud account and the
+// session id of a conversation, so a chat-action audit can be account-scoped and
+// carry a session id for the "open in Ask Nudgebee" deep link. The caller treats
+// any error as best-effort.
+func GetConversationAccountAndSession(context *security.RequestContext, conversationId string) (accountId string, sessionId string, err error) {
+	if conversationId == "" {
+		return "", "", nil
+	}
+	// id is a uuid column, so a non-uuid can never match — short-circuit as a
+	// best-effort miss rather than issuing a query that fails with a uuid syntax
+	// error. (The query already uses the id index: WHERE compares id directly;
+	// the ::text cast is only in the SELECT list.)
+	if _, perr := uuid.Parse(conversationId); perr != nil {
+		return "", "", nil
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return "", "", fmt.Errorf("GetConversationAccountAndSession: failed to get database manager: %w", err)
+	}
+	// account_id is a NOT NULL uuid column (cast to text so it scans into a
+	// string); session_id is a nullable text column (COALESCE to "").
+	var row struct {
+		AccountID string `db:"account_id"`
+		SessionID string `db:"session_id"`
+	}
+	err = dbms.Db.Get(&row, `SELECT account_id::text AS account_id, COALESCE(session_id, '') AS session_id FROM llm_conversations WHERE id = $1`, conversationId)
+	if err != nil {
+		return "", "", fmt.Errorf("GetConversationAccountAndSession: failed to resolve conversation %s: %w", conversationId, err)
+	}
+	return row.AccountID, row.SessionID, nil
+}
 
 func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequest ConversationFeedbackRequest) (map[string]bool, error) {
 	data := make(map[string]bool)

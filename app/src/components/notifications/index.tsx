@@ -13,7 +13,7 @@ import apiKubernetes from '@api1/kubernetes';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { DeleteIconRed as deleteIcon, writeIconLight } from '@assets';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import DeleteNotificationRuleModal from './DeleteNotificationRuleModal';
 import Text from '@shared/format/Text';
 import apiUser from '@api1/user';
@@ -248,7 +248,7 @@ const Notifications = () => {
         data.push({
           component: (
             <Box display={'flex'} flexDirection={'row'} alignItems={'center'} justifyContent={'flex-end'}>
-              {hasWriteAccess() ? (
+              {canManage('notifications', 'Write') ? (
                 <>
                   <Box sx={{ mr: 'var(--ds-space-2)' }}>
                     <DsButton
@@ -318,7 +318,7 @@ const Notifications = () => {
           actions={
             <>
               <DownloadButton onClick={() => ({ tableId: notificationId })} />
-              {hasWriteAccess() && (
+              {canManage('notifications', 'Write') && (
                 <DsButton id='notification-rule' tone='primary' size='md' onClick={() => handleButtonAction()}>
                   Create Rule
                 </DsButton>

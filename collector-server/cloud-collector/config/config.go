@@ -76,6 +76,9 @@ type appConfig struct {
 	RabbitMqKGUpdateExchange string `mapstructure:"rabbit_mq_kg_update_exchange"`
 	RabbitMqKGUpdateQueue    string `mapstructure:"rabbit_mq_kg_update_queue"`
 
+	RabbitMqEventPostProcessExchange string `mapstructure:"rabbit_mq_event_post_process_exchange"`
+	RabbitMqEventPostProcessQueue    string `mapstructure:"rabbit_mq_event_post_process_queue"`
+
 	ClickhouseHost     string `mapstructure:"clickhouse_host"`
 	ClickhouseUser     string `mapstructure:"clickhouse_user"`
 	ClickhousePassword string `mapstructure:"clickhouse_password"`
@@ -113,6 +116,26 @@ type appConfig struct {
 	// discovered when this is off. Re-enable once discovery is moved to a bulk
 	// INFORMATION_SCHEMA query and/or a longer refresh cadence.
 	CloudCollectorGcpBigqueryTableDiscoveryEnabled bool `mapstructure:"cloud_collector_gcp_bigquery_table_discovery_enabled"`
+
+	// CloudCollectorAwsConfigRuleDiscoveryEnabled gates per-rule AWS Config discovery.
+	// Disabled by default: enumerating every Config rule costs three sequential API
+	// calls per rule (tags, compliance, evaluation status) in every region, which on
+	// a Security Hub-enabled account means tens of thousands of calls and dominates
+	// the post-report resource sync. In practice the rules are almost entirely
+	// Security Hub-generated (`securityhub-*`) duplicates of standards we already
+	// collect via AWSSecurityHub, and the large majority have never evaluated
+	// (INSUFFICIENT_DATA). Config recorders, delivery channels, aggregators and
+	// conformance packs are still discovered when this is off, so the
+	// aws_config_not_enabled / recorder_not_recording / no_delivery_channel
+	// recommendations are unaffected. Re-enable once rule discovery uses the bulk
+	// (no ConfigRuleNames) DescribeComplianceByConfigRule and
+	// DescribeConfigRuleEvaluationStatus sweeps instead of per-rule calls.
+	CloudCollectorAwsConfigRuleDiscoveryEnabled bool `mapstructure:"cloud_collector_aws_config_rule_discovery_enabled"`
+
+	// EnableMultiSourceServicemap is the rollout toggle for the multi-source AWS
+	// service-map engine (VPC Flow Logs etc.) instead of the legacy AWS Config path.
+	// Env: ENABLE_MULTI_SOURCE_SERVICEMAP
+	EnableMultiSourceServicemap bool `mapstructure:"enable_multi_source_servicemap"`
 
 	// Request timeout in seconds for API handler context and HTTP server read/write
 	CloudCollectorRequestTimeoutSeconds int `mapstructure:"cloud_collector_request_timeout_seconds"`
@@ -184,6 +207,9 @@ func init() {
 	viper.SetDefault("rabbit_mq_kg_update_exchange", "kg_update_exchange")
 	viper.SetDefault("rabbit_mq_kg_update_queue", "kg_update")
 
+	viper.SetDefault("rabbit_mq_event_post_process_exchange", "event_post_process_exchange")
+	viper.SetDefault("rabbit_mq_event_post_process_queue", "event_post_process")
+
 	viper.SetDefault("clickhouse_host", "http://localhost:8123")
 	viper.SetDefault("clickhouse_user", "default")
 	viper.SetDefault("clickhouse_database", "nudgebee")
@@ -206,6 +232,12 @@ func init() {
 
 	// Per-table BigQuery discovery is off by default — see CloudCollectorGcpBigqueryTableDiscoveryEnabled.
 	viper.SetDefault("cloud_collector_gcp_bigquery_table_discovery_enabled", false)
+
+	// Per-rule AWS Config discovery is off by default — see CloudCollectorAwsConfigRuleDiscoveryEnabled.
+	viper.SetDefault("cloud_collector_aws_config_rule_discovery_enabled", false)
+
+	// Multi-source service-map engine is off by default — see EnableMultiSourceServicemap.
+	viper.SetDefault("enable_multi_source_servicemap", false)
 
 	viper.SetDefault("cloud_collector_server_cost_processing_workers_max", 1)
 	// Max number of trailing months of historical CUR data to backfill at new-account onboarding (0 disables).

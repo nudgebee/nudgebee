@@ -146,6 +146,81 @@ func TestSetGCPPolicyThreshold(t *testing.T) {
 	}
 }
 
+// A user-entered threshold must be applied even when the engine's verdict was
+// "investigate, don't retune" (issue #36285: the PR path failed with "no expression change
+// to write to the PR" because such suggestions carry suggested == current).
+func TestApplyRecommendationTypeUserOverride(t *testing.T) {
+	rule := &SourceRule{Expr: `latency > 0.05`, Duration: "5m"}
+	sug := &ApplySuggestionRow{Source: "prometheus", CurrentThreshold: 0.05, RecommendationType: "investigate_signal"}
+
+	f := func(v float64) *float64 { return &v }
+	i := func(v int) *int { return &v }
+
+	cases := []struct {
+		name           string
+		recType        string
+		acceptValue    *float64
+		acceptDuration *int
+		want           string
+	}{
+		{"no override keeps the verdict", "investigate_signal", nil, nil, "investigate_signal"},
+		{"same value is not an override", "investigate_signal", f(0.05), nil, "investigate_signal"},
+		{"edited threshold overrides", "investigate_signal", f(0.2), nil, "tune_threshold"},
+		{"edited duration overrides", "investigate_signal", nil, i(15), "increase_duration"},
+		{"both edited", "insufficient_data", f(0.2), i(15), "tune_both"},
+		{"unchanged duration is not an override", "investigate_signal", nil, i(5), "investigate_signal"},
+		{"disable is never promoted", "disable", f(0.2), nil, "disable"},
+		{"threshold tune plus duration edit widens to both", "tune_threshold", nil, i(15), "tune_both"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := *sug
+			s.RecommendationType = tc.recType
+			if got := applyRecommendationType(&s, rule, tc.acceptValue, tc.acceptDuration); got != tc.want {
+				t.Errorf("applyRecommendationType() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The rewrite must report whether it actually changed anything — the apply path uses this to
+// refuse a no-op instead of raising an empty PR or reporting an unchanged write as "applied".
+func TestBuildRewrittenRuleChangeFlags(t *testing.T) {
+	rule := &SourceRule{Source: "prometheus", Expr: `latency > 0.05`, Duration: "5m"}
+
+	noChange, err := BuildRewrittenRule(&ApplySuggestionRow{Source: "prometheus", CurrentThreshold: 0.05, RecommendationType: "investigate_signal"}, rule, 0.05, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if noChange.ChangedThreshold || noChange.ChangedDuration {
+		t.Errorf("investigate_signal reported a change: threshold=%v duration=%v", noChange.ChangedThreshold, noChange.ChangedDuration)
+	}
+
+	sameValue, err := BuildRewrittenRule(&ApplySuggestionRow{Source: "prometheus", CurrentThreshold: 0.05, RecommendationType: "tune_threshold"}, rule, 0.05, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sameValue.ChangedThreshold {
+		t.Errorf("rewriting to the same threshold reported a change: %q", sameValue.Expr)
+	}
+
+	changed, err := BuildRewrittenRule(&ApplySuggestionRow{Source: "prometheus", CurrentThreshold: 0.05, RecommendationType: "tune_both"}, rule, 0.2, 15)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !changed.ChangedThreshold || !changed.ChangedDuration {
+		t.Errorf("tune_both reported no change: threshold=%v duration=%v expr=%q", changed.ChangedThreshold, changed.ChangedDuration, changed.Expr)
+	}
+
+	cloud, err := BuildRewrittenRule(&ApplySuggestionRow{Source: "AWS_CloudWatch_Alarm", CurrentThreshold: 80, RecommendationType: "tune_threshold"}, &SourceRule{Source: "AWS_CloudWatch_Alarm"}, 60, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cloud.ChangedThreshold || cloud.ChangedDuration {
+		t.Errorf("cloud threshold tune flags wrong: threshold=%v duration=%v", cloud.ChangedThreshold, cloud.ChangedDuration)
+	}
+}
+
 func TestParseDurationMinutes(t *testing.T) {
 	cases := map[string]int{
 		"10m":     10,

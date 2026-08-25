@@ -31,7 +31,7 @@ func TestAzureAgent_Execute(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
-			azureAgent := newAzureAgent(tc.AccountId)
+			azureAgent := AzureAgent{}
 			err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 			assert.NoError(t, err, "Cleanup failed for session %s", tc.SessionId)
 

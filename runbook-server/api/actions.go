@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -207,11 +208,9 @@ func (s *Server) handleCreateWorkflow(c *gin.Context, sc *security.RequestContex
 }
 
 func (s *Server) handleListWorkflows(c *gin.Context, sc *security.RequestContext, args map[string]any) {
-	accountID, ok := args["account_id"].(string)
-	if !ok || accountID == "" {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
-		return
-	}
+	// The Automations listing is tenant-level with an account filter (#35113):
+	// no account means "every account this caller can read".
+	accountIDs := parseAccountFilter(args)
 
 	var search model.ListWorkflowRequest
 	if name, ok := args["name"].(string); ok {
@@ -256,18 +255,42 @@ func (s *Server) handleListWorkflows(c *gin.Context, sc *security.RequestContext
 	if createdBy, ok := args["created_by"].(string); ok {
 		search.CreatedBy = createdBy
 	}
+	// Accepts a real bool or the string form, since this filter is also reached
+	// over REST query params where everything arrives as text.
+	if aiInvocable, ok := args["ai_invocable"].(bool); ok {
+		search.AIInvocable = &aiInvocable
+	} else if raw, ok := args["ai_invocable"].(string); ok {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
+			search.AIInvocable = &parsed
+		}
+	}
 	if nextPageToken, ok := args["next_page_token"].(string); ok {
 		search.NextPageToken = nextPageToken
 	}
 
-	workflows, err := s.workflowService.ListWorkflows(sc, accountID, search)
+	workflows, err := s.workflowService.ListWorkflows(sc, accountIDs, search)
 	if err != nil {
 		s.logger.Error("failed to list workflows via RPC", "error", err)
-		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to list workflows"))
+		handleServiceError(c, err, "failed to list workflows")
 		return
 	}
 
 	c.JSON(http.StatusOK, workflows)
+}
+
+// parseAccountFilter reads the optional account scope shared by the tenant-level
+// listing actions. It accepts `account_ids` (the multi-select filter) and falls
+// back to a single `account_id`, which every pre-#35113 caller — and the
+// per-account deep links still scattered through the UI — sends. Empty means
+// "no filter"; ResolveReadableAccounts turns that into the caller's full set.
+func parseAccountFilter(args map[string]any) []string {
+	if ids := parseStringSlice(args["account_ids"]); len(ids) > 0 {
+		return ids
+	}
+	if accountID, ok := args["account_id"].(string); ok && accountID != "" {
+		return []string{accountID}
+	}
+	return nil
 }
 
 func (s *Server) handleGetWorkflow(c *gin.Context, sc *security.RequestContext, args map[string]any) {
@@ -841,23 +864,23 @@ func (s *Server) handleSaveConfig(c *gin.Context, sc *security.RequestContext, a
 		return
 	}
 
-	// Empty account_id means tenant-level. Writing tenant-level rows requires
-	// tenant-admin (or super-admin); account-level writes require write access
-	// to that specific account.
-	if accountID == "" {
-		if !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeUpdate) {
+	// Empty account_id means tenant-level (config.AccountID nil), otherwise the
+	// write is scoped to that account. configAccountScope resolves both the scope
+	// and the write verdict, and accepts a dynamic-RBAC config:Write grant on top
+	// of the built-in tenant/account write roles — the same rule the get/list/
+	// delete handlers already use. This handler used to run its own role-only
+	// check, so a pure config:Write holder was 401'd here after the read path had
+	// already served them the rows they were editing.
+	scopedAccountID, _, hasWrite := configAccountScope(sc, args)
+	if !hasWrite {
+		if accountID == "" {
 			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{errors.New("unauthorized to save tenant-level config")}))
-			return
-		}
-		config.AccountID = nil
-	} else {
-		if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) {
+		} else {
 			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{errors.New("unauthorized to save config")}))
-			return
 		}
-		acc := accountID
-		config.AccountID = &acc
+		return
 	}
+	config.AccountID = scopedAccountID
 
 	config.TenantID = sc.GetSecurityContext().GetTenantId()
 	config.UpdatedBy = sc.GetSecurityContext().GetUserId()
@@ -875,19 +898,40 @@ func (s *Server) handleSaveConfig(c *gin.Context, sc *security.RequestContext, a
 	c.JSON(http.StatusOK, gin.H{"id": id})
 }
 
+// configPermissionModule is the dynamic-RBAC module the config_* actions
+// classify to (see app/src/lib/permissionCatalog.ts — `config_list` →
+// `config:Read`). Keep in lockstep with that classifier.
+const configPermissionModule = "config"
+
+// canReadTenantConfigs reports whether the caller may see tenant-scoped config
+// rows: a built-in tenant read role, or a tenant-global `config:Read` custom
+// grant (`config:Write` implies read). Account-scoped grants are deliberately
+// not consulted — a tenant-scoped row belongs to no account.
+func canReadTenantConfigs(sc *security.RequestContext) bool {
+	return sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) ||
+		sc.GetSecurityContext().HasPermission(configPermissionModule, "Read") ||
+		sc.GetSecurityContext().HasPermission(configPermissionModule, "Write")
+}
+
 // configAccountScope reads the optional account_id arg and returns:
 //   - the *string to pass to ConfigService (nil when tenant-scoped)
 //   - whether the caller is authorized to read at that scope
 //   - whether the caller is authorized to write at that scope
+//
+// Both flags accept a dynamic-RBAC `config:<Class>` grant in addition to the
+// built-in roles: a pure custom-role holder has no built-in tenant/account role,
+// so the role checks alone would 401 a caller the gateway already admitted.
 func configAccountScope(sc *security.RequestContext, args map[string]any) (*string, bool, bool) {
 	accountID, _ := args["account_id"].(string)
 	if accountID == "" {
-		hasRead := sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
-		hasWrite := sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeUpdate)
+		hasRead := canReadTenantConfigs(sc)
+		hasWrite := sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeUpdate) ||
+			sc.GetSecurityContext().HasPermission(configPermissionModule, "Write")
 		return nil, hasRead, hasWrite
 	}
-	hasRead := sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead)
-	hasWrite := sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate)
+	hasRead := sc.GetSecurityContext().CanReadAccountData(accountID, configPermissionModule)
+	hasWrite := sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) ||
+		sc.GetSecurityContext().HasScopedPermission(accountID, configPermissionModule, "Write")
 	acc := accountID
 	return &acc, hasRead, hasWrite
 }
@@ -926,7 +970,7 @@ func (s *Server) handleGetConfig(c *gin.Context, sc *security.RequestContext, ar
 	// when querying via an account scope (the service merges tenant rows into
 	// account-scoped lookups). Return 404 rather than 401 to avoid leaking key
 	// existence.
-	if config.IsTenantScoped() && !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
+	if config.IsTenantScoped() && !canReadTenantConfigs(sc) {
 		c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{fmt.Errorf("config not found")}))
 		return
 	}
@@ -975,7 +1019,7 @@ func (s *Server) handleListConfigs(c *gin.Context, sc *security.RequestContext, 
 	// Callers without tenant read access must never see tenant-scoped rows.
 	// The service merges tenant rows into account-scoped lookups for tenant
 	// admins; strip them here for everyone else.
-	if !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
+	if !canReadTenantConfigs(sc) {
 		filtered := configs[:0]
 		for _, cfg := range configs {
 			if cfg.IsTenantScoped() {
@@ -1021,14 +1065,8 @@ func (s *Server) handleListTemplatingFunctions(c *gin.Context, sc *security.Requ
 }
 
 func (s *Server) handleWorkflowCount(c *gin.Context, sc *security.RequestContext, args map[string]any) {
-	accountID, ok := args["account_id"].(string)
-	if !ok || accountID == "" {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
-		return
-	}
-
 	req := model.WorkflowCountRequest{
-		AccountID: accountID,
+		AccountIDs: parseAccountFilter(args),
 	}
 
 	if status, ok := args["status"].(string); ok && status != "" {

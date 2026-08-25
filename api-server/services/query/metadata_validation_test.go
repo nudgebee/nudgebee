@@ -123,6 +123,44 @@ func TestSecurityColumnsAreNotAggregated(t *testing.T) {
 	}
 }
 
+func TestNotificationRuleTablesUseAccountScopedSecurityMetadata(t *testing.T) {
+	for _, name := range []string{"admin_get_notification_rules_v2", "admin_get_notification_rules_grouping_v2"} {
+		t.Run(name, func(t *testing.T) {
+			def, ok := table_metadata[name]
+			assert.True(t, ok, "table %s should exist", name)
+			assert.Equal(t, "account_id", def.AccountIdColumnName, "table %s should declare the account_id security column", name)
+			assert.Equal(t, "notifications", def.PermissionModule, "table %s should map to the notifications permission module", name)
+		})
+	}
+}
+
+// The Tenant Settings modal reads these two. Both are tenant-scoped with NO
+// account_id column, so a caller who is not a tenant-wide admin and holds no
+// module grant falls into the account-restriction branch of query/service.go and
+// gets "account id column not found" — a 400 that renders the whole modal blank.
+// Naming the module is what lets a `tenants:Read` grant read them, and it must
+// stay in lockstep with permissionCatalog.ts, where tenant_* and featureflag_*
+// both classify to `tenants`.
+func TestTenantSettingTablesUseTenantPermissionModule(t *testing.T) {
+	for _, name := range []string{"tenant_attributes_v2", "feature_flag_v2"} {
+		t.Run(name, func(t *testing.T) {
+			def, ok := table_metadata[name]
+			assert.True(t, ok, "table %s should exist", name)
+			assert.Equal(t, "tenants", def.PermissionModule, "table %s should map to the tenants permission module", name)
+		})
+	}
+}
+
+func TestIntegrationTablesUseTenantScopedPermissionMetadata(t *testing.T) {
+	for _, name := range []string{"integrations_get_all_accounts", "admin_get_integrations_v2", "admin_get_integrations_grouping_v2"} {
+		t.Run(name, func(t *testing.T) {
+			def, ok := table_metadata[name]
+			assert.True(t, ok, "table %s should exist", name)
+			assert.Equal(t, "integrations", def.PermissionModule, "table %s should map to the integrations permission module", name)
+		})
+	}
+}
+
 // TestAggregateTablesHaveAggregatedColumns validates that every Aggregate table
 // has at least one IsAggregated column.
 func TestAggregateTablesHaveAggregatedColumns(t *testing.T) {
@@ -258,4 +296,41 @@ func TestTableCount(t *testing.T) {
 	count := len(table_metadata)
 	assert.Greater(t, count, 50, "Expected at least 50 tables in table_metadata, got %d", count)
 	t.Logf("Total tables in table_metadata: %d", count)
+}
+
+// TestAccountScopableModulesPinned pins the exact set of modules a custom grant
+// can be account-scoped to (V778 scope-on-grant): modules whose query-engine
+// PermissionModule table carries a per-account column. This is the AUTHORITY the
+// customrole write-path guard uses; the role-editor UI mirrors it as
+// ACCOUNT_SCOPABLE_MODULES in app/src/lib/permissionCatalog.ts. If this set
+// changes (a scopable PermissionModule table is added/removed), update that FE
+// constant to keep the picker in sync.
+func TestAccountScopableModulesPinned(t *testing.T) {
+	got := AccountScopableModules()
+	want := map[string]bool{
+		"accounts":         true,
+		"ai_conversations": true,
+		"ai_functions":     true,
+		// The dashboard `nudgebee` datasource reaches these three through the panel
+		// allowlist (services/dashboard/entity_query.go); each needs a module so a
+		// custom-role holder has a grant to be given rather than a flat denial.
+		// (`tickets` and `recommendations` are reached the same way but were
+		// already in this set, so they stay in the alphabetical block below.)
+		"anomalies":          true,
+		"autooptimize":       true,
+		"spend":              true,
+		"audits":             true,
+		"cloud":              true,
+		"events":             true,
+		"insights":           true,
+		"k8s":                true,
+		"messagingplatforms": true,
+		"notifications":      true,
+		"recommendations":    true,
+		// feature_flag_v2 carries account_id and now maps to the `tenants` module
+		// (the standalone featureflags module was folded in).
+		"tenants": true,
+		"tickets": true,
+	}
+	assert.Equal(t, want, got, "account-scopable module set changed — sync app/src/lib/permissionCatalog.ts ACCOUNT_SCOPABLE_MODULES")
 }

@@ -185,7 +185,7 @@ func (s *K8sSource) createK8sSecretNode(sec *K8sSecretFromRelay, clusterName str
 // convertK8sSecretsToGraph emits K8sSecret nodes and BELONGS_TO edges to
 // their owning namespace. Returns the lookup map for Workload →
 // USES_SECRET wiring.
-func (s *K8sSource) convertK8sSecretsToGraph(secrets []K8sSecretFromRelay, workloads []K8sWorkloadRow, namespaceNodes map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode) {
+func (s *K8sSource) convertK8sSecretsToGraph(secrets []K8sSecretFromRelay, workloads []K8sWorkloadRow, clusterNodes, namespaceNodes map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode) {
 	nodes := make([]*core.DbNode, 0, len(secrets))
 	edges := make([]*core.DbEdge, 0)
 	byKey := make(map[string]*core.DbNode, len(secrets))
@@ -201,15 +201,15 @@ func (s *K8sSource) convertK8sSecretsToGraph(secrets []K8sSecretFromRelay, workl
 		nodes = append(nodes, node)
 		byKey[fmt.Sprintf("%s/%s", sec.Metadata.Namespace, sec.Metadata.Name)] = node
 
-		namespaceKey := fmt.Sprintf("%s/%s", clusterName, sec.Metadata.Namespace)
-		if nsNode, ok := namespaceNodes[namespaceKey]; ok {
-			edges = append(edges, core.NewEdge(
-				node.ID, nsNode.ID,
-				core.RelationshipBelongsTo,
-				map[string]interface{}{"connection_type": "namespace_membership"},
-				req.TenantID, req.CloudAccountID, "k8s",
-			))
-		}
+		nsNode, nsNodes, nsEdges := s.ensureNamespaceNode(sec.Metadata.Namespace, clusterName, namespaceNodes, clusterNodes, req)
+		nodes = append(nodes, nsNodes...)
+		edges = append(edges, nsEdges...)
+		edges = append(edges, core.NewEdge(
+			node.ID, nsNode.ID,
+			core.RelationshipBelongsTo,
+			map[string]interface{}{"connection_type": "namespace_membership"},
+			req.TenantID, req.CloudAccountID, "k8s",
+		))
 	}
 
 	return nodes, edges, byKey

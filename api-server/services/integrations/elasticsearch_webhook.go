@@ -369,10 +369,6 @@ func elasticsearchAlertType(kibanaRuleType string) string {
 // accepts. event_rules.severity is FK-constrained to event_rule_severity, whose
 // only rows are 'critical' and 'warning', so passing the lower-cased priority
 // ("high"/"medium"/"low") fails the insert with 23503.
-//
-// Shared by every webhook integration in this package, so never forward a raw
-// payload severity through it: OpenObserve's k8s_events stream, for instance,
-// renders severity as a numeric "0", which fails the same constraint.
 func eventRuleSeverity(priority event.EventPriority) string {
 	if priority == event.EventPriorityHigh {
 		return "critical"

@@ -41,6 +41,8 @@ const ConversationPopup: React.FC<ConversationPopupProps> = ({ query, sessionId,
           popup={true}
           sessionId={sessionId}
           source={source}
+          // Throwaway test session — must not overwrite the global drawer's pointer.
+          persistLastSession={false}
           // variableNames={variableNames as never[] | undefined}
           // variableDefaults={variableDefaults}
         />

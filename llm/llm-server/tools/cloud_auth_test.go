@@ -93,6 +93,7 @@ func TestBuildGcpAuth_Success(t *testing.T) {
 	assert.Equal(t, "my-project-id", auth.Env["GCP_PROJECT_ID"])
 	assert.Equal(t, "my-project-id", auth.Env["CLOUDSDK_CORE_PROJECT"])
 	assert.Equal(t, "1", auth.Env["CLOUDSDK_CORE_DISABLE_PROMPTS"])
+	assert.Equal(t, "False", auth.Env["CLOUDSDK_CORE_CHECK_GCE_METADATA"])
 	assert.Equal(t, "xterm", auth.Env["TERM"])
 	assert.NotEmpty(t, auth.Env["GOOGLE_APPLICATION_CREDENTIALS"])
 	assert.Contains(t, auth.CommandPrefix, "gcloud auth activate-service-account")

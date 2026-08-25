@@ -13,12 +13,6 @@ export class UserLocators extends CommonLocators {
   readonly duplicateMsg: Locator;
   readonly editUserModal: Locator;
   readonly successUpdateMsg: Locator;
-  readonly firstNameHelperText: Locator;
-  readonly lastNameHelperText: Locator;
-  readonly statusCombobox: Locator;
-  readonly statusFilterBtn: Locator;
-  readonly userSearchToggleBtn: Locator;
-  readonly userSearchInput: Locator;
   readonly statusButton: Locator;
   readonly nameSearchInput: Locator;
 
@@ -36,19 +30,25 @@ export class UserLocators extends CommonLocators {
     this.duplicateMsg = page.getByText("This email is already in use").first();
     this.editUserModal = page.locator('#edit-user-modal');
     this.successUpdateMsg = page.getByText("User updated");
-    this.firstNameHelperText = page.locator('#user-modal-firstname-helper-text');
-    this.lastNameHelperText = page.locator('#user-modal-lastname-helper-text');
-    this.statusCombobox = page.locator('#user-modal-status');
-    this.statusFilterBtn = page.locator('button').filter({ hasText: 'By Status' });
-    this.userSearchToggleBtn = page.locator('#box-all-users-search-toggle-button');
-    this.userSearchInput = page.locator('#box-all-users-search-input-text');
     this.statusButton = page.locator('#auto-complete-all-users-status-filter');
     this.nameSearchInput = page.locator('#all-users-name-search');
   }
 
   async selectRole(role: string): Promise<void> {
     await this.tenantRoleCombobox.click();
-    await this.getRoleOption(role).click();
+    const option = this.getRoleOption(role);
+    await option.waitFor({ state: "visible", timeout: 5000 });
+    // The role dropdown is a MUI Menu (disablePortal) rendered inside the modal.
+    // Dispatch the click straight to the option so its handler runs regardless of the
+    // invisible backdrop that overlays the items in headless (a normal click gets
+    // swallowed by that backdrop). This sets the value but, headless, does not always
+    // close the menu — so press Escape to dismiss it. Escape targets the topmost
+    // overlay (the menu), not the dialog beneath, then confirm the menu closed.
+    await option.dispatchEvent("click");
+    if (await option.isVisible().catch(() => false)) {
+      await this.page.keyboard.press("Escape");
+    }
+    await option.waitFor({ state: "detached", timeout: 5000 });
   }
 
   getRoleOption(role: string): Locator {
@@ -57,10 +57,6 @@ export class UserLocators extends CommonLocators {
 
   getEditBtnForUser(email: string): Locator {
     return this.page.locator('tr').filter({ hasText: email }).locator('#edit-user-button');
-  }
-
-  getStatusOption(status: string): Locator {
-    return this.page.getByTestId(`user-modal-status-${status.toLowerCase()}`);
   }
 
   // Set the user's status inside the edit/add modal.

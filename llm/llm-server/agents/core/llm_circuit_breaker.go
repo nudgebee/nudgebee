@@ -5,9 +5,23 @@ import (
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/llms/huggingface/huggingfaceclient"
 	"sync"
 	"time"
 )
+
+// init wires the HF client's breaker hooks to this package's per-pod breaker, letting
+// the client skip/trip the breaker without importing agents/core (which would be a
+// cycle). The breaker is in-memory per pod — its only job is to fail fast when the
+// endpoint is not ready, so a request doesn't hang through the full retry budget.
+func init() {
+	huggingfaceclient.IsCircuitOpen = func(model string) bool {
+		return IsModelCircuitOpen("huggingface", model)
+	}
+	huggingfaceclient.RecordUnavailable = func(model string) {
+		RecordModelFailure("huggingface", model)
+	}
+}
 
 // circuitBreakerState represents the state of a circuit breaker
 type circuitBreakerState string
@@ -19,20 +33,22 @@ const (
 
 	defaultCircuitBreakerCooldownSeconds = 60
 	maxCircuitBreakerCooldownSeconds     = 300 // 5 minutes max
+
+	// circuitBreakerProbeExtension is how long the first caller past an expired cooldown
+	// reserves the single probe slot (half-open), so concurrent callers keep failing fast
+	// instead of stampeding the recovering endpoint.
+	circuitBreakerProbeExtension = 15 * time.Second
 )
 
-// circuitBreakerEntry tracks the circuit breaker state for a provider+model combination
+// circuitBreakerEntry is the per-pod in-memory breaker state for one provider+model.
 type circuitBreakerEntry struct {
-	state         circuitBreakerState
-	openedAt      time.Time
-	failureCount  int
-	cooldownUntil time.Time
+	State         circuitBreakerState
+	OpenedAt      time.Time
+	CooldownUntil time.Time
+	FailureCount  int
 }
 
 var (
-	// circuitBreakerMap grows unbounded — entries are never evicted.
-	// TODO: add TTL-based eviction or a max-size cap if the number of distinct
-	// provider+model combinations grows significantly (e.g., dynamic model names).
 	circuitBreakerMap   = make(map[string]*circuitBreakerEntry)
 	circuitBreakerMutex sync.RWMutex
 )
@@ -50,123 +66,101 @@ func getCircuitBreakerCooldownSeconds() int {
 	return defaultCircuitBreakerCooldownSeconds
 }
 
-// IsModelCircuitOpen checks if the circuit breaker for a provider+model is open (should skip this model).
-// Returns true if the model should be skipped, false if it can be used.
-// When the cooldown has expired, the circuit transitions to half-open to allow a probe request.
+// IsModelCircuitOpen reports whether the provider+model circuit is open (skip it).
+// While within the cooldown the common path is a cheap read under RLock. Once the
+// cooldown expires, the first caller takes the write lock and extends the cooldown to
+// reserve a single probe (half-open); concurrent callers re-read the extended cooldown
+// and keep failing fast, so a recovering endpoint isn't stampeded.
 func IsModelCircuitOpen(provider, model string) bool {
 	key := getCircuitBreakerKey(provider, model)
 
-	// Hold the read lock across all field reads to eliminate the data race.
-	// circuitBreakerState is a string (2 words) and time.Time is a 3-word struct —
-	// neither is atomically readable without synchronisation.
 	circuitBreakerMutex.RLock()
-	entry, exists := circuitBreakerMap[key]
-	if !exists || entry.state == circuitBreakerStateClosed {
+	entry, ok := circuitBreakerMap[key]
+	if !ok || entry.State == circuitBreakerStateClosed {
 		circuitBreakerMutex.RUnlock()
 		return false
 	}
-	cooldownExpired := time.Now().After(entry.cooldownUntil)
+	stillCoolingDown := time.Now().Before(entry.CooldownUntil)
 	circuitBreakerMutex.RUnlock()
-
-	if cooldownExpired {
-		// Transition to half-open: allow one probe request.
-		// Upgrade to write lock and re-check — a concurrent RecordModelRateLimitHit
-		// may have re-opened the circuit between our RUnlock and this Lock, in which
-		// case the re-check below will find state != Open and skip the transition.
-		circuitBreakerMutex.Lock()
-		entry, exists = circuitBreakerMap[key]
-		if exists && entry.state == circuitBreakerStateOpen && time.Now().After(entry.cooldownUntil) {
-			entry.state = circuitBreakerStateHalfOpen
-			slog.Info("Circuit breaker transitioning to half-open, allowing probe request",
-				"provider", provider,
-				"model", model,
-				"failureCount", entry.failureCount)
-		}
-		circuitBreakerMutex.Unlock()
-		return false // Allow probe request
+	if stillCoolingDown {
+		return true
 	}
 
-	// Circuit is open and cooldown hasn't expired
-	return true
+	circuitBreakerMutex.Lock()
+	defer circuitBreakerMutex.Unlock()
+	entry, ok = circuitBreakerMap[key]
+	if !ok || entry.State == circuitBreakerStateClosed {
+		return false
+	}
+	if time.Now().After(entry.CooldownUntil) {
+		entry.CooldownUntil = time.Now().Add(circuitBreakerProbeExtension) // reserve the probe
+		return false
+	}
+	return true // another caller already took the probe
 }
 
-// RecordModelRateLimitHit opens the circuit breaker for a provider+model after a rate limit hit.
-// Uses escalating cooldown: base cooldown doubled each consecutive failure, capped at max.
-func RecordModelRateLimitHit(provider, model string) {
+// RecordModelFailure opens the circuit for a provider+model after a trip-worthy
+// failure (rate limit, 503, connection error, timeout). Uses an escalating cooldown:
+// base doubled per consecutive failure, capped at max. The whole read-modify-write is
+// done under the write lock so concurrent failures can't lose an increment.
+func RecordModelFailure(provider, model string) {
 	key := getCircuitBreakerKey(provider, model)
 	baseCooldown := getCircuitBreakerCooldownSeconds()
 	now := time.Now()
 
 	circuitBreakerMutex.Lock()
-	defer circuitBreakerMutex.Unlock()
-
-	entry, exists := circuitBreakerMap[key]
-	if !exists {
+	entry, ok := circuitBreakerMap[key]
+	if !ok {
 		entry = &circuitBreakerEntry{}
 		circuitBreakerMap[key] = entry
 	}
+	entry.FailureCount++
+	entry.State = circuitBreakerStateOpen
+	entry.OpenedAt = now
 
-	entry.failureCount++
-	entry.state = circuitBreakerStateOpen
-	entry.openedAt = now
-
-	// Escalating cooldown: base * 2^(failures-1), capped at max
 	cooldownSeconds := baseCooldown
-	for i := 1; i < entry.failureCount; i++ {
+	for i := 1; i < entry.FailureCount; i++ {
 		cooldownSeconds *= 2
 		if cooldownSeconds > maxCircuitBreakerCooldownSeconds {
 			cooldownSeconds = maxCircuitBreakerCooldownSeconds
 			break
 		}
 	}
-	entry.cooldownUntil = now.Add(time.Duration(cooldownSeconds) * time.Second)
+	entry.CooldownUntil = now.Add(time.Duration(cooldownSeconds) * time.Second)
+	failureCount, cooldownUntil := entry.FailureCount, entry.CooldownUntil
+	circuitBreakerMutex.Unlock()
 
-	slog.Warn("Circuit breaker opened for model due to rate limit",
-		"provider", provider,
-		"model", model,
-		"failureCount", entry.failureCount,
-		"cooldownSeconds", cooldownSeconds,
-		"cooldownUntil", entry.cooldownUntil.Format(time.RFC3339))
-
-	// Record metric
+	slog.Warn("Circuit breaker opened for model",
+		"provider", provider, "model", model,
+		"failureCount", failureCount, "cooldownSeconds", cooldownSeconds,
+		"cooldownUntil", cooldownUntil.Format(time.RFC3339))
 	common.MetricsLLMCircuitBreakerTripped(provider, model)
 }
 
-// RecordModelSuccess closes the circuit breaker for a provider+model after a successful request.
-// Resets the failure count to allow normal operation.
+// RecordModelRateLimitHit is the 429 entry point — a rate limit is one trip cause.
+func RecordModelRateLimitHit(provider, model string) {
+	RecordModelFailure(provider, model)
+}
+
+// RecordModelSuccess closes the circuit after a successful request (absent = closed).
 func RecordModelSuccess(provider, model string) {
 	key := getCircuitBreakerKey(provider, model)
 
-	// Hold RLock across the state read — entry.state is a string (2 words) and must
-	// not be read concurrently with a write from RecordModelRateLimitHit.
-	circuitBreakerMutex.RLock()
-	entry, exists := circuitBreakerMap[key]
-	if !exists || entry.state == circuitBreakerStateClosed {
-		circuitBreakerMutex.RUnlock()
-		return // Nothing to do
-	}
-	circuitBreakerMutex.RUnlock()
-
 	circuitBreakerMutex.Lock()
-	defer circuitBreakerMutex.Unlock()
-
-	// Re-check after acquiring write lock
-	entry, exists = circuitBreakerMap[key]
-	if !exists || entry.state == circuitBreakerStateClosed {
+	entry, ok := circuitBreakerMap[key]
+	if !ok || entry.State == circuitBreakerStateClosed {
+		circuitBreakerMutex.Unlock()
 		return
 	}
-
-	previousState := entry.state
-	entry.state = circuitBreakerStateClosed
-	entry.failureCount = 0
+	previousState := entry.State
+	delete(circuitBreakerMap, key)
+	circuitBreakerMutex.Unlock()
 
 	slog.Info("Circuit breaker closed for model after successful request",
-		"provider", provider,
-		"model", model,
-		"previousState", previousState)
+		"provider", provider, "model", model, "previousState", previousState)
 }
 
-// ResetCircuitBreakers clears all circuit breaker state. Intended for testing only.
+// ResetCircuitBreakers clears in-memory state. Intended for testing.
 func ResetCircuitBreakers() {
 	circuitBreakerMutex.Lock()
 	defer circuitBreakerMutex.Unlock()

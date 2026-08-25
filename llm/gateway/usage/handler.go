@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -142,9 +143,12 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		res, err := ListSessions(c.Request.Context(), db, ListSessionsRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
 			UserID: req.UserID, Search: req.Search,
-			Limit: req.Limit, Offset: req.Offset,
+			CallerUserID:  c.GetHeader("x-user-id"),
+			CallerIsAdmin: rpc.IsTenantAdmin(c),
+			Limit:         req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
+			slog.Error("usage: session list failed", "error", err, "tenant", tenantID)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "session list failed"})
 			return
 		}

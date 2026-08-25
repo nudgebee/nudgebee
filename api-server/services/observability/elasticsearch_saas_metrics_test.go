@@ -891,3 +891,25 @@ func TestESUnknownQueryFields_FlagsTheSilentNoOp(t *testing.T) {
 		assert.Empty(t, esUnknownQueryFields(nil, dsl))
 	})
 }
+
+func TestResolveESMetricsIndex(t *testing.T) {
+	cases := []struct {
+		name       string
+		requested  string
+		configured string
+		want       string
+	}{
+		{"explicit selection wins", "metrics-explicit", "metrics-configured", "metrics-explicit"},
+		{"falls back to configured index", "", "metrics-configured", "metrics-configured"},
+		{"blank selection falls back", "   ", "metrics-configured", "metrics-configured"},
+		{"trims the selection", "  metrics-explicit  ", "", "metrics-explicit"},
+		{"trims the configured index", "", "  metrics-configured  ", "metrics-configured"},
+		{"nothing configured stays empty", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ElasticsearchConfig{MetricsIndex: tc.configured}
+			assert.Equal(t, tc.want, resolveESMetricsIndex(tc.requested, cfg))
+		})
+	}
+}

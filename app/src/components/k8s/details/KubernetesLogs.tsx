@@ -19,7 +19,7 @@ import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { RefreshSubmitButton } from '@components/k8s/common/RefreshSubmitButton';
 import UserHistoryButton from '@shared/widgets/UserHistory';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import QueryModeSwitcher from '@components/k8s/common/QueryModeSwitcher';
 import { OperatorDescriptor } from '@components/k8s/common/operatorCatalog';
 import { LogDate } from '@components/k8s/common/LogDate';
@@ -167,9 +167,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   const [llmQueryResponse, setLlmQueryResponse] = useState('');
   const [generateQuestionText, setGenerateQuestionText] = useState('');
   const [conversationId, setConversationId] = useState('');
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiSessionId, setNubiSessionId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [logQueryItems, setLogQueryItems] = useState<any[]>([]);
   const [logOperations, setLogOperations] = useState<any[]>([]);
@@ -238,14 +236,13 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
 
   const resetStates = () => {
     setData([]);
+    setExecutedQuery('');
     setErrorMsg('');
     setLlmQueryResponse('');
     setGenerateQuestionText('');
     setConversationId('');
     setLogQuery('');
     setLogQueryItems([]);
-    setNubiQuery('');
-    setNubiSidebarVisible(false);
     setInterval(0);
     setPollLogs(false);
     setRunInitialQuery(false);
@@ -343,14 +340,21 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     [logProvider]
   );
 
-  const handleGenerateLogAnalysis = useCallback((stream: any, message: string) => {
-    const analysisPrompt = `@loganalysis analyse the following log and provide the root cause and possible actions to resolve the issue \n\n ${JSON.stringify(
-      stream
-    )} message:${message}`;
-    setNubiQuery(analysisPrompt);
-    setNubiSessionId(md5([JSON.stringify(stream)]));
-    setNubiSidebarVisible(true);
-  }, []);
+  const handleGenerateLogAnalysis = useCallback(
+    (stream: any, message: string) => {
+      const analysisPrompt = `@loganalysis analyse the following log and provide the root cause and possible actions to resolve the issue \n\n ${JSON.stringify(
+        stream
+      )} message:${message}`;
+      openNubiChat({
+        accountId,
+        sessionId: md5([JSON.stringify(stream)]),
+        query: analysisPrompt,
+        source: 'log_analysis',
+        aboveModal: nubiAboveModal,
+      });
+    },
+    [accountId, nubiAboveModal, openNubiChat]
+  );
 
   const formatLogResults = useCallback(
     (allResults: any[]) => {
@@ -978,20 +982,6 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
 
   return (
     <div>
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={accountId}
-        query={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiSessionId } }}
-        apiMode='investigate'
-        source='log_analysis'
-        position='right'
-        mode='overlay'
-        width='500px'
-        aboveModal={nubiAboveModal}
-      />
-
       <TicketCreatePopupForm
         open={isTicketCreateFormOpen}
         handleClose={closeTicketCreateForm}
@@ -1146,7 +1136,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
               options={[
                 ...(logProvider !== 'datadog' ? [{ value: 'build', label: 'Builder' }] : []),
                 { value: 'code', label: 'Code' },
-                ...(logProvider === 'loki' || logProvider === 'signoz' ? [{ value: 'ai', label: 'AI' }] : []),
+                ...(logProvider && !['datadog', 'prometheus', 'chronosphere', 'victoria-metrics'].includes(logProvider)
+                  ? [{ value: 'ai', label: 'AI' }]
+                  : []),
               ]}
             />
           )}
@@ -1166,6 +1158,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           {showQueryTextBox && (
             <Box sx={{ display: 'flex', alignItems: 'flex-start', flexDirection: 'column', paddingTop: 'var(--ds-space-1)' }}>
               <QueryModeSwitcher
+                key={logProvider}
                 accountId={accountId}
                 initialQuery={logQuery}
                 onQueryChange={(e: any) => {
@@ -1177,6 +1170,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                 providerOverride={logProvider && defaultProvider && logProvider !== defaultProvider ? logProvider : undefined}
                 operatorDescriptors={operatorDescriptors}
                 params={{ ...time }}
+                limit={logLimit}
                 queryItems={logQueryItems}
                 setQueryItems={setLogQueryItems}
                 _queryOperations={logOperations}

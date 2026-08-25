@@ -426,6 +426,208 @@ func truncateToTokenLimit(text string, maxTokens int, provider string, model str
 	return truncated
 }
 
+// preflightContextTrimMargin keeps the trimmed prompt below the window, absorbing
+// tokenizer + chat-template overhead (the Qwen3 "32769" off-by-one).
+const preflightContextTrimMargin = 256
+
+// applyPreflightContextWindowCap trims the largest text message(s) — the scratchpad,
+// never the user query — so the whole prompt fits the usable window before the first
+// send, avoiding an over-window 4xx. handleTokenLimitError remains the backstop.
+func applyPreflightContextWindowCap(ctx *security.RequestContext, messages []llms.MessageContent, provider, model string, resolution *LLMConfigResolution, agentName string) []llms.MessageContent {
+	maxContext := ResolveModelMaxContext(resolution, model)
+	if maxContext <= 0 {
+		return messages
+	}
+	budget := summarizationChunkSize(maxContext, model) - preflightContextTrimMargin
+	if budget < 256 {
+		budget = 256
+	}
+
+	// Cheap byte estimate to skip exact counting when clearly under budget (3
+	// bytes/token over-estimates). Non-text parts hide tokens, so don't trust it then.
+	totalBytes := 0
+	hasNonText := false
+	for _, m := range messages {
+		for _, p := range m.Parts {
+			if tp, ok := p.(llms.TextContent); ok {
+				totalBytes += len(tp.Text)
+			} else {
+				hasNonText = true
+			}
+		}
+	}
+	if !hasNonText && totalBytes/scratchpadCharsPerToken <= budget {
+		return messages
+	}
+
+	total, err := CalculateTotalTokens(ctx, messages, provider, model)
+	if err != nil || total <= budget {
+		return messages
+	}
+
+	// Copy so the caller's slice is never mutated.
+	result := make([]llms.MessageContent, len(messages))
+	copy(result, messages)
+
+	ctx.GetLogger().Warn("Pre-flight context-window cap: prompt exceeds usable budget, trimming largest message(s) before send",
+		"totalTokens", total, "budget", budget, "maxContext", maxContext, "agent", agentName)
+
+	// Count once; update only the trimmed message each iteration.
+	counts := make([]int, len(result))
+	for j, msg := range result {
+		t, e := calculateMessageTokens(ctx, msg, provider, model)
+		if e != nil {
+			t = estimateMessageTokens(msg)
+		}
+		counts[j] = t
+	}
+
+	const maxTrimIterations = 12
+	for i := 0; i < maxTrimIterations && total > budget; i++ {
+		idx, idxTokens := largestTextMessageIndex(result, counts)
+		if idx < 0 || idxTokens <= 0 {
+			break // nothing trimmable — hand off to the reactive backstop
+		}
+		// Trim the first text part, wherever it sits (largestTextMessageIndex implies one).
+		textPartIdx, textContent := -1, llms.TextContent{}
+		for pIdx, p := range result[idx].Parts {
+			if tc, ok := p.(llms.TextContent); ok {
+				textPartIdx, textContent = pIdx, tc
+				break
+			}
+		}
+		if textPartIdx < 0 {
+			break
+		}
+		targetTokens := idxTokens - (total - budget)
+		if targetTokens < 256 {
+			targetTokens = 256
+		}
+		trimmed := truncateToTokenLimit(textContent.Text, targetTokens, provider, model)
+		if trimmed == textContent.Text {
+			break // already at/under target — no progress, avoid an infinite loop
+		}
+		newParts := make([]llms.ContentPart, len(result[idx].Parts))
+		copy(newParts, result[idx].Parts)
+		newParts[textPartIdx] = llms.TextContent{Text: trimmed}
+		result[idx].Parts = newParts
+
+		// Exact delta update — total is the sum of per-message counts.
+		newMsgTokens, e := calculateMessageTokens(ctx, result[idx], provider, model)
+		if e != nil {
+			newMsgTokens = estimateMessageTokens(result[idx])
+		}
+		newTotal := total - idxTokens + newMsgTokens
+		if newTotal >= total {
+			break // no progress
+		}
+		total = newTotal
+		counts[idx] = newMsgTokens
+	}
+	return result
+}
+
+// ensureUserMessageRewrite describes what ensureUserMessage did to the message
+// slice. Non-empty means the safety net fired — the caller should log/metric it
+// so we can identify offending agents (the fix hides the caller's underlying
+// bug: an upstream planner emitted an empty tool_input, or a sub-agent was
+// spawned with query="").
+type ensureUserMessageRewrite string
+
+const (
+	ensureUserMessageNoOp     ensureUserMessageRewrite = ""
+	ensureUserMessageAppended ensureUserMessageRewrite = "appended_new_user_turn"
+	ensureUserMessageReplaced ensureUserMessageRewrite = "replaced_empty_user_turn"
+)
+
+// ensureUserMessage guarantees at least one non-empty user turn. Some chat templates
+// (Qwen3 on vLLM) reject a message set with no user query — and an empty user turn trips
+// the same "No user query found" error — so a request without a usable user message would
+// 400. Applied to every request (not gated on model name): the model label for a
+// self-hosted endpoint is operator-chosen and often omits "qwen", and no legitimate prompt
+// is user-message-less, so this is a no-op in normal flow.
+//
+// Behavior:
+//   - Some usable user turn exists: no-op (returns messages unchanged, "").
+//   - No user turn exists at all: append a minimal "Continue." user turn (keeps the
+//     cacheable prefix intact). Returns "appended_new_user_turn".
+//   - A user turn exists but its content is unusable (empty / whitespace-only text):
+//     REPLACE its content in-place with "Continue." rather than appending a new turn.
+//     Appending would produce consecutive Human turns (e.g. [System, Human(""), Human("Continue.")]),
+//     which strict alternating-role APIs (Anthropic Messages) 400 on. In-place replace
+//     preserves the alternating role structure across every downstream provider.
+//     Returns "replaced_empty_user_turn".
+//
+// The rewrite reason is returned so the caller can log agent-context alongside
+// (function has none of that context itself). The safety net firing is ALWAYS
+// a bug in the calling agent path — a real prompt is never user-message-less —
+// so we want visibility into which agent hit the rewrite (see task #158 shape).
+func ensureUserMessage(messages []llms.MessageContent) ([]llms.MessageContent, ensureUserMessageRewrite) {
+	emptyHumanIdx := -1
+	for i, m := range messages {
+		if m.Role != llms.ChatMessageTypeHuman {
+			continue
+		}
+		if hasUsableContent(m) {
+			return messages, ensureUserMessageNoOp
+		}
+		// Record the FIRST empty human turn only — that's the one we'll rewrite.
+		// A later empty human would produce consecutive humans on its own, but
+		// we don't observe that shape in practice; picking the first is stable.
+		if emptyHumanIdx == -1 {
+			emptyHumanIdx = i
+		}
+	}
+	if emptyHumanIdx != -1 {
+		// Replace-in-place on a defensive copy of the slice + the target message's
+		// Parts (both are shared with the caller; we must not mutate them).
+		out := make([]llms.MessageContent, len(messages))
+		copy(out, messages)
+		origParts := out[emptyHumanIdx].Parts
+		parts := make([]llms.ContentPart, len(origParts))
+		copy(parts, origParts)
+		// Find the first TextContent part and rewrite it. Don't hardcode index 0 —
+		// a mixed Human message could carry an image or binary part at [0] and a
+		// text part later; hardcoding would corrupt non-text content.
+		replaced := false
+		for j, part := range parts {
+			if tc, ok := part.(llms.TextContent); ok {
+				tc.Text = "Continue."
+				parts[j] = tc
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			// No text part at all (e.g. image-only human turn with empty caption
+			// somehow marked unusable): append a text part rather than dropping
+			// the original content or creating a second Human message.
+			parts = append(parts, llms.TextContent{Text: "Continue."})
+		}
+		out[emptyHumanIdx].Parts = parts
+		return out, ensureUserMessageReplaced
+	}
+	// No Human turn at all — safe to append; no consecutive-role concern.
+	out := make([]llms.MessageContent, len(messages), len(messages)+1)
+	copy(out, messages)
+	return append(out, llms.TextParts(llms.ChatMessageTypeHuman, "Continue.")), ensureUserMessageAppended
+}
+
+// hasUsableContent reports whether a message carries content the model can render — any
+// non-text part (image, binary, …) or a text part with non-whitespace content.
+func hasUsableContent(m llms.MessageContent) bool {
+	for _, p := range m.Parts {
+		if t, ok := p.(llms.TextContent); ok {
+			if strings.TrimSpace(t.Text) != "" {
+				return true
+			}
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // SummarizeLargeMessageChunked chunks a very large message and summarizes it with context preservation
 // Each chunk is summarized, and subsequent chunks include previous summaries as context
 // ALWAYS checks token limits before processing each chunk to prevent errors

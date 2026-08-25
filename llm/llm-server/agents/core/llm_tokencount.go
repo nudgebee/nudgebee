@@ -3,7 +3,6 @@ package core
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -282,8 +281,9 @@ func GetLlmMaxOutputTokens(model string) int {
 }
 
 // anthropicMaxOutputTokens returns the output-token ceiling for a Claude 4.x-or-newer
-// model, parsed from the model id rather than enumerated, so a new point release
-// cannot silently fall through to the caller's floor.
+// model, reusing the generation parser that already backs the thinking-capability
+// table (anthropicGeneration) so both tables agree on what "4.6" means and neither
+// has to re-learn Anthropic's id conventions.
 //
 // Values are deliberately at or BELOW each generation's documented ceiling:
 // over-requesting max_tokens is a hard 400 from the provider, whereas
@@ -294,7 +294,7 @@ func GetLlmMaxOutputTokens(model string) int {
 // Returns 0 for anything it cannot place, which leaves the caller's existing floor
 // in charge rather than guessing a ceiling for an unknown model.
 func anthropicMaxOutputTokens(normalized string) int {
-	major, minor, ok := anthropicGenerationForOutputCap(normalized)
+	major, minor, ok := anthropicGeneration(normalized)
 	if !ok || major < 4 {
 		return 0
 	}
@@ -305,41 +305,6 @@ func anthropicMaxOutputTokens(normalized string) int {
 	// Opus 4/4.1 cap at 32k — stay at the lowest ceiling in the 4.0-4.5 band so one
 	// value is safe for every model in it.
 	return 32000
-}
-
-// anthropicGenerationForOutputCap extracts major/minor from a Claude model id, across
-// bare, vendor-prefixed and Bedrock shapes ("claude-sonnet-4-6", "anthropic/claude-...",
-// "us.anthropic.claude-...-v1:0").
-//
-// The minor is bounded to two digits so a date suffix cannot be read as one:
-// "claude-sonnet-4-20250514" is generation 4 with no minor, not 4.20250514. A missing
-// minor reads as 0, so "claude-sonnet-5" is 5.0.
-//
-// NOTE (prod cherry-pick): upstream #36449 calls anthropicGeneration in
-// thinking_capability.go, which is part of #36320 and has not been promoted to prod.
-// This is a scoped local copy under a distinct name so the two cannot collide when
-// #36320 lands here; fold it back into the shared parser at that point.
-var (
-	outputCapFamilyFirstRE  = regexp.MustCompile(`claude-[a-z]+-(\d+)(?:[-.](\d{1,2})\b)?`)
-	outputCapVersionFirstRE = regexp.MustCompile(`claude-(\d+)[-.](\d{1,2})\b`)
-)
-
-func anthropicGenerationForOutputCap(m string) (major, minor int, ok bool) {
-	// "claude-3-7-sonnet" puts the version first; check it before the family-first form,
-	// whose [a-z]+ would otherwise fail to match the digits.
-	if g := outputCapVersionFirstRE.FindStringSubmatch(m); g != nil {
-		major, _ = strconv.Atoi(g[1])
-		minor, _ = strconv.Atoi(g[2])
-		return major, minor, true
-	}
-	if g := outputCapFamilyFirstRE.FindStringSubmatch(m); g != nil {
-		major, _ = strconv.Atoi(g[1])
-		if g[2] != "" {
-			minor, _ = strconv.Atoi(g[2])
-		}
-		return major, minor, true
-	}
-	return 0, 0, false
 }
 
 // GetLlmDefaultThinkingLevel returns the default thinking level for a model.

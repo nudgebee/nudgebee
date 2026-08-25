@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -112,68 +111,28 @@ func (m MySQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 		return core.NBToolResponse{}, err
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		// For workspace mode, we want raw terminal output
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, query, map[string]string{
-			"MYSQL_DATABASE":                  database,
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("mysql: unable to execute shell script", "error", err.Error(), "command", query)
-			if response == "" {
-				response = err.Error()
-			}
-			// mysql CLI uses --help for flags but its interactive help is \h;
-			// the model rarely runs the CLI directly, so lean on the SQL side.
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "mysql", `mysql --help (or \h in interactive mode for SQL syntax)`),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
-
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobMysql, query, nbRequestContext.AccountId, map[string]any{
-		"database": database,
-	}, false)
+	wm := workspace.NewWorkspaceManager()
+	// For workspace mode, we want raw terminal output
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, query, map[string]string{
+		"MYSQL_DATABASE":                  database,
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("mysql: unable to execute mysql query", "error", err.Error())
-		responseData := ""
-		if response != nil {
-			if responseData1, ok := response.(string); ok {
-				responseData = responseData1
-			}
+		nbRequestContext.Ctx.GetLogger().Error("mysql: unable to execute shell script", "error", err.Error(), "command", query)
+		if response == "" {
+			response = err.Error()
 		}
-		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
-		// non-string response, so the LLM always sees the failure reason
-		// rather than an empty envelope.
-		if responseData == "" {
-			responseData = err.Error()
-		}
+		// mysql CLI uses --help for flags but its interactive help is \h;
+		// the model rarely runs the CLI directly, so lean on the SQL side.
 		return core.NBToolResponse{
-			Data:   cliRecoveryEnvelope(responseData, "", "mysql", ""),
+			Data:   cliRecoveryEnvelope(response, "", "mysql", `mysql --help (or \h in interactive mode for SQL syntax)`),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	// Guard the assertion (mirrors tool_mssql): a future ExecuteContainerJob
-	// path could return a non-string / nil response alongside a nil error,
-	// which an unguarded `response.(string)` would turn into a panic. A nil
-	// response falls through as an empty string rather than the literal
-	// "<nil>" that fmt.Sprintf would produce.
-	data, ok := response.(string)
-	if !ok && response != nil {
-		data = fmt.Sprintf("%v", response)
-	}
 	return core.NBToolResponse{
-		Data:   data,
-		Type:   core.NBToolResponseTypeTable,
+		Data:   response,
+		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
 }

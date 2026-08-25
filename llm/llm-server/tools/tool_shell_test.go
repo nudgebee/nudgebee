@@ -102,6 +102,30 @@ func TestLooksLikeMissingDynamicFile(t *testing.T) {
 			want:     true,
 		},
 		{
+			// The dominant production shape: the model reconstructs a plausible
+			// name with a SHORT unix-second timestamp (10 digits). The old
+			// \d{15,19} pattern missed these, so a piped `grep <guess> | head`
+			// was reclassified as a benign no-match and the storm looped.
+			name:     "hallucinated name with a short unix-second timestamp",
+			response: "grep: logs_kubectl_1786095612.txt: No such file or directory\n",
+			want:     true,
+		},
+		{
+			name:     "hallucinated name with hyphenated pod segment",
+			response: "grep: logs_quote-6969d5454-v6v6v_1723034414.txt: No such file or directory\n",
+			want:     true,
+		},
+		{
+			name:     "missing system-offloaded evidence file",
+			response: "grep: evidence_logs_77c1f690.txt: No such file or directory\n",
+			want:     true,
+		},
+		{
+			name:     "missing system-offloaded investigation-query file",
+			response: "grep: investigation_query_abc123.txt: No such file or directory\n",
+			want:     true,
+		},
+		{
 			name:     "genuine empty no-match result",
 			response: "",
 			want:     false,
@@ -178,17 +202,22 @@ func TestShellErrorHint(t *testing.T) {
 			command:     `grep "foo file`,
 			wantHintSub: "unbalanced quotes",
 		},
+		// Every missing file-read gets the SAME generic hint that leads with
+		// `ls -la` — no branching on the filename shape. The cases below span the
+		// range of names (plain path, tool-output shape, reconstructed short-
+		// timestamp guess, system-offloaded artifact) to lock that they all get
+		// the one hint rather than pattern-specific variants.
 		{
-			name:        "no such file on cat",
+			name:        "no such file on cat leads with ls",
 			rawError:    `cat: /tmp/missing.json: No such file or directory`,
 			command:     "cat /tmp/missing.json",
-			wantHintSub: "workspace pod is per-account",
+			wantHintSub: "ls -la",
 		},
 		{
-			name:        "no such file on grep",
+			name:        "no such file on grep leads with ls",
 			rawError:    `grep: /tmp/missing.json: No such file or directory`,
 			command:     "grep foo /tmp/missing.json",
-			wantHintSub: "workspace pod is per-account",
+			wantHintSub: "ls -la",
 		},
 		{
 			name:        "no such file on non-file-reader gets no hint",
@@ -196,25 +225,33 @@ func TestShellErrorHint(t *testing.T) {
 			command:     "kubectl apply -f /tmp/missing.yaml",
 			wantHintSub: "", // first token is kubectl, not a file reader
 		},
-		// Dynamic workspace filename (logs_/metrics_/traces_ + unix-nano) — the
-		// fetch_logs file_ref race. See agent_log_fetch.go:saveLogsToWorkspace.
 		{
-			name:        "no such file on grep against a fetch_logs-shaped filename gets the dynamic-file hint",
+			// The generic hint retains the fetch_logs / tool-output race caveat
+			// as one sentence, so we don't lose that guidance by collapsing hints.
+			name:        "no such file on a fetch_logs-shaped filename keeps the same-batch race caveat",
 			rawError:    `grep: logs_kubectl_1784552026142158849.txt: No such file or directory`,
 			command:     `grep -nE "ERROR" logs_kubectl_1784552026142158849.txt`,
-			wantHintSub: "only known once that tool call actually completes",
+			wantHintSub: "SAME batch",
 		},
 		{
-			name:        "no such file on grep against a metrics-shaped filename also gets the dynamic-file hint",
-			rawError:    `grep: metrics_prometheus_1784552026142158849.json: No such file or directory`,
-			command:     `grep -nE "cpu" metrics_prometheus_1784552026142158849.json`,
-			wantHintSub: "only known once that tool call actually completes",
+			// The storm shape: a reconstructed name with a short unix-second
+			// timestamp. Gets the same generic hint (leads with `ls`).
+			name:        "no such file on a hallucinated short-timestamp name leads with ls",
+			rawError:    `grep: logs_kubectl_1786095612.txt: No such file or directory`,
+			command:     `grep -nE "ERROR" logs_kubectl_1786095612.txt`,
+			wantHintSub: "ls -la",
 		},
 		{
-			name:        "no such file on a plain filename that merely resembles the pattern falls back to the generic hint",
-			rawError:    `grep: logs_kubectl.txt: No such file or directory`,
-			command:     `grep -nE "ERROR" logs_kubectl.txt`,
-			wantHintSub: "workspace pod is per-account", // no unix-nano segment — not a dynamic-file guess
+			name:        "no such file on a system-offloaded evidence file leads with ls",
+			rawError:    `grep: evidence_logs_77c1f690.txt: No such file or directory`,
+			command:     `grep -iE "error|timeout" evidence_logs_77c1f690.txt`,
+			wantHintSub: "ls -la",
+		},
+		{
+			name:        "no such file on a plain non-artifact filename leads with ls",
+			rawError:    `grep: notes.txt: No such file or directory`,
+			command:     `grep -nE "ERROR" notes.txt`,
+			wantHintSub: "ls -la",
 		},
 		{
 			name:        "command not found",
@@ -239,7 +276,7 @@ func TestShellErrorHint(t *testing.T) {
 			name:        "no such file on env-prefixed cat gets the hint",
 			rawError:    `cat: /tmp/missing.json: No such file or directory`,
 			command:     "LC_ALL=C cat /tmp/missing.json",
-			wantHintSub: "workspace pod is per-account",
+			wantHintSub: "ls -la",
 		},
 		{
 			name:        "no such file on env-prefixed kubectl gets no hint (not a file reader)",
@@ -311,7 +348,7 @@ func TestWrapShellError_PreservesOriginal(t *testing.T) {
 	wrapped := wrapShellError(raw, "cat /tmp/missing.json")
 
 	// The wrapped form must contain both the hint and the raw error verbatim.
-	assert.Contains(t, wrapped, "workspace pod is per-account")
+	assert.Contains(t, wrapped, "ls -la")
 	assert.Contains(t, wrapped, raw)
 	assert.Contains(t, wrapped, `"original_error"`)
 	assert.Contains(t, wrapped, `"error_hint"`)

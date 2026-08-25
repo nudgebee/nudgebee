@@ -477,3 +477,7 @@ workflow-server:
 cost-server:
   enabled: true
   fullnameOverride: cost-server
+llm-gateway:
+  enabled: true
+  fullnameOverride: llm-gateway
+

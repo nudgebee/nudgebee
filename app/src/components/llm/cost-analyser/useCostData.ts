@@ -7,12 +7,20 @@
  *
  *   - `usageFilters` — filter-bar option-sets        (ai_get_usage_filters)
  *   - `metrics`      — KPI totals + per-dim breakdowns (ai_aggregate_usage_metrics)
- *   - `conversations`— up to 200 rows, cost-desc       (ai_list_conversation_costs)
+ *   - `conversations`— Overview's top-10 "recent runs"  (ai_list_conversation_costs)
  *
- * The Conversations explorer does NOT read that shared 200-row window — it pages
- * the same action server-side through `useConversationList` (below), so its row
- * count is the filter-wide total rather than the capped window. Callers rendering
- * that tab pass `skipConversations` to suppress the redundant shared fetch.
+ * `metrics`/`conversations` are only ever rendered by a subset of tabs (Overview,
+ * Models — see METRICS_TABS/CONVERSATIONS_TABS below); Agents, Tools, Users and
+ * Critiques fetch their own data independently and never read these fields. So
+ * both are fetched lazily, keyed on the active `tab`, instead of unconditionally
+ * on every mount — a tab that doesn't use them triggers no request. Each domain
+ * remembers the filter key it was last fetched for so flipping between tabs that
+ * share data (Overview ↔ Models) doesn't refetch.
+ *
+ * The Conversations explorer does NOT read the shared window — it pages the same
+ * action server-side through `useConversationList` (below), so its row count is
+ * the filter-wide total rather than a capped window, and no shared list fetch
+ * runs while that tab is open.
  *
  * Mock-only filters (trigger / assistant / template) are intentionally NOT sent
  * and do not trigger a refetch — they scope the mock-backed widgets only.
@@ -37,7 +45,18 @@ import type { CostFilters, Run } from './types';
 
 const OVERVIEW_DIMS: UsageDimension[] = ['source', 'model', 'agent', 'user', 'account'];
 const LIST_LIMIT = 200;
+/** Overview's "recent runs" widget only ever renders the top 10 (OverviewView.tsx) —
+ * fetch a small page there instead of the full explorer page. */
+const OVERVIEW_RUNS_LIMIT = 10;
 const DAY_MS = 86_400_000;
+
+/** Tabs whose view reads `metrics` (KPI totals + dimension breakdowns + prevTotals). */
+const METRICS_TABS = new Set(['overview', 'models']);
+/** Tabs whose view reads `conversations`. Only Overview's "recent runs" widget —
+ * the Conversations explorer pages the same action itself (`useConversationList`). */
+const CONVERSATIONS_TABS = new Set(['overview']);
+/** FilterBar (and its dropdown options) is hidden only on the Critiques tab. */
+const FILTER_BAR_TABS_EXCLUDED = new Set(['critiques']);
 
 export interface CostData {
   loading: boolean;
@@ -63,7 +82,7 @@ function previousWindow(startDate: string, endDate: string): { startDate: string
   return { startDate: `${iso(prevStartMs)}T00:00:00Z`, endDate: `${iso(prevEndMs)}T23:59:59Z` };
 }
 
-function toFilterRequest(accountId: string | undefined, f: CostFilters): UsageFilterRequest {
+export function toFilterRequest(accountId: string | undefined, f: CostFilters): UsageFilterRequest {
   return {
     accountIds: accountId ? [accountId] : [],
     startDate: `${f.startDate}T00:00:00Z`,
@@ -79,13 +98,18 @@ function toFilterRequest(accountId: string | undefined, f: CostFilters): UsageFi
   };
 }
 
-export function useCostData(accountId: string | undefined, filters: CostFilters, skipConversations = false): CostData {
-  const [loading, setLoading] = React.useState(true);
+export function useCostData(accountId: string | undefined, filters: CostFilters, tab: string): CostData {
+  const needUsageFilters = !FILTER_BAR_TABS_EXCLUDED.has(tab);
+  const needMetrics = METRICS_TABS.has(tab);
+  const needConversations = CONVERSATIONS_TABS.has(tab);
+
   const [error, setError] = React.useState<string | null>(null);
   const [usageFilters, setUsageFilters] = React.useState<UsageFilters | null>(null);
   const [metrics, setMetrics] = React.useState<UsageMetrics | null>(null);
   const [prevTotals, setPrevTotals] = React.useState<UsageTotals | null>(null);
   const [conversations, setConversations] = React.useState<ConversationCostList | null>(null);
+  const [metricsLoading, setMetricsLoading] = React.useState(needMetrics);
+  const [conversationsLoading, setConversationsLoading] = React.useState(needConversations);
   const [nonce, setNonce] = React.useState(0);
 
   // The filter-bar option-sets depend ONLY on account + date window (not on the
@@ -110,15 +134,20 @@ export function useCostData(accountId: string | undefined, filters: CostFilters,
     nonce,
   });
 
-  // Filter-bar options — refetch only when account/date changes. Non-critical:
-  // a failure leaves the dropdowns empty but doesn't break the content view.
+  // Filter-bar options — refetch only when account/date changes, and only while a
+  // tab that renders FilterBar is active. Non-critical: a failure leaves the
+  // dropdowns empty but doesn't break the content view.
+  const usageFiltersKeyRef = React.useRef<string | null>(null);
   React.useEffect(() => {
+    if (!needUsageFilters || usageFiltersKeyRef.current === filtersKey) return;
     const controller = new AbortController();
     let cancelled = false;
     const req = toFilterRequest(accountId, filters);
     getUsageFilters({ accountIds: req.accountIds, startDate: req.startDate, endDate: req.endDate }, controller.signal)
       .then((uf) => {
-        if (!cancelled) setUsageFilters(uf);
+        if (cancelled) return;
+        setUsageFilters(uf);
+        usageFiltersKeyRef.current = filtersKey;
       })
       .catch(() => {
         /* options are supplementary — don't surface as a page error */
@@ -128,52 +157,41 @@ export function useCostData(accountId: string | undefined, filters: CostFilters,
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtersKey]);
+  }, [filtersKey, needUsageFilters]);
 
-  // Content — metrics + conversation list + prev-period totals. Each half
-  // remembers the dataKey it was last fetched for, so toggling `skipConversations`
-  // (i.e. switching into or out of the Conversations tab, which pages the list
-  // itself) doesn't re-run the metrics queries that are already current.
+  // Metrics + prev-period totals — Overview (KPI cards + breakdown charts) and
+  // Models (per-model breakdown + over-time charts) only. Cached per dataKey so
+  // flipping Overview <-> Models doesn't refetch identical data.
   const metricsKeyRef = React.useRef<string | null>(null);
-  const listKeyRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    const needMetrics = metricsKeyRef.current !== dataKey;
-    const needList = !skipConversations && listKeyRef.current !== dataKey;
-    if (!needMetrics && !needList) return;
-
+    if (!needMetrics || metricsKeyRef.current === dataKey) return;
     const controller = new AbortController();
     let cancelled = false;
 
     const run = async () => {
-      setLoading(true);
+      setMetricsLoading(true);
       setError(null);
       const req = toFilterRequest(accountId, filters);
       const prev = previousWindow(filters.startDate, filters.endDate);
       try {
-        const [m, cl, pm] = await Promise.all([
-          needMetrics
-            ? aggregateUsageMetrics({ ...req, groupBy: OVERVIEW_DIMS, topN: 15, granularity: filters.granularity }, controller.signal)
-            : null,
-          needList ? listConversationCosts({ ...req, sortBy: 'cost', sortDir: 'desc', limit: LIST_LIMIT, offset: 0 }, controller.signal) : null,
-          needMetrics
-            ? aggregateUsageMetrics({ ...req, startDate: prev.startDate, endDate: prev.endDate, groupBy: [], topN: 0 }, controller.signal)
-            : null,
+        const [m, pm] = await Promise.all([
+          aggregateUsageMetrics({ ...req, groupBy: OVERVIEW_DIMS, topN: 15, granularity: filters.granularity }, controller.signal),
+          // Totals-only comparison window — no breakdown/time-series/storage needed,
+          // only pm.totals is read below, so skip the (expensive) storage scan.
+          aggregateUsageMetrics(
+            { ...req, startDate: prev.startDate, endDate: prev.endDate, groupBy: [], topN: 0, skipStorage: true },
+            controller.signal
+          ),
         ]);
         if (cancelled) return;
-        if (needMetrics) {
-          setMetrics(m);
-          setPrevTotals(pm?.totals ?? null);
-          metricsKeyRef.current = dataKey;
-        }
-        if (needList) {
-          setConversations(cl);
-          listKeyRef.current = dataKey;
-        }
+        setMetrics(m);
+        setPrevTotals(pm?.totals ?? null);
+        metricsKeyRef.current = dataKey;
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : 'Failed to load cost data');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setMetricsLoading(false);
       }
     };
 
@@ -183,10 +201,44 @@ export function useCostData(accountId: string | undefined, filters: CostFilters,
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataKey, skipConversations]);
+  }, [dataKey, needMetrics]);
+
+  // Conversation list — Overview's top-10 "recent runs" widget only; the
+  // Conversations explorer pages the same action itself (`useConversationList`).
+  // Cached per dataKey so returning to Overview doesn't refetch.
+  const conversationsKeyRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!needConversations || conversationsKeyRef.current === dataKey) return;
+    const controller = new AbortController();
+    let cancelled = false;
+
+    const run = async () => {
+      setConversationsLoading(true);
+      setError(null);
+      const req = toFilterRequest(accountId, filters);
+      try {
+        const cl = await listConversationCosts({ ...req, sortBy: 'cost', sortDir: 'desc', limit: OVERVIEW_RUNS_LIMIT, offset: 0 }, controller.signal);
+        if (cancelled) return;
+        setConversations(cl);
+        conversationsKeyRef.current = dataKey;
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : 'Failed to load cost data');
+      } finally {
+        if (!cancelled) setConversationsLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataKey, needConversations]);
 
   return {
-    loading,
+    loading: (needMetrics && metricsLoading) || (needConversations && conversationsLoading),
     error,
     usageFilters,
     metrics,

@@ -2,9 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"nudgebee/llm/cloud"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -13,6 +10,29 @@ import (
 )
 
 const ToolExecuteAwsCliCommand = "aws_execute"
+
+func init() {
+	// Phase 3d (#32503): the retired AwsAgent used the short handle "aws".
+	// Preserve resolvability for stored delegate_agent(tools=["aws"]) calls.
+	core.RegisterNBToolAlias("aws", ToolExecuteAwsCliCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the aws_orchestrator's rich `aws_lean.yaml` prompt is NOT loaded.
+// Deliberately slim: only the safety-critical and easy-to-miss syntax rules
+// that MUST survive delegate context. The orchestrator prompt still owns
+// investigation methodology, decision trees, and rich examples.
+func (t AwsCliTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs, ARNs, or IPs — empty CLI results = 'not found'.",
+		"**IAM safety:** NEVER attempt to modify your own IAM permissions or roles to grant access. `aws iam add-user-policy`, `aws iam attach-role-policy`, and similar are OFF LIMITS. Report missing permissions as a finding.",
+		"**Filter syntax gotcha:** `--filters` is plural. Values follow `Name=<filter>,Values=<value>` — e.g. `--filters Name=vpc-id,Values=vpc-12345`. Common wrong forms: `--filter …` (singular), `vpc-id=vpc-12345` (missing Name=/Values=).",
+		"**Group-by syntax gotcha:** `--group-by` values are `Type=DIMENSION,Key=<KEY>` space-separated between groups — e.g. `--group-by Type=DIMENSION,Key=SERVICE Type=DIMENSION,Key=REGION`. NOT `Type=SERVICE Type=REGION` and NOT comma-separated between groups.",
+		"**Cost Explorer credits:** For gross spend, exclude credits/refunds explicitly — `--filter '{\"Not\":{\"Dimensions\":{\"Key\":\"RECORD_TYPE\",\"Values\":[\"Credit\",\"Refund\"]}}}'`. Net cost is ~$0 on credit-covered accounts and misleads reporting.",
+		"**Config-provenance gate:** BEFORE proposing SG/NACL/routing changes for an app problem, check EC2 UserData / Launch Template / App Settings first — configuration issues look like network issues but aren't.",
+	}
+}
 
 // Pre-compiled regexes for shell syntax detection in aws_execute commands.
 var shellSyntaxRegexes = []*regexp.Regexp{
@@ -44,7 +64,8 @@ func (t AwsCliTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:**  When interacting with AWS, use this tool to retrieve information or perform actions.
-		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions. Single command only — no shell loops, pipes into shells, '&&', or '$()'.
+		* **Prioritize this tool:**  When interacting with AWS, use this tool to retrieve information or perform actions.
+		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions.
 		* **Output:**  The raw output of the executed 'aws' CLI command.
 
 		**Examples:**
@@ -57,7 +78,6 @@ func (t AwsCliTool) Description() string {
 
 		* Ensure correct command formatting and arguments. Always specify the region.
 		* Do not include AWS credentials in commands.  Assume they are configured correctly in the environment.
-		* For complex queries, use tools like 'jq' to parse and filter the JSON output.  Indicate this in the command.
 		`
 }
 
@@ -82,10 +102,6 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 
 	command := strings.TrimSpace(input.Command)
 
-	if !strings.HasPrefix(command, "aws") {
-		command = "aws " + command // Ensure "aws" prefix
-	}
-
 	accountId := ""
 	for _, v := range nbRequestContext.ToolConfig.Values {
 		if v.Name == "id" {
@@ -98,103 +114,46 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		return core.NBToolResponse{}, fmt.Errorf("unable to identify accountId - %s, please configure", t.Name())
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		creds, err := GetCloudAccountCredentials(accountId)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-
-		auth, err := BuildAwsAuth(nbRequestContext.Ctx.GetContext(), creds)
-		if err != nil {
-			// Check for permanent STS errors that should not be retried
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "PERMANENT ERROR") {
-				return core.NBToolResponse{
-					Data:   errMsg,
-					Status: core.NBToolResponseStatusError,
-				}, nil
-			}
-			return core.NBToolResponse{}, err
-		}
-
-		auth.Env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
-
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, auth.Env)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("aws: unable to execute shell script", "error", err.Error(), "command", command)
-			if response == "" {
-				response = err.Error()
-			}
-			// aws uses `aws <service> help` (no dashes), NOT `--help`, as the
-			// canonical help subcommand — hardcoding `--help` here would send
-			// the model to a slightly different code path.
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "aws", "aws <service> help"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
-
-	// Reject shell syntax in non-workspace mode — cloud.Execute only supports single CLI commands.
-	// When workspace is enabled (above), commands run in an isolated pod where shell syntax is safe.
-	if isShellSyntax(command) {
-		return core.NBToolResponse{
-			Data:   "ERROR: aws_execute accepts a single AWS CLI command, not shell scripts or loops. Call aws_execute once per command instead of using for-loops or pipes.",
-			Status: core.NBToolResponseStatusError,
-		}, nil
-	}
-
-	tenant := nbRequestContext.Ctx.GetSecurityContext().GetTenantId()
-	if tenant == "" {
-		tenant1, err := security.GetTenantIdFromAccountId(accountId)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-		tenant = tenant1
-	}
-
-	response, err := cloud.Execute(cloud.CloudExecuteCliCommandRequest{
-		AccountID: accountId,
-		TenantID:  tenant,
-		UserID:    nbRequestContext.Ctx.GetSecurityContext().GetUserId(),
-		Command:   command,
-	})
+	creds, err := GetCloudAccountCredentials(accountId)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("aws-cli: command execution failed", "error", err.Error(), "command", command)
 		return core.NBToolResponse{}, err
 	}
 
-	data := ""
-	if response["data"] != nil {
-		data = response["data"].(string)
-	} else if response["errors"] != nil {
-		errorsArr, ok := response["errors"].([]any)
-		if ok && len(errorsArr) > 0 {
-			errorMap, ok := errorsArr[0].(map[string]any)
-			if ok {
-				data = errorMap["message"].(string)
-			}
+	auth, err := BuildAwsAuth(nbRequestContext.Ctx.GetContext(), creds)
+	if err != nil {
+		// Check for permanent STS errors that should not be retried
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "PERMANENT ERROR") {
+			return core.NBToolResponse{
+				Data:   errMsg,
+				Status: core.NBToolResponseStatusError,
+			}, nil
 		}
+		return core.NBToolResponse{}, err
 	}
 
-	if data == "" {
-		dataArr, err := common.MarshalJson(response)
-		if err != nil {
-			return core.NBToolResponse{}, err
+	auth.Env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
+
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, auth.Env)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("aws: unable to execute shell script", "error", err.Error(), "command", command)
+		if response == "" {
+			response = err.Error()
 		}
-		data = string(dataArr)
+		// aws uses `aws <service> help` (no dashes), NOT `--help`, as the
+		// canonical help subcommand — hardcoding `--help` here would send
+		// the model to a slightly different code path.
+		return core.NBToolResponse{
+			Data:   cliRecoveryEnvelope(response, "", "aws", "aws <service> help"),
+			Status: core.NBToolResponseStatusError,
+		}, err
 	}
 
 	return core.NBToolResponse{
-		Data: data,
-		Type: core.NBToolResponseTypeText,
+		Data:   response,
+		Type:   core.NBToolResponseTypeText,
+		Status: core.NBToolResponseStatusSuccess,
 	}, nil
 }
 

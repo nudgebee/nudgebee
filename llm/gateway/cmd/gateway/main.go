@@ -20,6 +20,7 @@ import (
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/common"
 	"nudgebee/llm-gateway/config"
+	"nudgebee/llm-gateway/configtest"
 	"nudgebee/llm-gateway/engine"
 	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/proxy"
@@ -64,36 +65,15 @@ func traceResponseHeaderMiddleware() gin.HandlerFunc {
 	}
 }
 
-// providerCreds assembles the operator provider credentials from config: a key
-// per API-key provider (Anthropic/OpenAI/Gemini/HuggingFace — set any subset to
-// serve them all at once) plus the LLM_PROVIDER_* block for a single cloud provider
-// (Bedrock/Vertex/Azure) that needs structured creds. engine.New dedupes by
-// provider (per-provider keys win) and skips entries with no credential.
+// providerCreds assembles the operator provider credentials from config: a key per
+// API-key provider (Anthropic/OpenAI/Gemini/HuggingFace — set any subset to serve them
+// all at once). These GATEWAY_*_API_KEY keys are the gateway's ONLY env credential
+// source; a cloud provider (Bedrock/Vertex/Azure), a custom OpenAI-compatible endpoint,
+// or a per-tenant BYO key is configured as an LLM integration (resolved separately),
+// not via env. engine.New skips entries with no credential.
 func providerCreds() []engine.ProviderCredsConfig {
-	var creds []engine.ProviderCredsConfig
-
-	// LLM_PROVIDER_* block — when it carries a credential, an endpoint for a self-hosted
-	// provider (Ollama/vLLM/SGL are reached by base URL with an optional key), or when the
-	// named provider can run keyless (Bedrock via IRSA / the AWS default credential chain,
-	// enabled by setting LLM_PROVIDER=bedrock with no static keys). Scoping the endpoint
-	// case to self-hosted avoids a spurious "configured but unusable" warning for a plain
-	// base-URL override on an api-key provider that has no key set.
 	c := config.Config
-	if c.LlmProviderApiKey != "" || c.LlmProviderAccessKey != "" || c.LlmProviderSecretKey != "" ||
-		(c.LlmProviderApiEndpoint != "" && engine.SupportsEndpointOperator(c.LlmProvider)) ||
-		engine.SupportsKeylessOperator(c.LlmProvider) {
-		creds = append(creds, engine.ProviderCredsConfig{
-			Provider:     c.LlmProvider,
-			APIKey:       c.LlmProviderApiKey,
-			Endpoint:     c.LlmProviderApiEndpoint,
-			Region:       c.LlmProviderRegion,
-			AccessKey:    c.LlmProviderAccessKey,
-			SecretKey:    c.LlmProviderSecretKey,
-			SessionToken: c.LlmProviderSessionToken,
-		})
-	}
-
-	// Per-provider API keys (appended last so they take precedence per provider).
+	var creds []engine.ProviderCredsConfig
 	for _, pc := range []engine.ProviderCredsConfig{
 		{Provider: "anthropic", APIKey: c.AnthropicAPIKey},
 		{Provider: "openai", APIKey: c.OpenAIAPIKey},
@@ -258,6 +238,12 @@ func main() {
 	// clear 403 (rather than a keyless upstream error) when no credential is available.
 	proxy.RegisterOperatorCreds(eng.HasProviderCred)
 	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer)
+
+	// Connectivity-probe plane (POST /rpc/config/test-connection): the api-server delegates
+	// LLM Gateway "Test Connection" here so the probe runs from the gateway's own network
+	// (real reachability + SSRF guard), guarded by the action token. No DB needed — the
+	// config to test arrives in the request body.
+	configtest.RegisterRoutes(r, config.Config.GatewayActionToken)
 
 	// Read-only usage query plane (POST /rpc/usage/aggregate) for the AI Gateway
 	// dashboard — app → gateway service-to-service, guarded by the action token.

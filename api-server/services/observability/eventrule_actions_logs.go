@@ -536,6 +536,17 @@ func extractLogInsights(logs []OutputLog, maxErrors int) []playbooks.PlaybookAct
 // extracted labels. additionalInfo may carry action_name / reference_url that a
 // caller wants preserved; title, when non-empty, is merged in.
 func buildLogsActionResponse(logs []OutputLog, title string, additionalInfo map[string]any, maxInsights int, metaQuery any, extractors []RegexLabelExtractor, labelExtractors []LabelExtractor) *playbooks.LogsActionResponse {
+	// No logs means no card. An evidence of {"data":[]} renders an empty log
+	// viewer, which reads as "we looked and the service was quiet" when the truth
+	// is usually that nothing was collected — a resource that ships no logs, a
+	// scope that matched nothing, or missing permissions. The cloud_logs action
+	// already returns nil in this case; this path is the one that did not, so the
+	// same query produced an empty card or no card depending on which provider
+	// answered. Callers treat nil as "action produced nothing", which is the
+	// honest signal.
+	if len(logs) == 0 {
+		return nil
+	}
 	if additionalInfo == nil {
 		additionalInfo = map[string]any{}
 	}
@@ -558,6 +569,20 @@ func buildLogsActionResponse(logs []OutputLog, title string, additionalInfo map[
 		Metadata:        base.Metadata,
 		ExtractedLabels: extractLogLabelsFromOutputLogs(logs, extractors, labelExtractors),
 	}
+}
+
+// logsResponseOrNil returns a *true* nil PlaybookActionResponse when there is no
+// log evidence to store.
+//
+// Returning the typed pointer straight from an action would produce a non-nil
+// interface wrapping a nil *LogsActionResponse: every downstream `!= nil` check
+// passes and the first field access panics. Every caller of
+// buildLogsActionResponse must go through here.
+func logsResponseOrNil(resp *playbooks.LogsActionResponse) (playbooks.PlaybookActionResponse, error) {
+	if resp == nil {
+		return nil, nil
+	}
+	return resp, nil
 }
 
 // addExecutedQueryInfo records the provider query FetchLogs actually ran (and the
@@ -1171,7 +1196,7 @@ func (a *signozLogsAction) runSignozFetch(ctx playbooks.PlaybookActionContext, w
 		}
 	}
 
-	return buildLogsActionResponse(logResult.Logs, title, additionalInfo, actionLogMaxInsightErrors, metaQuery, extractors, labelExtractors), nil
+	return logsResponseOrNil(buildLogsActionResponse(logResult.Logs, title, additionalInfo, actionLogMaxInsightErrors, metaQuery, extractors, labelExtractors))
 }
 
 func (a *signozLogsAction) Execute(ctx playbooks.PlaybookActionContext, rawParams map[string]any) (playbooks.PlaybookActionResponse, error) {
@@ -1930,7 +1955,7 @@ type kubectlJsonBlockPayload struct {
 // buildLogResponse creates a standard log action response from OutputLog results
 // (configured-source workload auto path — no caller-supplied label extractors).
 func (a *observabilityLogAction) buildLogResponse(logoutput []OutputLog, queryInfo, additionalInfo map[string]any) (playbooks.PlaybookActionResponse, error) {
-	return buildLogsActionResponse(logoutput, "", additionalInfo, actionLogMaxInsightErrors, queryInfo, nil, nil), nil
+	return logsResponseOrNil(buildLogsActionResponse(logoutput, "", additionalInfo, actionLogMaxInsightErrors, queryInfo, nil, nil))
 }
 
 // buildWorkloadLogWhereClause creates a where clause to filter logs by workload name and namespace.
@@ -2007,7 +2032,7 @@ func (a *observabilityLogAction) Execute(ctx playbooks.PlaybookActionContext, ra
 		return nil, err
 	}
 
-	return buildLogsActionResponse(logResult.Logs, "", addExecutedQueryInfo(map[string]any{}, logResult), actionLogMaxInsightErrors, rawParams, params.RegexExtractors, params.LabelExtractors), nil
+	return logsResponseOrNil(buildLogsActionResponse(logResult.Logs, "", addExecutedQueryInfo(map[string]any{}, logResult), actionLogMaxInsightErrors, rawParams, params.RegexExtractors, params.LabelExtractors))
 }
 
 // Datadog Logs Action
@@ -2169,5 +2194,5 @@ func (a *datadogLogsAction) Execute(ctx playbooks.PlaybookActionContext, rawPara
 
 	// action_name "cloud_logs" is preserved — logActions mutual-exclusion,
 	// agentToServerActionMap dedup, and retained-evidence all key on it.
-	return buildLogsActionResponse(logResult.Logs, title, addExecutedQueryInfo(map[string]any{"action_name": "cloud_logs"}, logResult), 2, rawParams, nil, nil), nil
+	return logsResponseOrNil(buildLogsActionResponse(logResult.Logs, title, addExecutedQueryInfo(map[string]any{"action_name": "cloud_logs"}, logResult), 2, rawParams, nil, nil))
 }

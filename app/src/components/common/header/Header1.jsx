@@ -23,6 +23,8 @@ import NotificationOutlineIconDark from '@assets/new/bell-icon-dark.svg';
 import DocumentationIcon from '@assets/header/Documentation.svg';
 import newAwsLogo from '@assets/logo/aws_logo.png';
 import GroupingIcon from '@assets/header/group-icon.svg';
+import VmServerIcon from '@assets/new/vm-server.svg';
+import DashboardIconBlue from '@assets/home/Dashboard_Icon.svg';
 import OuK8sIcon from '@assets/ou-management/kubernetes_icon.icon.svg';
 import JiraIcon from '@assets/jira_icon.icon.svg';
 import GithubIcon from '@assets/github-icon.icon.svg';
@@ -257,7 +259,17 @@ const Header1 = ({ showBorder = false }) => {
         showAskNudgebee: true,
       },
       {
-        name: 'Cluster Overview',
+        // The fleet-wide overview across every provider's accounts. /kubernetes
+        // keeps an entry because it is still a route — a redirector that shows a
+        // spinner while it resolves which cluster (or /overview) to open.
+        name: 'Account Overview',
+        route: '/overview',
+        icon: ClusterIconBlue,
+        showActiveCluster: false,
+        connectClusterButton: true,
+      },
+      {
+        name: 'Account Overview',
         route: '/kubernetes',
         icon: ClusterIconBlue,
         showActiveCluster: false,
@@ -323,9 +335,11 @@ const Header1 = ({ showBorder = false }) => {
         name: 'Automation',
         route: '/automation',
         icon: WorkflowIconBlue,
-        clusterDetailButton: true,
-        showActiveCluster: true,
-        showAskNudgebee: true,
+        // Tenant-level like Troubleshoot / Optimize above: the listing carries
+        // its own multi-select Account filter, so the global cluster dropdown
+        // would be a second, conflicting account control.
+        clusterDetailButton: false,
+        showActiveCluster: false,
       },
       {
         name: 'Auto Pilot',
@@ -402,12 +416,29 @@ const Header1 = ({ showBorder = false }) => {
         showAskNudgebee: true,
       },
       {
+        name: 'Virtual Machines',
+        route: '/vm',
+        icon: VmServerIcon,
+        // Same shape as Cloud/K8s details: the page is scoped to one account and
+        // the global dropdown is how you switch it. handleDropdownChange sends a
+        // SelfHosted pick here and a cloud/K8s pick back to its own page.
+        showActiveCluster: true,
+        connectAccountButton: false,
+      },
+      {
         name: 'Application Group',
         route: '/grouping',
         icon: GroupingIcon,
         connectAccountButton: false,
         showGroupingDropdown: true,
         showBackButton: true,
+      },
+      {
+        name: 'Dashboards',
+        route: '/dashboards',
+        icon: DashboardIconBlue,
+        showActiveCluster: false,
+        connectAccountButton: false,
       },
       {
         name: (
@@ -447,7 +478,7 @@ const Header1 = ({ showBorder = false }) => {
       },
       {
         name: 'Automation Builder',
-        route: '/workflow',
+        route: '/automation',
         icon: WorkflowIconBlue,
         showActiveCluster: true,
         showAskNudgebee: false,
@@ -524,9 +555,10 @@ const Header1 = ({ showBorder = false }) => {
       );
     });
     if (matchedTab) {
+      const isDashboardGroups = router.pathname === '/dashboards' && router.asPath.includes('#groups');
       setAnchorActiveTab({
-        name: matchedTab.name,
-        icon: matchedTab.icon,
+        name: isDashboardGroups ? 'Application Group' : matchedTab.name,
+        icon: isDashboardGroups ? GroupingIcon : matchedTab.icon,
         showActiveCluster: matchedTab.showActiveCluster,
         disableDropdown: matchedTab.disableDropdown ?? false,
         connectClusterButton: matchedTab.connectClusterButton,
@@ -542,7 +574,7 @@ const Header1 = ({ showBorder = false }) => {
     if (['/tickets', '/user-management', '/kubernetes'].some((path) => router.pathname.startsWith(path))) {
       setSnackbarOpen(false);
     }
-  }, [router.pathname, headerItems]);
+  }, [router.pathname, router.asPath, headerItems]);
 
   // Capture the version this tab booted with — once, when the session first
   // resolves (data is null while useSession is loading). We deliberately never
@@ -587,6 +619,26 @@ const Header1 = ({ showBorder = false }) => {
     const fragment = currentRouter?.asPath?.split('#')?.[1] || '';
     const hashString = fragment ? `#${fragment}` : '';
 
+    // 0. Handle switching TO / AWAY FROM a self-hosted VM fleet.
+    //
+    // Kept ahead of the cloud/K8s branches because it is the only case keyed on
+    // the *provider* rather than the page: /vm is a single tenant-level route
+    // (no per-account path segment), so picking a self-hosted account from any
+    // account-scoped page lands there, and picking anything else while on /vm
+    // has to leave. Falling through to the branches below would push a
+    // SelfHosted id at /cloud-account/details/, which has no provider to render.
+    if (e.cloud_provider === 'SelfHosted') {
+      updateClusterState(e);
+      // Preserve the tab when already on /vm; enter on Summary otherwise.
+      currentRouter.push(`/vm?accountId=${e.value}${currentRouter.pathname === '/vm' ? hashString || '#summary' : '#summary'}`);
+      return;
+    }
+    if (currentRouter.pathname === '/vm') {
+      updateClusterState(e);
+      currentRouter.push(e.cloud_provider === 'K8s' ? `/kubernetes/details/${e.value}#summary` : `/cloud-account/details/${e.value}#summary`);
+      return;
+    }
+
     // 1. Handle switching TO Kubernetes FROM Cloud Account
     if (currentRouter.pathname.indexOf('/cloud-account/details/') > -1 && e.cloud_provider == 'K8s') {
       updateClusterState(e);
@@ -605,18 +657,7 @@ const Header1 = ({ showBorder = false }) => {
       return;
     }
 
-    // 3. Handle Auto Pilot Route (NEW)
-    else if (currentRouter.pathname.indexOf('/automation') > -1 || currentRouter.pathname.indexOf('/auto-pilot') > -1) {
-      const currentAccountId = currentRouter.query.accountId;
-      if (currentAccountId !== e.value) {
-        updateClusterState(e);
-        // Switch account but keep the same tab (hash)
-        currentRouter.push(`/automation?accountId=${e.value}${hashString}`);
-        return;
-      }
-    }
-
-    // 4. Handle same-view switching (staying on details page)
+    // 3. Handle same-view switching (staying on details page)
     const accountId = currentRouter?.query?.accountId || currentRouter.query?.KubernetesDetails || currentRouter.query?.CloudAccountDetails || '';
 
     if (accountId && accountId != e.value) {
@@ -756,6 +797,7 @@ const Header1 = ({ showBorder = false }) => {
       )}
 
       <Box
+        id='app-sticky-header'
         sx={{
           zIndex: 20,
           boxShadow: `0px ${ds.space[0]} ${ds.space[5]} ${ds.space[0]} ${ds.gray.alpha[100]}`,
@@ -804,8 +846,8 @@ const Header1 = ({ showBorder = false }) => {
                 </Typography>
               </Box>
             </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'flex-end', flex: 1 }}>
-              <GlobalPageSearch />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'center', flex: 1 }}>
+              <GlobalPageSearch hasClusterDropdown={anchorActiveTab.showActiveCluster} />
             </Box>
             <Box display={'flex'} alignItems={'center'} justifyContent={'flex-end'} gap={ds.space[3]}>
               <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: ds.space[2] }}>

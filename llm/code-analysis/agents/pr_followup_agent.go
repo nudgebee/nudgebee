@@ -75,13 +75,17 @@ type PRFollowupResult struct {
 
 // reviewComment represents a single review comment that needs to be addressed.
 type reviewComment struct {
-	ID        int64  `json:"id"`
-	Body      string `json:"body"`
-	Path      string `json:"path"`
-	Line      int    `json:"line"`
-	User      string `json:"user"`
-	CreatedAt string `json:"created_at"`
-	Source    string `json:"source"` // "inline", "review_body", "issue_comment"
+	ID   int64  `json:"id"`
+	Body string `json:"body"`
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	User string `json:"user"`
+	// AuthorType is GitHub's user type — "Bot" for any GitHub App, "User"
+	// otherwise. Recorded so the reply step can tell whether anyone would read
+	// a reply. It is deliberately NOT used to filter what the agent sees.
+	AuthorType string `json:"author_type"`
+	CreatedAt  string `json:"created_at"`
+	Source     string `json:"source"` // "inline", "review_body", "issue_comment"
 }
 
 // commentResponse maps a review comment ID to the agent's response.
@@ -146,8 +150,8 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 
 	prDetails := a.gatherPRDetails(ctx, repoInfo, prNumber)
 	inlineComments, inlineText := a.gatherInlineComments(ctx, repoInfo, prNumber)
-	issueComments, issueText := a.gatherIssueComments(ctx, repoInfo, prNumber)
-	reviewBodyComments, reviewBodyText := a.gatherReviewBodyComments(ctx, repoInfo, prNumber)
+	issueComments, issueText, answeredComments := a.gatherIssueComments(ctx, repoInfo, prNumber)
+	reviewBodyComments, reviewBodyText := a.gatherReviewBodyComments(ctx, repoInfo, prNumber, answeredComments)
 	prDiff := a.gatherDiff(ctx, repoInfo, prNumber)
 	ciFailureLogs := a.gatherCIFailureLogs(ctx, repoInfo, prNumber, req.Branch)
 
@@ -377,18 +381,38 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	var responses []commentResponse
 	if len(pendingComments) > 0 {
 		responses = a.extractCommentResponses(submitData, result.Summary, pendingComments)
-		// Build a source lookup from pending comments
+		// Build source and automation lookups from pending comments
 		commentSource := make(map[int64]string)
+		commentIsAutomation := make(map[int64]bool)
 		for _, c := range pendingComments {
 			commentSource[c.ID] = c.Source
+			commentIsAutomation[c.ID] = a.isAutomationComment(c.AuthorType, c.Body)
 		}
 
 		repliedCount := 0
 		skippedUnverified := 0
 		skippedByAgent := 0
+		skippedAutomation := 0
 		for _, resp := range responses {
 			if !resp.ShouldReply {
 				skippedByAgent++
+				continue
+			}
+			// Don't open a new top-level comment just to answer a tool.
+			//
+			// Scoped to non-inline sources on purpose. An inline reply is
+			// threaded under the review comment: GitHub tracks its resolution,
+			// and the human reading the PR sees whether each point was fixed or
+			// declined — so replying to gemini-code-assist or coderabbitai there
+			// is worth doing, and the InReplyToID check already stops repeats.
+			// A reply to a top-level automation comment is a brand-new comment in
+			// the conversation that no one asked for; PR #35094 collected nine of
+			// them reading "Acknowledged." and "Automated labeler comment."
+			//
+			// The comment is still gathered and acted on either way — only this
+			// reply is dropped.
+			if commentSource[resp.CommentID] != "inline" && commentIsAutomation[resp.CommentID] {
+				skippedAutomation++
 				continue
 			}
 			if resp.Action == "fixed" && !agentChangedSomething {
@@ -400,12 +424,25 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 			}
 			replyBody := fmt.Sprintf("**Automated Followup**\n\n%s", resp.Reply)
 			var replyErr error
-			switch commentSource[resp.CommentID] {
+			switch source := commentSource[resp.CommentID]; source {
 			case "inline":
 				replyErr = a.replyToComment(repoInfo, prNumber, resp.CommentID, replyBody)
 			default:
-				// issue_comment and review_body: post a top-level issue comment as reply
-				replyErr = a.postIssueComment(repoInfo, prNumber, replyBody)
+				// issue_comment and review_body: post a top-level issue comment as
+				// reply. Stamp which comment it answers — a standalone comment has
+				// no thread linkage, so this marker is the only record that stops
+				// the next run from replying to the same comment again.
+				//
+				// An empty source means the agent answered a comment id we never
+				// gathered (extractCommentResponses does not validate ids against
+				// the pending set). Post the reply as before, but without a marker:
+				// a marker naming no source cannot be parsed back, and writing one
+				// would put unmatchable noise in the PR.
+				body := replyBody
+				if source != "" {
+					body += "\n\n" + followupReplyMarker(source, resp.CommentID)
+				}
+				replyErr = a.postIssueComment(repoInfo, prNumber, body)
 			}
 			if replyErr != nil {
 				a.logger.Error(common.EventStepFailure, "Failed to reply to comment", replyErr, map[string]any{"comment_id": resp.CommentID, "source": commentSource[resp.CommentID]})
@@ -418,6 +455,7 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 			"replied":            repliedCount,
 			"skipped_unverified": skippedUnverified,
 			"skipped_by_agent":   skippedByAgent,
+			"skipped_automation": skippedAutomation,
 			"total":              len(pendingComments),
 		})
 		result.CommentPosted = repliedCount > 0
@@ -749,21 +787,106 @@ func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitp
 	return unaddressed, sb.String()
 }
 
+// followupReplyMarkerPrefix tags a top-level reply with the id of the comment it
+// answers. Inline replies are threaded, so GitHub itself records what we already
+// said and gatherInlineComments can read it back. Top-level replies are
+// standalone comments with no such linkage: without this marker, every run
+// re-reads every open comment as unanswered and replies again. Observed on
+// PR #35094, where three runs posted nine replies to the same three comments.
+const followupReplyMarkerPrefix = "<!-- nb-followup-reply-to:"
+
+// followupReplyMarkerRe parses the marker back out of one of our own comments.
+var followupReplyMarkerRe = regexp.MustCompile(`<!-- nb-followup-reply-to:([a-z_]+):(\d+) -->`)
+
+// followupReplyMarker renders the marker embedded in a top-level reply.
+func followupReplyMarker(source string, commentID int64) string {
+	return fmt.Sprintf("%s%s:%d -->", followupReplyMarkerPrefix, source, commentID)
+}
+
+// answeredCommentKey is the map key identifying one already-answered comment.
+// Source is part of the key because issue comments and review submissions are
+// separate id spaces on GitHub and can collide.
+func answeredCommentKey(source string, commentID int64) string {
+	return fmt.Sprintf("%s:%d", source, commentID)
+}
+
+// isAutomationComment reports whether a PR comment was written by a tool rather
+// than a person.
+//
+// This gates ONE thing: whether to open a *new top-level comment* answering it.
+// It must never gate what the agent reads, and it does not apply to inline
+// replies, which are threaded under the review comment and therefore useful
+// even when the reviewer is a bot. Bot-authored comments are frequently the most
+// actionable input on a PR (gemini-code-assist, coderabbitai), and a labeler
+// validation failure names a concrete fix. Issue #29204 removed an author filter
+// from the gatherers for precisely that reason; do not reintroduce one.
+//
+// The system prompt already asks for should_reply=false on automation comments,
+// and the agent mostly complies — but "mostly" left PR #35094 with nine replies
+// reading "Acknowledged." and "Automated labeler comment." This makes the
+// instruction an invariant instead of a request.
+//
+// Two rules, general first:
+//
+//  1. authorType == "Bot" — what GitHub reports for every GitHub App, so it
+//     covers dependabot, renovate, codecov, sonarcloud and github-actions on any
+//     repo with nothing to configure.
+//  2. A configured body marker, for automation driven by a workflow using a
+//     *human* personal access token, which GitHub attributes to that human so
+//     rule 1 cannot see it. See AgentConfig.AutomationCommentMarkers.
+//
+// Rule 2 matches on a marker the tool emits rather than on the author, who is a
+// real user — so a human writing *about* that tool still gets a reply.
+func (a *PRFollowupAgent) isAutomationComment(authorType, body string) bool {
+	if strings.EqualFold(authorType, "Bot") {
+		return true
+	}
+	for _, marker := range a.automationCommentMarkers() {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// automationCommentMarkers splits the configured comma-separated marker list,
+// dropping blanks. Falls back to the shipped default when the agent has no
+// config (unit tests, and any caller that constructs the agent directly).
+func (a *PRFollowupAgent) automationCommentMarkers() []string {
+	raw := config.DefaultAutomationCommentMarkers
+	if a.config != nil {
+		raw = a.config.Agent.AutomationCommentMarkers
+	}
+	var markers []string
+	for _, m := range strings.Split(raw, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			markers = append(markers, m)
+		}
+	}
+	return markers
+}
+
 // gatherIssueComments fetches all top-level PR/issue comments (not inline review comments).
-// Excludes only our own "Automated Followup" markers. The agent decides per-comment whether
-// engaging adds value via should_reply — we don't pre-filter by timestamp or author, since
-// coarse heuristics hide actionable signal (e.g. labeler bot comments explaining WHY a
-// check failed).
-func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) ([]reviewComment, string) {
+// Excludes our own "Automated Followup" markers, comments we have already replied
+// to (via followupReplyMarker), and repo-automation chatter. Beyond that the agent
+// decides per-comment whether engaging adds value via should_reply — we don't
+// pre-filter by timestamp or author, since coarse heuristics hide actionable signal.
+//
+// The third return value is the set of comment keys this PR already has a reply
+// for, extracted from our own comments in the same listing. gatherReviewBodyComments
+// reuses it rather than re-listing, since its replies land here too.
+func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) ([]reviewComment, string, map[string]bool) {
+	answered := make(map[string]bool)
+
 	if a.provider == gitprovider.GitProviderGitLab {
 		// GitLab MR notes are a single API; inline comments are already covered
-		return nil, ""
+		return nil, "", answered
 	}
 
 	out, err := a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/issues/%s/comments", repoInfo.FullPath, prNumber))
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to gather issue comments", map[string]any{"error": err.Error()})
-		return nil, ""
+		return nil, "", answered
 	}
 
 	var rawComments []struct {
@@ -771,31 +894,61 @@ func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitpr
 		Body string `json:"body"`
 		User struct {
 			Login string `json:"login"`
+			// Type is "Bot" for every GitHub App — the general automation signal.
+			Type string `json:"type"`
 		} `json:"user"`
 		CreatedAt string `json:"created_at"`
 	}
 	if err := json.Unmarshal([]byte(out), &rawComments); err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to parse issue comments", map[string]any{"error": err.Error()})
-		return nil, ""
+		return nil, "", answered
+	}
+
+	// First pass: recover what we already answered, from our own comments.
+	// The marker's two capture groups are the source and the comment id, which
+	// is exactly answeredCommentKey's "<source>:<id>" shape.
+	for _, c := range rawComments {
+		for _, m := range followupReplyMarkerRe.FindAllStringSubmatch(c.Body, -1) {
+			answered[m[1]+":"+m[2]] = true
+		}
 	}
 
 	var visible []reviewComment
+	skippedAnswered := 0
 	for _, c := range rawComments {
 		// Skip our own automated comments — these are state we wrote, not signal.
 		if strings.Contains(c.Body, "Automated Followup") || strings.Contains(c.Body, "Nudgebee Automated Followup") {
 			continue
 		}
+		if answered[answeredCommentKey("issue_comment", c.ID)] {
+			skippedAnswered++
+			continue
+		}
+		// Authorship is recorded, not filtered on. Bot-authored comments are
+		// often the most actionable input we get (gemini-code-assist,
+		// coderabbitai), and a labeler validation failure names a fix we can
+		// make — see issue #29204, which removed an author filter here for
+		// exactly that reason. Automation only suppresses the *reply*; see
+		// isAutomationComment.
 		visible = append(visible, reviewComment{
-			ID:        c.ID,
-			Body:      c.Body,
-			User:      c.User.Login,
-			CreatedAt: c.CreatedAt,
-			Source:    "issue_comment",
+			ID:         c.ID,
+			Body:       c.Body,
+			User:       c.User.Login,
+			AuthorType: c.User.Type,
+			CreatedAt:  c.CreatedAt,
+			Source:     "issue_comment",
+		})
+	}
+
+	if skippedAnswered > 0 {
+		a.logger.Log(common.EventStepComplete, "Filtered issue comments", map[string]any{
+			"skipped_already_answered": skippedAnswered,
+			"remaining":                len(visible),
 		})
 	}
 
 	if len(visible) == 0 {
-		return nil, ""
+		return nil, "", answered
 	}
 
 	var sb strings.Builder
@@ -805,11 +958,13 @@ func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitpr
 		fmt.Fprintf(&sb, "**Comment:**\n%s\n\n", c.Body)
 	}
 
-	return visible, sb.String()
+	return visible, sb.String(), answered
 }
 
 // gatherReviewBodyComments fetches review submission body text (the top-level text of a review, not inline comments).
-func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) ([]reviewComment, string) {
+// answered comes from gatherIssueComments: our replies to a review body are posted
+// as top-level issue comments, so that is where the reply markers live.
+func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, answered map[string]bool) ([]reviewComment, string) {
 	if a.provider == gitprovider.GitProviderGitLab {
 		return nil, ""
 	}
@@ -825,6 +980,7 @@ func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *
 		Body string `json:"body"`
 		User struct {
 			Login string `json:"login"`
+			Type  string `json:"type"`
 		} `json:"user"`
 		State     string `json:"state"`
 		CreatedAt string `json:"submitted_at"`
@@ -845,15 +1001,22 @@ func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *
 		if strings.Contains(body, "Automated Followup") || strings.Contains(body, "Nudgebee Automated Followup") {
 			continue
 		}
+		// Skip reviews we have already replied to. Same reasoning as the issue
+		// gatherer: the reply is a standalone comment, so only our own marker
+		// records that this review was handled.
+		if answered[answeredCommentKey("review_body", r.ID)] {
+			continue
+		}
 		// Do not filter by author; the ReAct planner triages each comment via
 		// the fixed/acknowledged/wont_fix framework. See inline gatherer.
 
 		unaddressed = append(unaddressed, reviewComment{
-			ID:        r.ID,
-			Body:      body,
-			User:      r.User.Login,
-			CreatedAt: r.CreatedAt,
-			Source:    "review_body",
+			ID:         r.ID,
+			Body:       body,
+			User:       r.User.Login,
+			AuthorType: r.User.Type,
+			CreatedAt:  r.CreatedAt,
+			Source:     "review_body",
 		})
 	}
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box } from '@mui/material';
 import recommendationApi, { RECOMMENDATION_STATUS, RECOMMENDATION_SERVERITY } from '@api1/recommendation';
 import { unique } from '@lib/collections';
@@ -9,11 +9,11 @@ import PropTypes from 'prop-types';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import apiUser from '@api1/user';
 import Text from '@shared/format/Text';
-import CustomTicketLink from '@shared/CustomTicketLink';
-import { colors, ds } from 'src/utils/colors';
+import TicketLink from '@shared/links/TicketLink';
+import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import { snakeToTitleCase, latestUpdatedAt } from 'src/utils/common';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import CustomTooltip from '@ui/Tooltip';
@@ -22,7 +22,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import WidgetCard from '@ui/WidgetCard';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -55,6 +55,7 @@ const RULE_LABEL_MAP = {
   services_misconfigurations: 'Service Issues',
   statefulsets_misconfigurations: 'Staefulsets Issues',
   health_check: 'Health Check',
+  secret_env_exposure: 'Secret Exposed as Environment Variable',
 };
 
 const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true, isOptimisePage = false, ...props }) => {
@@ -73,10 +74,8 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
   const [recommendationStatus, setRecommendationStatus] = useState('Open');
   const [namespace, setNamespace] = useState('');
   const [namespaceFilter, setNamespaceFilter] = useState([]);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
+  const rawBPRef = useRef([]);
 
   const kubernetesBestPracticesTable = 'kubernetesBestPracticesTable';
 
@@ -138,10 +137,10 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
     if (item.rule_name === 'certificate_expiry') {
       return (
         <>
-          <li style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}>
+          <li style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}>
             Date until expiry: {item.recommendation.days_until_expiry}
           </li>
-          <li style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}>
+          <li style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}>
             Expiry Date: {item.recommendation.expiry_date}
           </li>
         </>
@@ -151,7 +150,7 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
       return (
         <>
           {item.recommendation.messages.map((message, index) => (
-            <li key={index} style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}>
+            <li key={index} style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}>
               {message}
             </li>
           ))}
@@ -159,9 +158,7 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
       );
     }
     return (
-      <li style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}>
-        No Data Available
-      </li>
+      <li style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}>No Data Available</li>
     );
   };
 
@@ -207,6 +204,148 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
     }
   };
 
+  const buildRow = (item) => {
+    let data = [];
+    let name = RULE_LABEL_MAP[item.rule_name] || snakeToTitleCase(item.rule_name);
+    let nameSpace = '-';
+    let objectType = '-';
+    let objectNames = '-';
+
+    if (Array.isArray(item.recommendation)) {
+      nameSpace = unique(item.recommendation?.map((r) => r?.namespace))?.join(', ') ?? '-';
+      objectType = unique(item.recommendation?.map?.((r) => r?.kind))?.join(', ') ?? '-';
+      objectNames = unique(item.recommendation?.map?.((r) => r?.name))?.join(', ') ?? '-';
+    } else if (item.rule_name === 'health_check' && item.recommendation?.workload) {
+      nameSpace = item.recommendation.workload.namespace ?? '-';
+      objectType = item.recommendation.workload.kind ?? '-';
+      objectNames = item.recommendation.workload.name ?? '-';
+    } else if (item.recommendation) {
+      nameSpace = item.recommendation?.namespace ?? '-';
+      objectType = item.recommendation?.kind ?? '-';
+      objectNames = item.recommendation?.name ?? '-';
+    }
+    data.push({
+      component: ClusterNameWithRegion({
+        name: name,
+        hideIcon: true,
+        showAutoEllipsis: true,
+        maxWidth: '100%',
+        region:
+          item.ticket !== undefined ? <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} showAutoEllipsis={true} /> : '',
+      }),
+    });
+    data.push({
+      component: (() => {
+        const lvl = String(item.severity || '').toLowerCase();
+        const allowed = ['critical', 'high', 'medium', 'low', 'info'];
+        return allowed.includes(lvl) ? <SeverityIcon level={lvl} size={16} /> : <Text value='—' secondaryText />;
+      })(),
+      data: item.severity,
+    });
+    data.push({ component: <Text value={objectType || '-'} showAutoEllipsis /> });
+    data.push({ component: <Text value={nameSpace || '-'} showAutoEllipsis /> });
+    data.push({ component: <Text value={objectNames || '-'} showAutoEllipsis /> });
+    data.push({ component: <Datetime value={item.updated_at} /> });
+    data.push({
+      component: (
+        <ul style={{ padding: '0 0 0 var(--ds-space-4)' }}>
+          {item.recommendation && item.recommendation.length > 0
+            ? [...new Map(item.recommendation.map((r) => [r?.message, r])).values()].map((r) => {
+                if (r?.container) {
+                  return (
+                    <li
+                      key={r?.message}
+                      style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
+                    >
+                      {r?.message} in container <b>{r?.container}</b>
+                    </li>
+                  );
+                }
+                return (
+                  <li
+                    key={r?.message}
+                    style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
+                  >
+                    {r?.message}
+                  </li>
+                );
+              })
+            : getRecommendation(item)}
+        </ul>
+      ),
+    });
+    data.push({
+      component: (
+        <Box
+          onClick={(e) => e.stopPropagation()}
+          sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
+        >
+          <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
+            <span>
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                aria-label={`Ask ${assistantName}`}
+                id={`bp-ask-nubi-${item.id}`}
+                icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
+                onClick={() => {
+                  const prompt = buildNubiOptimizePrompt({
+                    ruleName: name,
+                    category: 'Configuration',
+                    severity: item.severity || 'Info',
+                    resourceName: objectNames || '-',
+                    resourceType: objectType || '',
+                    namespace: nameSpace || '',
+                    brief: Array.isArray(item.recommendation)
+                      ? item.recommendation
+                          .map((r) => r?.message)
+                          .filter(Boolean)
+                          .join('; ')
+                      : item.recommendation?.messages?.join('; ') || '',
+                  });
+                  openNubiChat({
+                    accountId: props?.kubernetes?.id,
+                    sessionId: `recom_${item.id}`,
+                    query: prompt,
+                    categorySource: 'Optimize',
+                  });
+                }}
+              />
+            </span>
+          </CustomTooltip>
+          <DsDropdownMenu
+            align='end'
+            size='sm'
+            items={[
+              {
+                id: `bp-action-ticket-${item.id}`,
+                label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
+                icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
+                disabled: !!item.ticket?.ticket_id,
+                onSelect: () => {
+                  onMenuClick({ id: 0 }, item);
+                },
+              },
+            ]}
+            trigger={
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                icon={<MoreVertIcon />}
+                aria-label='More actions'
+                id={`bp-action-menu-${item.id}`}
+              />
+            }
+          />
+        </Box>
+      ),
+    });
+
+    return data;
+  };
+
   const listBestPracticesRecommendations = () => {
     if (!props?.kubernetes?.id) {
       return;
@@ -230,150 +369,8 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
         setKubernetesBestPracticeCount(res?.data?.recommendation_aggregate?.aggregate?.count || 0);
         const rawItems = res?.data?.recommendation || [];
         setLastRefreshed(latestUpdatedAt(rawItems));
-        let k8sRecommendationData = rawItems.map((item) => {
-          let data = [];
-          let name = RULE_LABEL_MAP[item.rule_name] || snakeToTitleCase(item.rule_name);
-          let nameSpace = '-';
-          let objectType = '-';
-          let objectNames = '-';
-
-          if (Array.isArray(item.recommendation)) {
-            nameSpace = unique(item.recommendation?.map((r) => r?.namespace))?.join(', ') ?? '-';
-            objectType = unique(item.recommendation?.map?.((r) => r?.kind))?.join(', ') ?? '-';
-            objectNames = unique(item.recommendation?.map?.((r) => r?.name))?.join(', ') ?? '-';
-          } else if (item.rule_name === 'health_check' && item.recommendation?.workload) {
-            nameSpace = item.recommendation.workload.namespace ?? '-';
-            objectType = item.recommendation.workload.kind ?? '-';
-            objectNames = item.recommendation.workload.name ?? '-';
-          } else if (item.recommendation) {
-            nameSpace = item.recommendation?.namespace ?? '-';
-            objectType = item.recommendation?.kind ?? '-';
-            objectNames = item.recommendation?.name ?? '-';
-          }
-          data.push({
-            component: ClusterNameWithRegion({
-              name: name,
-              hideIcon: true,
-              showAutoEllipsis: true,
-              maxWidth: '100%',
-              region:
-                item.ticket !== undefined ? (
-                  <CustomTicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} showAutoEllipsis={true} />
-                ) : (
-                  ''
-                ),
-            }),
-          });
-          data.push({
-            component: (() => {
-              const lvl = String(item.severity || '').toLowerCase();
-              const allowed = ['critical', 'high', 'medium', 'low', 'info'];
-              return allowed.includes(lvl) ? <SeverityIcon level={lvl} size={16} /> : <Text value='—' secondaryText />;
-            })(),
-            data: item.severity,
-          });
-          data.push({ component: <Text value={objectType || '-'} showAutoEllipsis /> });
-          data.push({ component: <Text value={nameSpace || '-'} showAutoEllipsis /> });
-          data.push({ component: <Text value={objectNames || '-'} showAutoEllipsis /> });
-          data.push({ component: <Datetime value={item.updated_at} /> });
-          data.push({
-            component: (
-              <ul style={{ padding: '0 0 0 var(--ds-space-4)' }}>
-                {item.recommendation && item.recommendation.length > 0
-                  ? [...new Map(item.recommendation.map((r) => [r?.message, r])).values()].map((r) => {
-                      if (r?.container) {
-                        return (
-                          <li
-                            key={r?.message}
-                            style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}
-                          >
-                            {r?.message} in container <b>{r?.container}</b>
-                          </li>
-                        );
-                      }
-                      return (
-                        <li
-                          key={r?.message}
-                          style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}
-                        >
-                          {r?.message}
-                        </li>
-                      );
-                    })
-                  : getRecommendation(item)}
-              </ul>
-            ),
-          });
-          data.push({
-            component: (
-              <Box
-                onClick={(e) => e.stopPropagation()}
-                sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
-              >
-                <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
-                  <span>
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      aria-label={`Ask ${assistantName}`}
-                      id={`bp-ask-nubi-${item.id}`}
-                      icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
-                      onClick={() => {
-                        const prompt = buildNubiOptimizePrompt({
-                          ruleName: name,
-                          category: 'Configuration',
-                          severity: item.severity || 'Info',
-                          resourceName: objectNames || '-',
-                          resourceType: objectType || '',
-                          namespace: nameSpace || '',
-                          brief: Array.isArray(item.recommendation)
-                            ? item.recommendation
-                                .map((r) => r?.message)
-                                .filter(Boolean)
-                                .join('; ')
-                            : item.recommendation?.messages?.join('; ') || '',
-                        });
-                        setNubiQuery(prompt);
-                        setNubiAccountId(props?.kubernetes?.id);
-                        setNubiConversationId(`recom_${item.id}`);
-                        setNubiSidebarVisible(true);
-                      }}
-                    />
-                  </span>
-                </CustomTooltip>
-                <DsDropdownMenu
-                  align='end'
-                  size='sm'
-                  items={[
-                    {
-                      id: `bp-action-ticket-${item.id}`,
-                      label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
-                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
-                      disabled: !!item.ticket?.ticket_id,
-                      onSelect: () => {
-                        onMenuClick({ id: 0 }, item);
-                      },
-                    },
-                  ]}
-                  trigger={
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      icon={<MoreVertIcon />}
-                      aria-label='More actions'
-                      id={`bp-action-menu-${item.id}`}
-                    />
-                  }
-                />
-              </Box>
-            ),
-          });
-
-          return data;
-        });
-        setKubernetesBestPractice(k8sRecommendationData);
+        rawBPRef.current = rawItems;
+        setKubernetesBestPractice(rawItems.map(buildRow));
       })
       .catch(() => {
         setLoading(false);
@@ -402,8 +399,15 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
       });
   }, [props?.kubernetes?.id]);
 
-  const handleTicketSuccess = () => {
-    listBestPracticesRecommendations();
+  const handleTicketSuccess = ({ ticketId, url } = {}) => {
+    const idx = rawBPRef.current.findIndex((item) => item.id === ticketData?.id);
+    if (idx === -1) return;
+    rawBPRef.current[idx] = { ...rawBPRef.current[idx], ticket: { ticket_id: ticketId, url } };
+    setKubernetesBestPractice((prev) => {
+      const next = [...prev];
+      next[idx] = buildRow(rawBPRef.current[idx]);
+      return next;
+    });
   };
 
   const handleTicketFailure = (res) => {
@@ -539,7 +543,7 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             id={kubernetesBestPracticesTable}
             headers={BEST_PRACTICES_HEADER}
             tableData={kubernetesBestPractice}
@@ -554,18 +558,6 @@ const KubernetesBestPractices = ({ enabledSummary = true, enabledFilters = true,
           />
         </ListingLayout.Body>
       </ListingLayout>
-
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        queryPrefix={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-      />
     </>
   );
 };

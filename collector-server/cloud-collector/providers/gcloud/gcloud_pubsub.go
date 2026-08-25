@@ -189,6 +189,16 @@ func subscriptionToResourceV2(ctx providers.CloudProviderContext, sub *pubsubpb.
 func (s *pubSubService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
+	// Load GCP alarm templates for Pub/Sub (all subscription-level metrics)
+	pubsubAlarmTemplates, err := LoadGCPAlarmTemplates(ServiceNamePubSub)
+	if err != nil {
+		ctx.GetLogger().Warn("Failed to load GCP Pub/Sub alarm templates", "error", err)
+		pubsubAlarmTemplates = []providers.AlarmTemplate{} // Continue with other recommendations
+	}
+	// Evaluates CONDITIONAL templates' conditions (e.g. the dead-letter template
+	// only applies to subscriptions that have a dead-letter topic configured)
+	evaluator := providers.NewRuleEvaluator(nil)
+
 	for _, resource := range existingResources {
 		if resource.ServiceName != ServiceNamePubSub {
 			continue
@@ -217,6 +227,61 @@ func (s *pubSubService) GetRecommendations(ctx providers.CloudProviderContext, a
 
 		// Subscription-specific recommendations
 		if resource.Type == "pubsub.googleapis.com/Subscription" {
+			// Check for missing Cloud Monitoring alert policies. All Pub/Sub alarm
+			// templates target subscription-level metrics, so topics are skipped.
+			for _, template := range pubsubAlarmTemplates {
+				// CONDITIONAL templates apply only when the resource matches their
+				// conditions; NATIVE templates always apply
+				if !evaluator.ShouldRecommendAlarm(resource, template) {
+					continue
+				}
+
+				// GCP Monitoring's subscription_id label carries the short name;
+				// resource.Id is the full projects/... path (subscriptionToResourceV2)
+				resourceFilter := GetResourceFilterForService(ServiceNamePubSub, resource.Name)
+				isMissing, err := IsAlarmMissing(resource, template, resourceFilter)
+				if err != nil {
+					ctx.GetLogger().Warn("Failed to check if alarm is missing", "error", err, "template", template.Name)
+					continue
+				}
+
+				if !isMissing {
+					// Alarm already exists, skip
+					continue
+				}
+
+				// All Pub/Sub thresholds are static — no per-resource capacity to scale by
+				threshold := template.ThresholdRules.Default
+
+				alarmConfig := buildGCPAlarmConfig(resource, template, threshold, []providers.AlarmDimension{
+					{Name: "subscription_id", Value: resource.Name},
+				})
+
+				recommendations = append(recommendations, providers.Recommendation{
+					CategoryName: providers.RecommendationCategoryConfiguration,
+					RuleName:     template.Name,
+					Severity:     providers.RecommendationSeverityFromString(template.Severity),
+					Savings:      0,
+					Data: map[string]any{
+						"subscription_id":   resource.Name,
+						"subscription_name": resource.Name,
+						"topic":             resource.Meta["topic"],
+						"metric_name":       template.Configuration.MetricName,
+						"threshold":         threshold,
+						"alarm_config":      alarmConfig,
+						"alarm_type":        template.AlarmType,
+						"reason":            template.Description,
+						"metric_type":       template.MetricType,
+						"project_id":        account.AccountNumber,
+					},
+					Action:              providers.RecommendationActionModify,
+					ResourceServiceName: resource.ServiceName,
+					ResourceId:          resource.Id,
+					ResourceType:        resource.Type,
+					ResourceRegion:      resource.Region,
+				})
+			}
+
 			// Recommendation 2: Check for subscriptions without dead letter topics
 			if deadLetterTopic, ok := resource.Meta["dead_letter_topic"].(string); ok && deadLetterTopic == "" {
 				recommendations = append(recommendations, providers.Recommendation{

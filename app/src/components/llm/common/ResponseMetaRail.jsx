@@ -1,3 +1,4 @@
+import * as React from 'react';
 import dayjs from 'dayjs';
 import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
@@ -6,6 +7,7 @@ import { ds } from '@utils/colors';
 import { Chip } from '@ui/Chip';
 import Tooltip from '@ui/Tooltip';
 import { MessageTokenUsage } from './TokenUsageDisplay';
+import EgressFilterDetailModal from './EgressFilterDetailModal';
 
 const formatDuration = (createdAt, updatedAt) => {
   if (!createdAt || !updatedAt) {
@@ -69,6 +71,7 @@ const COUNT_LABELS = {
   tasks: ['task', 'tasks'],
   contexts: ['context', 'contexts'],
   memories: ['memory', 'memories'],
+  channels: ['channel', 'channels'],
   watches: ['watch', 'watches'],
 };
 
@@ -112,13 +115,27 @@ const countItem = (key, tone, count, onClick) => {
 // call was refused, its payload rewritten, or merely noted. The tooltip
 // then lists the rule ids that fired and the audit ids so support can
 // correlate against backend logs.
-const egressfilterItem = (events) => {
+//
+// Polymorphic array (PR #31514): `metadata.egressfilter[]` now holds events
+// from every outbound-inspection detector in the family (secrets +
+// EE PII scrubber), discriminated by each entry's `detector` field
+// ("secrets" / "pii"). This chip owns ONLY the secrets slice — PII gets its
+// own chip in a follow-up. We filter first so hit_count sums and rule_ids
+// tooltips never accidentally include PII entries (which have no `mode` /
+// `rule_ids` and would silently corrupt the tallies).
+// Legacy compat: rows persisted before the `detector` field landed lack
+// the key; absent === "secrets" so historical events keep rendering.
+const egressfilterItem = (events, onClickDetails) => {
   if (!Array.isArray(events) || events.length === 0) {
     return null;
   }
-  const hasEnforce = events.some((e) => e?.mode === 'enforce');
-  const hasRedact = events.some((e) => e?.mode === 'redact');
-  const hasDetect = events.some((e) => e?.mode === 'detect' || e?.mode === 'audit');
+  const secretEvents = events.filter((e) => e?.detector === 'secrets' || !e?.detector);
+  if (secretEvents.length === 0) {
+    return null;
+  }
+  const hasEnforce = secretEvents.some((e) => e?.mode === 'enforce');
+  const hasRedact = secretEvents.some((e) => e?.mode === 'redact');
+  const hasDetect = secretEvents.some((e) => e?.mode === 'detect' || e?.mode === 'audit');
   if (!hasEnforce && !hasRedact && !hasDetect) {
     return null;
   }
@@ -130,7 +147,7 @@ const egressfilterItem = (events) => {
   // never renders "0 secret blocked".
   const totalHits = Math.max(
     1,
-    events.reduce((n, e) => n + (Number(e?.hit_count) || 0), 0)
+    secretEvents.reduce((n, e) => n + (Number(e?.hit_count) || 0), 0)
   );
   const noun = totalHits === 1 ? 'secret' : 'secrets';
   const label = `${noun} ${verb}`;
@@ -139,14 +156,14 @@ const egressfilterItem = (events) => {
   // Deduped because the same rule firing on multiple LLM calls would
   // otherwise repeat in the list.
   const ruleSet = new Set();
-  events.forEach((e) => {
+  secretEvents.forEach((e) => {
     if (Array.isArray(e?.rule_ids)) {
       e.rule_ids.forEach((r) => r && ruleSet.add(r));
     }
   });
   const ruleList = Array.from(ruleSet).join(', ');
 
-  const auditIds = events
+  const auditIds = secretEvents
     .map((e) => e?.audit_id)
     .filter(Boolean)
     .join(', ');
@@ -159,20 +176,88 @@ const egressfilterItem = (events) => {
     const tooltipVerb = hasEnforce ? 'Blocked' : hasRedact ? 'Redacted' : 'Detected';
     tooltipParts.push(`${tooltipVerb}: ${ruleList}`);
   }
-  if (events.length > 1) {
-    tooltipParts.push(`${totalHits} hit${totalHits === 1 ? '' : 's'} across ${events.length} calls`);
+  if (secretEvents.length > 1) {
+    tooltipParts.push(`${totalHits} hit${totalHits === 1 ? '' : 's'} across ${secretEvents.length} calls`);
   }
   if (auditIds) {
     tooltipParts.push(`Audit: ${auditIds}`);
   }
   const tooltip = tooltipParts.join('. ') || label;
 
+  // Tooltip hints at click affordance so users know there's more detail
+  // than the compact chip surfaces.
+  const clickHint = onClickDetails ? ' — click to see details' : '';
+
   return {
     key: 'egressfilter',
     node: (
-      <Tooltip title={tooltip} placement='top'>
+      <Tooltip title={tooltip + clickHint} placement='top'>
         <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
-          <Chip variant='count' tone={tone} count={totalHits} aria-label={tooltip} size='xs'>
+          <Chip variant='count' tone={tone} count={totalHits} aria-label={tooltip + clickHint} size='xs' onClick={onClickDetails}>
+            {label}
+          </Chip>
+        </Box>
+      </Tooltip>
+    ),
+  };
+};
+
+// Per-message PII scrubbing signal — sibling of egressfilterItem for the EE
+// ee/scrubbing wrapper. PIIScrubEvent has a different shape from FilterEvent
+// (no `mode` — the wrapper always tokenizes reversibly; the detect/enforce
+// distinction lives on outage policy, not per-event). We show `N PII
+// scrubbed` with a warning tone and a tooltip listing distinct categories
+// detected (`EMAIL, PERSON`) + audit ids for support correlation.
+// Deliberately does NOT surface payload_bytes or agent_name in the chip —
+// those are for dashboards, not the message rail.
+const piiScrubItem = (events, onClickDetails) => {
+  if (!Array.isArray(events) || events.length === 0) {
+    return null;
+  }
+  const piiEvents = events.filter((e) => e?.detector === 'pii');
+  if (piiEvents.length === 0) {
+    return null;
+  }
+
+  const totalHits = Math.max(
+    1,
+    piiEvents.reduce((n, e) => n + (Number(e?.hit_count) || 0), 0)
+  );
+
+  // Distinct categories across all PII events, sorted for stable rendering.
+  const catSet = new Set();
+  piiEvents.forEach((e) => {
+    if (Array.isArray(e?.categories)) {
+      e.categories.forEach((c) => c && catSet.add(String(c)));
+    }
+  });
+  const catList = Array.from(catSet).sort().join(', ');
+
+  // Dedupe audit ids — two PII events on the same message could carry the
+  // same id (retries, or a badly-behaved caller emitting duplicates), and
+  // "scrub-abc, scrub-abc" is confusing noise in the tooltip.
+  const auditIds = Array.from(new Set(piiEvents.map((e) => e?.audit_id).filter(Boolean))).join(', ');
+
+  const tooltipParts = [];
+  if (catList) {
+    tooltipParts.push(`Scrubbed: ${catList}`);
+  }
+  if (piiEvents.length > 1) {
+    tooltipParts.push(`${totalHits} value${totalHits === 1 ? '' : 's'} across ${piiEvents.length} calls`);
+  }
+  if (auditIds) {
+    tooltipParts.push(`Audit: ${auditIds}`);
+  }
+  const label = totalHits === 1 ? 'PII scrubbed' : 'PII values scrubbed';
+  const tooltip = tooltipParts.join('. ') || label;
+  const clickHint = onClickDetails ? ' — click to see details' : '';
+
+  return {
+    key: 'pii',
+    node: (
+      <Tooltip title={tooltip + clickHint} placement='top'>
+        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
+          <Chip variant='count' tone='warning' count={totalHits} aria-label={tooltip + clickHint} size='xs' onClick={onClickDetails}>
             {label}
           </Chip>
         </Box>
@@ -197,9 +282,23 @@ const buildItems = (props) => {
   if (props.memoryCount > 0 && props.onOpenMemories) {
     items.push(countItem('memories', 'savings', props.memoryCount, props.onOpenMemories));
   }
-  const filterItem = egressfilterItem(props.egressfilterEvents);
+  if (props.channelCount > 0 && props.onOpenChannels) {
+    // 'agent' tone, same as contexts — both are grounded-context categories;
+    // the label carries the distinction. Renders only on Slack-originated
+    // turns that actually drew on a watched channel.
+    items.push(countItem('channels', 'agent', props.channelCount, props.onOpenChannels));
+  }
+  const filterItem = egressfilterItem(props.egressfilterEvents, props.onOpenEgressDetails);
   if (filterItem) {
     items.push(filterItem);
+  }
+  // PII chip renders alongside (or in place of) the secrets chip. The two are
+  // independent — a turn can trigger secrets only, PII only, both, or
+  // neither. Order: secrets then PII so the higher-severity/policy chip
+  // (secrets, which can carry an 'enforce' verdict) reads first left-to-right.
+  const piiItem = piiScrubItem(props.egressfilterEvents, props.onOpenEgressDetails);
+  if (piiItem) {
+    items.push(piiItem);
   }
   if (props.watchCount > 0 && props.onOpenWatches) {
     // 'success' tone (green family) — visually separate from tasks/contexts/
@@ -241,10 +340,12 @@ const ResponseMetaRail = ({
   taskCount = 0,
   contextCount = 0,
   memoryCount = 0,
+  channelCount = 0,
   watchCount = 0,
   onOpenTasks,
   onOpenContexts,
   onOpenMemories,
+  onOpenChannels,
   onOpenWatches,
   messageTokenData,
   onTokenUsageHover,
@@ -254,19 +355,28 @@ const ResponseMetaRail = ({
   const duration = formatDuration(createdAt, updatedAt);
   const absoluteTime = formatAbsoluteTime(updatedAt || createdAt);
 
+  // Modal state lives here (not in the chip factories) so the chips can
+  // stay pure render functions and the modal is a single instance per rail.
+  const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const hasEgressEvents = Array.isArray(egressfilterEvents) && egressfilterEvents.length > 0;
+  const onOpenEgressDetails = hasEgressEvents ? () => setDetailsOpen(true) : undefined;
+
   const items = buildItems({
     taskCount,
     contextCount,
     memoryCount,
+    channelCount,
     watchCount,
     onOpenTasks,
     onOpenContexts,
     onOpenMemories,
+    onOpenChannels,
     onOpenWatches,
     messageTokenData,
     onTokenUsageHover,
     isFetchingTokenData,
     egressfilterEvents,
+    onOpenEgressDetails,
     duration,
     absoluteTime,
   });
@@ -275,27 +385,36 @@ const ResponseMetaRail = ({
     return null;
   }
 
+  // Pre-split for the modal so it doesn't re-do the filter every render.
+  const secretEvents = hasEgressEvents ? egressfilterEvents.filter((e) => e?.detector === 'secrets' || !e?.detector) : [];
+  const piiEvents = hasEgressEvents ? egressfilterEvents.filter((e) => e?.detector === 'pii') : [];
+
   return (
-    <Box
-      sx={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: ds.space[2],
-        rowGap: ds.space.mul(0, 3),
-        justifyContent: 'flex-end',
-        '@media (max-width: 768px)': {
-          justifyContent: 'flex-start',
-        },
-      }}
-    >
-      {items.map((item, idx) => (
-        <Box key={item.key} sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
-          {item.node}
-          {idx < items.length - 1 && (item.boundary ? <Bar /> : <Dot />)}
-        </Box>
-      ))}
-    </Box>
+    <>
+      <Box
+        sx={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: ds.space[2],
+          rowGap: ds.space.mul(0, 3),
+          justifyContent: 'flex-end',
+          '@media (max-width: 768px)': {
+            justifyContent: 'flex-start',
+          },
+        }}
+      >
+        {items.map((item, idx) => (
+          <Box key={item.key} sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+            {item.node}
+            {idx < items.length - 1 && (item.boundary ? <Bar /> : <Dot />)}
+          </Box>
+        ))}
+      </Box>
+      {detailsOpen && (
+        <EgressFilterDetailModal open={detailsOpen} onClose={() => setDetailsOpen(false)} secretEvents={secretEvents} piiEvents={piiEvents} />
+      )}
+    </>
   );
 };
 
@@ -305,10 +424,12 @@ ResponseMetaRail.propTypes = {
   taskCount: PropTypes.number,
   contextCount: PropTypes.number,
   memoryCount: PropTypes.number,
+  channelCount: PropTypes.number,
   watchCount: PropTypes.number,
   onOpenTasks: PropTypes.func,
   onOpenContexts: PropTypes.func,
   onOpenMemories: PropTypes.func,
+  onOpenChannels: PropTypes.func,
   onOpenWatches: PropTypes.func,
   messageTokenData: PropTypes.any,
   onTokenUsageHover: PropTypes.func,
@@ -326,4 +447,6 @@ ResponseMetaRail.propTypes = {
 };
 
 export default ResponseMetaRail;
-export { egressfilterItem as __egressfilterItemForTest };
+
+// Exported for unit tests only. Not part of the public component API.
+export { egressfilterItem as __egressfilterItemForTest, piiScrubItem as __piiScrubItemForTest };

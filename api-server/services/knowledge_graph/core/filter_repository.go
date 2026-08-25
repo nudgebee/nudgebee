@@ -229,6 +229,10 @@ func (r *FilterRepository) GetAllFiltersForTenant(ctx *security.RequestContext, 
 		filters = append(filters, &filter)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate filters: %w", err)
+	}
+
 	return filters, nil
 }
 
@@ -472,6 +476,10 @@ func (r *FilterRepository) GetAllEnabledFilters(ctx *security.RequestContext) ([
 		filters = append(filters, &filter)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate enabled filters: %w", err)
+	}
+
 	r.logger.Info("retrieved all enabled filters",
 		"filter_count", len(filters))
 
@@ -620,6 +628,10 @@ func (r *FilterRepository) GetAllEnabledFiltersForTenant(ctx *security.RequestCo
 		}
 
 		filters = append(filters, &filter)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate enabled filters for tenant: %w", err)
 	}
 
 	r.logger.Info("retrieved enabled filters for tenant",

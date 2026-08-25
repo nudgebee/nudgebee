@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -13,6 +12,29 @@ import (
 )
 
 const ToolExecuteKubectlCommand = "kubectl_execute"
+
+func init() {
+	// Phase 3d (#32503): the retired KubectlAgent used the short handle "kubectl".
+	// Preserve resolvability for stored delegate_agent(tools=["kubectl"]) calls.
+	core.RegisterNBToolAlias("kubectl", ToolExecuteKubectlCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the k8s_orchestrator's `k8s_lean.yaml` prompt is NOT loaded. Slim
+// safety + easy-to-miss kubectl output-scale gotchas only; orchestrator
+// prompt owns investigation methodology.
+func (m KubectlExecuteTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Always specify a namespace via `-n <namespace>` (or `--all-namespaces` for cluster-wide reads). Never assume a namespace — if missing on an execute request, resolve via `resource_search_execute` or one concise clarification before running.",
+		"**Read-only investigations first:** Prefer `get`, `describe`, `logs` over mutating commands unless the request is explicitly an action. Reserve `--force` / `--grace-period=0` for the user's explicit ask.",
+		"**RBAC safety:** If a command returns Forbidden / 403, report the missing permission as a finding. NEVER modify RBAC or ServiceAccount bindings to grant yourself access.",
+		"**Output-scale gotchas:** AVOID `-o json` / `-o yaml` on `-A` / `--all-namespaces` without filters — output can saturate context and time out. Prefer default output, `-o wide`, or `-o custom-columns=...` for broad checks. For counting, use `--no-headers` (with `| wc -l`) so the header row isn't counted.",
+		"**Field selectors > client-side filtering:** `--field-selector=status.phase=Running`, `--selector=app=xxx` at the API is faster than piping to grep.",
+		"**Log discipline:** For `kubectl logs`, pipe through `grep`, `tail`, or `head` when volume is large. If a container's logs appear empty, consider `--previous` (last crash) or `-c <container>` for multi-container pods.",
+		"**Quoting:** Always quote complex arguments with special characters — `-o custom-columns=...`, `-o jsonpath=...`, `-l`, `--field-selector`, patterns with `[`, `(`, `?`, `@`, `*`. Example: `kubectl get pods -A -o 'custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace'`.",
+	}
+}
 
 // kubectlStderrNoisePrefixes are kubectl stderr lines that the workspace pod's
 // /execute handler merges into stdout (because cmd.Stdout and cmd.Stderr point at
@@ -443,9 +465,6 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 
 	nbRequestContext.Ctx.GetLogger().Info("k8s: executing executeShellCommand tool call", "query", input.Command)
 	command := strings.TrimSpace(input.Command)
-	if !strings.HasPrefix(command, "kubectl") {
-		command = "kubectl " + command
-	}
 
 	command1 := strings.ToLower(command)
 	// Block secret-bearing resource kinds. Uses a shell-aware tokenizer
@@ -508,97 +527,61 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		effectiveAccountId = configAccountId
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, effectiveAccountId, nbRequestContext.ConversationId, command, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			// Pipeline-tail no-match reclassification (issue #32240).
-			// The LLM regularly uses kubectl with `| grep` / `| awk` /
-			// `| jq` to filter output (`kubectl get pods | grep api-server`).
-			// When the filter finds nothing the pipeline exits 1, the
-			// workspace reports "exit status 1", and the LLM sees an
-			// opaque failure for what was a successful empty result. The
-			// helpers from tool_shell.go (PR #32007) already classify
-			// these correctly; we just need to wire them in.
-			if isNoMatchExit(err, command) {
-				nbRequestContext.Ctx.GetLogger().Info("k8s: reclassified pipeline-tail no-match as success", "command", command)
-				return successResponseNoMatches(nbRequestContext, response)
-			}
-			nbRequestContext.Ctx.GetLogger().Error("k8s: unable to execute shell script", "error", err.Error(), "command", command)
-			if response == "" {
-				response = err.Error()
-			}
-			return core.NBToolResponse{
-				Data:   response,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		stdout, stderr := splitKubectlStderrNoise(response)
-
-		// Wrap stdout in JSON for consistency with non-workspace mode and to
-		// let agents parse it. Stderr is intentionally NOT packed into this
-		// envelope — it travels via Metadata.Stderr so it stays out of the
-		// observation text the UI renders (and isn't tool-specific anymore).
-		outputformat := map[string]string{
-			"stdout": stdout,
-		}
-		outputformatBytes, err := common.MarshalJson(outputformat)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("kubectl: unable to marshal response", "error", err.Error())
-			return core.NBToolResponse{
-				Data:   response,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-		response = string(outputformatBytes)
-
-		resp := core.NBToolResponse{
-			Data:       response,
-			Type:       core.NBToolResponseTypeText,
-			Status:     core.NBToolResponseStatusSuccess,
-			References: []core.NBToolResponseReference{kubectlUIRef(nbRequestContext, command)},
-		}
-		if stderr != "" {
-			resp.Metadata = &core.NBToolResponseMetadata{Stderr: stderr}
-		}
-		return resp, nil
-	}
-
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobKubectl, command, effectiveAccountId, map[string]any{}, false)
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, effectiveAccountId, nbRequestContext.ConversationId, command, map[string]string{
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	if err != nil {
+		// Pipeline-tail no-match reclassification (issue #32240).
+		// The LLM regularly uses kubectl with `| grep` / `| awk` /
+		// `| jq` to filter output (`kubectl get pods | grep api-server`).
+		// When the filter finds nothing the pipeline exits 1, the
+		// workspace reports "exit status 1", and the LLM sees an
+		// opaque failure for what was a successful empty result. The
+		// helpers from tool_shell.go (PR #32007) already classify
+		// these correctly; we just need to wire them in.
+		if isNoMatchExit(err, command) {
+			nbRequestContext.Ctx.GetLogger().Info("k8s: reclassified pipeline-tail no-match as success", "command", command)
+			return successResponseNoMatches(nbRequestContext, response)
+		}
 		nbRequestContext.Ctx.GetLogger().Error("k8s: unable to execute shell script", "error", err.Error(), "command", command)
-		// ExecuteContainerJob returns (nil, err) on every failure path
-		// (relay.Execute error, getRelayCommandResponseData parser error,
-		// downstream unmarshal failure), so `response` is always nil here
-		// and the only thing that carries the actual signal — including
-		// the shim's "Error: Server returned NNN: ..." wrapper that the
-		// hint patterns are tuned for — is err.Error(). Use it as the
-		// raw input to wrapKubectlError. The `response` assertion below
-		// is defensive in case a future code path starts returning a
-		// non-nil response alongside an error.
-		rawError := err.Error()
-		if response != nil {
-			if responseStr, ok := response.(string); ok && responseStr != "" {
-				rawError = responseStr
-			}
+		if response == "" {
+			response = err.Error()
 		}
 		return core.NBToolResponse{
-			Data:   wrapKubectlError(rawError, command),
+			Data:   response,
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	data := response.(string)
+	stdout, stderr := splitKubectlStderrNoise(response)
+
+	// Wrap stdout in JSON so agents can parse it. Stderr is intentionally
+	// NOT packed into this envelope — it travels via Metadata.Stderr so it
+	// stays out of the observation text the UI renders (and isn't
+	// tool-specific anymore).
+	outputformat := map[string]string{
+		"stdout": stdout,
+	}
+	outputformatBytes, err := common.MarshalJson(outputformat)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("kubectl: unable to marshal response", "error", err.Error())
+		return core.NBToolResponse{
+			Data:   response,
+			Status: core.NBToolResponseStatusError,
+		}, err
+	}
+	response = string(outputformatBytes)
+
 	resp := core.NBToolResponse{
-		Data:       data,
+		Data:       response,
 		Type:       core.NBToolResponseTypeText,
 		Status:     core.NBToolResponseStatusSuccess,
 		References: []core.NBToolResponseReference{kubectlUIRef(nbRequestContext, command)},
 	}
-
+	if stderr != "" {
+		resp.Metadata = &core.NBToolResponseMetadata{Stderr: stderr}
+	}
 	return resp, nil
 }
 

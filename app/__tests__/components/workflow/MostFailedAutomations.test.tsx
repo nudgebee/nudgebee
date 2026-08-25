@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import MostFailedAutomations from '@components/workflow/execution-dashboard/MostFailedAutomations';
+import { TOP_FAILED_LIMIT } from '@components/workflow/execution-dashboard/constants';
 import type { FailedAutomationCount } from '@api1/workflow/types';
 
 const entries: FailedAutomationCount[] = [
@@ -9,41 +10,90 @@ const entries: FailedAutomationCount[] = [
 ];
 
 describe('MostFailedAutomations', () => {
-  it('renders one chip per entry', () => {
-    render(<MostFailedAutomations entries={entries} approximate={false} retentionDays={10} onSelectAutomation={jest.fn()} />);
+  it('renders one row per entry with its failure count', () => {
+    render(<MostFailedAutomations entries={entries} approximate={false} totalFailures={1000} onSelectAutomation={jest.fn()} />);
     expect(screen.getByTestId('execution-dashboard-most-failed-wf-1')).toBeInTheDocument();
     expect(screen.getByTestId('execution-dashboard-most-failed-wf-2')).toBeInTheDocument();
     expect(screen.getByText('768')).toBeInTheDocument();
   });
 
-  // Clicking a chip filters the table and nothing else — the summary above it
+  // The badge answers "would fixing this one automation matter?", so it is the
+  // row's share of every failure in the window — not of the rows shown.
+  it('shows each row as a share of all failures in the window', () => {
+    render(<MostFailedAutomations entries={entries} approximate={false} totalFailures={1000} onSelectAutomation={jest.fn()} />);
+    expect(screen.getByText('76.8%')).toBeInTheDocument();
+    expect(screen.getByText('20.4%')).toBeInTheDocument();
+  });
+
+  // Rounding a tiny-but-nonzero share to "0.0%" would read as "never fails".
+  it('floors a nonzero share rather than rounding it to zero', () => {
+    const rare: FailedAutomationCount[] = [{ workflow_id: 'wf-9', workflow_name: 'rare-failure', failure_count: 3 }];
+    render(<MostFailedAutomations entries={rare} approximate={false} totalFailures={100000} onSelectAutomation={jest.fn()} />);
+    expect(screen.getByText('<0.1%')).toBeInTheDocument();
+  });
+
+  // Clicking a row filters the table and nothing else — the summary beside it
   // is static by design.
   it('reports the clicked automation', () => {
     const onSelectAutomation = jest.fn();
-    render(<MostFailedAutomations entries={entries} approximate={false} retentionDays={10} onSelectAutomation={onSelectAutomation} />);
+    render(<MostFailedAutomations entries={entries} approximate={false} totalFailures={1000} onSelectAutomation={onSelectAutomation} />);
     fireEvent.click(screen.getByTestId('execution-dashboard-most-failed-wf-2'));
     expect(onSelectAutomation).toHaveBeenCalledWith('wf-2');
   });
 
-  it('captions the window it covers', () => {
-    render(<MostFailedAutomations entries={entries} approximate={false} retentionDays={10} onSelectAutomation={jest.fn()} />);
-    expect(screen.getByText('Most failed · last 10 days')).toBeInTheDocument();
+  it('is reachable by keyboard', () => {
+    const onSelectAutomation = jest.fn();
+    render(<MostFailedAutomations entries={entries} approximate={false} totalFailures={1000} onSelectAutomation={onSelectAutomation} />);
+    fireEvent.keyDown(screen.getByTestId('execution-dashboard-most-failed-wf-1'), { key: 'Enter' });
+    expect(onSelectAutomation).toHaveBeenCalledWith('wf-1');
   });
 
   it('says so when the ranking only covers the scanned prefix', () => {
-    render(<MostFailedAutomations entries={entries} approximate retentionDays={10} onSelectAutomation={jest.fn()} />);
-    expect(screen.getByText(/ranked over the first 1000 failures/)).toBeInTheDocument();
+    render(<MostFailedAutomations entries={entries} approximate totalFailures={1000} onSelectAutomation={jest.fn()} />);
+    expect(screen.getByText(/ranked over the first 1,000 failures/)).toBeInTheDocument();
   });
 
-  // An empty strip is worse than no strip.
+  it('drops the caveat when the ranking is exact', () => {
+    render(<MostFailedAutomations entries={entries} approximate={false} totalFailures={1000} onSelectAutomation={jest.fn()} />);
+    expect(screen.queryByText(/ranked over the first/)).not.toBeInTheDocument();
+  });
+
+  // This card shares a grid row with the summary, so rendering nothing while
+  // the aggregate loads leaves half a row of empty page that then pops in.
+  it('holds the row with a skeleton panel while the aggregate is in flight', () => {
+    render(<MostFailedAutomations entries={[]} loading approximate={false} totalFailures={0} onSelectAutomation={jest.fn()} />);
+    expect(screen.getByTestId('execution-dashboard-most-failed-loading')).toBeInTheDocument();
+    expect(screen.getByText('Where the failures are')).toBeInTheDocument();
+    // Four skeleton blocks per placeholder row: name, bar, count, badge.
+    expect(screen.getAllByRole('status')).toHaveLength(TOP_FAILED_LIMIT * 4);
+    // Nothing to aim at yet, so the placeholder rows are not click targets.
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+  });
+
+  // A refresh with rows already on screen must not flash back to skeletons.
+  it('keeps the real rows when a refetch starts with data already loaded', () => {
+    render(<MostFailedAutomations entries={entries} loading approximate={false} totalFailures={1000} onSelectAutomation={jest.fn()} />);
+    expect(screen.queryByTestId('execution-dashboard-most-failed-loading')).not.toBeInTheDocument();
+    expect(screen.getByTestId('execution-dashboard-most-failed-wf-1')).toBeInTheDocument();
+    expect(screen.queryAllByRole('status')).toHaveLength(0);
+  });
+
+  // An empty panel is worse than no panel.
   it('renders nothing when there are no failures', () => {
-    const { container } = render(<MostFailedAutomations entries={[]} approximate={false} retentionDays={10} onSelectAutomation={jest.fn()} />);
+    const { container } = render(<MostFailedAutomations entries={[]} approximate={false} totalFailures={0} onSelectAutomation={jest.fn()} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  // Without a total from the aggregate, shares fall back to the ranked set
+  // rather than dividing by zero.
+  it('falls back to the ranked entries when the window total is unknown', () => {
+    render(<MostFailedAutomations entries={entries} approximate={false} totalFailures={0} onSelectAutomation={jest.fn()} />);
+    expect(screen.getByText('79.0%')).toBeInTheDocument();
   });
 
   it('truncates a long automation name', () => {
     const long: FailedAutomationCount[] = [{ workflow_id: 'wf-3', workflow_name: 'github-infra-ci-job-failure-investigation', failure_count: 3 }];
-    render(<MostFailedAutomations entries={long} approximate={false} retentionDays={10} onSelectAutomation={jest.fn()} />);
-    expect(screen.getByText('github-infra-ci-job-fail…')).toBeInTheDocument();
+    render(<MostFailedAutomations entries={long} approximate={false} totalFailures={100} onSelectAutomation={jest.fn()} />);
+    expect(screen.getByText('github-infra-ci-job-failure-…')).toBeInTheDocument();
   });
 });

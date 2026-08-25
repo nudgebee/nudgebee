@@ -728,11 +728,35 @@ func TestForGithubAgentExecuteCli(t *testing.T) {
 			expected: false,
 			reason:   "Output redirect without jq should use normal handling",
 		},
+		{
+			name:     "glab mr list with --jq containing a pipe",
+			command:  "glab mr list --output json --jq '.[] | select(.state == \"opened\") | .title'",
+			expected: true,
+			reason:   "glab exposes its own --jq; the expression's pipes must not be split into stages",
+		},
+		{
+			name:     "glab ci list piped to jq",
+			command:  "glab ci list --status failed --output json | jq '.[0].id'",
+			expected: true,
+			reason:   "jq anywhere in a glab pipeline should trigger the same handling as gh",
+		},
+		{
+			name:     "glab without jq",
+			command:  "glab mr list --per-page 10",
+			expected: false,
+			reason:   "Simple glab listing without JSON processing",
+		},
+		{
+			name:     "non-git CLI with jq is unaffected",
+			command:  "kubectl get pods -o json | jq '.items[].metadata.name'",
+			expected: false,
+			reason:   "Only gh and glab get the jq special case",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isGithubCommandWithJq(tt.command)
+			result := isGitCliCommandWithJq(tt.command)
 			assert.Equal(t, tt.expected, result, "Reason: %s", tt.reason)
 		})
 	}

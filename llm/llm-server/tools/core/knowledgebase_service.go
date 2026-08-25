@@ -254,10 +254,7 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 		for _, line := range strings.Split(kb.Data, "\n") {
 			line = strings.TrimSpace(line)
 			if line != "" {
-				if len(line) > 200 {
-					line = line[:200]
-				}
-				kb.Description = line
+				kb.Description = common.TruncateHead(line, 200)
 				break
 			}
 		}

@@ -50,6 +50,13 @@ class RecommendationTabs(Enum):
         return cls[key].value
 
 
+def _tab_for_category(category: str) -> int:
+    try:
+        return RecommendationTabs.get_value(category.upper())
+    except KeyError:
+        return RecommendationTabs.RIGHTSIZING.value
+
+
 def _format_status_text(status: str) -> str:
     """
     Format status text with corresponding emoji for Teams.
@@ -132,7 +139,7 @@ def _build_totals_block(params: RecommendationParams) -> Dict[str, Any]:
     summary_text = " and ".join(parts)
     link = (
         f"{public_ip()}/kubernetes/details/{params.account_id}"
-        f"?tab={RecommendationTabs.get_value(params.category.upper())}&accountId={params.account_id}"
+        f"?tab={_tab_for_category(params.category)}&accountId={params.account_id}"
     )
     affected_text = f" {params.total_affected_resources} affected resources." if params.total_affected_resources else ""
     return {

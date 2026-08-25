@@ -16,12 +16,14 @@ def test_get_channel_and_ts_from_sent_notifications_no_delimiter():
     service.session = MagicMock()
     query_mock = MagicMock()
     filter_by_mock = MagicMock()
+    filter_mock = MagicMock()
     order_by_mock = MagicMock()
     limit_mock = MagicMock()
 
     service.session.query.return_value = query_mock
     query_mock.filter_by.return_value = filter_by_mock
-    filter_by_mock.order_by.return_value = order_by_mock
+    filter_by_mock.filter.return_value = filter_mock
+    filter_mock.order_by.return_value = order_by_mock
     order_by_mock.limit.return_value = limit_mock
     limit_mock.first.return_value = None  # Simulating no notification found
 
@@ -49,12 +51,14 @@ def test_get_channel_and_ts_from_sent_notifications_with_delimiter():
     service.session = MagicMock()
     query_mock = MagicMock()
     filter_by_mock = MagicMock()
+    filter_mock = MagicMock()
     order_by_mock = MagicMock()
     limit_mock = MagicMock()
 
     service.session.query.return_value = query_mock
     query_mock.filter_by.return_value = filter_by_mock
-    filter_by_mock.order_by.return_value = order_by_mock
+    filter_by_mock.filter.return_value = filter_mock
+    filter_mock.order_by.return_value = order_by_mock
     order_by_mock.limit.return_value = limit_mock
     limit_mock.first.return_value = None
 

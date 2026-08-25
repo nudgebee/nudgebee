@@ -200,16 +200,30 @@ func esUnknownQueryFields(fields []OutputMetricLabels, queryDSL string) []string
 	return unknown
 }
 
+// resolveESMetricsIndex settles the index a metrics query runs against: the
+// caller's explicit selection first, then the account's configured metrics index
+// (per-account index_account_mapping override -> top-level metrics_index, both
+// already folded into cfg.MetricsIndex by GetElasticsearchConfig). Returns "" when
+// neither is set, which the caller reports as a required-index error. Mirrors the
+// logs path in QueryLogs, which has always fallen back to cfg.LogIndex.
+func resolveESMetricsIndex(requested string, cfg *ElasticsearchConfig) string {
+	if trimmed := strings.TrimSpace(requested); trimmed != "" {
+		return trimmed
+	}
+	return strings.TrimSpace(cfg.MetricsIndex)
+}
+
 func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext, req FetchMetricsRequest) (OutputMetricQuery, error) {
 	cfg, err := GetElasticsearchConfig(ctx, req.AccountId)
 	if err != nil {
 		return OutputMetricQuery{}, err
 	}
 
-	index := ""
+	requested := ""
 	if req.Request != nil {
-		index, _ = req.Request["metric_name"].(string)
+		requested, _ = req.Request["metric_name"].(string)
 	}
+	index := resolveESMetricsIndex(requested, cfg)
 	if index == "" {
 		return OutputMetricQuery{}, fmt.Errorf("index is required for Elasticsearch metrics query")
 	}
@@ -382,10 +396,11 @@ func (e *ElasticSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestCo
 		return nil, err
 	}
 
-	index := ""
+	requested := ""
 	if req.Request != nil {
-		index, _ = req.Request["metric_name"].(string)
+		requested, _ = req.Request["metric_name"].(string)
 	}
+	index := resolveESMetricsIndex(requested, cfg)
 	if index == "" {
 		return nil, fmt.Errorf("index is required for Elasticsearch metric label values query")
 	}
@@ -529,7 +544,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsLabels(ctx *security.RequestContex
 		return nil, err
 	}
 
-	index := req.MetricName
+	index := resolveESMetricsIndex(req.MetricName, cfg)
 	if index == "" {
 		return nil, fmt.Errorf("index is required for Elasticsearch metrics labels query")
 	}

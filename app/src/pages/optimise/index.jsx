@@ -1,12 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
-import OptimizeNewPage from '@components/optimise-new/OptimizeNewPage';
 import SummaryView from '@components/optimise-new/summary/SummaryView';
-import ResolutionsView from '@components/optimise-new/ResolutionsView';
-import CostAnalyser from '@components/llm/cost-analyser/CostAnalyser';
-import GatewayUsage from '@components/llm/gateway-usage/GatewayUsage';
-import AutoOptimizeTabs from '@components/autopilot/tables/AutoOptimizeTabs';
 import { useRouter } from 'next/router';
 import {
   OptimizeSummaryIcon,
@@ -17,13 +13,20 @@ import {
   AutomateBlue,
   BetaIcon,
 } from '@assets';
-import { hasFeatureAccess, hasReadAccess, hasWriteAccess } from '@lib/auth';
+import { hasFeatureAccess, hasPermission, hasReadAccess, hasWriteAccess } from '@lib/auth';
 import { useData } from '@context/DataContext';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { ds } from '@utils/colors';
+
+// Only one tab is visible at a time; lazy-load the rest to cut initial JS.
+const OptimizeNewPage = dynamic(() => import('@components/optimise-new/OptimizeNewPage'), { ssr: false });
+const ResolutionsView = dynamic(() => import('@components/optimise-new/ResolutionsView'), { ssr: false });
+const AutoOptimizeTabs = dynamic(() => import('@components/autopilot/tables/AutoOptimizeTabs'), { ssr: false });
+const CostAnalyser = dynamic(() => import('@components/llm/cost-analyser/CostAnalyser'), { ssr: false });
+const GatewayUsage = dynamic(() => import('@components/llm/gateway-usage/GatewayUsage'), { ssr: false });
 
 export async function getServerSideProps() {
   return {
@@ -102,9 +105,16 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
         // all BYO-token traffic forwarded through the gateway (its own query API), not
         // agent conversations. Independently flag-gated for staged rollout. No
         // tabOptions, so its value need not equal its array index (see note above).
+        //
+        // Unlike the LLM Analyser above, this tab's actions (`llm_gateway_*`) are
+        // TENANT-scoped — they classify to the `llm` module and their handlers take
+        // no account id. So an `llm:Read` custom grant is a legitimate way to reach
+        // it, and hasReadAccess alone could never admit one: a grants-only holder
+        // carries no account ids in the session, so the tab vanished for precisely
+        // the users an admin had granted it to.
         isMounted &&
           enableLlmGateway &&
-          hasReadAccess(selectedCluster?.value) && {
+          (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read')) && {
             name: 'AI Gateway',
             id: 'ai-gateway',
             fragment: 'ai-gateway',

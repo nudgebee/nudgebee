@@ -1,5 +1,6 @@
 import axios, { type AxiosInstance } from 'axios';
 import { getGqlString } from '@lib/datetime';
+import { reportAccessDeniedForOperation } from '@lib/accessDenied';
 import { reportClientError } from '@lib/clientErrorReporter';
 import crypto from 'crypto';
 //import { loadProgressBar } from 'axios-progress-bar';
@@ -161,6 +162,11 @@ export const queryGraphQL = async (
       if (result.data.errors && result.data.errors[0].extensions && result.data.errors[0].extensions.code == 'invalid-jwt') {
         window.location.href = '/api/auth/signin';
       }
+    } else if (!isServer()) {
+      // Surface a consolidated "access denied" toast naming the section that
+      // failed to load when this operation 403s (GraphQL errors resolve with
+      // status 200, so a denial otherwise renders as a silent empty section).
+      reportAccessDeniedForOperation(operationName, result);
     }
 
     // Report GraphQL errors returned on a non-thrown response — the gateway
@@ -187,6 +193,14 @@ export const queryGraphQL = async (
   } catch (error) {
     const e = error as any;
     const status = e?.response?.status;
+    // A caller-initiated cancellation (the `signal` argument) is not a failure —
+    // the consumer navigated away or superseded the request. Reporting it would
+    // file a fake api-failure on every such navigation, and the fall-through
+    // below would hand back a bare XHR as if it were a response. Rethrow so the
+    // caller's own catch can ignore it.
+    if (axios.isCancel(e)) {
+      throw e;
+    }
     console.error('error on api call', status ?? e?.code ?? 'unknown', e?.message);
     // Report genuine breaks (network failures, 4xx, 5xx) to Loki — 4xx like 403/422
     // are strong signals in real sessions (permission gaps, schema mismatches).
@@ -215,6 +229,18 @@ export const queryGraphQL = async (
     }
   }
 };
+
+// queryGraphQL RESOLVES (never rejects) on a GraphQL-level error — it returns
+// { data: { data: null, errors: [...] } }. A caller that reads response.data.data
+// straight through therefore turns a rejected mutation into a silent success (or
+// a generic "failed" message with the real reason discarded). Route mutation/
+// query results through this so the upstream message propagates as a thrown
+// Error. Returns response.data.data for convenient chaining on the happy path.
+export function unwrapGraphQL(response: any, fallback: string) {
+  const errors = response?.data?.errors;
+  if (errors?.length) throw new Error(errors[0]?.message || fallback);
+  return response?.data?.data;
+}
 
 export type ParallelQueryConfig = {
   query: string;

@@ -682,6 +682,35 @@ func (a *amazonRds) GetResources(ctx providers.CloudProviderContext, account pro
 				instanceMap["VpcId"] = *instance.DBSubnetGroup.VpcId
 			}
 
+			// --- Resolve the endpoint to its private IP ---
+			// DescribeDBInstances only returns the endpoint hostname, never an
+			// address, so an RDS instance reaches the knowledge graph with no IP
+			// of its own. VPC Flow Logs record traffic by IP, and the flow-log
+			// flow source resolves each address against an index built from node
+			// IP properties. With no IP on the database node the only node
+			// carrying that address is the RDS network interface, so every
+			// "something talks to this database" edge terminates on an ENI named
+			// RDSNetworkInterface instead of the database, and blast radius stops
+			// one hop short of the resource an RDS alarm is actually about.
+			//
+			// Resolving here puts the address on the resource, so the database
+			// node wins the IP index on specificity (it outranks the interface it
+			// is attached to) and those edges land on the database.
+			//
+			// RDS publishes private addresses in public DNS, so this resolves
+			// from outside the VPC. Best-effort: a failure just leaves the field
+			// absent and restores today's behaviour.
+			if instance.Endpoint != nil && instance.Endpoint.Address != nil && *instance.Endpoint.Address != "" {
+				if ip, resolveErr := ResolveRDSEndpointToIP(ctx, *instance.Endpoint.Address); resolveErr == nil {
+					instanceMap["PrivateIpAddress"] = ip
+				} else {
+					ctx.GetLogger().Debug("could not resolve rds endpoint to ip",
+						"instance", *instance.DBInstanceIdentifier,
+						"endpoint", *instance.Endpoint.Address,
+						"error", resolveErr)
+				}
+			}
+
 			// --- Fetch Alarms ---
 			instanceMap["AlarmDetails"] = alarmsByResource[*instance.DBInstanceIdentifier]
 

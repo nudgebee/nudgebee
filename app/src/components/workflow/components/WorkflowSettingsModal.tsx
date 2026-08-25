@@ -14,6 +14,11 @@ import type { WorkflowSettings, WorkflowInput } from '@components/workflow/types
 import { parseDurationToSeconds } from '@components/workflow/utils/taskUtils';
 import { DeleteIconRed } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
+import { hasFeatureAccessForAccount } from '@lib/auth';
+
+/** Feature catalog id gating AI invocation of automations. Must match
+ * runbook-server's common.FeatureAIWorkflowTools. */
+const FEATURE_AI_WORKFLOW_TOOLS = 'AI_WORKFLOW_TOOLS';
 
 interface WorkflowSettingsModalProps {
   open: boolean;
@@ -21,6 +26,13 @@ interface WorkflowSettingsModalProps {
   onSave: (settings: WorkflowSettings) => void;
   initialSettings?: WorkflowSettings;
   taskTimeouts?: string[];
+  /** Account the automation belongs to. Needed because the AI capability can be
+   * enabled per account, not only tenant-wide. */
+  accountId?: string;
+  /** Trigger types currently on the canvas. AI invocation is limited to
+   * manually-triggerable automations, and the server enforces the same rule, so
+   * the toggle is disabled rather than letting a save fail. */
+  triggerTypes?: string[];
 }
 
 const defaultSettings: WorkflowSettings = {
@@ -31,6 +43,9 @@ const defaultSettings: WorkflowSettings = {
   outputs: {},
   tags: [],
   status: 'ACTIVE',
+  description: '',
+  aiInvocable: false,
+  llmDescription: '',
 };
 
 const defaultInput: WorkflowInput = {
@@ -236,8 +251,60 @@ const ArrayEditor: React.FC<{
   );
 };
 
-const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onClose, onSave, initialSettings = defaultSettings, taskTimeouts }) => {
+const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({
+  open,
+  onClose,
+  onSave,
+  initialSettings = defaultSettings,
+  taskTimeouts = [],
+  triggerTypes = [],
+  accountId,
+}) => {
   const [settings, setSettings] = useState<WorkflowSettings>(initialSettings);
+  const [aiToolsEnabled, setAiToolsEnabled] = useState(false);
+
+  // Resolved when the modal opens rather than at import time, so the section is
+  // hidden by default and only appears once the tenant is confirmed enrolled.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    let cancelled = false;
+    hasFeatureAccessForAccount(FEATURE_AI_WORKFLOW_TOOLS, accountId)
+      .then((enabled) => {
+        if (!cancelled) {
+          setAiToolsEnabled(enabled);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAiToolsEnabled(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, accountId]);
+
+  // Mirrors the server-side preconditions so the user is told why, instead of
+  // hitting a validation error on save.
+  const aiInvocableBlockedReason = useMemo(() => {
+    if (!triggerTypes.includes('manual')) {
+      return 'Add a manual trigger to this automation before the assistant can run it.';
+    }
+    if (!settings.llmDescription?.trim()) {
+      return 'Write a description for the AI below before turning this on.';
+    }
+    return '';
+  }, [triggerTypes, settings.llmDescription]);
+
+  // Never leave the flag on once its preconditions stop holding — otherwise the
+  // toggle would read as enabled while the server refuses every run.
+  useEffect(() => {
+    if (aiInvocableBlockedReason && settings.aiInvocable) {
+      setSettings((prev) => ({ ...prev, aiInvocable: false }));
+    }
+  }, [aiInvocableBlockedReason, settings.aiInvocable]);
   const [newInput, setNewInput] = useState<WorkflowInput>({ ...defaultInput });
   const [outputsJson, setOutputsJson] = useState('');
   const [newTag, setNewTag] = useState('');
@@ -316,7 +383,10 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
     }
   }, [initialSettings]);
 
-  const handleSettingChange = (field: keyof WorkflowSettings, value: string | number | string[] | WorkflowInput[] | Record<string, string>) => {
+  const handleSettingChange = (
+    field: keyof WorkflowSettings,
+    value: string | number | boolean | string[] | WorkflowInput[] | Record<string, string>
+  ) => {
     setSettings((prev) => ({
       ...prev,
       [field]: value,
@@ -1156,6 +1226,56 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
             }
           />
         </FormCard>
+
+        {/* AI invocation — only rendered where the capability is enabled, so the
+            toggle can never be set on a tenant where it would do nothing. */}
+        {aiToolsEnabled && (
+          <FormCard title='AI Assistant' description='Let the AI assistant run this automation on a user request' number={3} columns={1} icon={null}>
+            <FormField
+              label='Allow the AI assistant to run this automation'
+              description={
+                aiInvocableBlockedReason ||
+                'The assistant can propose this automation and run it after the user confirms, using their own permissions.'
+              }
+              value={settings.aiInvocable}
+              onChange={(e: any) => handleSettingChange('aiInvocable', Boolean(e?.target?.checked))}
+              fieldType='checkbox'
+              disabled={Boolean(aiInvocableBlockedReason)}
+              error={aiInvocableBlockedReason}
+              placeholder=''
+              minWidth='100%'
+              maxRows={1}
+              minRows={1}
+              maxLength={0}
+              limitTags={0}
+              options={[]}
+              onSelect={() => {}}
+              customRender={null}
+            />
+
+            <FormField
+              label='Description for the AI'
+              description='What this automation does and, more importantly, WHEN to use it. This is how the assistant decides whether it is the right one — e.g. "Restarts the payment consumers and drains the stuck queue. Use when payment-service pods are crashlooping with RabbitMQ timeouts."'
+              value={settings.llmDescription}
+              onChange={(e: any) => handleSettingChange('llmDescription', e.target.value)}
+              placeholder='Describe when the assistant should reach for this automation'
+              fieldType='textarea'
+              minRows={3}
+              maxRows={6}
+              minWidth='100%'
+              maxLength={2000}
+              limitTags={0}
+              options={[]}
+              onSelect={() => {}}
+              customRender={null}
+            />
+
+            <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700] }}>
+              The description is published with the automation, so the assistant sees it after your next publish. Turning the toggle off takes effect
+              immediately.
+            </Typography>
+          </FormCard>
+        )}
       </Box>
     </Modal>
   );

@@ -57,6 +57,11 @@ type GenAISession struct {
 	// can confirm the WHOLE prefix — not just the turn history — is byte-stable.
 	prevSysHash   string
 	prevToolsHash string
+	// lastStabilityFields holds the cache-stability diff computed just before the
+	// request is sent, so the per-call token-usage row can carry it. The two were
+	// previously separate log lines with no shared key, which made it impossible
+	// to join a prefix invalidation to the token cost it caused.
+	lastStabilityFields map[string]any
 	// sigByCall maps a function call's identity (name + canonical args) to the
 	// thought_signature gemini returned for it. It is an identity-keyed backstop
 	// to the positional splice: it re-attaches signatures onto reconstructed
@@ -130,23 +135,75 @@ func (s *GenAISession) reattachSignatures(history []*genai.Content) []*genai.Con
 	return history
 }
 
-// spliceModelResponses replaces reconstructed FC-containing model contents
-// in history with the originally recorded responses (which carry
-// ThoughtSignatures). Matching is positional among FC-containing contents
-// only — text/thought-only model messages pass through unchanged.
+// fcNameKey is the ordered set of function-call names in a model content, used
+// to tell whether a recording belongs to a given history turn. Names only:
+// arguments cannot be part of the key because window compaction truncates the
+// very arguments the splice exists to restore. Parallel calls land in one
+// content, so the whole set is compared.
+//
+// This is a match check, not a unique turn identity — consecutive turns calling
+// the same tool share a key. That is safe because the walk consumes recordings
+// in order, so same-named turns still pair up positionally. It would only
+// mis-pair if an UNRECORDED turn shared a name with a recorded one, and the sole
+// source of unrecorded turns is terminateFromLedger's synthesized
+// submit_analysis, which is gated on !hasCalledSubmitAnalysis() — so at most one
+// exists per run and no recorded call of that name can precede it.
+func fcNameKey(content *genai.Content) string {
+	if content == nil {
+		return ""
+	}
+	var names []string
+	for _, p := range content.Parts {
+		if p.FunctionCall != nil {
+			names = append(names, p.FunctionCall.Name)
+		}
+	}
+	return strings.Join(names, "\x00")
+}
+
+// spliceModelResponses replaces reconstructed FC-containing model contents in
+// history with the originally recorded responses (which carry ThoughtSignatures
+// and un-truncated arguments). Text- and thought-only model messages pass
+// through unchanged.
+//
+// Matching walks history and recordings BACKWARDS in lockstep, consuming a
+// recording only when its call identity matches the history turn's. Two
+// independent things break naive front-to-back positional matching:
+//
+//   - Window compaction deletes AI turns from the MIDDLE of history while
+//     recordings are append-only and never trimmed. History then holds fewer FC
+//     contents than there are recordings, and front-alignment pairs the
+//     surviving late turns with early recordings — replaying calls that never
+//     produced those responses. Walking from the tail fixes this, since
+//     compaction only ever removes OLD turns.
+//   - Synthesized calls (terminateFromLedger's submit_analysis) enter history
+//     without a recording, so history can also hold MORE FC contents than there
+//     are recordings, with the unrecorded one in the middle. Count-based
+//     alignment then shifts every recording past it onto the wrong turn. The
+//     identity check leaves such a turn untouched instead of consuming a slot.
+//
+// On an append-only history every turn matches in order, so this is the
+// identity mapping and behaviour is unchanged.
 func (s *GenAISession) spliceModelResponses(history []*genai.Content) []*genai.Content {
 	if s == nil || len(s.responses) == 0 {
 		return history
 	}
-	result := make([]*genai.Content, 0, len(history))
-	fcIdx := 0
-	for _, content := range history {
-		if content.Role == "model" && contentHasFunctionCall(content) && fcIdx < len(s.responses) {
-			result = append(result, s.responses[fcIdx])
-			fcIdx++
+	result := make([]*genai.Content, len(history))
+	copy(result, history)
+	recIdx := len(s.responses) - 1
+	for i := len(history) - 1; i >= 0 && recIdx >= 0; i-- {
+		content := history[i]
+		if content == nil || content.Role != "model" || !contentHasFunctionCall(content) {
 			continue
 		}
-		result = append(result, content)
+		if fcNameKey(s.responses[recIdx]) != fcNameKey(content) {
+			// This turn was never recorded (or the recordings have drifted).
+			// Leave it for reattachSignatures to patch by identity rather than
+			// overwrite it with another turn's call.
+			continue
+		}
+		result[i] = s.responses[recIdx]
+		recIdx--
 	}
 	return result
 }
@@ -278,6 +335,7 @@ func (c *Client) GenerateStructuredJSON(ctx context.Context, messages []llms.Mes
 	if systemInstruction != nil {
 		cfg.SystemInstruction = systemInstruction
 	}
+	callStart := time.Now()
 	resp, err := c.genaiClient.Models.GenerateContent(ctx, c.config.LLM.Model, history, cfg)
 	if err != nil {
 		return "", fmt.Errorf("structured generation failed (model=%s): %w", c.config.LLM.Model, err)
@@ -286,12 +344,15 @@ func (c *Client) GenerateStructuredJSON(ctx context.Context, messages []llms.Mes
 		return "", fmt.Errorf("structured generation returned no candidates")
 	}
 	if resp.UsageMetadata != nil {
-		c.addTokenUsage(
-			int(resp.UsageMetadata.PromptTokenCount),
-			int(resp.UsageMetadata.CandidatesTokenCount),
-			int(resp.UsageMetadata.TotalTokenCount),
-			int(resp.UsageMetadata.CachedContentTokenCount),
-		)
+		c.RecordCallUsage(TokenUsageCall{
+			PromptTokens:        int(resp.UsageMetadata.PromptTokenCount),
+			CompletionTokens:    int(resp.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:         int(resp.UsageMetadata.TotalTokenCount),
+			CachedContentTokens: int(resp.UsageMetadata.CachedContentTokenCount),
+			ThinkingTokens:      int(resp.UsageMetadata.ThoughtsTokenCount),
+			LatencySeconds:      time.Since(callStart).Seconds(),
+			TaskType:            callPhaseFromContext(ctx),
+		})
 	}
 	var b strings.Builder
 	for _, part := range resp.Candidates[0].Content.Parts {
@@ -360,7 +421,7 @@ func (c *Client) generateContentWithGenAI(
 		firstChanged, changedInOverlap := firstDivergence(session.prevHashes, curHashes)
 		sysHash := hashOne(systemInstruction)
 		toolsHash := hashOne(tools)
-		c.logger.Log(common.EventPlanningProgress, "history cache-stability diff", map[string]any{
+		stability := map[string]any{
 			"history_len":         len(history),
 			"prev_history_len":    len(session.prevHashes),
 			"first_changed_index": firstChanged,     // -1 => pure append (prefix stable, cache-friendly)
@@ -370,7 +431,23 @@ func (c *Client) generateContentWithGenAI(
 			"system_changed":      session.prevSysHash != "" && session.prevSysHash != sysHash,
 			"tools_changed":       session.prevToolsHash != "" && session.prevToolsHash != toolsHash,
 			"prefix_fully_stable": firstChanged == -1 && (session.prevSysHash == "" || session.prevSysHash == sysHash) && (session.prevToolsHash == "" || session.prevToolsHash == toolsHash),
-		})
+			// Share of the previous history invalidated by this call's mutation.
+			// This — not the raw divergence index — is what predicts the cache-hit
+			// drop, since a mutation near the head discards far more than one deep
+			// in the tail.
+			"invalidated_suffix_pct": invalidatedSuffixPct(firstChanged, len(session.prevHashes)),
+		}
+		// Stashed for the per-call token-usage row (same call, emitted after the
+		// response) so invalidation and its token cost land on one joinable row.
+		session.lastStabilityFields = stability
+		// Labels the call this diff precedes; the usage row increments to the same
+		// value. Kept as its own line so the diff survives a failed/usage-less call.
+		diffFields := make(map[string]any, len(stability)+1)
+		for k, v := range stability {
+			diffFields[k] = v
+		}
+		diffFields["call_index"] = session.callCount + 1
+		c.logger.Log(common.EventPlanningProgress, "history cache-stability diff", diffFields)
 		session.prevHashes = curHashes
 		session.prevSysHash = sysHash
 		session.prevToolsHash = toolsHash
@@ -412,7 +489,9 @@ func (c *Client) generateContentWithGenAI(
 	var resp *genai.GenerateContentResponse
 	var err error
 
+	var attemptStart time.Time
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptStart = time.Now()
 		resp, err = c.genaiClient.Models.GenerateContent(ctx, c.config.LLM.Model, history, genaiConfig)
 		if err == nil {
 			break
@@ -466,14 +545,18 @@ func (c *Client) generateContentWithGenAI(
 	// Convert response to langchaingo format
 	contentResp := convertGenAIResponse(resp)
 
-	// Track token usage under lock
+	// Track token usage under lock. Latency covers the successful attempt only
+	// (backoff sleeps excluded) — per-call rows should reflect provider time.
 	if resp.UsageMetadata != nil {
-		c.addTokenUsage(
-			int(resp.UsageMetadata.PromptTokenCount),
-			int(resp.UsageMetadata.CandidatesTokenCount),
-			int(resp.UsageMetadata.TotalTokenCount),
-			int(resp.UsageMetadata.CachedContentTokenCount),
-		)
+		c.RecordCallUsage(TokenUsageCall{
+			PromptTokens:        int(resp.UsageMetadata.PromptTokenCount),
+			CompletionTokens:    int(resp.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:         int(resp.UsageMetadata.TotalTokenCount),
+			CachedContentTokens: int(resp.UsageMetadata.CachedContentTokenCount),
+			ThinkingTokens:      int(resp.UsageMetadata.ThoughtsTokenCount),
+			LatencySeconds:      time.Since(attemptStart).Seconds(),
+			TaskType:            callPhaseFromContext(ctx),
+		})
 
 		// Per-call token + context-accumulation breakdown. The genai path
 		// captures real per-call usage but historically only the run total was
@@ -486,11 +569,20 @@ func (c *Client) generateContentWithGenAI(
 			pt := int(resp.UsageMetadata.PromptTokenCount)
 			cached := int(resp.UsageMetadata.CachedContentTokenCount)
 			fields := summarizeMessageSizes(messages, tools)
+			// Merge the pre-send cache-stability diff for THIS call, so one row
+			// carries both the invalidation and the tokens it cost. Merged before
+			// the usage keys so those always win on any name collision.
+			for k, v := range session.lastStabilityFields {
+				fields[k] = v
+			}
+			session.lastStabilityFields = nil
 			fields["call_index"] = session.callCount
 			fields["prompt_tokens"] = pt
 			fields["cached_content_tokens"] = cached
 			fields["output_tokens"] = int(resp.UsageMetadata.CandidatesTokenCount)
 			fields["total_tokens"] = int(resp.UsageMetadata.TotalTokenCount)
+			fields["thinking_tokens"] = int(resp.UsageMetadata.ThoughtsTokenCount)
+			fields["latency_seconds"] = time.Since(attemptStart).Seconds()
 			fields["fresh_input_tokens"] = pt - cached
 			if pt > 0 {
 				fields["cache_hit_pct"] = 100 * cached / pt
@@ -620,6 +712,18 @@ func stablePrefixLen(firstChanged, prevLen int) int {
 		return prevLen
 	}
 	return firstChanged
+}
+
+// invalidatedSuffixPct is the percentage of the previous call's history that
+// this call's mutation invalidated. A pure append invalidates nothing; a
+// mutation at index 0 invalidates everything. This is the field that tracks the
+// cache-hit drop, because the cost of an invalidation is proportional to how
+// much of the cached prefix it discards, not to how many messages changed.
+func invalidatedSuffixPct(firstChanged, prevLen int) int {
+	if firstChanged < 0 || prevLen <= 0 {
+		return 0
+	}
+	return 100 * (prevLen - firstChanged) / prevLen
 }
 
 // convertToolDefsToGenAI converts ToolDefinition slice to genai Tool format

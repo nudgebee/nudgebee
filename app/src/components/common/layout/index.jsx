@@ -1,18 +1,28 @@
 import * as React from 'react';
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useTenantBranding, DEFAULT_LOGO, DEFAULT_FAVICON } from '@hooks/useTenantBranding';
 import Box from '@mui/material/Box';
-import { Button, Collapse, Container, Typography, Menu, IconButton } from '@mui/material';
+import { Button, Container, Typography, Menu, MenuItem, IconButton, Popover } from '@mui/material';
 import { useRouter } from 'next/router';
-import { KeyboardArrowDownRounded } from '@mui/icons-material';
 import { signOut } from 'next-auth/react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { renderSlot } from '@lib/slots';
+import { userManagementFilters } from '@lib/authHooks';
 
 // Internal Imports
 import { LayoutHeaderActionSlot } from '@shared/layout/LayoutHeaderActionSlot';
-import { getUserSession, withAuth, hasReadAccess } from '@lib/auth';
+import {
+  getUserSession,
+  withAuth,
+  hasAdminSurfaceAccess,
+  hasReadAccess,
+  hasFeatureAccess,
+  isGrantsOnlyUser,
+  isUiFeatureEnabled,
+  hasPermission,
+  missingPermissionMessage,
+} from '@lib/auth';
 import {
   homeIcon1,
   KubernetesClusterIcon,
@@ -20,9 +30,28 @@ import {
   troubleshootIcon1,
   AdminIcon,
   ProfileOutlineIcon,
-  CloudAccountIcon,
   WhiteOptimizeIcon,
   WorkflowIconWhite,
+  AllEventsIcon,
+  SearchBlueIcon,
+  ServiceMapsIcon,
+  AutomateBlue,
+  dashboardIcon1,
+  PlayCircleIcon,
+  OptimizeSummaryIcon,
+  RecommendationIcon,
+  RecommendationResolutionIcon,
+  LLMConsumptionIcon,
+  IntegrationsIcon,
+  CloudAccountIcon,
+  VmIcon,
+  TicketBlueIcon,
+  UserIconOutline,
+  User1,
+  UserGroupIcon,
+  AuditIcon,
+  NotificationIcon1,
+  ApplicationsIcon,
 } from '@assets';
 import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
@@ -32,13 +61,23 @@ import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour'
 import Tooltip from '@ui/Tooltip';
 import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import { tenantSwitcher } from '@lib/tenantSwitcherService';
+import { useData } from '@context/DataContext';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
-import { colors, ds } from 'src/utils/colors';
+import NubiBrainNav from './NubiBrainNav';
+import { ds } from 'src/utils/colors';
 import { isRenderedInIframe } from 'src/utils/common';
 
 const COLLAPSED_WIDTH = 76;
+
+const FLYOUT_CLOSE_DELAY_MS = 150;
+const NAV_ITEM_HIGHLIGHT_BG = `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`;
+const SIDEBAR_FLYOUT_BG = `color-mix(in srgb, var(--ds-sidebar-bg, var(--ds-brand-600)) 65%, ${ds.gray[700]})`;
+const SIDEBAR_FLYOUT_TEXT = `color-mix(in srgb, ${ds.background[100]} 72%, transparent)`;
+const NAV_ITEM_HOVER_BG = SIDEBAR_FLYOUT_BG;
+const FLYOUT_ITEM_HOVER_BG = `color-mix(in srgb, ${ds.background[100]} 14%, transparent)`;
+const FLYOUT_ICON_PX = 20;
 
 /**
  * Utility to calculate dynamic paths based on current route params.
@@ -53,6 +92,18 @@ const getDynamicPath = (path, router) => {
   // 2. EXPLICITLY HANDLE troubleshoot: Add tab=0, ignore accountId
   if (path === '/troubleshoot' || path === 'troubleshoot') {
     return `${path}#all-events`;
+  }
+
+  // 2b. Automations is tenant-level too — it has its own Account filter, so
+  // seeding accountId from whatever page you clicked from would silently
+  // pre-narrow the listing to one account.
+  //
+  // /vm is stripped for a stronger reason: it only ever renders a self-hosted
+  // (cloud_provider = SelfHosted) account, so seeding the K8s or AWS account you
+  // happened to be looking at would put an id in the URL the page then has to
+  // throw away. It resolves its own account from the header dropdown instead.
+  if (path === '/automation' || path === '/vm') {
+    return path;
   }
 
   // Helper to get Account ID from various sources
@@ -95,9 +146,102 @@ const getDynamicPath = (path, router) => {
   return path;
 };
 
-const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }) => {
+/**
+ * Resolves a nav entry's `path` to the URL to actually visit. Sub-items already
+ * name their own hash tab (`/troubleshoot#investigations`), so they're taken as
+ * written; hash-less paths go through getDynamicPath to pick up the default tab
+ * and the in-scope accountId.
+ */
+const resolveNavPath = (path, router) => (path.includes('#') ? path : getDynamicPath(path, router));
+
+/**
+ * Navigating out of Troubleshoot's Knowledge Graph tab with next/router is
+ * blocked by the heavy elkjs layout running inside it, so leave that tab with a
+ * full document load instead.
+ */
+const navigateTo = (router, targetPath) => {
+  const onKnowledgeGraphTab = router.pathname === '/troubleshoot' && typeof window !== 'undefined' && window.location.hash === '#kg';
+  if (onKnowledgeGraphTab) {
+    window.location.assign(targetPath);
+    return;
+  }
+  router.push(targetPath);
+};
+
+/** True when the route currently rendered is the one this sub-item points at. */
+const isSubItemActive = (subPath, router) => {
+  const [base, hash] = subPath.split('#');
+  if (!router.pathname.startsWith(base)) {
+    return false;
+  }
+  if (!hash) {
+    return true;
+  }
+  // Compare only the top-level hash segment — `#all-events/triage-rules` is
+  // still the All Events sub-item.
+  return (router.asPath.split('#')[1] || '').split('/')[0] === hash;
+};
+
+const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }) => {
   const router = useRouter();
-  const haveSubItems = !!item?.subItems?.length;
+
+  if (!item || !anchorEl) {
+    return null;
+  }
+
+  return (
+    <Popover
+      id='sidenav-flyout'
+      anchorEl={anchorEl}
+      open
+      onClose={onMouseLeave}
+      anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+      transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+      sx={{ pointerEvents: 'none' }}
+      disableAutoFocus
+      disableEnforceFocus
+      disableRestoreFocus
+      disableScrollLock
+      slotProps={{ paper: { onMouseEnter, onMouseLeave, sx: styles.flyoutPaper } }}
+    >
+      {item.subItems.map((sub) => {
+        const row = (
+          <MenuItem
+            id={sub.id}
+            key={sub.text}
+            component={sub.disabled ? 'div' : Link}
+            href={sub.disabled ? undefined : sub.path}
+            disabled={sub.disabled}
+            selected={isSubItemActive(sub.path, router)}
+            onClick={(e) => {
+              e.preventDefault();
+              if (sub.disabled) {
+                return;
+              }
+              onNavigate(resolveNavPath(sub.path, router));
+            }}
+            sx={styles.flyoutItem}
+          >
+            <Box component='span' className='flyout-item-icon' sx={styles.flyoutItemIcon}>
+              <SafeIcon src={sub.icon} alt='' width={FLYOUT_ICON_PX} height={FLYOUT_ICON_PX} />
+            </Box>
+            {sub.text}
+          </MenuItem>
+        );
+        return sub.disabled && sub.disabledTooltip ? (
+          <Tooltip key={sub.text} title={sub.disabledTooltip} placement='right'>
+            <span style={{ display: 'block' }}>{row}</span>
+          </Tooltip>
+        ) : (
+          row
+        );
+      })}
+    </Popover>
+  );
+};
+
+const SideDrawerButton = ({ item = {}, isFlyoutOpen = false, onHoverOpen, onHoverClose }) => {
+  const router = useRouter();
 
   const isActive = useMemo(() => {
     if (item.path === '') {
@@ -111,85 +255,55 @@ const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }
   // NOTE: destinationPath memoization removed. Logic moved to handleLinkClick.
 
   const handleLinkClick = (e) => {
-    // 1. If sidebar is closed and item has sub-items, just open drawer
-    if (!open && haveSubItems) {
+    // Permission-disabled item: swallow the click entirely. The Button also
+    // carries pointer-events:none, but a keyboard Enter still fires onClick, so
+    // guard here too.
+    if (item.disabled) {
       e.preventDefault();
-      handleDrawerOpen();
       return;
     }
-
-    // 2. Lazy Execution: Calculate dynamic path ONLY when clicked
-    e.preventDefault(); // Stop default Link behavior (which would go to static item.path)
-
-    const targetPath = getDynamicPath(item.path, router);
-
-    // 3. Navigate programmatically
-    const getFragmentFromUrl = () => {
-      if (typeof window === 'undefined') {
-        return null;
-      }
-      return window.location.hash.replace('#', '');
-    };
-
-    const isTroubleshootTab2 = router.pathname === '/troubleshoot' && getFragmentFromUrl() === 'kg';
-    if (isTroubleshootTab2) {
-      // navigation using router is blocked due to heavy library(elkjs) inside troubleshoot tab2
-      window.location.assign(targetPath);
-      return;
-    }
-    router.push(targetPath);
+    e.preventDefault();
+    navigateTo(router, resolveNavPath(item.path, router));
   };
 
-  return (
-    <React.Fragment>
-      {/* We keep item.path here for semantic HTML, but override the click */}
-      <Button
-        component={Link}
-        href={item.path || '#'}
-        onClick={handleLinkClick}
-        sx={isActive ? styles.activeButton : undefined}
-        aria-label={item.text}
-        id={item?.id}
-      >
-        {isActive && <Box sx={styles.activeIndicator} />}
+  const navButton = (
+    <Button
+      component={Link}
+      href={item.disabled ? '#' : item.path || '#'}
+      onClick={handleLinkClick}
+      onMouseEnter={(e) => onHoverOpen(item, e.currentTarget)}
+      onMouseLeave={onHoverClose}
+      className={isActive ? 'active-nav' : undefined}
+      aria-label={item.text}
+      aria-disabled={item.disabled || undefined}
+      id={item?.id}
+      sx={{
+        ...styles.railButton,
+        ...(isActive ? styles.activeButton : {}),
+        ...(isFlyoutOpen ? styles.railButtonFlyoutOpen : {}),
+        ...(item.disabled ? { opacity: 0.4, pointerEvents: 'none' } : {}),
+      }}
+    >
+      {isActive && <Box sx={styles.activeIndicator} />}
 
-        <Box sx={styles.iconContainer}>
-          <Box sx={styles.iconWrapper}>
-            <SafeIcon src={item.icon} alt={item.text} fill style={{ objectFit: 'contain' }} />
-          </Box>
-
-          <Typography sx={styles.iconLabel}>{item.text}</Typography>
+      <Box sx={styles.iconContainer}>
+        <Box sx={styles.iconWrapper}>
+          <SafeIcon src={item.icon} alt={item.text} fill style={{ objectFit: 'contain' }} />
         </Box>
 
-        {open && (
-          <Box component='span' sx={styles.openTextContainer}>
-            <span>{item.text}</span>
-            <span className='sub-text'>{item.subText}</span>
-          </Box>
-        )}
+        <Typography sx={styles.iconLabel}>{item.text}</Typography>
+      </Box>
+    </Button>
+  );
 
-        {open && haveSubItems && <KeyboardArrowDownRounded sx={{ height: 10, transition: 'all 0.2s ease' }} />}
-      </Button>
-      {haveSubItems && (
-        <Collapse in={open}>
-          <Box className='collapsable'>
-            {item.subItems?.map((sub, idx) => (
-              <Button key={`${sub.text}-${idx}`} onClick={() => onClick(sub.path)} className={`menu-item sub-item`}>
-                <Box sx={{ width: '20px', height: '20px', position: 'relative' }}>
-                  <SafeIcon priority={true} src={sub.icon} alt={sub.text} fill style={{ objectFit: 'contain' }} />
-                </Box>
-                {open && (
-                  <Box component='span' sx={{ flexGrow: 1, whiteSpace: 'nowrap' }}>
-                    {sub.text}
-                  </Box>
-                )}
-                {open && sub.haveSubItems && <KeyboardArrowDownRounded />}
-              </Button>
-            ))}
-          </Box>
-        </Collapse>
-      )}
-    </React.Fragment>
+  return item.disabled && item.disabledTooltip ? (
+    <Tooltip title={item.disabledTooltip} placement='right'>
+      <span style={{ display: 'block' }} onMouseEnter={onHoverClose}>
+        {navButton}
+      </span>
+    </Tooltip>
+  ) : (
+    navButton
   );
 };
 
@@ -197,11 +311,15 @@ const PageLayout = ({ children }) => {
   const router = useRouter();
 
   // State
-  const [open, setOpen] = useState(false);
   const [anchorElUser, setAnchorElUser] = useState(null);
   const [openSwitchAccount, setOpenSwitchAccount] = useState(false);
   const [openSettings, setOpenSettings] = useState(false);
   const [openApiTokens, setOpenApiTokens] = useState(false);
+  // Which nav item's sub-section flyout is open, and the rail button it hangs
+  // off. One flyout for the whole rail, re-anchored per item.
+  const [flyout, setFlyout] = useState(null);
+  const flyoutCloseTimer = useRef(null);
+  const userMenuCloseTimer = useRef(null);
 
   // Let any component (e.g. the cross-tenant AccountGuard) request the tenant
   // switcher open without prop-drilling. subscribe() returns its unsubscribe
@@ -210,8 +328,18 @@ const PageLayout = ({ children }) => {
     return tenantSwitcher.subscribe(() => setOpenSwitchAccount(true));
   }, []);
 
+  // A pending close must not fire after unmount (or navigation away).
+  useEffect(
+    () => () => {
+      clearTimeout(flyoutCloseTimer.current);
+      clearTimeout(userMenuCloseTimer.current);
+    },
+    []
+  );
+
   // Derived Values
   const session = getUserSession();
+  const { selectedCluster } = useData();
   const { baseTitle, logoUrl: brandingLogoUrl, faviconUrl: brandingFaviconUrl, loading: brandingLoading } = useTenantBranding();
 
   // Logo: derived inline from branding. The `!brandingLoading` gate on the <img> below holds the
@@ -228,27 +356,247 @@ const PageLayout = ({ children }) => {
     return generateMenuItems(session?.hasMultipleTenantAccess || false);
   }, []);
 
+  // LLM_ANALYSER is a per-tenant feature flag, not a UI_ENABLE_* deployment
+  // toggle, so it can only be resolved client-side — same pattern as
+  // optimise/index.jsx, which owns the tab this nav entry links to. Fails
+  // closed until it resolves.
+  const [llmAnalyserEnabled, setLlmAnalyserEnabled] = useState(false);
+  useEffect(() => {
+    hasFeatureAccess('LLM_ANALYSER')
+      .then(setLlmAnalyserEnabled)
+      .catch(() => setLlmAnalyserEnabled(false));
+  }, []);
+
   const menuItems = useMemo(() => {
+    const isAdmin = !!(session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin'));
+    const canReadAccount = hasReadAccess(selectedCluster?.value);
+    // Each sub-item carries the module it actually reads. This used to be implicit
+    // — the parent's single `recommendations` gate stood in for the whole section —
+    // but the parent now also opens for `llm:Read` (AI Gateway below), and without
+    // per-sub-item modules that grant would light up Summary / Recommendations /
+    // Resolutions / Auto Optimize too, which it does not entitle. The two
+    // feature-flagged entries below are conditionally INCLUDED rather than gated,
+    // so for a grants-only user their `module` is redundant with the condition
+    // that admitted them — AI Gateway still carries one so the entry stays gated
+    // on its own if that condition is ever loosened. LLM Analyser's surface spans
+    // several `ai_*` sub-modules with no single right answer, and its `canReadAccount`
+    // condition is already false for every grants-only user, so it declares none
+    // rather than guess one and hide the tab from a legitimate holder.
+    const optimizeSections = [
+      { text: 'Summary', path: '/optimise#summary', id: 'sidenav-optimise-summary', module: 'recommendations', icon: OptimizeSummaryIcon },
+      {
+        text: 'Recommendations',
+        path: '/optimise#recommendations',
+        id: 'sidenav-optimise-recommendations',
+        module: 'recommendations',
+        icon: RecommendationIcon,
+      },
+      {
+        text: 'Resolutions',
+        path: '/optimise#resolutions',
+        id: 'sidenav-optimise-resolutions',
+        module: 'recommendations',
+        icon: RecommendationResolutionIcon,
+      },
+      { text: 'Auto Optimize', path: '/optimise#auto-optimize', id: 'sidenav-optimise-auto-optimize', module: 'autooptimize', icon: AutomateBlue },
+      ...(llmAnalyserEnabled && canReadAccount
+        ? [{ text: 'LLM Analyser', path: '/optimise#cost-analyser', id: 'sidenav-optimise-cost-analyser', icon: LLMConsumptionIcon }]
+        : []),
+      // `llm` is a TENANT-scoped module (@lib/permissionCatalog): the gateway usage
+      // API resolves the tenant from the session and takes no account, so the
+      // per-account `canReadAccount` check cannot see an `llm:Read` grant — a
+      // grants-only holder has empty session account ids by design, so it returns
+      // false and the entry disappeared for exactly the users who were granted it.
+      ...(isUiFeatureEnabled('llmGateway') && (canReadAccount || hasPermission('llm', 'Read'))
+        ? [{ text: 'AI Gateway', path: '/optimise#ai-gateway', id: 'sidenav-optimise-ai-gateway', module: 'llm', icon: IntegrationsIcon }]
+        : []),
+    ];
+
     const items = [
-      { path: '/home', icon: homeIcon1, text: 'Home', id: 'home-sidenavbutton' },
+      {
+        path: '/home',
+        // /overview belongs to no other rail item, so Home lights up for it.
+        activePaths: ['/overview'],
+        icon: homeIcon1,
+        text: 'Home',
+        id: 'home-sidenavbutton',
+        // Union of what the section's rows need, same reason Optimize declares
+        // one: gating the parent on `insights` alone greys it out for a holder
+        // of only `k8s:Read` or `cloud:Read`, and a disabled parent gets
+        // pointerEvents:'none' — its flyout never opens, so the row they ARE
+        // entitled to stays unreachable.
+        modules: ['insights', 'k8s', 'cloud'],
+        // Account Overview is the fleet-wide summary at /overview — one card per
+        // connected account across every provider (K8s, AWS, Azure, GCP,
+        // CloudFoundry, self-hosted VMs). It reads as a landing surface rather
+        // than a per-account one, so it hangs off Home; Infra's own rows still
+        // lead to each provider's page. `modules` (union, as Optimize does)
+        // because the page draws on both the k8s and cloud modules — either
+        // grant entitles something on it, and each section only renders the
+        // accounts the backend actually returns.
+        subItems: [
+          { text: 'Home', path: '/home', id: 'sidenav-home-home', module: 'insights', icon: homeIcon1 },
+          {
+            text: 'Account Overview',
+            path: '/overview#overview',
+            id: 'sidenav-home-account-overview',
+            modules: ['k8s', 'cloud'],
+            icon: KubernetesClusterIcon,
+          },
+        ],
+      },
+      // No `module`: a dashboard panel may query any connected account, so the
+      // page itself gates on nothing — each panel's query is authorised per
+      // account by the backend it reads.
+      {
+        path: '/dashboards',
+        icon: dashboardIcon1,
+        text: 'Dashboards',
+        id: 'dashboards-sidenavbutton',
+        subItems: [
+          { text: 'Dashboard List', path: '/dashboards#list', id: 'sidenav-dashboards-list', icon: dashboardIcon1 },
+          { text: 'Application Grouping', path: '/dashboards#groups', id: 'sidenav-dashboards-groups', icon: ApplicationsIcon },
+        ],
+      },
       {
         path: '/troubleshoot',
         activePaths: ['/investigate', '/agentHealth'],
         icon: troubleshootIcon1,
         text: 'Troubleshoot',
         id: 'troubleshoot-sidenavbutton',
+        module: 'events',
+        subItems: [
+          { text: 'All Events', path: '/troubleshoot#all-events', id: 'sidenav-troubleshoot-all-events', icon: AllEventsIcon },
+          { text: 'Investigations', path: '/troubleshoot#investigations', id: 'sidenav-troubleshoot-investigations', icon: SearchBlueIcon },
+          { text: 'Knowledge Graph', path: '/troubleshoot#kg', id: 'sidenav-troubleshoot-kg', icon: ServiceMapsIcon },
+        ],
       },
-      { path: '/optimise', icon: WhiteOptimizeIcon, text: 'Optimize', id: 'optimize-sidenavbutton' },
-      { path: '/kubernetes', icon: KubernetesClusterIcon, text: 'Clusters', haveSubItems: true, id: 'clusters-sidenavbutton' },
-      { path: '/cloud-account', icon: CloudAccountIcon, text: 'Cloud', haveSubItems: true, id: 'cloud-sidenavbutton' },
-      { path: '/automation', icon: WorkflowIconWhite, text: 'Automations', id: 'auto-pilot-sidenavbutton' },
-      { path: '/tickets', icon: ticketsIcon1, text: 'Tickets', id: 'tickets-sidenavbutton' },
+      {
+        path: '/automation',
+        icon: WorkflowIconWhite,
+        text: 'Automations',
+        id: 'auto-pilot-sidenavbutton',
+        module: 'workflows',
+        subItems: [
+          { text: 'Automations', path: '/automation#automations', id: 'sidenav-automation-automations', icon: AutomateBlue },
+          { text: 'Executions', path: '/automation#executions', id: 'sidenav-automation-executions', icon: dashboardIcon1 },
+          {
+            text: 'Task Runner',
+            path: '/automation#task-runner',
+            id: 'sidenav-automation-task-runner',
+            icon: PlayCircleIcon,
+            disabled: !(isAdmin || hasPermission('workflows', 'Execute') || hasPermission('workflows', 'Write')),
+            disabledTooltip: missingPermissionMessage('workflows:Execute'),
+          },
+        ],
+      },
+      {
+        path: '/optimise',
+        icon: WhiteOptimizeIcon,
+        text: 'Optimize',
+        id: 'optimize-sidenavbutton',
+        // The union of the modules its sub-items declare, so the section opens for
+        // any grant that entitles something inside it — and the sub-item gates
+        // decide what is actually reachable once it is open.
+        modules: ['recommendations', 'autooptimize', 'llm'],
+        subItems: optimizeSections,
+      },
+      {
+        path: '/kubernetes',
+        activePaths: ['/cloud-account', '/vm'],
+        icon: KubernetesClusterIcon,
+        text: 'Infra',
+        id: 'infra-sidenavbutton',
+        subItems: [
+          { text: 'K8s', path: '/kubernetes', id: 'sidenav-infra-k8s', module: 'k8s', icon: KubernetesClusterIcon },
+          { text: 'Cloud', path: '/cloud-account', id: 'sidenav-infra-cloud', module: 'cloud', icon: CloudAccountIcon },
+          // Self-hosted VM fleets (cloud_provider = SelfHosted / account_type = vm).
+          // Gated on the `cloud` module: everything the page reads lives in
+          // cloud_accounts / cloud_resourses / vm_package, all cloud-module tables.
+          { text: 'VM', path: '/vm', id: 'sidenav-infra-vm', module: 'cloud', icon: VmIcon },
+        ],
+      },
+      {
+        path: '/tickets',
+        icon: ticketsIcon1,
+        text: 'Tickets',
+        id: 'tickets-sidenavbutton',
+        module: 'tickets',
+        subItems: [
+          { text: 'All Tickets', path: '/tickets#tickets', id: 'sidenav-tickets-all', icon: TicketBlueIcon },
+          { text: 'Assigned to me', path: '/tickets#assigned-me', id: 'sidenav-tickets-assigned-me', icon: UserIconOutline },
+        ],
+      },
     ];
-    if (hasReadAccess()) {
-      items.push({ path: '/user-management', activePaths: ['/accounts'], icon: AdminIcon, text: 'Admin', id: 'admin-sidenav' });
+    if (hasAdminSurfaceAccess()) {
+      items.push({
+        path: '/user-management',
+        activePaths: ['/accounts'],
+        icon: AdminIcon,
+        text: 'Admin',
+        id: 'admin-sidenav',
+        subItems: [
+          { text: 'Users', path: '/user-management#users', id: 'sidenav-admin-users', module: 'users', icon: User1 },
+          { text: 'Groups', path: '/user-management#groups', id: 'sidenav-admin-groups', module: 'usergroups', icon: UserGroupIcon },
+          { text: 'Audits', path: '/user-management#audits', id: 'sidenav-admin-audits', module: 'audits', icon: AuditIcon },
+          {
+            text: 'Notifications',
+            path: '/user-management#notifications',
+            id: 'sidenav-admin-notifications',
+            module: 'notifications',
+            icon: NotificationIcon1,
+          },
+          {
+            text: 'Integrations',
+            path: '/user-management#integrations',
+            id: 'sidenav-admin-integrations',
+            module: 'integrations',
+            icon: IntegrationsIcon,
+          },
+          { text: 'Ownership', path: '/user-management#ownership', id: 'sidenav-admin-ownership', module: 'ownership', icon: UserGroupIcon },
+          // Admin sections registered by extensions (Roles & Permissions, Billing)
+          // rather than hardcoded above. Read from the SAME registry the
+          // /user-management page builds its tabs from, in the same order, so the
+          // flyout cannot drift from the tab list — the Roles tab had existed for
+          // a while with no way to reach it from the sidebar.
+          //
+          // No `module` is set on purpose: these self-gate via their own
+          // shouldShow(session) and are HIDDEN when it fails, whereas the base
+          // sections above always exist and render disabled-with-a-tooltip. Roles
+          // has no meaningful disabled state — a tenant without the CUSTOM_ROLES
+          // feature has nothing to administer there at all.
+          ...userManagementFilters(session).map((f) => ({
+            text: f.name,
+            path: `/user-management#${f.fragment}`,
+            id: `sidenav-admin-${f.fragment}`,
+            icon: f.icon,
+          })),
+        ],
+      });
     }
-    return items;
-  }, []);
+    if (!isGrantsOnlyUser(selectedCluster?.value)) return items;
+    // An entry is reachable when the user holds :Read on ANY of the modules behind
+    // it. Almost every entry has exactly one (`module`); `Optimize` declares two
+    // (`modules`) because its AI Gateway sub-item is a tenant-scoped `llm` surface
+    // with nothing to do with the `recommendations` module the rest of the section
+    // reads. Gating the section on `recommendations` alone greyed the parent out
+    // for an `llm:Read` holder — and a disabled parent gets pointerEvents:'none',
+    // so its flyout never opens and the granted sub-item stayed unreachable even
+    // though the sub-item itself was enabled. The tooltip names the primary module.
+    const gate = (entry) => {
+      const modules = entry.modules ?? (entry.module ? [entry.module] : []);
+      return modules.length > 0 && !modules.some((m) => hasPermission(m, 'Read'))
+        ? { ...entry, disabled: true, disabledTooltip: missingPermissionMessage(`${modules[0]}:Read`) }
+        : entry;
+    };
+    return items.map((item) => {
+      const subItems = item.subItems?.map(gate);
+      const gated = gate({ ...item, ...(subItems ? { subItems } : {}) });
+      return gated.disabled || !subItems?.length || subItems.some((sub) => !sub.disabled)
+        ? gated
+        : { ...gated, disabled: true, disabledTooltip: subItems[0].disabledTooltip };
+    });
+  }, [selectedCluster?.value, session, llmAnalyserEnabled]);
 
   // Route/Page Type Detection
   const pageFlags = useMemo(
@@ -256,7 +604,7 @@ const PageLayout = ({ children }) => {
       isAskNudgebee: router.pathname === '/ask-nudgebee',
       isAskNudgebeeV2: router.pathname === '/ask-nudgebee-v2',
       isInvestigate: router.pathname?.includes('/investigate') || router.pathname?.includes('/investigate2'),
-      isWorkflow: router.pathname === '/workflow' || router.pathname.startsWith('/workflow/'),
+      isWorkflow: router.pathname?.startsWith('/automation/'),
       isOptimize: router.pathname?.includes('/optimise'),
       isTroubleshoot: router.pathname?.includes('/troubleshoot'),
       isHome: router.pathname === '/home',
@@ -273,8 +621,36 @@ const PageLayout = ({ children }) => {
   const homeUrl = useMemo(() => getDynamicPath('/home', router), [router]);
 
   // Handlers
-  const handleDrawerOpen = () => setOpen(true);
   const handleSwitchAccountClose = () => setOpenSwitchAccount(false);
+
+  const openFlyout = (item, anchorEl) => {
+    clearTimeout(flyoutCloseTimer.current);
+    setFlyout(item.subItems?.length ? { item, anchorEl } : null);
+  };
+
+  const scheduleFlyoutClose = () => {
+    clearTimeout(flyoutCloseTimer.current);
+    flyoutCloseTimer.current = setTimeout(() => setFlyout(null), FLYOUT_CLOSE_DELAY_MS);
+  };
+
+  const cancelFlyoutClose = () => clearTimeout(flyoutCloseTimer.current);
+
+  const handleFlyoutNavigate = (targetPath) => {
+    setFlyout(null);
+    navigateTo(router, targetPath);
+  };
+
+  const openUserMenu = (e) => {
+    clearTimeout(userMenuCloseTimer.current);
+    setAnchorElUser(e.currentTarget);
+  };
+
+  const scheduleUserMenuClose = () => {
+    clearTimeout(userMenuCloseTimer.current);
+    userMenuCloseTimer.current = setTimeout(() => setAnchorElUser(null), FLYOUT_CLOSE_DELAY_MS);
+  };
+
+  const cancelUserMenuClose = () => clearTimeout(userMenuCloseTimer.current);
 
   const handleSubMenuClick = (subMenu) => {
     setAnchorElUser(null);
@@ -298,15 +674,6 @@ const PageLayout = ({ children }) => {
     setOpenApiTokens,
     handleSubMenuClick,
   });
-
-  const onMenuClick = (path) => {
-    if (path) {
-      router.push(path);
-    }
-    if (open) {
-      setOpen(!open);
-    }
-  };
 
   return (
     <>
@@ -353,6 +720,7 @@ const PageLayout = ({ children }) => {
                   <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', marginTop: 'var(--ds-space-3)' }}>
                     <Link href={homeUrl} passHref>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
+                      {/* oxlint-disable nextjs/no-img-element -- dynamic branding URL; next/image requires static domain allowlist */}
                       {!brandingLoading && (
                         <img
                           src={logoSrc}
@@ -360,19 +728,33 @@ const PageLayout = ({ children }) => {
                           aria-label={baseTitle}
                           width={50}
                           height={40}
-                          style={{ maxWidth: '50px', maxHeight: '40px', objectFit: 'contain' }}
+                          style={{ maxWidth: ds.space.mul(0, 25), maxHeight: ds.space.mul(1, 10), objectFit: 'contain' }}
                         />
                       )}
+                      {/* oxlint-enable nextjs/no-img-element */}
                     </Link>
                   </Box>
                   <Box sx={styles.separator} />
 
                   {menuItems.map((item, idx) => (
                     <React.Fragment key={item.id || `${item.text}-${idx}`}>
-                      {['Troubleshoot', 'Clusters', 'Tickets'].includes(item.text) && <Box sx={styles.subSeparator} />}
-                      <SideDrawerButton open={open} item={item} onClick={onMenuClick} handleDrawerOpen={handleDrawerOpen} />
+                      {['Troubleshoot', 'Infra', 'Tickets'].includes(item.text) && <Box sx={styles.subSeparator} />}
+                      <SideDrawerButton
+                        item={item}
+                        isFlyoutOpen={!!flyout && flyout.item.id === item.id}
+                        onHoverOpen={openFlyout}
+                        onHoverClose={scheduleFlyoutClose}
+                      />
                     </React.Fragment>
                   ))}
+
+                  <SubNavFlyout
+                    item={flyout?.item}
+                    anchorEl={flyout?.anchorEl}
+                    onMouseEnter={cancelFlyoutClose}
+                    onMouseLeave={scheduleFlyoutClose}
+                    onNavigate={handleFlyoutNavigate}
+                  />
 
                   {/* Auto-launches the first-login sidebar walkthrough once; renders nothing. */}
                   <FirstLoginTour />
@@ -381,7 +763,22 @@ const PageLayout = ({ children }) => {
                   <SectionFirstVisitTour />
 
                   <Box sx={styles.userMenuContainer}>
+                    <Box sx={{ mb: 'var(--ds-space-3)' }}>
+                      <NubiBrainNav surface='dark' />
+                    </Box>
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <IconButton
+                        id='account-setting'
+                        onMouseEnter={openUserMenu}
+                        onMouseLeave={scheduleUserMenuClose}
+                        onClick={openUserMenu}
+                        size='small'
+                      >
+                        <Box>
+                          <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
+                        </Box>
+                      </IconButton>
+
                       {getUserSession()?.tenant?.name && (
                         <Tooltip title={getUserSession()?.tenant?.name} placement='right'>
                           <Typography
@@ -389,8 +786,8 @@ const PageLayout = ({ children }) => {
                             sx={{
                               fontSize: 'var(--ds-text-caption)',
                               fontWeight: 'var(--ds-font-weight-semibold)',
-                              color: colors.text.white,
-                              maxWidth: '48px',
+                              color: ds.background[100],
+                              maxWidth: ds.space.mul(1, 12),
                               textAlign: 'center',
                               mb: 'var(--ds-space-1)',
                             }}
@@ -399,21 +796,37 @@ const PageLayout = ({ children }) => {
                           </Typography>
                         </Tooltip>
                       )}
-                      <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
-                        <Box>
-                          <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
-                        </Box>
-                      </IconButton>
                       <Menu
                         id='menu-appbar'
-                        sx={{ '.css-1xyun6z-MuiPaper-root-MuiPopover-paper-MuiMenu-paper': { left: '62px !important' } }}
+                        sx={{ pointerEvents: 'none' }}
                         anchorEl={anchorElUser}
                         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
                         keepMounted
-                        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
                         open={Boolean(anchorElUser)}
                         onClose={() => setAnchorElUser(null)}
-                        slotProps={{ paper: { sx: { minWidth: 360, maxWidth: 360, maxHeight: 'none' } } }}
+                        autoFocus={false}
+                        disableAutoFocus
+                        disableEnforceFocus
+                        disableRestoreFocus
+                        slotProps={{
+                          paper: {
+                            onMouseEnter: cancelUserMenuClose,
+                            onMouseLeave: scheduleUserMenuClose,
+                            sx: {
+                              pointerEvents: 'auto',
+                              minWidth: 360,
+                              maxWidth: 360,
+                              maxHeight: 'none',
+                              outline: 'none',
+                              border: 'none',
+                              borderRadius: 'var(--ds-overlay-radius)',
+                              boxShadow: 'var(--ds-overlay-shadow)',
+                              backgroundColor: 'var(--ds-overlay-bg)',
+                            },
+                          },
+                        }}
+                        MenuListProps={{ sx: { outline: 'none', py: 'var(--ds-overlay-padding-y)' } }}
                       >
                         {avatarSubMenu.map((setting) => getMenuItem(setting))}
                       </Menu>
@@ -433,19 +846,19 @@ const PageLayout = ({ children }) => {
                 sx={{
                   maxWidth: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 45)})`,
                   width: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
-                  px: open ? ds.space.mul(1, 16) : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
+                  px: pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
                   backgroundColor:
                     pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
-                      ? colors.background.home
+                      ? ds.background[100]
                       : pageFlags.isAskNudgebee
-                      ? colors.background.askNudgebeePage
-                      : colors.background.pages,
+                      ? ds.background[100]
+                      : ds.background[300],
                   ...styles.body,
                   position: 'relative',
-                  paddingBottom: isPaddedLayout ? '12px' : '0px',
+                  paddingBottom: isPaddedLayout ? ds.space[3] : 0,
                 }}
               >
-                <Container maxWidth='1800px' style={{ paddingInline: 0 }}>
+                <Container maxWidth={false} sx={{ maxWidth: ds.space.mul(0, 900) }} style={{ paddingInline: 0 }}>
                   <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
                 </Container>
               </Box>
@@ -467,7 +880,7 @@ const styles = {
     backgroundColor: 'var(--ds-sidebar-bg, var(--ds-brand-600))',
     minHeight: '100vh',
     transition: 'all ease 0.2s',
-    boxShadow: '2px 0 2px 0 rgba(0,0,0,0.25)',
+    boxShadow: 'none',
     display: 'flex',
     justifyContent: 'start',
     alignItems: 'center',
@@ -482,57 +895,78 @@ const styles = {
       flexDirection: 'column',
       justifyContent: 'center',
       alignItems: 'center',
-      gap: 'var(--ds-space-1)',
+      gap: 'var(--ds-space-0)',
       overflow: 'hidden',
       top: 0,
       height: '100vh',
     },
-    '& .collapsable': {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 'var(--ds-space-2)',
-    },
     '& button': {
       py: 'var(--ds-space-4)',
-      width: '76px',
-      height: '60px',
+      width: ds.space.mul(1, 19),
+      height: ds.space.mul(1, 15),
       display: 'flex',
       justifyContent: 'center',
       textAlign: 'left',
       borderRadius: 0,
+      transition: 'background-color 0.2s ease',
       '@media (max-width:1535px)': {
         py: 'var(--ds-space-2)',
         height: ds.space.mul(1, 13),
       },
       '&:hover': {
-        backgroundColor: colors.secondary.default,
-      },
-      '&.menu-item': {
-        borderBottom: 'none',
-        justifyContent: 'flex-start',
-        gap: 'var(--ds-space-3)',
-        borderRadius: 'var(--ds-radius-xl)',
-        color: colors.text.secondaryDark,
-        fontSize: 13,
-        lineHeight: '15px',
-        fontWeight: 'var(--ds-font-weight-semibold)',
-        textTransform: 'none',
-        '&.sub-item': { pl: 'var(--ds-space-6)' },
-        '& .sub-text': { fontSize: 8, color: colors.text.tertiary },
-        svg: {
-          minHeight: '20px',
-          minWidth: '20px',
-          height: '20px',
-          width: '20px',
-          '&.color-switching-icon': { path: { fill: colors.switchIconColor } },
-        },
-        '&.selected': {
-          backgroundColor: colors.secondary.default,
-          color: colors.white,
-          svg: { '&.color-switching-icon': { path: { fill: colors.white } } },
-        },
+        backgroundColor: NAV_ITEM_HOVER_BG,
       },
     },
+  },
+  flyoutPaper: {
+    pointerEvents: 'auto',
+    minWidth: ds.space.mul(0, 110),
+    backgroundColor: SIDEBAR_FLYOUT_BG,
+    backgroundImage: 'none',
+    color: ds.background[100],
+    borderRadius: '0 var(--ds-overlay-radius) var(--ds-overlay-radius) 0',
+    border: 'none',
+    boxShadow: 'none',
+    overflow: 'hidden',
+    padding: `var(--ds-space-2) 0`,
+    animation: 'sidenavFlyoutEnter var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',
+    '@keyframes sidenavFlyoutEnter': {
+      '0%': { opacity: 0, transform: `translateX(${ds.space.mul(0, -4)})` },
+      '100%': { opacity: 1, transform: 'translateX(0)' },
+    },
+  },
+  flyoutItem: {
+    fontSize: 'var(--ds-text-body)',
+    color: SIDEBAR_FLYOUT_TEXT,
+    minHeight: 'unset',
+    borderRadius: 'var(--ds-radius-md)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 'var(--ds-space-3)',
+    mx: 'var(--ds-space-2)',
+    padding: 'var(--ds-space-2) var(--ds-space-4) var(--ds-space-2) var(--ds-space-3)',
+    transition: `background-color ${ds.motion.micro} ${ds.motion.ease}, color ${ds.motion.micro} ${ds.motion.ease}, border-left-color ${ds.motion.micro} ${ds.motion.ease}`,
+    '&:hover': { backgroundColor: FLYOUT_ITEM_HOVER_BG, color: ds.background[100], '& .flyout-item-icon': { opacity: 1 } },
+    '&.Mui-selected': {
+      backgroundColor: NAV_ITEM_HIGHLIGHT_BG,
+      // blue-400 over blue-500 — the deeper blue muddies against the dark panel.
+      borderLeftColor: ds.blue[400],
+      color: ds.background[100],
+      fontWeight: 'var(--ds-font-weight-semibold)',
+      '& .flyout-item-icon': { opacity: 1 },
+      '&:hover': { backgroundColor: FLYOUT_ITEM_HOVER_BG },
+    },
+  },
+  flyoutItemIcon: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    width: `${FLYOUT_ICON_PX}px`,
+    height: `${FLYOUT_ICON_PX}px`,
+    opacity: 0.72,
+    transition: `opacity ${ds.motion.micro} ${ds.motion.ease}`,
+    '& img, & svg': { filter: 'brightness(0) invert(1)' },
   },
   body: {
     transition: 'ease 0.2s',
@@ -541,25 +975,35 @@ const styles = {
     alignItems: 'center',
     flexDirection: 'column',
   },
+  railButton: {
+    width: `${COLLAPSED_WIDTH}px`,
+    minWidth: 0,
+    borderRadius: 0,
+    px: 0,
+    '&:hover': { backgroundColor: NAV_ITEM_HOVER_BG },
+  },
+  railButtonFlyoutOpen: {
+    backgroundColor: NAV_ITEM_HOVER_BG,
+  },
   activeButton: {
-    background: colors.background.activeButtonColor,
+    background: NAV_ITEM_HIGHLIGHT_BG,
   },
   activeIndicator: {
-    width: '4px',
+    width: ds.space[1],
     height: '100%',
     position: 'absolute',
     left: 0,
-    background: 'var(--nb-color-sidebar-indicator)',
+    background: ds.yellow[500],
   },
   iconContainer: {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    gap: '0px',
+    gap: 0,
   },
   iconWrapper: {
-    width: '22px',
-    height: '22px',
+    width: ds.space.mul(0, 10),
+    height: ds.space.mul(0, 10),
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -571,36 +1015,31 @@ const styles = {
   },
   iconLabel: {
     paddingTop: 'var(--ds-space-3)',
-    lineHeight: '4px',
+    paddingBottom: 'var(--ds-space-1)',
+    lineHeight: ds.space[1],
     textTransform: 'capitalize',
     fontFamily: 'Roboto',
     fontWeight: 'var(--ds-font-weight-regular)',
-    fontSize: 'var(--ds-text-caption)',
-    color: colors.text.white,
+    fontSize: '10px',
+    color: ds.background[100],
     '@media (max-width:1535px)': {
       fontSize: '10px',
     },
   },
-  openTextContainer: {
-    flexGrow: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    whiteSpace: 'nowrap',
-  },
   separator: {
-    width: '46px',
-    marginY: '4px',
+    width: ds.space.mul(0, 23),
+    marginY: ds.space[1],
     height: '0.5px',
-    background: colors.background.white,
+    background: ds.background[100],
     display: 'list-item',
     '::marker': { content: '""' },
   },
   subSeparator: {
-    width: '46px',
-    marginY: '4px',
+    width: ds.space.mul(0, 23),
+    marginY: ds.space[1],
     height: '0.25px',
     opacity: '50%',
-    background: colors.background.secondaryDark,
+    background: ds.gray[400],
     display: 'list-item',
     '::marker': { content: '""' },
   },
@@ -608,7 +1047,7 @@ const styles = {
     marginTop: 'auto',
     paddingBottom: 'var(--ds-space-2)',
     '& button': {
-      height: '20px',
+      height: ds.space.mul(1, 5),
       py: 'var(--ds-space-4)',
     },
   },

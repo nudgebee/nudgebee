@@ -84,7 +84,7 @@ func getConnection() *rabbitmq.Conn {
 			rbmqConn1, err := rabbitmq.NewConn(
 				fmt.Sprintf("amqp://%s:%s@%s:%d", config.Config.RabbitMqUsername, config.Config.RabbitMqPassword, config.Config.RabbitMqHost, config.Config.RabbitMqPort),
 				rabbitmq.WithConnectionOptionsLogging,
-				rabbitmq.WithConnectionOptionsReconnectInterval(reconnectTimeDelay),
+				rabbitmq.WithConnectionOptionsBaseReconnectInterval(reconnectTimeDelay),
 			)
 			if err != nil {
 				slog.Default().Error("rbmq: error connecting to rabbitmq",

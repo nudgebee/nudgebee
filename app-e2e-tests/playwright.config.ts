@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import * as dotenv from "dotenv";
 import * as path from "path";
+import { existsSync } from "fs";
 import { AUTH_STATE_PATH } from "./tests/utils/paths";
 
 // Load the env file for the selected environment. dotenv never overrides a
@@ -49,7 +50,13 @@ export default defineConfig({
     video: "retain-on-failure",
     baseURL: process.env.BASE_URL,
     // Reuse the session captured by global-setup so tests start authenticated.
-    storageState: AUTH_STATE_PATH,
+    // Only when the file is actually there: pointing storageState at a missing
+    // file makes EVERY test fail at context creation ("Error reading storage
+    // state ... ENOENT") before a single line of test code runs. That happens
+    // whenever global-setup has not run — notably the VS Code extension's
+    // per-test ▶ Run Test, which does not run it. Without the state file tests
+    // simply start logged out, and doFullLogin() performs the LDAP login itself.
+    storageState: existsSync(AUTH_STATE_PATH) ? AUTH_STATE_PATH : undefined,
   },
 
   projects: [

@@ -6,11 +6,9 @@ import { ds, resolveColor } from '@utils/colors';
 
 const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading, cpuQueries, memoryQueries }) => {
   const memoryLabels = Object.values(memoryData.labels);
-  const memoryLabelsMid = Math.floor(memoryLabels?.length / 2);
   const memoryReccValue = parseFloat(recc?.memoryRecc?.replaceAll(',', ''));
 
   const cpuLabels = Object.values(cpuData.labels);
-  const cpuLabelsMid = Math.floor(cpuLabels?.length / 2);
   const cpuReccValue = parseFloat(recc.cpuRecc);
 
   const cpuData1 = {
@@ -111,35 +109,12 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading, cp
     ],
   };
 
-  const cpuOptions = {
-    scales: {
-      x: {
-        grid: { display: false },
-        ticks: {
-          autoSkip: true,
-          callback: function (value, index, _ticks) {
-            if (index == 0 || index == cpuLabelsMid || index === cpuLabels.length - 1) {
-              return cpuLabels[index]?.split('T')[0];
-            }
-          },
-        },
-      },
-    },
-  };
-
-  const memOptions = {
-    scales: {
-      x: {
-        grid: { display: false },
-        ticks: {
-          autoSkip: true,
-          callback: function (value, index, _ticks) {
-            if (index === 0 || index === memoryLabelsMid || index === memoryLabels.length - 1) {
-              return memoryLabels[index]?.split('T')[0];
-            }
-          },
-        },
-      },
+  // The x axis is left to the chart, which reads the instants back out of these
+  // ISO labels and picks a format for the range on screen. This used to print the
+  // date part of three hand-picked ticks — the same idea, but a different axis
+  const scaleOptions = {
+    x: {
+      grid: { display: false },
     },
   };
 
@@ -164,7 +139,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading, cp
             </Typography>
             <MetricQueryInfo queries={cpuQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
           </Box>
-          <Chart.Line dataset={cpuData1.datasets} labels={cpuData1.labels} scaleOptions={cpuOptions.scales} loading={loading} />
+          <Chart.Line dataset={cpuData1.datasets} labels={cpuData1.labels} scaleOptions={scaleOptions} loading={loading} />
         </Box>
       </Grid>
       <Grid item xs={6}>
@@ -186,7 +161,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading, cp
             </Typography>
             <MetricQueryInfo queries={memoryQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
           </Box>
-          <Chart.Line dataset={memoryData1.datasets} labels={memoryData1.labels} scaleOptions={memOptions.scales} loading={loading} />
+          <Chart.Line dataset={memoryData1.datasets} labels={memoryData1.labels} scaleOptions={scaleOptions} loading={loading} />
         </Box>
       </Grid>
     </Grid>

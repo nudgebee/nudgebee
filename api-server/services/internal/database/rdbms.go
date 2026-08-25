@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"nudgebee/services/config"
@@ -617,6 +618,26 @@ func (d *DatabaseManager) BuildInClause(values ...any) string {
 	return strings.Join(valueStr, ",")
 }
 
+// applyPoolBounds caps a pool explicitly. Without it database/sql defaults
+// MaxOpenConns to 0 (unlimited) and never recycles connections, so the backend's
+// own connection cap — not the app — becomes the limiter, and idle connections
+// outlive any server- or proxy-side idle cutoff and come back dead.
+func applyPoolBounds(db *sqlx.DB, maxOpen, maxIdle, idleMinutes, lifetimeMinutes int) {
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxIdleTime(time.Duration(idleMinutes) * time.Minute)
+	db.SetConnMaxLifetime(time.Duration(lifetimeMinutes) * time.Minute)
+}
+
+func applyAgentWarehousePoolBounds(db *sqlx.DB) {
+	applyPoolBounds(db,
+		config.Config.AgentWarehouseMaxConnection,
+		config.Config.AgentWarehouseMinConnection,
+		config.Config.AgentWarehouseIdleMinutes,
+		config.Config.AgentWarehouseConnMaxLifetimeMinutes,
+	)
+}
+
 func newAgentWarehouseDatabaseManager() (*DatabaseManager, error) {
 	agentWarehouse := newAgentWarehouseDriver()
 	connector, err := agentWarehouse.OpenConnector("agent_warehouse")
@@ -624,8 +645,10 @@ func newAgentWarehouseDatabaseManager() (*DatabaseManager, error) {
 		slog.Error("error opening connector for agent warehouse", "error", err)
 		return nil, err
 	}
+	db := sqlx.NewDb(sql.OpenDB(connector), "clickhouse")
+	applyAgentWarehousePoolBounds(db)
 	databaseManager := DatabaseManager{
-		Db: sqlx.NewDb(sql.OpenDB(connector), "clickhouse"),
+		Db: db,
 	}
 	return &databaseManager, nil
 }
@@ -637,8 +660,10 @@ func newAgentWarehouseBigQueryDatabaseManager() (*DatabaseManager, error) {
 		slog.Error("error opening connector for agent warehouse", "error", err)
 		return nil, err
 	}
+	db := sqlx.NewDb(sql.OpenDB(connector), "bigquery")
+	applyAgentWarehousePoolBounds(db)
 	databaseManager := DatabaseManager{
-		Db: sqlx.NewDb(sql.OpenDB(connector), "bigquery"),
+		Db: db,
 	}
 	return &databaseManager, nil
 }
@@ -650,8 +675,10 @@ func newAgentWarehouseChronosphereDatabaseManager() (*DatabaseManager, error) {
 		slog.Error("error opening connector for agent warehouse", "error", err)
 		return nil, err
 	}
+	db := sqlx.NewDb(sql.OpenDB(connector), "chronosphere")
+	applyAgentWarehousePoolBounds(db)
 	databaseManager := DatabaseManager{
-		Db: sqlx.NewDb(sql.OpenDB(connector), "chronosphere"),
+		Db: db,
 	}
 	return &databaseManager, nil
 }
@@ -683,6 +710,12 @@ func newClickhouseDatabaseManager() (*DatabaseManager, error) {
 		slog.Error("error connecting to clickhouse", "error", err)
 		return nil, err
 	}
+	applyPoolBounds(db,
+		config.Config.ClickhouseMaxConnection,
+		config.Config.ClickhouseMinConnection,
+		config.Config.ClickhouseIdleMinutes,
+		config.Config.ClickhouseConnMaxLifetimeMinutes,
+	)
 
 	if err := db.Ping(); err != nil {
 		slog.Error("error pinging clickhouse", "error", err)
@@ -715,6 +748,13 @@ func newPostgresDatabaseManager() (*DatabaseManager, error) {
 
 var databaseManager map[DatabaseManagerType]*DatabaseManager = make(map[DatabaseManagerType]*DatabaseManager)
 
+// databaseManagerMu guards databaseManager and databaseManagerHooks. Managers are
+// created lazily on first use, so without it two goroutines racing an
+// uninitialised entry either abort the process with "concurrent map read and map
+// write" or both run a new*DatabaseManager constructor — and the loser of the map
+// write strands a fully-opened sqlx.DB pool that Close() can no longer reach.
+var databaseManagerMu sync.RWMutex
+
 type DatabaseManagerType string
 
 const (
@@ -730,11 +770,27 @@ const (
 // GetDatabaseManagerIfInitialized returns the manager only if it was already
 // created by a prior GetDatabaseManager call. It never opens a new connection.
 func GetDatabaseManagerIfInitialized(name DatabaseManagerType) (*DatabaseManager, bool) {
+	databaseManagerMu.RLock()
+	defer databaseManagerMu.RUnlock()
 	manager, ok := databaseManager[name]
 	return manager, ok
 }
 
 func GetDatabaseManager(name DatabaseManagerType) (*DatabaseManager, error) {
+	// Fast path: once every manager is initialised this is the steady state, so
+	// keep it a shared read with no write contention.
+	databaseManagerMu.RLock()
+	manager, ok := databaseManager[name]
+	databaseManagerMu.RUnlock()
+	if ok {
+		return manager, nil
+	}
+
+	// Slow path: construct under the write lock, re-checking first so at most one
+	// pool per type is ever opened. Safe to hold across construction — no
+	// constructor and no registered hook calls back into GetDatabaseManager.
+	databaseManagerMu.Lock()
+	defer databaseManagerMu.Unlock()
 	if manager, ok := databaseManager[name]; ok {
 		return manager, nil
 	}
@@ -796,10 +852,14 @@ func GetDatabaseManager(name DatabaseManagerType) (*DatabaseManager, error) {
 var databaseManagerHooks map[DatabaseManagerType]func() (*DatabaseManager, error) = make(map[DatabaseManagerType]func() (*DatabaseManager, error))
 
 func RegisterDatabaseManagerHook(name DatabaseManagerType, callback func() (*DatabaseManager, error)) {
+	databaseManagerMu.Lock()
+	defer databaseManagerMu.Unlock()
 	databaseManagerHooks[name] = callback
 }
 
 func Close() {
+	databaseManagerMu.RLock()
+	defer databaseManagerMu.RUnlock()
 	for _, db := range databaseManager {
 		err := db.Db.Close()
 		if err != nil {

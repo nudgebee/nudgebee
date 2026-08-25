@@ -64,7 +64,7 @@ func TestModelConfigRoundTrip(t *testing.T) {
 		conversationID, sessionID, tenantID, accountID, userID,
 		"", "round-trip-test",
 		ConversationStatusCompleted, ConversationSourceUserInvestigation,
-		"", "", nil,
+		"", "", nil, "",
 	)
 	require.NoError(t, err, "seed conversation")
 	// Cleanup unless KEEP_TEST_CONVERSATION=true — useful when the operator
@@ -85,7 +85,7 @@ func TestModelConfigRoundTrip(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 
 	// --- Round 1: dispatch blanket. Row should hold provider+model; tier NULL.
-	applyConversationModelConfig(ctx, dao, conversationID, "openai", "gpt-4o-mini", ConversationTierOverrides{})
+	applyConversationModelConfig(ctx, dao, conversationID, "openai", "gpt-4o-mini", ConversationTierOverrides{}, "", false)
 
 	conv, err := dao.GetConversation(conversationID)
 	require.NoError(t, err)
@@ -104,7 +104,7 @@ func TestModelConfigRoundTrip(t *testing.T) {
 		string(ModelTierReasoning): {Provider: "googleai", Model: "gemini-2.5-pro"},
 		string(ModelTierRetrieval): {Provider: "openai", Model: "gpt-4o-mini"},
 	}}
-	applyConversationModelConfig(ctx, dao, conversationID, "", "", tierPicks)
+	applyConversationModelConfig(ctx, dao, conversationID, "", "", tierPicks, "", false)
 
 	conv, err = dao.GetConversation(conversationID)
 	require.NoError(t, err)
@@ -125,7 +125,7 @@ func TestModelConfigRoundTrip(t *testing.T) {
 	assert.Equal(t, "gpt-4o-mini", res.Model)
 
 	// --- Round 3: dispatch blanket again. Tier must clear; blanket replaces.
-	applyConversationModelConfig(ctx, dao, conversationID, "anthropic", "claude-opus-4-7", ConversationTierOverrides{})
+	applyConversationModelConfig(ctx, dao, conversationID, "anthropic", "claude-opus-4-7", ConversationTierOverrides{}, "", false)
 
 	conv, err = dao.GetConversation(conversationID)
 	require.NoError(t, err)

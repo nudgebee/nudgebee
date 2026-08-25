@@ -68,6 +68,35 @@ func buildRoutingDef(raw any) *model.WorkflowDefinition {
 	return def
 }
 
+// applyCalleeRunTags marks a child workflow run as a run OF THE CALLEE, which is
+// what makes it appear in the callee's own Executions list — ListWorkflowExecutions
+// filters on SearchAttrWorkflowID, so an untagged child is reachable only by
+// drilling into the caller's run. The trigger tag distinguishes it from a run a
+// user started, and the version Memo lets the list render the version that ran.
+//
+// No-op for inline tasks that synthesize a definition rather than calling a stored
+// workflow (core.group, core.foreach): there is no callee to attribute the run to.
+func applyCalleeRunTags(searchAttrs, memo map[string]any, calleeWorkflowID string, version *model.WorkflowVersion) {
+	if calleeWorkflowID == "" {
+		return
+	}
+	searchAttrs[model.SearchAttrWorkflowID] = calleeWorkflowID
+	searchAttrs[model.SearchAttrWorkflowTrigger] = string(model.WorkflowTriggerCalled)
+	for k, v := range model.WorkflowVersionMemo(version) {
+		memo[k] = v
+	}
+}
+
+// resolveLastExecutionTarget returns the id of the workflow row whose last_execution_*
+// columns this run writes: itself, the callee for a core.call-workflow run (its "inline-…"
+// id matches no row), or "" for definition-synthesizing children that own no row.
+func resolveLastExecutionTarget(wfID, startAttrWorkflowID string) string {
+	if !strings.HasPrefix(wfID, "inline-") {
+		return wfID
+	}
+	return startAttrWorkflowID
+}
+
 // getUserDisplayName returns the display name to attribute the workflow run to.
 // Prefers the actual triggerer (manual / retrigger), falls back to the last
 // updater for scheduled/webhook/event-rule triggers.
@@ -500,10 +529,21 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	var systemSearchAttrs []temporal.SearchAttributeUpdate
 	systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrTenantID).ValueSet(wf.TenantID))
 	systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrAccountID).ValueSet(wf.AccountID))
-	systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID).ValueSet(wf.ID))
+
+	searchAttributes := workflow.GetTypedSearchAttributes(ctx)
+	// A run started by core.call-workflow carries the CALLEE's workflow id from
+	// its start options, while `wf.ID` here is the synthetic "inline-…" id of the
+	// definition snapshot handed to the child. Overwriting would erase the only
+	// link between the run and the workflow it is a run of, so an id set at start
+	// time wins. Top-level runs set the same value they would get from wf.ID.
+	startWorkflowID, hasStartWorkflowID := searchAttributes.GetKeyword(temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID))
+	if !hasStartWorkflowID || startWorkflowID == "" {
+		systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID).ValueSet(wf.ID))
+	}
+	// The workflow row this run's last_execution_* columns belong to.
+	lastExecTarget := resolveLastExecutionTarget(wf.ID, startWorkflowID)
 
 	// Add workflow trigger type if available from info.SearchAttributes
-	searchAttributes := workflow.GetTypedSearchAttributes(ctx)
 	if searchAttributes.Size() > 0 {
 		if triggerType, ok := searchAttributes.GetKeyword(temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowTrigger)); ok {
 			systemSearchAttrs = append(systemSearchAttrs, temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowTrigger).ValueSet(triggerType))
@@ -523,8 +563,14 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 		if r := recover(); r != nil {
 			logger.Error("Panic recovered in workflow execution", "panic", r)
 			panicMessage := fmt.Sprintf("%v", r)
-			// Pass the panic message to the final status update
-			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, inputs, logger, temporal.NewApplicationError("workflow panic", "panic", panicMessage))
+			// Pass the panic message to the final status update, on the same terms as
+			// the failure path below: a called run records status, not the callee's hooks.
+			panicErr := temporal.NewApplicationError("workflow panic", "panic", panicMessage)
+			if !isChildWorkflow {
+				updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, panicErr)
+			} else if !wf.DryRun {
+				setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusFailed, panicErr.Error(), logger)
+			}
 			// Set the error for the workflow function to return, causing the Temporal workflow to fail.
 			err = temporal.NewApplicationError("workflow panic: non-deterministic", "panic", panicMessage)
 		}
@@ -542,9 +588,10 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 		return "", err
 	}
 
-	// Update workflow status to RUNNING with retry logic, only for parent workflows
-	if !isChildWorkflow && !wf.DryRun {
-		updateInprogressWorkflowStatus(ctx, wf, logger)
+	// Update status to RUNNING for every run that owns a workflow row — top-level
+	// runs, and called runs, which own the callee's row.
+	if lastExecTarget != "" && !wf.DryRun {
+		updateInprogressWorkflowStatus(ctx, wf, lastExecTarget, logger)
 	}
 
 	// Upsert static Search Attributes from wf.Tags
@@ -709,7 +756,10 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	if workflowError != nil {
 		logger.Info("Workflow execution failed because of error", "workflowId", wf.ID, "error", workflowError)
 		if !isChildWorkflow {
-			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, inputs, logger, workflowError)
+			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, workflowError)
+		} else if !wf.DryRun {
+			// A called run records status on the callee's row, but not its hooks or tags.
+			setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusFailed, workflowError.Error(), logger)
 		}
 		return "", workflowError
 	}
@@ -824,7 +874,10 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 				}
 			}
 		}
-		updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, inputs, logger, nil)
+		updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, nil)
+	} else if !wf.DryRun {
+		// As on the failure path: status on the callee's row, no hooks or tags.
+		setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusCompleted, "", logger)
 	}
 
 	logger.Info("Workflow execution completed", "workflowId", wf.ID, "result", workflowResult)
@@ -835,9 +888,12 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	return string(resultBytes), nil
 }
 
-func updateInprogressWorkflowStatus(ctx workflow.Context, wf *model.Workflow, logger temporalLog.Logger) {
-	logger.Info("updating workflow status to in-progress", "id", wf.ID, "tenant", wf.TenantID, "account", wf.AccountID)
-	// Update workflow status to RUNNING with retry logic
+// setLastExecutionStatus records status on targetWorkflowID's row, which is not always
+// wf.ID (see resolveLastExecutionTarget) — hence the copy; wf keeps its own id elsewhere.
+func setLastExecutionStatus(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, status model.WorkflowExecutionStatus, statusMessage string, logger temporalLog.Logger) {
+	if targetWorkflowID == "" {
+		return
+	}
 	activityOptions := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Second, // Short timeout for status update
 		RetryPolicy: &temporal.RetryPolicy{
@@ -848,11 +904,18 @@ func updateInprogressWorkflowStatus(ctx workflow.Context, wf *model.Workflow, lo
 		},
 	}
 	statusUpdateCtx := workflow.WithActivityOptions(ctx, activityOptions)
-	statusFuture := workflow.ExecuteActivity(statusUpdateCtx, Internal_UpdateLastExecutionStatusActivity, wf, model.WorkflowExecutionStatusRunning, "")
+	targetWf := *wf
+	targetWf.ID = targetWorkflowID
+	statusFuture := workflow.ExecuteActivity(statusUpdateCtx, Internal_UpdateLastExecutionStatusActivity, &targetWf, status, statusMessage)
 	if err := statusFuture.Get(statusUpdateCtx, nil); err != nil {
-		logger.Error("Failed to update workflow status to RUNNING", "error", err)
+		logger.Error("Failed to update workflow last execution status", "workflowId", targetWorkflowID, "status", status, "error", err)
 		// Optionally: surface alert here if critical
 	}
+}
+
+func updateInprogressWorkflowStatus(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, logger temporalLog.Logger) {
+	logger.Info("updating workflow status to in-progress", "id", targetWorkflowID, "tenant", wf.TenantID, "account", wf.AccountID)
+	setLastExecutionStatus(ctx, wf, targetWorkflowID, model.WorkflowExecutionStatusRunning, "", logger)
 }
 
 type internalTaskResult struct {
@@ -1288,10 +1351,29 @@ func processTaskLoop(
 							// Create a TaskContext for the inline task
 							taskContext := types.NewTemporalTaskContext(context.TODO(), wf.TenantID, wf.AccountID, wf.ID, eventID, wf.UpdatedBy, wf.Name, getUserDisplayName(wf), temporalClient, dataConverter, workflowStore, temporalId, uuid.Nil.String(), logger, wf.DryRun)
 
-							childWfDef, err := inlineTask.GetChildWorkflowDefinition(taskContext, paramMap)
-							if err != nil {
-								logger.Error("Failed to get child workflow definition", "taskID", task.ID, "error", err)
-								return completedTasks, nil, err
+							// Tasks that call a STORED workflow (core.call-workflow) also
+							// report which workflow and version the child came from, so the
+							// run can be tagged as a run of the callee. Tasks that
+							// synthesize a definition on the fly only return the definition.
+							var childWfDef *model.WorkflowDefinition
+							var calleeWfID string
+							var calleeVersion *model.WorkflowVersion
+							if resolver, ok := taskImpl.(types.TaskChildWorkflowResolver); ok {
+								resolved, err := resolver.ResolveChildWorkflow(taskContext, paramMap)
+								if err != nil {
+									logger.Error("Failed to resolve child workflow", "taskID", task.ID, "error", err)
+									return completedTasks, nil, err
+								}
+								childWfDef = resolved.Definition
+								calleeWfID = resolved.WorkflowID
+								calleeVersion = resolved.Version
+							} else {
+								def, err := inlineTask.GetChildWorkflowDefinition(taskContext, paramMap)
+								if err != nil {
+									logger.Error("Failed to get child workflow definition", "taskID", task.ID, "error", err)
+									return completedTasks, nil, err
+								}
+								childWfDef = def
 							}
 
 							// Construct a synthetic Workflow object
@@ -1309,26 +1391,23 @@ func processTaskLoop(
 								LastExecutionStatus: model.WorkflowExecutionStatusRunning,
 							}
 
+							childMemo := map[string]interface{}{
+								"parent_task_id":               task.ID,
+								"child_definition_id":          childWfID,
+								types.MemoKeyCallWorkflowDepth: callWfDepth + 1,
+							}
+							childSearchAttrs := map[string]interface{}{
+								model.SearchAttrTenantID:         wf.TenantID,
+								model.SearchAttrAccountID:        wf.AccountID,
+								model.SearchAttrParentWorkflowID: wf.ID, // Or SearchAttrParentWorkflowID constant if available
+							}
+							applyCalleeRunTags(childSearchAttrs, childMemo, calleeWfID, calleeVersion)
+
 							cwo := workflow.ChildWorkflowOptions{
-								WorkflowID: fmt.Sprintf("%s-%s-%s", wf.ID, task.ID, uuid.New().String()), // Unique Run ID
-								TaskQueue:  config.Config.RunbookServerTemporalQueue,
-								// No workflow-version Memo here on purpose: GetChildWorkflowDefinition
-								// already pins the child to the callee's LIVE version, and the
-								// execution-detail drill-down resolves the child via child_definition_id
-								// + Temporal history (not the version Memo). Children are retried
-								// through their parent, never independently, so the version linkage
-								// keys (which ExecuteWorkflow stamps on top-level runs) have no
-								// consumer here.
-								Memo: map[string]interface{}{
-									"parent_task_id":               task.ID,
-									"child_definition_id":          childWfID,
-									types.MemoKeyCallWorkflowDepth: callWfDepth + 1,
-								},
-								SearchAttributes: map[string]interface{}{
-									model.SearchAttrTenantID:         wf.TenantID,
-									model.SearchAttrAccountID:        wf.AccountID,
-									model.SearchAttrParentWorkflowID: wf.ID, // Or SearchAttrParentWorkflowID constant if available
-								},
+								WorkflowID:       fmt.Sprintf("%s-%s-%s", wf.ID, task.ID, uuid.New().String()), // Unique Run ID
+								TaskQueue:        config.Config.RunbookServerTemporalQueue,
+								Memo:             childMemo,
+								SearchAttributes: childSearchAttrs,
 							}
 
 							ctxWithCWO := workflow.WithChildOptions(ctx, cwo)
@@ -1777,7 +1856,7 @@ func processTaskLoop(
 	return completedTasks, executionTrace, nil
 }
 
-func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Workflow, inputs map[string]any, logger temporalLog.Logger, workflowError error) {
+func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, inputs map[string]any, logger temporalLog.Logger, workflowError error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Panic recovered in workflow deferred cleanup hooks", "panic", r)
@@ -1803,12 +1882,8 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 	}
 
 	if !wf.DryRun {
-		logger.Info("updating final workflow status", "id", wf.ID, "tenant", wf.TenantID, "account", wf.AccountID)
-		statusFuture := workflow.ExecuteActivity(statusUpdateCtx, Internal_UpdateLastExecutionStatusActivity, wf, finalStatus, statusMessage)
-		statusErr := statusFuture.Get(statusUpdateCtx, nil)
-		if statusErr != nil {
-			logger.Error("Failed to update final workflow status", "error", statusErr)
-		}
+		logger.Info("updating final workflow status", "id", targetWorkflowID, "tenant", wf.TenantID, "account", wf.AccountID)
+		setLastExecutionStatus(ctx, wf, targetWorkflowID, finalStatus, statusMessage, logger)
 
 		// Update linked event_resolution if one exists for this execution (no-op if none)
 		info := workflow.GetInfo(ctx)

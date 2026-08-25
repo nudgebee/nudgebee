@@ -388,7 +388,7 @@ func updateCode(ctx AccountAdapterContext, dir string, request ApplyRecommendati
 		rootPath = gitDetails.Annotations[annotations.CIHelmRootPath]
 	}
 	switch {
-	case request.Recommendation.Category == "RightSizing" && request.Recommendation.RuleName == "pod_right_sizing":
+	case request.Recommendation.RuleName == "pod_right_sizing":
 		// Resource → (workload-wide annotation key, helm jsonPath descriptor).
 		// The default-key column lets us look up the workload-wide annotation as a
 		// named constant; the suffix column is what we splice into the per-container
@@ -1490,7 +1490,7 @@ type githubAdapter struct {
 
 func (k *githubAdapter) ApplyRecommendation(ctx AccountAdapterContext, request ApplyRecommendationRequest, existingRecommendations []models.RecommendationResolution, recommendResolutionId string) (ApplyRecommendationResponse, error) {
 	switch {
-	case request.Recommendation.Category == "RightSizing" && request.Recommendation.RuleName == "pod_right_sizing":
+	case request.Recommendation.RuleName == "pod_right_sizing":
 		if request.Resource.Id == "" {
 			return ApplyRecommendationResponse{}, fmt.Errorf("rule is not supported for empty respurce id")
 		}

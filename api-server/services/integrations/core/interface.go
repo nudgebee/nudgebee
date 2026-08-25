@@ -47,6 +47,18 @@ type TestableIntegration interface {
 	TestConnection(ctx *security.RequestContext, values []IntegrationConfigValue, accountId string) error
 }
 
+// TenantScopedIntegration is an optional capability an Integration may implement to
+// declare that it binds to the tenant directly and needs NO cloud-account mapping (no
+// account_id). The generic create + connection-test paths skip the account_id requirement
+// for these — e.g. llm_gateway resolves credentials per-tenant and has no account concept.
+// This is the per-integration counterpart to IntegrationCategory.IsTenantScoped (which
+// scopes whole categories like ticketing/messaging); an integration is treated as
+// tenant-scoped if EITHER says so. Default (interface not implemented) = account-scoped,
+// so existing integrations are unaffected.
+type TenantScopedIntegration interface {
+	TenantScoped() bool
+}
+
 type IntegrationSchemaType string
 
 const (

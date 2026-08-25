@@ -40,7 +40,10 @@ func TestBuildCorrelationInsert_MatchesPerCandidateSemantics(t *testing.T) {
 
 	// 2 candidates × 2 directions = 4 rows × 9 cols = 36 args.
 	require.Len(t, args, 4*correlationInsertCols)
-	assert.Contains(t, query, "ON CONFLICT (related_event_id, event_id, cloud_account_id) DO NOTHING")
+	// Bare ON CONFLICT (no target) so the insert works against both the old
+	// pair-level unique and V867's pair+type unique, whichever the DB has
+	// during a rolling deploy.
+	assert.Contains(t, query, "ON CONFLICT DO NOTHING")
 	// Each value tuple ends with its 9th placeholder ($9, $18, $27, $36): four
 	// sequentially-numbered tuples, no gaps or repeats.
 	for _, end := range []string{"$9)", "$18)", "$27)", "$36)"} {

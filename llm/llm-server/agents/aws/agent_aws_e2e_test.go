@@ -31,7 +31,7 @@ func TestAWSAgent_Execute(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
-			awsAgent := newAwsAgent(tc.AccountId)
+			awsAgent := AwsAgent{}
 			err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 			assert.NoError(t, err, "Cleanup failed for session %s", tc.SessionId)
 

@@ -6,6 +6,17 @@
  *                                           auto-collapses to a flat list when
  *                                           the options span only one group)
  *              freeSolo   = boolean        (allow values not in options list)
+ *              disablePortal = boolean     (default true = panel mounts inline.
+ *                                           Pass false inside a Modal/Drawer or any
+ *                                           clipping container so the panel portals
+ *                                           to body — same prop as DropdownMenu/Select)
+ *              showSelectedIcon = boolean  (single-select only; leads the trigger with
+ *                                           the selected option's `icon`)
+ *              clearable  = boolean        (default true; when false the trigger
+ *                                           keeps its caret instead of swapping to
+ *                                           a clear (x) once a value is selected —
+ *                                           for pickers where "no value" isn't a
+ *                                           valid state)
  *
  * Option icons: an option's `icon` (svg asset src or JSX) renders as a 16px
  * leading SafeIcon in its row. Panel width defaults to the trigger width with
@@ -765,6 +776,9 @@ function FilterDropdownButton({
   groupIcon,
   selectionWithinGroup = false,
   freeSolo = false,
+  clearable = true,
+  disablePortal = true,
+  showSelectedIcon = false,
   popoverWidth,
   popoverAlign = 'left',
   onSelect,
@@ -818,6 +832,13 @@ function FilterDropdownButton({
   );
 
   // Build display values: max limitTag for multi, 1 for single
+  // Single-select only: the chosen option, so its `icon` can lead the trigger.
+  const selectedOption = useMemo(() => {
+    if (multiple || !hasSelection) return null;
+    if (value != null && typeof value === 'object') return value;
+    return options.find((opt) => getValue(opt) === value) ?? null;
+  }, [value, options, multiple, hasSelection]);
+
   const selectedDisplayText = useMemo(() => {
     if (!hasSelection) return null;
     if (multiple && Array.isArray(value)) {
@@ -1067,6 +1088,21 @@ function FilterDropdownButton({
         }}
       >
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: ds.space.mul(0, 3), flex: 1, overflow: 'hidden', minWidth: 0 }}>
+          {showSelectedIcon && selectedOption?.icon && (
+            // SafeIcon returns a JSX icon verbatim, so its own style prop can't size it —
+            // constrain from the wrapper to keep the trigger glyph consistent.
+            <Box
+              component='span'
+              sx={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                flexShrink: 0,
+                '& > *, & svg, & img': { width: 12, height: 12, objectFit: 'contain' },
+              }}
+            >
+              <SafeIcon src={selectedOption.icon} alt='' />
+            </Box>
+          )}
           {(label || (!hasSelection && placeholder) || isOptionsLoading) && (
             <span
               style={{
@@ -1126,7 +1162,7 @@ function FilterDropdownButton({
             </>
           )}
         </span>
-        {hasSelection ? (
+        {hasSelection && clearable ? (
           <svg
             width='14'
             height='14'
@@ -1147,7 +1183,7 @@ function FilterDropdownButton({
         open={open}
         anchorEl={anchorEl}
         onClose={() => setAnchorEl(null)}
-        disablePortal
+        disablePortal={disablePortal}
         anchorOrigin={{ vertical: 'bottom', horizontal: popoverAlign }}
         transformOrigin={{ vertical: 'top', horizontal: popoverAlign }}
         slotProps={{
@@ -1337,6 +1373,9 @@ FilterDropdownButton.propTypes = {
   groupIcon: PropTypes.func,
   selectionWithinGroup: PropTypes.bool,
   freeSolo: PropTypes.bool,
+  clearable: PropTypes.bool,
+  disablePortal: PropTypes.bool,
+  showSelectedIcon: PropTypes.bool,
   onSelect: PropTypes.func,
   onOpen: PropTypes.func,
   disabled: PropTypes.bool,

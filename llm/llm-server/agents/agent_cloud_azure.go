@@ -10,24 +10,16 @@ import (
 // Tool/Agent Constants
 const AzureAgentName = "azure"
 
-func init() {
-	toolDescription := `Executes Azure CLI commands based on natural language queries. Returns the output of the commands. Use this tool to interact with Azure Services. It can also filter using --query (JMESPath) and --output options, or shell utilities like jq.`
-	toolInput := "Natural Language query about Azure resources or operations."
-	toolOutput := "Output of Azure Cli tool"
-	core.RegisterNBAgentFactoryAndTool(AzureAgentName, func(accountId string) (core.NBAgent, error) {
-		return newAzureAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
-}
+// Phase 3d (#32503): agent registration removed. Guidance now lives on
+// AzureCliTool.ToolPrompt(); the wrapping agent added a ReAct-loop hop with no
+// data-transformation of its own. The short handle "azure" continues to
+// resolve to azure_execute via tool alias (see tool_cloud_azure.go init).
+// Kept type/methods for one release so external references to AzureAgentName
+// still compile; delete after bake.
 
-func newAzureAgent(accountId string) core.NBAgent {
-	return AzureAgent{
-		accountId: accountId,
-	}
-}
-
-type AzureAgent struct {
-	accountId string
-}
+// AzureAgent is deprecated (Phase 3d #32503). Type kept for compat; runtime
+// registration and guidance live on AzureCliTool now.
+type AzureAgent struct{}
 
 func (a AzureAgent) GetName() string {
 	return AzureAgentName

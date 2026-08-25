@@ -17,6 +17,18 @@ func GenerateNodeID(uniqueKey string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(uniqueKey)).String()
 }
 
+// NodeIDFor derives a node's deterministic ID from the natural key the
+// knowledge_graph_node unique constraint is built on (unique_key +
+// cloud_account_id + tenant_id).
+//
+// Every node-creation site must use this. A random uuid.New() ID hands the same
+// logical node a different primary key on every build, so the node upsert's
+// ON CONFLICT arm never matches and Postgres falls through to a plain INSERT,
+// which then trips the unique constraint and aborts the entire graph save.
+func NodeIDFor(uniqueKey, tenantID, cloudAccountID string) string {
+	return GenerateNodeID(uniqueKey + tenantID + cloudAccountID)
+}
+
 // GenerateEdgeID generates a unique ID for an edge based on source, destination, and relationship
 func GenerateEdgeID(sourceNodeID, destinationNodeID string, relationshipType RelationshipType) string {
 	key := fmt.Sprintf("%s->%s:%s", sourceNodeID, destinationNodeID, relationshipType)
@@ -89,7 +101,7 @@ func NewNode(nodeType NodeType, uniqueKey string, properties map[string]interfac
 	ontologyAttributes := BuildOntologyAttributes(specificType, nodeType, properties)
 
 	return &DbNode{
-		ID:                 GenerateNodeID(uniqueKey + tenantID + cloudAccountID),
+		ID:                 NodeIDFor(uniqueKey, tenantID, cloudAccountID),
 		NodeType:           nodeType,
 		SpecificType:       specificType,
 		UniqueKey:          uniqueKey,
@@ -1146,6 +1158,9 @@ func GetK8sCloudAccountMapping(ctx *security.RequestContext, tenantID string, cl
 		}
 		mapping[k8sAccountID] = append(mapping[k8sAccountID], cloudAccountID)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating cloud account mapping rows: %w", err)
+	}
 
 	return mapping, nil
 }
@@ -1235,6 +1250,9 @@ func GetK8sAccountsForTenant(tenantID string, cloudAccountIDs []string) ([]K8sAc
 			continue
 		}
 		k8sAccounts = append(k8sAccounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating K8s account rows: %w", err)
 	}
 
 	return k8sAccounts, nil

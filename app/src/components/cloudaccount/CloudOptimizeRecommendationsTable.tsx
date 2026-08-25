@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { useRouter } from 'next/router';
 import { usePagination } from '@hooks/usePagination';
@@ -88,7 +88,8 @@ const CATEGORY_CONFIG: Record<OptimizeCategory, CategoryConfig> = {
     showAccountFilter: true,
     getRecommendationText: (details, item) => details.description || item.recommendation?.reason,
     recommendationsTooltip: 'CPU and memory adjustments for over- or under-provisioned resources, derived from observed usage.',
-    savingsTooltip: 'Total estimated annual savings if all right-sizing recommendations are applied',
+    savingsTooltip:
+      'Estimated annual savings (monthly savings × 12) if right-sizing recommendations are applied. Alternative options for the same resource (e.g. multiple Savings Plan terms) are counted once, so this can be less than the sum of the rows below.',
   },
   Configuration: {
     tableId: 'cloudaccount-optimize-configuration-change',
@@ -124,7 +125,8 @@ const CATEGORY_CONFIG: Record<OptimizeCategory, CategoryConfig> = {
     showAccountFilter: false,
     getRecommendationText: (details, item) => details.recommendations?.[0] || item.recommendation?.reason,
     recommendationsTooltip: 'Upgrade recommendations for outdated engine versions, deprecated platforms, and end-of-life instance families.',
-    savingsTooltip: 'Total estimated annual savings if all infrastructure upgrade recommendations are applied',
+    savingsTooltip:
+      'Estimated annual savings (monthly savings × 12) if infrastructure upgrade recommendations are applied. Alternative options for the same resource are counted once, so this can be less than the sum of the rows below.',
   },
 };
 
@@ -159,14 +161,10 @@ const CloudOptimizeRecommendationsTable = (props: {
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
   const [isAlarmCreationModalOpen, setIsAlarmCreationModalOpen] = useState(false);
   const [selectedRecommendation, setSelectedRecommendation] = useState<any>(null);
-  const [applyingRecommendationId, setApplyingRecommendationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingTotal, setLoadingTotal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const { page, rowsPerPage, changePage, setPage } = usePagination(10);
   const { allCluster, selectedCluster } = useData();
 
@@ -336,27 +334,6 @@ const CloudOptimizeRecommendationsTable = (props: {
     // The useEffect will automatically reload the data
   };
 
-  const handleApplyAlarmRecommendation = async (row: any) => {
-    if (!row?.id) return;
-    setApplyingRecommendationId(row.id);
-    try {
-      const response = await apiRecommendations.applyRecommendation(row.account_id ?? selectedAccountId, row.id, {
-        reason: 'Creating CloudWatch alarm from Nudgebee recommendation',
-      });
-      if (response?.errors?.length) {
-        snackbar.error(response.errors[0]?.message || 'Failed to create CloudWatch alarm');
-        return;
-      }
-      snackbar.success('CloudWatch alarm created successfully');
-      handleAlarmCreationSuccess();
-    } catch (err) {
-      const message = (err as any)?.response?.data?.message || (err as Error)?.message || 'Failed to create CloudWatch alarm';
-      snackbar.error(message);
-    } finally {
-      setApplyingRecommendationId(null);
-    }
-  };
-
   const handleAskNubi = (e: React.MouseEvent, item: any, recommenedationDetails: any, objectName: string, serviceName: string) => {
     e.stopPropagation();
     const prompt = buildNubiOptimizePrompt({
@@ -368,11 +345,14 @@ const CloudOptimizeRecommendationsTable = (props: {
       accountName: getAccountName(item.account_id),
       estimatedSavings: item.estimated_savings || undefined,
       brief: recommenedationDetails?.description || item.recommendation?.reason || undefined,
+      alarmConfig: item.recommendation?.alarm_config || undefined,
     });
-    setNubiQuery(prompt);
-    setNubiAccountId(item.account_id || selectedAccountId);
-    setNubiConversationId(`recom_${item.id}`);
-    setNubiSidebarVisible(true);
+    openNubiChat({
+      accountId: item.account_id || selectedAccountId,
+      sessionId: `recom_${item.id}`,
+      query: prompt,
+      categorySource: 'Optimize',
+    });
   };
 
   const handleTicketFailure = (error: string) => {
@@ -523,9 +503,11 @@ const CloudOptimizeRecommendationsTable = (props: {
       data: recommendationValue,
     });
 
-    // Savings (RightSizing and InfraUpgrade only)
+    // Savings (RightSizing and InfraUpgrade only). estimated_savings is stored
+    // per month (see SavingsFooter "Projected Monthly Savings" in the drilldown);
+    // the summary card above annualizes it, so label rows /mo — not /yr.
     if (config.showSavings) {
-      data.push({ component: <Currency value={item.estimated_savings} precison={1} prefix={currencySymbol || '$'} suffix='/yr' /> });
+      data.push({ component: <Currency value={item.estimated_savings} precison={1} prefix={currencySymbol || '$'} suffix='/mo' /> });
     }
 
     // Actions menu (Ask NuBi + per-row dropdown)
@@ -813,7 +795,6 @@ const CloudOptimizeRecommendationsTable = (props: {
                       props.accountAccess !== 'readonly' &&
                       hasWriteAccess(row?.account_id ?? selectedAccountId) &&
                       isActionableStatus;
-                    const isApplying = applyingRecommendationId === row?.id;
                     const resolvedProvider = props.provider || (selectedCluster as any)?.cloud_provider || '';
                     const canExecuteCommand =
                       props.accountAccess !== 'readonly' &&
@@ -823,23 +804,15 @@ const CloudOptimizeRecommendationsTable = (props: {
                     const sideActions = canApplyAlarm
                       ? [
                           {
-                            id: 'apply-alarm',
-                            label: isApplying ? 'Creating...' : 'Create Alarm',
-                            onClick: () => handleApplyAlarmRecommendation(row),
-                            tone: 'primary' as const,
-                            size: 'md' as const,
-                            loading: isApplying,
-                            description: 'Auto-create alarm with the default configuration',
-                          },
-                          {
-                            id: 'edit-alarm-config',
-                            label: 'Edit Configuration',
+                            id: 'create-alarm',
+                            label: 'Create Alarm',
                             onClick: () => {
                               setSelectedRecommendation(row);
                               setIsAlarmCreationModalOpen(true);
                             },
-                            tone: 'secondary' as const,
+                            tone: 'primary' as const,
                             size: 'md' as const,
+                            description: 'Review the configuration and notification channels, then create',
                           },
                         ]
                       : [];
@@ -890,24 +863,18 @@ const CloudOptimizeRecommendationsTable = (props: {
         reference={{ id: ticketData?.id, type: (props.provider || (selectedCluster as any)?.cloud_provider || 'aws').toLowerCase() }}
       />
 
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        query={nubiQuery}
-        context={{ type: 'general', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-      />
-
       {config.showAlarmModal && selectedRecommendation && (
         <AlarmCreationModal
           open={isAlarmCreationModalOpen}
           onClose={closeAlarmCreationModal}
           recommendation={selectedRecommendation}
-          accountId={selectedAccountId}
+          accountId={selectedRecommendation?.account_id ?? selectedAccountId}
+          provider={
+            props.provider ||
+            (accounts as any[])?.find((acc: any) => acc.id === (selectedRecommendation?.account_id ?? selectedAccountId))?.cloud_provider ||
+            (selectedCluster as any)?.cloud_provider ||
+            ''
+          }
           onSuccess={handleAlarmCreationSuccess}
           accountAccess={props.accountAccess}
         />

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -1092,11 +1092,18 @@ func (m EventSummaryTool) InputSchema() toolcore.ToolSchema {
 		Type: toolcore.ToolSchemaTypeObject,
 		Properties: map[string]toolcore.ToolSchemaProperty{
 			"command": {
-				Type:        toolcore.ToolSchemaTypeString,
-				Description: "Events Data",
+				Type: toolcore.ToolSchemaTypeString,
+				Description: "Optional and ignored. Call summarises the event data already " +
+					"carried on the request context; nothing is read from this field.",
 			},
 		},
-		Required: []string{"command"},
+		// Deliberately no Required entry. Call() reads input.Context /
+		// QueryContext and never looks at "command", but the model is only ever
+		// told "Input: events data" — so it called the tool without that field,
+		// validation rejected the call, and the resulting
+		// `Invalid tool input for "event_summary"` text was stored and rendered
+		// as the event's summary. A required field nothing consumes can only
+		// ever fail.
 	}
 }
 
@@ -1187,10 +1194,13 @@ func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input to
 
 	// Batch all events into a single LLM call instead of one-per-event
 	var eventPrompt string
+	eventPromptName := prompts.PromptEventGeneralSummary
 	if serviceLabelFound {
-		eventPrompt = prompts_repo.GetPrompt(prompts_repo.PromptEventSummary)
-	} else {
-		eventPrompt = prompts_repo.GetPrompt(prompts_repo.PromptEventGeneralSummary)
+		eventPromptName = prompts.PromptEventSummary
+	}
+	eventPrompt, eventPromptErr := prompts.GetPromptStrict(nbRequestContext.Ctx.GetContext(), eventPromptName, nbRequestContext.AccountId)
+	if eventPromptErr != nil {
+		return toolcore.NBToolResponse{}, fmt.Errorf("event summary: loading %s prompt: %w", eventPromptName, eventPromptErr)
 	}
 
 	// Add account context (cloud provider) as a hidden system instruction

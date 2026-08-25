@@ -37,60 +37,46 @@ func TestForwardedLLMConfigToMap(t *testing.T) {
 	assert.False(t, hasModel, "empty model must be omitted")
 }
 
-func TestForwardedLLMConfigToEnv(t *testing.T) {
-	env := forwardedLLMConfigToEnv(&core.ForwardedLLMConfig{
-		Provider: "googleai",
-		Model:    "gemini-3-flash-preview",
-		ApiKey:   "secret-key",
-		Region:   "us-west-2",
+// Bedrock authenticates with an AWS credential triple rather than an API key.
+// This hop is a hand-written map, so a field added to ForwardedLLMConfig but
+// not here is silently dropped and the pod falls back to the AWS default
+// credential chain — which on GKE dead-ends at an IMDS dial timeout.
+func TestForwardedLLMConfigToMap_BedrockCredentials(t *testing.T) {
+	t.Run("forwards a complete credential triple", func(t *testing.T) {
+		m := forwardedLLMConfigToMap(&core.ForwardedLLMConfig{
+			Provider:     "bedrock",
+			Model:        "arn:aws:bedrock:us-west-2:1234:inference-profile/us.meta.llama4",
+			AccessKey:    "AKIAEXAMPLE",
+			SecretKey:    "shhh",
+			SessionToken: "session",
+		})
+		assert.Equal(t, "AKIAEXAMPLE", m["access_key"])
+		assert.Equal(t, "shhh", m["secret_key"])
+		assert.Equal(t, "session", m["session_token"])
 	})
-	got := map[string]string{}
-	for _, e := range env {
-		// Forwarded config is plaintext per-request env, never SecretKeyRef.
-		assert.Nil(t, e.ValueFrom, "%s must be an inline value, not ValueFrom", e.Name)
-		got[e.Name] = e.Value
-	}
-	assert.Equal(t, "googleai", got["LLM_PROVIDER"])
-	assert.Equal(t, "gemini-3-flash-preview", got["LLM_MODEL_NAME"])
-	assert.Equal(t, "secret-key", got["LLM_PROVIDER_API_KEY"])
-	assert.Equal(t, "us-west-2", got["LLM_PROVIDER_REGION"])
-	// Credential vars are emitted even when empty — see below.
-	endpoint, hasEndpoint := got["LLM_PROVIDER_API_ENDPOINT"]
-	assert.True(t, hasEndpoint, "credential vars must always be emitted")
-	assert.Empty(t, endpoint)
-}
 
-// This override always sets LLM_PROVIDER, so every credential var must be
-// emitted with it — otherwise the secret's credential for the *previous*
-// provider survives underneath and gets spliced onto the forwarded one.
-func TestForwardedLLMConfigToEnv_KeylessProviderBlanksCredentials(t *testing.T) {
-	env := forwardedLLMConfigToEnv(&core.ForwardedLLMConfig{
-		Provider: "bedrock",
-		Model:    "us.meta.llama4-maverick-17b-instruct-v1:0",
+	t.Run("omits the optional session token", func(t *testing.T) {
+		m := forwardedLLMConfigToMap(&core.ForwardedLLMConfig{
+			Provider:  "bedrock",
+			AccessKey: "AKIAEXAMPLE",
+			SecretKey: "shhh",
+		})
+		assert.Equal(t, "AKIAEXAMPLE", m["access_key"])
+		_, hasToken := m["session_token"]
+		assert.False(t, hasToken, "empty session token must be omitted")
 	})
-	got := map[string]string{}
-	for _, e := range env {
-		got[e.Name] = e.Value
-	}
-	assert.Equal(t, "bedrock", got["LLM_PROVIDER"])
-	for _, name := range []string{
-		"LLM_PROVIDER_API_KEY",
-		"LLM_PROVIDER_API_ENDPOINT",
-		"LLM_PROVIDER_API_VERSION",
-		"LLM_PROVIDER_API_TYPE",
-		"LLM_PROVIDER_REGION",
-	} {
-		val, ok := got[name]
-		assert.True(t, ok, "%s must be emitted to blank the secret's value", name)
-		assert.Empty(t, val)
-	}
-}
 
-// An unresolved model is not a credential: falling through to the pod's default
-// beats forcing it blank.
-func TestForwardedLLMConfigToEnv_EmptyModelFallsThrough(t *testing.T) {
-	env := forwardedLLMConfigToEnv(&core.ForwardedLLMConfig{Provider: "bedrock"})
-	for _, e := range env {
-		assert.NotEqual(t, "LLM_MODEL_NAME", e.Name, "empty model must not override the pod default")
-	}
+	t.Run("omits a half-set pair", func(t *testing.T) {
+		// A static credentials provider built from half a pair is a hard error
+		// in the AWS SDK, not a fall-through to the pod's own chain — so an
+		// incomplete pair must not cross the wire at all.
+		m := forwardedLLMConfigToMap(&core.ForwardedLLMConfig{
+			Provider:  "bedrock",
+			AccessKey: "AKIAEXAMPLE",
+		})
+		_, hasAccess := m["access_key"]
+		_, hasSecret := m["secret_key"]
+		assert.False(t, hasAccess, "lone access key must be omitted")
+		assert.False(t, hasSecret)
+	})
 }

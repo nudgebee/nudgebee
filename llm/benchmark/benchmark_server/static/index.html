@@ -290,10 +290,66 @@ tailwind.config = {
           </select>
         </div>
         <div>
-          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Log Backend</label>
-          <label class="flex items-center gap-2 text-[12px] text-gray-600 py-2 cursor-pointer" title="Pin the log backend to kubectl for this run (sends log_provider_override=k8s to the llm-server)">
-            <input type="checkbox" id="bm-force-k8s-logs" class="rounded border-gray-300 accent-amber-500"> Force kubectl logs
-          </label>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-k8s-mode">K8s Orchestrator</label>
+          <select id="bm-k8s-mode" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all"
+            title="Force a specific K8s orchestrator variant for this run (sends config.k8s_orchestrator_mode to the llm-server). 'Default' defers to the llm-server env (LLM_SERVER_K8S_ORCHESTRATOR_MODE).">
+            <option value="">Default (defer to env)</option>
+            <option value="delegating">Delegating (v1, kubectl sub-agent)</option>
+            <option value="direct">Direct (v2, kubectl_execute + full sub-agents)</option>
+            <option value="lean">Lean (minimal prompt, direct kubectl)</option>
+            <option value="native">Native (kubectl-first, lean tool set)</option>
+          </select>
+        </div>
+      </div>
+      <div class="mb-4 p-3 rounded-xl border border-gray-100 bg-gray-50/50">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">LLM</span>
+            <div id="bm-llm-loader" class="hidden"><div class="spinner-sm"></div></div>
+            <!-- Segmented, and first: the mode decides what the body below even
+                 asks for, so reading order has to match decision order. -->
+            <div class="inline-flex items-center bg-gray-100 rounded-lg p-0.5" role="group" aria-label="LLM pin mode">
+              <button type="button" id="bm-llm-mode-blanket" onclick="bmSetLlmMode('blanket')" class="bm-seg px-2.5 py-1 rounded-md text-[11px] font-medium transition-all">All calls</button>
+              <button type="button" id="bm-llm-mode-tier" onclick="bmSetLlmMode('tier')" class="bm-seg px-2.5 py-1 rounded-md text-[11px] font-medium transition-all">By task</button>
+              <button type="button" id="bm-llm-mode-config" onclick="bmSetLlmMode('config')" class="bm-seg px-2.5 py-1 rounded-md text-[11px] font-medium transition-all">Config</button>
+            </div>
+          </div>
+          <span id="bm-llm-mode-help" class="text-[11px] text-gray-400 text-right"></span>
+        </div>
+        <input type="hidden" id="bm-llm-mode" value="blanket" />
+
+        <!-- All calls: one config, one model. -->
+        <div id="bm-llm-body-blanket" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-config">Config</label>
+            <select id="bm-llm-config" onchange="bmOnConfigChange()" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+              <option value="">Default (llm-server resolves)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-model">Model</label>
+            <select id="bm-llm-model" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all" disabled>
+              <option value="">Default (config's model)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- By task: the same two questions, once per task. -->
+        <div id="bm-llm-body-tier" class="hidden"></div>
+
+        <!-- Config: choice on the left, what it resolves to on the right —
+             the same shape as the other two bodies. -->
+        <div id="bm-llm-body-config" class="hidden grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-config-whole">Config</label>
+            <select id="bm-llm-config-whole" onchange="bmOnWholeConfigChange()" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+              <option value="">Default (llm-server resolves)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">What it will use</label>
+            <div id="bm-llm-config-summary" class="text-[11px] text-gray-500"></div>
+          </div>
         </div>
       </div>
       <div id="bm-test-selector" class="hidden mb-4">
@@ -1022,6 +1078,39 @@ function renderRunsList() {
 // ============================================================
 // Run Detail
 // ============================================================
+const _bmCredNames = {};
+
+function bmCredLabel(source, tenantId, accountId) {
+  if (!source) return 'default';
+  const m = _bmCredNames[`${tenantId}|${accountId}`];
+  // Falls back to the raw id: an integration that's since been deleted has no
+  // name to show, and the id is still the truthful answer.
+  return (m && m[source]) || source;
+}
+
+async function bmPatchCredNames(tenantId, accountId) {
+  const key = `${tenantId}|${accountId}`;
+  if (!tenantId || !accountId) return;
+  if (!_bmCredNames[key]) {
+    const d = await api('GET', `/dashboard/models?account_id=${accountId}&tenant_id=${tenantId}`);
+    const map = {};
+    for (const c of (d && d.credentials) || []) map[c.llm_config_source] = c.name;
+    // Slot-level names win over the credential's: two configs sharing an API
+    // key fold into one credential under a single name, so a run pinned to the
+    // other one would otherwise be labelled with a config it never used.
+    for (const m of (d && d.models) || []) {
+      if (m.llm_config_source && m.config_name) map[m.llm_config_source] = m.config_name;
+    }
+    // Whole-config pins name a config, not a slot, so they have no row above.
+    for (const cfg of bmGroupConfigs((d && d.models) || [])) map[bmWholeConfigSource(cfg.key)] = cfg.name;
+    _bmCredNames[key] = map;
+  }
+  document.querySelectorAll('.bm-cred-name').forEach(el => {
+    const name = _bmCredNames[key][el.dataset.src];
+    if (name) el.textContent = name;
+  });
+}
+
 async function loadRunDetail(runId, silent) {
   if (!silent) detailTestPageNum = 1;
   const s = await api('GET', `/agent-benchmark/${runId}/status`);
@@ -1037,6 +1126,26 @@ async function loadRunDetail(runId, silent) {
   const tenant = await resolveName('tenant', s.tenant_id);
   const account = await resolveName('account', s.account_id);
   const dur = fmtDuration(s.duration_seconds);
+  // Per-phase totals across all tests — surfaced only on hover so the visible
+  // Duration cell stays the wall-clock number the user already knows. LLM
+  // phase is 0 on reruns (only duration_seconds is populated then), so the
+  // tooltip labels it accordingly rather than showing a misleading "0s".
+  const _durTests = s.test_results || [];
+  const sumField = (f) => _durTests.reduce((acc, t) => acc + (t[f] || 0), 0);
+  const execSecs = sumField('duration_seconds');
+  const llmSecs = sumField('llm_duration');
+  const setupSecs = sumField('setup_duration');
+  const teardownSecs = sumField('teardown_duration');
+  const tooltipLines = [
+    `Wall-clock (run start → completed): ${dur}`,
+    `Exec total (Σ per-test duration): ${fmtDuration(execSecs)}`,
+    llmSecs > 0 ? `LLM (Σ per-test llm_duration): ${fmtDuration(llmSecs)}` : `LLM: not recorded (Σ = 0 — reruns don't populate the phase field)`,
+    setupSecs > 0 ? `Setup (Σ per-test setup_duration): ${fmtDuration(setupSecs)}` : `Setup: not recorded`,
+    teardownSecs > 0 ? `Teardown (Σ per-test teardown_duration): ${fmtDuration(teardownSecs)}` : `Teardown: not recorded`,
+  ];
+  // HTML-attribute-safe join: escape double-quotes so the title attr renders cleanly.
+  const durTooltip = tooltipLines.join('\n').replace(/"/g, '&quot;');
+  const durValue = `<span title="${durTooltip}" class="cursor-help border-b border-dotted border-gray-300">${dur}</span>`;
   const models = (s.model_names || []).join(', ') || '—';
   const [cur, tot] = (s.progress || '0/0').split('/').map(Number);
   const pct = tot > 0 ? Math.round(cur/tot*100) : 0;
@@ -1046,7 +1155,7 @@ async function loadRunDetail(runId, silent) {
   const summary = s.test_results_summary || {};
   const metaItems = [
     {label: 'Started', value: fmtDate(s.started_at || s.created_at)},
-    {label: 'Duration', value: dur},
+    {label: 'Duration', value: durValue},
     {label: 'Progress', value: s.progress},
     {label: 'Tenant', value: `${tenant} / ${account}`},
   ];
@@ -1071,6 +1180,17 @@ async function loadRunDetail(runId, silent) {
   if (s.max_tests) filterChips.push(`<span class="inline-block bg-purple-50 text-purple-700 border border-purple-200 rounded-full px-2 py-0.5 text-[10px] font-medium">max: ${s.max_tests}</span>`);
   if (s.test_filter) filterChips.push(`<span class="inline-block bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-2 py-0.5 text-[10px] font-medium">-k ${s.test_filter}</span>`);
   if (s.parallel_workers && s.parallel_workers > 1) filterChips.push(`<span class="inline-block bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full px-2 py-0.5 text-[10px] font-medium">parallel: ${s.parallel_workers}</span>`);
+  if (s.k8s_orchestrator_mode) filterChips.push(`<span class="inline-block bg-cyan-50 text-cyan-700 border border-cyan-200 rounded-full px-2 py-0.5 text-[10px] font-medium" title="Per-request K8s orchestrator mode: routes to k8s_orchestrator_${s.k8s_orchestrator_mode}">k8s: ${s.k8s_orchestrator_mode}</span>`);
+  // Pinned LLM config. Distinct from the "Model" meta above, which is derived
+  // from token metrics after the fact — these render immediately and say what
+  // the run asked for, which is what you need while it's still running.
+  const _credChip = (src, label) => `<span class="inline-block bg-rose-50 text-rose-700 border border-rose-200 rounded-full px-2 py-0.5 text-[10px] font-medium" title="llm_config_source: ${escAttr(src)}">${label}</span>`;
+  if (s.llm_config_source) filterChips.push(_credChip(s.llm_config_source, `cred: <span class="bm-cred-name" data-src="${escAttr(s.llm_config_source)}">${esc(bmCredLabel(s.llm_config_source, s.tenant_id, s.account_id))}</span>`));
+  if (s.llm_model_name) filterChips.push(`<span class="inline-block bg-rose-50 text-rose-700 border border-rose-200 rounded-full px-2 py-0.5 text-[10px] font-medium" title="Blanket model pinned for every request in this run">model: ${esc(s.llm_model_name)}</span>`);
+  for (const [tier, pick] of Object.entries(s.llm_tier_models || {})) {
+    const label = `${tier}: ${esc(pick.model || 'default')}`;
+    filterChips.push(_credChip(pick.llm_config_source || '', `<span class="bm-cred-name" data-src="${escAttr(pick.llm_config_source || '')}" data-suffix="${escAttr(label)}">${esc(bmCredLabel(pick.llm_config_source, s.tenant_id, s.account_id))}</span> &middot; ${label}`));
+  }
   const filtersHtml = filterChips.length
     ? `<div class="bg-white/80 border border-gray-200/80 rounded-xl px-4 py-2.5 mb-2 flex items-center flex-wrap gap-1.5">
          <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mr-2">Filters</span>
@@ -1460,6 +1580,9 @@ async function loadRunDetail(runId, silent) {
   hide('detail-loading');
   hide('detail-error');
   show('detail-content');
+  // Deliberately not awaited — the chips already show the truthful source id,
+  // and this only upgrades them to the friendlier name.
+  bmPatchCredNames(s.tenant_id, s.account_id);
 }
 
 function setDetailTestPage(p) { detailTestPageNum = p; renderDetailTests(); }
@@ -2007,6 +2130,9 @@ async function loadBenchmarkForm() {
   $('bm-agent').onchange = bmOnAgentChange;
 
   bmOnAgentChange();
+  // Paints the segmented control's active state and shows the matching body —
+  // without it the three segments render identically until one is clicked.
+  bmSetLlmMode('blanket');
   hide('bm-loading'); show('bm-form');
 }
 
@@ -2016,6 +2142,7 @@ async function bmOnTenantChange() {
     $('bm-account').innerHTML = '<option value="">Select tenant first</option>';
     $('bm-account').disabled = true;
     $('bm-tool-config').innerHTML = '<option value="">Select account first</option>';
+    bmResetLlmPickers();
     return;
   }
   // Show loader, disable account select. The user dropdown was removed —
@@ -2030,9 +2157,9 @@ async function bmOnTenantChange() {
   const accountOpts = (accounts?.accounts||[]);
   $('bm-account').innerHTML = accountOpts.map(a => `<option value="${a.id}">${a.account_name} (${a.cloud_provider})</option>`).join('') || '<option value="">No accounts</option>';
   $('bm-account').disabled = false;
-  $('bm-account').onchange = () => { bmLoadToolConfigs(); validateBmForm(); };
+  $('bm-account').onchange = () => { bmLoadToolConfigs(); bmLoadCredentials(); validateBmForm(); };
   // Auto-load tool configs if account has values
-  if (accountOpts.length) bmLoadToolConfigs();
+  if (accountOpts.length) { bmLoadToolConfigs(); bmLoadCredentials(); }
   validateBmForm();
 }
 
@@ -2045,6 +2172,331 @@ async function bmLoadToolConfigs() {
   const d = await api('GET', `/dashboard/tool-configs?account_id=${aid}&tenant_id=${tid}`);
   hide('bm-toolconfig-loader');
   $('bm-tool-config').innerHTML = '<option value="">Default</option>' + (d?.configs||[]).map(c => `<option value="${c.name}">${c.name} (${c.type||''})</option>`).join('');
+}
+
+// LLM credential pinning. A credential is one distinct destination (provider +
+// endpoint + key + region + ...) with the models reachable through it; the
+// llm-server computes that grouping because endpoints and keys are never
+// serialized here. Pinning keeps a run on one credential so two runs are
+// comparable instead of drifting with the resolver's layered walk.
+let _bmCredentials = [];
+// One row per configured slot, each keeping its own config's name. The picker
+// lists configs from these rather than from credentials[], which folds configs
+// sharing an API key into a single entry under one name.
+let _bmModels = [];
+let _bmConfigs = [];
+const BM_TIERS = ['reasoning', 'retrieval', 'summary'];
+
+// db:<uuid>, db:<uuid>:tier:<t> and db:<uuid>:agent:<a> all belong to the one
+// integration db:<uuid>. Every env slot belongs to the single system config.
+function bmConfigKeyForSource(src) {
+  if (!src) return '';
+  if (src.startsWith('db:')) { const p = src.split(':'); return p.length >= 2 ? `db:${p[1]}` : src; }
+  return 'env';
+}
+// Trims the slot decoration the server appends — "name · Summary tier
+// (fallback)" is the same config as "name".
+// config_name is omitempty on the wire, so it can be absent. Falls back to
+// the source id, which is what the server itself shows for a slot it can't
+// name — an empty label would leave the option looking unselectable.
+function bmConfigName(entry) {
+  const raw = entry.config_name || entry.llm_config_source || '';
+  return raw.replace(/\s*\(fallback\)\s*$/i, '').replace(/\s+·\s+.*$/, '').trim() || raw;
+}
+// The config's own base slot — what a pin means when no tier is involved.
+const bmBaseSource = (key) => (key === 'env' ? 'env:global' : key);
+// ':all' is the one source-id shape that names a config instead of a single
+// slot, letting each call read its own task's model. See the LlmConfigSource
+// schema in llm-server's llm_config.go.
+const bmWholeConfigSource = (key) => (key === 'env' ? 'env:all' : `${key}:all`);
+
+function bmGroupConfigs(models) {
+  const byKey = new Map();
+  for (const m of models) {
+    const key = bmConfigKeyForSource(m.llm_config_source);
+    if (!key) continue;
+    const existing = byKey.get(key);
+    if (existing) existing.entries.push(m);
+    else byKey.set(key, { key, name: '', entries: [m] });
+  }
+  // Named after grouping, from the first slot that actually carries a name:
+  // naming from whichever slot arrived first would label the whole config with
+  // a raw source id whenever that one slot happened to lack one.
+  for (const cfg of byKey.values()) {
+    cfg.name = bmConfigName(cfg.entries.find(e => e.config_name) || cfg.entries[0]);
+  }
+  return [...byKey.values()];
+}
+
+// One row per distinct model in a config. A model usually appears more than
+// once — as the base model and again under a tier — and those are the same
+// choice here. The slot kept becomes the pin, so a primary always beats a
+// fallback.
+function bmConfigRows(key) {
+  const cfg = _bmConfigs.find(c => c.key === key);
+  const byModel = new Map();
+  for (const e of (cfg && cfg.entries) || []) {
+    const row = { model: e.model, provider: e.provider, source: e.llm_config_source, isFallback: !!e.is_fallback };
+    const existing = byModel.get(e.model);
+    if (!existing || (existing.isFallback && !row.isFallback)) byModel.set(e.model, row);
+  }
+  return [...byModel.values()];
+}
+
+// The tier slots a config actually defines, so Config mode can show what
+// "picks per task" will mean for it rather than promising tiers it lacks.
+function bmConfigTiers(key) {
+  const cfg = _bmConfigs.find(c => c.key === key);
+  const out = [];
+  for (const t of BM_TIERS) {
+    const slot = ((cfg && cfg.entries) || []).find(e => e.llm_config_source.endsWith(`:tier:${t}`) && !e.is_fallback);
+    if (slot) out.push({ tier: t, model: slot.model });
+  }
+  return out;
+}
+// Identified by equality with the config's base source, not by "has no
+// :tier:" — an agent slot (db:<uuid>:agent:<name>) has no ':tier:' either and
+// would otherwise be reported as the model every untagged call falls back to.
+function bmConfigBaseModel(key) {
+  const cfg = _bmConfigs.find(c => c.key === key);
+  const base = bmBaseSource(key);
+  const slot = ((cfg && cfg.entries) || []).find(e => e.llm_config_source === base && !e.is_fallback);
+  return slot ? slot.model : '';
+}
+
+const bmLlmMode = () => $('bm-llm-mode')?.value || 'blanket';
+
+const BM_MODE_HELP = {
+  blanket: 'Used for every call in the run, including background work.',
+  tier: 'Untagged background calls keep the operator default.',
+  config: 'The config picks the model per task; tasks it does not set fall back to its default model.',
+};
+
+function bmSetLlmMode(mode) {
+  $('bm-llm-mode').value = mode;
+  for (const m of ['blanket', 'tier', 'config']) {
+    const on = m === mode;
+    const btn = $(`bm-llm-mode-${m}`);
+    if (btn) {
+      btn.className = `bm-seg px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+        on ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'
+      }`;
+      btn.setAttribute('aria-pressed', String(on));
+    }
+    $(`bm-llm-body-${m}`)?.classList.toggle('hidden', !on);
+  }
+  const help = $('bm-llm-mode-help');
+  if (help) help.textContent = BM_MODE_HELP[mode] || '';
+  if (mode === 'tier') bmRenderTierRows();
+  if (mode === 'config') bmRenderConfigSummary();
+}
+
+function bmResetLlmPickers() {
+  _bmCredentials = []; _bmModels = []; _bmConfigs = [];
+  for (const id of ['bm-llm-config', 'bm-llm-config-whole']) {
+    const el = $(id);
+    if (el) { el.innerHTML = '<option value="">Default (llm-server resolves)</option>'; el.disabled = false; }
+  }
+  const model = $('bm-llm-model');
+  if (model) { model.innerHTML = '<option value="">Default (config\'s model)</option>'; model.disabled = true; }
+  const rows = $('bm-llm-body-tier');
+  if (rows) rows.innerHTML = '';
+  const summary = $('bm-llm-config-summary');
+  if (summary) summary.innerHTML = '';
+  bmSetLlmMode('blanket');
+}
+
+function _bmConfigOptions(selected) {
+  return '<option value="">Default</option>' + _bmConfigs.map(c =>
+    `<option value="${escAttr(c.key)}"${c.key === selected ? ' selected' : ''}>${esc(c.name)}</option>`
+  ).join('');
+}
+
+function _bmModelOptions(key) {
+  return '<option value="">Default</option>' + bmConfigRows(key).map(r =>
+    `<option value="${escAttr(r.model)}">${esc(r.model)}</option>`
+  ).join('');
+}
+
+// Every select in the LLM section is filled from this one request, so they all
+// wait on it together — a half-populated picker invites a pick that is about to
+// be replaced.
+let _bmCredLoadSeq = 0;
+
+async function bmLoadCredentials() {
+  const [aid, tid] = [$('bm-account').value, $('bm-tenant').value];
+  if (!aid || !tid) return;
+
+  const seq = ++_bmCredLoadSeq;
+  bmSetLlmLoading(true);
+  let d = null;
+  try {
+    d = await api('GET', `/dashboard/models?account_id=${aid}&tenant_id=${tid}`);
+  } catch (e) {
+    console.error('bmLoadCredentials failed', e);
+  }
+  // Switching account twice in quick succession can land the responses out of
+  // order; without this the older one repopulates the picker for an account the
+  // user already left.
+  if (seq !== _bmCredLoadSeq) return;
+
+  // Populated on failure too: an empty-but-usable picker beats selects stuck
+  // on "Loading…" with the spinner gone.
+  _bmCredentials = (d && d.credentials) || [];
+  _bmModels = (d && d.models) || [];
+  _bmConfigs = bmGroupConfigs(_bmModels);
+  bmSetLlmLoading(false);
+  for (const id of ['bm-llm-config', 'bm-llm-config-whole']) {
+    const el = $(id);
+    if (el) { el.innerHTML = _bmConfigOptions(''); el.disabled = false; }
+  }
+  $('bm-llm-model').innerHTML = '<option value="">Default (config\'s model)</option>';
+  $('bm-llm-model').disabled = true;
+  // Not preserved: a different account serves different configs, so any pick
+  // carried over would name one it cannot resolve.
+  bmRenderTierRows(false);
+  bmRenderConfigSummary();
+}
+
+// Only sets the loading state — clearing it is the caller's repopulation,
+// which knows the correct enabled/disabled state for each select (the model
+// ones stay disabled until a config is picked).
+function bmSetLlmLoading(on) {
+  $('bm-llm-loader')?.classList.toggle('hidden', !on);
+  if (!on) return;
+  for (const id of ['bm-llm-config', 'bm-llm-config-whole']) {
+    const el = $(id);
+    if (el) { el.innerHTML = '<option value="">Loading configs…</option>'; el.disabled = true; }
+  }
+  const model = $('bm-llm-model');
+  if (model) { model.innerHTML = '<option value="">Default (config\'s model)</option>'; model.disabled = true; }
+  for (const t of BM_TIERS) {
+    for (const id of [`bm-tier-config-${t}`, `bm-tier-model-${t}`]) {
+      const el = $(id);
+      if (el) el.disabled = true;
+    }
+  }
+  const summary = $('bm-llm-config-summary');
+  if (summary) summary.innerHTML = '<span class="text-gray-400">Loading…</span>';
+}
+
+function bmOnConfigChange() {
+  const key = $('bm-llm-config').value;
+  const model = $('bm-llm-model');
+  // Without a config there is no model list to offer — the llm-server picks
+  // both.
+  model.disabled = !key;
+  model.innerHTML = key ? _bmModelOptions(key) : '<option value="">Default (config\'s model)</option>';
+}
+
+function bmOnWholeConfigChange() {
+  bmRenderConfigSummary();
+}
+
+function bmRenderConfigSummary() {
+  const el = $('bm-llm-config-summary');
+  if (!el) return;
+  const key = $('bm-llm-config-whole')?.value;
+  if (!key) {
+    el.innerHTML = '<span class="text-gray-400">Pick a config to see the models it uses.</span>';
+    return;
+  }
+  const tiers = bmConfigTiers(key), base = bmConfigBaseModel(key);
+  const row = (label, model, muted) =>
+    `<div class="flex justify-between gap-3 py-0.5">
+       <span class="${muted ? 'text-gray-400' : 'font-medium text-gray-600'} capitalize">${esc(label)}</span>
+       <span class="${muted ? 'text-gray-400' : 'text-gray-600'} truncate">${esc(model)}</span>
+     </div>`;
+  const rows = tiers.map(({ tier, model }) => row(tier, model, false));
+  // Untagged background work never carries a tier, so the base model is not a
+  // footnote — say what it is.
+  if (base) rows.push(row(tiers.length ? 'Everything else' : 'All calls', base, true));
+  el.innerHTML = tiers.length
+    ? rows.join('')
+    : `<div class="text-gray-400 mb-1">Sets no per-task models.</div>${rows.join('')}`;
+}
+
+// Each task is All-calls repeated: the same two labelled questions, so all
+// three modes read as one shape instead of three.
+//
+// `preserve` keeps picks across a mode switch, where re-rendering would
+// silently wipe them. It must be false when the account changes — those picks
+// name configs the new account cannot serve.
+function bmRenderTierRows(preserve = true) {
+  const rows = $('bm-llm-body-tier');
+  if (!rows) return;
+  const sel = 'az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all';
+  const lbl = 'block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5';
+  const prev = Object.fromEntries(BM_TIERS.map(t => [t, {
+    config: (preserve && $(`bm-tier-config-${t}`)?.value) || '',
+    model: (preserve && $(`bm-tier-model-${t}`)?.value) || '',
+  }]));
+  rows.innerHTML = `<div class="grid grid-cols-1 md:grid-cols-3 gap-3">` + BM_TIERS.map(t => `
+      <div class="rounded-xl border border-gray-100 bg-white/60 p-3">
+        <div class="text-[11px] font-semibold text-gray-600 capitalize mb-2.5">${t}</div>
+        <label class="${lbl}">Config</label>
+        <select id="bm-tier-config-${t}" class="${sel} mb-2.5" onchange="bmOnTierConfigChange('${t}')">${_bmConfigOptions(prev[t].config)}</select>
+        <label class="${lbl}">Model</label>
+        <select id="bm-tier-model-${t}" class="${sel}"${prev[t].config ? '' : ' disabled'}><option value="">Default</option></select>
+      </div>`).join('') + `</div>`;
+  // Model options depend on the config, so refill them after the DOM exists.
+  for (const t of BM_TIERS) {
+    if (!prev[t].config) continue;
+    const el = $(`bm-tier-model-${t}`);
+    el.innerHTML = _bmModelOptions(prev[t].config);
+    el.value = prev[t].model;
+  }
+}
+
+function bmOnTierConfigChange(tier) {
+  const key = $(`bm-tier-config-${tier}`).value;
+  const model = $(`bm-tier-model-${tier}`);
+  model.disabled = !key;
+  model.innerHTML = key ? _bmModelOptions(key) : '<option value="">Default</option>';
+}
+
+// Collects the pin into the run payload. Returns {} when nothing is pinned so
+// the run behaves exactly as it did before this field existed.
+function bmLlmPayload() {
+  const mode = bmLlmMode();
+  if (mode === 'tier') {
+    const picks = {};
+    for (const t of BM_TIERS) {
+      const key = $(`bm-tier-config-${t}`)?.value;
+      if (!key) continue;
+      const m = $(`bm-tier-model-${t}`)?.value;
+      const row = m ? bmConfigRows(key).find(r => r.model === m) : null;
+      // With a model the pick pins that model's own slot, which may be a tier
+      // slot with its own endpoint, and the provider is that slot's own.
+      //
+      // Without a model, send only the source: the server reads the provider
+      // from the pinned slot and ignores anything sent alongside it. Guessing
+      // one from the config's first model was wrong on a mixed config — that
+      // row can belong to a different provider than the base slot.
+      picks[t] = row
+        ? { llm_config_source: row.source, provider: row.provider, model: row.model }
+        : { llm_config_source: bmBaseSource(key) };
+    }
+    return Object.keys(picks).length ? { llm_tier_models: picks } : {};
+  }
+  if (mode === 'config') {
+    const whole = $('bm-llm-config-whole')?.value;
+    // No provider/model: the config's own per-task models decide, and the
+    // server rejects a model sent alongside a whole-config pin.
+    return whole ? { llm_config_source: bmWholeConfigSource(whole) } : {};
+  }
+  const key = $('bm-llm-config')?.value;
+  if (!key) return {};
+  const model = $('bm-llm-model')?.value;
+  if (!model) return { llm_config_source: bmBaseSource(key) };
+  // A model with no matching row can only mean the select is stale. Sending it
+  // with a blank provider would be a half-set override, which the server
+  // rejects outright ("either both or neither must be set alongside a pinned
+  // source") — so fall back to pinning the config and letting it name a model,
+  // exactly as picking no model does.
+  const row = bmConfigRows(key).find(r => r.model === model);
+  if (!row) return { llm_config_source: bmBaseSource(key) };
+  return { llm_config_source: row.source, llm_provider: row.provider, llm_model_name: model };
 }
 
 async function bmOnAgentChange() {
@@ -2244,7 +2696,8 @@ function bmPayload() {
     tag_filter: tags || null,
     parallel_workers: parseInt($('bm-parallel-workers').value) || 1,
     run_name: $('bm-run-name').value.trim() || null,
-    log_provider_override: $('bm-force-k8s-logs')?.checked ? 'k8s' : null,
+    k8s_orchestrator_mode: $('bm-k8s-mode')?.value || null,
+    ...bmLlmPayload(),
   };
   // Tenant override is honoured only for super_admin (the only role that
   // can switch tenants); the server validates and ignores it for others.

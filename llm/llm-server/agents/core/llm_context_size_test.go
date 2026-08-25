@@ -20,6 +20,8 @@ func TestResolveModelContextMap(t *testing.T) {
 	}{
 		{"nil config → no entry", nil, "any-model", 0},
 		{"global model+size", map[string]string{"llm_model_name": "gpt-4o", "llm_model_context_size": "16000"}, "gpt-4o", 16000},
+		// Shape a db:<uuid> pinned config feeds resolveFromPinnedSource.
+		{"pinned integration config window", map[string]string{"llm_model_name": "Qwen/Qwen3.6-35B-A3B-FP8", "llm_model_context_size": "32768"}, "Qwen/Qwen3.6-35B-A3B-FP8", 32768},
 		{"per-tier model+size", map[string]string{"llm_tier_model_summary": "Qwen/Q-FP8", "llm_tier_context_size_summary": "32768"}, "Qwen/Q-FP8", 32768},
 		{"per-agent model+size", map[string]string{"llm_model_name_k8s_debug": "claude-x", "llm_model_context_size_k8s_debug": "8192"}, "claude-x", 8192},
 		{"size without model → no entry", map[string]string{"llm_model_context_size": "16000"}, "gpt-4o", 0},

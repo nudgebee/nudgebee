@@ -3,7 +3,7 @@ import html
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, List, Optional
 
 import aiohttp
 import requests
@@ -24,6 +24,7 @@ from notifications_server.services.channel_context import ChannelContextService
 from notifications_server.services.common import THREAD_CONTEXT_MARKER
 from notifications_server.services.messaging_installations import load_installation_by_team
 from notifications_server.services.slack_images import collect_slack_images
+from notifications_server.services import slack_progress
 from notifications_server.services.actions import (
     validate_and_get_user_tenants,
     CLUSTER_NOT_FOUND,
@@ -59,6 +60,12 @@ from notifications_server.repositories.google_chat_binding_repository import (
 )
 from notifications_server.repositories.user_repository import get_llm_conversation_by_session
 from notifications_server.utils.transformer import Transformer
+from notifications_server.utils.rich_text_blocks import (
+    batch_slack_groups,
+    render_rich_segments,
+    send_blocks_with_fallback,
+    to_slack_dicts,
+)
 
 LOG = logging.getLogger(__name__)
 event_cache = Cache()
@@ -69,6 +76,12 @@ SLACK_TEXT_BLOCK_LIMIT = settings.slack.text_block_limit
 FOLLOWUP_OPTIONS_THRESHOLD = settings.slack.followup_options_threshold
 # Slack static_select hard-caps at 100 options; reject-payload territory beyond that.
 SLACK_STATIC_SELECT_MAX_OPTIONS = 100
+# Slack's hard cap on blocks in a single message is 50; handle_final_response
+# batches atomic content groups (one chart, one table, one text chunk) up to
+# this (deliberately lower) limit instead of always sending one Slack message
+# per group. Kept a power of two so a rejected message can be evenly bisected
+# down to the single offending block (see utils.rich_text_blocks.send_blocks_with_fallback).
+SLACK_MAX_BLOCKS_PER_MESSAGE = 32
 # How an inbound Google Chat space interaction is dispatched (see
 # Events._resolve_gchat_disposition). The join and message paths render each
 # disposition differently, but the bound-vs-unbound decision is identical.
@@ -77,6 +90,12 @@ GCHAT_CONNECT = "connect"
 GCHAT_SERVE = "serve"
 _SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s+")
 _DELIMITER_PATTERN = re.compile(r"([,;:])\s+")
+# Matches llm-server's events.SessionIdPrefixEvent — the prefix its
+# event-investigation pipeline uses to key a conversation by event fingerprint
+# (parentConversationId = SessionIdPrefixEvent + eventFingerprint). Reusing the
+# same prefix+key here lets an @mention in a bound incident channel append to
+# that same conversation instead of starting an unrelated one.
+EVENT_CONVERSATION_SESSION_PREFIX = "event-"
 
 
 def _parse_iso(iso_str):
@@ -162,7 +181,7 @@ class Events:
         return blocks
 
     @staticmethod
-    def build_llm_payload(cached_entry, query_override=None, channel_context=None):
+    def build_llm_payload(cached_entry, query_override=None, channel_context=None, channel_context_refs=None):
         payload = {
             "query": query_override or cached_entry["text"],
             "account_id": cached_entry["account_id"],
@@ -176,6 +195,8 @@ class Events:
         # it into `query`.
         if channel_context:
             payload["channel_context"] = channel_context
+        if channel_context_refs:
+            payload["channel_context_refs"] = channel_context_refs
         return payload
 
     def _slack_bot_token(self, team_id):
@@ -357,6 +378,11 @@ class Events:
                 "team_id": team_id,
                 "session_id": session_id,
                 "platform": "slack",
+                # Carried so a later async follow-up (delivered via the
+                # llm-server webhook, which has no Slack event of its own to
+                # read api_app_id from) still resolves the bot that actually
+                # owns this thread when multiple Slack apps share a team_id.
+                "app_id": self.common_service.app_id,
             },
         )
 
@@ -402,6 +428,8 @@ class Events:
                 "team_id": team_id,
                 "session_id": session_id,
                 "platform": "slack",
+                # See _check_history_for_conversation for why this is cached.
+                "app_id": self.common_service.app_id,
             }
             self.cache.cache_event_entry(thread_ts, event_entry)
             self._request_cluster_confirmation(channel_id, team_id, thread_ts, user_email, slack_user_id)
@@ -440,7 +468,8 @@ class Events:
                 user_id=user_id,
                 is_thread=is_thread,
                 slack_user_id=slack_user_id,
-                session_id=f"event-{session_id}",
+                session_id=f"{EVENT_CONVERSATION_SESSION_PREFIX}{session_id}",
+                app_id=self.common_service.app_id,
             )
 
             # Cache updated entry under thread_ts
@@ -452,7 +481,7 @@ class Events:
             if existing_entry.get("account_id") and existing_entry.get("tenant_id"):
                 url = (
                     f"{settings.base_url}/ask-nudgebee?accountId={existing_entry['account_id']}"
-                    f"&session_id=event-{session_id}"
+                    f"&session_id={EVENT_CONVERSATION_SESSION_PREFIX}{session_id}"
                 )
                 self.common_service.slack_reply_in_thread_with_context(
                     channel_id,
@@ -480,6 +509,7 @@ class Events:
             "team_id": team_id,
             "session_id": session_id,
             "platform": "slack",
+            "app_id": self.common_service.app_id,
         }
         self.cache.cache_event_entry(thread_ts, event_entry)
         self._request_cluster_confirmation(channel_id, team_id, thread_ts, user_email, slack_user_id)
@@ -528,6 +558,18 @@ class Events:
         except Exception as e:
             LOG.error("Failed to request cluster confirmation: %s", e, exc_info=True)
 
+    @staticmethod
+    def _bound_session_id(mapping):
+        """Extract the event-investigation session id (e.g. event.fingerprint)
+        a channel-account mapping was bound with, if any. Stored in
+        channel_metadata rather than a column — see
+        CommonService._persist_channel_account_mapping."""
+        try:
+            return json.loads(mapping.channel_metadata or "{}").get("session_id")
+        except Exception:
+            LOG.warning(f"Failed to parse channel_metadata for mapping {mapping.id}")
+            return None
+
     def _resolve_mapped_account(self, platform, channel_id, user_id, tenants):
         for tenant_id in tenants:
             mapping = self._get_channel_account_mapping(tenant_id, platform, channel_id)
@@ -536,7 +578,7 @@ class Events:
 
             if self._validate_user_access_to_account(user_id, tenant_id, str(mapping.account_id)):
                 LOG.debug(f"Using channel mapping: channel={channel_id} -> account={mapping.account_id}")
-                return {"id": str(mapping.account_id)}
+                return {"id": str(mapping.account_id), "bound_session_id": self._bound_session_id(mapping)}
 
             LOG.warning(f"User {user_id} does not have access to mapped account {mapping.account_id}")
 
@@ -616,7 +658,18 @@ class Events:
             )
             return
 
-        url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={channel_id}-{thread_ts}"
+        session_id = f"{channel_id}-{thread_ts}"
+        bound_session_id = account.get("bound_session_id")
+        if bound_session_id:
+            # This channel is bound to a specific investigation conversation
+            # (see CommonService._persist_channel_account_mapping) — route this
+            # and every future @mention in the channel to it instead of a fresh,
+            # unrelated chat session.
+            session_id = f"{EVENT_CONVERSATION_SESSION_PREFIX}{bound_session_id}"
+            self.cache.update_event_entry(thread_ts, session_id=session_id)
+            cached_entry["session_id"] = session_id
+
+        url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
         confirmation_message = (
             f"{get_account_selected_confirmation(account_name)}\n<{url}|View in {settings.urls.branding_name}>"
         )
@@ -810,7 +863,24 @@ class Events:
 
         self._attach_images(payload, thread_ts)
 
-        self.query_llm_server(payload, headers)
+        slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
+        # Errors are replied to here rather than re-raised: the @mention caller
+        # (execute_event) only logs exceptions, which would leave the thread
+        # silent after the panel vanished.
+        try:
+            self.query_llm_server(payload, headers)
+        except requests.RequestException as e:
+            LOG.debug(f"Query to LLM failed: {e}")
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            error_response = self._safe_error_response(e)
+            self.common_service.slack_reply_in_thread(
+                channel_id, team_id, thread_ts, self._llm_error_reply(status, error_response)
+            )
+        except Exception as e:
+            LOG.debug(f"Query to LLM failed: {e}")
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
+            self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, get_llm_offline_message())
 
     def _fetch_and_update_account_details_by_id(self, account_id, channel_id, team_id, thread_ts):
         with Session(self.session.get_bind()) as session:
@@ -845,7 +915,7 @@ class Events:
         question = (query_text or "").split(THREAD_CONTEXT_MARKER, 1)[0].strip()
         try:
             with ChannelContextService(engine=self.session.get_bind(), common_service=self.common_service) as svc:
-                block, used = svc.build(
+                block, used, refs = svc.build(
                     tenant_id=cached_entry.get("tenant_id"),
                     team_id=team_id,
                     channel_id=channel_id,
@@ -857,12 +927,12 @@ class Events:
                 )
         except Exception:
             LOG.exception("Failed to build channel context for %s/%s", team_id, channel_id)
-            return None
+            return None, None
         # Kept with the conversation, not the message rows: which messages an
         # answer rested on is per-thread state that should expire with the
         # thread's session rather than outlive it in the database.
         self.cache.update_event_entry(thread_ts, channel_context_used=used)
-        return block
+        return block, refs
 
     def _process_event(self, channel_id, cleaned_string, team_id, thread_ts, _type):
         cached_entry = self.cache.get_event_entry(thread_ts)
@@ -892,8 +962,15 @@ class Events:
             cleaned_string = conversation
             cached_entry = self.cache.get_event_entry(thread_ts)
 
-        channel_context = self._build_channel_context(cached_entry, channel_id, team_id, thread_ts, cleaned_string)
-        payload = self.build_llm_payload(cached_entry, query_override=cleaned_string, channel_context=channel_context)
+        channel_context, channel_context_refs = self._build_channel_context(
+            cached_entry, channel_id, team_id, thread_ts, cleaned_string
+        )
+        payload = self.build_llm_payload(
+            cached_entry,
+            query_override=cleaned_string,
+            channel_context=channel_context,
+            channel_context_refs=channel_context_refs,
+        )
 
         headers = {
             "x-tenant-id": cached_entry["tenant_id"],
@@ -902,10 +979,14 @@ class Events:
 
         self._attach_images(payload, thread_ts)
 
+        # Panel opens before the LLM request goes out: agent inference runs
+        # before the 202, and the user should see "thinking" during it.
+        slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
         try:
             self.query_llm_server(payload, headers)
         except requests.RequestException as e:
             LOG.debug(f"Query to LLM failed: {e}")
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             status = getattr(getattr(e, "response", None), "status_code", None)
             error_response = self._safe_error_response(e)
             self.common_service.slack_reply_in_thread(
@@ -913,6 +994,7 @@ class Events:
             )
         except Exception as e:
             LOG.debug(f"Query to LLM failed: {e}")
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, get_llm_offline_message())
 
     @staticmethod
@@ -1118,7 +1200,8 @@ class Events:
             )
 
             LOG.info(f"Calling LLM server event analysis API: {url}")
-            result = requests.post(url, headers=headers, json=payload)
+            # 20 minutes is intentional.
+            result = requests.post(url, headers=headers, json=payload, timeout=1200)
             result.raise_for_status()
 
             response_data = result.json()
@@ -1232,25 +1315,58 @@ class Events:
             current += (" " if current else "") + txt
         return current
 
+    @staticmethod
+    def _plain_text_leaf(text: str) -> List[dict]:
+        """Leftover-plain-text renderer passed to render_rich_segments: chunks
+        by sentence (Events.split_text) rather than generic.py's char-slice
+        chunking, since this path is a fire-and-forget background reply with
+        no fixed block budget to respect."""
+        blocks = [MarkdownBlock(text=chunk) for chunk in Events.split_text(text) if chunk.strip()]
+        return to_slack_dicts(blocks)
+
+    def _send_message_with_fallback(self, channel_id: str, team_id: str, thread_ts: str, blocks: List[dict]) -> None:
+        """Send ``blocks`` as one Slack message, bisecting and retrying in
+        halves on a block-shape-specific rejection (see
+        utils.rich_text_blocks.send_blocks_with_fallback). Any other failure
+        (rate limiting, an expired token, a network blip, ...) propagates to
+        handle_final_response's outer handler, which already sends the
+        generic error reply once."""
+        send_blocks_with_fallback(
+            blocks,
+            lambda b: self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, b, False),
+        )
+
     def handle_final_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         try:
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             response_text = payload.response
-            text_chunks = self.split_text(response_text)
+            view_url = self._diagram_view_url(cached_entry)
 
-            for i, chunk in enumerate(text_chunks):
-                blocks = Transformer.to_slack(MarkdownBlock(text=chunk))
+            slack_groups = render_rich_segments(response_text, self._plain_text_leaf, view_url)
 
-                if i == len(text_chunks) - 1 and cached_entry and cached_entry.get("slack_user_id"):
-                    blocks += Transformer.to_slack(ContextBlock(text=f"<@{cached_entry.get('slack_user_id')}>"))
+            if not slack_groups:
+                # response_text was empty/whitespace-only, so nothing survived the
+                # chunk.strip() filter - still send one message so the thread gets
+                # a reply. (render_mermaid_code always returns >=1 block, so this
+                # can only happen when there was no mermaid segment either.)
+                slack_groups = [Transformer.to_slack(MarkdownBlock(text=response_text.strip()))]
 
-                self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, blocks, False)
+            if cached_entry and cached_entry.get("slack_user_id"):
+                slack_groups[-1] = slack_groups[-1] + Transformer.to_slack(
+                    ContextBlock(text=f"<@{cached_entry.get('slack_user_id')}>")
+                )
+
+            messages = batch_slack_groups(slack_groups, SLACK_MAX_BLOCKS_PER_MESSAGE)
+
+            for blocks in messages:
+                self._send_message_with_fallback(channel_id, team_id, thread_ts, blocks)
 
             if cached_entry:
                 event_cache.update_event_entry(thread_ts, status="COMPLETED")
                 LOG.debug("Conversation marked as COMPLETED.")
 
-            if len(text_chunks) > 1:
-                LOG.debug(f"Response was split into {len(text_chunks)} messages due to size limit")
+            if len(messages) > 1:
+                LOG.debug(f"Response was split into {len(messages)} messages due to size limit")
         except Exception as e:
             LOG.error(f"Failed to process LLM server response: {e}")
             self.reply(
@@ -1262,6 +1378,16 @@ class Events:
                     " Try again."
                 ),
             )
+
+    @staticmethod
+    def _diagram_view_url(cached_entry: Optional[dict]) -> Optional[str]:
+        """URL to view a Mermaid diagram rendered in the web app, when we have
+        enough context to build one (same link used for follow-up options)."""
+        account_id = cached_entry.get("account_id") if cached_entry else None
+        session_id = cached_entry.get("session_id") if cached_entry else None
+        if not (account_id and session_id):
+            return None
+        return f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
 
     @staticmethod
     def _build_followup_action_elements(followup_options, cached_entry):
@@ -1306,6 +1432,7 @@ class Events:
 
     def handle_followup_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         try:
+            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             follow_up = json.loads(payload.response)
             followup_question = f"{follow_up.get('question', '')}"
             followup_options = follow_up.get("followupOptions", [])
@@ -1344,10 +1471,30 @@ class Events:
         except (json.JSONDecodeError, KeyError) as e:
             LOG.warning(f"Failed to parse follow-up response as JSON: {e}. Using raw response.")
             self.reply(channel_id, team_id, thread_ts, payload.response)
+        except Exception as e:
+            # Mirrors handle_final_response/handle_error_response's outer catch.
+            # Without this, a failure while posting the follow-up (e.g. the
+            # resolved Slack installation is the wrong app when two bots share
+            # a team_id, or any other Slack API error) propagated uncaught up
+            # to the /llm/response route, which turned it into a 500 that
+            # llm-server only logs at Debug. The question never reached the
+            # thread, so the user had no way to answer it and the conversation
+            # sat WAITING indefinitely.
+            LOG.error(f"Failed to send follow-up question to Slack: {e}", exc_info=True)
+            slack_user_id = cached_entry.get("slack_user_id") if cached_entry else None
+            message = get_generic_error_message()
+            if slack_user_id:
+                message = f"<@{slack_user_id}> {message}"
+            try:
+                self.reply(channel_id, team_id, thread_ts, message)
+            except Exception as reply_err:
+                LOG.error(f"Failed to send fallback error message to Slack: {reply_err}", exc_info=True)
 
     def handle_error_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         """Tell the thread the run failed. ``payload.response`` is a raw upstream
         error string, so it is logged by the caller and never posted."""
+        slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
+
         message = get_generic_error_message()
         slack_user_id = cached_entry.get("slack_user_id") if cached_entry else None
         if slack_user_id:

@@ -3,7 +3,7 @@ import { Box, IconButton } from '@mui/material';
 import { writeIcon } from '@assets';
 import apiUserManagement from '@api1/user';
 import { Label } from '@ui/Label';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import UserModal from './modal/UserModal';
 import CustomTable from '@shared/tables/CustomTable';
 import Text from '@shared/format/Text';
@@ -72,7 +72,7 @@ const UserGroupUsers = ({ groupId, onUserUpdate }) => {
             {
               component: (
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                  {hasWriteAccess() && currentUser?.user?.email !== user?.user?.username ? (
+                  {canManage('usergroups', 'Write') && currentUser?.user?.email !== user?.user?.username ? (
                     <IconButton
                       onClick={(e) => {
                         handleEditUserModal(e, user);

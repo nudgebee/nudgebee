@@ -1,12 +1,13 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/config"
+	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -28,13 +29,13 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 // role-overlay gates exposed, mirroring resolveReact3RoleModes outputs.
 func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode bool) string {
 	t.Helper()
-	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
+	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact3Base, "")
 	assert.NotEmpty(t, base, "embedded react_3 base prompt must load")
 
 	vars := []string{
-		"tool_names", "tool_descriptions", "workspace_enabled", "shell_tool_enabled",
+		"tool_names", "tool_descriptions",
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
-		"orchestrator_mode", "executor_mode",
+		"orchestrator_mode", "executor_mode", "is_investigation",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
 		"memory_consumption_rules", "async_completion_rules",
@@ -43,13 +44,12 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 	out, err := tmpl.Format(map[string]any{
 		"tool_names":                   "kubectl, logs, metrics",
 		"tool_descriptions":            "kubectl: ...",
-		"workspace_enabled":            true,
-		"shell_tool_enabled":           false,
 		"delegate_agent_enabled":       false,
 		"notebook_enabled":             notebookEnabled,
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
 		"orchestrator_mode":            orchestratorMode,
 		"executor_mode":                executorMode,
+		"is_investigation":             true, // keep the full (investigation) prompt for these role/hypothesis fences
 		"conversation_context_enabled": false,
 		"context_management_rules":     "",
 		"time_handling_rules":          "",
@@ -342,12 +342,12 @@ func TestResolveOrchestratorThinkingLevel(t *testing.T) {
 // tests assert that gate-scoped rules only render when their respective flag is on.
 func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabled, sdgGroundingEnabled bool) string {
 	t.Helper()
-	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer)
+	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReactCritiquer, "")
 	assert.NotEmpty(t, base, "embedded react critiquer prompt must load")
 
 	vars := []string{
 		"input", "scratchpad", "final_answer", "question_type", "tool_names",
-		"tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled",
+		"tool_descriptions", "tools_invoked", "hypothesis_mode_enabled",
 		"sdg_grounding_enabled", "notebook", "today",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
@@ -360,7 +360,6 @@ func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabl
 		"question_type":           questionType,
 		"tool_names":              "kubectl, logs, metrics",
 		"tool_descriptions":       "kubectl: ...",
-		"shell_tool_enabled":      false,
 		"tools_invoked":           "kubectl",
 		"hypothesis_mode_enabled": hypothesisModeEnabled,
 		"sdg_grounding_enabled":   sdgGroundingEnabled,

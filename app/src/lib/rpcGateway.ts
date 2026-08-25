@@ -11,7 +11,7 @@ import {
 } from 'graphql';
 import { decodeSessionJWT, decrypt } from '@lib/internal';
 import { isSessionRevoked } from '@lib/sessionRevocation';
-import { loadActionInputSchema, loadRpcRoutes, type SchemaFieldInfo } from '@lib/rpcRoutes';
+import { loadActionInputSchema, loadRpcRoutes, type RpcRoute, type SchemaFieldInfo } from '@lib/rpcRoutes';
 import { elevateRoles } from '@lib/authHooks';
 import { pickDefaultRole } from '@lib/rolePriority';
 
@@ -123,6 +123,7 @@ function synthesizeJwtFromBearer(rawJwt: string): Promise<JWT | null> {
         sub: userId,
         tenant: { id: (p.tenant_id as string) ?? '' },
         roles: (p.allowed_roles as string[]) ?? [],
+        permissions: (p.permissions as string[]) ?? [],
         accountIds: (p.account_ids as string[]) ?? [],
         readOnlyAccountIds: (p.readonly_account_ids as string[]) ?? [],
         namespacedAccountIds: (p.namespaced_account_ids as string[]) ?? [],
@@ -182,6 +183,11 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
 export type SessionVariables = {
   role: string;
   allowed_roles: string[];
+  // Dynamic-RBAC custom-role grants the holder carries, as `<module>:<Class>`
+  // keys (see permissionCatalog.ts). Used by the gateway's action-level gate;
+  // upstream Go handlers re-resolve grants from the DB (NewSecurityContext) and
+  // do NOT trust this list for their own re-validation.
+  permissions: string[];
   user_id: string;
   tenant_id: string;
 };
@@ -212,13 +218,81 @@ export function buildSessionVariables(jwt: JWT): SessionVariables {
   return {
     role: defaultRole,
     allowed_roles: allowedRoles,
+    permissions: (jwt.permissions as string[]) || [],
     user_id: userId,
     tenant_id: tenantId,
   };
 }
 
-function resolveHandler(handler: string): string {
-  return handler.replace(/\{\{(\w+)\}\}/g, (_, name) => process.env[name] || '');
+// Substitutes `{{ENV_VAR}}` placeholders in an action's handler URL, reporting any
+// placeholder whose env var is unset or empty. Reporting them matters: substituting
+// '' collapses the URL to a host-less path (`/rpc/config/rate_limits/list`), which
+// is still truthy, so it sails past the `handler_unresolved` guard and dies inside
+// fetch as "Failed to parse URL" — surfacing a missing-env-var config gap as
+// `upstream_unreachable`, which sends you debugging a network that is fine.
+function resolveHandler(handler: string): { url: string; missing: string[] } {
+  const missing: string[] = [];
+  const url = handler.replace(/\{\{(\w+)\}\}/g, (_, name) => {
+    const value = process.env[name];
+    if (!value) {
+      missing.push(name);
+      return '';
+    }
+    return value;
+  });
+  return { url, missing };
+}
+
+// Account-scoped grants (V798 scope-on-grant) are baked into the session as
+// `scoped:<module>:<Class>` keys — see api-server ScopedPermissionPrefix /
+// GetScopedPermissionKeys. Keep this value in lockstep with that Go constant.
+const SCOPED_PERMISSION_PREFIX = 'scoped:';
+
+// actionHasCustomGrant decides whether the caller's dynamic-RBAC custom grants
+// authorize `route`. Pure + exported so the gateway's authorization decision is
+// unit-testable in isolation (forwardAction itself does upstream I/O).
+//
+// Two grant flavors, both with the Write⇒Read relaxation (a `<module>:Write`
+// grant satisfies a read-classified `<module>:Read` action; Write/Execute stay
+// exact):
+//   - Tenant-global grants (`<module>:<Class>`) authorize the action on ANY route.
+//   - Account-scoped grants (`scoped:<module>:<Class>`) authorize ONLY when the
+//     action routes to the query engine (`/rpc/query`) — the one uniformly
+//     per-account-gateable path, where the query engine restricts the read to the
+//     granted accounts (ScopedAccountIdsForModule). Custom-handler actions have no
+//     per-account gate, so a scoped grant never admits them; the caller falls
+//     through to the built-in role check and is denied (fail-closed).
+// Actions whose upstream handler has been VERIFIED to re-check the caller's
+// account-scoped grant (HasScopedPermission / CanReadAccountData) against the
+// account carried in the request. A scoped key is admitted for these; every
+// other non-/rpc/query action fails closed, because the gateway cannot know
+// which account a custom handler will operate on.
+//
+// This is the opt-in ledger for account-scoped enforcement: add an action here
+// ONLY in the same change that adds the check to its handler. Removing a check
+// without removing the entry silently widens a scoped role to tenant-wide.
+//
+//   relay_forward_request — services/api/relay.go's validateRelayAccountAccess
+//     re-checks the account in the request body against the caller's k8s grant
+//     (CanReadAccountData for reads, HasScopedPermission(k8s,Write) for writes),
+//     so an account-scoped k8s grant is safe to admit here.
+export const ACCOUNT_ENFORCED_ACTIONS = new Set<string>(['relay_forward_request']);
+
+export function actionHasCustomGrant(actionName: string, route: Pick<RpcRoute, 'permission' | 'handler'>, permissions: string[]): boolean {
+  const perm = route.permission;
+  if (!perm) return false;
+  const writeVariant = perm.endsWith(':Read') ? perm.replace(/:Read$/, ':Write') : null;
+  // Tenant-global: exact key or (for a Read action) its Write variant.
+  if (permissions.includes(perm) || (writeVariant !== null && permissions.includes(writeVariant))) {
+    return true;
+  }
+  // Account-scoped: the query engine enforces the account for every /rpc/query
+  // read (ScopedAccountIdsForModule); other actions qualify only by being on the
+  // verified-handler ledger above.
+  if (!route.handler.endsWith('/rpc/query') && !ACCOUNT_ENFORCED_ACTIONS.has(actionName)) return false;
+  return (
+    permissions.includes(SCOPED_PERMISSION_PREFIX + perm) || (writeVariant !== null && permissions.includes(SCOPED_PERMISSION_PREFIX + writeVariant))
+  );
 }
 
 export type ForwardOptions = {
@@ -243,7 +317,7 @@ export const NO_TENANT_ROLE_MESSAGE =
 
 export type ForwardError =
   | { kind: 'method_not_found'; method: string }
-  | { kind: 'handler_unresolved'; method: string; handler: string }
+  | { kind: 'handler_unresolved'; method: string; handler: string; missingEnv: string[] }
   | { kind: 'no_tenant_role'; method: string }
   | { kind: 'forbidden'; method: string; role: string; allowedRoles: string[] }
   | { kind: 'upstream_unreachable'; method: string; url: string; detail: string }
@@ -266,6 +340,12 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   const role = opts.sessionVariables.role || '';
   const allowedRoles = opts.sessionVariables.allowed_roles || [];
   const isSuperAdmin = allowedRoles.includes('super_admin');
+  // Dynamic-RBAC: the action is granted if the caller holds a custom-role
+  // permission matching the action's classified key. Fails closed — an action
+  // we couldn't classify (route.permission undefined) is never grantable this
+  // way, only via a built-in role in allowedRoles.
+  const permissions = opts.sessionVariables.permissions || [];
+  const hasPermission = actionHasCustomGrant(opts.method, route, permissions);
   // Tenant-agnostic actions (actions.yaml `tenant_agnostic: true`) authorize on
   // the authenticated user's identity alone, not on a role within the active
   // tenant, so both gates below are skipped for them. This is what keeps
@@ -276,30 +356,42 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   // caller's own username, so skipping the role gate doesn't widen tenant-scoped
   // data access. super_admin bypasses both gates too.
   if (!isSuperAdmin && !route.tenantAgnostic) {
-    // No roles at all → the user has no assignment in the active tenant. Report
-    // that as its own error rather than a `forbidden` that would falsely name
-    // `tenant_admin_readonly` (buildSessionVariables' fallback role label, not a
-    // real role the user holds).
-    if (allowedRoles.length === 0) {
+    // No roles AND no grants at all → the user genuinely has no assignment in
+    // the active tenant. Report that as its own error rather than a `forbidden`
+    // that would falsely name `tenant_admin_readonly` (buildSessionVariables'
+    // fallback role label, not a real role the user holds).
+    //
+    // Keyed on holding NO grants, not on lacking a grant for THIS action. A pure
+    // custom-role user who calls a non-grantable action (privilege administration
+    // like userroles_upsert_group, signup, session plumbing) holds no built-in
+    // role and no matching grant, so the old condition told them to "switch to a
+    // tenant where you have access" — advice that is both wrong and unactionable
+    // for someone who has access and simply cannot perform this one operation.
+    // They fall through to `forbidden` below, which says so.
+    if (allowedRoles.length === 0 && permissions.length === 0) {
       return { ok: false, error: { kind: 'no_tenant_role', method: opts.method } };
     }
     const hasAllowedRole = allowedRoles.some((r) => route.allowedRoles.has(r));
-    if (!hasAllowedRole) {
+    if (!hasAllowedRole && !hasPermission) {
       return {
         ok: false,
         error: {
           kind: 'forbidden',
           method: opts.method,
-          role,
+          // Blank for a grants-only caller: `role` is buildSessionVariables'
+          // 'tenant_admin_readonly' fallback label, not a role they hold, and
+          // naming it in the denial sends them chasing a role they never had.
+          // forwardErrorMessage words the message around the action instead.
+          role: allowedRoles.length > 0 ? role : '',
           allowedRoles: [...route.allowedRoles],
         },
       };
     }
   }
 
-  const upstreamUrl = resolveHandler(route.handler);
-  if (!upstreamUrl) {
-    return { ok: false, error: { kind: 'handler_unresolved', method: opts.method, handler: route.handler } };
+  const { url: upstreamUrl, missing: missingEnv } = resolveHandler(route.handler);
+  if (!upstreamUrl || missingEnv.length > 0) {
+    return { ok: false, error: { kind: 'handler_unresolved', method: opts.method, handler: route.handler, missingEnv } };
   }
 
   // Apply RPC's recursive list-input coercion before forwarding. Both the
@@ -659,11 +751,14 @@ function forwardErrorMessage(err: ForwardError): string {
     case 'method_not_found':
       return `Method not found: ${err.method}`;
     case 'handler_unresolved':
+      // The missing variable names go to the server log only — the client message
+      // stays generic, as it does for the other upstream-side failures.
+      console.error(`[graphql-gateway] handler_unresolved method=${err.method} handler=${err.handler} missingEnv=${err.missingEnv.join(',')}`);
       return `Handler URL unresolved for ${err.method}`;
     case 'no_tenant_role':
       return NO_TENANT_ROLE_MESSAGE;
     case 'forbidden':
-      return `Role '${err.role}' is not permitted to invoke '${err.method}'`;
+      return err.role ? `Role '${err.role}' is not permitted to invoke '${err.method}'` : `Your permissions do not allow '${err.method}'`;
     case 'upstream_unreachable':
       console.error(`[graphql-gateway] upstream_unreachable method=${err.method} url=${err.url} detail=${err.detail}`);
       return `Upstream unreachable for ${err.method}`;

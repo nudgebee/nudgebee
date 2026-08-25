@@ -125,7 +125,7 @@ type MockWorkflowStore struct{}
 func (m *MockWorkflowStore) CreateWorkflowWithInitialVersion(ctx context.Context, tenantID, accountID string, wf model.Workflow) (string, *model.WorkflowVersion, error) {
 	return "mock-workflow-id", &model.WorkflowVersion{ID: "mock-version-id", WorkflowID: "mock-workflow-id", VersionNumber: 1, Source: model.WorkflowVersionSourceCreate, IsLive: true}, nil
 }
-func (m *MockWorkflowStore) List(ctx context.Context, tenantID, accountID string, request model.ListWorkflowRequest) ([]model.Workflow, int, error) {
+func (m *MockWorkflowStore) List(ctx context.Context, tenantID string, accountIDs []string, request model.ListWorkflowRequest) ([]model.Workflow, int, error) {
 	return nil, 0, nil
 }
 func (m *MockWorkflowStore) Find(ctx context.Context, tenantID, accountID, id string) (*model.Workflow, error) {
@@ -161,6 +161,9 @@ func (m *MockWorkflowStore) ListByIntegrationName(ctx context.Context, tenantID,
 func (m *MockWorkflowStore) ListCallers(ctx context.Context, tenantID, accountID, calleeName string) ([]model.WorkflowCaller, error) {
 	return nil, nil
 }
+func (m *MockWorkflowStore) ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]model.AIInvocableWorkflow, error) {
+	return nil, nil
+}
 func (m *MockWorkflowStore) Update(ctx context.Context, tenantID, accountID, id string, wf model.Workflow) error {
 	return nil
 }
@@ -185,10 +188,13 @@ func (m *MockWorkflowStore) DeleteExpiredState(ctx context.Context, limit int) (
 func (m *MockWorkflowStore) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error {
 	return nil
 }
-func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID, accountID string, status model.WorkflowStatus, triggerType string) (int64, error) {
+func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID string, accountIDs []string, status model.WorkflowStatus, triggerType string) (int64, error) {
 	return 0, nil
 }
-func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
+func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+func (m *MockWorkflowStore) ListWorkflowIDNames(ctx context.Context, tenantID string, accountIDs []string, limit int) (map[string]string, error) {
 	return map[string]string{}, nil
 }
 func (m *MockWorkflowStore) GetUserNames(ctx context.Context, ids []string) (map[string]string, error) {

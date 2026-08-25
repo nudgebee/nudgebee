@@ -11,6 +11,7 @@ import (
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -861,6 +862,20 @@ func TestWorkflowBuilderAgent_AgenticBuild(t *testing.T) {
 					triggers := def["triggers"].([]interface{})
 					trigger := triggers[0].(map[string]interface{})
 					assert.Equal(t, tc.expectTrigger, trigger["type"], "Expected trigger type %s", tc.expectTrigger)
+
+					// Asserting the type alone passed straight through #35383: a flat trigger
+					// ({"type":"schedule","cron":"..."}) still has the right type, but every key
+					// outside "type" is dropped on decode, so the automation saves with a trigger
+					// that can never fire. Check the settings actually survived.
+					if tc.expectTrigger != "manual" {
+						params, _ := trigger["params"].(map[string]interface{})
+						assert.NotEmpty(t, params,
+							"a %s trigger must carry its settings under \"params\" — top-level keys are discarded on decode", tc.expectTrigger)
+						for k := range trigger {
+							assert.True(t, triggerTopLevelKeys[k],
+								"trigger key %q is not part of the trigger schema and would be silently dropped; settings belong inside \"params\"", k)
+						}
+					}
 				}
 
 				if tc.expectTaskType != "" {
@@ -2065,3 +2080,279 @@ func TestWorkflowBuilder_E2E_OOMKilled_QARepro(t *testing.T) {
 // internal/model/workflow.go:208), which rejects "7d"/"1w" but accepts
 // compound durations like "1h30m". A previous revision had the rule
 // inverted — this test prevents that regression.
+
+// TestWorkflowBuilder_UnlimitedPlanRevisions verifies that repeated "Request Changes" cycles
+// never start a build on their own. The builder used to auto-build once the revision count passed
+// maxPlanAttempts, which surfaced as "the third Request Changes skipped the approval step and
+// directly started the build" (#34098). Every cycle must come back to the approval prompt; only
+// "Approve and Build" builds.
+func TestWorkflowBuilder_UnlimitedPlanRevisions(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping test: TEST_ACCOUNT not set")
+	}
+
+	accountId := os.Getenv("TEST_ACCOUNT")
+	userId := os.Getenv("TEST_USER")
+	tenantId := os.Getenv("TEST_TENANT")
+	sessionId := "ut-wb-unlimited-revisions"
+
+	agent := newWorkflowBuilderAgent(accountId)
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
+	_ = core.DeleteConversationBySession(sessionId, accountId, userId)
+
+	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
+		"Build an automation named revision-cap-probe with a manual trigger that prints the message 'v0'")
+	assert.Nil(t, err)
+
+	answer := func(text string) {
+		t.Helper()
+		messageId, perr := uuid.Parse(resp.MessageId)
+		assert.Nil(t, perr)
+		agentId, perr := uuid.Parse(resp.AgentId)
+		assert.Nil(t, perr)
+		resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId, text,
+			core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
+			core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
+		assert.Nil(t, err)
+	}
+
+	// Clear any clarifying questions until the plan-approval prompt appears.
+	for i := 0; i < 4 && resp.Status == core.ConversationStatusWaiting &&
+		!slices.Contains(resp.FollowupRequest.FollowupOptions, PlanApprovalOptionApprove); i++ {
+		answer("Skip")
+	}
+	assert.Equal(t, core.ConversationStatusWaiting, resp.Status, "expected a plan-approval prompt")
+
+	// Five revision cycles — well past the retired cap of 3. Every one must return to approval.
+	for i := 1; i <= 5; i++ {
+		answer(PlanApprovalOptionChanges)
+		assert.Equal(t, core.ConversationStatusWaiting, resp.Status, "revision %d: must ask what to change", i)
+
+		answer(fmt.Sprintf("change the printed message to 'v%d'", i))
+		assert.Equal(t, core.ConversationStatusWaiting, resp.Status,
+			"revision %d: must return to plan approval, not auto-build", i)
+		assert.Contains(t, resp.FollowupRequest.FollowupOptions, PlanApprovalOptionApprove,
+			"revision %d: approval options must be offered", i)
+		t.Logf("revision %d: still awaiting approval", i)
+	}
+
+	// Only an explicit approval builds.
+	answer(PlanApprovalOptionApprove)
+	assert.NotEqual(t, core.ConversationStatusWaiting, resp.Status, "approval must build")
+	t.Logf("after approval: status=%s response=%.200s", resp.Status, strings.Join(resp.Response, "\n"))
+}
+
+// TestWorkflowBuilder_E2E_NonManualTriggerParamsAreNested is the acceptance check for #35383:
+// a non-manual trigger must come out of a real build with its settings under `params`.
+//
+// This is the assertion the suite was missing. TestWorkflowBuilderAgent_AgenticBuild checked
+// trigger["type"] only, which a flat trigger satisfies — {"type":"schedule","cron":"0 * * * *"}
+// has the right type and still loses its cron on decode, saving an automation that never fires.
+// Asserting against the working definition rather than the chat summary keeps this honest whether
+// the build returns raw JSON or an auto-saved markdown summary.
+func TestWorkflowBuilder_E2E_NonManualTriggerParamsAreNested(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping test: TEST_ACCOUNT not set")
+	}
+
+	accountId := os.Getenv("TEST_ACCOUNT")
+	userId := os.Getenv("TEST_USER")
+	tenantId := os.Getenv("TEST_TENANT")
+
+	cases := []struct {
+		name        string
+		sessionId   string
+		query       string
+		wantTrigger string
+		wantParam   string // the setting that used to be dropped when written flat
+	}{
+		{
+			name:        "schedule",
+			sessionId:   "ut-wb-trigger-params-schedule",
+			query:       "Create an automation with a schedule trigger that runs every hour and prints a summary",
+			wantTrigger: "schedule",
+			wantParam:   "cron",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := newWorkflowBuilderAgent(accountId)
+			sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
+			_ = core.DeleteConversationBySession(tc.sessionId, accountId, userId)
+
+			resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, tc.sessionId, tc.query,
+				core.ConversationSessionRequestWithEnableQueryRefinement(false))
+			assert.Nil(t, err)
+
+			answer := func(text string) {
+				t.Helper()
+				messageId, perr := uuid.Parse(resp.MessageId)
+				assert.Nil(t, perr)
+				agentId, perr := uuid.Parse(resp.AgentId)
+				assert.Nil(t, perr)
+				resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, tc.sessionId, text,
+					core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
+					core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
+				assert.Nil(t, err)
+			}
+
+			// Clear clarifying questions until the plan-approval prompt appears, then build.
+			for i := 0; i < 4 && resp.Status == core.ConversationStatusWaiting &&
+				!slices.Contains(resp.FollowupRequest.FollowupOptions, PlanApprovalOptionApprove); i++ {
+				answer("Skip")
+			}
+			if assert.Equal(t, core.ConversationStatusWaiting, resp.Status, "expected a plan-approval prompt") {
+				answer(PlanApprovalOptionApprove)
+			}
+
+			// Assert against the definition that would be saved, not the chat text.
+			if !assert.NotNil(t, agent.state.WorkingWorkflow, "build produced no definition") {
+				return
+			}
+			def, ok := agent.state.WorkingWorkflow["definition"].(map[string]interface{})
+			if !assert.True(t, ok, "definition missing from working workflow") {
+				return
+			}
+			triggers, _ := def["triggers"].([]interface{})
+			if !assert.NotEmpty(t, triggers, "definition has no triggers") {
+				return
+			}
+
+			built, _ := json.Marshal(triggers)
+			t.Logf("built triggers: %s", built)
+
+			var matched bool
+			for _, rt := range triggers {
+				trigger, ok := rt.(map[string]interface{})
+				if !ok || trigger["type"] != tc.wantTrigger {
+					continue
+				}
+				matched = true
+				for k := range trigger {
+					assert.True(t, triggerTopLevelKeys[k],
+						"trigger key %q is not part of the trigger schema and is dropped on decode; it belongs inside \"params\"", k)
+				}
+				params, _ := trigger["params"].(map[string]interface{})
+				if assert.NotEmpty(t, params, "a %s trigger must carry its settings under \"params\"", tc.wantTrigger) {
+					assert.Contains(t, params, tc.wantParam, "%s must be inside params, not at the trigger's top level", tc.wantParam)
+				}
+			}
+			assert.True(t, matched, "no %s trigger in the built definition", tc.wantTrigger)
+		})
+	}
+}
+
+// TestWorkflowBuilder_E2E_AccountIdIsTheSelectedAccountUUID is the acceptance check for #35391.
+//
+// The account is chosen before the builder is invoked — the Create Automation dialog requires it,
+// and the request carries it as account_id and nothing else (verified on the wire: no
+// current_cluster_id is sent from that surface). Two things must follow from that:
+//
+//  1. The builder must not ask which cluster/account to target. It asked on every observed run,
+//     offering every cloud account in the TENANT — two of them production — for an automation
+//     explicitly scoped to a dev account.
+//  2. Every cloud-CLI task must carry that account's UUID literally. The observed values were a
+//     display name ("k8s-dev", rejected by Postgres as 22P02), a config reference
+//     ("{{ Configs.k8s_dev_account_id }}", which saves live but bound to nothing because missing
+//     configs are auto-created empty), and no account_id at all.
+func TestWorkflowBuilder_E2E_AccountIdIsTheSelectedAccountUUID(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping test: TEST_ACCOUNT not set")
+	}
+
+	accountId := os.Getenv("TEST_ACCOUNT")
+	userId := os.Getenv("TEST_USER")
+	tenantId := os.Getenv("TEST_TENANT")
+	sessionId := "ut-wb-account-binding"
+
+	agent := newWorkflowBuilderAgent(accountId)
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
+	_ = core.DeleteConversationBySession(sessionId, accountId, userId)
+
+	// No current_cluster_id is set on the request — exactly what the Create Automation dialog sends.
+	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
+		"Every day at 9am, list the pods in namespace nudgebee whose restart count is above 3",
+		core.ConversationSessionRequestWithEnableQueryRefinement(false))
+	assert.Nil(t, err)
+
+	var questionsAsked []string
+	answer := func(text string) {
+		t.Helper()
+		messageId, perr := uuid.Parse(resp.MessageId)
+		assert.Nil(t, perr)
+		agentId, perr := uuid.Parse(resp.AgentId)
+		assert.Nil(t, perr)
+		resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId, text,
+			core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
+			core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
+		assert.Nil(t, err)
+	}
+
+	for i := 0; i < 4 && resp.Status == core.ConversationStatusWaiting &&
+		!slices.Contains(resp.FollowupRequest.FollowupOptions, PlanApprovalOptionApprove); i++ {
+		questionsAsked = append(questionsAsked, resp.FollowupRequest.Question)
+		answer("Skip")
+	}
+	if assert.Equal(t, core.ConversationStatusWaiting, resp.Status, "expected a plan-approval prompt") {
+		answer(PlanApprovalOptionApprove)
+	}
+
+	for _, question := range questionsAsked {
+		lower := strings.ToLower(question)
+		assert.NotContains(t, lower, "cluster",
+			"the account was already chosen; asking which cluster to use is the bug (#35391). Asked: %q", question)
+		assert.NotContains(t, lower, "which account",
+			"the account was already chosen; asking which account to use is the bug (#35391). Asked: %q", question)
+	}
+
+	if !assert.NotNil(t, agent.state.WorkingWorkflow, "build produced no definition") {
+		return
+	}
+	def, ok := agent.state.WorkingWorkflow["definition"].(map[string]interface{})
+	if !assert.True(t, ok, "definition missing from working workflow") {
+		return
+	}
+	tasks, _ := def["tasks"].([]interface{})
+	if !assert.NotEmpty(t, tasks, "definition has no tasks") {
+		return
+	}
+
+	built, _ := json.Marshal(tasks)
+	t.Logf("built tasks: %s", built)
+
+	var sawCloudCliTask bool
+	var assertAccountIds func(tasks []interface{})
+	assertAccountIds = func(tasks []interface{}) {
+		for _, rawTask := range tasks {
+			task, ok := rawTask.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			taskType, _ := task["type"].(string)
+			switch strings.ToLower(strings.TrimSpace(taskType)) {
+			case "k8s.cli", "cloud.aws.cli", "cloud.gcp.cli", "cloud.azure.cli":
+				sawCloudCliTask = true
+				taskId, _ := task["id"].(string)
+				params, _ := task["params"].(map[string]interface{})
+				raw, _ := params["account_id"].(string)
+				got := strings.TrimSpace(raw)
+
+				// Two outcomes are correct, and the prompt now prefers the first: omit account_id
+				// and let the engine default it to the automation's own account, or write that
+				// account's UUID literally. What must never appear is a display name or a
+				// {{ Configs.* }} reference — the values this build produced before the fix.
+				if got != "" {
+					assert.Equal(t, accountId, got,
+						"task %q (%s) set an account_id, so it must be the automation's own account as a literal UUID", taskId, taskType)
+				}
+			}
+			if nested, ok := task["tasks"].([]interface{}); ok {
+				assertAccountIds(nested)
+			}
+		}
+	}
+	assertAccountIds(tasks)
+
+	assert.True(t, sawCloudCliTask, "this prompt must produce a cloud-CLI task or it proves nothing")
+}

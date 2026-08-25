@@ -38,7 +38,7 @@ const DISABLED_PROVIDERS = new Set([
 ]);
 // Constants moved to top level for better organization
 const PROVIDERS = {
-  CLOUD: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY'],
+  CLOUD: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY', 'SELFHOSTED'],
   MGMNT_TOOL: ['JIRA', 'SERVICENOW', 'PAGERDUTY'],
   WEBHOOKS: [
     'PAGERDUTY_WEBHOOK',
@@ -76,7 +76,7 @@ const PROVIDERS = {
     'HIVE',
     'SOLARWINDS',
   ],
-  LLM: ['LLM'],
+  LLM: ['LLM', 'LLM_GATEWAY'],
   SERVER: ['SSH', 'VM_AGENT'],
 };
 
@@ -85,21 +85,21 @@ const SECTIONS_CONFIG = [
     id: 'cloud',
     label: 'Kubernetes & Cloud',
     icon: CloudAccountIcon,
-    providers: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY'],
+    providers: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY', 'SELFHOSTED'],
     tab: 1,
   },
   {
     id: 'messaging',
     label: 'Messaging & Alerting',
     icon: MessageBlueIcon,
-    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'],
+    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD', 'PAGERDUTY', 'ZENDUTY'],
     tab: 2,
   },
   {
     id: 'ticket',
     label: 'Ticketing',
     icon: TicketBlueIcon,
-    providers: ['JIRA', 'SERVICENOW', 'PAGERDUTY', 'ZENDUTY', 'FRESHDESK'],
+    providers: ['JIRA', 'SERVICENOW', 'PAGERDUTY', 'ZENDUTY', 'FRESHDESK', 'GITHUB', 'GITLAB'],
     tab: 3,
   },
   {
@@ -119,7 +119,6 @@ const SECTIONS_CONFIG = [
       'GCP_MONITORING_WEBHOOK',
       'DYNATRACE_WEBHOOK',
       'SOLARWINDS_WEBHOOK',
-      'OPENOBSERVE_WEBHOOK',
       'ELASTICSEARCH_WEBHOOK',
       'WORKFLOW_WEBHOOK',
     ],
@@ -199,7 +198,7 @@ const SECTIONS_CONFIG = [
     id: 'llm',
     label: 'LLM',
     icon: TroubleshootIconBlue,
-    providers: ['LLM', 'MCP'],
+    providers: ['LLM', 'LLM_GATEWAY', 'MCP'],
     tab: 12,
   },
   {

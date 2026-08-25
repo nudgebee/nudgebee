@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // List of common English stop words
@@ -99,4 +100,20 @@ func StripFirstAgentMention(query string) string {
 		return strings.TrimSpace(query[loc[1]:])
 	}
 	return query
+}
+
+// TruncateHead truncates s to at most maxBytes from the start, ensuring the cut
+// does not split a multi-byte UTF-8 character.
+func TruncateHead(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Walk back from maxBytes to find a valid rune boundary
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }

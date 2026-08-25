@@ -70,14 +70,14 @@ func TestEventAnalysis_AssemblyToolPersisted(t *testing.T) {
 
 	// Persistence: the pipeline's output must be in event_log_analysis (what the
 	// UI reads), not only in the HTTP response.
-	inv, err := repo.GetEventAnalysis(sc, fingerprint, aggKey, account, events.AnalysisTypeInvestigation)
+	inv, err := repo.GetEventAnalysis(sc, eventID, fingerprint, aggKey, account, events.AnalysisTypeInvestigation)
 	require.NoError(t, err)
 	require.NotNil(t, inv, "investigation row not persisted")
 	assert.Equal(t, string(events.AnalysisStatusCompleted), inv.Status)
 	assert.Contains(t, inv.Summary, "Related Alerts Check",
 		"persisted investigation missing the required Related Alerts Check section")
 
-	detailed, err := repo.GetEventAnalysis(sc, fingerprint, aggKey, account, events.AnalysisTypeDetailedResponse)
+	detailed, err := repo.GetEventAnalysis(sc, eventID, fingerprint, aggKey, account, events.AnalysisTypeDetailedResponse)
 	require.NoError(t, err)
 	require.NotNil(t, detailed, "detailed_response row not persisted")
 	assert.Contains(t, detailed.Summary, "Related Alerts Check",

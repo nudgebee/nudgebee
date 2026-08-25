@@ -422,6 +422,85 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 	return observabilityResp, nil
 }
 
+// OutputLogQuery carries just the resolved provider-native query text — no log
+// data. Mirrors api-server's observability.OutputLogQuery (the logs_get_query
+// action's response shape).
+type OutputLogQuery struct {
+	Query string `json:"query"`
+}
+
+// GetLogsQuery resolves a canonical where-clause (or pre-built query) into the
+// provider-native query text via the logs_get_query action, WITHOUT executing
+// it against the real backend or fetching any log data — the query-preview
+// counterpart to QueryLogs. Used by ai_generate_log_query, whose job is only to
+// fill in the query bar; running the real query for every "generate" click
+// wasted backend load and network bytes for data the caller always discarded.
+func GetLogsQuery(ctx security.RequestContext, request LogQueryRequest) (OutputLogQuery, error) {
+	queryPayload := map[string]any{
+		"action": map[string]any{
+			"name": "logs_get_query",
+		},
+		"input": map[string]any{
+			"request": request,
+		},
+	}
+
+	tenant := ctx.GetSecurityContext().GetTenantId()
+	if tenant == "" {
+		tenant1, err := security.GetTenantIdFromAccountId(request.AccountId)
+		if err != nil {
+			return OutputLogQuery{}, err
+		}
+		tenant = tenant1
+	}
+
+	if tenant == "" {
+		return OutputLogQuery{}, errors.New("tenant id is empty")
+	}
+
+	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/logs", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
+		"Content-Type":   contentTypeJson,
+		"Accept":         contentTypeJson,
+		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
+		"x-tenant-id":    tenant,
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
+	}), common.HttpWithJsonBody(queryPayload))
+	if err != nil {
+		return OutputLogQuery{}, fmt.Errorf("services: logs_get_query, unable to process request: %v", err)
+	}
+	defer func() {
+		if resp.Body != nil {
+			if err := resp.Body.Close(); err != nil {
+				slog.Info("services_server: failed to close response body", "error", err)
+			}
+		}
+	}()
+
+	jsonBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return OutputLogQuery{}, err
+	}
+
+	if resp.StatusCode == 401 {
+		return OutputLogQuery{}, fmt.Errorf("unauthorized: %v", string(jsonBody))
+	}
+	if resp.StatusCode != 200 {
+		var errResp struct {
+			Message string `json:"message"`
+		}
+		if unmarshalErr := common.UnmarshalJson(jsonBody, &errResp); unmarshalErr == nil && errResp.Message != "" {
+			return OutputLogQuery{}, fmt.Errorf("services: logs_get_query error: %s", errResp.Message)
+		}
+		return OutputLogQuery{}, fmt.Errorf("services: logs_get_query, unexpected response (status %d): %s", resp.StatusCode, string(jsonBody))
+	}
+
+	var output OutputLogQuery
+	if err = common.UnmarshalJson(jsonBody, &output); err != nil {
+		return OutputLogQuery{}, err
+	}
+	return output, nil
+}
+
 func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3Request) (core.ObservabilityTraceResponse, error) {
 	queryPayload := map[string]any{
 		"action": map[string]any{
@@ -744,7 +823,11 @@ type ObservabilityProvider struct {
 	Capabilities ProviderCapabilities `json:"capabilities"`
 }
 
-func GetObservabilityProvider(ctx security.RequestContext, accountId, provider string) (ObservabilityProvider, error) {
+// requestedProvider optionally pins resolution to a specific provider (e.g.
+// "loki") instead of the account's default for providerType — mirrors
+// DefaultProvider.Provider on the api-server side (used by the logs tab's
+// provider switcher). Empty keeps the existing default-provider behavior.
+func GetObservabilityProvider(ctx security.RequestContext, accountId, provider, requestedProvider string) (ObservabilityProvider, error) {
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "get_default_provider",
@@ -753,6 +836,7 @@ func GetObservabilityProvider(ctx security.RequestContext, accountId, provider s
 			"request": map[string]any{
 				"account_id":    accountId,
 				"provider_type": provider,
+				"provider":      requestedProvider,
 			},
 		},
 	}
@@ -1085,6 +1169,14 @@ func ListMetricsSeriesMatch(ctx security.RequestContext, accountId, provider, na
 	return response, nil
 }
 
+// metricsLabelValuesRequestTimeout bounds the RPC round-trip for a single
+// metrics_list_label_values call. Package-level for test override; do not
+// mutate at runtime. 60s picks a value comfortably above the ~0.1s median
+// and above p95 for legitimate calls, while still short enough that the
+// LLM sees the error mid-investigation and can pivot (versus stalling the
+// whole conversation until its TTL reap — the observed prod bug pattern).
+var metricsLabelValuesRequestTimeout = 60 * time.Second
+
 // ListMetricsSeriesLabelValues fetches values for a given label. For ES/Opensearch, pass
 // request with metric_name set to the index pattern (e.g. {"metric_name": "metrics-*"}).
 func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provider, label string, request ...map[string]any) (core.ObservabilityMetricsLabelValuesResponse, error) {
@@ -1118,13 +1210,18 @@ func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provid
 		return core.ObservabilityMetricsLabelValuesResponse{}, errors.New("tenant id is empty")
 	}
 
+	// Bound the round-trip so a wedged provider (a direct-API Datadog call that
+	// skips relay's own 180s×3 budget, or a relay path that somehow escapes it —
+	// the two 85-min hangs at 2026-08-03 conv 9591d843 + a9ea0c9e both exceeded
+	// relay's ~554s theoretical max) surfaces as an actionable tool error
+	// instead of stalling the conversation until its TTL reap.
 	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/metrics", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
 		"Content-Type":   contentTypeJson,
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
 		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
-	}), common.HttpWithJsonBody(queryPayload))
+	}), common.HttpWithJsonBody(queryPayload), common.HttpWithTimeout(metricsLabelValuesRequestTimeout))
 
 	if err != nil {
 		return core.ObservabilityMetricsLabelValuesResponse{}, fmt.Errorf("services: loglabels, unable to process request: %v", err)

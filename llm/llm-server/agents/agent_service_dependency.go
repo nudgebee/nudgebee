@@ -10,8 +10,8 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -30,7 +30,7 @@ func init() {
 		`(A) Preserve scope — copy any account, namespace, cluster, or cloud source the user named verbatim into the plain-language ` + "`command`" + ` (e.g. "what does webapp in the nudgebee namespace call in account k8s-dev?"); omitting them forces a clarifying question. ` +
 		`(B) State intent, not mechanics — send the goal in plain language; never pre-decompose into node IDs, node types, or graph traversal (the tool resolves those itself). ` +
 		`(C) If the reply is a clarifying question, STOP and return it to the user verbatim — do not re-call the tool to investigate options or pick a default. ` +
-		`(D) Trust the reply — do not re-verify its topology with kubectl, aws, fetch_logs, or resource_search (they carry no KG topology). ` +
+		`(D) Trust the reply — do not re-verify its topology with kubectl, aws, fetch_logs, or resource_search_execute (they carry no KG topology). ` +
 		`(E) Cite the reply's evidence; never add connections or hubs it did not return (if a service has no inbound CALLS, say so).`
 
 	toolInput := "A plain-language question describing what you want to know about dependencies/topology/connectivity (e.g. \"what does llm-server in the nudgebee namespace call?\"). State intent only — do NOT mention node IDs, node types, or graph traversal."
@@ -65,7 +65,7 @@ func (l ServiceDependencyGraphAgent) GetDescription() string {
 
 func (l ServiceDependencyGraphAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	toolsList := []toolcore.NBTool{}
-	if rs, ok := toolcore.GetNBTool(l.accountId, ResourceSearchAgentName); ok {
+	if rs, ok := toolcore.GetNBTool(l.accountId, tools.ToolResourceSearch); ok {
 		toolsList = append(toolsList, rs)
 	}
 	for _, name := range []string{tools.ToolKGSearchNodes, tools.ToolKGTraverse} {
@@ -83,9 +83,9 @@ func (l ServiceDependencyGraphAgent) GetSupportedTools(ctx *security.RequestCont
 
 func (l ServiceDependencyGraphAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	instructions := []string{
-		"**Resource Discovery:** If the user provides a partial or ambiguous resource name, use the `resource_search` tool to find the correct resource name.",
+		"**Resource Discovery:** If the user provides a partial or ambiguous resource name, use the `resource_search_execute` tool to find the correct resource name.",
 		"**Dependency & Topology:** Use `kg_traverse` for dependency chains, CALLS relationships, hosting topology, connectivity (K8s and cloud). Use `kg_search_nodes` for discovery (finding what exists by name/type/namespace/source).",
-		prompts_repo.GetPrompt(prompts_repo.PromptAgentKgUsage),
+		prompts.GetPrompt(ctx.GetContext(), prompts.PromptKgUsage, ""),
 	}
 	if config.Config.KGGetNodeEnabled {
 		instructions = append(instructions,
@@ -98,11 +98,7 @@ func (l ServiceDependencyGraphAgent) GetSystemPrompt(ctx *security.RequestContex
 	}
 
 	toolUsage := map[string][]string{
-		ResourceSearchAgentName: {
-			"Use this tool for fuzzy resource matching when resources are not found.",
-			"Input: JSON with search_type ('fuzzy', 'suggestions', 'namespace'), resource_name, resource_type, namespace",
-			"Output: suggestions and search strategies",
-		},
+		tools.ToolResourceSearch: resourceSearchToolUsage,
 		tools.ToolKGSearchNodes: {
 			"Search the KG to find resources by name, type, namespace, source, or labels (covers K8s and cloud).",
 			`Input: {"query":"redis%","node_types":["Workload"],"namespace":"prod"}`,
@@ -190,7 +186,7 @@ var _ core.DefaultToolsOptOut = ServiceDependencyGraphAgent{}
 // OptOutDefaultTools declines the planner's automatic default-tool injection
 // (shell_execute, load_skills). This agent is deliberately KG-only — its tool set
 // is curated in GetSupportedTools (kg_search_nodes, kg_traverse, kg_get_node,
-// resource_search). shell_execute is out of scope here and was observed driving
+// resource_search_execute). shell_execute is out of scope here and was observed driving
 // spurious no-op shell calls; load_skills has no KB role for topology questions.
 func (l ServiceDependencyGraphAgent) OptOutDefaultTools() bool {
 	return true

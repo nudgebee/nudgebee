@@ -3,7 +3,7 @@ import k8sApi from '@api1/kubernetes';
 import { Typography } from '@mui/material';
 import CodeMirror, { EditorView } from '@uiw/react-codemirror';
 import { yaml as yaml1 } from '@codemirror/lang-yaml';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import Loader from '@shared/Loader';
 import { Button as DsButton } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';

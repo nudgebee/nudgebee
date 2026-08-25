@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
-	"nudgebee/llm/memory"
+	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
@@ -110,7 +110,7 @@ func sanitizeErrorForUser(err error) string {
 // silently run on the expensive Reasoning-tier (pro) model. Stamping every
 // agent — Retrieval by default — confines the pro tier to the orchestrators
 // that explicitly opt into Reasoning.
-func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.RequestContext {
+func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) *security.RequestContext {
 	if ctx == nil {
 		return nil
 	}
@@ -123,7 +123,7 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyModelTier, agentModelCategory(agent)),
+		context.WithValue(goCtx, ContextKeyModelTier, resolveModelTier(agent, request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -131,32 +131,74 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.
 	)
 }
 
-// promptVariantForRequest returns promptVariantLean for a top-level plain-retrieval
-// turn when the query-lean prompt is enabled, else "" (full/default prompt).
-// Classification uses OriginalQuery (the user's verbatim top-level question,
-// falling back to Query) so a delegated sub-agent brief never drives the shape;
-// sub-agents always resolve to "" and keep the full prompt and their cache slots.
+// resolveModelTier returns the model tier stamped for this turn. By default it is
+// the agent's declared category (agentModelCategory). When query model-downshift is
+// enabled, a TOP-LEVEL plain-retrieval turn on a Reasoning-tier orchestrator is
+// downshifted Reasoning → Summary: a query needs tool orchestration + formatting,
+// not deep causal reasoning, so it runs on the cheaper/faster Summary-tier model.
+// It keys off isTopLevelPlainRetrievalTurn — the SAME signal as the lean prompt
+// variant — so tier + prompt variant + (model-keyed) cache slot stay consistent.
+// Investigations and sub-agents (isTopLevelPlainRetrievalTurn == false, or a non-
+// Reasoning base) keep their tier, so this only ever shifts the top-level query case.
+func resolveModelTier(agent NBAgent, request NBAgentRequest) ModelTier {
+	base := agentModelCategory(agent)
+	if config.Config.LlmServerReact3QueryModelDownshiftEnabled &&
+		base == ModelTierReasoning &&
+		isTopLevelPlainRetrievalTurn(request) {
+		return ModelTierSummary
+	}
+	return base
+}
+
+// promptVariantForRequest returns the prompt/cache variant for a turn. Only a
+// TOP-LEVEL plain-retrieval (query) turn gets a non-default variant; investigations,
+// sub-agents, and degenerate queries resolve to "" (full/default prompt + its cache
+// slot). Query turns fork the prompt shape AND the cache slot:
+//   - lean-prompt flag ON  → promptVariantLean: drops the heavy investigation overlays
+//     (notebook / hypothesis / orchestrator contract) AND the RCA answer-format spec.
+//   - lean-prompt flag OFF → promptVariantQuery: drops ONLY the RCA answer-format spec,
+//     so a simple query is not answered as an investigation, while keeping every other
+//     overlay identical to today.
+//
+// Either way the variant keys a DISTINCT cache slot from investigation turns, so the
+// two prompt shapes coexist instead of alternating content under one slot and busting it.
+// Classification uses isTopLevelPlainRetrievalTurn — the same canonical signal that
+// drives the model-tier downshift — so prompt variant, cache slot, and tier agree.
 func promptVariantForRequest(request NBAgentRequest) string {
-	if !config.Config.LlmServerReact3QueryLeanPromptEnabled {
+	if !isTopLevelPlainRetrievalTurn(request) {
 		return ""
 	}
+	if config.Config.LlmServerReact3QueryLeanPromptEnabled {
+		return promptVariantLean
+	}
+	return promptVariantQuery
+}
+
+// isTopLevelPlainRetrievalTurn reports whether this is a TOP-LEVEL, non-investigation
+// ("query" / plain-retrieval) turn. It is the single classification that drives BOTH
+// the lean prompt variant (promptVariantForRequest) and the query model downshift
+// (resolveModelTier), each behind its own flag — so tier, prompt variant, and cache
+// slot always agree on the same signal. Uses OriginalQuery (the user's verbatim
+// top-level question, falling back to Query) so a delegated sub-agent brief never
+// drives the shape; sub-agents and investigation turns are false. A degenerate/empty
+// query is false (keep the full prompt + Reasoning tier rather than stripping either
+// on an unknown query).
+func isTopLevelPlainRetrievalTurn(request NBAgentRequest) bool {
 	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
 	if !isTopLevel {
-		return ""
+		return false
 	}
 	query := request.OriginalQuery
 	if query == "" {
 		query = request.Query
 	}
 	if query == "" {
-		// Degenerate/malformed request — fall back to the full prompt rather than
-		// stripping the investigation machinery on an unknown query.
-		return ""
+		return false
 	}
 	if IsInvestigationRequestTask(query) || request.ConversationSource == ConversationSourceInvestigation {
-		return ""
+		return false
 	}
-	return promptVariantLean
+	return true
 }
 
 // applyPromptVariant stamps ContextKeyPromptVariant with the turn's prompt shape.
@@ -180,6 +222,69 @@ func applyPromptVariant(ctx *security.RequestContext, request NBAgentRequest) *s
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
+}
+
+// classifyTaskType labels a TOP-LEVEL turn as taskTypeQuery (plain retrieval) or
+// taskTypeInvestigation (RCA), or "" for a sub-agent / degenerate request. It is
+// the flag-free classification behind promptVariantForRequest (same top-level +
+// IsInvestigationRequestTask signal), split out so it can be persisted on every
+// token-usage row regardless of whether the lean-prompt / tier-downshift flags are
+// on — that is what makes query-vs-investigation segmentation and classifier-miss
+// audits possible in post-run review.
+func classifyTaskType(request NBAgentRequest) string {
+	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
+	if !isTopLevel {
+		return ""
+	}
+	query := request.OriginalQuery
+	if query == "" {
+		query = request.Query
+	}
+	if query == "" {
+		return ""
+	}
+	if IsInvestigationRequestTask(query) || request.ConversationSource == ConversationSourceInvestigation {
+		return taskTypeInvestigation
+	}
+	return taskTypeQuery
+}
+
+// applyTaskTypeAttribution stamps ContextKeyTaskType so the token-usage writer can
+// persist the turn classification. Sibling of applyPromptVariant; ALWAYS (re)stamps
+// so a sub-agent invoked with the parent's context resolves to "" (unclassified)
+// rather than inheriting the parent's label.
+func applyTaskTypeAttribution(ctx *security.RequestContext, request NBAgentRequest) *security.RequestContext {
+	if ctx == nil {
+		return nil
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return security.NewRequestContext(
+		context.WithValue(goCtx, ContextKeyTaskType, classifyTaskType(request)),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+}
+
+// orchestratorSkillScopeName returns the canonical orchestrator name whose KB
+// mappings a mode-variant handle should ALSO resolve, or "" for a non-variant name.
+// Orchestrators are registered under one canonical name (<cloud>_orchestrator) and
+// several @-invocable mode handles (<cloud>_orchestrator_lean / _direct / _native /
+// _delegating). The organic default runs under the canonical name (so KBs mapped to it
+// resolve), but a handle's GetName()+aliases do NOT include the canonical name — so a
+// skill mapped to <cloud>_orchestrator is invisible when the orchestrator runs/tests
+// under any of its handles. Scoping handles back to their canonical base makes skill
+// mappings work uniformly across every planner mode and cloud (k8s/aws/gcp/azure/…).
+// Additive only: fetchAgentKBs dedups, so returning the base is harmless when unmapped.
+func orchestratorSkillScopeName(agentName string) string {
+	if i := strings.Index(agentName, "_orchestrator_"); i != -1 {
+		return agentName[:i+len("_orchestrator")]
+	}
+	return ""
 }
 
 func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) (NBAgentResponse, error) {
@@ -242,13 +347,18 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// call it makes resolves the category-specific model. Sub-operations may
 	// override per call. See applyAgentModelTier for why a category-less agent
 	// must RESET (not inherit) the tier.
-	ctx = applyAgentModelTier(ctx, agent)
+	ctx = applyAgentModelTier(ctx, agent, request)
 
 	// Stamp the prompt variant (lean vs full) for this turn so the prompt build
 	// (planner) and the cache key read one source of truth and never drift.
 	// No-op unless the query-lean prompt is enabled AND this is a top-level
 	// plain-retrieval turn — sub-agents and investigations keep the full prompt.
 	ctx = applyPromptVariant(ctx, request)
+
+	// Stamp the turn classification (query / investigation / "") so the token-usage
+	// writer can persist task_type for post-run tier/quality segmentation. Flag-free
+	// and side-effect-free — attribution only, does not change model or prompt.
+	ctx = applyTaskTypeAttribution(ctx, request)
 
 	// get history and use it as context - PARALLELIZED
 	var messageHistoryFomatter []prompts.MessageFormatter
@@ -369,10 +479,44 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		request.PreviousState = previousState
 	}
 
+	// Attach the provider that will actually serve this agent's LLM calls, so
+	// prompt resolution (provider-specific files, provider-scoped DB config,
+	// provider-targeted experiments) matches it. Without this, prompt loads fall
+	// back to the deployment-wide LLM_PROVIDER env var, which per-account model
+	// configuration, pinned sources, and conversation overrides can all disagree
+	// with. Resolution failure keeps the env fallback — same behavior as before.
+	// Rebind ctx locally instead of ctx.SetContext: sub-agents in a parallel
+	// action batch share the caller's RequestContext pointer, so an in-place
+	// mutation would race and leak one agent's provider into its siblings.
+	if ctx != nil {
+		if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Provider != "" {
+			ctx = security.NewRequestContext(
+				nbprompts.WithRequestProvider(ctx.GetContext(), res.Provider),
+				ctx.GetSecurityContext(),
+				ctx.GetLogger(),
+				ctx.GetTracer(),
+				ctx.GetMeter(),
+			)
+		}
+	}
+
+	// Images attached but no configured model (main or lite) can process them:
+	// don't let the agent loose on tool-calling investigation driven by a query
+	// it can't actually ground in the image content — answer directly instead.
+	// Checked once here and reused below; ExtractImageContext would otherwise
+	// redundantly reach the same conclusion internally and no-op.
+	imagesUnsupportedByModel := false
+	if len(request.Images) > 0 {
+		provider, model := resolveEffectiveVisionProvider(ctx, request.AccountId, agent.GetName(), request.ConversationId)
+		if _, ok := resolveVisionCapableTier(provider, model); !ok {
+			imagesUnsupportedByModel = true
+		}
+	}
+
 	// Extract actionable context from attached images before planning.
 	// This enriches vague queries like "can you investigate" with concrete details
 	// (service names, error codes, metric values) visible in the screenshots.
-	if len(request.Images) > 0 && IsImageSupportEnabled() {
+	if len(request.Images) > 0 && !imagesUnsupportedByModel {
 		request.Query = ExtractImageContext(ctx, request)
 	}
 
@@ -400,6 +544,13 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// log_default → query_generator, ...) so a sub-agent's lazy <skill-lists> can
 	// also see KBs the user mapped to its custom-planner parent.
 	ownSkillNames := append([]string{agent.GetName()}, agent.GetNameAliases()...)
+	// Mode-variant orchestrator handles (@k8s_orchestrator_lean, @aws_orchestrator_direct,
+	// …) also resolve KBs mapped to their canonical <cloud>_orchestrator, so a skill works
+	// under every planner mode/cloud — not only the organic default (which runs under the
+	// canonical name). See orchestratorSkillScopeName.
+	if base := orchestratorSkillScopeName(agentName); base != "" {
+		ownSkillNames = append(ownSkillNames, base)
+	}
 	skillAgentNames := make([]string, 0, len(ownSkillNames)+len(request.InheritSkillsFromAgents))
 	skillAgentNames = append(skillAgentNames, ownSkillNames...)
 	skillAgentNames = append(skillAgentNames, request.InheritSkillsFromAgents...)
@@ -456,20 +607,22 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// Pre-step path: KB content goes to the human message, not the
 			// cacheable system prefix. The `<skill-lists>` menu is built for any
 			// agent with KB mappings (so load_skills still works); the eager RAG
-			// retrieval runs only for the top-level invocation — sub-agents keep
-			// the lazy menu + load_skills flow.
+			// retrieval runs uniformly across all agent invocations.
 			kbs := fetchAgentKBs(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, selected)
 			// No zero-KB short-circuit: the retrieval below is account-wide RAG
 			// and needs no agent mapping — an agent with no mapped KBs must
 			// still surface account knowledge (e.g. a synced Confluence runbook
 			// for the alert under investigation, #34779). Only the menu is
 			// mapping-dependent; BuildSkillListsMenu returns "" for empty kbs.
-			block := ""
-			var kbRefs []AgentReference
-			if isTopLevelInvocation {
-				// Per-KB retrieval: references reflect only the KBs whose
-				// content actually matched, not every mapped KB.
+			// Per-KB retrieval: references reflect only the KBs whose content
+			// actually matched, not every mapped KB. If pre-step content was
+			// already populated or retrieval was already executed for this turn
+			// (e.g. propagated by the caller), reuse it to avoid redundant RAG calls.
+			block := strings.TrimSpace(request.KBPrestepContent)
+			kbRefs := request.KBReferences
+			if !request.KBPrestepExecuted && block == "" {
 				block, kbRefs = retrieveRelevantKB(ctx, request, kbs)
+				block = strings.TrimSpace(block)
 			}
 			menu := BuildSkillListsMenu(kbs, block != "")
 			kbChan <- kbAssemblyResult{prompt: prompt, menu: menu, prestepBlock: block, kbRefs: kbRefs}
@@ -484,14 +637,26 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// entirely — no concatenation, no double-injection. When the module is off
 	// (or the tenant is not allowlisted) the legacy notebook remains primary.
 	tenantID := ctx.GetSecurityContext().GetTenantId()
-	memoryModuleActive := memory.ComposeEnabledFor(tenantID)
+	memoryModuleActive := isMemoryV2ActiveFn(tenantID)
 
 	memChan := make(chan string, 1)
 	memV2Chan := make(chan string, 1)
-	if memoryModuleActive {
+	// Memory is composed once, at the top-level invocation; sub-agents skip the
+	// per-agent recompose (mirrors the eager KB retrieval above, which is already
+	// top-level-only) — each recompose re-ran the 3-layer memory Compose (~3-5s).
+	// isTopLevelInvocation keys off OriginalQuery, which tool-invoked sub-agents like
+	// the async "LLM" title generator never inherit, so also treat any request with a
+	// distinct parent agent as a sub-agent (the canonical test in promptVariantForRequest).
+	isSubAgentInvocation := !isTopLevelInvocation ||
+		(request.ParentAgentId != "" && request.ParentAgentId != request.AgentId)
+	if isSubAgentInvocation {
+		// Empty sends keep the collectors below unblocked.
+		memChan <- ""
+		memV2Chan <- ""
+	} else if memoryModuleActive {
 		memChan <- ""
 		go func() {
-			memV2Chan <- composeMemoryV2Block(ctx, request, agent)
+			memV2Chan <- composeMemoryV2BlockFn(ctx, request, agent)
 		}()
 	} else {
 		go func(cf []string) {
@@ -504,7 +669,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	kbStart := time.Now()
 	kbResult = <-kbChan
 	if memoryModuleActive {
-		initialNotebook = <-memV2Chan
+		// Reference context, not working state: seeding the notebook handed
+		// every injected memory the authority of the agent's own prior
+		// findings. The planner frames it as <user_memory>; the notebook
+		// starts empty.
+		request.MemoryContext = <-memV2Chan
 		<-memChan // drain
 	} else {
 		initialNotebook = <-memChan
@@ -520,6 +689,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// cacheable system prefix). Empty on the legacy path.
 	request.SkillListsMenu = kbResult.menu
 	request.KBPrestepContent = kbResult.prestepBlock
+	request.KBReferences = kbResult.kbRefs
+	request.KBPrestepExecuted = true
 
 	// Persist pre-step KB references so the UI's "Skills used" surface shows
 	// which KBs the pre-step retrieval pulled in — the same way it shows lazy
@@ -630,7 +801,13 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	ctx.GetLogger().Info("agentexecutor: executing agent planner", "agent", agent.GetName(), "query_len", len(request.Query), "hasState", request.PreviousState != "", "refinement_duration", time.Since(refinementStart).String(), "total_setup_duration", time.Since(start).String())
 
 	var response NBAgentPlannerExecutorResponse
-	if customAgent, ok := agent.(NBCustomAgent); ok && agent.GetPlannerType() == AgentPlannerTypeCustom {
+	if imagesUnsupportedByModel {
+		response = NBAgentPlannerExecutorResponse{
+			Status:     AgentExecutionStatusSuccess,
+			Response:   "The current model doesn't support image attachments, so I can't view the image(s) you attached. Please describe what's shown — error messages, resource names, metric values, or the issue you're seeing — and I'll help investigate.",
+			IsTerminal: true,
+		}
+	} else if customAgent, ok := agent.(NBCustomAgent); ok && agent.GetPlannerType() == AgentPlannerTypeCustom {
 		// Restore state for stateful custom agents (e.g., WorkflowBuilder multi-stage flow)
 		if previousAgentState != "" {
 			type statefulAgent interface {
@@ -695,7 +872,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			return NBAgentResponse{}, err
 		}
 	} else {
-		nbAgentPlanner, err := createAgentPlanner(ctx, agent, request, systemMessage, messageHistoryFomatter, initialNotebook)
+		var nbAgentPlanner NBAgentPlanner
+		nbAgentPlanner, err = createAgentPlanner(ctx, agent, request, systemMessage, messageHistoryFomatter, initialNotebook)
 		if err != nil {
 			// Try to update DB, but don't let a DB error mask the original error
 			dbErr := GetConversationDao().UpdateConversationAgentResponse(agentId.String(), err.Error(), AgentExecutionStatusFail, "", "unable to create plan", "", "")
@@ -800,47 +978,12 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 
 	// Handle response if it has followup with a question
 	if response.Followup.Question != "" && (agentStatus == AgentExecutionStatusWaiting || strings.EqualFold(string(agentStatus), string(AgentExecutionStatusWaiting))) {
-		dao := GetConversationDao()
-
 		// CRITICAL: Ensure the followup request points to THIS agent (the parent)
 		// so that the next user turn correctly resumes this agent instead of jumping to the child.
 		response.Followup.AgentId = agentId
 		response.Followup.AgentName = agent.GetName()
 
-		followUpRequest := response.Followup
-		// Check if the agent already has a followup message
-		followUpExists := false
-		agents, err := dao.ListConversationAgents("", followUpRequest.AgentId.String())
-		if err == nil && len(agents) > 0 {
-			existingAgent := agents[0]
-			if existingAgent.FollowupMessageID != uuid.Nil {
-				// Agent already has a followup message - check if it's currently waiting
-				fmsg, fErr := dao.GetConversationMessage(existingAgent.FollowupMessageID.String(), request.AccountId, request.ConversationId)
-				if fErr == nil && fmsg.Status != ConversationStatusCompleted {
-					ctx.GetLogger().Info("followup: agent already has an active followup message, updating config",
-						"agentId", followUpRequest.AgentId.String(),
-						"followupMessageId", existingAgent.FollowupMessageID)
-					newConfig := map[string]any{
-						"question":        followUpRequest.Question,
-						"followupType":    followUpRequest.FollowupType,
-						"followupOptions": followUpRequest.FollowupOptions,
-						"toolName":        followUpRequest.ToolName,
-						"toolId":          followUpRequest.ToolId,
-					}
-					if updateErr := dao.UpdateConversationMessageFollowupConfig(existingAgent.FollowupMessageID.String(), newConfig); updateErr != nil {
-						ctx.GetLogger().Error("followup: failed to update followup config", "error", updateErr)
-					}
-					followUpExists = true
-				}
-			}
-		}
-		if !followUpExists {
-			ctx.GetLogger().Info("agentexecutor: generating new followup message", "agent", agent.GetName(), "type", followUpRequest.FollowupType)
-			_, err := GenerateFollowup(ctx, request, followUpRequest)
-			if err != nil {
-				ctx.GetLogger().Error("agentexecutor: unable to generate followup", "error", err)
-			}
-		}
+		syncAgentFollowupMessage(ctx, GetConversationDao(), request, agent.GetName(), response.Followup)
 	}
 
 	var conversationStatus ConversationStatus
@@ -877,27 +1020,54 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 
 	// Generate image descriptions asynchronously for follow-up context.
 	// Fires for completed and waiting turns so history replay has image context on resume.
-	if len(request.Images) > 0 && IsImageSupportEnabled() &&
+	if len(request.Images) > 0 &&
 		agentResponse.Status != ConversationStatusFailed &&
 		agentResponse.Status != ConversationStatusTerminated {
 		GenerateImageDescriptionsAsync(ctx, request)
 	}
 
-	// use response formatting only when there are multiple agents involved
+	// Run the LLM response formatter only when a turn touched enough distinct
+	// agents that step-reference guidance and citation normalization pay off.
+	//
+	// Threshold raised from >1 (2+ agents) to >4 (5+ agents) on 2026-08-04
+	// after a 7d prod review found: the formatter is a fresh LLM call
+	// (~500ms + ~$0.005) whose measurable unique contribution is step-ID
+	// citation rewriting (~28.6% of runs) and header/prose polish. On 2/3/4-
+	// agent turns the citation guide adds little (few tool sources to link),
+	// the prose polish has historically drifted into chatty/emoji tone that
+	// violates the professional persona (memory item on tone-drift), AND the
+	// formatter runs a fresh LLM call with only its own system prompt — it
+	// does NOT reference account-level persona/tone customization, so any
+	// tenant with a custom voice gets overridden on every formatted response.
+	//
+	// Raising the threshold to 5+ agents drops ~417 marginal runs/wk
+	// (~68% reduction: 2-agent 146 + 3-agent 162 + 4-agent 109) while
+	// keeping formatter on the ~199/wk heavy-fanout narratives (5+ distinct
+	// tool/agent sources) where the step-ref guide is genuinely
+	// load-bearing.
+	//
+	// Follow-up review 2-3 days after deploy: sample formatted vs
+	// un-formatted responses at 5+/4-/1-agent slices — decide whether to
+	// raise further, keep, or replace the LLM formatter with a deterministic
+	// header/citation normalization pass (which would remove the persona-
+	// conflict problem entirely). Companion header-source fix in PR #35608
+	// removes the primary reason we needed formatter to run broadly
+	// (un-normalized `(5-Whys)` header on single-agent turns).
 	if agentResponse.Status == ConversationStatusCompleted && (request.ParentAgentId == "" || request.ParentAgentId == request.AgentId || request.ParentAgentId == uuid.Nil.String()) {
+		const formatterMinDistinctAgents = 4 // formatter fires when count > this (i.e. 5+ agents)
 		distinctAgents := make(map[string]bool)
 		for _, invocation := range agentResponse.AgentStepResponse {
 			if invocation.Call.FunctionCall != nil && invocation.Call.FunctionCall.Name != "" && !strings.EqualFold(invocation.Call.FunctionCall.Name, "llm") && !strings.EqualFold(invocation.Call.FunctionCall.Name, "planner") && !strings.Contains(invocation.Call.FunctionCall.Name, "debug") {
 				if _, ok := GetNBAgent(ctx, invocation.Call.FunctionCall.Name, request.AccountId, AgentStatusEnabled); ok {
 					distinctAgents[strings.ToLower(invocation.Call.FunctionCall.Name)] = true
 				}
-				if len(distinctAgents) > 1 {
+				if len(distinctAgents) > formatterMinDistinctAgents {
 					break
 				}
 			}
 		}
 
-		if len(distinctAgents) > 1 {
+		if len(distinctAgents) > formatterMinDistinctAgents {
 			// Pass the effective (runtime) planner type: orchestrating/react agents
 			// run as react_3 and assign sequential DisplayIDs, so the formatter must
 			// build the step-reference guide for them too — not just declared-react_3 agents.
@@ -906,6 +1076,46 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	}
 
 	return agentResponse, err
+}
+
+// syncAgentFollowupMessage persists followUpRequest for the agent: it updates
+// the agent's still-active followup message in place when one exists, and
+// otherwise creates a new followup message.
+//
+// The update branch overwrites a config the planner already wrote, so it must
+// pass the whole FollowupRequest and let the DAO serialize it. A hand-rolled
+// partial map here dropped confirmationKey: the user's approval was then
+// recorded under the bare tool name, which a per-action-scoped tool
+// (toolcore.ToolConfirmationScope — the recommendation write tools) can never
+// match on resume, so every approved apply died on the "config not resolved"
+// fail-fast gate in executeAgentPlanner.
+// The dao is a parameter rather than a GetConversationDao() call inside: tests
+// covering this would otherwise have to swap the package-global, which races
+// with the fire-and-forget goroutines other tests leave running (caught by
+// -race in CI).
+func syncAgentFollowupMessage(ctx *security.RequestContext, dao IConversationDao, request NBAgentRequest, agentName string, followUpRequest FollowupRequest) {
+	agents, err := dao.ListConversationAgents("", followUpRequest.AgentId.String())
+	if err == nil && len(agents) > 0 {
+		existingAgent := agents[0]
+		if existingAgent.FollowupMessageID != uuid.Nil {
+			// Agent already has a followup message - check if it's currently waiting
+			fmsg, fErr := dao.GetConversationMessage(existingAgent.FollowupMessageID.String(), request.AccountId, request.ConversationId)
+			if fErr == nil && fmsg.Status != ConversationStatusCompleted {
+				ctx.GetLogger().Info("followup: agent already has an active followup message, updating config",
+					"agentId", followUpRequest.AgentId.String(),
+					"followupMessageId", existingAgent.FollowupMessageID)
+				if updateErr := dao.UpdateConversationMessageFollowupConfig(existingAgent.FollowupMessageID.String(), followUpRequest); updateErr != nil {
+					ctx.GetLogger().Error("followup: failed to update followup config", "error", updateErr)
+				}
+				return
+			}
+		}
+	}
+
+	ctx.GetLogger().Info("agentexecutor: generating new followup message", "agent", agentName, "type", followUpRequest.FollowupType)
+	if _, err := GenerateFollowup(ctx, request, followUpRequest); err != nil {
+		ctx.GetLogger().Error("agentexecutor: unable to generate followup", "error", err)
+	}
 }
 
 func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, history string, agentId uuid.UUID) (NBAgentRequest, NBAgentResponse, error) {
@@ -922,6 +1132,7 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 
 		followupMessageType := string(FollowupTypeSingleSelect)
 		toolName := ""
+		confirmationKey := ""
 		existingToolConfigs := map[string]string{}
 		existingToolConfirmations := map[string]string{}
 		if request.QueryConfig.ToolConfigs != nil {
@@ -977,6 +1188,12 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 			if followupConfig["toolName"] != nil {
 				toolName = followupConfig["toolName"].(string)
 			}
+			// Per-action confirmations record under the key the doAction gate
+			// computed (tool + input scope), carried on the followup; absent —
+			// the historical per-tool key (the tool name).
+			if key, ok := followupConfig["confirmationKey"].(string); ok && key != "" {
+				confirmationKey = key
+			}
 		}
 
 		updateRequestMessageConfig := false
@@ -986,7 +1203,10 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 			request.Query = previousQuery
 			updateRequestMessageConfig = true
 		} else if followupMessageType == string(FollowupTypeToolConfirmation) {
-			existingToolConfirmations[toolName] = followupMessage.Response
+			if confirmationKey == "" {
+				confirmationKey = toolName
+			}
+			existingToolConfirmations[confirmationKey] = followupMessage.Response
 			request.Query = previousQuery
 			updateRequestMessageConfig = true
 		} else {

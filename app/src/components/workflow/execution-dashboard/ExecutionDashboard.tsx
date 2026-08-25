@@ -9,23 +9,34 @@ import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import { Label } from '@ui/Label';
 import { Button } from '@ui/Button';
+import Tooltip from '@ui/Tooltip';
 import { ds } from '@utils/colors';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import type { AccountExecutionItem } from '@api1/workflow/types';
 import { getDuration, getStatusTone } from '../utils/executionStatus';
 import useExecutionDashboard from './useExecutionDashboard';
 import ExecutionSummaryCards from './ExecutionSummaryCards';
 import MostFailedAutomations from './MostFailedAutomations';
 import ExecutionDetailDrawer from './ExecutionDetailDrawer';
-import { EXECUTION_STATUS_OPTIONS, MAX_PAGEABLE_ROWS, TABLE_HEADERS, executionUserLabel } from './constants';
-
-interface ExecutionDashboardProps {
-  accountId?: string;
-}
+import { EXECUTION_STATUS_OPTIONS, TABLE_HEADERS, executionUserLabel } from './constants';
 
 const TABLE_ID = 'execution-dashboard-table';
 
+/** Two lines of error text, then ellipsis — the rest lives in the tooltip. */
+const ERROR_CELL_CLAMP = {
+  fontSize: 'var(--ds-text-small)',
+  display: '-webkit-box',
+  WebkitBoxOrient: 'vertical' as const,
+  WebkitLineClamp: 2,
+  overflow: 'hidden',
+  wordBreak: 'break-word' as const,
+};
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 /**
- * Executions across every automation in the account.
+ * Executions across every automation in every account the caller can read,
+ * narrowed by the Account filter.
  *
  * Two behaviours here are consequences of the Temporal visibility store and
  * are deliberate, not omissions:
@@ -34,7 +45,7 @@ const TABLE_ID = 'execution-dashboard-table';
  *   - Counts render with a "≈" prefix and the date range is clamped to the
  *     namespace retention, because executions older than that do not exist.
  */
-const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) => {
+const ExecutionDashboard: React.FC = () => {
   const {
     filters,
     updateFilters,
@@ -46,10 +57,13 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
     loading,
     error,
     aggregate,
+    aggregateLoading,
     automationOptions,
     userOptions,
+    accounts,
+    accountOptions,
     refresh,
-  } = useExecutionDashboard(accountId);
+  } = useExecutionDashboard();
 
   const [selectedExecution, setSelectedExecution] = useState<AccountExecutionItem | null>(null);
 
@@ -61,12 +75,22 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
   const tableData = useMemo(
     () =>
       executions.map((execution) => [
-        { component: <Datetime value={execution.start_time} baseDate={new Date()} /> },
         {
-          component: (
+          component: <Datetime value={execution.start_time} baseDate={new Date()} />,
+          // Merged into the object CustomTable hands to onRowClick. Lives on
+          // the first cell now that the Execution ID column is gone — the id
+          // itself is drawer-only detail, not something to scan a column of.
+          drilldownQuery: { executionId: execution.id },
+        },
+        {
+          // The builder needs an account, and a visibility record written
+          // before nb_account_id existed carries none — link only when the row
+          // can actually say where it ran, rather than sending the user to
+          // `?accountId=undefined`.
+          component: execution.account_id ? (
             <Typography
               component='a'
-              href={`/workflow/${execution.workflow_id}?accountId=${accountId}#executions`}
+              href={`/automation/${execution.workflow_id}?accountId=${execution.account_id}#executions`}
               // New tab: the dashboard is a triage surface, and losing the
               // filtered table to inspect one automation is the wrong trade.
               target='_blank'
@@ -87,35 +111,72 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
             >
               {execution.workflow_name || execution.workflow_id}
             </Typography>
-          ),
-        },
-        {
-          component: (
+          ) : (
             <Typography
-              title={execution.id}
-              sx={{ fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}
-            >
-              {execution.id.slice(0, 8)}
-            </Typography>
-          ),
-          // Merged into the object CustomTable hands to onRowClick.
-          drilldownQuery: { executionId: execution.id },
-        },
-        { component: <Label text={execution.status.toUpperCase()} tone={getStatusTone(execution.status)} /> },
-        {
-          component: (
-            <Typography
-              title={executionUserLabel(execution.user_name, execution.triggered_by)}
+              title={execution.workflow_name || execution.workflow_id}
               sx={{
-                fontSize: 'var(--ds-text-small)',
+                fontSize: 'var(--ds-text-body)',
                 color: 'var(--ds-gray-700)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
               }}
             >
-              {executionUserLabel(execution.user_name, execution.triggered_by)}
+              {execution.workflow_name || execution.workflow_id}
             </Typography>
+          ),
+        },
+        {
+          component: (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, overflow: 'hidden' }}>
+              {execution.account_id && accounts[execution.account_id]?.cloud_provider && (
+                <CloudProviderIcon cloud_provider={accounts[execution.account_id].cloud_provider} width='14px' height='14px' />
+              )}
+              <Typography
+                title={(execution.account_id && accounts[execution.account_id]?.name) || execution.account_id || ''}
+                sx={{
+                  fontSize: 'var(--ds-text-small)',
+                  color: 'var(--ds-gray-700)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {(execution.account_id && accounts[execution.account_id]?.name) || execution.account_id || '-'}
+              </Typography>
+            </Box>
+          ),
+        },
+        { component: <Label text={execution.status.toUpperCase()} tone={getStatusTone(execution.status)} /> },
+        {
+          component: (
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                title={executionUserLabel(execution.user_name, execution.triggered_by)}
+                sx={{
+                  fontSize: 'var(--ds-text-small)',
+                  color: 'var(--ds-gray-700)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {executionUserLabel(execution.user_name, execution.triggered_by)}
+              </Typography>
+              {/* How the run started. Used to sit in the Details column, where
+                  it read as an error's peer on rows that had no error. */}
+              <Typography
+                sx={{
+                  fontSize: 'var(--ds-text-caption)',
+                  color: 'var(--ds-gray-500)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {execution.trigger_type || 'Manual'}
+              </Typography>
+            </Box>
           ),
         },
         {
@@ -126,39 +187,46 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
           ),
         },
         {
-          component: (
-            <Typography
-              title={execution.failure_reason || execution.trigger_type || ''}
-              sx={{
-                fontSize: 'var(--ds-text-small)',
-                color: execution.failure_reason ? 'var(--ds-red-600)' : 'var(--ds-gray-600)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {execution.failure_reason || execution.trigger_type || 'Manual'}
-            </Typography>
+          // Failures only. Errors run long — clamp to two lines, put the whole
+          // message in a tooltip, and leave the full text (with stack) to the
+          // drawer rather than letting one row stretch the table.
+          component: execution.failure_reason ? (
+            <Tooltip title={execution.failure_reason} variant='explainer' desc='Open the row for the full error.'>
+              <Typography sx={{ ...ERROR_CELL_CLAMP, color: 'var(--ds-red-600)' }}>{execution.failure_reason}</Typography>
+            </Tooltip>
+          ) : (
+            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>—</Typography>
           ),
         },
       ]),
-    [executions, accountId]
+    [executions, accounts]
   );
-
-  // The server refuses to page past MAX_PAGEABLE_ROWS, so don't render page
-  // numbers the user would only get an error from.
-  const pageableRows = Math.min(totalRows, MAX_PAGEABLE_ROWS);
 
   return (
     <Box>
-      <ExecutionSummaryCards aggregate={aggregate} loading={loading} retentionDays={retentionDays} />
+      {/* Headline left, breakdown right. The failure count and the automations
+          it came from are one question, so they sit on one row; the right panel
+          drops away when there are no failures to attribute. */}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: '360px minmax(0, 1fr)' },
+          gap: 'var(--ds-space-3)',
+          padding: 'var(--ds-space-4) 0',
+          // Default `stretch`: the two cards are one row of information and a
+          // ragged bottom edge reads as a rendering bug.
+        }}
+      >
+        <ExecutionSummaryCards aggregate={aggregate} loading={aggregateLoading} retentionDays={retentionDays} />
 
-      <MostFailedAutomations
-        entries={aggregate?.top_failed || []}
-        approximate={!!aggregate?.top_failed_is_approximate}
-        retentionDays={retentionDays}
-        onSelectAutomation={(workflowId) => updateFilters({ workflowIds: [workflowId] })}
-      />
+        <MostFailedAutomations
+          entries={aggregate?.top_failed || []}
+          loading={aggregateLoading}
+          approximate={!!aggregate?.top_failed_is_approximate}
+          totalFailures={aggregate?.failed || 0}
+          onSelectAutomation={(workflowId) => updateFilters({ workflowIds: [workflowId] })}
+        />
+      </Box>
 
       <ListingLayout id='execution-dashboard'>
         <ListingLayout.Toolbar
@@ -192,6 +260,16 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
           }
         >
           <FilterDropdown
+            id='execution-dashboard-filter-account'
+            label='Account'
+            multiple
+            grouped
+            groupIcon={renderAccountGroupIcon}
+            options={accountOptions}
+            value={accountOptions.filter((option) => filters.accountIds.includes(option.value))}
+            onSelect={(_event: any, items: any) => updateFilters({ accountIds: (items || []).map((item: any) => item.value) })}
+          />
+          <FilterDropdown
             id='execution-dashboard-filter-automation'
             label='Automation'
             multiple
@@ -220,7 +298,10 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', padding: `0 ${ds.space[5]}` }}>
           <InfoOutlined sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-500)' }} />
           <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-            {`Filters apply to this table only; the summary above is not affected. Sorted newest first.${
+            {/* Account is a scope, not a table filter — it replaced the page-level
+                account the summary used to be pinned to, so it moves the cards
+                too. The rest still narrow only the table. */}
+            {`Account applies to the whole page; the other filters apply to this table only. Sorted newest first.${
               retentionDays > 0 ? ` Execution history is retained for ${retentionDays} days.` : ''
             }`}
           </Typography>
@@ -234,7 +315,7 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
             loading={loading}
             rowsPerPage={pageSize}
             pageNumber={page}
-            totalRows={pageableRows}
+            totalRows={totalRows}
             onPageChange={(nextPage: number, nextPageSize: number) => changePage(nextPage, nextPageSize)}
             onRowClick={(query: any) => {
               const match = executions.find((execution) => execution.id === query?.executionId);
@@ -246,7 +327,7 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
         </ListingLayout.Body>
       </ListingLayout>
 
-      <ExecutionDetailDrawer execution={selectedExecution} accountId={accountId} onClose={() => setSelectedExecution(null)} />
+      <ExecutionDetailDrawer execution={selectedExecution} onClose={() => setSelectedExecution(null)} />
     </Box>
   );
 };

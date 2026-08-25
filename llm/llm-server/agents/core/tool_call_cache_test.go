@@ -309,3 +309,36 @@ func TestTurnToolCallCache_PersistsAcrossPlanRegeneration(t *testing.T) {
 	assert.Equal(t, int64(1), hits)
 	assert.Equal(t, int64(1), entries)
 }
+
+// TestDuplicateCacheHitNotice verifies the render-only duplicate notice: it appears in
+// the planner's scratchpad ONLY for steps flagged IsDuplicateCacheHit, the step's stored
+// Observation stays clean (so it never leaks to the terminal response / UI / summarizer),
+// and terminal steps are never flagged.
+func TestDuplicateCacheHitNotice(t *testing.T) {
+	mkStep := func(dup, terminal bool) NBAgentPlannerToolActionStep {
+		return NBAgentPlannerToolActionStep{
+			Action:              NBAgentPlannerToolAction{ToolID: "P1", Tool: "events", ToolInput: `{"q":"recent"}`},
+			Observation:         "3 pods, 1 CrashLoop",
+			Status:              ToolStatusSuccess,
+			IsTerminal:          terminal,
+			IsDuplicateCacheHit: dup,
+		}
+	}
+
+	// Flagged step → scratchpad carries the notice; stored Observation stays clean.
+	dup := mkStep(true, false)
+	sp := ConstructScratchPad([]NBAgentPlannerToolActionStep{dup})
+	assert.Contains(t, sp, "ALREADY EXECUTED THIS TURN")
+	assert.Contains(t, sp, "3 pods, 1 CrashLoop")
+	assert.Equal(t, "3 pods, 1 CrashLoop", dup.Observation, "stored observation must stay clean")
+
+	// Unflagged step → no notice.
+	plain := ConstructScratchPad([]NBAgentPlannerToolActionStep{mkStep(false, false)})
+	assert.NotContains(t, plain, "ALREADY EXECUTED THIS TURN")
+
+	// The executor sets the flag as !IsTerminal, so a terminal cached step is never
+	// flagged — asserting the guard that protects the final response.
+	terminalCached := mkStep(false, true)
+	terminalCached.IsDuplicateCacheHit = !terminalCached.IsTerminal
+	assert.False(t, terminalCached.IsDuplicateCacheHit, "terminal step must never be flagged")
+}

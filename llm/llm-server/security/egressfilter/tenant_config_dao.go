@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"nudgebee/llm/common"
 )
@@ -25,7 +26,7 @@ import (
 // API). List exists for ops debugging; no production read path goes
 // through it.
 
-const tenantConfigSelectColumns = `tenant_id, mode, enabled, allowlist, custom_rules, disabled_rules, updated_at`
+const tenantConfigSelectColumns = `tenant_id, mode, enabled, allowlist, custom_rules, disabled_rules, pii_enabled, pii_mode, pii_ner_enabled, pii_disabled_categories, updated_at`
 
 // GetTenantConfigByID returns the override row for one tenant, or (nil, nil)
 // when no row exists. The "no row" case is normal — most tenants run at
@@ -49,16 +50,24 @@ func GetTenantConfigByID(ctx context.Context, tenantID uuid.UUID) (*TenantConfig
 		WHERE tenant_id = $1
 	`
 	var (
-		mode          string
-		enabled       bool
-		allowlistJSON []byte
-		customRules   []byte
-		disabledJSON  []byte
-		updatedAt     time.Time
-		tenantIDOut   uuid.UUID
+		mode            string
+		enabled         bool
+		allowlistJSON   []byte
+		customRules     []byte
+		disabledJSON    []byte
+		piiEnabled      sql.NullBool
+		piiMode         sql.NullString
+		piiNerEnabled   sql.NullBool
+		piiDisabledCats pq.StringArray
+		updatedAt       time.Time
+		tenantIDOut     uuid.UUID
 	)
 	row := db.Db.QueryRowContext(ctx, query, tenantID)
-	err = row.Scan(&tenantIDOut, &mode, &enabled, &allowlistJSON, &customRules, &disabledJSON, &updatedAt)
+	err = row.Scan(
+		&tenantIDOut, &mode, &enabled, &allowlistJSON, &customRules, &disabledJSON,
+		&piiEnabled, &piiMode, &piiNerEnabled, &piiDisabledCats,
+		&updatedAt,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -67,11 +76,23 @@ func GetTenantConfigByID(ctx context.Context, tenantID uuid.UUID) (*TenantConfig
 	}
 
 	cfg := &TenantConfig{
-		TenantID:    tenantIDOut,
-		Mode:        Mode(mode),
-		Enabled:     enabled,
-		CustomRules: customRules,
-		UpdatedAt:   updatedAt,
+		TenantID:              tenantIDOut,
+		Mode:                  Mode(mode),
+		Enabled:               enabled,
+		CustomRules:           customRules,
+		PIIDisabledCategories: []string(piiDisabledCats),
+		UpdatedAt:             updatedAt,
+	}
+	if piiEnabled.Valid {
+		v := piiEnabled.Bool
+		cfg.PIIEnabled = &v
+	}
+	if piiMode.Valid {
+		cfg.PIIMode = piiMode.String
+	}
+	if piiNerEnabled.Valid {
+		v := piiNerEnabled.Bool
+		cfg.PIINerEnabled = &v
 	}
 	if err := json.Unmarshal(allowlistJSON, &cfg.Allowlist); err != nil {
 		return nil, fmt.Errorf("egressfilter.GetTenantConfigByID: parse allowlist: %w", err)
@@ -121,21 +142,63 @@ func UpsertTenantConfig(ctx context.Context, cfg *TenantConfig) error {
 	if err != nil {
 		return fmt.Errorf("egressfilter.UpsertTenantConfig: db: %w", err)
 	}
+	// PII columns: pointer + string map cleanly to Postgres NULL / value
+	// via sql.NullBool / sql.NullString. pii_disabled_categories is NOT
+	// NULL DEFAULT '{}' at the DB level, so a nil slice serializes as an
+	// empty array via pq.Array(nil-slice) → OK.
+	var (
+		piiEnabledArg    any
+		piiModeArg       any
+		piiNerEnabledArg any
+	)
+	if cfg.PIIEnabled != nil {
+		piiEnabledArg = *cfg.PIIEnabled
+	} else {
+		piiEnabledArg = nil // -> SQL NULL
+	}
+	if cfg.PIIMode != "" {
+		piiModeArg = cfg.PIIMode
+	} else {
+		piiModeArg = nil
+	}
+	if cfg.PIINerEnabled != nil {
+		piiNerEnabledArg = *cfg.PIINerEnabled
+	} else {
+		piiNerEnabledArg = nil
+	}
+
 	query := `
 		INSERT INTO public.llm_egressfilter_tenant_config
-			(tenant_id, mode, enabled, allowlist, custom_rules, disabled_rules, updated_at)
-		VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, NOW())
+			(tenant_id, mode, enabled, allowlist, custom_rules, disabled_rules,
+			 pii_enabled, pii_mode, pii_ner_enabled, pii_disabled_categories,
+			 updated_at)
+		VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb,
+		        $7, $8, $9, $10,
+		        NOW())
 		ON CONFLICT (tenant_id) DO UPDATE SET
-			mode           = EXCLUDED.mode,
-			enabled        = EXCLUDED.enabled,
-			allowlist      = EXCLUDED.allowlist,
-			custom_rules   = EXCLUDED.custom_rules,
-			disabled_rules = EXCLUDED.disabled_rules,
-			updated_at     = NOW()
+			mode                     = EXCLUDED.mode,
+			enabled                  = EXCLUDED.enabled,
+			allowlist                = EXCLUDED.allowlist,
+			custom_rules             = EXCLUDED.custom_rules,
+			disabled_rules           = EXCLUDED.disabled_rules,
+			pii_enabled              = EXCLUDED.pii_enabled,
+			pii_mode                 = EXCLUDED.pii_mode,
+			pii_ner_enabled          = EXCLUDED.pii_ner_enabled,
+			pii_disabled_categories  = EXCLUDED.pii_disabled_categories,
+			updated_at               = NOW()
 	`
+	// pq.Array(nil-slice) marshals to SQL NULL, but pii_disabled_categories
+	// is NOT NULL DEFAULT '{}'. A nil slice from either "field absent on
+	// PUT" or "explicit empty on PATCH" would violate the constraint on
+	// upsert — coerce to a non-nil empty slice so we always send '{}'.
+	cats := cfg.PIIDisabledCategories
+	if cats == nil {
+		cats = []string{}
+	}
 	if _, err := db.Db.ExecContext(ctx, query,
 		cfg.TenantID, string(cfg.Mode), cfg.Enabled,
 		allowlistJSON, customRules, disabledJSON,
+		piiEnabledArg, piiModeArg, piiNerEnabledArg, pq.Array(cats),
 	); err != nil {
 		return fmt.Errorf("egressfilter.UpsertTenantConfig: exec: %w", err)
 	}
@@ -188,23 +251,43 @@ func ListTenantConfigs(ctx context.Context, limit int) ([]TenantConfig, error) {
 	var out []TenantConfig
 	for rows.Next() {
 		var (
-			tID           uuid.UUID
-			mode          string
-			enabled       bool
-			allowlistJSON []byte
-			customRules   []byte
-			disabledJSON  []byte
-			updatedAt     time.Time
+			tID             uuid.UUID
+			mode            string
+			enabled         bool
+			allowlistJSON   []byte
+			customRules     []byte
+			disabledJSON    []byte
+			piiEnabled      sql.NullBool
+			piiMode         sql.NullString
+			piiNerEnabled   sql.NullBool
+			piiDisabledCats pq.StringArray
+			updatedAt       time.Time
 		)
-		if err := rows.Scan(&tID, &mode, &enabled, &allowlistJSON, &customRules, &disabledJSON, &updatedAt); err != nil {
+		if err := rows.Scan(
+			&tID, &mode, &enabled, &allowlistJSON, &customRules, &disabledJSON,
+			&piiEnabled, &piiMode, &piiNerEnabled, &piiDisabledCats,
+			&updatedAt,
+		); err != nil {
 			return nil, fmt.Errorf("egressfilter.ListTenantConfigs: scan: %w", err)
 		}
 		cfg := TenantConfig{
-			TenantID:    tID,
-			Mode:        Mode(mode),
-			Enabled:     enabled,
-			CustomRules: customRules,
-			UpdatedAt:   updatedAt,
+			TenantID:              tID,
+			Mode:                  Mode(mode),
+			Enabled:               enabled,
+			CustomRules:           customRules,
+			PIIDisabledCategories: []string(piiDisabledCats),
+			UpdatedAt:             updatedAt,
+		}
+		if piiEnabled.Valid {
+			v := piiEnabled.Bool
+			cfg.PIIEnabled = &v
+		}
+		if piiMode.Valid {
+			cfg.PIIMode = piiMode.String
+		}
+		if piiNerEnabled.Valid {
+			v := piiNerEnabled.Bool
+			cfg.PIINerEnabled = &v
 		}
 		// Log unmarshal failures so corrupted JSONB rows are visible during
 		// ops triage. Continue with empty defaults — caller is debugging,

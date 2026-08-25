@@ -35,6 +35,11 @@ interface GitIntegration {
 
 const NON_ACTIONABLE = new Set(['none', 'review_alert', 'not_eligible']);
 
+// Recommendations that deliberately keep the current threshold ("investigate, don't retune").
+// They can still be applied, but only as an explicit override — the operator has to enter a
+// value different from the current one, otherwise there is nothing to write.
+const NO_ENGINE_CHANGE = new Set(['investigate_signal', 'insufficient_data']);
+
 // Integrations management lives on the user-management page, integrations tab.
 const INTEGRATIONS_SETTINGS_URL = '/user-management#integrations';
 
@@ -283,6 +288,12 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
   const validValue = !Number.isNaN(acceptNum);
   const valueChanged = validValue && suggestedValue != null && acceptNum !== suggestedValue;
 
+  // "Investigate, don't retune" verdicts suggest the current threshold, so applying them
+  // unchanged writes nothing (the backend rejects it). Require an actual edit first.
+  const currentValue = options?.current_threshold ?? data.current_threshold;
+  const overrideRequired = NO_ENGINE_CHANGE.has(recType);
+  const overrideMissing = overrideRequired && (!validValue || (currentValue != null && acceptNum === Number(currentValue)));
+
   const openConfirm = (m: ApplyMethod) => {
     setMethod(m);
     setError('');
@@ -362,7 +373,8 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
 
   const prRepoValid = reposFromIntegration.length > 0 ? !!selectedRepoKey : !!derivedOrg && !!derivedRepo;
   const prInputsValid = method !== 'pr' || (!!selectedIntegration && prRepoValid && !!gitFilePath.trim());
-  const confirmDisabled = applying || !selectedAvailable || !validValue || (requiresOverride && !overrideRisk) || !prInputsValid || noIntegration;
+  const confirmDisabled =
+    applying || !selectedAvailable || !validValue || overrideMissing || (requiresOverride && !overrideRisk) || !prInputsValid || noIntegration;
 
   const alreadyApplied = applyStatus === 'applied';
 
@@ -490,6 +502,14 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
               </Box>
             </Box>
             {!validValue && <Text value='Enter a numeric threshold.' sx={{ fontSize: ds.text.caption, color: ds.red[700] }} />}
+            {overrideRequired && (
+              <Text
+                value={`This alert is flagged for investigation, not retuning${
+                  currentValue != null ? ` — the analysis keeps the current threshold (${operator} ${currentValue})` : ''
+                }. Enter a different value to override it.`}
+                sx={{ fontSize: ds.text.caption, color: ds.amber[700] }}
+              />
+            )}
             {valueChanged && (
               <Text
                 value={`Suggested ${operator} ${suggestedValue}. The preview below reflects the suggested value; ${acceptValue} will be applied.`}

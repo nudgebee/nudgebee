@@ -54,6 +54,15 @@ func (t *TicketsResolveTask) Execute(taskCtx types.TaskContext, params map[strin
 		return nil, err
 	}
 
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket resolve")
+		return map[string]any{
+			"ticket_id": ticketId,
+			"status":    "dry_run",
+			"message":   "Dry run: ticket resolve skipped",
+		}, nil
+	}
+
 	request := ticket.ResolveTicketRequest{
 		TicketId:      ticketId,
 		IntegrationId: integrationId,
@@ -88,6 +97,7 @@ func (t *TicketsResolveTask) InputSchema() *types.Schema {
 				Description: "Incident management integration (PagerDuty or ZenDuty only)",
 				Required:    true,
 				Order:       2,
+				SubTypes:    incidentPlatforms,
 			},
 			"ticket_id": {
 				Type:        types.PropertyTypeString,

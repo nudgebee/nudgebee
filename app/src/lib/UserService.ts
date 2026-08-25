@@ -1,4 +1,4 @@
-import { gqlStringify, queryGraphQL } from './HttpService';
+import { gqlStringify, queryGraphQL, unwrapGraphQL } from './HttpService';
 import cache from './cache';
 import { safeJSONParse } from 'src/utils/common';
 
@@ -600,12 +600,14 @@ export async function createUserGroup(name: string, desc: string) {
     name: name,
     description: desc,
   });
-  if (response.data.errors) {
-    return response.data;
-  }
-
+  // Throw rather than return the error envelope. Returning it made a failed
+  // create indistinguishable from a successful one to the caller: GroupModal
+  // read `result?.data?.data?.id`, got undefined without an exception, reported
+  // "Group added successfully", then called usergroups_update_members with
+  // group_id undefined — surfacing an authorization failure as the gateway's
+  // `missing_required_variable:$group_id`.
   return {
-    data: response.data.data.usergroup_create,
+    data: unwrapGraphQL(response, 'Failed to create group')?.usergroup_create,
   };
 }
 
@@ -807,7 +809,16 @@ export async function listUserTenantRoles(username: string, tenantId: string) {
   const response = await queryGraphQL(query, 'UserTenantRoles', {
     object: { username, tenant_id: tenantId },
   });
+  // queryGraphQL does not throw on GraphQL / gateway failures — it returns them in
+  // response.data.errors with response.data.data absent. Surface that so callers can
+  // tell a *failed* lookup apart from a user who genuinely holds no roles in the
+  // tenant (the normal case for custom-role-only access). The status/missing-response
+  // checks cover the failure shapes that carry no errors array: the 502/503 the server
+  // gateway returns when it is unavailable or cannot handle the operation, and the
+  // bare `undefined` queryGraphQL resolves to when a server-side call throws outright.
+  const errored = !response || response.status !== 200 || (Array.isArray(response.data?.errors) && response.data.errors.length > 0);
   return {
+    errored,
     data: response?.data?.data?.users_list_tenant_roles?.roles || [],
     tenantName: response?.data?.data?.users_list_tenant_roles?.tenant_name,
   };
@@ -841,6 +852,49 @@ export async function getAccountByTenant(tenantId: string) {
     errored,
     data: { cloud_accounts: rows },
   };
+}
+
+// Resolve a user's effective dynamic-RBAC custom-role grants ("<module>:<class>"
+// keys) for a tenant, plus whether the CUSTOM_ROLES feature is enabled for that
+// tenant at all. Used at session build to bake both into the JWT so the
+// rpcGateway gate and the UI gating can work without a per-request DB hit. Runs
+// server-side (synthetic admin context) during NextAuth callbacks.
+const RESOLVE_CUSTOM_PERMISSIONS_QUERY = `
+query ResolveCustomPermissions($userId: String!, $tenantId: String!) {
+  customroles_list_user_permissions(user_id: $userId, tenant_id: $tenantId) {
+    permissions
+    enabled
+  }
+}`;
+
+export type ResolvedCustomPermissions = {
+  permissions: string[];
+  // false whenever the feature is off for the tenant, the customroles_* action
+  // isn't part of this build (OSS), or the resolve failed — all of which must
+  // leave the UI on its built-in-role behavior rather than gate anything.
+  enabled: boolean;
+};
+
+export async function resolveUserCustomPermissions(userId: string, tenantId: string): Promise<ResolvedCustomPermissions> {
+  const off: ResolvedCustomPermissions = { permissions: [], enabled: false };
+  if (!userId || !tenantId) return off;
+  try {
+    const response = await queryGraphQL(RESOLVE_CUSTOM_PERMISSIONS_QUERY, 'ResolveCustomPermissions', {
+      userId,
+      tenantId,
+    });
+    // queryGraphQL surfaces gateway/GraphQL failures in response.data.errors
+    // (it does not throw). Route them through the catch so a failed resolve is
+    // logged rather than silently read as "user has zero custom grants".
+    if (response?.data?.errors) {
+      throw new Error(response.data.errors?.[0]?.message || 'GraphQL error resolving custom permissions');
+    }
+    const result = response?.data?.data?.customroles_list_user_permissions;
+    return { permissions: result?.permissions || [], enabled: !!result?.enabled };
+  } catch (err) {
+    console.log('unable to resolve custom permissions for user', userId, err);
+    return off;
+  }
 }
 
 export async function getCloudAccountAttr(accountId: string) {

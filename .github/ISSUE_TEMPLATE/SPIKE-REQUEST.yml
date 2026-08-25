@@ -1,14 +1,16 @@
-name: "💡 Spike Request"
+name: "🔍 Spike Request"
 description: Explorative work to answer a question or gather information
-title: "💡 [REQUEST] - <title>"
-labels: []
+title: "🔍 [SPIKE] - <title>"
+labels: [
+  "spike"
+]
 body:
   - type: textarea
     id: summary
     attributes:
       label: "Summary"
-      description: Provide a brief explanation of the feature
-      placeholder: Describe in a few lines your feature request
+      description: Provide a brief explanation of what needs to be explored
+      placeholder: Describe in a few lines the question this spike should answer
     validations:
       required: true
   - type: textarea

@@ -117,7 +117,7 @@ func fetchAgentKBs(ctx *security.RequestContext, accountId string, ownNames []st
 	return kbs
 }
 
-// buildSkillListsMenu renders a `<skill-lists>` discovery block (names +
+// BuildSkillListsMenu renders a `<skill-lists>` discovery block (names +
 // descriptions only — no bodies, no RAG previews) from the given KBs. It is
 // placed in the planner's human message (not the cacheable system prefix) when
 // the KB pre-step is enabled. Returns "" when no active KB exists.

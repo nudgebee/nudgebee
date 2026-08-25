@@ -390,10 +390,11 @@ func (e *CloudEnricher) EnrichExternalServices(
 
 		// If no existing node found, create a new inferred node
 		if inferredNode == nil {
+			uniqueKey := fmt.Sprintf("%s:%s:%s", nodeType, awsEndpoint, "inferred")
 			inferredNode = &core.DbNode{
-				ID:             uuid.New().String(),
+				ID:             core.NodeIDFor(uniqueKey, tenantID, cloudAccountID),
 				NodeType:       nodeType,
-				UniqueKey:      fmt.Sprintf("%s:%s:%s", nodeType, awsEndpoint, "inferred"),
+				UniqueKey:      uniqueKey,
 				CloudAccountID: cloudAccountID,
 				TenantID:       tenantID,
 				Level:          "Tenant",
@@ -691,10 +692,11 @@ func (e *CloudEnricher) enrichLoadBalancerWithTargets(
 			environment = lbEnv
 		}
 
+		uniqueKey := fmt.Sprintf("Service:%s:%s", k8sServiceName, k8sNamespace)
 		ingressNode := &core.DbNode{
-			ID:             uuid.New().String(),
+			ID:             core.NodeIDFor(uniqueKey, tenantID, k8sAccountID),
 			NodeType:       core.NodeTypeService,
-			UniqueKey:      fmt.Sprintf("Service:%s:%s", k8sServiceName, k8sNamespace),
+			UniqueKey:      uniqueKey,
 			CloudAccountID: k8sAccountID,
 			TenantID:       tenantID,
 			Level:          "Tenant",
@@ -1097,9 +1099,10 @@ func (e *CloudEnricher) enrichLoadBalancerWithTargets(
 					properties["labels"] = labels
 				}
 
+				uniqueKey := fmt.Sprintf("%s:%s:%s", ownerKind, ownerName, namespace)
 				targetNode = &core.DbNode{
-					ID:              uuid.New().String(),
-					UniqueKey:       fmt.Sprintf("%s:%s:%s", ownerKind, ownerName, namespace),
+					ID:              core.NodeIDFor(uniqueKey, tenantID, k8sAccountID),
+					UniqueKey:       uniqueKey,
 					NodeType:        core.NodeTypePod, // Still use Pod type for infrastructure
 					CloudAccountID:  k8sAccountID,
 					TenantID:        tenantID,

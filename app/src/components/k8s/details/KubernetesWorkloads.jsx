@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import SearchInput from '@ui/SearchInput';
@@ -27,11 +27,12 @@ import { hasWriteAccess } from '@lib/auth';
 import LogFileIcon from '@assets/application/logs-new.svg';
 import EditFileIcon from '@assets/application/edit-new.svg';
 import { useRouter } from 'next/router';
+import { useData } from '@context/DataContext';
 import GitSvg from '@assets/application/github-new.svg';
 import SecurityScanSvg from '@assets/security-scan.svg';
 import NumberComponent from '@shared/format/Number';
 import { action } from 'src/utils/actionStyles';
-import { parseHttpResponseBodyMessage } from 'src/utils/common';
+import { parseHttpResponseBodyMessage, snakeToTitleCase } from 'src/utils/common';
 import SLOInspectionIcon from '@assets/kubernetes/slo-inspection.svg';
 import apiKubernetes1 from '@api1/kubernetes1';
 import apiCriticality from '@api1/criticality';
@@ -56,7 +57,7 @@ import AutoOptimizeContinuousVerticalRightSizingSingleConfiguration from '@compo
 import CodeMirror from '@uiw/react-codemirror';
 import { yaml as yamlLang } from '@codemirror/lang-yaml';
 import { EditorView } from '@codemirror/view';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import Dashboard from '@components/dashboards/AppDashboard';
 import KubernetesPodYaml from '@components/k8s/details/KubernetesPodYaml';
 import KubernetesRightSizing from '@components/recommendations/KubernetesRightSizing';
@@ -91,6 +92,14 @@ const CRITICALITY_VARIANT = { critical: 'criticalRed', high: 'red', medium: 'gre
 
 const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
   const router = useRouter();
+  const { selectedCluster } = useData();
+  // This page is always scoped to a single cluster (`accountId`), so the Auto
+  // Optimize modals' Account field has exactly one valid option — reuse the
+  // header cluster-switcher's label when it matches, else fall back to the id.
+  const workloadAccountOptions = useMemo(
+    () => [{ value: accountId, label: (selectedCluster?.value === accountId && selectedCluster?.label) || accountId }],
+    [accountId, selectedCluster]
+  );
   const [data, setData] = useState([]);
   const [criticalityMap, setCriticalityMap] = useState({});
   const [totalCount, setTotalCount] = useState(0);
@@ -834,7 +843,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
 
   const fetchSLOReport = () => {
     return apiKubernetes1.getSLOReport({
-      accountId,
+      account_id: accountId,
       workload_namespace: Array.from(new Set(workloadFqdn.map((d) => d.split('.')[0]))),
       workload_name: Array.from(new Set(workloadFqdn.map((d) => d.split('.')[1]))),
       start_date: new Date(getSpecificTime(1440)).toISOString(),
@@ -1051,22 +1060,63 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
     }
   };
 
+  // The column says "SLO (24h)", so summarise the whole window. A workload has
+  // two configs (availability + latency) x ~24 hourly rows; taking the first
+  // match of a list ordered by updated_at reported one config for one hour, so
+  // a latency breach 20 hours ago read OK, and an availability breach was
+  // invisible whenever the latency row happened to sort first.
   const updateSLOData = (sloResponse, updatedData) => {
     const sloReportData = sloResponse?.data?.data?.slo_report ?? [];
-    if (sloReportData.length > 0) {
-      updatedData.forEach((item, index) => {
-        const matchedItem = sloReportData.find(
-          (sloItem) =>
-            sloItem.workload_namespace === item[0].drilldownQuery.namespaceName && sloItem.workload_name === item[0].drilldownQuery.workloadName
-        );
-        if (matchedItem) {
-          const status = matchedItem.status === 'FIRING' ? 'FIRING' : 'OK';
-          updatedData[index][7] = {
-            component: <Label textTransform={'none'} text={status} />,
-          };
-        }
-      });
+    if (sloReportData.length === 0) {
+      return;
     }
+
+    const byWorkload = new Map();
+    for (const row of sloReportData) {
+      const key = `${row.workload_namespace}/${row.workload_name}`;
+      const rows = byWorkload.get(key);
+      if (rows) {
+        rows.push(row);
+      } else {
+        byWorkload.set(key, [row]);
+      }
+    }
+
+    updatedData.forEach((item, index) => {
+      const rows = byWorkload.get(`${item[0].drilldownQuery.namespaceName}/${item[0].drilldownQuery.workloadName}`);
+      // Leave the '-' placeholder when no SLO is configured — that is a
+      // different statement from "the SLO is healthy".
+      if (!rows || rows.length === 0) {
+        return;
+      }
+
+      const firing = rows.filter((r) => r.status === 'FIRING');
+      if (firing.length > 0) {
+        const breached = [...new Set(firing.map((r) => r.slo_config?.name).filter(Boolean))].map(snakeToTitleCase).join(', ');
+        updatedData[index][7] = {
+          component: (
+            <>
+              <Label textTransform={'none'} text='FIRING' />
+              {breached ? <Text secondaryText value={`[${breached}]`} /> : null}
+            </>
+          ),
+        };
+        return;
+      }
+
+      // Nothing in the window could be measured. Not the same as healthy — a
+      // workload with no traffic must not read as meeting its objective.
+      if (rows.every((r) => r.status === 'NO_DATA')) {
+        updatedData[index][7] = {
+          component: <Label textTransform={'none'} text='NO DATA' variant='grey' />,
+        };
+        return;
+      }
+
+      updatedData[index][7] = {
+        component: <Label textTransform={'none'} text='OK' />,
+      };
+    });
   };
 
   const updateEventCounts = (eventResponse, updatedData) => {
@@ -1623,14 +1673,14 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         >
           <FilterDropdown
             label='Namespace'
-            options={namespaceFilter.map((o) => ({ value: o, label: o }))}
+            options={namespaceFilter?.map((o) => ({ value: o, label: o })) || []}
             value={selectedNamespace}
             onSelect={onNamespaceFilterChange}
             disabled={disableOptions}
           />
           <FilterDropdown
             label='Workload Type'
-            options={workloadTypeFilter.map((o) => ({ value: o, label: o }))}
+            options={workloadTypeFilter?.map((o) => ({ value: o, label: o })) || []}
             value={selectedWorkloadType}
             onSelect={onWorkloadTypeFilterChange}
             disabled={disableOptions}
@@ -1653,6 +1703,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           >
             <AutoOptimizeHorizontalRightSizingSingleConfiguration
               autoOptimizeData={{
+                accountId,
                 auto_optimize_resource_maps: [
                   {
                     resource_identifier: {
@@ -1667,6 +1718,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               msTeamsData={[]}
               googleChannelList={[]}
               setIsLoading={setLoading}
+              accountOptions={workloadAccountOptions}
             />
           </Modal>
           <Modal
@@ -1677,6 +1729,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           >
             <AutoOptimizeContinuousVerticalRightSizingSingleConfiguration
               autoOptimizeData={{
+                accountId,
                 auto_optimize_resource_maps: [
                   {
                     resource_identifier: {
@@ -1692,6 +1745,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               googleChannelList={[]}
               setIsLoading={setLoading}
               currentData={{}}
+              accountOptions={workloadAccountOptions}
             />
           </Modal>
 

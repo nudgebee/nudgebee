@@ -181,3 +181,39 @@ func TestProjectWorkflowListResponse_UnexpectedShapePassesThrough(t *testing.T) 
 	raw := []byte(`{"error": "unauthorized"}`)
 	assert.Equal(t, raw, projectWorkflowListResponse(raw))
 }
+
+// TestProjectWorkflowListResponse_OmitsDraftAIDescription pins the one field
+// deliberately withheld from this projection. GET /workflows returns the DRAFT
+// definition, so its llm_description is AI text nobody published. Offering it
+// also made the model treat the listing as sufficient for "which automation fits
+// this symptom" — skipping workflow_search, which reads the live version, in
+// half of observed runs. ai_invocable and status stay: they are workflow-level
+// columns and accurate here.
+func TestProjectWorkflowListResponse_OmitsDraftAIDescription(t *testing.T) {
+	raw := []byte(`{
+		"workflows": [{
+			"id": "wf-1",
+			"name": "restart-consumers",
+			"description": "Restarts payment consumers",
+			"status": "ACTIVE",
+			"ai_invocable": true,
+			"definition": {
+				"llm_description": "DRAFT ONLY - half-written, never published",
+				"triggers": [{"type": "manual"}]
+			}
+		}]
+	}`)
+
+	var parsed map[string]any
+	assert.NoError(t, json.Unmarshal(projectWorkflowListResponse(raw), &parsed))
+	wf := parsed["workflows"].([]any)[0].(map[string]any)
+
+	_, present := wf["llm_description"]
+	assert.False(t, present, "draft llm_description must not reach the model from the listing")
+
+	// The fields the listing is still responsible for.
+	assert.Equal(t, "Restarts payment consumers", wf["description"])
+	assert.Equal(t, true, wf["ai_invocable"])
+	assert.Equal(t, "ACTIVE", wf["status"])
+	assert.Equal(t, []any{"manual"}, wf["trigger_types"])
+}

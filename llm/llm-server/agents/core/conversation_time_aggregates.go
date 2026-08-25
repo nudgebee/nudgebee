@@ -76,10 +76,15 @@ func HandleConversationTimeAggregatesApi(ctx *security.RequestContext, request C
 	// set automatically.
 	var accountIDs []string
 	if request.AccountId != "" {
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			return ConversationTimeAggregatesResponse{}, fmt.Errorf("HandleConversationTimeAggregatesApi: forbidden account_id")
 		}
 		accountIDs = []string{request.AccountId}
+	} else if sc := ctx.GetSecurityContext(); sc.HasPermission("ai_conversations", "Read") || sc.HasPermission("ai_conversations", "Write") {
+		// A tenant-global ai_conversations grant reads across the tenant. Falling
+		// back to ListAccountIds() here would hand a pure custom-role holder an
+		// empty list — the widget renders blank instead of reporting anything.
+		accountIDs = sc.GetAccountIds()
 	} else {
 		accountIDs = ctx.GetSecurityContext().ListAccountIds()
 	}

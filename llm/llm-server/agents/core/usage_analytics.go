@@ -63,7 +63,7 @@ const cacheSavingsExpr = `(CASE
 const usageBaseFrom = `
 	FROM llm_conversation_token_usage t
 	INNER JOIN llm_conversations c ON c.id = t.conversation_id
-	LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider`
+	LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider AND p.tenant_id IS NULL`
 
 // usageDimensions whitelists the dimensions a caller may group cost by.
 // Membership is the only thing taken from caller input; the SQL column /
@@ -172,9 +172,14 @@ func (f UsageMetricsFilter) buildToolWhere() (string, []any) {
 	if len(f.Sources) > 0 {
 		clauses = append(clauses, fmt.Sprintf("c.source = ANY($%d)", n))
 		args = append(args, pq.Array(f.Sources))
+		n++
 	} else {
 		// Hide the cost_optimizer's own runs by default (parity with buildWhere).
 		clauses = append(clauses, "c.source IS DISTINCT FROM 'Optimize'")
+	}
+	if f.UserID != "" {
+		clauses = append(clauses, fmt.Sprintf("c.user_id = $%d", n))
+		args = append(args, f.UserID)
 	}
 	return strings.Join(clauses, " AND "), args
 }
@@ -246,8 +251,9 @@ type UsageMetrics struct {
 	Breakdowns map[string][]UsageGroupRow `json:"breakdowns"`
 	TimeSeries *UsageTimeSeries           `json:"time_series,omitempty"`
 	// Storage is the cache-lifecycle storage cost (separate from token cost),
-	// prorated to the report window. Always populated for the account-wide
-	// aggregation; nil only on error-free empty-scope calls.
+	// prorated to the report window. Populated for the account-wide aggregation
+	// unless the caller opted out via skipStorage (GetUsageMetrics); nil only on
+	// error-free empty-scope calls or when skipped.
 	Storage *CacheStorage `json:"storage,omitempty"`
 }
 
@@ -325,8 +331,10 @@ func cacheHitPct(cached, input int64) float64 {
 // breakdown (<= 0 = unlimited, capped at maxUsageTopN). Pass several dims for the
 // Overview screen, one for a single cut, none for KPI cards only. When
 // granularity is non-empty (a member of usageGranularities) the over-time series
-// is computed too, in its own concurrent scan.
-func (chat *ConversationDao) GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string) (UsageMetrics, error) {
+// is computed too, in its own concurrent scan. skipStorage skips the (separate)
+// cache-lifecycle storage-cost scan for callers that only read totals/breakdowns —
+// e.g. a totals-only comparison window whose result.Storage would be discarded.
+func (chat *ConversationDao) GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error) {
 	result := UsageMetrics{Breakdowns: map[string][]UsageGroupRow{}}
 	if len(filter.AccountIDs) == 0 {
 		return result, nil
@@ -440,19 +448,22 @@ func (chat *ConversationDao) GetUsageMetrics(filter UsageMetricsFilter, dims []s
 	}
 
 	// Cache-lifecycle storage cost (prorated, by scope) — separate table/grain,
-	// own scan, concurrent. Account+date(+model/provider) scoped only.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		st, err := chat.runCacheStorageCost(filter)
-		if err != nil {
-			fail(err)
-			return
-		}
-		mu.Lock()
-		result.Storage = st
-		mu.Unlock()
-	}()
+	// own scan, concurrent. Account+date(+model/provider) scoped only. Skipped
+	// when the caller has no use for it (see skipStorage doc above).
+	if !skipStorage {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st, err := chat.runCacheStorageCost(filter)
+			if err != nil {
+				fail(err)
+				return
+			}
+			mu.Lock()
+			result.Storage = st
+			mu.Unlock()
+		}()
+	}
 
 	wg.Wait()
 	if firstErr != nil {
@@ -593,10 +604,24 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 func (chat *ConversationDao) breakdownForDimension(dim, where string, args []any, limit int) ([]UsageGroupRow, error) {
 	switch dim {
 	case "user":
+		// The synthetic system user has no row in `users`, so previously this
+		// breakdown just dropped its usage entirely (AND t.user_id <> systemUserID)
+		// — leaving the per-user rows short of the Overview totals by however much
+		// automation/background usage the tenant has (#35804). Keep those rows and
+		// label them like the audit log already does for the same sentinel
+		// (app/src/components/audits/index.jsx), rather than silently excluding them.
+		// t.user_id is nullable (background rows written via
+		// buildCodeAnalysisUsageRecord can carry an empty UserID with no
+		// systemUserID fallback), and dropping the old "<> systemUserID" filter
+		// means those NULL rows are no longer excluded upstream — the CASE alone
+		// would emit a NULL group_key and fail the scan into GroupKey's
+		// non-nullable string. Outer COALESCE(..., 'unknown') matches how every
+		// other dimension in this file (model/provider/source/agent/status,
+		// runGroupedUsageSets above) already guards a nullable group key.
 		return chat.runUsageBreakdown(
-			"COALESCE(u.display_name, u.username, t.user_id::text)",
+			fmt.Sprintf("COALESCE(CASE WHEN t.user_id = '%s' THEN 'SYSTEM' ELSE COALESCE(u.display_name, u.username, t.user_id::text) END, 'unknown')", systemUserID),
 			"LEFT JOIN users u ON u.id = t.user_id",
-			fmt.Sprintf(" AND t.user_id <> '%s'", systemUserID),
+			"",
 			where, args, limit)
 	case "account":
 		return chat.runUsageBreakdown(
@@ -661,7 +686,7 @@ func (chat *ConversationDao) runCacheStorageCost(filter UsageMetricsFilter) (*Ca
 			COUNT(*)                           AS entries
 		FROM llm_cache_lifecycle cl
 		LEFT JOIN llm_model_pricing p
-			ON p.model_name = cl.llm_model AND p.provider_name = cl.llm_provider
+			ON p.model_name = cl.llm_model AND p.provider_name = cl.llm_provider AND p.tenant_id IS NULL
 		WHERE %s
 		GROUP BY cl.scope
 		ORDER BY cost_usd DESC`, where)
@@ -819,7 +844,8 @@ type UsageMetricsRequest struct {
 	Statuses    []string `json:"statuses,omitempty"`
 	GroupBy     []string `json:"group_by,omitempty"` // model|provider|source|agent|status|user|account
 	TopN        int      `json:"top_n,omitempty"`
-	Granularity string   `json:"granularity,omitempty"` // day|week|month (empty = no over-time series)
+	Granularity string   `json:"granularity,omitempty"`  // day|week|month (empty = no over-time series)
+	SkipStorage bool     `json:"skip_storage,omitempty"` // true = skip the cache-storage scan (response.storage stays nil)
 }
 
 // UsageMetricsResponse echoes the resolved dimensions alongside the metrics.
@@ -867,7 +893,7 @@ func HandleUsageMetricsApi(ctx *security.RequestContext, request UsageMetricsReq
 		UserID:     request.UserId,
 	}
 
-	metrics, err := GetConversationDao().GetUsageMetrics(filter, request.GroupBy, request.TopN, request.Granularity)
+	metrics, err := GetConversationDao().GetUsageMetrics(filter, request.GroupBy, request.TopN, request.Granularity, request.SkipStorage)
 	if err != nil {
 		return UsageMetricsResponse{}, err
 	}
@@ -880,6 +906,12 @@ func HandleUsageMetricsApi(ctx *security.RequestContext, request UsageMetricsReq
 func resolveAccessibleAccounts(ctx *security.RequestContext, requested []string) ([]string, error) {
 	sec := ctx.GetSecurityContext()
 	if len(requested) == 0 {
+		// A tenant-global ai_conversations grant reads across the tenant;
+		// ListAccountIds() is the built-in account scope and is empty for a pure
+		// custom-role holder, which would silently produce an empty dashboard.
+		if sec.HasPermission("ai_conversations", "Read") || sec.HasPermission("ai_conversations", "Write") {
+			return sec.GetAccountIds(), nil
+		}
 		return sec.ListAccountIds(), nil
 	}
 	allowed := make([]string, 0, len(requested))
@@ -887,7 +919,7 @@ func resolveAccessibleAccounts(ctx *security.RequestContext, requested []string)
 		if id == "" {
 			continue
 		}
-		if !sec.HasAccountAccess(id, security.SecurityAccessTypeRead) {
+		if !sec.CanReadAccountData(id, "ai_conversations") {
 			return nil, fmt.Errorf("resolveAccessibleAccounts: forbidden account_id %s", id)
 		}
 		allowed = append(allowed, id)

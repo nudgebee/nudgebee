@@ -31,7 +31,7 @@ func TestGCPAgent_Execute(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
-			gcpAgent := newGcpAgent(tc.AccountId)
+			gcpAgent := GcpAgent{}
 			err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 			assert.NoError(t, err, "Cleanup failed for session %s", tc.SessionId)
 
@@ -69,7 +69,7 @@ func TestGCPAgent_ExecuteCrossAccount(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
-			gcpAgent := newGcpAgent(tc.AccountId)
+			gcpAgent := GcpAgent{}
 			err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 			assert.NoError(t, err, "Cleanup failed for session %s", tc.SessionId)
 

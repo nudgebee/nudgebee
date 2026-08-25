@@ -1,4 +1,4 @@
-import { Box, Typography, Divider } from '@mui/material';
+import { Box, Typography, Divider, Tooltip } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import LinkIcon from '@mui/icons-material/Link';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -19,7 +19,7 @@ import CustomDrawer from '@shared/CustomDrawer';
 import Currency from '@shared/format/Currency';
 import Datetime from '@shared/format/Datetime';
 import recommendationApi from '@api1/recommendation';
-import { daysSinceLong, getResourceDisplayName } from './utils';
+import { daysSinceLong, dismissalLabel, getResourceDisplayName } from './utils';
 import CommandExecutionHistory from '@components/cloudaccount/CommandExecutionHistory';
 
 // Severity → DS Label tone (mirrors the summary list mapping).
@@ -53,6 +53,7 @@ interface RecommendationDetailPanelProps {
   accounts?: Record<string, { name: string; cloud_provider: string; account_access?: string }>;
   initialTab?: number;
   onCreateTicket?: (rec: any) => void;
+  onDismiss?: (rec: any) => void;
   onResolve?: (rec: any) => void;
   onCopyCli?: (rec: any) => void;
   onAskNubi?: (rec: any) => void;
@@ -175,6 +176,7 @@ const RecommendationDetailPanel = ({
   accounts = {},
   initialTab = 0,
   onCreateTicket,
+  onDismiss,
   onResolve,
   onCopyCli,
   onAskNubi,
@@ -230,9 +232,19 @@ const RecommendationDetailPanel = ({
               <Label size='sm' tone={SEVERITY_TONE[severity] ?? 'neutral'}>
                 {severity}
               </Label>
-              <Label size='sm' tone={status === 'Open' ? 'info' : 'neutral'}>
-                {status}
-              </Label>
+              {status === 'Dismissed' ? (
+                <Tooltip title={rec.dismissed_reason ? `Reason: ${rec.dismissed_reason}` : ''} placement='bottom'>
+                  <Box component='span'>
+                    <Label size='sm' tone='neutral'>
+                      {dismissalLabel(rec.snoozed_until)}
+                    </Label>
+                  </Box>
+                </Tooltip>
+              ) : (
+                <Label size='sm' tone={status === 'Open' ? 'info' : 'neutral'}>
+                  {status}
+                </Label>
+              )}
               <Label size='sm' tone='neutral'>
                 {category.replace(/([A-Z])/g, ' $1').trim()}
               </Label>
@@ -441,7 +453,15 @@ const RecommendationDetailPanel = ({
           </Box>
         </Box>
 
-        <ActionBar fullRecommendation={rec} onCreateTicket={onCreateTicket} onResolve={onResolve} onCopyCli={onCopyCli} onAskNubi={onAskNubi} />
+        <ActionBar
+          fullRecommendation={rec}
+          provider={accounts[rec.account_id]?.cloud_provider}
+          onCreateTicket={onCreateTicket}
+          onDismiss={onDismiss}
+          onResolve={onResolve}
+          onCopyCli={onCopyCli}
+          onAskNubi={onAskNubi}
+        />
       </Box>
     </CustomDrawer>
   );

@@ -70,12 +70,17 @@ type Property struct {
 	// frontend as markdown inside an info-icon tooltip next to the field
 	// label. Use this for column lists, operator cheatsheets, or other
 	// reference material that would clutter Description.
-	Help                string               `json:"help,omitempty"`
-	Required            bool                 `json:"required"`
-	Default             any                  `json:"default,omitempty"`
-	IsEncrypted         bool                 `json:"is_encrypted,omitempty"`
-	Options             []string             `json:"options,omitempty"`
-	SubType             string               `json:"sub_type,omitempty"`
+	Help        string   `json:"help,omitempty"`
+	Required    bool     `json:"required"`
+	Default     any      `json:"default,omitempty"`
+	IsEncrypted bool     `json:"is_encrypted,omitempty"`
+	Options     []string `json:"options,omitempty"`
+	SubType     string   `json:"sub_type,omitempty"`
+	// SubTypes narrows an integration-backed dropdown (PropertyTypeTicket) to a
+	// set of integration types, for fields that accept more than one but not
+	// all of them — e.g. the incident-only tasks accept pagerduty/zenduty. The
+	// frontend filters the option list by it; SubType stays the single-value form.
+	SubTypes            []string             `json:"sub_types,omitempty"`
 	Title               string               `json:"title,omitempty"`
 	Order               int                  `json:"order,omitempty"`
 	Hidden              bool                 `json:"hidden,omitempty"`

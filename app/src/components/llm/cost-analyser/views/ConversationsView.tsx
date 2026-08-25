@@ -22,7 +22,7 @@ import { listConversationCosts } from '@api1/ai-cost';
 import ConversationsTable, { HEADER_TO_KEY, type ConvSortKey, type ConvView } from '../components/ConversationsTable';
 import { downloadFile, runsToCsv } from '../format';
 import { rowToRun } from '../adapt';
-import { useConversationList, type ConversationSortBy } from '../useCostData';
+import { toFilterRequest, useConversationList, type ConversationSortBy } from '../useCostData';
 import type { CostFilters } from '../types';
 
 /** Table sort key → the `sort_by` value the list action whitelists. */
@@ -55,6 +55,32 @@ interface ConversationsViewProps {
   onSelectRun: (sessionId: string, accountId?: string) => void;
   /** Open the detail modal on the Optimize tab and analyze (cached or fresh). */
   onAnalyse?: (sessionId: string, accountId?: string) => void;
+}
+
+/**
+ * Encodes the export's scope into its filename so the file self-documents what
+ * it is: which account, which date range, and that it's the top-N-by-cost slice
+ * of a larger set (issue #35732 — the old fixed name recorded none of this).
+ */
+function exportFilename(
+  accountLabel: string | undefined,
+  startDate: string | undefined,
+  endDate: string | undefined,
+  shown: number,
+  total: number
+): string {
+  const slug = (s: string) =>
+    s
+      .replace(/[^a-z0-9]+/gi, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+  const parts = ['ai-cost-conversations'];
+  // Skip an all-punctuation account label — its slug is empty and would leave a "__".
+  const accountSlug = accountLabel ? slug(accountLabel) : '';
+  if (accountSlug) parts.push(accountSlug);
+  if (startDate && endDate) parts.push(`${startDate}_to_${endDate}`);
+  parts.push(total > shown ? `top${shown}-of-${total}` : `${shown}-rows`);
+  return `${parts.join('_')}.csv`;
 }
 
 export function ConversationsView({ accountId, filters, listCap, accountNameById, onSelectRun, onAnalyse }: ConversationsViewProps) {
@@ -113,22 +139,20 @@ export function ConversationsView({ accountId, filters, listCap, accountNameById
   const handleExport = async () => {
     setExporting(true);
     try {
+      // Same filter mapping the list query uses, so a new CostFilters field
+      // reaches the export without a second place to remember.
       const cl = await listConversationCosts({
-        accountIds: accountId ? [accountId] : [],
-        startDate: `${filters.startDate}T00:00:00Z`,
-        endDate: `${filters.endDate}T23:59:59Z`,
-        sources: filters.sources ?? [],
-        models: filters.models,
-        providers: filters.providers,
-        agents: filters.agents ?? [],
-        statuses: filters.statuses,
-        userId: filters.userId || undefined,
+        ...toFilterRequest(accountId, filters),
         sortBy,
         sortDir,
         limit: listCap,
         offset: 0,
       });
-      downloadFile('ai-cost-conversations.csv', runsToCsv((cl?.rows ?? []).map(rowToRun)));
+      const exported = (cl?.rows ?? []).map(rowToRun);
+      // Filename records the export's scope — account, date range, and that it is
+      // the top-N slice of the filter-wide total (issue #35732).
+      const accountLabel = accountId ? accountNameById?.[accountId] : undefined;
+      downloadFile(exportFilename(accountLabel, filters.startDate, filters.endDate, exported.length, total), runsToCsv(exported, accountNameById));
     } finally {
       setExporting(false);
     }

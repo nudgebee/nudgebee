@@ -6,25 +6,24 @@ import apiUser from '@api1/user';
 import apiWorkflow from '@api1/workflow';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import { Button as DsButton } from '@ui/Button';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
-import { getDateDiff } from '@lib/datetime';
 import IntegrationDynamicFormModal from '@components/integrations/modal/IntegrationDynamicFormModal';
 import AddLLMConfigModal from '@components/llm/AddLLMConfigModal';
 import VmAgentCredentialsDialog from '@components/integrations/modal/VmAgentCredentialsDialog';
 import { Label } from '@ui/Label';
-import NDialog from '@shared/modal/NDialog';
+import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
-import CustomTable from '@shared/tables/CustomTable2';
-import { hasWriteAccess } from '@lib/auth';
+import CustomTable from '@shared/tables/CustomTable';
+import { canManage } from '@lib/auth';
 import { action } from 'src/utils/actionStyles';
-import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
+import { ds } from 'src/utils/colors';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import { Grid, Stack, Typography } from '@mui/material';
+import { Box, Stack, Typography } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
+import { Chip } from '@ui/Chip';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState } from 'react';
@@ -39,6 +38,9 @@ const getDisplayName = (name) => {
   }
   if (name === 'ssh') {
     return 'SSH';
+  }
+  if (name === 'llm_gateway') {
+    return 'LLM Gateway';
   }
   return snakeToTitleCase(name);
 };
@@ -87,7 +89,18 @@ const integrationConnectionKey = {
   argocd: 'server',
 };
 
+// LLM Gateway rows have no single fixed connection key — surface the provider (and the
+// endpoint for a custom one, since a well-known provider has no base_url).
+const LLM_GATEWAY_PROVIDER_LABELS = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini', custom: 'Custom' };
+
 const getConnectionInfo = (integrationName, configValues) => {
+  if (integrationName === 'llm_gateway') {
+    const val = (name) => configValues?.find((c) => c.name === name)?.value || '';
+    const provider = val('provider');
+    if (!provider) return '-';
+    if (provider === 'custom') return val('base_url') || 'Custom';
+    return LLM_GATEWAY_PROVIDER_LABELS[provider] || snakeToTitleCase(provider);
+  }
   const key = integrationConnectionKey[integrationName];
   if (!key || !configValues) return '-';
   const entry = configValues.find((c) => c.name === key);
@@ -117,7 +130,6 @@ const ListIntegrations = ({ integrationName }) => {
     'gcp_monitoring_webhook',
     'dynatrace_webhook',
     'solarwinds_webhook',
-    'openobserve_webhook',
     'elasticsearch_webhook',
   ];
   const integrationWebhooks = [
@@ -133,7 +145,6 @@ const ListIntegrations = ({ integrationName }) => {
     'dynatrace_webhook',
     'solarwinds',
     'solarwinds_webhook',
-    'openobserve_webhook',
     'elasticsearch_webhook',
   ];
   const agentManagedIntegrations = ['ES', 'loki', 'prometheus', 'otel_clickhouse', 'jaeger'];
@@ -142,9 +153,14 @@ const ListIntegrations = ({ integrationName }) => {
     integrationName === 'vm_agent' ||
     integrationName?.endsWith('_webhook') ||
     integrationWebhooks.includes(integrationName);
+  // This page passes the LLM type as 'LLM' while other types are lowercase.
+  const isLLMIntegration = String(integrationName || '').toLowerCase() === 'llm';
+  // LLM Gateway is tenant-scoped (no account concept) — it drops the Account column.
+  const isLLMGateway = integrationName === 'llm_gateway';
+  const accountCols = isLLMGateway ? [] : ['Account'];
   const headers = hideConnectionInfo
-    ? ['Name', 'Account', 'Created By', 'Updated By', 'Status', '']
-    : ['Name', 'Connection Info', 'Account', 'Created By', 'Updated By', 'Status', ''];
+    ? ['Name', ...accountCols, 'Created By', 'Updated By', 'Status', '']
+    : ['Name', 'Connection Info', ...accountCols, 'Created By', 'Updated By', 'Status', ''];
 
   const { data: session } = useSession();
   const router = useRouter();
@@ -222,8 +238,22 @@ const ListIntegrations = ({ integrationName }) => {
     }
   };
 
+  const linkedAccounts = (item) => (Array.isArray(item?.integrations_cloud_accounts) ? item.integrations_cloud_accounts : []);
+
+  const defaultAccountCount = (item) => linkedAccounts(item).filter((a) => a?.default_llm_provider === true).length;
+
+  const isDefaultForAllAccounts = (item) => {
+    const accounts = linkedAccounts(item);
+    return accounts.length > 0 && defaultAccountCount(item) === accounts.length;
+  };
+
   const getMenuItems = (item) => {
-    if (!hasWriteAccess()) return [];
+    // Same gate as the Add-integration button below (canManage('integrations',
+    // 'Write')). It used to be a bare hasWriteAccess(), which only consults the
+    // built-in roles: a pure custom-role holder with integrations:Write could
+    // add an integration but got an empty row menu — no Edit, Enable/Disable or
+    // Delete on the thing they had just created.
+    if (!canManage('integrations', 'Write')) return [];
     const status = item.status || 'enabled';
     const items = [];
     if (item?.source === 'agent' && agentManagedIntegrations.includes(integrationName)) {
@@ -255,6 +285,15 @@ const ListIntegrations = ({ integrationName }) => {
       }
       if (integrationName === 'vm_agent' && status !== 'disabled') {
         items.push({ label: 'Regenerate Token', id: 'regenerate' });
+      }
+      // Setting the default through Edit is not a real option: Save is gated on
+      // a passing Test Connection, so it costs a live provider call, and a
+      // config whose key has been rotated could never be made default at all.
+      // Offered only where it can take effect — a disabled config is skipped by
+      // resolution — and hidden once this config already serves every account
+      // it is linked to.
+      if (isLLMIntegration && status !== 'disabled' && !isDefaultForAllAccounts(item)) {
+        items.push({ label: 'Set as default', id: 'set-default' });
       }
     }
     const isItemTestable = (() => {
@@ -291,6 +330,44 @@ const ListIntegrations = ({ integrationName }) => {
     }
   };
 
+  // Sends ONLY the default flag. The save loop upserts the values it is given
+  // and never deletes ones it isn't, so omitting provider/model/credentials
+  // leaves them untouched — and avoids the trap that the list response redacts
+  // secrets to '', which the LLM save path reads as "delete this row".
+  // skip_validation is set for the same reason: there are no field values here
+  // to validate. The backend clears the previous default itself.
+  const setAsDefaultLLM = async (item) => {
+    const accountIds = linkedAccounts(item)
+      .map((a) => a?.cloud_account_id)
+      .filter(Boolean);
+    if (accountIds.length === 0) {
+      snackbar.error('This LLM config is not linked to an account, so it cannot be made default');
+      return;
+    }
+    try {
+      const response = await apiIntegrations.addIntegrations({
+        integration_id: item.id,
+        integration_name: 'llm',
+        integration_config_name: item.name,
+        account_ids: accountIds,
+        source: item?.source || 'user',
+        skip_validation: true,
+        integration_config_values: [{ name: 'default_llm_provider', value: 'true' }],
+      });
+      const gqlErrors = response?.data?.errors;
+      if (Array.isArray(gqlErrors) && gqlErrors.length > 0) {
+        snackbar.error(gqlErrors[0]?.message || 'Failed to set default LLM provider');
+        return;
+      }
+      snackbar.success(`"${item.name}" is now the default LLM provider`);
+      listIntegrationConfiguration();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('ListIntegrations: set default threw', err);
+      snackbar.error('Failed to set default LLM provider');
+    }
+  };
+
   const onMenuClick = async (menuItem, item) => {
     if (menuItem.id === 'edit') {
       // AddLLMConfigModal consumes the raw integration row directly; the
@@ -312,6 +389,8 @@ const ListIntegrations = ({ integrationName }) => {
         });
       }
       setOpenModal(true);
+    } else if (menuItem.id === 'set-default') {
+      await setAsDefaultLLM(item);
     } else if (menuItem.id === 'delete' || menuItem.id === 'disable') {
       if (integrationName === 'workflow_webhook') {
         const workflow = await findAssociatedWorkflowForWebhook(item);
@@ -356,51 +435,6 @@ const ListIntegrations = ({ integrationName }) => {
     listIntegrationConfiguration();
   }, [recordsPerPage, currentPage, selectedNameFilter, selectedStatusFilter, integrationName]);
 
-  const getAgentConnectionInfo = (item) => {
-    const accountId = item?.integrations_cloud_accounts?.[0]?.cloud_account_id;
-    const health = accountId ? agentHealthMap[accountId] : null;
-    if (!health) {
-      return { text: '-' };
-    }
-    const isConnected = health.status === 'CONNECTED';
-    const statusColor = isConnected ? '#12B76A' : '#F04438';
-    let timeAgo = '';
-    if (health.last_connected_at) {
-      const diff = getDateDiff(health.last_connected_at);
-      if (diff.days > 0) {
-        timeAgo = `${diff.days}d ago`;
-      } else if (diff.hours > 0) {
-        timeAgo = `${diff.hours}h ago`;
-      } else if (diff.minutes > 0) {
-        timeAgo = `${diff.minutes}m ago`;
-      } else {
-        timeAgo = 'just now';
-      }
-    }
-    return {
-      component: (
-        <Stack
-          direction='row'
-          alignItems='center'
-          spacing={0.5}
-          onClick={() => (window.location.href = `/agentHealth?accountId=${accountId}#proxy-agent`)}
-          sx={{ cursor: 'pointer', '&:hover .details-icon': { opacity: 1 } }}
-        >
-          <FiberManualRecordIcon sx={{ fontSize: 8, color: statusColor }} />
-          <Typography component='span' sx={{ fontSize: 'var(--ds-text-body)', color: statusColor, fontWeight: 'var(--ds-font-weight-medium)' }}>
-            {isConnected ? 'Connected' : 'Disconnected'}
-          </Typography>
-          {timeAgo && (
-            <Typography component='span' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>
-              &middot; {timeAgo}
-            </Typography>
-          )}
-          <OpenInNewIcon className='details-icon' sx={{ fontSize: 14, color: 'var(--ds-gray-700)', opacity: 0, transition: 'opacity 0.2s' }} />
-        </Stack>
-      ),
-    };
-  };
-
   const parseIntegrationItem = (item) => {
     return {
       ...item,
@@ -409,14 +443,67 @@ const ListIntegrations = ({ integrationName }) => {
     };
   };
 
+  const accountNamesText = (item) => {
+    const names = linkedAccounts(item)
+      .map((d) => d?.cloud_account_name)
+      .filter(Boolean);
+    return names.join(', ') || '-';
+  };
+
+  // The marker sits on the config's own name rather than in a column, because
+  // it is a property of this config, not of any one account it serves.
+  //
+  // The UI applies one default to every account a config is linked to, so the
+  // normal state is all-or-nothing and a bare chip says it. A mixed state can
+  // only arrive through the API (the write path accepts a per-account map); it
+  // shows the count rather than being rounded to a plain "Default", which would
+  // misstate the accounts it excludes.
+  const nameCell = (item) => {
+    const linked = linkedAccounts(item);
+    const marked = linked.filter((a) => a?.default_llm_provider === true).length;
+    if (!isLLMIntegration || marked === 0) {
+      return { text: item.name };
+    }
+    return {
+      component: (
+        <Stack direction='row' spacing={0.5} alignItems='center' useFlexGap flexWrap='wrap'>
+          <span>{item.name}</span>
+          <Chip size='sm' variant='tag' tone='success'>
+            {marked === linked.length ? 'Default' : `Default (${marked} of ${linked.length})`}
+          </Chip>
+          <Tooltip title='Accounts added here use this provider by default.'>
+            <InfoOutlinedIcon sx={{ fontSize: ds.text.body, color: ds.gray[500], cursor: 'help' }} />
+          </Tooltip>
+        </Stack>
+      ),
+    };
+  };
+
+  // LLM only: other integration types are one-per-account, so they keep the
+  // plain text list and gain nothing from chips.
+  const accountChips = (item) => {
+    const linked = linkedAccounts(item).filter((a) => a?.cloud_account_name);
+    if (linked.length === 0) {
+      return <span>-</span>;
+    }
+    return (
+      <Stack direction='row' spacing={0.5} useFlexGap flexWrap='wrap'>
+        {linked.map((acc, i) => (
+          <Chip key={`${acc.cloud_account_name}-${i}`} size='sm' variant='tag' tone='neutral'>
+            {acc.cloud_account_name}
+          </Chip>
+        ))}
+      </Stack>
+    );
+  };
+
   const buildIntegrationRow = (item) => {
-    const connectionInfoCell =
-      integrationName === 'vm_agent'
-        ? getAgentConnectionInfo(item)
-        : { text: getConnectionInfo(integrationName === 'postgres' ? 'postgresql' : integrationName, item.integration_config_values) };
+    const connectionInfoCell = {
+      text: getConnectionInfo(integrationName === 'postgres' ? 'postgresql' : integrationName, item.integration_config_values),
+    };
     const baseRow = [
-      { text: item.name },
-      { text: item?.integrations_cloud_accounts?.map((d) => d?.cloud_account_name)?.join(', ') || '-' },
+      nameCell(item),
+      ...(isLLMGateway ? [] : [isLLMIntegration ? { component: accountChips(item) } : { text: accountNamesText(item) }]),
       { text: item?.source == 'agent' ? 'agent' : item?.created_by_display_name || '-' },
       { text: item?.source == 'agent' ? 'agent' : item?.updated_by_display_name || '-' },
       { component: <Label text={item.status || '-'} /> },
@@ -606,184 +693,172 @@ const ListIntegrations = ({ integrationName }) => {
         accessSecret={regeneratedCredentials?.accessSecret}
       />
       {integrationName === 'solarwinds' && (
-        <NDialog
+        <Modal
           handleClose={() => setOpenSetupGuide(false)}
-          buttonText='Close'
-          dialogTitle={
+          title={
             <Typography component='h2' variant='h6' fontWeight={600}>
               SolarWinds Observability Setup Guide
             </Typography>
           }
-          dialogContent={
-            <Stack spacing={2} sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
-              <Typography variant='subtitle2' fontWeight={600}>
-                Step 1: Choose your Data Center Region
-              </Typography>
-              <Typography variant='body2' component='div'>
-                Your region is visible in the URL when you log in to SolarWinds Observability (e.g. <code>my.ap-01.cloud.solarwinds.com</code>).
-                Available regions:
-                <ul style={{ paddingLeft: '18px', marginTop: '6px' }}>
-                  <li>
-                    <code>na-01</code> — North America 1
-                  </li>
-                  <li>
-                    <code>na-02</code> — North America 2
-                  </li>
-                  <li>
-                    <code>eu-01</code> — Europe 1
-                  </li>
-                  <li>
-                    <code>ap-01</code> — Asia Pacific 1
-                  </li>
-                </ul>
-              </Typography>
-              <Typography variant='subtitle2' fontWeight={600}>
-                Step 2: Create an API Access Token
-              </Typography>
-              <Typography variant='body2' component='div'>
-                <ol style={{ paddingLeft: '18px', marginTop: '6px' }}>
-                  <li>Log in to SolarWinds Observability</li>
-                  <li>
-                    Go to <strong>Settings → API Tokens</strong>
-                  </li>
-                  <li>
-                    Click <strong>Add Token</strong>, select the <strong>API Access</strong> scope (not Ingestion)
-                  </li>
-                  <li>Copy the generated token value</li>
-                </ol>
-              </Typography>
-              <Typography variant='body2' sx={{ color: 'text.secondary' }}>
-                Enter the <strong>Data Center Region</strong> and <strong>API Access Token</strong> in the form above to connect Nudgebee to your
-                SolarWinds account.
-              </Typography>
-            </Stack>
-          }
           open={openSetupGuide}
-          additionalComponent={undefined}
-          handleSubmit={() => setOpenSetupGuide(false)}
-        />
+          width='md'
+          confirmText='Close'
+          onConfirm={() => setOpenSetupGuide(false)}
+          isCancelRequired={false}
+        >
+          <Stack spacing={ds.space[4]} sx={{ fontSize: ds.text.bodyLg }}>
+            <Typography variant='subtitle2' fontWeight={600}>
+              Step 1: Choose your Data Center Region
+            </Typography>
+            <Typography variant='body2' component='div'>
+              Your region is visible in the URL when you log in to SolarWinds Observability (e.g. <code>my.ap-01.cloud.solarwinds.com</code>).
+              Available regions:
+              <ul style={{ paddingLeft: ds.space[4], marginTop: ds.space[1] }}>
+                <li>
+                  <code>na-01</code> — North America 1
+                </li>
+                <li>
+                  <code>na-02</code> — North America 2
+                </li>
+                <li>
+                  <code>eu-01</code> — Europe 1
+                </li>
+                <li>
+                  <code>ap-01</code> — Asia Pacific 1
+                </li>
+              </ul>
+            </Typography>
+            <Typography variant='subtitle2' fontWeight={600}>
+              Step 2: Create an API Access Token
+            </Typography>
+            <Typography variant='body2' component='div'>
+              <ol style={{ paddingLeft: ds.space[4], marginTop: ds.space[1] }}>
+                <li>Log in to SolarWinds Observability</li>
+                <li>
+                  Go to <strong>Settings → API Tokens</strong>
+                </li>
+                <li>
+                  Click <strong>Add Token</strong>, select the <strong>API Access</strong> scope (not Ingestion)
+                </li>
+                <li>Copy the generated token value</li>
+              </ol>
+            </Typography>
+            <Typography variant='body2' sx={{ color: 'text.secondary' }}>
+              Enter the <strong>Data Center Region</strong> and <strong>API Access Token</strong> in the form above to connect Nudgebee to your
+              SolarWinds account.
+            </Typography>
+          </Stack>
+        </Modal>
       )}
       {integrationName === 'splunk_observability_platform' && (
-        <NDialog
+        <Modal
           handleClose={() => setOpenSetupGuide(false)}
-          buttonText='Close'
-          dialogTitle={
+          title={
             <Typography component='h2' variant='h6' fontWeight={600}>
               Splunk Observability Cloud Setup Guide
             </Typography>
           }
-          dialogContent={
-            <Stack spacing={2} sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
-              <Typography variant='subtitle2' fontWeight={600}>
-                Step 1: Find your Realm
-              </Typography>
-              <Typography variant='body2' component='div'>
-                The realm identifies your Splunk Observability Cloud region (e.g. <code>us1</code>, <code>us0</code>, <code>eu0</code>).
-                <ol style={{ paddingLeft: '18px', marginTop: '6px' }}>
-                  <li>Log in to Splunk Observability Cloud</li>
-                  <li>
-                    Go to <strong>Settings → Organizations</strong> and note the <strong>Realm</strong> value
-                  </li>
-                </ol>
-              </Typography>
-              <Typography variant='subtitle2' fontWeight={600}>
-                Step 2: Create an Organization Access Token
-              </Typography>
-              <Typography variant='body2' component='div'>
-                <ol style={{ paddingLeft: '18px', marginTop: '6px' }}>
-                  <li>
-                    Go to <strong>Settings → Access Tokens</strong>
-                  </li>
-                  <li>
-                    Click <strong>New Token</strong>, give it a name, and select the <strong>API</strong> authorization scope
-                  </li>
-                  <li>Copy the generated token value</li>
-                </ol>
-              </Typography>
-              <Typography variant='body2' sx={{ color: 'text.secondary' }}>
-                Enter the <strong>Realm</strong> and <strong>Access Token</strong> in the form above to connect Nudgebee to your Splunk Observability
-                Cloud account.
-              </Typography>
-            </Stack>
-          }
           open={openSetupGuide}
-          additionalComponent={undefined}
-          handleSubmit={() => setOpenSetupGuide(false)}
-        />
+          width='md'
+          confirmText='Close'
+          onConfirm={() => setOpenSetupGuide(false)}
+          isCancelRequired={false}
+        >
+          <Stack spacing={ds.space[4]} sx={{ fontSize: ds.text.bodyLg }}>
+            <Typography variant='subtitle2' fontWeight={600}>
+              Step 1: Find your Realm
+            </Typography>
+            <Typography variant='body2' component='div'>
+              The realm identifies your Splunk Observability Cloud region (e.g. <code>us1</code>, <code>us0</code>, <code>eu0</code>).
+              <ol style={{ paddingLeft: ds.space[4], marginTop: ds.space[1] }}>
+                <li>Log in to Splunk Observability Cloud</li>
+                <li>
+                  Go to <strong>Settings → Organizations</strong> and note the <strong>Realm</strong> value
+                </li>
+              </ol>
+            </Typography>
+            <Typography variant='subtitle2' fontWeight={600}>
+              Step 2: Create an Organization Access Token
+            </Typography>
+            <Typography variant='body2' component='div'>
+              <ol style={{ paddingLeft: ds.space[4], marginTop: ds.space[1] }}>
+                <li>
+                  Go to <strong>Settings → Access Tokens</strong>
+                </li>
+                <li>
+                  Click <strong>New Token</strong>, give it a name, and select the <strong>API</strong> authorization scope
+                </li>
+                <li>Copy the generated token value</li>
+              </ol>
+            </Typography>
+            <Typography variant='body2' sx={{ color: 'text.secondary' }}>
+              Enter the <strong>Realm</strong> and <strong>Access Token</strong> in the form above to connect Nudgebee to your Splunk Observability
+              Cloud account.
+            </Typography>
+          </Stack>
+        </Modal>
       )}
-      <NDialog
-        handleClose={handleConfirmationClose}
-        buttonText={modalAction ? snakeToTitleCase(modalAction) : 'Submit'}
-        submitTone={modalAction === 'delete' || modalAction === 'disable' ? 'danger' : 'primary'}
-        dialogTitle={
+      <Modal
+        handleClose={isActionLoading ? () => {} : handleConfirmationClose}
+        title={
           <Typography component='h2' variant='h6' fontWeight={600}>
             {`${snakeToTitleCase(modalAction || '')} ${getDisplayName(integrationName)} Integration: ${selectedIntegration.name}`}
           </Typography>
         }
-        dialogContent={
+        open={!!modalAction}
+        width='md'
+        loader={isActionLoading}
+        actionButtons={
           <>
-            {modalAction === 'regenerate'
-              ? 'Are you sure you want to regenerate the token? Existing agent connections will stop working until updated with new credentials.'
-              : `Are you sure you want to ${modalAction} this "${selectedIntegration.name}" - "${getDisplayName(integrationName)}" integration?`}
-            {(modalAction === 'delete' || modalAction === 'disable') && integrationsWithCautionMessage.includes(integrationName) ? (
-              <Grid
-                container
-                mt={2}
-                mb={1}
-                mr={1}
-                sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                }}
-              >
-                <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
-                  Caution:
-                </Typography>
-                <Grid
-                  container
-                  borderRadius={2}
-                  p={2}
-                  sx={{
-                    marginTop: 'var(--ds-space-2)',
-                    display: 'flex',
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    border: '1px solid var(--ds-gray-300)',
-                  }}
-                >
-                  <Grid
-                    item
-                    xs={11}
-                    sx={{
-                      overflowY: 'auto',
-                      maxHeight: '100px',
-                      display: 'flex',
-                    }}
-                  >
-                    <span style={{ textAlign: 'justify' }}>
-                      {`Deleting the ${snakeToTitleCase(
-                        integrationName
-                      )} subscription token may disrupt active integrations and prevent critical alerts from being delivered.
-                If this token is configured in any application, it will no longer receive event notifications from ${snakeToTitleCase(
-                  integrationName
-                )}. Ensure that the token
-                is not in use before proceeding with deletion. 🚨`}
-                    </span>
-                  </Grid>
-                </Grid>
-              </Grid>
-            ) : // --- CHANGED ---
-            modalAction === 'delete' && integrationName === 'confluence' ? (
-              <span>{`Deleting the confluence integration will lead to loss of documentation access. 🚨`}</span>
-            ) : null}
-            {/* --- END CHANGE --- */}
+            <DsButton id='integration-action-cancel-btn' tone='secondary' onClick={handleConfirmationClose} disabled={isActionLoading}>
+              Cancel
+            </DsButton>
+            <DsButton
+              tone={modalAction === 'delete' || modalAction === 'disable' ? 'danger' : 'primary'}
+              loading={isActionLoading}
+              onClick={handleConfirmationSubmit}
+            >
+              {modalAction ? snakeToTitleCase(modalAction) : 'Submit'}
+            </DsButton>
           </>
         }
-        open={!!modalAction} // Opens for 'delete', 'disable', or 'enable'
-        additionalComponent={undefined}
-        handleSubmit={handleConfirmationSubmit}
-        loading={isActionLoading}
-      />
+      >
+        <>
+          {modalAction === 'regenerate'
+            ? 'Are you sure you want to regenerate the token? Existing agent connections will stop working until updated with new credentials.'
+            : `Are you sure you want to ${modalAction} this "${selectedIntegration.name}" - "${getDisplayName(integrationName)}" integration?`}
+          {(modalAction === 'delete' || modalAction === 'disable') && integrationsWithCautionMessage.includes(integrationName) ? (
+            <Box sx={{ mt: ds.space[4], mb: ds.space[2], display: 'flex', flexDirection: 'column' }}>
+              <Typography variant='subtitle1' sx={{ fontSize: ds.text.bodyLg }}>
+                Caution:
+              </Typography>
+              <Box
+                sx={{
+                  mt: ds.space[4],
+                  mb: ds.space[6],
+                  p: ds.space[4],
+                  borderRadius: ds.radius.lg,
+                  border: `1px solid ${ds.gray[300]}`,
+                  overflowY: 'auto',
+                  maxHeight: ds.space.mul(1, 25),
+                }}
+              >
+                <Typography sx={{ textAlign: 'justify' }}>
+                  {`Deleting the ${snakeToTitleCase(
+                    integrationName
+                  )} subscription token may disrupt active integrations and prevent critical alerts from being delivered. If this token is configured in any application, it will no longer receive event notifications from ${snakeToTitleCase(
+                    integrationName
+                  )}. Ensure that the token is not in use before proceeding with deletion. 🚨`}
+                </Typography>
+              </Box>
+            </Box>
+          ) : // --- CHANGED ---
+          modalAction === 'delete' && integrationName === 'confluence' ? (
+            <span>{` Deleting the confluence integration will lead to loss of documentation access. 🚨`}</span>
+          ) : null}
+          {/* --- END CHANGE --- */}
+        </>
+      </Modal>
 
       {integrationName === 'LLM' ? (
         // LLM uses the custom modal (tier overrides + per-agent overrides +
@@ -823,7 +898,7 @@ const ListIntegrations = ({ integrationName }) => {
         <ListingLayout.Toolbar
           title={
             <Stack direction='row' alignItems='center' spacing={1}>
-              <Typography color={'var(--ds-gray-700)'} fontSize='16px' fontWeight={600}>
+              <Typography color={ds.gray[700]} fontSize={ds.text.title} fontWeight={600}>
                 {getDisplayName(integrationName)}
               </Typography>
               <CloudProviderIcon cloud_provider={integrationName} />
@@ -834,7 +909,7 @@ const ListIntegrations = ({ integrationName }) => {
                       tone='ghost'
                       composition='icon-only'
                       size='xs'
-                      icon={<InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)' }} />}
+                      icon={<InfoOutlinedIcon sx={{ fontSize: ds.text.title }} />}
                       aria-label='View Splunk Observability Cloud setup guide'
                       onClick={() => setOpenSetupGuide(true)}
                     />
@@ -848,7 +923,7 @@ const ListIntegrations = ({ integrationName }) => {
                       tone='ghost'
                       composition='icon-only'
                       size='xs'
-                      icon={<InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)' }} />}
+                      icon={<InfoOutlinedIcon sx={{ fontSize: ds.text.title }} />}
                       aria-label='View SolarWinds Observability setup guide'
                       onClick={() => setOpenSetupGuide(true)}
                     />
@@ -858,7 +933,10 @@ const ListIntegrations = ({ integrationName }) => {
             </Stack>
           }
           actions={
-            integrationName != 'loki' && integrationName != 'prometheus' && integrationName != 'otel_clickhouse' && hasWriteAccess() ? (
+            integrationName != 'loki' &&
+            integrationName != 'prometheus' &&
+            integrationName != 'otel_clickhouse' &&
+            canManage('integrations', 'Write') ? (
               <DsButton
                 id={`add-${toKebabCase(integrationName)}-account-btn`}
                 tone='primary'
@@ -890,7 +968,7 @@ const ListIntegrations = ({ integrationName }) => {
               />
             );
           })()}
-          <CustomSearch
+          <SearchInput
             id={`${integrationName}-name-search`}
             value={nameInput}
             onChange={(next) => {

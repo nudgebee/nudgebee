@@ -359,18 +359,18 @@ func ParseSourceMap(src map[string]any) (OutputLog, bool) {
 		return OutputLog{}, false
 	}
 
-	// Message: ECS/Filebeat/Elastic Agent carry it at top-level "message";
-	// Fluent-Bit carries it at top-level "log"; OTel-native docs carry it at
-	// body.text — or a bare string "body".
+	// Message: ECS docs (Beats / Elastic Agent / Logstash) carry it at top-level
+	// "message" and use "log" for an object ({level, file, offset}), so the "log"
+	// assertion fails there; Fluent-Bit carries the line at top-level "log";
+	// OTel-native docs (data stream logs-generic.otel-default) carry it at
+	// body.text — or a bare string "body". Try all three so no shipper's hits are
+	// dropped.
 	msg, ok := src["message"].(string)
 	if !ok || strings.TrimSpace(msg) == "" {
 		msg, ok = src["log"].(string)
 	}
 	if !ok || strings.TrimSpace(msg) == "" {
 		msg = otelBodyText(src)
-	}
-	if strings.TrimSpace(msg) == "" {
-		msg, _ = src["message"].(string)
 	}
 	// Still nothing recognisable as a line: the document is a real event that
 	// simply has no message field (Packetbeat network_traffic.*, and other Elastic
@@ -1314,6 +1314,12 @@ func pplFormatValue(val any) string {
 	switch v := val.(type) {
 	case string:
 		return "'" + pplEscapeString(v) + "'"
+	// Integers render bare and exactly. float64 cannot hold every int64 (only below
+	// 2^53), so epoch-nanosecond values would lose precision if routed through it.
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case int:
+		return fmt.Sprintf("%d", v)
 	case float64:
 		if v == float64(int64(v)) {
 			return fmt.Sprintf("%d", int64(v))

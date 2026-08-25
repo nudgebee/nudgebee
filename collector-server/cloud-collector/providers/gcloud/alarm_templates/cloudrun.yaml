@@ -1,0 +1,62 @@
+# GCP Cloud Run Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for serverless workload monitoring
+service_name: "Cloud Run"
+
+templates:
+  - name: "gcp_run_request_latency_alarm_missing"
+    alarm_type: "LATENCY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "High request latency degrades user experience and can indicate resource starvation, cold starts, or slow downstream dependencies. Create an alert policy on p99 request latency."
+    configuration:
+      namespace: "run.googleapis.com"
+      metric_name: "RequestLatency"
+      metric_type_filter: "run.googleapis.com/request_latencies"
+      resource_type: "cloud_run_revision"
+      statistic: "ALIGN_PERCENTILE_99"
+      period: 300  # 5 minutes
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 1000.0  # p99 latency in ms
+
+  - name: "gcp_run_instance_count_ceiling_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "When the number of running container instances approaches the configured max_instances ceiling, Cloud Run can no longer scale out and requests start queuing or failing. Alert before the ceiling is hit."
+    configuration:
+      namespace: "run.googleapis.com"
+      metric_name: "InstanceCount"
+      metric_type_filter: "run.googleapis.com/container/instance_count"
+      resource_type: "cloud_run_revision"
+      statistic: "ALIGN_MAX"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MAX"
+    threshold_rules:
+      default: 80.0            # fallback when max_instances is unknown
+      default_percentage: 0.80 # threshold = 80% of the service's own max_instances
+
+  - name: "gcp_run_memory_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Container instances that run close to their memory limit are killed with out-of-memory errors, dropping in-flight requests. Create an alert policy on p99 container memory utilization."
+    configuration:
+      namespace: "run.googleapis.com"
+      metric_name: "MemoryUtilization"
+      metric_type_filter: "run.googleapis.com/container/memory/utilizations"
+      resource_type: "cloud_run_revision"
+      statistic: "ALIGN_PERCENTILE_99"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.85  # 85% of the container memory limit

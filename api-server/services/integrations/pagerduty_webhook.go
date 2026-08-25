@@ -834,6 +834,13 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	// empty, so a subject recovered from labels always wins.
 	applyGCPMonitoringSubject(&parsedPayload)
 
+	// Deterministic last resort before the LLM: scan the title for a bare pod
+	// name (covers titles with no "pod=" structure for reNamespace/rePod to
+	// anchor on, e.g. Alertmanager's default title).
+	if parsedPayload.EventSubjectName == "" {
+		core.ResolveSubjectFromTitlePodName(sc, &parsedPayload, accountId)
+	}
+
 	// LLM fallback: if no subject found after deterministic parsing, use LLM
 	resolvedByLLM := false
 	if parsedPayload.EventSubjectName == "" {

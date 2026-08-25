@@ -252,6 +252,20 @@ If the visual styles changed (new size, new state, new tone), also update `primi
 
 Refactors with no public-API or visual change don't require a spec update — but mention it explicitly in the PR body so reviewers don't have to guess.
 
+## Keeping Global Search in sync (REQUIRED, HIGH PRIORITY)
+
+Every navigable tab/sub-tab must be reachable from the header's global search (`GlobalPageSearch.jsx`). Its data lives in [`src/lib/navSearchPages.ts`](src/lib/navSearchPages.ts):
+
+- Top-level hash-routed tabs (`/troubleshoot`, `/optimise`, `/tickets`, `/user-management`) → `navSearchPages`
+- Detail-page tabs needing a runtime `accountId` scoped to one cloud provider (K8s/AWS/Azure/GCP details) → the matching `*SearchFragments` array (`k8sDetailsSearchFragments`, `awsDetailsSearchFragments`, `azureDetailsSearchFragments`, `gcpDetailsSearchFragments`)
+- Detail-page tabs needing a runtime `accountId` but NOT tied to one cloud provider (`/automation`, `/agentHealth`) → `accountScopedSearchFragments` (each entry names its own `basePath`/`group`)
+
+Whenever a PR adds, renames, or removes a `fragment` in any page's `filterOptions`/`tabOptions` (or the equivalent `baseOptions`/`awsOptions`/`azureOptions`/`gcpOptions` in the detail pages), the same change MUST land in `navSearchPages.ts` in the same PR — either a new/updated entry, or an explicit new entry (with a reason) in the exported `navSearchIgnoredFragments` list at the bottom of that file if it's intentionally excluded (e.g. a `disabled: true` tab).
+
+**This is a HIGH severity finding, not a nitpick** — a tab missing from global search is a silent discoverability regression that won't surface in tests or manual QA of the tab itself. Any AI review pass (Gemini Code Assist, `/create-pr` self-review, `/review-pr`) MUST flag a diff that adds/changes a tab `fragment` without a matching `navSearchPages.ts` change in the same PR, and should treat it as blocking rather than optional cleanup.
+
+The sidebar's hover flyout (`menuItems[].subItems` in [`src/components/common/layout/index.jsx`](src/components/common/layout/index.jsx)) is the second hand-maintained copy of the same tab list — it carries only the **top-level** tabs of each page. Adding, renaming, or removing a top-level `fragment` means updating it too. Sub-tabs never appear there, so a sub-tab-only change doesn't.
+
 ## Key Libraries Reference
 
 | Library                    | Usage                                  |

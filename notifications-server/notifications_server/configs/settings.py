@@ -415,13 +415,24 @@ class SlackSettings(BaseSettings):
     followup_options_threshold: int = Field(
         25, validation_alias=AliasChoices("FOLLOWUP_OPTIONS_THRESHOLD", "followup_options_threshold")
     )
-    # Always on. The llm-server's LLM_SERVER_IMAGE_SUPPORT_ENABLED remains the
-    # source of truth and re-validates every image.
+    # Always on. llm-server always accepts image attachments and
+    # re-validates every image itself (no toggle to keep in sync with).
     image_max_per_message: int = Field(
         4, validation_alias=AliasChoices("SLACK_IMAGE_MAX_PER_MESSAGE", "slack_image_max_per_message")
     )
     image_max_size_mb: float = Field(
         1.5, validation_alias=AliasChoices("SLACK_IMAGE_MAX_SIZE_MB", "slack_image_max_size_mb")
+    )
+    thinking_steps_poll_seconds: float = Field(
+        5.0, validation_alias=AliasChoices("SLACK_THINKING_STEPS_POLL_SECONDS", "slack_thinking_steps_poll_seconds")
+    )
+    thinking_steps_max_minutes: int = Field(
+        20, validation_alias=AliasChoices("SLACK_THINKING_STEPS_MAX_MINUTES", "slack_thinking_steps_max_minutes")
+    )
+    # Per-process ceiling on concurrent progress pollers; beyond it new
+    # conversations simply get no panel rather than queueing.
+    thinking_steps_max_pollers: int = Field(
+        50, validation_alias=AliasChoices("SLACK_THINKING_STEPS_MAX_POLLERS", "slack_thinking_steps_max_pollers")
     )
 
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")

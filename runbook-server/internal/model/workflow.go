@@ -21,6 +21,15 @@ type WorkflowDefinition struct {
 	RetryPolicy *WorkflowRetryPolicy `yaml:"retry_policy,omitempty" json:"retry_policy,omitempty"`
 	// Workflow-level timeout (overrides per-task if set), e.g. "30m"
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty" validate:"omitempty,duration"`
+	// LLMDescription tells the AI assistant what this automation does and, more
+	// importantly, WHEN to reach for it (e.g. "Restarts the payment consumers and
+	// drains the stuck queue. Use when payment-service pods are crashlooping with
+	// RabbitMQ timeouts."). Required before Workflow.AIInvocable can be set.
+	//
+	// This lives in the definition — not on the workflow row — because it is
+	// content: it snapshots with a published version, so the AI sees what is live
+	// rather than a half-finished draft.
+	LLMDescription string `yaml:"llm_description,omitempty" json:"llm_description,omitempty"`
 	// Presentation-only canvas layout (per-task coords live on Task.Layout / Trigger.Layout).
 	Layout *WorkflowDefinitionLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
 }
@@ -76,12 +85,31 @@ type Workflow struct {
 	LastExecutionTime          *time.Time              `json:"last_execution_time,omitempty" yaml:"last_execution_time,omitempty"`
 	LastExecutionVersion       *int                    `json:"last_execution_version,omitempty" yaml:"last_execution_version,omitempty"`
 	Name                       string                  `json:"name" yaml:"name" validate:"required,workflowname"`
-	CreatedBy                  string                  `json:"created_by,omitempty" yaml:"created_by,omitempty"`
-	CreatedByUser              *WorkflowUser           `json:"created_by_user,omitempty" yaml:"created_by_user,omitempty"`
-	UpdatedBy                  string                  `json:"updated_by,omitempty" yaml:"updated_by,omitempty"`
-	UpdatedByUser              *WorkflowUser           `json:"updated_by_user,omitempty" yaml:"updated_by_user,omitempty"`
-	CreatedAt                  time.Time               `json:"created_at,omitempty" yaml:"created_at,omitempty"`
-	UpdatedAt                  time.Time               `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	// Description is the human-facing workflow description. Workflow YAML has
+	// always accepted a top-level `description:` key; before this field existed
+	// yaml.v3 silently discarded it.
+	Description *string `json:"description,omitempty" yaml:"description,omitempty"`
+	// AIInvocable opts this workflow in to invocation by the AI assistant.
+	// Default false — the AI cannot run an automation nobody opted in.
+	//
+	// Workflow-level rather than part of the versioned definition so that
+	// revocation is immediate: unchecking it stops AI runs at once instead of
+	// waiting for a publish + make-live, and a version rollback cannot silently
+	// re-expose an automation. Enforced server-side on every AI-originated
+	// workflow run, so it is a real boundary and not merely a discovery filter
+	// — within its scope, which is workflow execution. Running a single task
+	// standalone and dry-running a composed definition are separate routes that
+	// have no workflow to opt in; see the SCOPE note on assertAIInvocationAllowed.
+	//
+	// Setting it requires the definition to carry a non-empty LLMDescription and
+	// a manual trigger (see validateWorkflowStructLevel).
+	AIInvocable   bool          `json:"ai_invocable" yaml:"ai_invocable,omitempty"`
+	CreatedBy     string        `json:"created_by,omitempty" yaml:"created_by,omitempty"`
+	CreatedByUser *WorkflowUser `json:"created_by_user,omitempty" yaml:"created_by_user,omitempty"`
+	UpdatedBy     string        `json:"updated_by,omitempty" yaml:"updated_by,omitempty"`
+	UpdatedByUser *WorkflowUser `json:"updated_by_user,omitempty" yaml:"updated_by_user,omitempty"`
+	CreatedAt     time.Time     `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt     time.Time     `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
 	// CreatedFromSessionID is the LLM conversation session_id that produced this
 	// workflow. Set on create only; never overwritten by Update so the UI can always
 	// deep-link back to the original chat. NULL for UI/manual workflows.
@@ -246,6 +274,10 @@ const (
 	WorkflowTriggerWebhook      WorkflowTrigger = "webhook"
 	WorkflowTriggerEvent        WorkflowTrigger = "event"
 	WorkflowTriggerOptimization WorkflowTrigger = "optimization"
+	// WorkflowTriggerCalled tags a run started by another workflow's
+	// core.call-workflow step. It is a RUN tag only — deliberately absent from
+	// ValidateWorkflowTrigger, since no one can declare it on a definition.
+	WorkflowTriggerCalled WorkflowTrigger = "called"
 )
 
 // LifecyclePhase is the event-lifecycle phase an event trigger subscribes to,
@@ -299,17 +331,47 @@ type Trigger struct {
 	Layout   *WorkflowTaskLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
 }
 
-// Validate performs struct-level validation for Trigger.
-func (t Trigger) Validate(sl validator.StructLevel) {
-	// For most trigger types a missing params block means "no params to validate".
-	// Event and optimization triggers are exceptions: event requires at least one of
-	// event_type or filter, and optimization requires at least one of categories,
-	// rule_names, clusters, or filter — both must run their case below even when
-	// params is nil/empty so the missing-params error surfaces.
-	if t.Params == nil && t.Type != WorkflowTriggerEvent && t.Type != WorkflowTriggerOptimization {
-		return
+// HasManualTrigger reports whether the definition declares a manual trigger.
+//
+// AI invocation is restricted to manually-triggerable automations: a schedule /
+// webhook / event-driven automation already has its own trigger contract, and
+// firing one out of band from a chat turn is not what its author signed up for.
+// Used both by validation (before AIInvocable can be set) and by the
+// AI-trigger gate, which re-checks it against the LIVE version at run time.
+func (d WorkflowDefinition) HasManualTrigger() bool {
+	for _, t := range d.Triggers {
+		if t.Type == WorkflowTriggerManual {
+			return true
+		}
 	}
+	return false
+}
 
+// SupportsAIInvocation reports whether this definition carries what the
+// AI-invocation opt-in depends on: something to tell the assistant when to reach
+// for the automation, and a manual trigger to reach for it with.
+//
+// validateWorkflowStructLevel enforces the same two conditions, but separately,
+// so it can name which one is missing. This is for the callers that need the
+// combined answer as a value: a save that swaps in a definition unable to carry
+// the grant drops the grant instead of failing outright, which is what the
+// settings UI does when the preconditions stop holding.
+func (d WorkflowDefinition) SupportsAIInvocation() bool {
+	return strings.TrimSpace(d.LLMDescription) != "" && d.HasManualTrigger()
+}
+
+// Validate performs struct-level validation for Trigger.
+//
+// Every trigger type states its own param requirements in its case below, and each
+// case is nil-safe (map reads and ranges on a nil map are no-ops, len(nil) is 0), so
+// a nil Params block reaches the switch and fails whatever that type actually
+// requires. There is deliberately no pre-switch short-circuit: the previous one
+// exempted every type except event/optimization, which meant `webhook` (needs
+// integration_name) and `schedule` (needs cron) were never checked when the caller
+// omitted params entirely — validate answered OK and the subsequent save 400'd
+// (#35384). Keep per-type knowledge in the case, never in a guard above it, or the
+// next type that gains a required param reintroduces the same hole.
+func (t Trigger) Validate(sl validator.StructLevel) {
 	switch t.Type {
 	case WorkflowTriggerSchedule:
 		cronVal, cronOk := t.Params["cron"]
@@ -320,6 +382,14 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 		cronStr, cronStrOk := cronVal.(string)
 		if !cronStrOk || cronStr == "" {
 			sl.ReportError(t.Params, "params", "Params", "cron_invalid", "")
+			return
+		}
+		// Parse here rather than letting Temporal be the first thing that reads
+		// the expression: schedule registration happens after the workflow row
+		// is committed, so a cron Temporal rejects used to leave a scheduleless
+		// workflow behind while the API reported a failure.
+		if err := ValidateCronExpression(cronStr); err != nil {
+			sl.ReportError(t.Params, "params", "Params", "cron_syntax_invalid", "")
 			return
 		}
 		if overlapVal, ok := t.Params["overlap_policy"]; ok {
@@ -607,12 +677,55 @@ type ListWorkflowRequest struct {
 	LastExecutionStatus WorkflowExecutionStatus `json:"last_execution_status,omitempty"`
 	TriggerType         string                  `json:"trigger_type,omitempty"`
 	CreatedBy           string                  `json:"created_by,omitempty"`
+	// AIInvocable filters to workflows opted in to (or out of) AI invocation.
+	// A pointer so that "unset" stays distinct from "explicitly false" — the
+	// AI-tool discovery listing asks for true, while the normal UI listing sends
+	// nothing and keeps seeing every workflow.
+	AIInvocable *bool `json:"ai_invocable,omitempty"`
 }
 
 type ListWorkflowResponse struct {
 	Workflows     []Workflow `json:"workflows"`
 	NextPageToken string     `json:"next_page_token,omitempty"`
 	TotalCount    int        `json:"total_count"`
+}
+
+// AIWorkflowCandidate is one automation the AI assistant may run, as returned by
+// the AI search. Deliberately narrow: the AI needs to decide *whether* this is
+// the right automation and *what to pass it*, nothing more. The full definition
+// — every task, its rendered params, the canvas layout — would be a large
+// distraction in a chat turn.
+type AIWorkflowCandidate struct {
+	ID string `json:"id"`
+	// Name is the human name, useful both for matching and for naming the
+	// automation back to the user before running it.
+	Name string `json:"name"`
+	// Description is the human-facing summary; LLMDescription says when to reach
+	// for this automation and is the field that actually drives selection.
+	Description    string `json:"description,omitempty"`
+	LLMDescription string `json:"llm_description"`
+	// Inputs is the live version's input declaration, so the model can fill
+	// parameters in without a second round trip to workflow_get.
+	Inputs []Input `json:"inputs,omitempty"`
+}
+
+// AIInvocableWorkflow pairs a workflow's identity with the definition that would
+// actually run — the live version snapshot, not the draft.
+type AIInvocableWorkflow struct {
+	ID          string
+	Name        string
+	Description string
+	// Definition is the LIVE version's definition.
+	Definition WorkflowDefinition
+}
+
+// AIWorkflowSearchResponse is the AI search result set.
+type AIWorkflowSearchResponse struct {
+	Workflows []AIWorkflowCandidate `json:"workflows"`
+	// TotalInvocable is how many automations were eligible before ranking, so a
+	// caller can tell "nothing matched your query" from "nothing is opted in" —
+	// two situations that need very different advice to the user.
+	TotalInvocable int `json:"total_invocable"`
 }
 
 // WorkflowCaller is a lightweight projection returned by ListCallers — just

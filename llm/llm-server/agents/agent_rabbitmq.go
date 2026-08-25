@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -10,20 +9,14 @@ import (
 
 const RabbitMQAgentName = "rabbitmq"
 
-func init() {
-	// This describes the 'rabbitmq' agent when it is used as a tool by another agent.
-	toolDescription := `Executes RabbitMQ operations by translating natural language questions into rabbitmqadmin commands or RabbitMQ HTTP Management API calls. Use this agent to list, query, or manage queues, exchanges, connections, consumers, and other RabbitMQ resources. Supports consumer-by-queue identification, queue health/backlog analysis, and node metrics. Returns command results or summaries for automation and troubleshooting.`
-	toolInput := "Provide a question in natural language to list, query, or manage RabbitMQ resources."
-	toolOutput := "Returns command results or summaries for RabbitMQ operations."
+// Phase 3c (#32503): agent registration removed. Guidance for both invocation
+// shapes (rabbitmqadmin CLI + rabbitmq-api HTTP shim) now lives on
+// RabbitExecuteTool.ToolPrompt(). Kept type/methods for one release so external
+// references to RabbitMQAgentName still compile; delete after bake.
 
-	core.RegisterNBAgentFactoryAndTool(RabbitMQAgentName, func(accountId string) (core.NBAgent, error) {
-		return RabbitMQAgent{accountId: accountId}, nil
-	}, toolDescription, toolInput, toolOutput)
-}
-
-type RabbitMQAgent struct {
-	accountId string
-}
+// RabbitMQAgent is deprecated (Phase 3c #32503). Type kept for Flattenable-path
+// tests; runtime registration and guidance live on RabbitExecuteTool now.
+type RabbitMQAgent struct{}
 
 func (l RabbitMQAgent) GetName() string {
 	return RabbitMQAgentName
@@ -86,13 +79,11 @@ func (l RabbitMQAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteRabbitCommand] = []string{
-			"Use this tool to execute rabbitmqadmin commands, `rabbitmq-api METHOD /path` calls, or legacy curl calls against the RabbitMQ HTTP Management API.",
-			"Input: a valid rabbitmqadmin command, a `rabbitmq-api METHOD /path [extra curl args]` invocation (host/port/creds injected automatically), or a curl command targeting http://$RABBITMQ_HOST:$RABBITMQ_PORT/api/... .",
-			"Output: the data returned by the command.",
-			"You can use pipes (|) and jq to process output (e.g. `rabbitmqadmin -f raw_json list queues ... | jq ...` or `rabbitmq-api GET /api/overview | jq ...`).",
-		}
+	toolUsage[tools.ToolExecuteRabbitCommand] = []string{
+		"Use this tool to execute rabbitmqadmin commands, `rabbitmq-api METHOD /path` calls, or legacy curl calls against the RabbitMQ HTTP Management API.",
+		"Input: a valid rabbitmqadmin command, a `rabbitmq-api METHOD /path [extra curl args]` invocation (host/port/creds injected automatically), or a curl command targeting http://$RABBITMQ_HOST:$RABBITMQ_PORT/api/... .",
+		"Output: the data returned by the command.",
+		"You can use pipes (|) and jq to process output (e.g. `rabbitmqadmin -f raw_json list queues ... | jq ...` or `rabbitmq-api GET /api/overview | jq ...`).",
 	}
 	examples := []core.NBAgentPromptExample{
 		// --- rabbitmqadmin examples ---

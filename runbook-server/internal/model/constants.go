@@ -25,4 +25,15 @@ const (
 	// execute the on-screen draft definition without snapshotting a version row;
 	// the exact graph is recovered from Temporal history (the start-event input).
 	MemoWorkflowIsDraftRun = "workflow_is_draft_run" // bool; true for draft ("Run current") executions
+	// MemoWorkflowAITriggered marks an execution the AI assistant started on a
+	// user's behalf, so AI-initiated runs can be told apart from human ones when
+	// judging the feature's blast radius.
+	//
+	// Memo rather than a SearchAttribute on purpose: a new search attribute has
+	// to be registered per Temporal namespace before it can be written, which
+	// couples the rollout to an admin step in every environment. Memo needs no
+	// such registration — the same reason MemoWorkflowIsDraftRun lives here. The
+	// trade-off is that Memo is not server-side filterable in visibility
+	// queries; it is read back with the execution and counted by the caller.
+	MemoWorkflowAITriggered = "workflow_ai_triggered" // bool; true for AI-initiated executions
 )

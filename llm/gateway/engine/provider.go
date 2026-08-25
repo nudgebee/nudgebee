@@ -18,6 +18,7 @@ type ProviderCredsConfig struct {
 	AccessKey    string // llm_provider_access_key (bedrock)
 	SecretKey    string // llm_provider_secret_key (bedrock)
 	SessionToken string // llm_provider_session_token (bedrock)
+	ProjectID    string // llm_provider_project_id (vertex GCP project)
 }
 
 // providerCred is a resolved credential the nbAccount hands to core via
@@ -47,31 +48,6 @@ func NormalizeProvider(name string) schemas.ModelProvider {
 	default:
 		return schemas.ModelProvider(strings.ToLower(strings.TrimSpace(name)))
 	}
-}
-
-// SupportsEndpointOperator reports whether an operator can enable this provider with
-// just an endpoint and no key — the self-hosted, OpenAI-compatible servers (Ollama,
-// vLLM, SGL), which are reached by base URL with an OPTIONAL bearer token. These are
-// operator-only (a per-tenant DirectKey cannot carry a base URL).
-func SupportsEndpointOperator(providerName string) bool {
-	switch NormalizeProvider(providerName) {
-	case schemas.Ollama, schemas.VLLM, schemas.SGL:
-		return true
-	}
-	return false
-}
-
-// SupportsKeylessOperator reports whether an operator can configure this provider
-// with no static credential material — i.e. it authenticates via an ambient mechanism.
-// Bedrock can (AWS default credential chain / IRSA on EKS) and Azure can (the Azure
-// default credential chain / managed identity); the api-key providers cannot. Used to
-// decide whether to enable a provider whose LLM_PROVIDER_* block carries no key.
-func SupportsKeylessOperator(providerName string) bool {
-	switch NormalizeProvider(providerName) {
-	case schemas.Bedrock, schemas.Azure:
-		return true
-	}
-	return false
 }
 
 // buildCred converts OPERATOR config into a Bifrost Key. For cloud providers it
@@ -171,6 +147,42 @@ func buildKey(provider schemas.ModelProvider, cfg ProviderCredsConfig, allowKeyl
 		if !keyless {
 			key.Value = schemas.SecretVar{Val: cfg.APIKey}
 		}
+	case schemas.Vertex:
+		// Vertex AI: project + region are REQUIRED and travel ON the key (VertexKeyConfig),
+		// so this works for operator config and per-tenant BYO alike. Auth is a service-
+		// account JSON (llm_provider_api_key) or, keyless, GCP Application Default
+		// Credentials (Workload Identity on GKE). Keyless = the pod's identity, so it is
+		// OPERATOR-ONLY (allowKeyless) — a tenant must supply a static service-account key,
+		// never borrow the pod's identity. Region must be a GCP region (e.g. us-central1);
+		// the llm_provider_region default (us-west-2) is an AWS region and won't work here.
+		//
+		// Trim stray whitespace: project/region go straight into the request URL (a space
+		// silently breaks routing), and trimming the credential first means a whitespace-only
+		// value is treated as keyless (clean fallback) rather than a downstream JSON error.
+		projectID := strings.TrimSpace(cfg.ProjectID)
+		region := strings.TrimSpace(cfg.Region)
+		creds := strings.TrimSpace(cfg.APIKey)
+		if projectID == "" || region == "" {
+			return schemas.Key{}, false
+		}
+		if region == "us-west-2" {
+			// The shared llm_provider_region default is us-west-2 (an AWS region). It is
+			// non-empty, so it passes the check above but fails at request time with an
+			// opaque GCP error — warn so the misconfig is visible at config time.
+			slog.Warn("engine: vertex region is \"us-west-2\", an AWS region — set a GCP region (e.g. us-central1)")
+		}
+		keyless := creds == ""
+		if keyless && !allowKeyless {
+			return schemas.Key{}, false
+		}
+		vk := &schemas.VertexKeyConfig{
+			ProjectID: schemas.SecretVar{Val: projectID},
+			Region:    schemas.SecretVar{Val: region},
+		}
+		if !keyless {
+			vk.AuthCredentials = schemas.SecretVar{Val: creds} // service-account JSON
+		}
+		key.VertexKeyConfig = vk
 	case schemas.Ollama, schemas.VLLM, schemas.SGL:
 		// Self-hosted OpenAI-compatible servers: reached by base URL (carried via the
 		// provider config's BaseURL from cfg.Endpoint) with an OPTIONAL bearer token.

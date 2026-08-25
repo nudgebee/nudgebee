@@ -1,32 +1,33 @@
 import apiAccount from '@api1/account';
 import apiKubernetes1 from '@api1/kubernetes1';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
 import Datetime from '@shared/format/Datetime';
 import { toast as snackbar } from '@ui/Toast';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
-import { hasWriteAccess, fetchFeatureFlagsForAccount } from '@lib/auth';
-import { Box, Grid, Stack, TextField, Typography } from '@mui/material';
-import { useRouter } from 'next/navigation';
+import { hasWriteAccess, fetchFeatureFlagsForAccount, canManage } from '@lib/auth';
+import { Box, Grid, Stack, Typography } from '@mui/material';
+import { Input } from '@ui/Input';
+import { Link } from '@ui/Link';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from '@ui/Modal';
-import TextWithBorder from '@shared/TextWithBorder';
+import Heading from '@components/common/Heading';
 import { Divider } from '@ui/Divider';
-import NDialog from '@shared/modal/NDialog';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import { Button as DsButton } from '@ui/Button';
 import { TourLauncher } from '@components/common/tour';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { action } from 'src/utils/actionStyles';
+import { ds } from 'src/utils/colors';
 import { getFeatures, updateFeatureFlagForAccount } from '@lib/UserService';
 import { Checkbox } from '@ui/Checkbox';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import apiUser from '@api1/user';
-import CopyableText from '@shared/CopyableText';
+import CopyButton from '@shared/buttons/CopyButton';
 
 // Agents connect asynchronously minutes after an account is created, so the
 // health columns are still empty on the fetch that follows install. Poll to
@@ -34,7 +35,6 @@ import CopyableText from '@shared/CopyableText';
 const AGENT_POLL_MS = 30000;
 
 const K8sIntegrationTile = () => {
-  const router = useRouter();
   const headers = [
     'Name',
     { name: 'Status', width: '10%' },
@@ -184,22 +184,7 @@ const K8sIntegrationTile = () => {
             return [
               {
                 drilldownQuery: { id: item.id },
-                component: (
-                  <Typography
-                    variant='body2'
-                    onClick={() => router.push(`/kubernetes/details/${item.id}`)}
-                    sx={{
-                      color: 'link',
-                      cursor: 'pointer',
-                      textDecoration: 'none',
-                      '&:hover': {
-                        textDecoration: 'underline',
-                      },
-                    }}
-                  >
-                    {item.account_name}
-                  </Typography>
-                ),
+                component: <Link href={`/kubernetes/details/${item.id}`}>{item.account_name}</Link>,
               },
               {
                 component: <Label text={item.status} />,
@@ -370,33 +355,33 @@ const K8sIntegrationTile = () => {
 
   const styles = {
     label: {
-      padding: '0px 2px',
-      mb: '4px',
-      fontSize: 'var(--ds-text-body-lg)',
-      fontWeight: 'var(--ds-font-weight-regular)',
-      color: 'var(--ds-gray-700)',
+      padding: `0px ${ds.space[1]}`,
+      mb: ds.space[1],
+      fontSize: ds.text.bodyLg,
+      fontWeight: ds.weight.regular,
+      color: ds.gray[700],
     },
     inputField: {
-      fontSize: 'var(--ds-text-body-lg)',
+      fontSize: ds.text.bodyLg,
       '& .MuiOutlinedInput-root': {
-        borderRadius: '6px',
-        backgroundColor: 'white',
+        borderRadius: ds.radius.md,
+        backgroundColor: ds.background[100],
         '&.Mui-focused fieldset': {
-          borderColor: 'var(--ds-blue-500)',
+          borderColor: ds.blue[500],
         },
       },
       '& .MuiInputBase-input': {
-        padding: '8px 12px',
+        padding: `${ds.space[2]} ${ds.space[3]}`,
       },
     },
     errorText: {
-      color: 'var(--ds-red-500)',
-      fontSize: 'var(--ds-text-small)',
-      fontWeight: 'var(--ds-font-weight-medium)',
-      mt: 1,
+      color: ds.red[500],
+      fontSize: ds.text.small,
+      fontWeight: ds.weight.medium,
+      mt: ds.space[2],
     },
     requiredStar: {
-      color: 'var(--ds-red-500)',
+      color: ds.red[500],
     },
   };
 
@@ -531,14 +516,14 @@ const K8sIntegrationTile = () => {
     return (
       <Grid
         container
-        borderRadius={2}
-        p={2}
+        borderRadius={ds.radius.lg}
+        p={ds.space[4]}
         sx={{
-          margin: '15px 0 30px 0px',
+          margin: `${ds.space[4]} 0 ${ds.space[6]} 0px`,
           display: 'flex',
           flexDirection: 'row',
           justifyContent: 'space-between',
-          border: '1px solid var(--ds-gray-300)',
+          border: `1px solid ${ds.gray[300]}`,
         }}
       >
         <Grid
@@ -546,15 +531,15 @@ const K8sIntegrationTile = () => {
           xs={11}
           sx={{
             overflowY: 'auto',
-            maxHeight: '100px',
+            maxHeight: ds.space.mul(1, 25),
           }}
         >
-          <Typography sx={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-body-lg)' }} variant='body1' id='k8sCurlCommand'>
+          <Typography sx={{ color: ds.gray[500], fontSize: ds.text.bodyLg }} variant='body1' id='k8sCurlCommand'>
             {k8sCurlCommand}
           </Typography>
         </Grid>
         <Grid item xs={1}>
-          <CopyableText copyableText={k8sCurlCommand} iconOnly={true} iconSize={16} snackbarMessage='Command copied to clipboard' />
+          <CopyButton text={k8sCurlCommand} size='md' toastMessage='Command copied to clipboard' />
         </Grid>
       </Grid>
     );
@@ -587,10 +572,10 @@ const K8sIntegrationTile = () => {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'flex-end',
-              gap: '8px',
-              p: '6px',
+              gap: ds.space[2],
+              p: ds.space[1],
               button: {
-                minWidth: '140px',
+                minWidth: ds.space.mul(1, 35),
               },
             }}
           >
@@ -603,257 +588,135 @@ const K8sIntegrationTile = () => {
           </Box>
         }
       >
-        <Box sx={{ padding: '12px 24px 12px 24px' }}>
-          <TextWithBorder
-            value='Account Name'
-            borderColor={'var(--ds-blue-500)'}
-            borderWidth='3px'
-            sx={{
-              '& p': {
-                fontSize: 'var(--ds-text-title)',
-                fontWeight: 'var(--ds-font-weight-medium)',
-                color: 'var(--ds-gray-700)',
-                marginBottom: '18px',
-              },
-            }}
-          />
-          <Box display='grid' gridTemplateColumns='1fr 1fr' gap='16px'>
+        <Box sx={{ padding: `${ds.space[3]} ${ds.space[5]} ${ds.space[3]} ${ds.space[5]}` }}>
+          <Heading value='Account Name' borderWidth='md' />
+          <Box display='grid' gridTemplateColumns='1fr 1fr' gap={ds.space[4]}>
             <Box display='flex' flexDirection='column'>
-              <TextField
-                fullWidth
+              <Input
                 value={accountName}
                 label='Account Name'
                 placeholder='Account Name'
-                onChange={(e) => handleK8sAccountNameChange(e.target.value)}
-                variant='outlined'
-                sx={styles.inputField}
+                onChange={(value) => handleK8sAccountNameChange(value)}
                 disabled={!hasWriteAccess()}
               />
             </Box>
           </Box>
 
-          <Divider color={'var(--ds-background-200)'} sx={{ marginTop: 'var(--ds-space-5)', marginBottom: 'var(--ds-space-5)' }} />
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 
-          <TextWithBorder
-            value='Log Label Mapper'
-            borderColor={'var(--ds-blue-500)'}
-            borderWidth='3px'
-            sx={{
-              '& p': {
-                fontSize: 'var(--ds-text-title)',
-                fontWeight: 'var(--ds-font-weight-medium)',
-                color: 'var(--ds-gray-700)',
-                marginBottom: '18px',
-              },
-            }}
-          />
-          <Box display='grid' gridTemplateColumns='1fr 1fr' gap='16px'>
+          <Heading value='Log Label Mapper' borderWidth='md' />
+          <Box display='grid' gridTemplateColumns='1fr 1fr' gap={ds.space[4]}>
             <Box display='flex' flexDirection='column'>
               <Typography sx={styles.label}>Pod</Typography>
-              <TextField
-                fullWidth
-                value={logPodLabel}
-                placeholder='Log Pod label'
-                onChange={(e) => setLogPodLabel(e.target.value)}
-                variant='outlined'
-                sx={styles.inputField}
-              />
+              <Input value={logPodLabel} placeholder='Log Pod label' onChange={(value) => setLogPodLabel(value)} />
             </Box>
 
             <Box display='flex' flexDirection='column'>
               <Typography sx={styles.label}>Namespace</Typography>
-              <TextField
-                fullWidth
-                value={logNamespaceLabel}
-                placeholder='Log Namespace label'
-                onChange={(e) => setLogNamespaceLabel(e.target.value)}
-                variant='outlined'
-                sx={styles.inputField}
-              />
+              <Input value={logNamespaceLabel} placeholder='Log Namespace label' onChange={(value) => setLogNamespaceLabel(value)} />
             </Box>
 
             <Box display='flex' flexDirection='column'>
               <Typography sx={styles.label}>App</Typography>
-              <TextField
-                fullWidth
-                value={logAppLabel}
-                placeholder='Log App label'
-                onChange={(e) => setLogAppLabel(e.target.value)}
-                variant='outlined'
-                sx={styles.inputField}
-              />
+              <Input value={logAppLabel} placeholder='Log App label' onChange={(value) => setLogAppLabel(value)} />
             </Box>
 
             <Box display='flex' flexDirection='column'>
               <Typography sx={styles.label}>Default query</Typography>
-              <TextField
-                fullWidth
-                value={logDefaultQuery}
-                placeholder='Default Query'
-                onChange={(e) => setLogDefaultQuery(e.target.value)}
-                variant='outlined'
-                sx={styles.inputField}
-              />
+              <Input value={logDefaultQuery} placeholder='Default Query' onChange={(value) => setLogDefaultQuery(value)} />
             </Box>
           </Box>
-          <Divider color={'var(--ds-background-200)'} sx={{ marginTop: 'var(--ds-space-5)', marginBottom: 'var(--ds-space-5)' }} />
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 
-          <TextWithBorder
-            value='Certificate Expiry'
-            borderColor={'var(--ds-blue-500)'}
-            borderWidth='3px'
-            sx={{
-              '& p': {
-                fontSize: 'var(--ds-text-title)',
-                fontWeight: 'var(--ds-font-weight-medium)',
-                color: 'var(--ds-gray-700)',
-                marginBottom: '16px',
-              },
-            }}
-          />
-          <Box display='grid' gridTemplateColumns='1fr 1fr' gap='16px'>
+          <Heading value='Certificate Expiry' borderWidth='md' />
+          <Box display='grid' gridTemplateColumns='1fr 1fr' gap={ds.space[4]}>
             <Box display='flex' flexDirection='column'>
               <Typography sx={styles.label}>Certificate Expiry</Typography>
-              <TextField
-                fullWidth
-                value={certificateExpiry}
+              <Input
+                value={String(certificateExpiry ?? '')}
                 type='number'
-                onChange={(e) => setCertificateExpiry(e.target.value)}
+                inputMode='numeric'
+                onChange={(value) => setCertificateExpiry(value)}
                 onKeyDown={(e) => {
                   if (e.key === '-') {
                     e.preventDefault();
                   }
                 }}
-                InputProps={{
-                  inputProps: { min: 0 },
-                }}
-                variant='outlined'
-                sx={styles.inputField}
               />
             </Box>
           </Box>
 
-          <Divider color={'var(--ds-background-200)'} sx={{ marginTop: 'var(--ds-space-5)', marginBottom: 'var(--ds-space-5)' }} />
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 
-          <TextWithBorder
-            value='Abandoned App Configuration'
-            borderColor={'var(--ds-blue-500)'}
-            borderWidth='3px'
-            sx={{
-              '& p': {
-                fontSize: 'var(--ds-text-title)',
-                fontWeight: 'var(--ds-font-weight-medium)',
-                color: 'var(--ds-gray-700)',
-                marginBottom: '16px',
-              },
-            }}
-          />
-          <Box display='grid' gridTemplateColumns='1fr 1fr' gap='16px'>
+          <Heading value='Abandoned App Configuration' borderWidth='md' />
+          <Box display='grid' gridTemplateColumns='1fr 1fr' gap={ds.space[4]}>
             <Box display='flex' flexDirection='column'>
               <Typography sx={styles.label}>Network Threshold</Typography>
-              <TextField
-                fullWidth
-                value={networkThreshold}
+              <Input
+                value={String(networkThreshold ?? '')}
                 type='number'
-                defaultValue={1000}
-                onChange={(e) => setNetworkThreshold(e.target.value)}
+                inputMode='numeric'
+                onChange={(value) => setNetworkThreshold(value)}
                 onKeyDown={(e) => {
                   if (e.key === '-') {
                     e.preventDefault();
                   }
                 }}
-                InputProps={{
-                  inputProps: { min: 0 },
-                }}
-                variant='outlined'
-                sx={styles.inputField}
               />
             </Box>
             <Box display='flex' flexDirection='column'>
               <Typography sx={styles.label}>Observation Days</Typography>
-              <TextField
-                fullWidth
-                value={observationDays}
-                defaultValue={7}
+              <Input
+                value={String(observationDays ?? '')}
                 type='number'
-                onChange={(e) => setObservationDays(e.target.value)}
+                inputMode='numeric'
+                onChange={(value) => setObservationDays(value)}
                 onKeyDown={(e) => {
                   if (e.key === '-') {
                     e.preventDefault();
                   }
                 }}
-                InputProps={{
-                  inputProps: { min: 0 },
-                }}
-                variant='outlined'
-                sx={styles.inputField}
               />
             </Box>
           </Box>
 
-          <Divider color={'var(--ds-background-200)'} sx={{ marginTop: 'var(--ds-space-5)', marginBottom: 'var(--ds-space-5)' }} />
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 
-          {selectedAnomalyConfigs.length > 0 && (
-            <TextWithBorder
-              value='Anomaly Configuration'
-              borderColor={'var(--ds-blue-500)'}
-              borderWidth='3px'
-              sx={{
-                '& p': {
-                  fontSize: 'var(--ds-text-title)',
-                  fontWeight: 'var(--ds-font-weight-medium)',
-                  color: 'var(--ds-gray-700)',
-                  marginBottom: '16px',
-                },
-              }}
-            />
-          )}
+          {selectedAnomalyConfigs.length > 0 && <Heading value='Anomaly Configuration' borderWidth='md' />}
           {selectedAnomalyConfigs.length > 0
             ? selectedAnomalyConfigs.map((ac) => (
-                <Box key={ac.title} display='flex' alignItems='center' gap={2} sx={{ mt: 2 }}>
+                <Box key={ac.title} display='flex' alignItems='center' gap={ds.space[4]} sx={{ mt: ds.space[4] }}>
                   <Box display='flex' flexDirection='column'>
                     <Typography sx={styles.label}>Type</Typography>
-                    <TextField fullWidth value={ac.anomaly_type} disabled={true} variant='outlined' sx={styles.inputField} />
+                    <Input value={String(ac.anomaly_type ?? '')} disabled onChange={() => {}} />
                   </Box>
                   <Box display='flex' flexDirection='column'>
                     <Typography sx={styles.label}>Operator</Typography>
-                    <TextField fullWidth value={ac.change_operator} disabled={true} variant='outlined' sx={styles.inputField} />
+                    <Input value={String(ac.change_operator ?? '')} disabled onChange={() => {}} />
                   </Box>
                   <Box display='flex' flexDirection='column'>
                     <Typography sx={styles.label}>Title</Typography>
-                    <TextField fullWidth value={ac.title} disabled={true} variant='outlined' sx={styles.inputField} />
+                    <Input value={String(ac.title ?? '')} disabled onChange={() => {}} />
                   </Box>
                   <Box display='flex' flexDirection='column'>
                     <Typography sx={styles.label}>Buffer Percentage</Typography>
-                    <TextField fullWidth value={ac.buffer_percentage * 100} type='number' disabled={true} variant='outlined' sx={styles.inputField} />
+                    <Input value={String(ac.buffer_percentage * 100)} type='number' disabled onChange={() => {}} />
                   </Box>
                 </Box>
               ))
             : null}
-          <Divider color={'var(--ds-background-200)'} sx={{ marginTop: 'var(--ds-space-5)', marginBottom: 'var(--ds-space-5)' }} />
-          <TextWithBorder
-            value='Feature Flag'
-            borderColor={'var(--ds-blue-500)'}
-            borderWidth='3px'
-            sx={{
-              '& p': {
-                fontSize: 'var(--ds-text-title)',
-                fontWeight: 'var(--ds-font-weight-medium)',
-                color: 'var(--ds-gray-700)',
-                marginBottom: '16px',
-              },
-            }}
-          />
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
+          <Heading value='Feature Flag' borderWidth='md' />
           <Box
             display='grid'
             gridTemplateColumns='repeat(3, 1fr)'
             sx={{
-              ml: '12px',
+              ml: ds.space[3],
               width: '100%',
               '& > *': {
-                borderRight: '1px solid #EBEBEB',
-                borderBottom: '1px solid #EBEBEB',
-                padding: '12px 16px',
+                borderRight: `1px solid ${ds.gray[200]}`,
+                borderBottom: `1px solid ${ds.gray[200]}`,
+                padding: `${ds.space[3]} ${ds.space[4]}`,
                 '&:nth-of-type(3n)': {
                   borderRight: 'none',
                 },
@@ -876,42 +739,57 @@ const K8sIntegrationTile = () => {
         </Box>
       </Modal>
 
-      <NDialog
-        buttonText='Confirm'
-        submitTone={updateAccountStatus.status == 'active' ? 'primary' : 'danger'}
-        handleClose={() => setUpdateAccountStatus({})}
-        dialogTitle={
+      <Modal
+        handleClose={isStatusUpdating ? () => {} : () => setUpdateAccountStatus({})}
+        open={updateAccountStatus && Object.keys(updateAccountStatus).length > 0}
+        title={
           <Typography component='h2' variant='h6' fontWeight={600}>
             {updateAccountStatus.status == 'active' ? 'Enable' : 'Disable'} Kubernetes Account
           </Typography>
         }
-        dialogContent={`Are you sure you want to ${updateAccountStatus.status == 'active' ? 'enable' : 'disable'} "${
+        width='md'
+        loader={isStatusUpdating}
+        actionButtons={
+          <>
+            <DsButton id='k8s-account-status-cancel-btn' tone='secondary' onClick={() => setUpdateAccountStatus({})} disabled={isStatusUpdating}>
+              Cancel
+            </DsButton>
+            <DsButton
+              tone={updateAccountStatus.status == 'active' ? 'primary' : 'danger'}
+              loading={isStatusUpdating}
+              onClick={handleUpdateAccountStatus}
+            >
+              Confirm
+            </DsButton>
+          </>
+        }
+      >
+        {`Are you sure you want to ${updateAccountStatus.status == 'active' ? 'enable' : 'disable'} "${
           updateAccountStatus.name
         }" the configured Kubernetes Account?`}
-        handleSubmit={handleUpdateAccountStatus}
-        open={updateAccountStatus && Object.keys(updateAccountStatus).length > 0}
-        loading={isStatusUpdating}
-      />
-      <NDialog
+      </Modal>
+      <Modal
         handleClose={() => setK8sCurlCommand('')}
-        dialogTitle={`Update the Agent`}
+        title='Update the Agent'
         open={k8sCurlCommand && k8sCurlCommand.length > 0}
-        isSubmitRequired={false}
-        additionalComponent={additionalShowcaseAgentUpdateCmd()}
-      />
+        width='md'
+        isConfirmRequired={false}
+      >
+        {additionalShowcaseAgentUpdateCmd()}
+      </Modal>
       <K8sAccountModal openModal={openModal} handleClose={closeModal} handleOnAccountCreate={handleOnAccountCreate} />
       <ListingLayout id='k8s-integrations'>
         <ListingLayout.Toolbar
           title={
             <Stack direction='row' alignItems='center' spacing={1}>
-              <Typography color={'var(--ds-gray-700)'} fontSize='16px' fontWeight={600}>
+              <Typography color={ds.gray[700]} fontSize={ds.text.title} fontWeight={600}>
                 Kubernetes
               </Typography>
               <CloudProviderIcon cloud_provider='K8S' />
             </Stack>
           }
           actions={
-            hasWriteAccess() ? (
+            canManage('integrations', 'Write') ? (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <TourLauncher tourId='connect-cluster' label='How to connect a cluster' />
                 <DsButton id='add-k8s-account' tone='primary' size='md' onClick={() => setOpenModal(true)} aria-label='Add K8s Account'>
@@ -928,7 +806,7 @@ const K8sIntegrationTile = () => {
             value={statusOptions.find((o) => o.value === selectedStatusFilter) ?? null}
             onSelect={(_e, item) => handleStatusFilterChange({ target: { value: item?.value || '' } })}
           />
-          <CustomSearch
+          <SearchInput
             id='k8s-name-search'
             value={nameInput}
             onChange={(next) => {

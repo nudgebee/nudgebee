@@ -98,6 +98,32 @@ func TestListToolUsage_SortByCost(t *testing.T) {
 	assert.Equal(t, "kubectl_get", out.Rows[1].ToolName)
 }
 
+// TestListToolUsage_UserFilter is a regression test for #35798: buildToolWhere
+// used to ignore filter.UserID entirely, so picking a user on the Tools tab
+// changed nothing. Both scans must now carry a c.user_id clause.
+func TestListToolUsage_UserFilter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	now := time.Now()
+
+	mock.ExpectQuery(`c\.user_id = \$4`).WillReturnRows(sqlmock.NewRows(toolOpCols))
+	mock.ExpectQuery(`c\.user_id = \$4`).WillReturnRows(
+		sqlmock.NewRows([]string{"tool_name", "downstream_cost_usd", "downstream_llm_calls"}))
+
+	filter := UsageMetricsFilter{
+		AccountIDs: []string{"acc-1"},
+		StartDate:  now.Add(-24 * time.Hour),
+		EndDate:    now,
+		UserID:     "user-42",
+	}
+
+	_, err = dao.ListToolUsage(filter, "calls", 100)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // TestListToolUsage_NoAccounts short-circuits to an empty list (no query issued).
 func TestListToolUsage_NoAccounts(t *testing.T) {
 	dao := &ConversationDao{}

@@ -28,6 +28,13 @@ type AlarmConfiguration struct {
 	MetricTypeFilter string `yaml:"metric_type_filter,omitempty" json:"metric_type_filter,omitempty"`
 	ResourceType     string `yaml:"resource_type,omitempty" json:"resource_type,omitempty"`
 
+	// MetricLabelFilters pins metric-label equality filters that are part of
+	// the template's identity — e.g. response_code_class="5xx" for an
+	// error-rate alert. Unlike Dimensions (which scope the alert to one
+	// resource at recommendation time), these are constants of the template
+	// itself. GCP-only; unused by AWS/Azure.
+	MetricLabelFilters map[string]string `yaml:"metric_label_filters,omitempty" json:"metric_label_filters,omitempty"`
+
 	// Metric math fields (for multi-metric alarms with expressions)
 	Metrics []MetricQuery `yaml:"metrics,omitempty" json:"metrics,omitempty"` // Metric queries for metric math
 
@@ -102,6 +109,11 @@ type AlarmCreationConfig struct {
 	MetricTypeFilter string `json:"metric_type_filter,omitempty"`
 	ResourceType     string `json:"resource_type,omitempty"`
 
+	// MetricLabelFilters carries the template's pinned metric-label filters
+	// (see AlarmConfiguration.MetricLabelFilters) into the stored alarm config
+	// so Create Alert scopes to the right label values (e.g. 5xx only).
+	MetricLabelFilters map[string]string `json:"metric_label_filters,omitempty"`
+
 	// Metric math fields (for multi-metric alarms with expressions)
 	Metrics []MetricQueryConfig `json:"metrics,omitempty"`
 
@@ -112,6 +124,11 @@ type AlarmCreationConfig struct {
 	Threshold          float64 `json:"threshold"`
 	ComparisonOperator string  `json:"comparison_operator"`
 	TreatMissingData   string  `json:"treat_missing_data"`
+
+	// NotificationTargets are attached to the alarm at creation: SNS topic ARNs
+	// (AWS AlarmActions), notification channel resource names (GCP), or action
+	// group resource IDs (Azure). Optional — an empty list creates a silent alarm.
+	NotificationTargets []string `json:"notification_targets,omitempty"`
 }
 
 // MetricQueryConfig represents a metric query for alarm creation (runtime version with resolved dimensions)

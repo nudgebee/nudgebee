@@ -33,6 +33,12 @@ type metricsListCacheEntry struct {
 
 var metricsListCache sync.Map
 
+// metricsLabelValuesCache caches metrics_label_values results. It is deliberately
+// separate from metricsListCache: a struct key cannot collide the way a delimited
+// string one can. Prometheus recording-rule metric names contain colons
+// (`cluster:node_cpu:ratio`) and the filter is free-form, so joining the fields
+// with ':' would make (filter "a:b", metric "c") and (filter "a", metric "b:c")
+// the same key and serve one lookup's values for the other.
 type labelValuesCacheKey struct {
 	accountId string
 	provider  string
@@ -60,6 +66,11 @@ const ToolSearchMetrics = "search_metrics"
 
 // maxPrometheusMetricsInResponse caps the number of metrics returned by metrics_list when LLM filtering is active.
 const maxPrometheusMetricsInResponse = 100
+
+// maxPrometheusLabelValuesInResponse caps metrics_label_values output. Labels like
+// `instance` or `pod` are high-cardinality; an uncapped list would blow the
+// scratchpad budget for no benefit, since the agent only needs enough values to
+// recognise the naming scheme and pick the one it is looking for.
 const maxPrometheusLabelValuesInResponse = 100
 
 func init() {
@@ -71,6 +82,9 @@ func init() {
 	})
 	core.RegisterNBToolFactory(ToolMetricsLabelsList, func(accountId string) (core.NBTool, error) {
 		return ListMetricsLabelsTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolMetricsLabelValues, func(accountId string) (core.NBTool, error) {
+		return ListMetricsLabelValuesTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolSearchMetrics, func(accountId string) (core.NBTool, error) {
 		return SearchMetricsTool{}, nil
@@ -127,6 +141,18 @@ func (m PrometheusExecuteTool) InputSchema() core.ToolSchema {
 	}
 }
 
+// prometheusNoDataMessage is the guidance returned when every query in a batch
+// comes back empty. This is the exact point where the agent would otherwise start
+// guessing successive label names, so it must route each named-resource shape to
+// the discovery tool that can actually resolve it.
+func prometheusNoDataMessage(query string) string {
+	return fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range."+
+		" If this is for a named workload, call %s (workload + namespace) to get the families that actually have series for it, then rebuild the query."+
+		" For any other named resource (a node, an instance, a device), do NOT guess another label name — call %s with the label you are filtering on to see the values it actually takes, then filter on a real value."+
+		" Otherwise use %s/%s for keyword discovery.",
+		query, ToolMetricsSeriesMatch, ToolMetricsLabelValues, ToolMetricsList, ToolSearchMetrics)
+}
+
 // promQLParser is a shared, stateless PromQL parser. ParseExpr builds a fresh
 // internal parser per call from the (immutable) Options, so a single package-level
 // instance is safe to reuse concurrently and avoids per-call allocations.
@@ -165,6 +191,12 @@ func validatePromQLSyntax(query string) string {
 				"If the query already IS PromQL, check metric name spelling and label syntax: labels must use '=', '!=', '=~', '!~' inside '{}'."
 		case strings.Contains(msg, "parse error") && strings.Contains(msg, "["):
 			hint = "Hint: Duration format is invalid. Use 's', 'm', 'h', 'd' suffixes (e.g., [5m], [1h])."
+		case strings.Contains(msg, "unknown function") && strings.Contains(msg, "label_values"):
+			// label_values() is a Grafana template-variable function, not PromQL. The
+			// model reaches for it when it needs a label's values, so name the tool
+			// that actually provides them rather than listing PromQL functions.
+			hint = "Hint: `label_values()` is a Grafana template function, not PromQL — it will never parse here. " +
+				"To list the values a label takes, call the " + ToolMetricsLabelValues + " tool instead (label, optional filter)."
 		case strings.Contains(msg, "unknown function"):
 			hint = "Hint: Unknown PromQL function. Common functions: rate(), irate(), increase(), sum(), avg(), max(), min(), histogram_quantile()."
 		default:
@@ -395,7 +427,7 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	if allEmpty {
 		slog.Info("prometheus: all queries returned empty data", "query", input.Command, "parentAgentId", nbRequestContext.ParentAgentId)
 		return core.NBToolResponse{
-			Data:       fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range. If this is for a named workload, call metrics_series_match (workload + namespace) to get the families that actually have series for it, then rebuild the query. Otherwise use metrics_list/search_metrics for keyword discovery.", input.Command),
+			Data:       prometheusNoDataMessage(input.Command),
 			Status:     core.NBToolResponseStatusSuccess,
 			References: []core.NBToolResponseReference{core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "query"}, "Query Prometheus", map[string]string{"tab": "4", "subtab": "2"}, input.Command)},
 		}, nil
@@ -760,7 +792,7 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 			esQueryIsIndexPattern = true
 		}
 		if indexPattern == "" {
-			if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics"); err == nil && obsProvider.DefaultIndex != "" {
+			if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics", ""); err == nil && obsProvider.DefaultIndex != "" {
 				indexPattern = obsProvider.DefaultIndex
 			}
 		}
@@ -1488,7 +1520,7 @@ func getESMetricIndexPattern(nbRequestContext core.NbToolContext, defaultIndex s
 		return defaultIndex
 	}
 	if nbRequestContext.Ctx != nil {
-		if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics"); err == nil && obsProvider.DefaultIndex != "" {
+		if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics", ""); err == nil && obsProvider.DefaultIndex != "" {
 			return obsProvider.DefaultIndex
 		}
 	}

@@ -6,12 +6,19 @@ import (
 	"github.com/spf13/viper"
 )
 
-// TestOrchestratorModeDefaultsToLean guards the k8s/aws orchestrator default.
+// TestOrchestratorModeDefaultsToLean guards the k8s orchestrator default.
 //
 // Lean is the mode dev/QA has run without regression, and it is materially cheaper
 // per investigation than delegating (reduced tool core + minimal prompt). The default
 // lives in a viper.SetDefault call, so a silent revert to "delegating" would not fail
 // anything else — hence this test.
+//
+// This arrived from prod (hotfix 4c8f3d92e) covering k8s AND aws. The aws row is
+// dropped here rather than carried across the backmerge: #32503 Phase 1 collapsed the
+// cloud orchestrators to lean-only, so llm_server_aws_orchestrator_mode no longer
+// exists on main — no struct field, no SetDefault, and zero readers. A test asserting
+// a deleted key's default guards nothing; the invariant it stood for (cloud is lean)
+// is now structural rather than configurable.
 //
 // The env vars are cleared rather than skipped around: viper.AutomaticEnv() is active
 // (config.go), so an operator override in the ambient environment would otherwise
@@ -27,7 +34,6 @@ func TestOrchestratorModeDefaultsToLean(t *testing.T) {
 		envVar string
 	}{
 		{"llm_server_k8s_orchestrator_mode", "LLM_SERVER_K8S_ORCHESTRATOR_MODE"},
-		{"llm_server_aws_orchestrator_mode", "LLM_SERVER_AWS_ORCHESTRATOR_MODE"},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
 			t.Setenv(tc.envVar, "")

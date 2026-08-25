@@ -5,6 +5,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
 	"strings"
@@ -22,13 +23,16 @@ import (
 func TestLogAgent_BuildToolList(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 
-	mustHave := []string{ResourceSearchAgentName, FetchLogsAgentName}
+	mustHave := []string{tools.ToolResourceSearch, FetchLogsAgentName}
 	mustNotHave := []string{
 		"query_generator",
 		"datadog_log_query",
 		"kubectl_intent_generator",
 		"kubectl_execute",
 	}
+	// NB: the logs agent holds the direct resource_search_execute tool (mustHave
+	// above), never the removed resource_search agent — it resolves pod names via
+	// the tool without the extra LLM translate hop.
 
 	cases := []struct {
 		name     string
@@ -46,8 +50,8 @@ func TestLogAgent_BuildToolList(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			agent := newLogAgent("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
 				services_server.ObservabilityProvider{Provider: tc.provider})
-			tools := agent.GetSupportedTools(ctx)
-			names := toolNamesForTest(tools)
+			tl := agent.GetSupportedTools(ctx)
+			names := toolNamesForTest(tl)
 
 			for _, expected := range mustHave {
 				assert.Contains(t, names, expected,
@@ -126,6 +130,35 @@ func TestClassifyLogMode(t *testing.T) {
 			original: "",
 			want:     logModeInvestigation,
 		},
+
+		// Enumeration's noun list must cover symptom words, not just the
+		// "error" family — otherwise a plain listing request that happens to
+		// describe pods as "failing"/"broken"/"crashed" (rather than saying
+		// "errors") falls through to the weak-symptom investigation tier and
+		// gets routed into the heavier mandatory-shell_execute workflow for
+		// what the user framed as "just list them".
+		{"list failing pods", "list the pods that are failing in namespace nudgebee", "", logModeEnumeration},
+		{"show broken services", "show me the broken services in prod", "", logModeEnumeration},
+		{"list crashed pods", "list crashed pods in nudgebee", "", logModeEnumeration},
+
+		// Stem/wildcard forms (fail\w*, crash\w*) and optional plurals catch
+		// variants a literal enumeration would miss: past tense ("failed", not
+		// just "failures"/"failing"), compound crash states that don't end at
+		// a word boundary after "crash" ("crashloopbackoff"), and singular
+		// nouns ("exception"/"issue", not just their plurals). Without these,
+		// "list the pods that failed" fell all the way through to ROUTINE —
+		// worse than the investigation-mode misroute this file's earlier
+		// cases fix, since ROUTINE doesn't even get the weak-symptom fallback.
+		{"list failed pods", "list the pods that failed in namespace nudgebee", "", logModeEnumeration},
+		{"list crashloopbackoff pods", "list crashloopbackoff pods in nudgebee", "", logModeEnumeration},
+		{"list exception singular", "list exception in api-server", "", logModeEnumeration},
+		{"show issue singular", "show issue with pod", "", logModeEnumeration},
+
+		// A strong causal ask must win even when an enumeration verb also
+		// appears in the same query — enumeration checking first (as it did
+		// before this fix) would discard the causal ask entirely.
+		{"causal ask co-occurring with enumeration verb", "show me the errors and explain why it broke", "", logModeInvestigation},
+		{"why are pods failing", "why are the pods failing in cron-scheduler", "", logModeInvestigation},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -161,7 +194,7 @@ func TestSystemPrompt_NarrowsToOneMode(t *testing.T) {
 			mustHave: []string{
 				"MODE = INVESTIGATION",
 				"last 24h, limit 5000",
-				"Mandatory shell_execute pass",
+				"Mandatory diagnostic sweep",
 				"Time-window framing",
 				"Label anchor",
 				"all logs for app <name>",
@@ -185,7 +218,7 @@ func TestSystemPrompt_NarrowsToOneMode(t *testing.T) {
 				"Label anchor",
 			},
 			mustMiss: []string{
-				"Mandatory shell_execute pass",
+				"Mandatory diagnostic sweep",
 				"last 24h, limit 5000",
 				"Per-signature aggregation pipeline",
 				"Time-window framing",
@@ -206,7 +239,7 @@ func TestSystemPrompt_NarrowsToOneMode(t *testing.T) {
 			},
 			mustMiss: []string{
 				"Workflow (Routine):",
-				"Mandatory shell_execute pass",
+				"Mandatory diagnostic sweep",
 				"last 24h, limit 5000",
 				"Time-window framing",
 				// jq pipeline was removed (broke after JSONL flatten).

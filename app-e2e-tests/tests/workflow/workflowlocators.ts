@@ -5,6 +5,7 @@ export class WorkflowLocators extends CommonLocators {
   readonly autoPilotSidenavBtn: Locator;
   readonly createAutomationBtn: Locator;
   readonly createNewAutomationModal: Locator;
+  readonly createAccountSelect: Locator;
   readonly makeAnAutomationCard: Locator;
 
   readonly editTitleBtn: Locator;
@@ -67,6 +68,7 @@ export class WorkflowLocators extends CommonLocators {
     this.autoPilotSidenavBtn = page.locator("#auto-pilot-sidenavbutton");
     this.createAutomationBtn = page.locator("#workflow-listing-create-btn");
     this.createNewAutomationModal = page.getByText("Create a New Automation", { exact: true });
+    this.createAccountSelect = page.locator("#wf-create-account-select");
     this.makeAnAutomationCard = page.getByText("Make an Automation", { exact: true });
 
     this.editTitleBtn = page.locator('button:has([data-testid="EditIcon"])').first();

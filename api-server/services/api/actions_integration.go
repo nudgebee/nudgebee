@@ -12,6 +12,7 @@ import (
 	"nudgebee/services/observability"
 	"nudgebee/services/security"
 	"nudgebee/services/user"
+	"nudgebee/services/vmpackage"
 	"strings"
 	"time"
 
@@ -372,6 +373,16 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		return
 
 	case "webhook_subject_mappings_sync":
+		// Tenant admins and super admins only. The sync rewrites the tenant-wide
+		// webhook_subject_mappings table from every resolved incident in the
+		// connected Datadog / PagerDuty / Zenduty account, and that table decides
+		// which subject future alerts are attributed to — a bad sync silently
+		// misroutes the tenant's incidents. actions.yaml lists the same two roles;
+		// this is the half that holds if the action is ever reached another way.
+		if sc := ctx.GetSecurityContext(); !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
+			c.JSON(403, common.ErrorActionForbidden("only tenant admins can sync webhook subject mappings"))
+			return
+		}
 		var request integrations.WebhookSubjectMappingsSyncRequest
 		if err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -483,6 +494,32 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			"options": result.Options,
 			"message": result.Message,
 		})
+		return
+
+	case "integrations_upsert_discovery_target":
+		reqMap, ok := actionPayload.Input["request"].(map[string]any)
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid or missing request payload"))
+			return
+		}
+		var request vmpackage.DiscoveryTargetRequest
+		if err := common.UnmarshalMapToStruct(reqMap, &request); err != nil {
+			slog.Error("integrations: failed to decode request", "error", err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := common.ValidateStruct(request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := vmpackage.UpsertDiscoveryTarget(ctx, request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, map[string]string{"status": "success"})
 		return
 
 	default:

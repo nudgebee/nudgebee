@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { Box, Typography, Alert } from '@mui/material';
 import { Input } from '@ui/Input';
@@ -44,7 +44,7 @@ const formatDate = (dateString) => {
   return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 };
 
-// Global Context Card Component
+// Account Context Card Component
 const GlobalContextCard = ({ context, onEdit, onDelete, hasAccess, showAccount }) => {
   const MENU_ITEMS = [
     {
@@ -165,7 +165,7 @@ GlobalContextCard.propTypes = {
   showAccount: PropTypes.bool,
 };
 
-// Create/Edit Global Context Modal Component
+// Create/Edit Account Context Modal Component
 const GlobalContextFormModal = ({ open, onClose, onSubmit, editContext, loading }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -259,7 +259,7 @@ const GlobalContextFormModal = ({ open, onClose, onSubmit, editContext, loading 
 
   const handleSubmit = () => {
     if (!name.trim()) {
-      snackbar.error('Please enter a name for the global context');
+      snackbar.error('Please enter a name for the account context');
       return;
     }
     onSubmit({
@@ -273,7 +273,7 @@ const GlobalContextFormModal = ({ open, onClose, onSubmit, editContext, loading 
     <Modal
       open={open}
       handleClose={onClose}
-      title={editContext ? 'Edit Global Context' : 'Create Global Context'}
+      title={editContext ? 'Edit Account Context' : 'Create Account Context'}
       width='md'
       actionButtons={
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3], py: ds.space[3], px: ds.space[5] }}>
@@ -306,7 +306,7 @@ const GlobalContextFormModal = ({ open, onClose, onSubmit, editContext, loading 
             label='Name'
             required
             size='sm'
-            placeholder='Enter a name for this global context (eg: global_gc_01, tenant_knowledge)'
+            placeholder='Enter a name for this account context (eg: account_ctx_01, tenant_knowledge)'
             value={name}
             onChange={(next) => setName(next)}
           />
@@ -319,7 +319,7 @@ const GlobalContextFormModal = ({ open, onClose, onSubmit, editContext, loading 
             size='sm'
             type='textarea'
             rows={2}
-            placeholder='Enter a description for this global context'
+            placeholder='Enter a description for this account context'
             value={description}
             onChange={(next) => setDescription(next)}
           />
@@ -431,7 +431,7 @@ const GlobalContextFormModal = ({ open, onClose, onSubmit, editContext, loading 
             type='textarea'
             minRows={8}
             maxRows={15}
-            placeholder='Paste or type your global context content here...'
+            placeholder='Paste or type your account context content here...'
             value={content}
             onChange={(next) => setContent(next)}
           />
@@ -476,31 +476,45 @@ const GlobalContextTab = ({ accountId }) => {
 
   const hasAccess = !isTenantWide && hasWriteAccess(accountId);
 
-  const fetchGlobalContexts = async () => {
-    try {
-      setLoading(true);
-      const response = await apiGlobalContext.getGlobalContexts(accountId || '');
-      if (response.errors && response.errors.length > 0) {
-        setError('Failed to fetch global contexts');
-        snackbar.error('Failed to fetch global contexts');
-      } else if (response.data) {
-        setGlobalContexts(response.data);
-        setError(null);
-      } else {
-        setGlobalContexts([]);
+  // `isActive` lets callers (specifically the mount effect below) drop any
+  // state updates that come back after the effect cleanup fires. Event-driven
+  // callers (handleCreate/handleEdit/handleDelete refreshes) can omit it and
+  // get the default always-active predicate. Wrapped in useCallback for a
+  // stable reference across renders so it's safe to include in effect deps.
+  const fetchGlobalContexts = useCallback(
+    async (isActive = () => true) => {
+      try {
+        setLoading(true);
+        const response = await apiGlobalContext.getGlobalContexts(accountId || '');
+        if (!isActive()) return;
+        if (response.errors && response.errors.length > 0) {
+          setError('Failed to fetch account contexts');
+          snackbar.error('Failed to fetch account contexts');
+        } else if (response.data) {
+          setGlobalContexts(response.data);
+          setError(null);
+        } else {
+          setGlobalContexts([]);
+        }
+      } catch (err) {
+        if (!isActive()) return;
+        console.error('Error fetching account contexts:', err);
+        setError('An error occurred while fetching account contexts');
+        snackbar.error('An error occurred while fetching account contexts');
+      } finally {
+        if (isActive()) setLoading(false);
       }
-    } catch (err) {
-      console.error('Error fetching global contexts:', err);
-      setError('An error occurred while fetching global contexts');
-      snackbar.error('An error occurred while fetching global contexts');
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+    [accountId]
+  );
 
   useEffect(() => {
-    fetchGlobalContexts();
-  }, [accountId]);
+    let active = true;
+    fetchGlobalContexts(() => active);
+    return () => {
+      active = false;
+    };
+  }, [accountId, fetchGlobalContexts]);
 
   const handleCreate = () => {
     setSelectedContext(null);
@@ -513,18 +527,18 @@ const GlobalContextTab = ({ accountId }) => {
       setSubmitting(true);
       const response = await apiGlobalContext.getGlobalContext(accountId, context.id);
       if (response.errors && response.errors.length > 0) {
-        snackbar.error('Failed to fetch global context details');
+        snackbar.error('Failed to fetch account context details');
         return;
       }
       if (response.data) {
         setSelectedContext(response.data);
         setFormModalOpen(true);
       } else {
-        snackbar.error('Failed to fetch global context details');
+        snackbar.error('Failed to fetch account context details');
       }
     } catch (err) {
-      console.error('Error fetching global context:', err);
-      snackbar.error('An error occurred while fetching global context details');
+      console.error('Error fetching account context:', err);
+      snackbar.error('An error occurred while fetching account context details');
     } finally {
       setSubmitting(false);
     }
@@ -544,28 +558,28 @@ const GlobalContextTab = ({ accountId }) => {
         // Update existing
         response = await apiGlobalContext.updateGlobalContext(accountId, selectedContext.id, data);
         if (response.errors && response.errors.length > 0) {
-          const errorMessage = response.errors[0]?.message || 'Failed to update global context';
+          const errorMessage = response.errors[0]?.message || 'Failed to update account context';
           snackbar.error(errorMessage);
           return;
         }
-        snackbar.success('Global context updated successfully');
+        snackbar.success('Account context updated successfully');
       } else {
         // Create new
         response = await apiGlobalContext.createGlobalContext(accountId, data);
         if (response.errors && response.errors.length > 0) {
-          const errorMessage = response.errors[0]?.message || 'Failed to create global context';
+          const errorMessage = response.errors[0]?.message || 'Failed to create account context';
           snackbar.error(errorMessage);
           return;
         }
-        snackbar.success('Global context created successfully');
+        snackbar.success('Account context created successfully');
       }
 
       setFormModalOpen(false);
       setSelectedContext(null);
       fetchGlobalContexts();
     } catch (err) {
-      console.error('Error submitting global context:', err);
-      snackbar.error('An error occurred while saving the global context');
+      console.error('Error submitting account context:', err);
+      snackbar.error('An error occurred while saving the account context');
     } finally {
       setSubmitting(false);
     }
@@ -581,18 +595,18 @@ const GlobalContextTab = ({ accountId }) => {
       const response = await apiGlobalContext.deleteGlobalContext(accountId, selectedContext.id);
 
       if (response.errors && response.errors.length > 0) {
-        const errorMessage = response.errors[0]?.message || 'Failed to delete global context';
+        const errorMessage = response.errors[0]?.message || 'Failed to delete account context';
         snackbar.error(errorMessage);
         return;
       }
 
-      snackbar.success('Global context deleted successfully');
+      snackbar.success('Account context deleted successfully');
       setDeleteModalOpen(false);
       setSelectedContext(null);
       fetchGlobalContexts();
     } catch (err) {
-      console.error('Error deleting global context:', err);
-      snackbar.error('An error occurred while deleting the global context');
+      console.error('Error deleting account context:', err);
+      snackbar.error('An error occurred while deleting the account context');
     } finally {
       setSubmitting(false);
     }
@@ -638,7 +652,7 @@ const GlobalContextTab = ({ accountId }) => {
                 fontFamily: 'var(--ds-font-display)',
               }}
             >
-              Global Context
+              Account Context
             </Typography>
             <ScopeChip accountId={accountId} />
           </Box>
@@ -659,16 +673,16 @@ const GlobalContextTab = ({ accountId }) => {
             icon={<SafeIcon src={PlusIcon} alt='plus' width={14} height={14} />}
             onClick={handleCreate}
             disabled={globalContexts.length > 0}
-            tooltip={globalContexts.length > 0 ? 'Only one global context is allowed per account' : undefined}
+            tooltip={globalContexts.length > 0 ? 'Only one account context is allowed per account' : undefined}
           >
-            Add Global Context
+            Add Account Context
           </Button>
         )}
       </WidgetCard>
 
       {isTenantWide && (
         <Alert severity='info' sx={{ mb: ds.space[4] }}>
-          Viewing all global contexts across this tenant. Switch to an account-scoped page to create, edit, or delete.
+          Viewing all account contexts across this tenant. Switch to an account-scoped page to create, edit, or delete.
         </Alert>
       )}
 
@@ -695,27 +709,21 @@ const GlobalContextTab = ({ accountId }) => {
               mb: ds.space[2],
             }}
           >
-            No global contexts found
+            No account contexts found
           </Typography>
           <Typography
             sx={{
               fontSize: 'var(--ds-text-small)',
               color: 'var(--ds-gray-500)',
-              mb: ds.space[4],
               textAlign: 'center',
             }}
           >
-            Create a global context to provide the AI with account-specific knowledge. Only one global context is allowed per account.
+            Create an account context to provide the AI with account-specific knowledge. Only one account context is allowed per account.
           </Typography>
-          {hasAccess && (
-            <Button tone='secondary' size='sm' onClick={handleCreate}>
-              Create Global Context
-            </Button>
-          )}
         </Box>
       )}
 
-      {/* Global Context List */}
+      {/* Account Context List */}
       {globalContexts.length > 0 && (
         <Box>
           {globalContexts.map((context) => (
@@ -750,12 +758,12 @@ const GlobalContextTab = ({ accountId }) => {
           setDeleteModalOpen(false);
           setSelectedContext(null);
         }}
-        title={`Delete Global Context: ${selectedContext?.name || ''}`}
+        title={`Delete Account Context: ${selectedContext?.name || ''}`}
         width='sm'
       >
         <Box sx={{ padding: ds.space[5] }}>
           <Typography variant='body1' sx={{ mb: ds.space[4] }}>
-            Are you sure you want to delete the global context &quot;<strong>{selectedContext?.name}</strong>&quot;?
+            Are you sure you want to delete the account context &quot;<strong>{selectedContext?.name}</strong>&quot;?
           </Typography>
           <Typography variant='body2' sx={{ color: 'var(--ds-gray-500)', mb: ds.space[5] }}>
             This action cannot be undone. The AI planner for this account will no longer have access to this context.

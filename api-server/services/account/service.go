@@ -33,9 +33,35 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/subscription/armsubscription"
 )
 
+// A fleet of bare VMs reached through an agent rather than a provider API —
+// the same shape as `kubernetes` (one since V104), except the agent fronts
+// machines instead of a cluster and there is no cloud account behind it to
+// authenticate against or bill from.
+//
+// The two columns carry different facts and must not be collapsed:
+// account_type says *what* is managed (vm / kubernetes / cloud), cloud_provider
+// says *who runs it* (SelfHosted / AWS / GCP / ...). That split is what lets a
+// VM fleet discovered by an agent inside a cloud VPC keep account_type `vm`
+// while naming its real provider.
+//
+// account_type is a free-text column with no database constraint, and several
+// integrations already define their own values (jira, slack, snowflake, ...),
+// so adding one needs no migration. cloud_provider does have one — see V848.
+const (
+	AccountTypeVM             = "vm"
+	AccountProviderSelfHosted = "SelfHosted"
+)
+
 const (
 	// azureCostManagementWarningMsg is the message shown when Azure credentials lack Cost Management API access
 	azureCostManagementWarningMsg = "Azure account created successfully, but the credentials do not have permission to access the Azure Cost Management API. Please grant the 'Cost Management Reader' role or equivalent to enable cost tracking. You can update the permissions in the Azure Portal and the system will automatically detect the change on the next sync."
+
+	// azureBulkOnboardConcurrency caps how many subscriptions AzureBulkOnboard
+	// creates at once, and so how much of the connection pool (20 per pod) one
+	// caller-sized request can hold. CreateAccount runs several queries and spawns
+	// its own initial-load goroutine, and the subscription count comes straight
+	// from the request body.
+	azureBulkOnboardConcurrency = 4
 )
 
 type GcpOnboardRequest struct {
@@ -736,6 +762,24 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 		query.AgentAccessSecretV2 = k8sAccessSecretHashed
 		query.CloudProvider = "K8s"
 		query.AccountType = "kubernetes"
+	} else if strings.EqualFold(query.CloudProvider, AccountProviderSelfHosted) || strings.EqualFold(query.AccountType, AccountTypeVM) {
+		// A self-hosted VM fleet has no cloud behind it: no provider API to
+		// authenticate against, no billing source, no region. So unlike the cloud
+		// branch below there is nothing to validate.
+		//
+		// It also issues no credentials, unlike the kubernetes branch above. A
+		// cluster has exactly one agent, so minting its credentials alongside the
+		// account is natural; a VM account holds *many* foragers, one per network
+		// segment, and each gets its own identity from the VM agent integration
+		// (CreateProxyAgent) together with its install command. An account-level
+		// credential here would be a second, unused identity implying a one-agent
+		// model we do not have.
+		//
+		// Without this branch the request falls through to "unknown cloud
+		// provider", which is why VM fleets are currently onboarded as kubernetes
+		// accounts (see #35683).
+		query.CloudProvider = AccountProviderSelfHosted
+		query.AccountType = AccountTypeVM
 	} else if strings.EqualFold("cloud", query.AccountType) || slices.Contains([]string{"aws", "azure", "gcp", "cloudfoundry"}, strings.ToLower(query.CloudProvider)) {
 		switch query.CloudProvider {
 		case "AWS":
@@ -2034,6 +2078,9 @@ func ListAccounts(ctx *security.RequestContext, tenantId string) ([]models.Accou
 		}
 		rowsMap = append(rowsMap, row)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return rowsMap, nil
 }
@@ -2072,6 +2119,9 @@ func ListActiveAccountsWithConnectedAgents(ctx *security.RequestContext, tenantI
 		}
 		rowsMap = append(rowsMap, row)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return rowsMap, nil
 }
@@ -2099,6 +2149,9 @@ func GetActiveK8sNodeCountForAccounts(tenantId string) ([]models.AccountNodeCoun
 			return nil, err
 		}
 		accountNodeCounts = append(accountNodeCounts, accountNodeCount)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return accountNodeCounts, nil
@@ -2332,10 +2385,13 @@ func AzureBulkOnboard(context *security.RequestContext, query AzureBulkOnboardRe
 	if len(remaining) > 0 {
 		results := make([]AzureBulkOnboardAccountResult, len(remaining))
 		var wg sync.WaitGroup
+		sem := make(chan struct{}, azureBulkOnboardConcurrency)
 		for i, sub := range remaining {
 			wg.Add(1)
 			go func(idx int, sub AzureBulkOnboardSubInput) {
 				defer wg.Done()
+				sem <- struct{}{}        // Acquire token
+				defer func() { <-sem }() // Release token
 				result := AzureBulkOnboardAccountResult{SubscriptionID: sub.SubscriptionID}
 
 				displayName := sub.DisplayName

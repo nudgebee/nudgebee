@@ -26,11 +26,8 @@ func TestLogAnalysisCode2_ExecuteLogAnalysis(t *testing.T) {
 	codeAnalysis := CodeAgent2{}
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{})
 
-	// Use workspace mode with local code-analysis server
-	config.Config.LlmServerWorkspaceEnabled = true
 	config.Config.LlmServerWorkspaceLocalUrl = "http://localhost:8080"
 	defer func() {
-		config.Config.LlmServerWorkspaceEnabled = false
 		config.Config.LlmServerWorkspaceLocalUrl = ""
 	}()
 
@@ -63,124 +60,13 @@ func TestLogAnalysisCode2_ExecuteLogAnalysis(t *testing.T) {
 
 }
 
-func TestLogAnalysisCode2_ExecuteShellCommand(t *testing.T) {
-	codeAnalysis := CodeAgent2{}
-	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{})
-	config.Config.LlmServerCodeAgentMode = "remote-cli"
-
-	testCases :=
-		[]struct {
-			SessionId string
-			Query     string
-			AccountId string
-			UserId    string
-		}{
-			{
-				SessionId: "ut-code-chain-2",
-				AccountId: os.Getenv("TEST_ACCOUNT"),
-				UserId:    os.Getenv("TEST_USER"),
-				Query:     "Can you show files in temp directory",
-			},
-		}
-	for _, tc := range testCases {
-
-		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
-		assert.Nil(t, err)
-
-		resp, err := core.HandleConversationSessionRequest(sc, codeAnalysis, tc.UserId, tc.AccountId, tc.SessionId, tc.Query)
-		assert.Nil(t, err)
-		assert.NotNil(t, resp)
-		assert.Equal(t, resp.AgentName, codeAnalysis.GetName())
-		assert.NotEmpty(t, resp.Query)
-		assert.NotNil(t, resp.AgentStepResponse)
-		assert.Greater(t, len(resp.Response), 0)
-	}
-
-}
-
-func TestCodeAgent2_UsingCli(t *testing.T) {
-
-	codeAnalysis := CodeAgent2{}
-	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{})
-
-	testCases :=
-		[]struct {
-			SessionId string
-			Query     string
-			AccountId string
-			UserId    string
-		}{
-			{
-				SessionId: "ut-code-chain-1.1",
-				AccountId: os.Getenv("TEST_ACCOUNT"),
-				UserId:    os.Getenv("TEST_USER"),
-				Query:     logAnalysisGitData2,
-			},
-		}
-	for _, tc := range testCases {
-
-		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
-		assert.Nil(t, err)
-
-		resp, err := core.HandleConversationSessionRequest(sc, codeAnalysis, tc.UserId, tc.AccountId, tc.SessionId, tc.Query)
-		assert.Nil(t, err)
-		assert.NotNil(t, resp)
-		assert.Equal(t, resp.AgentName, codeAnalysis.GetName())
-		assert.NotEmpty(t, resp.Query)
-		assert.NotNil(t, resp.AgentStepResponse)
-		assert.Greater(t, len(resp.Response), 0)
-	}
-}
-
-func TestLogAnalysisCode1_ExecuteShellCommand(t *testing.T) {
-	codeAnalysis := CodeAgent2{}
-	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{})
-	config.Config.LlmServerCodeAgentMode = "remote-cli"
-
-	testCases :=
-		[]struct {
-			SessionId string
-			Query     string
-			AccountId string
-			UserId    string
-		}{
-			{
-				SessionId: "ut-code-chain-2",
-				AccountId: os.Getenv("TEST_ACCOUNT"),
-				UserId:    os.Getenv("TEST_USER"),
-				Query:     "Can you list last 5 pr from nudgebee/nudgebee",
-			},
-		}
-	for _, tc := range testCases {
-
-		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
-		assert.Nil(t, err)
-
-		resp, err := core.HandleConversationSessionRequest(sc, codeAnalysis, tc.UserId, tc.AccountId, tc.SessionId, tc.Query)
-		assert.Nil(t, err)
-		assert.NotNil(t, resp)
-		assert.Equal(t, resp.AgentName, codeAnalysis.GetName())
-		assert.NotEmpty(t, resp.Query)
-		assert.NotNil(t, resp.AgentStepResponse)
-		assert.Greater(t, len(resp.Response), 0)
-	}
-
-}
-
 // TestCodeAgent2_UsingWorkspace is an integration test that runs code analysis
-// via the workspace /analyze endpoint instead of launching a pod.
-// Requires: K8s access, workspace pod running, DB access, git credentials configured.
+// via the workspace /analyze endpoint. Requires: K8s access, workspace pod
+// running, DB access, git credentials configured.
 // Run with: go test -v -run TestCodeAgent2_UsingWorkspace ./agents/...
-
 func TestCodeAgent2_UsingWorkspace(t *testing.T) {
 	codeAnalysis := CodeAgent2{}
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{})
-
-	// Enable workspace mode
-	config.Config.LlmServerWorkspaceEnabled = true
-	defer func() {
-		config.Config.LlmServerWorkspaceEnabled = false
-	}()
 
 	testCases := []struct {
 		name      string
@@ -211,6 +97,3 @@ func TestCodeAgent2_UsingWorkspace(t *testing.T) {
 		})
 	}
 }
-
-// TestCodeAgent2_WorkspaceResponseParsing tests that the workspace response
-// from /analyze is correctly parsed into the expected output format.

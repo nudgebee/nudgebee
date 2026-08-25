@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -9,14 +10,121 @@ import (
 	"strings"
 	"time"
 
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
-	"nudgebee/llm/memory"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
 	"github.com/lithammer/fuzzysearch/fuzzy"
 	"github.com/tmc/langchaingo/llms"
+)
+
+// Memory-v2 seam. These package-level function pointers default to no-op /
+// disabled implementations so this file compiles clean without importing
+// nudgebee/llm/ee/memory. In prod (which ships the full source tree)
+// agents/core/memory_v2.go's init() reassigns each pointer to a real impl
+// that reaches into memory.Default(), memory.ComposeEnabledFor, and the
+// typed stores. In OSS builds memory_v2.go is stripped by .oss-exclude and
+// these no-op defaults stay in force — every memory-v2 code path becomes
+// a legacy fall-through.
+//
+// Per-tenant gating is preserved: isMemoryV2ActiveFn calls through to
+// memory.ComposeEnabledFor(tenantID) in EE, which reads the MEMORY_MODULE
+// feature-flag row for the tenant. Tenants not enrolled in MEMORY_MODULE
+// still take the legacy path even on EE binaries — unchanged from before
+// the seam was introduced.
+var (
+	// isMemoryV2ActiveFn reports whether memory-v2 is enabled for this
+	// tenant. OSS default: always false.
+	isMemoryV2ActiveFn = func(tenantID string) bool { return false }
+
+	// recordExtractedFactViaMemoryV2Fn writes a single extracted fact to
+	// the memory-v2 typed stores. OSS default: returns an error so the
+	// caller records stats.Errors and moves on.
+	recordExtractedFactViaMemoryV2Fn = func(
+		ctx *security.RequestContext,
+		agent NBAgent,
+		request NBAgentRequest,
+		fact MemoryFact,
+		memType MemoryType,
+		confidence float64,
+	) error {
+		return errors.New("memory-v2 unavailable in this build")
+	}
+
+	// extractSessionWorkingMemoryFn runs the v2 session extractor after
+	// each turn (writes a fresh per-session working-memory blob). OSS
+	// default: no-op — session-working-memory feature simply doesn't run.
+	extractSessionWorkingMemoryFn = func(
+		ctx *security.RequestContext,
+		request NBAgentRequest,
+		response string,
+		notebook string,
+	) {
+	}
+
+	// composeMemoryV2BlockFn returns the rendered <memory> block the
+	// executor injects into the agent prompt when memoryModuleActive is
+	// true. OSS default: empty string — the executor's !memoryModuleActive
+	// branch (legacy retrieveAndBuildMemoryNotebook path) is exclusively
+	// taken in OSS, so this hook is never actually reached in an OSS
+	// binary; the no-op is just what makes the file compile.
+	composeMemoryV2BlockFn = func(
+		ctx *security.RequestContext,
+		request NBAgentRequest,
+		agent NBAgent,
+	) string {
+		return ""
+	}
+
+	// loadTypedStoreDedupContextFn returns existing collective facts matching
+	// this turn's query, as a bullet list, for the extractor's write-time dedup
+	// hint (Layer 1). EE override (memory_v2.go) reads the collective store via
+	// Postgres full-text search — current + authoritative, NOT the async RAG
+	// index — because in module-active mode the legacy llm_conversation_memory
+	// table is empty, which left the extractor blind and re-emitting known facts.
+	// OSS default: empty (no memory module).
+	loadTypedStoreDedupContextFn = func(
+		ctx *security.RequestContext,
+		request NBAgentRequest,
+	) string {
+		return ""
+	}
+
+	// dedupCanonicalSubjectFn is the Layer-2 pre-write dedup check: given a
+	// freshly extracted fact, it returns the subject of an existing collective
+	// fact that duplicates it under a DIFFERENT subject (Postgres FTS candidate +
+	// body token-overlap over threshold), so the caller rewrites this fact's
+	// subject to collide on the Upsert key instead of inserting a duplicate row.
+	// Empty = no cross-subject duplicate. OSS default: no-op.
+	dedupCanonicalSubjectFn = func(
+		ctx *security.RequestContext,
+		request NBAgentRequest,
+		fact MemoryFact,
+	) string {
+		return ""
+	}
+
+	// RegisterMemoryMaintenanceJobsFn registers the memory-v2 scheduled
+	// maintenance jobs (SQL-only bundle in memory/maintenance + LLM-driven
+	// bundle in this package). Called from cmd/main.go AFTER config load
+	// and scheduler bootstrap so config.Config.MemoryMaintenance* values
+	// are populated and the scheduler singleton is ready. OSS default:
+	// no-op.
+	//
+	// Split as a hook instead of a package `init()` on the EE-only file
+	// because the old direct call in cmd/main.go was after config load —
+	// moving it to package init() would have run it before config was
+	// populated, breaking the config-driven schedule fields.
+	RegisterMemoryMaintenanceJobsFn = func() {}
+
+	// StartMemoryRagProjectorsFn spawns the memory-v2 RAG projector goroutines
+	// (Patterns / Decisions / Collective) — write-side outbox workers that
+	// drain rag_projected_at IS NULL rows into rag-server. Called from
+	// cmd/main.go with the process syncCtx so a shutdown cancels the drain
+	// loops. Gated internally on MemoryModuleEnabled && MemoryRagEnabled.
+	// OSS default: no-op.
+	StartMemoryRagProjectorsFn = func(_ context.Context) {}
 )
 
 // memoryDedupSimilarityThreshold is the minimum RAG cosine-similarity score at which a
@@ -41,6 +149,52 @@ var ephemeralMemoryPattern = regexp.MustCompile(
 	`(?i)\b(age[ds]?\s*(up\s+to\s+)?\d+[smhdw]|\d+[smhdw]\d+[smhdw]|\d+\s+replicas?|index\s+\d+|single\s+replica)\b`,
 )
 
+// imageRefPattern matches container image references pinned to a specific
+// timestamp/sha tag — "true for this deploy, stale the next". These leak in as
+// "architectural facts" ("X uses image reg/…:2026-06-09T…") but are not durable.
+var imageRefPattern = regexp.MustCompile(`(?i)(:20\d\d-\d\d-\d\d[t_-]|@sha256:)`)
+
+// bareCommandPattern matches content that is essentially a shell command
+// (starts with a CLI verb + args) rather than a durable, tenant-specific
+// insight. A real fact that *uses* a command starts with prose ("Namespaces
+// stuck in Terminating can be deleted using kubectl patch…") and is kept; a
+// bare "kubectl get pods -w" is rejected as noise. Deliberately case-sensitive:
+// a command is typed lowercase, whereas sentence-case prose ("Docker images
+// should…") capitalises the tool name and must not be filtered. The lowercase-
+// prose edge ("git is the VCS we use") is caught by proseIndicatorWords.
+var bareCommandPattern = regexp.MustCompile(`^\s*(kubectl|helm|docker|awk|sed|grep|curl|aws|gcloud|az|git|kubectx|kubens|psql|kubeconfig)(\s|$)`)
+
+// proseIndicatorWords are common English function words. Content that opens
+// with a tool name but contains ANY of these somewhere is prose *about* the
+// tool ("docker container is configured…"), not a command invocation — a bare
+// command practically never contains one. Scanning the whole content (rather
+// than only the word right after the tool) avoids the endless follower-word
+// whack-a-mole. Words that commonly appear as command flags/values ("in", "to",
+// "it") are deliberately excluded to avoid keeping real commands.
+var proseIndicatorWords = map[string]struct{}{
+	"is": {}, "are": {}, "was": {}, "were": {}, "be": {}, "been": {}, "being": {},
+	"has": {}, "have": {}, "had": {}, "does": {}, "did": {},
+	"can": {}, "could": {}, "should": {}, "must": {}, "will": {}, "would": {}, "may": {}, "might": {},
+	"the": {}, "an": {}, "this": {}, "that": {}, "these": {}, "those": {}, "its": {}, "their": {},
+	"for": {}, "with": {}, "from": {}, "because": {}, "when": {}, "where": {}, "which": {}, "than": {},
+	"uses": {}, "used": {}, "provides": {}, "needs": {}, "requires": {}, "allows": {},
+	"supports": {}, "handles": {}, "manages": {}, "lets": {}, "configured": {}, "enabled": {},
+	"should've": {}, "and": {}, "or": {},
+}
+
+// hasProseIndicator reports whether any whitespace-delimited token (stripped of
+// surrounding punctuation) is an English function word — the signal that the
+// text is prose rather than a bare command.
+func hasProseIndicator(s string) bool {
+	for _, f := range strings.Fields(s) {
+		w := strings.Trim(strings.ToLower(f), ",.;:!?()'\"`")
+		if _, ok := proseIndicatorWords[w]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // junkMemoryPrefixes rejects stray markdown headers, scratchpad tags, and
 // template fragments that occasionally leak from the extractor LLM. The
 // single "#" entry covers every markdown header level (`##`, `###`, ...).
@@ -58,11 +212,29 @@ var junkMemoryExact = map[string]struct{}{
 	"[]": {}, "{}": {}, "nothing": {}, "nothing to extract": {},
 }
 
+// IsAcceptableMemoryContent runs the content-sanitization filters (junk,
+// placeholder, markdown/template fragments, ephemeral state, pinned image
+// tags, bare commands, length floors) on externally-supplied memory content.
+// The conversation extractor applies these before Record; the memory-injection
+// API calls this at its boundary so a finding pushed by a service can't bypass
+// the sanitization (the `memory` package can't import this package, so the
+// check has to run before Record is called). Pass memType="user_preference"
+// with a non-empty subject to get the typed-preference relaxation (a pref
+// value is naturally short).
+func IsAcceptableMemoryContent(content, memType, subject string) (bool, string) {
+	return isAcceptableMemoryFact(MemoryFact{Content: content, Type: memType, Subject: subject})
+}
+
 // isAcceptableMemoryFact decides whether an extracted fact is worth saving
 // to the long-term memory store. The second return value is a short reason
 // for observability and unit-test readability.
-func isAcceptableMemoryFact(content string) (bool, string) {
-	trimmed := strings.TrimSpace(content)
+//
+// For user_preference facts with a non-empty Subject (typed key), content is
+// the preference VALUE — naturally short ("nudgebee", "loki", "kubectl top")
+// and the (subject, value) pair is the unit of meaning. The length / word
+// floors that filter free-form notes don't apply.
+func isAcceptableMemoryFact(fact MemoryFact) (bool, string) {
+	trimmed := strings.TrimSpace(fact.Content)
 	if trimmed == "" {
 		return false, "empty"
 	}
@@ -78,16 +250,35 @@ func isAcceptableMemoryFact(content string) (bool, string) {
 		}
 	}
 
-	if len([]rune(trimmed)) < minMemoryContentChars {
-		return false, "too_short"
-	}
-
-	if len(strings.Fields(trimmed)) < minMemoryContentWords {
-		return false, "too_few_words"
+	typedPreference := strings.EqualFold(fact.Type, string(MemoryTypeUserPreference)) && fact.Subject != ""
+	if !typedPreference {
+		if len([]rune(trimmed)) < minMemoryContentChars {
+			return false, "too_short"
+		}
+		if len(strings.Fields(trimmed)) < minMemoryContentWords {
+			return false, "too_few_words"
+		}
 	}
 
 	if ephemeralMemoryPattern.MatchString(trimmed) {
 		return false, "ephemeral_state"
+	}
+
+	// A pinned image tag / sha is ephemeral — stale on the next deploy. Skip the
+	// check for preferences (a user could legitimately pin a value).
+	if !typedPreference && imageRefPattern.MatchString(trimmed) {
+		return false, "ephemeral_image_ref"
+	}
+
+	// A bare command is not a durable insight. Preferences are exempt (a user's
+	// preferred command, e.g. "kubectl top nodes", is a legitimate value).
+	// Content that opens with a tool name is a command UNLESS it reads as prose
+	// about the tool ("docker container is configured…") — detected by any
+	// English function word anywhere in the text. Strip wrapping backticks so a
+	// fenced `kubectl get pods` is still caught.
+	trimmedCmd := strings.Trim(trimmed, "`")
+	if !typedPreference && bareCommandPattern.MatchString(trimmedCmd) && !hasProseIndicator(trimmedCmd) {
+		return false, "bare_command"
 	}
 
 	return true, ""
@@ -105,12 +296,19 @@ func isAcceptableMemoryFact(content string) (bool, string) {
 func filterAcceptableMemories(memories []LongTermMemory) []LongTermMemory {
 	out := memories[:0]
 	for _, m := range memories {
-		if ok, _ := isAcceptableMemoryFact(m.Content); ok {
+		if ok, _ := isAcceptableMemoryFact(MemoryFact{Content: m.Content, Type: string(m.MemoryType)}); ok {
 			out = append(out, m)
 		}
 	}
 	return out
 }
+
+// errMemoryRecordSkipped marks a memory-v2 Record outcome that the typed-store
+// grounding gate intentionally refused (e.g. a Decisions fact with no
+// user-agreement quote, or an empty subject). The EE bridge maps the store's
+// sentinels onto this so the caller counts a benign skip as Skipped, not Errors,
+// without this OSS-kept file importing ee/memory.
+var errMemoryRecordSkipped = errors.New("memory-v2: record skipped by grounding gate")
 
 // MemoryExtractionStats tracks outcomes of a single extraction run for
 // observability and test verification.
@@ -124,27 +322,43 @@ type MemoryExtractionStats struct {
 	Errors       int // save/dedup failures
 }
 
-func extractLongTermMemory(ctx *security.RequestContext, request NBAgentRequest, response string, notebook string) MemoryExtractionStats {
+func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, response string, notebook string, toolCallCount int) MemoryExtractionStats {
 	var stats MemoryExtractionStats
 	// When the Memory Module is enabled for this tenant, skip legacy extraction
 	// entirely. Extracted facts go to the new typed stores via the bridge; the
 	// legacy llm_conversation_memory table and its RAG index are not written.
 	tenantID := ctx.GetSecurityContext().GetTenantId()
-	memoryModuleActive := memory.ComposeEnabledFor(tenantID)
-	// Load semantically similar existing memories to prevent duplicates.
-	// Using the current query gives the LLM the most relevant existing knowledge for deduplication,
-	// rather than an arbitrary window of the 25 most recently inserted memories.
-	dedupQuery := request.Query
-	if response != "" && len(response) < 500 {
-		dedupQuery = request.Query + " " + response
-	}
-	existingMemories, err := GetConversationDao().LoadLongTermMemories(request.AccountId, dedupQuery, 10)
+	memoryModuleActive := isMemoryV2ActiveFn(tenantID)
+
+	// Layer-1 dedup: show the extractor the existing knowledge so it does not
+	// re-emit facts already stored. This MUST read from where facts actually
+	// live. In module-active mode facts are in the typed stores (collective) and
+	// the legacy llm_conversation_memory table stays empty — reading it left the
+	// extractor blind (the Q15 accumulation), so module-active reads the typed
+	// store via Postgres full-text search (loadTypedStoreDedupContextFn), while
+	// legacy mode keeps the llm_conversation_memory similarity read.
 	existingMemoriesStr := "None"
-	if err == nil && len(existingMemories) > 0 {
-		existingMemoriesStr = "- " + strings.Join(existingMemories, "\n- ")
+	if memoryModuleActive {
+		if dedup := strings.TrimSpace(loadTypedStoreDedupContextFn(ctx, request)); dedup != "" {
+			existingMemoriesStr = dedup
+		}
+	} else {
+		dedupQuery := request.Query
+		if response != "" && len(response) < 500 {
+			dedupQuery = request.Query + " " + response
+		}
+		if existingMemories, err := GetConversationDao().LoadLongTermMemories(request.AccountId, dedupQuery, 10); err == nil && len(existingMemories) > 0 {
+			existingMemoriesStr = "- " + strings.Join(existingMemories, "\n- ")
+		}
 	}
 
-	promptTemplate := prompts_repo.GetPrompt(prompts_repo.PromptMemoryExtractor)
+	promptTemplate, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptMemoryExtractor, request.AccountId)
+	if promptErr != nil {
+		// Extracting against an empty instruction would write junk into long-term
+		// memory, which is worse than extracting nothing.
+		ctx.GetLogger().Error("memory: extractor prompt failed to load, skipping extraction", "error", promptErr)
+		return MemoryExtractionStats{}
+	}
 
 	// Create the dynamic human message
 	humanPrompt := fmt.Sprintf("Original Question: %s\nFinal Resolution: %s\nInvestigation Notes (Notebook): %s\n\nExisting Knowledge (Facts already learned):\n%s",
@@ -188,10 +402,16 @@ func extractLongTermMemory(ctx *security.RequestContext, request NBAgentRequest,
 			stats.Extracted = len(parsedFacts)
 			ctx.GetLogger().Info("agentexecutor: long-term memory extraction complete", "facts_found", stats.Extracted)
 
-			// When no investigation notebook exists (e.g., conversational/tool agents),
-			// restrict extraction to user_preference facts only to avoid saving low-quality
-			// observations that lack the full investigation context needed to validate them.
-			preferenceOnly := notebook == ""
+			// Grounding gate: restrict extraction to user_preference facts (which are
+			// user-STATED, not environment claims) when the turn lacks investigation
+			// grounding — either no notebook context, OR zero tool calls executed.
+			// A zero-tool answer's factual claims (metric/resource/label/config
+			// identifiers) come from the model or injected memory/KB, not from fresh
+			// verification against the live source; promoting them to durable facts
+			// creates a hallucination feedback loop — an unverified guess becomes
+			// "knowledge" and is re-injected on the next similar question. User
+			// preferences are exempt: they assert intent, not environment truth.
+			preferenceOnly := notebook == "" || toolCallCount == 0
 
 			for _, fact := range parsedFacts {
 				memType := MemoryTypeInvestigationResult
@@ -215,7 +435,7 @@ func extractLongTermMemory(ctx *security.RequestContext, request NBAgentRequest,
 				// useful knowledge. Applied before the update / bridge /
 				// legacy branches so low-quality content never reaches any
 				// store. See isAcceptableMemoryFact for the full rule set.
-				if ok, reason := isAcceptableMemoryFact(fact.Content); !ok {
+				if ok, reason := isAcceptableMemoryFact(fact); !ok {
 					ctx.GetLogger().Info("agentexecutor: rejecting low-quality memory fact",
 						"reason", reason,
 						"content", fact.Content,
@@ -225,25 +445,47 @@ func extractLongTermMemory(ctx *security.RequestContext, request NBAgentRequest,
 					continue
 				}
 
-				if fact.IsUpdate {
-					// Handle UPDATE: old fact -> new fact
-					handleMemoryUpdate(ctx, request, fact)
-					stats.Updated++
-				} else if memoryModuleActive {
-					// New path: route the fact through the classifier into the
-					// typed stores. Legacy table + RAG index are not touched.
-					if berr := memory.BridgeFromLegacy(memory.LegacyMemoryFact{
-						TenantID:       tenantID,
-						UserID:         request.UserId,
-						ConversationID: request.ConversationId,
-						MemoryType:     string(memType),
-						Content:        fact.Content,
-					}); berr != nil {
-						ctx.GetLogger().Error("agentexecutor: typed-store bridge failed", "error", berr, "fact", fact.Content)
-						stats.Errors++
+				if memoryModuleActive {
+					// Layer-2 pre-write dedup: if this fact duplicates an existing
+					// one stored under a DIFFERENT subject, rewrite its subject to
+					// the canonical one so the Upsert refreshes that row instead of
+					// inserting a duplicate (the Q15 case: same metric, 3 subjects).
+					// Same-subject re-assertions already collide on the Upsert key.
+					if canon := dedupCanonicalSubjectFn(ctx, request, fact); canon != "" && !strings.EqualFold(canon, fact.Subject) {
+						ctx.GetLogger().Info("agentexecutor: dedup merged fact onto existing subject",
+							"extracted_subject", fact.Subject, "canonical_subject", canon)
+						fact.Subject = canon
+					}
+
+					// Module-active: every fact (new OR update) routes to the typed
+					// stores via the memory-v2 bridge. handleMemoryUpdate writes only
+					// the legacy llm_conversation_memory table, which is unused here —
+					// an IsUpdate fact routed there would vanish instead of refreshing
+					// the typed-store row. The collective/patterns Upsert refreshes
+					// body + bumps confidence on same-key re-assertion; a correction's
+					// fresh confidence wins via the Correction flag. The bridge's
+					// shape-conversion, super-admin user-id rescue, and agent-module
+					// resolution live in memory_v2.go so this OSS-kept file never
+					// references memory.ExtractedFact.
+					if berr := recordExtractedFactViaMemoryV2Fn(ctx, agent, request, fact, memType, groundedConfidence(memType, toolCallCount)); berr != nil {
+						if errors.Is(berr, errMemoryRecordSkipped) {
+							// Intended grounding-gate skip (e.g. a Decisions fact
+							// without a user-agreement quote), not a save failure.
+							ctx.GetLogger().Debug("agentexecutor: memory-v2 record skipped", "reason", berr, "subject", fact.Subject, "type", memType)
+							stats.Skipped++
+						} else {
+							ctx.GetLogger().Error("agentexecutor: memory-v2 record failed", "error", berr, "subject", fact.Subject, "type", memType)
+							stats.Errors++
+						}
+					} else if fact.IsUpdate {
+						stats.Updated++
 					} else {
 						stats.Saved++
 					}
+				} else if fact.IsUpdate {
+					// Legacy UPDATE: old fact -> new fact in llm_conversation_memory.
+					handleMemoryUpdate(ctx, request, fact)
+					stats.Updated++
 				} else {
 					// Legacy path: similarity dedup + save to llm_conversation_memory
 					// + AddMemoryToRAG. Runs only when the memory module is off
@@ -293,6 +535,18 @@ func extractLongTermMemory(ctx *security.RequestContext, request NBAgentRequest,
 		"errors", stats.Errors,
 	)
 	return stats
+}
+
+// extractSessionWorkingMemory runs after each turn to refresh the typed
+// per-session working-memory blob the next turn's Compose will inject
+// under <session_working_memory>. The real body lives in
+// agents/core/memory_v2.go (EE-only) and is wired in via
+// extractSessionWorkingMemoryFn's init override. In OSS builds the hook
+// stays at the no-op default and this function returns without doing
+// anything — the legacy path does not have an equivalent session-scoped
+// working-memory feature, so there is nothing to fall back to.
+func extractSessionWorkingMemory(ctx *security.RequestContext, request NBAgentRequest, response string, notebook string) {
+	extractSessionWorkingMemoryFn(ctx, request, response, notebook)
 }
 
 func parseMemoryFacts(ctx *security.RequestContext, content string) []MemoryFact {
@@ -518,6 +772,32 @@ func memoryConfidence(mt MemoryType) float64 {
 		return 0.7
 	default:
 		return 0.5
+	}
+}
+
+// groundedConfidence scores a fact's STORED confidence from its type and how
+// much live verification backed the turn. The collective composer reranks by
+// this confidence (rerankCollectiveByConfidence), so a claim the agent never
+// verified against a live source must rank below a tool-grounded one — that is
+// what prevents an unverified guess (e.g. a hallucinated metric name emitted
+// with zero tool calls) from outranking a metric-queried fact.
+//
+// User preferences are user-STATED intent, not environment truth, so grounding
+// does not apply. Every other type is scaled by the number of tool calls the
+// turn executed: 0 → heavy penalty (belt-and-suspenders with the extraction
+// grounding gate), 1 → light penalty, ≥2 → full type confidence.
+func groundedConfidence(mt MemoryType, toolCallCount int) float64 {
+	base := memoryConfidence(mt)
+	if mt == MemoryTypeUserPreference {
+		return base
+	}
+	switch toolCallCount {
+	case 0:
+		return base * 0.4
+	case 1:
+		return base * 0.85
+	default:
+		return base
 	}
 }
 

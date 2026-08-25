@@ -11,7 +11,7 @@ import { action } from 'src/utils/actionStyles';
 import { hasWriteAccess } from '@lib/auth';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
-import yaml1 from 'js-yaml';
+import * as yaml1 from 'js-yaml';
 import FilterDropdown from '@ui/FilterDropdown';
 import {
   awsInstanceCategory,

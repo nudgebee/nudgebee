@@ -61,14 +61,24 @@ What type of issue would you like to create?
 
 ### For Feature Request
 
-Ask or infer from context:
+Ask or infer from context. **The web form is the source of truth for this schema** —
+these mirror `.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml` one for one.
 
 1. **Title**: Short descriptive title for the feature
-2. **Summary** (required): Brief explanation of the feature
-3. **Basic Example** (required): Specific examples of how the feature would work
-4. **Drawbacks** (required): Potential drawbacks or impacts
-5. **Unresolved Questions** (optional): Questions that remain unresolved
-6. **Reference Issues** (optional): Related issue numbers
+2. **Function** (required): Troubleshooting / collectors · AI · Integrations · Notifications / tickets / optimize · UI / API / auth · Platform · Not sure
+3. **Who asked for this** (required): Customer — named account · Prospect — active deal · Sales / field feedback · Support — recurring ticket · Our own judgement · Internal / team need. **Never invent a customer** — "Our own judgement" is valid and common.
+4. **Summary** (required): Brief explanation of the feature
+5. **What this unblocks** (required): The account, deal, renewal or support load behind it — or a stated bet on product direction
+6. **How we will know it worked** (required): The observable change after it ships; a number is best
+7. **What we are not doing instead** (required): The trade-off accepted. "Nothing" is legitimate for small work
+8. **Basic Example** (optional): Specific examples of how the feature would work
+9. **Drawbacks** (optional): Potential drawbacks or impacts
+10. **Unresolved questions** (optional): Questions that remain unresolved
+11. **Parent / epic** (optional): The larger piece of work this slices, as `#<n>`
+12. **Related work** (optional): One link per line, prefixed with the relationship — `Part of #123` · `Blocked by #123` · `Blocks #123` · `Related to #123`
+
+If you cannot answer 5, 6 or 7 from context, **ask** rather than inventing plausible
+text — a fabricated customer or metric survives into prioritisation as if it were evidence.
 
 ### For Bug Report
 
@@ -101,47 +111,91 @@ Based on the type, format the issue body in markdown:
 
 ### Feature Request Body
 
+**The web form is the source of truth for this schema.** GitHub renders
+`.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml` as `###` headings whose text matches each
+field's `label`. Match them exactly so form-filed and skill-filed issues parse the same.
+
 ```markdown
-## Summary
+### Function
+{function}
+
+### Who asked for this
+{source}
+
+### Summary
 {summary}
 
-## Basic Example
-{basic_example}
+### What this unblocks
+{unblocks}
 
-## Drawbacks
-{drawbacks}
+### How we will know it worked
+{success}
 
-## Unresolved Questions
+### What we are not doing instead
+{tradeoff}
+
+### Basic Example
+{basic_example or "None"}
+
+### Drawbacks
+{drawbacks or "None"}
+
+### Unresolved questions
 {unresolved_questions or "None"}
 
-## Reference Issues
-{reference_issues or "None"}
+### Parent / epic
+{parent or "None"}
+
+### Related work
+{related or "None"}
 ```
 
 ### Bug Report Body
 
+**The web form is the source of truth for this schema.** GitHub renders
+`.github/ISSUE_TEMPLATE/BUG-REPORT.yml` as `###` headings whose text matches each
+field's `label` exactly. Emit the same headings, in the same order, with the same
+capitalisation, so an issue filed by this skill is indistinguishable from one filed
+through the form. Use `###`, not `##`, and do not rename the headings.
+
+Omit any optional heading you have nothing for rather than writing "N/A" — an empty
+section is worse than an absent one.
+
 ```markdown
-## Description
+### Environment
+{Exactly one of: Production | QA / Test | Dev | Local only | Not sure}
+
+### Description
 {description}
 
-## Reproduction URL
-{reproduction_url}
+### Impact
+- **Who is affected**: {all tenants / specific feature users / dev-only / etc.}
+- **Severity**: {what the user can't do, or what they see incorrectly}
+- **Since when**: {date or version, "unknown" if not known}
 
-## Reproduction Steps
+### Link
+{URL to the affected page, dashboard or conversation. Omit the heading if none.}
+
+### Reproduction steps
 {reproduction_steps}
 
-## Screenshots
-{screenshots or "N/A"}
+### Logs
+{logs — omit the heading if none}
 
-## Logs
-```
-{logs or "N/A"}
+### Screenshots
+{screenshots — omit the heading if none}
+
+### Client details
+{Browser / OS, e.g. "Chrome 128 / macOS". UI bugs only — omit for backend bugs.}
 ```
 
-## Environment
-- **Browsers**: {browsers or "N/A"}
-- **OS**: {os or "N/A"}
-```
+`Environment`, `Description`, `Impact` and `Reproduction steps` are required by the
+form: always emit all four, writing "unknown" where you must. `Environment` must be
+one of the five literal dropdown options above, spelled exactly — any other string
+will not match what the form produces.
+
+**If you change the form, change this block in the same PR.** The two drifting apart
+is what made half the bug corpus unparseable in the first place.
 
 ### Spike Request Body
 

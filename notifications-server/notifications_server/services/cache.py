@@ -438,6 +438,29 @@ class Cache:
             LOG.exception(f"Error caching user name for {user_id}: {e}")
             return False
 
+    def get_cached_team_domain(self, team_id):
+        self._ensure_connection()
+        if not self.redis_client:
+            return None
+        try:
+            return self.redis_client.get(f"slack_team_domain:{team_id}")
+        except redis.RedisError as e:
+            LOG.exception(f"Error reading cached team domain for {team_id}: {e}")
+            return None
+
+    def cache_team_domain(self, team_id, domain, ttl_seconds=86400):
+        """Empty string is a valid value — it negative-caches a workspace whose
+        domain could not be resolved, so failures don't retry the API per mention."""
+        self._ensure_connection()
+        if not self.redis_client or domain is None:
+            return False
+        try:
+            self.redis_client.set(f"slack_team_domain:{team_id}", domain, ex=ttl_seconds)
+            return True
+        except redis.RedisError as e:
+            LOG.exception(f"Error caching team domain for {team_id}: {e}")
+            return False
+
     def mark_event_seen(self, event_id, ttl_seconds=600):
         """True the first time an event id is seen, False on Slack's retries.
         Fails open (True) when Redis is unavailable — the storage layer upserts,

@@ -959,9 +959,17 @@ func (s *cloudLoadBalancingService) targetPoolToResource(projectID, region strin
 func (s *cloudLoadBalancingService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
+	// Load GCP alarm templates for Load Balancing (https_lb_rule metrics)
+	lbAlarmTemplates, err := LoadGCPAlarmTemplates(ServiceNameCloudLoadBalancing)
+	if err != nil {
+		ctx.GetLogger().Warn("Failed to load GCP Load Balancing alarm templates", "error", err)
+		lbAlarmTemplates = []providers.AlarmTemplate{} // Continue with other recommendations
+	}
+
 	for _, resource := range existingResources {
 		switch resource.Type {
 		case "forwarding-rule":
+			recommendations = append(recommendations, s.getForwardingRuleAlarmRecommendations(ctx, account, resource, lbAlarmTemplates)...)
 			recs := s.getForwardingRuleRecommendations(resource)
 			recommendations = append(recommendations, recs...)
 		case "backend-service":
@@ -971,6 +979,69 @@ func (s *cloudLoadBalancingService) GetRecommendations(ctx providers.CloudProvid
 	}
 
 	return recommendations, nil
+}
+
+// getForwardingRuleAlarmRecommendations runs the alarm-missing check for one
+// forwarding rule. https_lb_rule metrics only exist for rules that front an
+// HTTP(S) proxy, so TCP/UDP/internal rules are skipped — an alert on them
+// would watch a series that never has data.
+func (s *cloudLoadBalancingService) getForwardingRuleAlarmRecommendations(ctx providers.CloudProviderContext, account providers.Account, resource providers.Resource, templates []providers.AlarmTemplate) []providers.Recommendation {
+	target, _ := resource.Meta["target"].(string)
+	if !strings.Contains(target, "/targetHttpProxies/") && !strings.Contains(target, "/targetHttpsProxies/") {
+		return nil
+	}
+
+	recommendations := []providers.Recommendation{}
+
+	// GCP Monitoring's forwarding_rule_name label carries the short rule name;
+	// resource.Id is a composite {project}/{scope}/forwardingRules/{name}
+	resourceFilter := GetResourceFilterForService(ServiceNameCloudLoadBalancing, resource.Name)
+	for _, template := range templates {
+		isMissing, err := IsAlarmMissing(resource, template, resourceFilter)
+		if err != nil {
+			ctx.GetLogger().Warn("Failed to check if alarm is missing", "error", err, "template", template.Name)
+			continue
+		}
+
+		if !isMissing {
+			// Alarm already exists, skip
+			continue
+		}
+
+		// All Load Balancing thresholds are static
+		threshold := template.ThresholdRules.Default
+
+		alarmConfig := buildGCPAlarmConfig(resource, template, threshold, []providers.AlarmDimension{
+			{Name: "forwarding_rule_name", Value: resource.Name},
+		})
+
+		recommendations = append(recommendations, providers.Recommendation{
+			CategoryName: providers.RecommendationCategoryConfiguration,
+			RuleName:     template.Name,
+			Severity:     providers.RecommendationSeverityFromString(template.Severity),
+			Savings:      0,
+			Data: map[string]any{
+				"rule_id":      resource.Id,
+				"rule_name":    resource.Name,
+				"rule_region":  resource.Region,
+				"scheme":       resource.Meta["load_balancing_scheme"],
+				"metric_name":  template.Configuration.MetricName,
+				"threshold":    threshold,
+				"alarm_config": alarmConfig,
+				"alarm_type":   template.AlarmType,
+				"reason":       template.Description,
+				"metric_type":  template.MetricType,
+				"project_id":   account.AccountNumber,
+			},
+			Action:              providers.RecommendationActionModify,
+			ResourceServiceName: resource.ServiceName,
+			ResourceId:          resource.Id,
+			ResourceType:        resource.Type,
+			ResourceRegion:      resource.Region,
+		})
+	}
+
+	return recommendations
 }
 
 func (s *cloudLoadBalancingService) getForwardingRuleRecommendations(resource providers.Resource) []providers.Recommendation {

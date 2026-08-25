@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/common"
 )
 
 // ============================================================
@@ -91,10 +92,7 @@ func ToolOutputsNoErrors(t *testing.T, resp core.NBAgentResponse) bool {
 		// Only check the first ~200 bytes — substring inside a long log
 		// dump is fine, but if the response *starts* with an error marker
 		// that's a real failure.
-		head := out
-		if len(head) > 200 {
-			head = head[:200]
-		}
+		head := common.TruncateHead(out, 200)
 		for _, p := range prefixes {
 			if strings.HasPrefix(head, p) {
 				t.Errorf("tool call #%d (%s) returned error-like output: %s",

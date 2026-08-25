@@ -111,6 +111,18 @@ func TestToolSource_ValidateConfig_RejectsMutatingCommand(t *testing.T) {
 		`rm -rf /tmp/blast`,
 		`gh release delete v1.0.0 --yes`,
 		`gh pr close 42`,
+		`glab mr merge 42`,
+		`glab mr note 42 --message "done"`,
+		`glab issue close 17`,
+		`glab ci retry 98765`,
+		`glab ci run --branch main`,
+		`glab release delete v1.0.0`,
+		// `glab api` takes an endpoint, not a verb, so these are only caught by
+		// the dedicated method/field patterns — not the verb alternation.
+		`glab api -X DELETE projects/1/issues/2`,
+		`glab api --method POST projects/1/pipeline`,
+		`glab api projects/1/issues -f title=oops`,
+		`glab api projects/1/issues --field title=oops`,
 		`aws s3api delete-bucket --bucket mine`,
 		`aws ec2 terminate-instances --instance-ids i-1234`,
 		`terraform apply -auto-approve`,
@@ -139,6 +151,13 @@ func TestToolSource_ValidateConfig_AcceptsReadOnlyCommand(t *testing.T) {
 		`kubectl get deploy foo -o jsonpath='{.status.readyReplicas}'`,
 		`kubectl wait --for=condition=Complete --timeout=0 job/foo`,
 		`gh run view 12345 --repo o/r --json status -q .status`,
+		`glab ci get --repo g/p --pipeline-id 12345 --output json --jq .status`,
+		`glab ci list --repo g/p --status failed --per-page 5`,
+		`glab mr view 42 --repo g/p --output json --jq .state`,
+		// Plain GET through glab api stays allowed; "delete" appearing as prose
+		// inside a query string must not trip the -X matcher.
+		`glab api "projects/g%2Fp/pipelines?status=failed&per_page=5"`,
+		`glab api "projects/g%2Fp/issues?search=please+delete+this"`,
 		`aws cloudformation describe-stacks --stack-name s`,
 		`helm status my-release`,
 		`argocd app get my-app -o json`,

@@ -68,6 +68,7 @@ const ES_QUERY_LANGUAGES = [
  *   deleteDataOnQueryBlockDeletion?: (query_key: string) => void
  *   providerType?: string,
  *   initialEsIndex?: string,
+ *   limit?: number,
  * }} props
  */
 
@@ -92,6 +93,7 @@ const QueryModeSwitcher = ({
   providerType = '',
   initialQuery = '',
   initialEsIndex = '',
+  limit,
 }) => {
   const { assistantName } = useTenantBranding();
   const [mounted, setMounted] = useState(false);
@@ -400,6 +402,11 @@ const QueryModeSwitcher = ({
         // when the fetch runs against the override (e.g. Loki). Only sent when
         // overridden, mirroring the fetch path in KubernetesLogs.handleSubmit.
         ...(providerOverride ? { log_provider: providerOverride } : {}),
+        // Preview the query with the same row limit the fetch will use. Without
+        // it the backend falls back to the provider default (Pinot/Hive: 1000),
+        // so the generated SQL contradicted the toolbar's Limit selection — and
+        // in Code mode that SQL is executed verbatim, silently overriding it.
+        limit,
       });
 
       if (response?.data?.errors) {
@@ -570,11 +577,30 @@ const QueryModeSwitcher = ({
     }
     setQuery('');
     setHelperTextForLLM('');
-    if (logProvider == 'loki') {
+    if (
+      logProvider &&
+      logProvider !== 'datadog' &&
+      logProvider !== 'prometheus' &&
+      logProvider !== 'chronosphere' &&
+      logProvider !== 'victoria-metrics'
+    ) {
+      // Generic, provider-independent log query generation — covers loki, ES,
+      // signoz, newrelic, loggly, azure_app_insights, observe, pinot, hive, and
+      // any future log backend without a per-provider branch here. datadog and
+      // the metrics providers (handled below) aren't wired to this action; an
+      // unconfigured/k8s-only account is rejected server-side.
       apiAskNudgebee
-        .askAiGenerateLokiQuery({
+        .askAiGenerateLogQuery({
           account_id: accountId,
           query: generateQuestionText,
+          // Unlike the other log_provider call sites in this file, this is sent
+          // unconditionally (not gated on providerOverride) — an account with no
+          // single clear "default" among multiple integrations can leave
+          // defaultProvider empty/stale, which would silently drop the override
+          // and let the backend resolve a different provider than what the
+          // dropdown shows. Always pinning to the currently-selected logProvider
+          // removes that failure mode entirely.
+          ...(logProvider ? { log_provider: logProvider } : {}),
         })
         .then((res) => {
           const errors = res?.data?.errors || [];
@@ -586,7 +612,7 @@ const QueryModeSwitcher = ({
             }
             return;
           }
-          const data = res?.data?.data?.ai_generate_loki_query?.data;
+          const data = res?.data?.data?.ai_generate_log_query?.data;
           const sessionId = data?.session_id;
           if (sessionId) {
             startPolling(sessionId, (conv) => {
@@ -598,16 +624,13 @@ const QueryModeSwitcher = ({
                 const result = extractQueryResultFromConversation(conv);
                 if (result) {
                   const queryData = safeJSONParse(result.response);
-                  if (queryData) {
-                    const queries = Object.keys(queryData);
-                    if (queries.length > 0) {
-                      const key = uuidv4();
-                      setQuery(queries[0]);
-                      if (onQueryChange) {
-                        onQueryChange({ query: queries[0], queryKeys: [key] });
-                      }
-                      sendConversationIdAndLLMResponseToParent(result.conversationId, queryData[queries[0]]);
+                  if (queryData?.query) {
+                    const key = uuidv4();
+                    setQuery(queryData.query);
+                    if (onQueryChange) {
+                      onQueryChange({ query: queryData.query, queryKeys: [key] });
                     }
+                    sendConversationIdAndLLMResponseToParent(result.conversationId, queryData.query);
                   }
                 }
               } else {
@@ -617,16 +640,13 @@ const QueryModeSwitcher = ({
           } else {
             const query = data?.response[0] ?? '{}';
             const queryData = safeJSONParse(query);
-            if (queryData) {
-              const queries = Object.keys(queryData);
-              if (queries.length > 0) {
-                const key = uuidv4();
-                setQuery(queries[0]);
-                if (onQueryChange) {
-                  onQueryChange({ query: queries[0], queryKeys: [key] });
-                }
-                sendConversationIdAndLLMResponseToParent(data?.conversation_id ?? '', queryData[queries[0]]);
+            if (queryData?.query) {
+              const key = uuidv4();
+              setQuery(queryData.query);
+              if (onQueryChange) {
+                onQueryChange({ query: queryData.query, queryKeys: [key] });
               }
+              sendConversationIdAndLLMResponseToParent(data?.conversation_id ?? '', queryData.query);
             }
             setIsLoadingGenerateQuestionText(false);
             if (onAiLoadingChange) {
@@ -1007,6 +1027,7 @@ QueryModeSwitcher.propTypes = {
   setQueryOperations: PropTypes.func,
   setLlmQueryResponse: PropTypes.func,
   setConversationId: PropTypes.func,
+  limit: PropTypes.number,
   qLEditor: PropTypes.string,
   setQLEditor: PropTypes.func,
   allowMultipleQueries: PropTypes.bool,

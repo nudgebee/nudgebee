@@ -3,9 +3,9 @@ package agents
 import (
 	"fmt"
 	"log/slog"
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -30,7 +30,7 @@ func init() {
 func newMetricsAgent(ctx *security.RequestContext, accountId string, provider services_server.ObservabilityProvider) core.NBAgent {
 	var primaryAgent core.NBAgent
 
-	switch strings.ToLower(provider.Provider) {
+	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
 	case "datadog":
 		if metricsAgent, ok := core.GetNBAgent(ctx, "datadog_metrics", accountId, ""); ok {
 			primaryAgent = metricsAgent
@@ -43,6 +43,19 @@ func newMetricsAgent(ctx *security.RequestContext, accountId string, provider se
 		} else {
 			slog.Warn("metrics: elasticsearch metrics agent not found, falling back to prometheus", "accountId", accountId)
 		}
+	case "aws":
+		// Cloud-only AWS account with no first-class metrics provider — read CloudWatch
+		// metrics via the aws CLI.
+		primaryAgent = aws.NewAwsMetricsAgent(accountId)
+	case "gcp":
+		// Cloud-only GCP account with no first-class metrics provider — read Cloud
+		// Monitoring via the gcloud CLI (GetMetricsProvider resolves this from the
+		// account's cloud type; see cloudFallbackProvider).
+		primaryAgent = newGcpMetricsAgent(accountId)
+	case "azure":
+		// Cloud-only Azure account with no first-class metrics provider — read Azure
+		// Monitor via the az CLI.
+		primaryAgent = newAzureMetricsAgent(accountId)
 	}
 
 	if primaryAgent == nil {
@@ -122,6 +135,24 @@ func getMetricsAgent(ctx *security.RequestContext, accountId string) (core.NBAge
 	return newMetricsAgent(ctx, accountId, metricsConnectionProvider), nil
 }
 
+// buildLargeMetricsMessage builds the truncation notice returned to whichever
+// orchestrator invoked the metrics tool. The sub-agent's own ReAct loop has
+// already finished by this point (MetricsAgentTool.Call reaches this after
+// ExecuteAgentToolCall returns), so this message — not a sub-agent prompt — is
+// what the calling agent actually observes.
+//
+// The saved file holds the sub-agent's own answer text, not raw per-datapoint
+// data: ExecuteAgentToolCall's nested-call path never invokes the top-level
+// conversation flow that runs PostProcessResponse (see PrometheusAgent's
+// override in agent_prometheus.go — it's wired up but only fires when
+// Prometheus is the top-level agent for a whole conversation, e.g. a direct
+// `@prometheus` invocation, never through this wrapper). So the guidance here
+// is plain-text search, not a specific data shape, and applies the same way
+// regardless of which provider (Prometheus, Datadog, ...) is behind the call.
+func buildLargeMetricsMessage(savedLen int, outputFile, preview string) string {
+	return fmt.Sprintf("Output large (%d bytes). Saved to %s. Use shell_execute to search it (e.g. grep -n \"<keyword or timestamp>\" %s | head -20) instead of re-querying with a narrower time range.\nPreview: %s", savedLen, outputFile, outputFile, preview)
+}
+
 type MetricsAgentTool struct {
 }
 
@@ -184,13 +215,11 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		}
 		shouldSave := false
 
-		if config.Config.LlmServerShellToolEnabled {
-			if outputFile != "" {
-				shouldSave = true
-			} else if len(metricData) > 2000 {
-				shouldSave = true
-				outputFile = fmt.Sprintf("metrics_%d.txt", time.Now().UnixNano()) // Metrics often JSON/Text
-			}
+		if outputFile != "" {
+			shouldSave = true
+		} else if len(metricData) > 2000 {
+			shouldSave = true
+			outputFile = fmt.Sprintf("metrics_%d.txt", time.Now().UnixNano()) // Metrics often JSON/Text
 		}
 
 		if shouldSave {
@@ -206,8 +235,7 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 					Description: "Raw metrics data collected by system",
 				})
 
-				savedLen := len(metricData)
-				metricData = fmt.Sprintf("Output large (%d bytes). Saved to %s.\nPreview: %s", savedLen, outputFile, metricData)
+				metricData = buildLargeMetricsMessage(len(metricData), outputFile, metricData)
 			}
 		}
 

@@ -93,10 +93,24 @@ func ApplyThresholdSuggestion(ctx *security.RequestContext, req ApplyThresholdRe
 		newDuration = *req.AcceptDuration
 	}
 
-	rewritten, err := BuildRewrittenRule(sug, rule, newThreshold, newDuration)
+	// An explicit user-entered threshold/duration overrides the engine's recommendation type,
+	// so a "do not retune" verdict (investigate_signal / insufficient_data) can still be
+	// applied when an operator deliberately edits the value.
+	sugForApply := *sug
+	sugForApply.RecommendationType = applyRecommendationType(sug, rule, req.AcceptValue, req.AcceptDuration)
+
+	rewritten, err := BuildRewrittenRule(&sugForApply, rule, newThreshold, newDuration)
 	if err != nil {
 		_ = markApplyFailed(ctx.GetContext(), db, req, err.Error())
 		return ApplyThresholdResult{}, err
+	}
+	// Nothing to write — the recommendation changes neither threshold nor duration and the
+	// user did not override it. Fail loudly for both methods rather than raising an empty PR
+	// or reporting a no-op direct write as "applied".
+	if !rewritten.Disable && !rewritten.ChangedThreshold && !rewritten.ChangedDuration {
+		err := fmt.Errorf("nothing to apply: this suggestion does not change the threshold or duration (recommendation: %q) — enter a different threshold value to override it", sug.RecommendationType)
+		_ = markApplyFailed(ctx.GetContext(), db, req, err.Error())
+		return ApplyThresholdResult{Method: req.Method, Status: "failed", Error: err.Error()}, err
 	}
 
 	result := ApplyThresholdResult{
@@ -108,7 +122,7 @@ func ApplyThresholdSuggestion(ctx *security.RequestContext, req ApplyThresholdRe
 
 	switch req.Method {
 	case "direct":
-		if err := applyDirect(ctx, sug, rule, rewritten); err != nil {
+		if err := applyDirect(ctx, &sugForApply, rule, rewritten); err != nil {
 			_ = markApplyFailed(ctx.GetContext(), db, req, err.Error())
 			result.Status = "failed"
 			result.Error = err.Error()
@@ -120,7 +134,7 @@ func ApplyThresholdSuggestion(ctx *security.RequestContext, req ApplyThresholdRe
 		}
 
 	case "pr":
-		resolutionID, err := applyViaPR(ctx, sug, rule, rewritten, req)
+		resolutionID, err := applyViaPR(ctx, &sugForApply, rule, rewritten, req)
 		if err != nil {
 			_ = markApplyFailed(ctx.GetContext(), db, req, err.Error())
 			result.Status = "failed"
@@ -266,6 +280,18 @@ func GetThresholdApplyOptions(ctx *security.RequestContext, alertRuleKey, cloudA
 		CurrentThreshold: sug.CurrentThreshold,
 		NewThreshold:     sug.SuggestedThreshold,
 		Operator:         sug.Operator,
+	}
+
+	// quality_only rows have no numeric suggestion (metric not fetchable). A 'disable'
+	// verdict is threshold-free and can flow through the normal rewrite machinery; every
+	// other verdict has nothing mechanical to apply — mark both methods unavailable.
+	if sug.Status == "quality_only" && sug.RecommendationType != "disable" {
+		reason := "no numeric suggestion — verdict from firing history only; review the rule in the provider console"
+		out.Options = []ApplyOption{
+			{Method: "direct", Available: false, Reason: reason},
+			{Method: "pr", Available: false, Reason: reason},
+		}
+		return out, nil
 	}
 
 	rule, ruleErr := LoadSourceRule(ctx.GetContext(), db, cloudAccountID, sug.AlertName)
@@ -429,8 +455,14 @@ func applyViaPR(ctx *security.RequestContext, sug *ApplySuggestionRow, rule *Sou
 	if !promQLSources[sug.Source] {
 		return "", fmt.Errorf("PR apply is currently supported only for Prometheus/PagerDuty rule files; use direct apply for %q", sug.Source)
 	}
+	// The PR path rewrites the rule expression in the repo file and nothing else, so a change
+	// that leaves the expression untouched (disable, or a duration-only tune) has to go
+	// through direct apply.
+	if rewritten.Disable {
+		return "", fmt.Errorf("disabling a rule is not supported through the PR path; use direct apply")
+	}
 	if rule.Expr == rewritten.Expr {
-		return "", fmt.Errorf("no expression change to write to the PR")
+		return "", fmt.Errorf("no expression change to write to the PR — this change only affects the evaluation window (for:), which the PR path does not write; use direct apply")
 	}
 
 	return pr_raise.ApplyAlertThresholdPR(ctx, pr_raise.AlertThresholdPRRequest{

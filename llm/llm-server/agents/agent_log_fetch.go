@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
@@ -34,16 +33,19 @@ const FetchLogsAgentName = "fetch_logs"
 type FetchLogsAgent struct {
 	accountId string
 	provider  services_server.ObservabilityProvider
-
-	labelsOnce sync.Once
-	fields     []string
-	indices    map[string]string
 }
 
 func init() {
+	common.CacheCreateNamespace(logLabelsCacheNS, common.CacheNamespaceWithExpiration(logLabelsCacheTTL))
+	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
+		if err := common.CacheDeleteWithTag(logLabelsCacheNS, logLabelsAccountTag(accountId)); err != nil {
+			slog.Debug("fetch_logs: unable to evict cached labels", "error", err, "account_id", accountId)
+		}
+	})
+
 	toolDescription := `Fetches logs for a resource and returns raw log content. Translates a natural-language log question into the right backend query (Loki/Signoz/ES JSON, Datadog facet syntax, or kubectl flags) and runs it. Saves output to a workspace file so it can be downloaded or grepped via shell_execute. The caller is responsible for the strategy — fetch_logs runs whatever query the question implies; it does not add implicit error filters or widen windows on its own. For investigations, ask for a broad chronological window so the trigger (config reload, deploy, antecedent context) surfaces before the symptom storm.`
 	toolInput := "Provide a natural-language log question (e.g. 'errors in <service> last 1h', 'why is <service> slow', 'logs for pod <workload>-<6-10 hex>-<5 alnum> in namespace <ns>')."
-	toolOutput := "JSON envelope: {\"query\": \"<rendered backend query>\", \"logs\": \"<raw lines or preview>\", \"file_ref\": \"<workspace file path or empty>\", \"provider\": \"<loki|es|datadog|kubectl>\", \"bundle_signal\": \"<category-tagged crash-bundle sweep against file_ref, computed server-side when the query wording asked for error content (error/fail/crash/timeout/oom/…); empty when it didn't fire>\"}"
+	toolOutput := "JSON envelope: {\"query\": \"<rendered backend query>\", \"logs\": \"<raw lines or preview>\", \"file_ref\": \"<workspace file path or empty>\", \"provider\": \"<loki|es|datadog|kubectl>\", \"bundle_signal\": \"<category-tagged crash-bundle sweep against file_ref, computed server-side when the query wording asked for error content (error/fail/crash/timeout/oom/…); empty when it didn't fire>\", \"fallback_note\": \"<present only when the configured backend's query matched zero rows and the agent retried via kubectl — explains that this answer came from kubectl instead of the configured provider, so a zero-row backend result isn't mistaken for 'no logs exist'; absent otherwise>\"}"
 
 	core.RegisterNBAgentFactoryAsTool(FetchLogsAgentName, func(accountId string) (core.NBAgent, error) {
 		// Always construct v2. It embeds v1 and gates the canonical path on the
@@ -120,18 +122,103 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 		return errorResponse(a.GetName(), fmt.Errorf("kubectl_execute: %w", err)), nil
 	}
 	if matched, reason := looksLikeFetchError("kubectl", logs); matched {
+		if isNotFoundReason(reason) {
+			if hint := discoverKubectlCandidates(ctx, a.accountId, request, intent); hint != "" {
+				return errorResponse(a.GetName(), fmt.Errorf("kubectl fetch failed: %s. %s", reason, hint)), nil
+			}
+		}
 		return errorResponse(a.GetName(), fmt.Errorf("kubectl fetch failed: %s", reason)), nil
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "kubectl", logs)
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "kubectl", logs)
 	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}
-	return makeFetchResponse(a.GetName(), cmd, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+	return makeFetchResponse(a.GetName(), cmd, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+}
+
+// isNotFoundReason excludes forbidden/unauthorized/connection errors, which a
+// different resource guess can't fix.
+func isNotFoundReason(reason string) bool {
+	low := strings.ToLower(reason)
+	return strings.Contains(low, "notfound") || strings.Contains(low, "not found")
+}
+
+// discoverKubectlCandidates surfaces similarly-named resources as a hint on a
+// NotFound — it never retries or substitutes the target itself; the planner
+// decides whether to retry with corrected coordinates.
+func discoverKubectlCandidates(ctx *security.RequestContext, accountId string, request core.NBAgentRequest, intent kubectlLogQuery) string {
+	term := strings.TrimSpace(intent.ResourceName)
+	if idx := strings.LastIndex(term, "/"); idx != -1 {
+		term = term[idx+1:]
+	}
+	if term == "" {
+		return ""
+	}
+	cmd := fmt.Sprintf(
+		"kubectl get pods,deployments,statefulsets,daemonsets --all-namespaces --no-headers | grep -F -i -- '%s' | head -5",
+		escapeShellSingleQuoted(term),
+	)
+	out, _, err := callTool(ctx, accountId, request, tools.ToolExecuteKubectlCommand, cmd)
+	if err != nil {
+		ctx.GetLogger().Warn("fetch_logs: kubectl discovery call failed", "error", err, "resource_name", term)
+		return ""
+	}
+
+	return formatDiscoveryHint(parseKubectlDiscoveryCandidates(extractKubectlStdout(out)))
+}
+
+// extractKubectlStdout unwraps kubectl_execute's {"stdout":...} envelope,
+// falling back to the raw string when it isn't that JSON shape.
+func extractKubectlStdout(out string) string {
+	var env struct {
+		Stdout string `json:"stdout"`
+	}
+	if json.Unmarshal([]byte(out), &env) == nil && env.Stdout != "" {
+		return strings.TrimSpace(env.Stdout)
+	}
+	return strings.TrimSpace(out)
+}
+
+const discoveryCandidateCap = 5
+
+// parseKubectlDiscoveryCandidates parses `kubectl get <types> -A --no-headers`
+// lines ("<namespace> <kind>/<name> ...") into "<namespace>/<name> (<kind>)".
+func parseKubectlDiscoveryCandidates(stdout string) []string {
+	if stdout == "" {
+		return nil
+	}
+	candidates := make([]string, 0, discoveryCandidateCap)
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		namespace := fields[0]
+		typeName := strings.SplitN(fields[1], "/", 2)
+		if len(typeName) != 2 {
+			continue
+		}
+		candidates = append(candidates, fmt.Sprintf("%s/%s (%s)", namespace, typeName[1], typeName[0]))
+		if len(candidates) >= discoveryCandidateCap {
+			break
+		}
+	}
+	return candidates
+}
+
+func formatDiscoveryHint(candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Similar resources found via discovery: %s. If one of these matches your intent, retry fetch_logs with the corrected namespace/resource name.",
+		strings.Join(candidates, ", "),
+	)
 }
 
 func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
-	fields, indices := a.labelsAndIndices(provider)
+	fields, indices := fetchLabelsAndIndices(a.accountId, provider)
 	jsonQuery, err := generateLogQuery(ctx, request, provider.Provider, fields, indices, provider.DefaultIndex)
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("loki/es query extraction: %w", err)), nil
@@ -146,12 +233,12 @@ func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext
 	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
 	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}
-	return makeFetchResponse(a.GetName(), jsonQuery, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+	return makeFetchResponse(a.GetName(), jsonQuery, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
 func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
@@ -167,30 +254,99 @@ func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.Request
 	if matched, reason := looksLikeFetchError("datadog", logs); matched {
 		return errorResponse(a.GetName(), fmt.Errorf("datadog fetch failed: %s", reason)), nil
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "datadog", logs)
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "datadog", logs)
 	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}
-	return makeFetchResponse(a.GetName(), ddQuery, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+	return makeFetchResponse(a.GetName(), ddQuery, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
 }
 
-// labelsAndIndices feeds the query-generator prompt real labels/indices instead
-// of guesses. The labelsOnce memo lives on a shared instance and is only valid
-// for the account's own provider — an override fetches fresh.
-func (a *FetchLogsAgent) labelsAndIndices(provider services_server.ObservabilityProvider) ([]string, map[string]string) {
-	if strings.EqualFold(provider.Provider, a.provider.Provider) {
-		a.labelsOnce.Do(func() { a.fields, a.indices = fetchLabelsAndIndices(a.accountId, provider) })
-		return a.fields, a.indices
-	}
-	return fetchLabelsAndIndices(a.accountId, provider)
+// logLabelsCacheNS caches discovered backend labels (and, for ES, the account's
+// index map) per account+provider. The label list is a HARD input to the
+// query-generation prompt — buildCanonicalLogQueryPrompt renders it as the
+// `canonical_name → backend_field` block — so it must be resolved BEFORE the
+// LLM call, on the critical path of every fetch. Discovery costs an HTTP
+// round-trip to services-server, which in turn queries the backend's own label
+// API. The previous per-instance sync.Once memo never helped: FetchLogsAgent is
+// reconstructed on every invocation (GetNBAgent → newFetchLogsAgentV2), so two
+// fetches in one investigation meant two full discoveries.
+const logLabelsCacheNS = "llm_log_labels"
+
+// logLabelsCacheTTL is deliberately shorter than logProviderCacheTTL: labels
+// track the workloads actually emitting logs, so a newly deployed app or
+// namespace should become queryable within minutes rather than half an hour.
+const logLabelsCacheTTL = 15 * time.Minute
+
+// logLabels is the cache payload for fetchLabelsAndIndices.
+//
+// ExpiresAt is stamped into the payload rather than left to the cache store:
+// the default in_memory backend (bigcache) silently ignores per-entry
+// expiration — gocache's BigcacheStore.Set drops the option and bigcache has
+// only one global LifeWindow, shared by every namespace and fixed by whichever
+// namespace initialises first. Without this stamp, logLabelsCacheTTL would be
+// decorative and the real TTL would be someone else's constant. A zero
+// ExpiresAt (entry written by an older build) reads as already-expired, which
+// degrades to a refetch — the safe direction.
+type logLabels struct {
+	Fields    []string          `json:"fields"`
+	Indices   map[string]string `json:"indices"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+// logLabelsCacheKey scopes the entry to the exact discovery inputs. The provider
+// name is normalised so config whitespace/casing can't split the entry, and
+// DefaultIndex is part of the key because ES label discovery is index-scoped
+// (QueryLogLabels passes it through as the `index` request field) — two indices
+// on the same account legitimately yield different field sets.
+func logLabelsCacheKey(accountId string, provider services_server.ObservabilityProvider) string {
+	return fmt.Sprintf("%s:%s:%s", accountId, strings.ToLower(strings.TrimSpace(provider.Provider)), provider.DefaultIndex)
+}
+
+// logLabelsAccountTag groups every provider/index entry belonging to one account
+// under a single tag, so the integration-change invalidator can evict them all
+// without having to enumerate the provider and index combinations that produced
+// the keys.
+func logLabelsAccountTag(accountId string) string {
+	return "account:" + accountId
 }
 
 // fetchLabelsAndIndices warns on an empty list rather than failing: the caller
 // then falls back to backend defaults that are wrong for ES/Signoz, and this
 // warn is the only signal an operator gets that an override named a backend the
 // account has no integration for.
+//
+// Results are cached for logLabelsCacheTTL. An empty label set is NEVER cached —
+// it means discovery failed (or the override named a backend this account has no
+// integration for), and pinning that would leave the query generator on wrong
+// backend defaults for the whole TTL, silently returning zero rows.
 func fetchLabelsAndIndices(accountId string, provider services_server.ObservabilityProvider) ([]string, map[string]string) {
+	// An empty accountId bypasses the cache entirely rather than keying on
+	// ":provider:index", which every empty-account caller would share. Discovery
+	// for an empty account fails upstream today (QueryLabels can't resolve a
+	// tenant) and an empty result is never cached, so this is unreachable — but
+	// a key that could be shared across tenants must not depend on a downstream
+	// error to stay empty. Mirrors the same guard in GetLogProvider.
+	var cacheKey string
+	if accountId != "" {
+		cacheKey = logLabelsCacheKey(accountId, provider)
+		if data, ok := common.CacheGet(logLabelsCacheNS, cacheKey); ok {
+			var cached logLabels
+			if err := common.UnmarshalJson(data, &cached); err != nil {
+				// Evict rather than leave it: the success path below overwrites
+				// this key anyway, but if discovery keeps failing (empty results
+				// are never cached) the unreadable bytes would otherwise linger
+				// and re-warn on every call.
+				slog.Warn("fetch_logs: cached labels unreadable, rediscovering", "account_id", accountId, "provider", provider.Provider)
+				if err := common.CacheDelete(logLabelsCacheNS, cacheKey); err != nil {
+					slog.Debug("fetch_logs: unable to evict unreadable label entry", "error", err, "account_id", accountId)
+				}
+			} else if time.Now().Before(cached.ExpiresAt) {
+				return cached.Fields, cached.Indices
+			}
+		}
+	}
+
 	labels := tools.NewNBLogToolWithProvider(accountId, provider).QueryLabels()
 	if len(labels) == 0 {
 		slog.Warn("fetch_logs: no provider labels — translator will fall back to backend defaults",
@@ -201,6 +357,16 @@ func fetchLabelsAndIndices(accountId string, provider services_server.Observabil
 		indices = utils.GetESAccountIndexConfig(accountId, "logs").Indices
 	}
 	slog.Info("fetch_logs: fetchLabelsAndIndices complete", "account_id", accountId, "provider", provider.Provider, "label_count", len(labels), "labels", labels, "indices", indices)
+
+	if len(labels) > 0 && cacheKey != "" {
+		if data, err := common.MarshalJson(logLabels{Fields: labels, Indices: indices, ExpiresAt: time.Now().Add(logLabelsCacheTTL)}); err != nil {
+			slog.Debug("fetch_logs: unable to serialize labels for cache", "error", err, "account_id", accountId)
+		} else if err := common.CacheSet(logLabelsCacheNS, cacheKey, data,
+			common.CacheSetWithExpiration(logLabelsCacheTTL),
+			common.CacheSetWithTags(logLabelsAccountTag(accountId))); err != nil {
+			slog.Debug("fetch_logs: unable to cache labels", "error", err, "account_id", accountId)
+		}
+	}
 	return labels, indices
 }
 
@@ -223,7 +389,7 @@ func callTool(ctx *security.RequestContext, accountId string, request core.NBAge
 		request.UserId, request.ConversationId, request.MessageId, request.AgentId,
 		command, nil, request.QueryContext, request.QueryConfig, "",
 	)
-	resp, err := tool.Call(toolCtx, toolcore.NBToolCallRequest{Command: command})
+	resp, err := core.CallTool(toolCtx, tool, toolcore.NBToolCallRequest{Command: command})
 	if err != nil {
 		return "", nil, err
 	}
@@ -469,7 +635,7 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 	toolCtx := toolcore.NewNbToolContext(ctx, bundleTool, accountId,
 		request.UserId, request.ConversationId, request.MessageId, request.AgentId,
 		q, nil, request.QueryContext, request.QueryConfig, "")
-	resp, err := bundleTool.Call(toolCtx, toolcore.NBToolCallRequest{
+	resp, err := core.CallTool(toolCtx, bundleTool, toolcore.NBToolCallRequest{
 		Arguments: map[string]any{
 			"bundle":   "crash",
 			"log_file": fileRef,
@@ -500,7 +666,7 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 	return resp.Data, nil
 }
 
-// makeFetchResponse returns {query, logs, file_ref, bundle_signal} so the
+// makeFetchResponse returns {query, logs, file_ref, provider, complete, bundle_signal} so the
 // parent's scratchpad shows which query produced the data, where the raw
 // logs were saved, and — when the query wording indicates an error-content
 // investigation and the bundle flag is on — a pre-computed category-level
@@ -508,20 +674,58 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 // auto-bundle didn't fire (non-error query, flag off, empty file, or bundle
 // tool error) and the caller should ignore the field. See
 // runAutoDiagnosticBundle for the gating logic.
-func makeFetchResponse(agentName, query, logs, fileRef, bundleSignal string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
-	inlineLogs := logs
-	if fileRef != "" && len(logs) > logInlinePreviewBytes {
-		// ToValidUTF8 drops a partial trailing rune left by the byte slice.
-		inlineLogs = strings.ToValidUTF8(logs[:logInlinePreviewBytes], "") + fmt.Sprintf(
-			"\n\n[... %d more bytes truncated — full logs saved to file_ref %q; use shell_execute to grep it ...]",
-			len(logs)-logInlinePreviewBytes, fileRef)
+func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
+	// Preview the SAME representation that was written to file_ref, not the raw
+	// backend payload. saveLogsToWorkspace writes flattenLogsToJSONL(logs) —
+	// "<timestamp>\t<message>" per line — while this used to inline the raw
+	// Loki/ES envelope. Showing one format and handing over a file in another
+	// makes it impossible to write a working grep from the preview alone, so the
+	// model had to spend a turn on `head -n 20 <file_ref>` first to discover the
+	// real layout before it could filter. Observed in three separate sessions;
+	// no prompt wording fixes it, because the instruction ("grep <file_ref>")
+	// referred to an artifact the preview didn't describe.
+	// Reuse the body saveLogsToWorkspace already flattened rather than redoing
+	// it — this used to parse a multi-MB payload a second time per fetch.
+	// Empty when nothing was saved (no logs, or save failed), in which case
+	// there is no file to mirror and the raw payload is the only thing to show.
+	previewSource := flattened
+	if previewSource == "" {
+		previewSource = logs
 	}
-	envelope := map[string]string{
+	inlineLogs := previewSource
+	logsComplete := true
+	if fileRef != "" && len(previewSource) > logInlinePreviewBytes {
+		logsComplete = false
+		// ToValidUTF8 drops a partial trailing rune left by the byte slice.
+		inlineLogs = strings.ToValidUTF8(previewSource[:logInlinePreviewBytes], "") + fmt.Sprintf(
+			"\n\n[... %d more bytes truncated — full logs saved to file_ref %q, in EXACTLY this same line format; use shell_execute to filter it ...]",
+			len(previewSource)-logInlinePreviewBytes, fileRef)
+	} else if fileRef != "" && strings.TrimSpace(inlineLogs) != "" {
+		// Only when a file actually exists — with no file_ref there is nothing to
+		// be tempted to read, and "file_ref holds nothing further" would name an
+		// artifact that was never produced.
+		// Mirror of the truncation marker above, on the same in-band channel.
+		// A bare JSON field is easy to skim past; the truncated case proves the
+		// model reads and acts on a bracketed marker at the end of `logs`, so
+		// the complete case states its conclusion the same way rather than
+		// leaving it to be inferred from a flag.
+		inlineLogs += "\n\n[... complete — all matching lines are shown above; file_ref holds nothing further, so no shell_execute is needed ...]"
+	}
+	envelope := map[string]any{
 		"query":         query,
 		"logs":          inlineLogs,
 		"file_ref":      fileRef,
 		"provider":      providerFromLogs(logs),
 		"bundle_signal": bundleSignal,
+		// logs_complete=true means every matching line is already inline and
+		// file_ref holds nothing extra — shelling out to read it is pure cost.
+		// Signalled explicitly because the previous "absence of a truncation
+		// marker" was too weak a cue: measured over 14 days, 57.7% of fetches
+		// returned the logs complete inline, yet the agent still spent turns
+		// grepping them. Named with its subject rather than a bare `complete`,
+		// which in an envelope of nouns reads as "the fetch completed" (status)
+		// rather than "the log content is entire".
+		"logs_complete": logsComplete,
 	}
 	body, err := common.MarshalJson(envelope)
 	if err != nil {
@@ -559,9 +763,9 @@ func makeFetchResponse(agentName, query, logs, fileRef, bundleSignal string, ref
 // Anything that doesn't parse as the expected JSON envelope (Datadog
 // alternate shapes, "No logs found" placeholders, kubectl text) is also
 // passed through unchanged.
-func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId, providerLabel, logs string) (string, []toolcore.NBToolResponseReference) {
+func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId, providerLabel, logs string) (string, string, []toolcore.NBToolResponseReference) {
 	if strings.TrimSpace(logs) == "" {
-		return "", nil
+		return "", "", nil
 	}
 	label := strings.ToLower(strings.TrimSpace(providerLabel))
 	if label == "" {
@@ -572,10 +776,10 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 	wm := workspace.NewWorkspaceManager()
 	if err := wm.SaveFile(ctx, accountId, conversationId, filename, body); err != nil {
 		ctx.GetLogger().Warn("fetch_logs: failed to save logs to workspace", "error", err, "file", filename)
-		return "", nil
+		return "", body, nil
 	}
 	ctx.GetLogger().Info("fetch_logs: logs saved", "file", filename, "bytes", len(body), "raw_bytes", len(logs), "format", logsLayout(logs, body))
-	return filename, []toolcore.NBToolResponseReference{
+	return filename, body, []toolcore.NBToolResponseReference{
 		{
 			Text:        filename,
 			Url:         filename,
@@ -596,7 +800,17 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 //     found" placeholder, Datadog alternate shapes)
 //   - the envelope has zero entries
 func flattenLogsToJSONL(raw string) string {
-	if strings.TrimSpace(raw) == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return raw
+	}
+	// Fast path: the expected envelope is `{"logs":[...]}`, so anything not
+	// starting with `{` cannot be it — skip unmarshalling a potentially
+	// multi-MB string only to fail. Note this does NOT cover the kubectl
+	// backend: kubectl_execute wraps its output as `{"stdout":"..."}`, which
+	// does start with `{` and still parses (into zero entries) before falling
+	// through below. Suggested in review by gemini-code-assist on PR #36182.
+	if !strings.HasPrefix(trimmed, "{") {
 		return raw
 	}
 	var doc struct {
@@ -821,6 +1035,14 @@ func buildLogIntentMessages(systemPrompt string, request core.NBAgentRequest) []
 		fmt.Fprintf(&human, "Context:\n%s\n\n", request.ConversationContext)
 		hasHints = true
 	}
+	if kb := strings.TrimSpace(request.KBPrestepContent); kb != "" {
+		fmt.Fprintf(&human, "Domain Knowledge / Runbooks:\n%s\n\n", kb)
+		hasHints = true
+	}
+	if sc := strings.TrimSpace(request.SkillsContext); sc != "" {
+		fmt.Fprintf(&human, "Skills Context:\n%s\n\n", sc)
+		hasHints = true
+	}
 	if hasHints {
 		fmt.Fprintf(&human, "Current query: %s", request.Query)
 	} else {
@@ -877,10 +1099,7 @@ tail SHOULD be 10000 so the grep has a meaningful window to scan.
 
 	var intent kubectlLogQuery
 	if err := common.ExtractAndUnmarshalJSON([]byte(res.Choices[0].Content), &intent); err != nil {
-		preview := res.Choices[0].Content
-		if len(preview) > 200 {
-			preview = preview[:200]
-		}
+		preview := common.TruncateHead(res.Choices[0].Content, 200)
 		ctx.GetLogger().Error("fetch_logs: kubectl intent JSON unmarshal failed", "error", err, "raw_preview", preview)
 		return kubectlLogQuery{}, fmt.Errorf("intent JSON unmarshal: %w", err)
 	}

@@ -192,3 +192,67 @@ func TestWrapper_EnforceStillBlocksCarriedOver(t *testing.T) {
 	assert.Equal(t, 0, inner.callCount(), "provider must not be reached")
 	assert.Empty(t, events, "no NEW secret this turn, so no per-message badge")
 }
+
+// TestReportScope_ReTypedSecretInNewTurnIsReported locks the contract that when
+// a secret from prior conversation history is re-typed in the current turn,
+// the scope recognizes the surplus occurrence and reports it (fixes #35811).
+func TestReportScope_ReTypedSecretInNewTurnIsReported(t *testing.T) {
+	// Baseline history has 1 occurrence of secretPrior.
+	scope := newReportScope("history holds " + secretPrior)
+	// Payload contains history (1 occurrence) PLUS new message with secretPrior (2nd occurrence).
+	payload := "history: " + secretPrior + "\nquestion: echo " + secretPrior
+
+	hits := Scan(payload).Hits
+	require.Len(t, hits, 2, "both occurrences in payload are scanned")
+
+	kept, mask := scope.filter(hits, payload)
+	require.Len(t, kept, 1, "re-typed secret must be reported for the current turn")
+	assert.Equal(t, secretPrior, payload[kept[0].Start:kept[0].End])
+	assert.Equal(t, []bool{false, true}, mask, "history occurrence is dropped, current turn occurrence is kept")
+}
+
+// TestWrapper_DetectReportsReTypedSecret: end-to-end wrapper test ensuring that
+// re-typing a secret from prior history emits a FilterEvent for the current turn.
+func TestWrapper_DetectReportsReTypedSecret(t *testing.T) {
+	inner := &fakeModel{respText: "ok"}
+	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeDetect)
+
+	msgs := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{
+			llms.TextContent{Text: "history: " + secretPrior + "\nquestion: echo " + secretPrior},
+		}},
+	}
+
+	var events []FilterEvent
+	ctx := collectEvents(context.Background(), &events)
+	ctx = WithReportBaseline(ctx, "earlier turn contained "+secretPrior)
+
+	_, err := wrapped.GenerateContent(ctx, msgs)
+	require.NoError(t, err)
+	require.Equal(t, 1, inner.callCount())
+
+	require.Len(t, events, 1, "re-typed secret must emit a FilterEvent for this turn")
+	assert.Equal(t, 1, events[0].HitCount)
+	assert.Contains(t, events[0].RuleIDs, "aws-access-key-id")
+}
+
+// TestReportScope_ReTypedSecretInSubsequentCallIsReported verifies that a secret
+// suppressed in an earlier LLM call of a turn (due to matching history count)
+// is still reported when a subsequent call in the same turn introduces a fresh occurrence.
+func TestReportScope_ReTypedSecretInSubsequentCallIsReported(t *testing.T) {
+	scope := newReportScope("history holds " + secretPrior)
+
+	// Call 1: 1 occurrence (same as history) -> should be suppressed
+	payload1 := "history: " + secretPrior
+	hits1 := Scan(payload1).Hits
+	require.Len(t, hits1, 1)
+	kept1, _ := scope.filter(hits1, payload1)
+	assert.Empty(t, kept1, "pure carry-over in first call is suppressed")
+
+	// Call 2: 2 occurrences (1 more than history) -> should report the new one
+	payload2 := "history: " + secretPrior + "\nquestion: echo " + secretPrior
+	hits2 := Scan(payload2).Hits
+	require.Len(t, hits2, 2)
+	kept2, _ := scope.filter(hits2, payload2)
+	assert.Len(t, kept2, 1, "new occurrence in second call must be reported")
+}

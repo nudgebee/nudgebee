@@ -359,7 +359,7 @@ func handleV2GetCreateMeta(ctx core.NbToolContext, req TicketV2OperationRequest)
 	sb.WriteString("- All other fields (custom fields, labels, etc.) → pass in `additional_fields` using the exact field key from above\n")
 	sb.WriteString("- **Format for additional_fields values:**\n")
 	sb.WriteString("  - `select` fields: use `{\"id\": \"<id>\"}` with the id from the allowed values list\n")
-	sb.WriteString("  - `multicheckboxes`/`multiselect` fields: use `[{\"id\": \"<id>\"}, ...]` array of id objects\n")
+	sb.WriteString("  - `multiselect` fields: use `[{\"id\": \"<id>\"}, ...]` array of id objects\n")
 	sb.WriteString("  - `datetime` fields: use ISO 8601 format, e.g. `\"2026-03-12T06:52:43.565Z\"`\n")
 	sb.WriteString("  - `datepicker` fields: use ISO date format, e.g. `\"2026-03-12\"`\n")
 	sb.WriteString("  - `string`/`text` fields: use plain string value\n")
@@ -411,6 +411,7 @@ func handleV2CreateTicket(ctx core.NbToolContext, req TicketV2OperationRequest) 
 		projectKey = resolved
 	}
 	// Fetch create-meta to validate required fields before creating
+	var droppedFields []string
 	meta, metaErr := ticketServerGetCreateMeta(ctx.Ctx, tenantID, integrationID, projectKey)
 	if metaErr != nil {
 		ctx.Ctx.GetLogger().Warn(
@@ -438,6 +439,7 @@ func handleV2CreateTicket(ctx core.NbToolContext, req TicketV2OperationRequest) 
 		if missingMsg != "" {
 			return "", fmt.Errorf("%s", missingMsg)
 		}
+		droppedFields = dropUnsupportedCreateFields(meta.Data.TicketsGetCreateMeta, &req)
 	}
 
 	// Pass additional_fields through as-is to the ticket-server.
@@ -473,8 +475,55 @@ func handleV2CreateTicket(ctx core.NbToolContext, req TicketV2OperationRequest) 
 		return "", fmt.Errorf("ticket-server error: %s", ticket.Error)
 	}
 
-	return fmt.Sprintf("Ticket created successfully:\n- **ID**: %s\n- **Platform**: %s\n- **Status**: %s\n- **URL**: %s",
-		ticket.TicketID, ticket.Platform, ticket.Status, ticket.URL), nil
+	msg := fmt.Sprintf("Ticket created successfully:\n- **ID**: %s\n- **Platform**: %s\n- **Status**: %s\n- **URL**: %s",
+		ticket.TicketID, ticket.Platform, ticket.Status, ticket.URL)
+	if len(droppedFields) > 0 {
+		msg += fmt.Sprintf("\n\nNote: %s not applied — not available on this project/issue-type's create screen.", strings.Join(droppedFields, ", "))
+	}
+	return msg, nil
+}
+
+// dropUnsupportedCreateFields removes severity/assignee/additional_fields entries
+// that don't correspond to a field on the resolved issue type's create screen.
+// get_create_meta is the only source of truth for which fields a project+issue-type
+// actually exposes; sending one it doesn't (e.g. severity when there's no priority
+// field on the screen) rejects the entire create_ticket request with a platform 400
+// instead of just that field. Mutates req in place and returns the dropped field
+// names for a note back to the agent.
+func dropUnsupportedCreateFields(issueTypes []ticketServerIssueType, req *TicketV2OperationRequest) []string {
+	var targetIssueType *ticketServerIssueType
+	if req.TicketType != "" {
+		for i, it := range issueTypes {
+			if strings.EqualFold(it.Name, req.TicketType) {
+				targetIssueType = &issueTypes[i]
+				break
+			}
+		}
+	}
+	if targetIssueType == nil {
+		targetIssueType = &issueTypes[0]
+	}
+
+	var dropped []string
+	if req.Severity != "" {
+		if _, ok := targetIssueType.Fields["priority"]; !ok {
+			dropped = append(dropped, "severity")
+			req.Severity = ""
+		}
+	}
+	if req.Assignee != "" {
+		if _, ok := targetIssueType.Fields["assignee"]; !ok {
+			dropped = append(dropped, "assignee")
+			req.Assignee = ""
+		}
+	}
+	for key := range req.AdditionalFields {
+		if _, ok := targetIssueType.Fields[key]; !ok {
+			dropped = append(dropped, key)
+			delete(req.AdditionalFields, key)
+		}
+	}
+	return dropped
 }
 
 // checkRequiredFields validates that all required fields from create-meta are present in the request.

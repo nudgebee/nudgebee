@@ -43,6 +43,7 @@ FINDING_CALLBACK_ID = "nb_finding_actions"
 # their signed payloads, so it stays as-is while the labels read "Suppress"
 # (matching the Triage Rules UI and the SUPPRESSED status it produces).
 SUPPRESS_ACTION_NAME = "silence_finding"
+ASK_NUBI_ACTION_NAME = "ask_nubi"
 SUPPRESS_THIS_DURATIONS = (("1h", 1), ("4h", 4), ("24h", 24), ("7d", 168))
 SUPPRESS_ALL_DURATIONS = (("4h", 4), ("24h", 24), ("7d", 168))
 

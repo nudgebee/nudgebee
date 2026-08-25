@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/events"
 	"nudgebee/llm/tools/core"
 	"regexp"
@@ -48,6 +49,7 @@ from (
 	    subject_namespace,
 	    subject_node,
 	    subject_owner,
+	    subject_owner_kind,
 	    ends_at,
 	    starts_at,
 	    fingerprint,
@@ -99,6 +101,7 @@ from (
 	    subject_namespace,
 	    subject_node,
 	    subject_owner,
+	    subject_owner_kind,
 	    ends_at,
 	    starts_at,
 	    fingerprint,
@@ -120,7 +123,33 @@ from (
 ) as e
 `
 
+// resolveEventsViewPlaceholders substitutes the __DATE_FILTER__ and
+// __ACCOUNT_ID__ placeholders in an events view template. When skipDateFilter
+// is true, the date filter clause is stripped entirely instead of being
+// substituted (used for direct ID lookups, so older events stay accessible).
+func resolveEventsViewPlaceholders(view, accountId string, skipDateFilter bool) string {
+	if skipDateFilter {
+		view = strings.ReplaceAll(view, " AND starts_at >= '__DATE_FILTER__'", "")
+	} else if strings.Contains(view, "__DATE_FILTER__") {
+		last30days := time.Now().AddDate(0, 0, -30)
+		daysStr := last30days.Format("2006-01-02")
+		view = strings.ReplaceAll(view, "__DATE_FILTER__", daysStr)
+	}
+
+	if accountId != "" {
+		view = strings.ReplaceAll(view, "__ACCOUNT_ID__", accountId)
+	}
+
+	return view
+}
+
 type EventsExecuteTool struct {
+	// FullEvidence preserves the complete collected log body on the processed
+	// row instead of gutting it to mined error lines / a 500-byte tail. Set by
+	// programmatic single-event consumers (the event analyzer, the evidence
+	// drill-down tool); the interactive events agent keeps the lean default so
+	// query results stay scratchpad-sized.
+	FullEvidence bool
 }
 
 func (m EventsExecuteTool) Name() string {
@@ -146,6 +175,30 @@ func (m EventsExecuteTool) InputSchema() core.ToolSchema {
 		},
 		Required: []string{"command"},
 	}
+}
+
+// errorLogSeverities marks the log-entry severities extracted into
+// ErrorLogData so error/warning lines stay available to the investigation
+// prompt even when the full log body is too large to inline.
+var errorLogSeverities = map[string]bool{
+	"ERROR":    true,
+	"CRITICAL": true,
+	"FATAL":    true,
+	"WARNING":  true,
+	"WARN":     true,
+}
+
+// formatErrorLogLine renders a log-evidence entry as
+// "<timestamp>\t<SEVERITY>\t<message>" when its severity marks it as an
+// error/warning line; the bool reports whether it did.
+func formatErrorLogLine(entry map[string]any, message string) (string, bool) {
+	sev, _ := entry["severity"].(string)
+	sev = strings.ToUpper(strings.TrimSpace(sev))
+	if !errorLogSeverities[sev] {
+		return "", false
+	}
+	ts, _ := entry["timestamp"].(string)
+	return strings.TrimSpace(ts) + "\t" + sev + "\t" + message, true
 }
 
 func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int, messagesMap map[string][]map[string]string) map[string]any {
@@ -419,6 +472,13 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 								if dataMap, ok := result.(map[string]any); ok && dataMap["message"] != nil {
 									if bodyStr, ok := dataMap["message"].(string); ok {
 										investigateData.LogData = investigateData.LogData + "\n" + bodyStr
+										// Same bound the raw-text miner honours, so listing
+										// queries (many rows) stay scratchpad-sized.
+										if len(investigateData.ErrorLogData) < config.Config.LLMServerAgentMaxLogLines {
+											if errorLine, isError := formatErrorLogLine(dataMap, bodyStr); isError {
+												investigateData.ErrorLogData = append(investigateData.ErrorLogData, errorLine)
+											}
+										}
 									}
 								}
 							}
@@ -428,8 +488,14 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 					}
 
 				}
+				// Carry the enricher's pattern digest (top log templates with
+				// counts + level breakdown) so the investigation prompt can
+				// surface it — it is far denser signal than the raw log body.
+				if summary, ok := evidence.AdditionalInfo["log_summary"]; ok && summary != nil {
+					investigateData.LogSummary = summary
+				}
 
-			} else if evidence.Type == "api_traces_enricher_v2" {
+			} else if evidence.Type == "api_traces_enricher_v2" || (evidence.Type == "json" && evidence.AdditionalInfo != nil && evidence.AdditionalInfo["action_name"] == "traces") {
 				investigateData.Traces.Data = evidence.Data
 				if stringData, ok := evidence.Data.(string); ok {
 					tracesMap := map[string]any{}
@@ -442,6 +508,23 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 				investigateData.Traces.Insight = evidence.Insights
 				investigateData.Traces.AdditionalInfo = evidence.AdditionalInfo
 				investigateData.Traces.Title = evidence.Type
+			} else if actionName, ok := evidence.AdditionalInfo["action_name"].(string); evidence.Type == "json" && ok && actionName == "pod_enricher" {
+				// pod_enricher's payload is a JSON array, not an object — the
+				// generic json branch below would fail to match it and drop it
+				// into Others. Route it to PodData directly instead.
+				var podData any
+				if stringData, ok := evidence.Data.(string); ok {
+					if err := common.UnmarshalJson([]byte(stringData), &podData); err != nil {
+						slog.Error("unmarshaling pod_enricher JSON", "error", err)
+						podData = nil
+					}
+				} else {
+					podData = evidence.Data
+				}
+				investigateData.PodData.Data = podData
+				investigateData.PodData.Insight = evidence.Insights
+				investigateData.PodData.AdditionalInfo = evidence.AdditionalInfo
+				investigateData.PodData.Title = evidence.Type
 			} else if evidence.Type == "json" {
 				evidenceDataJson := map[string]any{}
 				additionalInfo := evidence.AdditionalInfo
@@ -595,18 +678,22 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 			}
 		}
 
-		if investigateData.LogData != "" {
-			errorLines := GetErrorLinesFromLogStringOrDefault(investigateData.LogData, true)
-			investigateData.ErrorLogData = errorLines
+		// Per-entry severity extraction (formatErrorLogLine) already filled
+		// ErrorLogData when the evidence carried structured severities; only
+		// fall back to mining the raw text when it did not.
+		if investigateData.LogData != "" && len(investigateData.ErrorLogData) == 0 {
+			investigateData.ErrorLogData = GetErrorLinesFromLogStringOrDefault(investigateData.LogData, true)
 		}
 
 		// only send full data if overall count is 1, else use error lines as normally this results in very huge data
-		if c != 1 || len(investigateData.ErrorLogData) > 0 {
-			investigateData.LogData = ""
-		}
+		if !m.FullEvidence {
+			if c != 1 || len(investigateData.ErrorLogData) > 0 {
+				investigateData.LogData = ""
+			}
 
-		if c == 1 && len(investigateData.LogData) > 0 && len(investigateData.LogData) > 500 {
-			investigateData.LogData = lo.Substring(investigateData.LogData, -500, 500)
+			if c == 1 && len(investigateData.LogData) > 0 && len(investigateData.LogData) > 500 {
+				investigateData.LogData = lo.Substring(investigateData.LogData, -500, 500)
+			}
 		}
 
 		data["evidences"] = investigateData
@@ -750,18 +837,7 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 		eventsView1 = eventsViewWithId
 	}
 
-	if isIdLookup {
-		// skip date filter for direct ID lookups so older events are still accessible
-		eventsView1 = strings.ReplaceAll(eventsView1, " AND starts_at >= '__DATE_FILTER__'", "")
-	} else if strings.Contains(eventsView1, "__DATE_FILTER__") {
-		last30days := time.Now().AddDate(0, 0, -30)
-		daysStr := last30days.Format("2006-01-02")
-		eventsView1 = strings.ReplaceAll(eventsView1, "__DATE_FILTER__", daysStr)
-	}
-
-	if nbRequestContext.AccountId != "" {
-		eventsView1 = strings.ReplaceAll(eventsView1, "__ACCOUNT_ID__", nbRequestContext.AccountId)
-	}
+	eventsView1 = resolveEventsViewPlaceholders(eventsView1, nbRequestContext.AccountId, isIdLookup)
 
 	input.Command = strings.TrimSuffix(input.Command, ";")
 	input.Command = fixBareTimestamps(input.Command)
@@ -922,7 +998,7 @@ func (m EventsExecuteTool) buildEvidenceManifest(data map[string]any, evidences 
 			case actionName == "signoz_logs_enricher" || actionName == "logs_enricher" || actionName == "cloud_logs" || actionName == "logs":
 				hasLogs = true
 				availableTypes = append(availableTypes, "logs")
-			case actionName == "pod_details":
+			case actionName == "pod_details", actionName == "pod_enricher":
 				availableTypes = append(availableTypes, "pod_data")
 			case strings.Contains(actionName, "api_failure_enricher"):
 				availableTypes = append(availableTypes, "api_failures")

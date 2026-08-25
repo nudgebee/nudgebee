@@ -130,7 +130,7 @@ const ACCENT_TONE_COLOR: Record<CardTone, string> = {
 // pairs used by Chip and Banner so a tinted Card visually relates to a same-tone
 // chip/banner placed near it.
 const TINTED_BG: Record<CardTone, string> = {
-  neutral: 'var(--ds-background-300)',
+  neutral: 'var(--ds-background-200)',
   info: 'var(--ds-blue-100)',
   success: 'var(--ds-green-100)',
   warning: 'var(--ds-amber-100)',

@@ -72,3 +72,8 @@ dependencies:
     version: '0.1.0'
     condition: cost-server.enabled
     repository: file://../cost-server/
+  - name: llm-gateway
+    version: '0.1.0'
+    condition: llm-gateway.enabled
+    repository: file://../llm-gateway/
+

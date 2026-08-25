@@ -1,0 +1,55 @@
+# GCP Cloud Load Balancing Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for HTTP(S) load balancer monitoring.
+# Metrics live on the https_lb_rule monitored resource, keyed by
+# forwarding_rule_name — templates apply to forwarding rules that target an
+# HTTP(S) proxy (the wiring gates on that).
+#
+# Note: the ticket also suggested an "unhealthy backend count" alert, but the
+# loadbalancing.googleapis.com namespace exposes no backend-health metric —
+# health status is only reachable via health-check logs or uptime checks,
+# which are a different mechanism. Deliberately omitted.
+service_name: "Cloud Load Balancing"
+
+templates:
+  - name: "gcp_lb_backend_error_rate_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Backend 5xx responses mean users are seeing errors at the front door of the system. Alert when server-error responses keep occurring on a load balancer."
+    configuration:
+      namespace: "loadbalancing.googleapis.com"
+      metric_name: "BackendErrorResponses"
+      metric_type_filter: "loadbalancing.googleapis.com/https/request_count"
+      resource_type: "https_lb_rule"
+      metric_label_filters:
+        # response_code_class is an INT64 label — values are numeric classes
+        # (200/300/400/500), NOT "5xx"; 500 covers all server errors. Rendered
+        # unquoted in the filter (see metricLabelClause).
+        response_code_class: "500"
+      statistic: "ALIGN_SUM"
+      period: 300  # 5 minutes
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_SUM"
+    threshold_rules:
+      default: 5.0  # server errors per 5-minute window — starting point
+
+  - name: "gcp_lb_backend_latency_alarm_missing"
+    alarm_type: "LATENCY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High backend latency slows every request passing through the load balancer and usually points at an overloaded or degraded backend. Alert when p99 backend latency exceeds 1 second."
+    configuration:
+      namespace: "loadbalancing.googleapis.com"
+      metric_name: "BackendLatency"
+      metric_type_filter: "loadbalancing.googleapis.com/https/backend_latencies"
+      resource_type: "https_lb_rule"
+      statistic: "ALIGN_PERCENTILE_99"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 1000.0  # milliseconds — p99 backend latency above 1s

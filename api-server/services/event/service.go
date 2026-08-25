@@ -887,11 +887,25 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		// status = 'COMPLETED'. Filtering collapsed three distinct states —
 		// still-running, failed, and genuinely-missing — into a single
 		// sql.ErrNoRows, so a failed analysis surfaced a misleading "wait for it
-		// to finish" message. Reading the status back lets us report each state
-		// accurately. The (cloud_account_id, event_fingerprint,
-		// event_aggregation_key, analysis_type) tuple is unique, so this still
-		// matches at most one row.
-		eventLogAnalysisRow := dbms.Db.QueryRowx("SELECT analysis, status, status_reason from event_log_analysis WHERE analysis_type = 'log_analysis' and cloud_account_id = $1 AND event_fingerprint = $2 AND event_aggregation_key = $3", query.AccountId, *r.Fingerprint, *r.AggregationKey)
+		// Reading the status back lets us report each state
+		// accurately. We fetch the mapped log analysis entry for this event ID,
+		// falling back to the latest log analysis for this fingerprint if unmapped.
+		// event_id is a uuid column, so bind NULL rather than "" — the join then
+		// simply never matches instead of erroring on the cast.
+		var dbEventId any
+		if query.EventId != "" {
+			dbEventId = query.EventId
+		}
+		// Order on COALESCE(updated_at, recorded_at): updated_at is nullable and
+		// NULLs sort first on DESC, which would rank legacy rows as the newest.
+		eventLogAnalysisRow := dbms.Db.QueryRowx(`
+			SELECT ela.analysis, ela.status, ela.status_reason
+			FROM event_log_analysis ela
+			LEFT JOIN event_analysis_mapping eam ON ela.id = eam.analysis_id AND eam.event_id = $4 AND eam.analysis_type = 'log_analysis'
+			WHERE ela.analysis_type = 'log_analysis' AND ela.cloud_account_id = $1 AND ela.event_fingerprint = $2 AND ela.event_aggregation_key = $3
+			ORDER BY (eam.event_id IS NOT NULL) DESC, COALESCE(ela.updated_at, ela.recorded_at) DESC
+			LIMIT 1
+		`, query.AccountId, *r.Fingerprint, *r.AggregationKey, dbEventId)
 		if eventLogAnalysisRow.Err() != nil {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("invalid event_log_analysis - %s", query.EventId)
 		}
@@ -1261,6 +1275,10 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		eventResolutionsToCheck = append(eventResolutionsToCheck, resolution)
 		eventIds = append(eventIds, resolution.EventId)
 	}
+	if err := rows.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating event resolutions", "error", err)
+		return err
+	}
 
 	if len(eventResolutionsToCheck) == 0 {
 		return nil
@@ -1292,6 +1310,13 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			return err
 		}
 		events[event.Id] = event
+	}
+	// A truncated read here is destructive: the reconcile below permanently marks
+	// every resolution whose event is missing from this map as FAILED, so a partial
+	// map would fail resolutions whose events actually exist.
+	if err := rows1.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating events", "error", err)
+		return err
 	}
 
 	ctx.GetLogger().Info("Checking resolutions", "resolutions", len(eventResolutionsToCheck))

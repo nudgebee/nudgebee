@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
 	"github.com/tmc/langchaingo/llms"
@@ -118,7 +118,14 @@ func llmSummarizeObservation(
 		summarizeInput = TruncateMiddle(summarizeInput, 2048, getMaxObservationChars()-2048)
 	}
 
-	prompt := prompts_repo.GetPrompt(prompts_repo.PromptScratchpadSummarizer, toolName, toolInput, originalLen, summarizeInput)
+	// Fail safe rather than silently: with no prompt there is nothing to summarize with,
+	// so hand back the (already truncated) observation instead of asking the model to
+	// summarize under an empty instruction.
+	prompt, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptScratchpadSummarizer, request.AccountId, toolName, toolInput, originalLen, summarizeInput)
+	if promptErr != nil {
+		ctx.GetLogger().Error("scratchpad summarizer: loading prompt failed, returning observation unsummarized", "error", promptErr)
+		return summarizeInput
+	}
 
 	// Build a lite-model context with a timeout. WithoutCancel decouples this call from
 	// parent cancellation — the internal timeout ensures we don't hang indefinitely.

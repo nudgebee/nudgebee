@@ -14,6 +14,11 @@ var databaseSchemaProps = []core.PropertyDef{
 	{Name: "engine_version", Indexed: true},
 	{Name: "endpoint_address", Indexed: true},
 	{Name: "endpoint_port", Indexed: true},
+	// private_ip_address is the endpoint hostname resolved to an address by the
+	// collector. It is what lets VPC Flow Logs edges land on the database rather
+	// than on the RDS network interface that carries the same address, since the
+	// flow-log IP index prefers the more specific node.
+	{Name: "private_ip_address", Indexed: true},
 	{Name: "encrypted", Indexed: true},
 	{Name: "instance_type", Indexed: true},
 	{Name: "multi_az", Indexed: true},
@@ -263,6 +268,15 @@ func (s *AWSSource) extractDatabaseMetadata(properties map[string]interface{}, m
 		if port, ok := endpoint["Port"].(float64); ok {
 			properties["endpoint_port"] = int(port)
 		}
+	}
+
+	// Endpoint address resolved to an IP by the collector. VPC Flow Logs identify
+	// endpoints by address, so without this the database is absent from the
+	// flow-log IP index and its traffic edges attach to the RDS network interface
+	// instead. Absent whenever resolution failed, which simply leaves the
+	// database out of that index as before.
+	if privateIP, ok := metaMap["PrivateIpAddress"].(string); ok && privateIP != "" {
+		properties["private_ip_address"] = privateIP
 	}
 
 	// Engine info (important for compatibility)

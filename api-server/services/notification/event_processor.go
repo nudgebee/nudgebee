@@ -63,16 +63,14 @@ func ProcessEvent(ctx *security.RequestContext, newEvent map[string]any) (err er
 	return nil
 }
 
-// ProcessEventResolved publishes the resolved notification for an event whose
-// upsert flipped it to RESOLVED. Mirrors ProcessEvent's gates (HIGH priority,
-// not suppressed, SLO handled by its own service); delivery is thread-only
-// downstream — notifications-server drops it unless the firing message was
-// actually sent, which also dedupes repeated resolve webhooks.
+// ProcessEventResolved publishes the resolved notification for an event that a
+// resolve path flipped to RESOLVED/CLOSED. Delivery is thread-only downstream —
+// notifications-server drops it unless the firing message was actually sent,
+// which both dedupes repeated resolve webhooks and makes a priority gate here
+// redundant: only findings that cleared ProcessEvent's HIGH gate ever have a
+// thread to reply to. Gating on priority would in fact break the cloud path,
+// which downgrades priority to INFO in the same UPDATE that resolves the row.
 func ProcessEventResolved(ctx *security.RequestContext, newEvent map[string]any) (err error) {
-	if priority, _ := newEvent["priority"].(string); priority != "HIGH" {
-		return nil
-	}
-
 	source, _ := newEvent["source"].(string)
 	if source == "slo" {
 		return nil

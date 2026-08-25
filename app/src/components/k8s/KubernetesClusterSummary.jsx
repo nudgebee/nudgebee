@@ -22,8 +22,9 @@ import TraceIcon from '@assets/home/traces-icon.icon.svg';
 import SecurityIcon from '@assets/home/security-icon.icon.svg';
 import LogsIcon from '@assets/home/logs-icon.icon.svg';
 import { useData } from '@context/DataContext';
+import { hasPermission, missingPermissionMessage, isGrantsOnlyUser } from '@lib/auth';
 import { v4 as uuidv4 } from 'uuid';
-import { colorsArray } from 'src/utils/common';
+import { colorsArray, moduleForFragment } from 'src/utils/common';
 import { GetInsightIcon } from '@shared/icons/GetInsightIcon';
 import CustomOptimizationsSummaryCard from './common/CustomOptimizationsSummaryCard';
 import HighlightText from './common/HighlightComponent';
@@ -818,6 +819,12 @@ const CostSummary = ({ clusterSummary = {}, accountId }) => {
     return route;
   };
 
+  // Per-module gating applies ONLY to grants-only custom-role users (no
+  // tenant-wide role, no account access); tenant admins, account users, and the
+  // demo account keep every link. A link the user lacks `<module>:Read` for is
+  // greyed with a request-access tooltip instead of navigating.
+  const gateQuickLinks = isGrantsOnlyUser(accountId);
+
   const QuickLinksData = [
     {
       links: [
@@ -957,30 +964,54 @@ const CostSummary = ({ clusterSummary = {}, accountId }) => {
         <DSCard variant='accent' tone='info' size='md'>
           <Heading value='Quick Links' borderWidth='md' borderColor='var(--ds-blue-500)' />
           <Box display='grid' gridTemplateColumns={'repeat(2,1fr)'} mt='var(--ds-space-1)'>
-            {uniqueLinks.map((link) => (
-              <Box display={'flex'} alignItems={'center'} key={link.name} my={'var(--ds-space-1)'} gap={'var(--ds-space-2)'}>
+            {uniqueLinks.map((link) => {
+              const mod = moduleForFragment(link.fragment);
+              const disabled = gateQuickLinks && !hasPermission(mod, 'Read');
+              return (
                 <Box
-                  sx={{
-                    height: '16px',
-                    width: '16px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    img: {
-                      height: '100%',
-                      width: '100%',
-                    },
-                  }}
+                  display={'flex'}
+                  alignItems={'center'}
+                  key={link.name}
+                  my={'var(--ds-space-1)'}
+                  gap={'var(--ds-space-2)'}
+                  sx={disabled ? { opacity: 0.4 } : undefined}
                 >
-                  <SafeIcon src={link.icon} alt={link.name} />
+                  <Box
+                    sx={{
+                      height: '16px',
+                      width: '16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      img: {
+                        height: '100%',
+                        width: '100%',
+                      },
+                    }}
+                  >
+                    <SafeIcon src={link.icon} alt={link.name} />
+                  </Box>
+                  {disabled ? (
+                    <DSTooltip title={missingPermissionMessage(`${mod}:Read`)}>
+                      <Typography
+                        fontSize={'var(--ds-text-body)'}
+                        fontWeight={'var(--ds-font-weight-regular)'}
+                        color={'var(--ds-gray-500)'}
+                        sx={{ cursor: 'default' }}
+                      >
+                        {link.name}
+                      </Typography>
+                    </DSTooltip>
+                  ) : (
+                    <DSLink href={buildUrl(selectedCluster, accountId, link.fragment, 'details', {})}>
+                      <Typography fontSize={'var(--ds-text-body)'} fontWeight={'var(--ds-font-weight-regular)'} color={'var(--ds-gray-600)'}>
+                        {link.name}
+                      </Typography>
+                    </DSLink>
+                  )}
                 </Box>
-                <DSLink href={buildUrl(selectedCluster, accountId, link.fragment, 'details', {})}>
-                  <Typography fontSize={'var(--ds-text-body)'} fontWeight={'var(--ds-font-weight-regular)'} color={'var(--ds-gray-600)'}>
-                    {link.name}
-                  </Typography>
-                </DSLink>
-              </Box>
-            ))}
+              );
+            })}
           </Box>
         </DSCard>
       </Box>

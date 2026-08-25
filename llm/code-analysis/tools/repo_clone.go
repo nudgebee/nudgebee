@@ -31,12 +31,16 @@ type RepoCloneTool struct {
 }
 
 type RepoCloneInput struct {
-	RepoURL      string              `json:"repo_url"`
-	LocalPath    string              `json:"local_path,omitempty"` // Path to existing local repository
-	Credentials  *models.Credentials `json:"credentials,omitempty"`
-	Branch       string              `json:"branch,omitempty"`
-	Shallow      bool                `json:"shallow,omitempty"`
-	WorkspaceDir string              `json:"workspace_dir,omitempty"` // Shared workspace directory from planner
+	RepoURL     string              `json:"repo_url"`
+	LocalPath   string              `json:"local_path,omitempty"` // Path to existing local repository
+	Credentials *models.Credentials `json:"credentials,omitempty"`
+	Branch      string              `json:"branch,omitempty"`
+	// BaseBranch names the branch this work would merge into. It is fetched alongside
+	// Branch so `git merge origin/<base>` can reproduce a PR merge conflict — the bare
+	// clone is otherwise narrowed to the requested branch only.
+	BaseBranch   string `json:"base_branch,omitempty"`
+	Shallow      bool   `json:"shallow,omitempty"`
+	WorkspaceDir string `json:"workspace_dir,omitempty"` // Shared workspace directory from planner
 }
 
 func NewRepoCloneTool(workspaceDir string, gitClient *git.GitClient) *RepoCloneTool {
@@ -102,6 +106,10 @@ func (t *RepoCloneTool) InputSchema() core.ToolSchema {
 			"branch": map[string]any{
 				"type":        "string",
 				"description": "Specific branch to clone (optional, defaults to default branch)",
+			},
+			"base_branch": map[string]any{
+				"type":        "string",
+				"description": "Branch this work merges into (optional). Fetch it too when you need to diff or merge against the base, e.g. to reproduce a PR merge conflict.",
 			},
 			"shallow": map[string]any{
 				"type":        "boolean",
@@ -193,7 +201,7 @@ func (t *RepoCloneTool) Execute(ctx context.Context, input map[string]any) core.
 	}
 
 	// Clone or reuse repository via worktree for performance
-	cloneResult, err := t.gitClient.CloneOrReuseRepository(ctx, params.RepoURL, internalCreds, params.Branch, repoDir)
+	cloneResult, err := t.gitClient.CloneOrReuseRepository(ctx, params.RepoURL, internalCreds, params.Branch, repoDir, params.BaseBranch)
 	if err != nil {
 		// Sanitize the raw git error before surfacing it in either Error or
 		// Observation — git usually redacts credentials in URLs but not

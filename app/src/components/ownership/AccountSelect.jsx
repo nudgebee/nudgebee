@@ -2,6 +2,9 @@ import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Select } from '@ui/Select';
 import apiUserManagement from '@api1/user';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 // Single-select of the tenant's cloud accounts. Shared by the rule modal and the
 // bulk-assign modal. Value is the account id; label is account_name.
@@ -19,7 +22,7 @@ export default function AccountSelect({ value, onChange, id, label, placeholder,
       .then((rows) => {
         if (!active) return;
         const list = (Array.isArray(rows) ? rows : []).filter((a) => (providerFilter ? providerFilter(a.cloud_provider) : true));
-        setOptions(list.map((a) => ({ value: a.id, label: a.account_name || a.id })));
+        setOptions(list.map((a) => ({ value: a.id, label: a.account_name || a.id, group: a.cloud_provider || 'Other' })));
       })
       .catch(() => active && setOptions([]))
       .finally(() => active && setLoading(false));
@@ -34,6 +37,8 @@ export default function AccountSelect({ value, onChange, id, label, placeholder,
       label={label}
       placeholder={placeholder || 'Select an account'}
       options={options}
+      grouped
+      groupIcon={renderAccountGroupIcon}
       value={value || null}
       onChange={(next) => onChange(next || '')}
       loading={loading}

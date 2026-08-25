@@ -458,8 +458,23 @@ func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderCont
 }
 
 func (a *awsProvider) QueryMetrices(ctx providers.CloudProviderContext, account providers.Account, filter providers.QueryMetricsRequest) (providers.QueryMetricsResponse, error) {
+	// A Metrics Insights query names its own namespace, metrics and grouping, so
+	// there is no service to resolve — going through the registry would reject it
+	// as an unsupported service and return an empty result.
+	if strings.TrimSpace(filter.Query) != "" {
+		return queryAwsMetricsInsights(ctx, account, filter)
+	}
 	service, ok := GetAwsService(filter.ServiceName)
 	if !ok {
+		// Callers that already know the CloudWatch namespace have no NudgeBee
+		// service name to dispatch on — the alarm-driven aws_get_metric action
+		// passes the namespace taken from the alarm itself (e.g.
+		// "AWS/ApplicationELB") as ServiceName, and no such service exists.
+		// Querying CloudWatch directly honours that namespace; returning an
+		// empty result here silently produced blank evidence cards instead.
+		if filter.MetricNamespace != "" {
+			return getAwsCloudwatchMetrics(ctx, account, filter)
+		}
 		return providers.QueryMetricsResponse{
 			Items: []providers.MetricItem{},
 		}, nil
@@ -1343,8 +1358,8 @@ func (a *awsProvider) QueryServiceMap(ctx providers.CloudProviderContext, accoun
 
 // shouldUseMultiSourceEngine checks if the multi-source engine should be used
 func (a *awsProvider) shouldUseMultiSourceEngine(account providers.Account) bool {
-	// Check environment variable for global toggle
-	if os.Getenv("ENABLE_MULTI_SOURCE_SERVICEMAP") == "true" {
+	// Global toggle (env: ENABLE_MULTI_SOURCE_SERVICEMAP)
+	if config.Config.EnableMultiSourceServicemap {
 		return true
 	}
 

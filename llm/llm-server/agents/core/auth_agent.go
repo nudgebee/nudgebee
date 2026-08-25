@@ -15,7 +15,10 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 	toolName := action.Tool
 	var tool toolcore.NBTool
 	found := false
-	for _, tool1 := range agent.GetSupportedTools(ctx) {
+	// Resolve request-aware so a mode-restricted tool (absent from this
+	// request's set) is rejected here even though the agent's canonical
+	// toolset contains it.
+	for _, tool1 := range SupportedToolsForRequest(ctx, agent, request) {
 		if strings.EqualFold(tool1.Name(), toolName) {
 			found = true
 			tool = tool1
@@ -25,7 +28,7 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 
 	if !found {
 		// check if it's a builtin tool like load_skills or shell_execute
-		if strings.EqualFold(toolName, "load_skills") || (strings.EqualFold(toolName, toolcore.ToolExecuteShellCommand) && config.Config.LlmServerShellToolEnabled) {
+		if strings.EqualFold(toolName, "load_skills") || strings.EqualFold(toolName, toolcore.ToolExecuteShellCommand) {
 			if t, ok := toolcore.GetNBTool(request.AccountId, toolName); ok {
 				found = true
 				tool = t
@@ -88,7 +91,7 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 	}
 
 	if !found {
-		return nil, nil, fmt.Errorf("auth: tool not found - %s, agent - %s", toolName, agent.GetName())
+		return nil, nil, fmt.Errorf("auth: tool not found - %s, agent - %s (not in your authorized tool set — route through delegate_agent, or discover it via search_tools first)", toolName, agent.GetName())
 	}
 
 	requestType := toolcore.ToolRequestType("")

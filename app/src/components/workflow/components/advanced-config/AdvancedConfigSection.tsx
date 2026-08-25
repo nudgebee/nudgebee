@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Box, Typography, Collapse, Badge, Tooltip, Chip } from '@mui/material';
+import { Box, Typography, Collapse, Badge, Chip } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import { ExpandMore, Settings, Timer, Storage, GridView, ErrorOutline } from '@mui/icons-material';
 
 // Quick navigation sections configuration

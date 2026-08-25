@@ -215,8 +215,12 @@ func QueryMetrics(ctx *security.RequestContext, metricRequest QueryMetricsReques
 		return response, errors.New("tenant is required")
 	}
 
-	if metricRequest.Query.ServiceName == "" {
-		return response, errors.New("query.service_name is required")
+	// Metrics are selected either structurally (a service, plus metric names and
+	// dimensions) or by a provider-native query that carries its own namespace
+	// and grouping — a CloudWatch Metrics Insights statement. One or the other,
+	// so a query-only request has no service to name.
+	if metricRequest.Query.ServiceName == "" && strings.TrimSpace(metricRequest.Query.Query) == "" {
+		return response, errors.New("query.service_name or query.query is required")
 	}
 
 	resp, err := common.HttpPost(config.Config.CloudCollectorServerUrl+"/v1/cloud/get_metrics", common.HttpWithTimeout(30*time.Second), common.HttpWithJsonBody(map[string]any{
@@ -299,6 +303,55 @@ func ListMetrics(ctx *security.RequestContext, accountId string, request ListMet
 	err = json.Unmarshal(bodyData, &response2)
 	if err != nil {
 		return ListMetricsResponse{}, err
+	}
+
+	return response2.Data, nil
+}
+
+type listNotificationTargetsApiResponse struct {
+	Data ListNotificationTargetsResponse `json:"data"`
+}
+
+func ListNotificationTargets(ctx *security.RequestContext, request ListNotificationTargetsRequest) (ListNotificationTargetsResponse, error) {
+	if request.AccountId == "" {
+		return ListNotificationTargetsResponse{}, errors.New("account_id is required")
+	}
+
+	resp, err := common.HttpPost(config.Config.CloudCollectorServerUrl+"/v1/cloud/list_notification_targets", common.HttpWithTimeout(15*time.Second), common.HttpWithJsonBody(map[string]any{
+		"account_id": request.AccountId,
+		"request": map[string]any{
+			"region": request.Region,
+		},
+	}), common.HttpWithHeaders(map[string]string{
+		config.Config.CloudCollectorServerTokenHeader: config.Config.CloudCollectorServerToken,
+		"x-tenant-id": ctx.GetSecurityContext().GetTenantId(),
+		"x-user-id":   ctx.GetSecurityContext().GetUserId(),
+	}))
+
+	if err != nil {
+		return ListNotificationTargetsResponse{}, err
+	}
+
+	body := resp.Body
+	defer func() {
+		err := body.Close()
+		if err != nil {
+			ctx.GetLogger().Error("Error closing response body", "error", err)
+		}
+	}()
+	bodyData, err := io.ReadAll(body)
+	if err != nil {
+		return ListNotificationTargetsResponse{}, err
+	}
+
+	if resp.StatusCode != 200 {
+		return ListNotificationTargetsResponse{}, fmt.Errorf("error while listing notification targets - %s", string(bodyData))
+	}
+
+	response2 := listNotificationTargetsApiResponse{}
+	err = json.Unmarshal(bodyData, &response2)
+	if err != nil {
+		return ListNotificationTargetsResponse{}, err
 	}
 
 	return response2.Data, nil

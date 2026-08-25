@@ -49,7 +49,7 @@ import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
 import apiUser from '@api1/user';
 import { getDateString, getLast24Hrs } from '@lib/datetime';
-import { hasWriteAccess, getCurrentTenant } from '@lib/auth';
+import { hasWriteAccess, hasPermission, getCurrentTenant } from '@lib/auth';
 import { safeJSONParse, titleCaseForAggregationKey, syncFilterFromQuery, toSeverityLevel, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
 import { applyFiltersOnRouter } from '@lib/router';
 import { action } from 'src/utils/actionStyles';
@@ -124,10 +124,6 @@ const DEFAULT_TABLE_COLUMNS = [
   {
     name: 'Triage Score',
     width: '10%',
-    // The cell packs a score, a bar, an info icon and the priority-pin control — ~173px
-    // of content. Without a floor the resize hook happily allots it 10% (~74px) and the
-    // whole group spills over the columns on both sides.
-    minWidth: 175,
     align: 'left',
     defaultVisible: true,
     info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
@@ -244,6 +240,7 @@ const KubernetesEventsTable = ({
   stickyColumnIndex = '',
   resource_ids = [],
   showTimeFilter = true,
+  hideScopeFilters = false,
   isTroubleshootPage = false,
   showEventTypeColumn = false,
 }) => {
@@ -274,6 +271,14 @@ const KubernetesEventsTable = ({
     { value: 'DEBUG', label: 'Debug' },
     { value: 'LOW', label: 'Low' },
     { value: 'INFO', label: 'Info' },
+  ];
+  // Nubi's own rank, distinct from `priorityFilter` above (the source system's
+  // severity). The Troubleshoot briefing drills down on this.
+  const nubiRankFilter = [
+    { value: 'P0', label: 'P0' },
+    { value: 'P1', label: 'P1' },
+    { value: 'P2', label: 'P2' },
+    { value: 'P3', label: 'P3' },
   ];
   const sortByOptions = [
     { value: 'created_at', label: 'Time' },
@@ -359,7 +364,6 @@ const KubernetesEventsTable = ({
       {
         name: 'Triage Score',
         width: '10%',
-        minWidth: 175,
         align: 'left',
         info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
       },
@@ -436,6 +440,9 @@ const KubernetesEventsTable = ({
   const [selectedAggregationKey, setSelectedAggregationKey] = useState(() => getInitialAggregationKey());
   const [selectedPriority, setSelectedPriority] = useState(
     () => defaultQuery?.eventPriority ?? getValidParam(router.query.eventPriority) ?? persisted?.priority
+  );
+  const [selectedNubiRank, setSelectedNubiRank] = useState(
+    () => defaultQuery?.eventComputedPriority ?? getValidParam(router.query.eventComputedPriority) ?? persisted?.computedPriority
   );
   const [selectedDateRange, setSelectedDateRange] = useState(() => getInitialTime());
   const [selectedStatus, setSelectedStatus] = useState(() => {
@@ -572,6 +579,29 @@ const KubernetesEventsTable = ({
     });
   }, [accountId, router.query.accountIds]);
 
+  // Follow start_time/end_time when something OUTSIDE this table changes them —
+  // on Troubleshoot the briefing strip above owns a range picker of its own, and
+  // getInitialTime() only reads the URL at mount, so without this the briefing
+  // and the list silently drift onto different windows. Same shape as the
+  // accountIds sync above; the identity guard is what keeps it from looping when
+  // handleDateRangeChange is the one that wrote the URL. Troubleshoot-only: the
+  // other pages mounting this table have no second control over the range, and
+  // several carry start_time/end_time from the global filter.
+  useEffect(() => {
+    if (!isTroubleshootPage) return;
+    const startTime = Number(getValidParam(router.query.start_time));
+    const endTime = Number(getValidParam(router.query.end_time));
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) return;
+    setSelectedDateRange((prev) => {
+      if (prev?.startDate === startTime && prev?.endDate === endTime) return prev;
+      // shortcutClickTime 0 = a custom (absolute) range, which is what an
+      // externally-set window is as far as this table's picker is concerned.
+      return { startDate: startTime, endDate: endTime, shortcutClickTime: 0 };
+    });
+    setCurrentPage(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTroubleshootPage, router.query.start_time, router.query.end_time]);
+
   // Once the real accounts list has loaded, drop any cached/URL account ids
   // that no longer exist (deleted account, revoked access). Without this,
   // a stale id never shows as a selected chip (the dropdown only renders
@@ -606,14 +636,6 @@ const KubernetesEventsTable = ({
           info: item?.info,
           infoPlacement: item?.infoPlacement,
           component: item?.component,
-          // `truncate` and `align` have to survive this remap: they're what makes the
-          // table clamp a cell to its own column. Dropping them let a long alert title
-          // render at full width and paint over the Triage Score column beside it.
-          ...(item?.truncate && { truncate: item.truncate }),
-          ...(item?.align && { align: item.align }),
-          ...(item?.size && { size: item.size }),
-          ...(item?.minWidth !== undefined && { minWidth: item.minWidth }),
-          ...(item?.maxWidth !== undefined && { maxWidth: item.maxWidth }),
           ...(item?.mandatory && { mandatory: item.mandatory }),
           ...(item?.defaultVisible !== undefined && { defaultVisible: item.defaultVisible }),
         };
@@ -729,6 +751,13 @@ const KubernetesEventsTable = ({
     writePersistedFilters(persistKey, { priority: e?.target?.value });
   };
 
+  const onNubiRankFilterChange = (e, _p) => {
+    setSelectedNubiRank(e?.target?.value);
+    setCurrentPage(0);
+    applyFiltersOnRouter(router, { eventComputedPriority: e?.target?.value });
+    writePersistedFilters(persistKey, { computedPriority: e?.target?.value });
+  };
+
   const onStatusFilterChange = (e, _p) => {
     setSelectedStatus(e?.target?.value);
     setCurrentPage(0);
@@ -788,15 +817,24 @@ const KubernetesEventsTable = ({
     return description;
   };
 
+  // Creating a ticket needs write access to the row's account OR the tickets:Write
+  // custom-role grant (tickets_create → tickets:Write). Without either, the Create
+  // Ticket action is disabled.
+  const canCreateTicketFor = (item) => hasWriteAccess(item?.account_id) || hasPermission('tickets', 'Write');
+
   const getMenuItems = (item, disableTicket) => {
+    const canCreateTicket = canCreateTicketFor(item);
     let MENU_ITEMS;
     if (hasWriteAccess(item.account_id)) {
       MENU_ITEMS = [
         {
           icon: TicketsIcon,
-          label: 'Create Ticket',
+          // ThreeDotsMenu items can't show a hover tooltip when disabled, so name
+          // the required grant inline (the user can tell an admin exactly what to
+          // grant) rather than in a tooltip.
+          label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
           id: 'create-ticket',
-          disabled: disableTicket,
+          disabled: disableTicket || !canCreateTicket,
           iconBlack: true,
         },
         {
@@ -816,9 +854,12 @@ const KubernetesEventsTable = ({
       MENU_ITEMS = [
         {
           icon: TicketsIcon,
-          label: 'Create Ticket',
+          // ThreeDotsMenu items can't show a hover tooltip when disabled, so name
+          // the required grant inline (the user can tell an admin exactly what to
+          // grant) rather than in a tooltip.
+          label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
           id: 'create-ticket',
-          disabled: disableTicket,
+          disabled: disableTicket || !canCreateTicket,
           iconBlack: true,
         },
       ];
@@ -843,12 +884,23 @@ const KubernetesEventsTable = ({
       if (data.source) params.set('eventSource', data.source);
       if (accountId) params.set('eventCluster', accountId);
       if (data.subject_namespace) params.set('eventNamespace', data.subject_namespace);
-      router.push(`/workflow/new?${params.toString()}`);
+      router.push(`/automation/new?${params.toString()}`);
     }
   };
 
-  const handleTicketSuccess = () => {
-    listEvents();
+  const handleTicketSuccess = ({ ticketId, url } = {}) => {
+    const fingerprint = ticketData?.fingerprint;
+    if (!fingerprint || !buildRowDataRef.current) return;
+    ticketReferenceMapRef.current.set(fingerprint, { ticket_id: ticketId, url });
+    setData((prev) => {
+      const next = [...prev];
+      rawEventsRef.current.forEach((e, idx) => {
+        if (e.fingerprint === fingerprint) {
+          next[idx] = buildRowDataRef.current([rawEventsRef.current[idx]], ticketReferenceMapRef.current)[0];
+        }
+      });
+      return next;
+    });
   };
 
   const handlePriorityChange = (eventId, newPriority, newScore, newFactors) => {
@@ -940,6 +992,11 @@ const KubernetesEventsTable = ({
       query.priority = selectedPriority;
     } else {
       delete query.priority;
+    }
+    if (selectedNubiRank) {
+      query.computed_priority = selectedNubiRank;
+    } else {
+      delete query.computed_priority;
     }
     if (selectedStatus) {
       query.status = selectedStatus;
@@ -1062,6 +1119,34 @@ const KubernetesEventsTable = ({
                       </span>
                     </Tooltip>
                   )}
+                  {item.incident_member_count > 0 && (
+                    <Tooltip
+                      title={`${item.incident_member_count} related alert${
+                        item.incident_member_count > 1 ? 's' : ''
+                      } on this subject grouped under this event`}
+                    >
+                      <span>
+                        <Chip variant='tag' tone='warning' size='xs' data-testid='incident-leader-chip'>
+                          +{item.incident_member_count} SAME INCIDENT
+                        </Chip>
+                      </span>
+                    </Tooltip>
+                  )}
+                  {item.incident_leader_id && (
+                    <Tooltip title='Part of an incident on this subject — click to open the leading event'>
+                      <span
+                        style={{ cursor: 'pointer' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.open(`/investigate?id=${item.incident_leader_id}&accountId=${item.account_id}`, '_blank');
+                        }}
+                      >
+                        <Chip variant='tag' tone='neutral' size='xs' data-testid='incident-child-chip'>
+                          GROUPED
+                        </Chip>
+                      </span>
+                    </Tooltip>
+                  )}
                 </Box>
                 {isTroubleshootPage && account && (
                   <Text value={`acc: ${account?.label || account?.account_name || item.account_id}`} secondaryText showAutoEllipsis />
@@ -1077,9 +1162,7 @@ const KubernetesEventsTable = ({
             component: ClusterNameWithRegion({
               name: item.title,
               hideIcon: true,
-              // No `smallScreenWidth`: the Message column is already percentage-sized by the
-              // table, so pinning it to a fixed 120px under 1100px only squeezed the copy into
-              // a sliver while the cell around it stayed wide.
+              smallScreenWidth: ds.space.mul(0, 60),
               maxWidth: '100%',
               showAutoEllipsis: true,
               lineClamp: 3,
@@ -1204,11 +1287,23 @@ const KubernetesEventsTable = ({
                 eventId={item.id}
                 currentStatus={item.nb_status || 'OPEN'}
                 snoozedUntil={item.snoozed_until}
-                onStatusChange={() => listEvents()}
-                onCreateTicket={() => {
-                  setTicketData(item);
-                  setIsTicketCreateFormOpen(true);
+                onStatusChange={(newStatus, snoozedUntil) => {
+                  rawEventsRef.current = rawEventsRef.current.map((e) =>
+                    e.id === item.id ? { ...e, nb_status: newStatus, snoozed_until: snoozedUntil ?? null } : e
+                  );
+                  if (buildRowDataRef.current) {
+                    setData(buildRowDataRef.current(rawEventsRef.current, ticketReferenceMapRef.current));
+                  }
                 }}
+                onCreateTicket={
+                  canCreateTicketFor(item) && !ticketReferenceMap.has(item.fingerprint || item.id)
+                    ? () => {
+                        setTicketData(item);
+                        setIsTicketCreateFormOpen(true);
+                      }
+                    : undefined
+                }
+                disabled={!hasWriteAccess(item.account_id)}
                 disableSnoozeTooltip
                 tooltipTitle={getTriageStatusTooltip(item.nb_status || 'OPEN', item.snoozed_until)}
               />
@@ -1242,6 +1337,8 @@ const KubernetesEventsTable = ({
       });
     };
 
+    buildRowDataRef.current = buildRowData;
+
     // Fire data query (onlyData skips count) and count query in parallel
     const dataQuery = { ...query, onlyData: true };
     const dataPromise = k8sApi.getK8sEvents(rowsPerPage, currentPage * rowsPerPage, dataQuery);
@@ -1263,6 +1360,8 @@ const KubernetesEventsTable = ({
         ticketRes?.data?.tickets?.forEach((element) => {
           ticketReferenceMap.set(element.reference_id, element);
         });
+        rawEventsRef.current = events;
+        ticketReferenceMapRef.current = ticketReferenceMap;
         const data = buildRowData(events, ticketReferenceMap);
         setData(data);
         setLoading(false);
@@ -1283,13 +1382,7 @@ const KubernetesEventsTable = ({
   };
 
   useEffect(() => {
-    if (isTroubleshootPage) {
-      if (accounts.length > 0) {
-        listEvents();
-      }
-    } else {
-      listEvents();
-    }
+    listEvents();
   }, [
     selectedAccountId,
     currentPage,
@@ -1299,6 +1392,7 @@ const KubernetesEventsTable = ({
     selectedSubjectType,
     selectedAggregationKey,
     selectedPriority,
+    selectedNubiRank,
     selectedDateRange,
     selectedStatus,
     JSON.stringify(defaultQuery),
@@ -1419,6 +1513,7 @@ const KubernetesEventsTable = ({
     selectedSubjectType,
     selectedAggregationKey,
     selectedPriority,
+    selectedNubiRank,
     selectedStatus,
     selectedDateRange,
     showTrendChart,
@@ -1484,7 +1579,7 @@ const KubernetesEventsTable = ({
         <ListingLayout.Toolbar
           actions={
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-              {showTimeFilter && (
+              {showTimeFilter && !hideScopeFilters && (
                 <CustomDateTimeRangePicker
                   passedSelectedDateTime={{
                     startTime: selectedDateRange.startDate,
@@ -1550,7 +1645,7 @@ const KubernetesEventsTable = ({
                   }}
                 />
               )}
-              {isTroubleshootPage && (
+              {isTroubleshootPage && !hideScopeFilters && (
                 <FilterDropdown
                   id='filter-account'
                   label='Account'
@@ -1676,6 +1771,19 @@ const KubernetesEventsTable = ({
                   onSelect={onPriorityFilterChange}
                 />
               )}
+              {/* Troubleshoot-only: this table mounts on 11 other pages, and the
+                  briefing strip that drills down on Nubi's rank only exists here.
+                  The state and query wiring stay unconditional so a briefing
+                  drill-down URL still applies its filter wherever it lands. */}
+              {isTroubleshootPage && !disabledFilters.includes('nubiRank') && (
+                <FilterDropdown
+                  id='filter-nubi-rank'
+                  label='Nubi Rank'
+                  options={nubiRankFilter}
+                  value={selectedNubiRank}
+                  onSelect={onNubiRankFilterChange}
+                />
+              )}
               {!disabledFilters.includes('status') && (
                 <FilterDropdown id='filter-status' label='Status' options={statusFilter} value={selectedStatus} onSelect={onStatusFilterChange} />
               )}
@@ -1779,6 +1887,7 @@ KubernetesEventsTable.propTypes = {
   stickyColumnIndex: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
   resource_ids: PropTypes.arrayOf(PropTypes.string),
   showTimeFilter: PropTypes.bool,
+  hideScopeFilters: PropTypes.bool,
   isTroubleshootPage: PropTypes.bool,
 };
 

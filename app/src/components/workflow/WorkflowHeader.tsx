@@ -87,12 +87,18 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
     }
   };
 
-  const tabOptions = canEdit
-    ? [
-        { value: 'editor', label: 'Editor' },
-        { value: 'executions', label: 'Executions' },
-      ]
-    : [{ value: 'executions', label: 'Executions' }];
+  // Read-only users keep the Editor tab visible but disabled (with a tooltip)
+  // rather than having it vanish — a missing tab reads as "broken", a disabled
+  // one explains why.
+  const tabOptions = [
+    {
+      value: 'editor',
+      label: 'Editor',
+      disabled: !canEdit,
+      ...(canEdit ? {} : { tooltip: 'You do not have edit access to this automation.' }),
+    },
+    { value: 'executions', label: 'Executions' },
+  ];
 
   const effectiveAllowTitleEdit = allowTitleEdit && canEdit;
 

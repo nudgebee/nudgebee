@@ -60,6 +60,8 @@ interface RequestsViewProps {
   sessionFilter: string | null;
   onSelectSession: (id: string) => void;
   onClearSession: () => void;
+  /** Widen the shell's date window to the last 30 days (offered from the empty state). */
+  onExpandRange: () => void;
 }
 
 const LIMIT = 50;
@@ -385,6 +387,7 @@ export function RequestsView({
   sessionFilter,
   onSelectSession,
   onClearSession,
+  onExpandRange,
 }: RequestsViewProps) {
   const [offset, setOffset] = React.useState(0);
   const [limit, setLimit] = React.useState(LIMIT);
@@ -452,6 +455,23 @@ export function RequestsView({
   const tableData = React.useMemo(() => rows.map((r) => toRow(r, costSev, setBodyRow, onSelectSession)), [rows, costSev, onSelectSession]);
 
   const showEmpty = !loading && !error && rows.length === 0;
+
+  // Empty-state guidance: if any filter is active it's the likely cause, so offer to
+  // clear them; otherwise the window is just empty, so offer to widen it (unless it's
+  // already ~30 days). effStatus/effDlp fold in any Governance-drill-in scope.
+  const hasActiveFilters = Boolean(userFilter || models.length || providers.length || effStatus || effDlp || toolFilter || govChip || sessionFilter);
+  const rangeDays = Math.round((Date.parse(filters.endDate) - Date.parse(filters.startDate)) / 86_400_000);
+  const canExpand = rangeDays < 29;
+  const clearAllFilters = () => {
+    setModels([]);
+    setProviders([]);
+    setStatus('');
+    setDlpFilter('');
+    if (toolFilter) onClearTool();
+    if (govFilter) onClearGov();
+    if (sessionFilter) onClearSession();
+    if (userFilter) onChangeUser(null);
+  };
 
   return (
     <Card>
@@ -533,8 +553,19 @@ export function RequestsView({
           <EmptyState
             size='section'
             illustration='no-results'
-            title='No requests'
-            description='Try widening the date range or clearing the filters.'
+            title={hasActiveFilters ? 'No matching requests' : 'No requests in this range'}
+            description={
+              hasActiveFilters
+                ? 'No gateway requests match the current filters in this date range.'
+                : 'No gateway requests were recorded in this date range.'
+            }
+            action={
+              hasActiveFilters
+                ? { label: 'Clear filters', onClick: clearAllFilters }
+                : canExpand
+                ? { label: 'View last 30 days', onClick: onExpandRange }
+                : undefined
+            }
           />
         ) : (
           !error &&

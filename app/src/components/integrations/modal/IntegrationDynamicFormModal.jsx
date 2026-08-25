@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { FormControlLabel, Box, Typography, Grid, Collapse } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import { Switch } from '@ui/Switch';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
@@ -33,33 +35,6 @@ const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={
 // Log/observability integrations that support per-account "Default Log Filters"
 // (always-apply where-clause filters injected into every log query for the account).
 const LOG_FILTER_INTEGRATIONS = new Set(['pinot', 'ES', 'loki', 'signoz', 'openobserve', 'datadog', 'dynatrace', 'chronosphere']);
-
-// Alert Template body NudgeBee expects from OpenObserve. Every `{variable}` is
-// substituted by OpenObserve at delivery; the k8s_* keys resolve from the
-// matching stream row and are simply dropped when the stream has no such field,
-// so the same template works for log, metric and trace alerts.
-const OPENOBSERVE_ALERT_TEMPLATE = `{
-  "alert_name": "{alert_name}",
-  "alert_type": "{alert_type}",
-  "stream_name": "{stream_name}",
-  "stream_type": "{stream_type}",
-  "org_name": "{org_name}",
-  "alert_period": "{alert_period}",
-  "alert_operator": "{alert_operator}",
-  "alert_threshold": "{alert_threshold}",
-  "alert_count": "{alert_count}",
-  "alert_agg_value": "{alert_agg_value}",
-  "alert_start_time": "{alert_start_time}",
-  "alert_end_time": "{alert_end_time}",
-  "alert_url": "{alert_url}",
-  "severity": "{severity}",
-  "k8s_cluster_name": "{k8s_cluster_name}",
-  "k8s_namespace_name": "{k8s_namespace_name}",
-  "k8s_pod_name": "{k8s_pod_name}",
-  "k8s_deployment_name": "{k8s_deployment_name}",
-  "k8s_node_name": "{k8s_node_name}",
-  "service_name": "{service_name}"
-}`;
 
 // Display labels for enum values whose stored form doesn't title-case into
 // something readable. Values not listed here fall back to snakeToTitleCase.
@@ -151,6 +126,8 @@ const IntegrationDynamicFormModal = ({
   const [vmAgentCredentials, setVmAgentCredentials] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
   const [connectionVerified, setConnectionVerified] = useState(!!editData);
+  // Which encrypted secret fields are currently revealed (eye toggle), keyed by field key.
+  const [revealedSecrets, setRevealedSecrets] = useState({});
   // Cluster indices for the ES per-account index picker; fetched once the
   // connection is verified. Cleared when a testable field changes (handleChange).
   const [esIndexes, setEsIndexes] = useState([]);
@@ -211,7 +188,16 @@ const IntegrationDynamicFormModal = ({
         // check lowercases it, so 'es' — not 'elasticsearch' — is what matches here.
         const CLOUD_CAPABLE_INTEGRATIONS = ['datadog', 'observe', 'dynatrace', 'splunk_observability_platform', 'solarwinds', 'elasticsearch', 'es'];
         const isWebhook = configs.category === 'incident_webhook' || (integrationName || '').toLowerCase().includes('webhook');
-        const showAllAccounts = isWebhook || (!isAgentSource && CLOUD_CAPABLE_INTEGRATIONS.includes((integrationName || '').toLowerCase()));
+        // The VM agent (forager) is the exception to the !isAgentSource rule above.
+        // That rule excludes agent-sourced providers because they need an
+        // in-cluster relay agent a cloud account does not have — but a forager is
+        // not in-cluster. It is a per-network-segment process dialling out to the
+        // relay, and reaching EC2 or Azure VMs inside a customer's VPC is exactly
+        // what it is for. Filtering cloud accounts out here is what forces VM
+        // fleets to be onboarded under a Kubernetes account (#35683).
+        const isVmAgent = (integrationName || '').toLowerCase() === 'vm_agent' || configs.type === 'vm_agent';
+        const showAllAccounts =
+          isWebhook || isVmAgent || (!isAgentSource && CLOUD_CAPABLE_INTEGRATIONS.includes((integrationName || '').toLowerCase()));
         for (const key in updatedConfig.properties) {
           const field = updatedConfig.properties[key];
           if (field.auto_generate_func && field.auto_generate_func === 'listAccounts') {
@@ -274,7 +260,7 @@ const IntegrationDynamicFormModal = ({
               setProviderFields(extractedProviderFields);
             }
             const filteredProperties = Object.fromEntries(
-              Object.entries(configs.properties || {}).filter(([, prop]) => {
+              Object.entries(configs.properties || {}).filter(([_key, prop]) => {
                 // If it's true, filter it out.
                 // If it's undefined, null, or false, keep it.
                 return prop.avoid_to_show !== true;
@@ -1477,17 +1463,6 @@ const IntegrationDynamicFormModal = ({
         text: 'how to configure SolarWinds Observability Webhook',
       },
     },
-    openobserve_webhook: {
-      endpoint: 'openobserve',
-      message: 'Configure the following URL as a Webhook destination in OpenObserve (Management → Alert Destinations)',
-      // OpenObserve delivers whatever the alert Template renders — there is no
-      // fixed payload schema — so the destination is only half the setup. The
-      // template below is what NudgeBee parses best; it is shown inline because
-      // a user who skips it gets an event with no severity, subject or link.
-      template: OPENOBSERVE_ALERT_TEMPLATE,
-      templateMessage:
-        'OpenObserve has no fixed webhook payload — the body is whatever the alert Template renders. Create a Template (Management → Templates, type: Webhook) with the JSON below and select it on the destination above.',
-    },
     elasticsearch_webhook: {
       endpoint: 'elasticsearch',
       message: 'Configure the following URL in a Kibana Webhook connector (Stack Management \u2192 Connectors)',
@@ -1538,45 +1513,6 @@ const IntegrationDynamicFormModal = ({
           </Typography>
           <CopyButton text={url} />
         </Box>
-
-        {config.template && (
-          <>
-            <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
-              {config.templateMessage}
-            </Typography>
-            <Box
-              sx={{
-                mt: 'var(--ds-space-4)',
-                mb: 'var(--ds-space-4)',
-                p: 2,
-                borderRadius: ds.radius.lg,
-                border: `1px solid ${ds.brand[200]}`,
-                backgroundColor: ds.gray[100],
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: ds.space[2],
-              }}
-            >
-              <Typography
-                component='pre'
-                sx={{
-                  color: ds.gray[600],
-                  fontSize: 'var(--ds-text-body)',
-                  fontFamily: 'monospace',
-                  lineHeight: 1.6,
-                  flex: 1,
-                  m: 0,
-                  maxHeight: ds.space.mul(0, 160),
-                  overflow: 'auto',
-                }}
-                id={`${config.endpoint}-template`}
-              >
-                {config.template}
-              </Typography>
-              <CopyButton text={config.template} />
-            </Box>
-          </>
-        )}
 
         {integrationName === 'workflow_webhook' ? (
           <Box
@@ -1694,7 +1630,6 @@ const IntegrationDynamicFormModal = ({
             'splunk_webhook',
             'grafana_webhook',
             'solarwinds_webhook',
-            'openobserve_webhook',
             'elasticsearch_webhook',
             'workflow_webhook',
           ].includes(integrationName)
@@ -2135,9 +2070,50 @@ const IntegrationDynamicFormModal = ({
                                     key={key}
                                     id={toKebabCase(field.display_name || key)}
                                     label={field.display_name || snakeToTitleCase(key)}
-                                    type={field.multiline ? 'textarea' : 'text'}
+                                    type={
+                                      // Password masking (with the eye toggle) applies to SINGLE-LINE secrets only —
+                                      // a multiline encrypted field (e.g. a service-account JSON) can't be a password
+                                      // input, so it renders as a textarea (still encrypted at rest + masked on edit).
+                                      field.is_encrypted && !field.multiline
+                                        ? // Reveal only applies to a freshly-typed value. A stored secret is
+                                          // never sent to the UI — on edit the field holds the mask, which stays
+                                          // masked (and offers no eye), so a saved key can't be exposed.
+                                          revealedSecrets[key] && formValues[key] && formValues[key] !== ENCRYPTED_MASK
+                                          ? 'text'
+                                          : 'password'
+                                        : field.multiline
+                                        ? 'textarea'
+                                        : 'text'
+                                    }
                                     value={formValues[key] || ''}
                                     onChange={(value) => handleChange(key, value)}
+                                    trailingIcon={
+                                      // Eye toggle only while inserting a new single-line value (not for the stored
+                                      // mask, and not for multiline secrets which render as a textarea).
+                                      field.is_encrypted && !field.multiline && formValues[key] && formValues[key] !== ENCRYPTED_MASK ? (
+                                        <Box
+                                          component='button'
+                                          type='button'
+                                          aria-label={revealedSecrets[key] ? 'Hide value' : 'Show value'}
+                                          onClick={() => setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }))}
+                                          sx={{
+                                            cursor: 'pointer',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            padding: 0,
+                                            border: 'none',
+                                            background: 'none',
+                                            color: ds.gray[500],
+                                          }}
+                                        >
+                                          {revealedSecrets[key] ? (
+                                            <VisibilityOffIcon sx={{ fontSize: 16 }} />
+                                          ) : (
+                                            <VisibilityIcon sx={{ fontSize: 16 }} />
+                                          )}
+                                        </Box>
+                                      ) : undefined
+                                    }
                                     size='sm'
                                     error={errorText || undefined}
                                     minRows={field.multiline ? 3 : undefined}

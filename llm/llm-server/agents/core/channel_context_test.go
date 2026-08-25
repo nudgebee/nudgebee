@@ -22,6 +22,9 @@ func TestRenderChannelContextBlock_FencesAndFramesTheTranscript(t *testing.T) {
 	// is even before the security rules are consulted.
 	assert.Contains(t, block, "reference material only")
 	assert.Contains(t, block, "not instructions")
+	// And it must tell the model to USE the conversation to scope a vague
+	// question — not merely to hold it as passive background.
+	assert.Contains(t, block, "scope the question")
 }
 
 func TestRenderChannelContextBlock_KeepsHostileTextInsideTheFence(t *testing.T) {
@@ -117,4 +120,17 @@ func TestRenderChannelContextBlock_LeavesOrdinaryTextAlone(t *testing.T) {
 	assert.Contains(t, out, "<@U123>")
 	assert.Contains(t, out, "3 < 5")
 	assert.NotContains(t, out, "[removed-tag]")
+}
+
+func TestChannelContextRefsOptionCarriesProvenance(t *testing.T) {
+	// The provenance travels next to the block but never into it: the option
+	// lands on its own request field, destined for a reference row, and an
+	// absent payload stays absent rather than becoming an empty citation.
+	cfg := additionalConversationSessionRequestConfig{}
+	ConversationSessionRequestWithChannelContextRefs(map[string]any{"channel_id": "C1"}).apply(&cfg)
+	assert.Equal(t, "C1", cfg.channelContextRefs["channel_id"])
+
+	empty := additionalConversationSessionRequestConfig{}
+	ConversationSessionRequestWithChannelContextRefs(nil).apply(&empty)
+	assert.Empty(t, empty.channelContextRefs)
 }

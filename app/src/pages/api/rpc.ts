@@ -160,6 +160,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             res.status(404).json(rpcError(rpcId, RPC_METHOD_NOT_FOUND, `Method not found: ${method}`));
             return;
           case 'handler_unresolved':
+            console.error(
+              `[rpc-proxy] handler_unresolved method=${method} handler=${result.error.handler} missingEnv=${result.error.missingEnv.join(',')}`
+            );
             res.status(500).json(rpcError(rpcId, RPC_INTERNAL_ERROR, `Handler URL unresolved for ${method}`));
             return;
           case 'no_tenant_role':

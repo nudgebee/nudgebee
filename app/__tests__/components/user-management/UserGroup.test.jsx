@@ -2,9 +2,9 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
-const mockHasWriteAccess = jest.fn();
+const mockCanManage = jest.fn();
 jest.mock('@lib/auth', () => ({
-  hasWriteAccess: (...args) => mockHasWriteAccess(...args),
+  canManage: (...args) => mockCanManage(...args),
 }));
 
 jest.mock('@api1/user', () => ({
@@ -195,7 +195,7 @@ const mockGroupsResponse = (rows = sampleGroups, count = rows.length) => ({
 describe('UserGroup (integration)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockHasWriteAccess.mockReturnValue(true);
+    mockCanManage.mockReturnValue(true);
     apiUserManagement.listAccounts.mockResolvedValue(sampleAccounts);
     apiUserManagement.listUserGroups.mockResolvedValue(mockGroupsResponse());
   });
@@ -273,7 +273,7 @@ describe('UserGroup (integration)', () => {
   });
 
   it('hides Add User Group button without write access', async () => {
-    mockHasWriteAccess.mockReturnValue(false);
+    mockCanManage.mockReturnValue(false);
     render(<UserGroup />);
     await waitFor(() => expect(apiUserManagement.listUserGroups).toHaveBeenCalled());
     expect(screen.queryByTestId('new-user-group')).not.toBeInTheDocument();

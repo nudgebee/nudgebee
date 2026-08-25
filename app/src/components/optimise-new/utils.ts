@@ -47,8 +47,43 @@ export const RULE_LABELS: Record<string, string> = {
   unassociated_public_ip: 'Unassociated Public IP',
 };
 
+// Labels for rules whose framing depends on the category the row landed under.
+// A pod_right_sizing row lands under Configuration when no container declares
+// any cpu/memory request — a scheduling-hygiene defect worth $0, so the sizing
+// wording misreads there. The rule_name stays one value on purpose: same KRR
+// detector, same payload, same apply path, and category is already the
+// discriminator in the upsert conflict key.
+export const CATEGORY_RULE_LABELS: Record<string, Record<string, string>> = {
+  Configuration: {
+    pod_right_sizing: 'Missing Resource Requests',
+  },
+};
+
 export const NON_SECURITY_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'];
 export const DEFAULT_STATUS = ['Open', 'InProgress'];
+
+// Options for the Status filter. An empty selection means DEFAULT_STATUS, so the
+// page's default view is unchanged; Dismissed covers snoozed rows too (a snooze
+// is stored as Dismissed + snoozed_until).
+export const STATUS_FILTER_OPTIONS = [
+  { label: 'Open', value: 'Open' },
+  { label: 'In progress', value: 'InProgress' },
+  { label: 'Dismissed / snoozed', value: 'Dismissed' },
+];
+
+// Label for a Dismissed recommendation's badge: distinguishes a live snooze
+// ("Snoozed until Aug 11, 2026") from a permanent dismissal. An elapsed
+// snoozed_until reads as plain "Dismissed" — the expiry sweep returns the row
+// to Open on its next pass.
+export const dismissalLabel = (snoozedUntil?: string | null): string => {
+  if (snoozedUntil) {
+    const until = new Date(snoozedUntil);
+    if (!Number.isNaN(until.getTime()) && until.getTime() > Date.now()) {
+      return `Snoozed until ${until.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    }
+  }
+  return 'Dismissed';
+};
 
 // InfraUpgrade rules that belong to the cluster-upgrade feature rather than to
 // cost optimisation. Each already has a dedicated surface — the Upgrade Planner
@@ -74,9 +109,77 @@ export const UPGRADE_PLANNER_RULES = [
   'post_flight',
 ];
 
+// ─── Filter buckets (Savings / Last seen presets) ───
+//
+// Preset buckets shown in the Savings and Last-seen filter dropdowns. The
+// mappers below translate a bucket key into the server-side facet params
+// consumed by getK8sRecommendation / getK8sRecommendationSummaryByRuleName.
+
+export interface SavingsBucket {
+  key: string;
+  label: string;
+  caption?: string;
+  savingsGte?: number;
+  savingsLt?: number;
+}
+
+export const SAVINGS_BUCKETS: SavingsBucket[] = [
+  { key: '', label: 'Any' },
+  { key: 'gte1', label: '≥ $1 /mo', savingsGte: 1 },
+  { key: 'gte5', label: '≥ $5 /mo', savingsGte: 5 },
+  { key: 'gte10', label: '≥ $10 /mo', savingsGte: 10 },
+  { key: 'gte25', label: '≥ $25 /mo', savingsGte: 25 },
+  { key: 'cost-increase', label: 'Cost increase (< $0)', caption: 'Reliability fixes that raise spend', savingsLt: 0 },
+];
+
+export const savingsBucketToParams = (key: string): { savingsGte?: number; savingsLt?: number } => {
+  const bucket = SAVINGS_BUCKETS.find((b) => b.key === key);
+  if (!bucket) return {};
+  const params: { savingsGte?: number; savingsLt?: number } = {};
+  if (bucket.savingsGte !== undefined) params.savingsGte = bucket.savingsGte;
+  if (bucket.savingsLt !== undefined) params.savingsLt = bucket.savingsLt;
+  return params;
+};
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+export interface LastSeenBucket {
+  key: string;
+  label: string;
+  caption?: string;
+  withinMs?: number;
+  olderThanMs?: number;
+}
+
+export const LAST_SEEN_BUCKETS: LastSeenBucket[] = [
+  { key: '', label: 'Any time' },
+  { key: '1h', label: 'Last hour', withinMs: HOUR_MS },
+  { key: '24h', label: 'Last 24 hours', withinMs: DAY_MS },
+  { key: '7d', label: 'Last 7 days', withinMs: 7 * DAY_MS },
+  { key: '30d', label: 'Last 30 days', withinMs: 30 * DAY_MS },
+  { key: 'stale', label: 'Not seen in 30+ days', caption: 'Stale, likely-resolved findings', olderThanMs: 30 * DAY_MS },
+];
+
+// "Last seen" is the row's updated_at: bumped by every re-scan upsert (and by
+// user edits), so buckets are computed against the fetch time, not cached.
+export const lastSeenBucketToParams = (key: string, now: number = Date.now()): { updatedAtGte?: string; updatedAtLt?: string } => {
+  const bucket = LAST_SEEN_BUCKETS.find((b) => b.key === key);
+  if (!bucket) return {};
+  if (bucket.withinMs !== undefined) return { updatedAtGte: new Date(now - bucket.withinMs).toISOString() };
+  if (bucket.olderThanMs !== undefined) return { updatedAtLt: new Date(now - bucket.olderThanMs).toISOString() };
+  return {};
+};
+
 // ─── Shared helpers ───
 
-export const formatRuleName = (ruleName: string): string => {
+// `category` is optional because some surfaces name a rule with no row in hand
+// (the Rules filter, workflow triggers) — those keep the rule-level label.
+export const formatRuleName = (ruleName: string, category?: string): string => {
+  const scoped = category ? CATEGORY_RULE_LABELS[category]?.[ruleName] : undefined;
+  if (scoped) {
+    return scoped;
+  }
   if (RULE_LABELS[ruleName]) {
     return RULE_LABELS[ruleName];
   }
@@ -86,6 +189,41 @@ export const formatRuleName = (ruleName: string): string => {
     .replace(/^aws /i, 'AWS ')
     .replace(/^azure /i, 'Azure ')
     .replace(/^gcp /i, 'GCP ');
+};
+
+// Every label a rule can carry, for search matching. The Rules filter shows one
+// option per (rule_name, category), so a rule with a category-scoped label would
+// otherwise be unfindable by the name the table actually renders (and vice versa).
+export const ruleNameSearchText = (ruleName: string): string => {
+  const aliases = Object.values(CATEGORY_RULE_LABELS)
+    .map((byRule) => byRule[ruleName])
+    .filter(Boolean);
+  return Array.from(new Set([formatRuleName(ruleName), ...aliases])).join(' ');
+};
+
+// ─── Rules filter values (rule_name + category) ───
+//
+// A rule can land under more than one category — pod_right_sizing is
+// Configuration when a workload declares no requests at all, RightSizing
+// otherwise — and the table labels each framing differently ("Missing Resource
+// Requests" vs "Pod Right Sizing"). The Rules filter therefore keys its options
+// on (rule_name, category), not rule_name alone, so each framing is its own
+// row with the right label, group and count. The option value carries both so
+// the two rows select independently.
+//
+// A bare value (no separator) means "this rule, any category" — the legacy
+// shape, still produced by old shared ?rules= URLs, and treated as unscoped.
+const RULE_FILTER_SEP = '::';
+
+export const makeRuleFilterValue = (ruleName: string, category?: string): string =>
+  category ? `${ruleName}${RULE_FILTER_SEP}${category}` : ruleName;
+
+export const parseRuleFilterValue = (value: string): { ruleName: string; category?: string } => {
+  const idx = value.indexOf(RULE_FILTER_SEP);
+  if (idx === -1) {
+    return { ruleName: value };
+  }
+  return { ruleName: value.slice(0, idx), category: value.slice(idx + RULE_FILTER_SEP.length) };
 };
 
 export const daysSince = (dateStr: string | null): string => {
@@ -220,7 +358,7 @@ const buildContainerPatch = (containerName: string, entries: any[], workloadType
 
 export const buildKubectlCommand = (rec: any): string => {
   const recData = safeParseJSON(rec.recommendation);
-  const isPodRightSizing = rec.category === 'RightSizing' && rec.rule_name === 'pod_right_sizing';
+  const isPodRightSizing = rec.rule_name === 'pod_right_sizing';
 
   if (!isPodRightSizing || !recData || typeof recData !== 'object') {
     return `# Recommendation ID: ${rec.id}\n# Category: ${rec.category}\n# Rule: ${rec.rule_name}`;
@@ -324,6 +462,9 @@ export const getRecommendationBrief = (rec: any): string => {
   if (!jsonb) return '';
   const data = safeParseJSON(jsonb);
   if (typeof data === 'string') return data;
+  // pod_right_sizing payloads keep the KRR shape under either category
+  // (requests-unset rows live under Configuration)
+  if (rec.rule_name === 'pod_right_sizing') return getRightSizingBrief(data);
   switch (rec.category || '') {
     case 'RightSizing':
       return getRightSizingBrief(data);

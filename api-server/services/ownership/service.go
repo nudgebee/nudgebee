@@ -402,13 +402,15 @@ func UpsertRule(ctx *security.RequestContext, req UpsertRuleRequest) (StatusResp
 	// conflict-check + write run under a per-tenant advisory lock so two concurrent
 	// upserts can't both pass the check and create colliding rules.
 	var id string
-	if lErr := withTenantRuleLock(d, tenantId, func() error {
-		if conflict, cErr := findConflictingRule(d, tenantId, req, req.Id); cErr != nil {
+	if lErr := withTenantRuleLock(d, tenantId, func(tx *sqlx.Tx) error {
+		// Everything here runs on the locking tx, not the pooled handle, so this
+		// call holds exactly one connection and leaves none idle in transaction.
+		if conflict, cErr := findConflictingRule(tx, tenantId, req, req.Id); cErr != nil {
 			return cErr
 		} else if conflict != nil {
 			return common.ErrorBadRequest(fmt.Sprintf("This overlaps the existing rule %q — edit that rule instead.", conflict.Name))
 		}
-		newId, uErr := upsertRuleRow(d, tenantId, req, ctx.GetSecurityContext().GetUserId())
+		newId, uErr := upsertRuleRow(tx, tenantId, req, ctx.GetSecurityContext().GetUserId())
 		if uErr != nil {
 			return uErr
 		}

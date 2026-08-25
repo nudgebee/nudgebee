@@ -18,6 +18,42 @@ type RequestContext struct {
 	tracer          *trace.Tracer
 	meter           *metric.Meter
 	context         context.Context
+	// aiTriggered marks a request that originated from the AI assistant rather
+	// than directly from a human. Set from the X-Trigger-Source header at the
+	// edge; consumed by the AI-invocation gate, which applies restrictions no
+	// human-driven request is subject to.
+	//
+	// The zero value is false, so any context built without going through the
+	// HTTP edge (background jobs, schedules, tests) is treated as
+	// not-AI-originated — which is correct: those paths are not the AI.
+	aiTriggered bool
+}
+
+// IsAITriggered reports whether this request originated from the AI assistant.
+//
+// Deliberately NOT nil-receiver-safe. Callers use it as `if ctx.IsAITriggered()
+// { ...enforce AI restrictions... }`, so a nil-guard returning false would not
+// be defensive — it would silently SKIP the AI-invocation gate and let an
+// unchecked run through. A nil context here is a programming error, and a panic
+// is the safe failure: it denies the request loudly instead of quietly widening
+// what the AI may do. (Contrast common.IsFeatureEnabledForAccount, which does
+// guard its nil dependency — there the guard returns an error, i.e. denies.)
+//
+// Every other method on this type dereferences rc without a nil check too, so
+// callers already cannot hold a nil RequestContext usefully.
+func (rc *RequestContext) IsAITriggered() bool {
+	return rc.aiTriggered
+}
+
+// SetAITriggered marks this request as AI-originated. Called only at the HTTP
+// edge, from the inbound X-Trigger-Source header.
+//
+// This is a setter rather than a NewRequestContext parameter deliberately: the
+// default must be "not AI" for the many call sites that build a context without
+// an HTTP request, and a new required parameter would let a future caller pass
+// the wrong value into a security gate.
+func (rc *RequestContext) SetAITriggered(aiTriggered bool) {
+	rc.aiTriggered = aiTriggered
 }
 
 func (rc *RequestContext) GetSecurityContext() *SecurityContext {
@@ -64,6 +100,24 @@ func NewRequestContext(ctx context.Context, securityContext *SecurityContext, lo
 		logger = logger.With("trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
 	}
 	return &RequestContext{context: ctx, securityContext: securityContext, logger: logger, tracer: tracer, meter: meter}
+}
+
+// WithContext returns a shallow copy of this request context bound to a
+// different Go context, preserving the security context, logger, tracer, meter
+// and the aiTriggered flag.
+//
+// Intended for cleanup that must outlive the request's own cancellation. A
+// rollback triggered by a timed-out call would otherwise issue every one of its
+// calls on the context that just expired, so it would fail immediately in
+// exactly the situation it exists to handle. Callers are expected to pass a
+// detached context (context.WithoutCancel) carrying its own timeout.
+func (rc *RequestContext) WithContext(ctx context.Context) *RequestContext {
+	if rc == nil {
+		return nil
+	}
+	clone := *rc
+	clone.context = ctx
+	return &clone
 }
 
 func NewRequestContextForSuperAdmin() *RequestContext {

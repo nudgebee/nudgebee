@@ -10,24 +10,16 @@ import (
 // Tool/Agent Constants
 const GcpAgentName = "gcp"
 
-func init() { // This describes the 'gcp' agent when it is used as a tool by another agent (e.g., gcp_debug).
-	toolDescription := `Interacts with Google Cloud Platform (GCP) services to retrieve information or perform actions using the gcloud CLI. Covers all GCP capabilities: Compute, GKE, Cloud Storage, Cloud SQL, Cloud Run, Cloud Functions, Cloud Logging, Cloud Monitoring, Pub/Sub, IAM, Billing, and more. This tool is "smart" and handles its own project and resource discovery — use it for any GCP investigation without needing separate reconnaissance. Returns gcloud CLI output and summaries.`
-	toolInput := "Natural Language query about GCP resources or operations."
-	toolOutput := "Output of gcloud Cli tool"
-	core.RegisterNBAgentFactoryAndTool(GcpAgentName, func(accountId string) (core.NBAgent, error) {
-		return newGcpAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
-}
+// Phase 3d (#32503): agent registration removed. Guidance now lives on
+// GcpCliTool.ToolPrompt(); the wrapping agent added a ReAct-loop hop with no
+// data-transformation of its own. The short handle "gcp" continues to resolve
+// to gcloud_execute via tool alias (see tool_cloud_gcp.go init). Kept
+// type/methods for one release so external references to GcpAgentName still
+// compile; delete after bake.
 
-func newGcpAgent(accountId string) core.NBAgent {
-	return GcpAgent{
-		accountId: accountId,
-	}
-}
-
-type GcpAgent struct {
-	accountId string
-}
+// GcpAgent is deprecated (Phase 3d #32503). Type kept for compat; runtime
+// registration and guidance live on GcpCliTool now.
+type GcpAgent struct{}
 
 func (a GcpAgent) GetName() string {
 	return GcpAgentName
@@ -72,7 +64,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 		"**Cloud Trace fallback:** If both paths are empty or unauthorized, don't conclude the system is healthy — fall back to `severity>=ERROR`, latency/timeout patterns in textPayload (e.g., Postgres `duration:` on `cloudsql_database`), and narrow by resource labels (service, revision, pod, instance) in the recent window.",
 		"**Cloud Monitoring metrics:** use `gcloud monitoring time-series list` (with a hyphen). For complex metric queries with filter/interval params, use the Cloud Monitoring v3 REST API via `shell_execute` with `curl -H \"Authorization: Bearer $(gcloud auth print-access-token)\" ...` — NOT via this gcloud tool.",
 		"**Cloud SQL Insights:** access Query Insights config via `gcloud sql instances describe INSTANCE --format=\"value(settings.insightsConfig)\"`, and query the actual per-query metrics through the Cloud Monitoring API for `cloudsql.googleapis.com/database/*` metric types.",
-		"**Format flag:** `--format=json` is the safe default for parseable output. If you use `--format=table`, always include a column spec in single quotes: `--format='table(name,region,status)'`. Bare `--format=table` fails because the shell wrapping interprets the parens.",
+		"**Format flag:** `--format=json` is the safe default for parseable output. If you use `--format=table`, you MUST specify the columns (projection) in single quotes: `--format='table(name,region,status)'`. Bare `--format=table` fails because gcloud requires the column list; the parenthesised form must be single-quoted so the shell doesn't interpret the parens.",
 		"**Best practices**: Use best practices for all GCP services such as IAM, Cloud Storage, Compute Engine, Cloud Functions, Cloud Run, GKE etc.",
 		"**State clear assumptions**: If you are making any assumptions, please state clearly in the response.",
 	}
@@ -96,7 +88,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolExecuteGcpCliCommand,
-					Input: "gcloud compute instances list --format=table",
+					Input: "gcloud compute instances list --format=json",
 				},
 			},
 		},
@@ -123,7 +115,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolExecuteGcpCliCommand,
-					Input: "gcloud billing accounts list --format=table",
+					Input: "gcloud billing accounts list --format=json",
 				},
 			},
 		},
@@ -132,7 +124,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolExecuteGcpCliCommand,
-					Input: "gcloud projects list --format=table",
+					Input: "gcloud projects list --format=json",
 				},
 			},
 		},
@@ -141,7 +133,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolExecuteGcpCliCommand,
-					Input: "gcloud container clusters list --format=table",
+					Input: "gcloud container clusters list --format=json",
 				},
 			},
 		},

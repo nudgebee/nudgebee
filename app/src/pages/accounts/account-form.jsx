@@ -19,6 +19,7 @@ import AwsOrgDashboard from './AwsOrgDashboard';
 import AddAzureAccountModal from './AddAzureAccountModal';
 import AddGcpAccountModal from './AddGcpAccountModal';
 import AddCloudFoundryAccountModal from './AddCloudFoundryAccountModal';
+import AddSelfHostedAccountModal from './AddSelfHostedAccountModal';
 
 export default function AddAccountForm() {
   const { cloudProvider } = useRouter().query;
@@ -116,6 +117,15 @@ export default function AddAccountForm() {
                 addAccountButtonText='Add Cloud Foundry Account'
               />
             );
+          case 'selfhosted':
+            return (
+              <CloudAccountTile
+                cloudProvider='SelfHosted'
+                title='Self-Hosted VMs'
+                AddAccountModalComponent={AddSelfHostedAccountModal}
+                addAccountButtonText='Add Self-Hosted Account'
+              />
+            );
           case 'msteams':
             return (
               <MessagingIntegrationTile
@@ -165,6 +175,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'redis'} />;
           case 'llm':
             return <ListIntegrations integrationName={'LLM'} />;
+          case 'llm_gateway':
+            return <ListIntegrations integrationName={'llm_gateway'} />;
           case 'loggly':
             return <ListIntegrations integrationName={'loggly'} />;
           case 'loki':

@@ -41,7 +41,7 @@ const H = {
   session: (
     <HeaderLabel
       label='Session'
-      info='One conversation. Exact ids come from a client/header or request metadata; ~inferred ids are grouped by the opening prompt.'
+      info='One conversation, with a preview of its opening message below the id (shown when body capture is on and you may view it). Exact ids come from a client/header or request metadata; ~inferred ids are grouped by the opening prompt.'
     />
   ),
   user: <HeaderLabel label='User' info='The user whose conversation this is.' />,
@@ -75,41 +75,58 @@ function SessionCell({ s, onDrill }: { s: GatewaySession; onDrill: (id: string) 
     });
   };
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', minWidth: 0 }}>
-      <Box
-        component='button'
-        type='button'
-        onClick={() => onDrill(s.session_id)}
-        title={`${s.session_id} — click to view this session's requests`}
-        sx={{
-          padding: 0,
-          border: 'none',
-          background: 'none',
-          cursor: 'pointer',
-          fontFamily: 'var(--ds-font-mono, monospace)',
-          fontSize: 'var(--ds-text-small)',
-          fontVariantNumeric: 'tabular-nums',
-          color: exact ? 'var(--ds-blue-600)' : 'var(--ds-gray-500)',
-          fontStyle: exact ? 'normal' : 'italic',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          '&:hover': { textDecoration: 'underline' },
-        }}
-      >
-        {exact ? '' : '~'}
-        {short}
+    <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: '2px' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', minWidth: 0 }}>
+        <Box
+          component='button'
+          type='button'
+          onClick={() => onDrill(s.session_id)}
+          title={`${s.session_id} — click to view this session's requests`}
+          sx={{
+            padding: 0,
+            border: 'none',
+            background: 'none',
+            cursor: 'pointer',
+            fontFamily: 'var(--ds-font-mono, monospace)',
+            fontSize: 'var(--ds-text-small)',
+            fontVariantNumeric: 'tabular-nums',
+            color: exact ? 'var(--ds-blue-600)' : 'var(--ds-gray-500)',
+            fontStyle: exact ? 'normal' : 'italic',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            '&:hover': { textDecoration: 'underline' },
+          }}
+        >
+          {exact ? '' : '~'}
+          {short}
+        </Box>
+        <Button
+          tone='ghost'
+          size='sm'
+          composition='icon-only'
+          icon={copied ? <CheckOutlinedIcon sx={{ fontSize: 13 }} /> : <ContentCopyOutlinedIcon sx={{ fontSize: 13 }} />}
+          aria-label='Copy session id'
+          tooltip={copied ? 'Copied' : 'Copy session id'}
+          onClick={copy}
+          data-testid={`gateway-session-copy-${s.session_id}`}
+        />
       </Box>
-      <Button
-        tone='ghost'
-        size='sm'
-        composition='icon-only'
-        icon={copied ? <CheckOutlinedIcon sx={{ fontSize: 13 }} /> : <ContentCopyOutlinedIcon sx={{ fontSize: 13 }} />}
-        aria-label='Copy session id'
-        tooltip={copied ? 'Copied' : 'Copy session id'}
-        onClick={copy}
-        data-testid={`gateway-session-copy-${s.session_id}`}
-      />
+      {s.first_message && (
+        <Box
+          title={s.first_message}
+          sx={{
+            fontSize: 'var(--ds-text-caption)',
+            color: 'var(--ds-gray-500)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            maxWidth: '100%',
+          }}
+        >
+          {s.first_message}
+        </Box>
+      )}
     </Box>
   );
 }

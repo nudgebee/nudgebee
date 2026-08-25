@@ -199,6 +199,14 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 	if userId != "" && userId != uuid.Nil.String() {
 		req.Header.Set("X-User-ID", userId)
 	}
+	// Declare AI origin on every call. llm-server IS the AI assistant, so this is
+	// simply true, and setting it centrally means no future tool can forget it.
+	//
+	// The header only ever costs the caller privileges: runbook-server uses it to
+	// apply the extra AI-invocation restrictions (opted-in + ACTIVE + manual
+	// trigger + feature flag) to workflow execution. Reads and non-execution
+	// endpoints ignore it.
+	req.Header.Set(headerTriggerSource, triggerSourceAI)
 
 	client := common.HttpClient()
 	resp, err := client.Do(req)
@@ -228,7 +236,11 @@ type WorkflowListTool struct{}
 func (t WorkflowListTool) Name() string             { return ToolWorkflowList }
 func (t WorkflowListTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowListTool) Description() string {
-	return "Lists existing automations with optional filtering."
+	return "Lists existing automations with optional filtering — for managing and " +
+		"inspecting them (what exists, its status, when it last ran). To find an " +
+		"automation that fits a problem someone described, use workflow_search: it " +
+		"matches against what each automation is for and reads published data, which " +
+		"this listing does not."
 }
 func (t WorkflowListTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
@@ -280,7 +292,10 @@ func projectWorkflowListResponse(raw []byte) []byte {
 	slim := make([]map[string]any, 0, len(parsed.Workflows))
 	for _, wf := range parsed.Workflows {
 		item := map[string]any{}
-		for _, k := range []string{"id", "name", "status", "last_execution_status", "last_execution_time"} {
+		// ai_invocable tells the model which automations it may actually run, so
+		// it can say "that one isn't enabled for me" instead of attempting a call
+		// the server will refuse. description is the human-facing summary.
+		for _, k := range []string{"id", "name", "description", "status", "ai_invocable", "last_execution_status", "last_execution_time"} {
 			if v, ok := wf[k]; ok && v != nil {
 				item[k] = v
 			}
@@ -289,6 +304,15 @@ func projectWorkflowListResponse(raw []byte) []byte {
 			item["last_execution_status_message"] = truncateRunes(msg, maxStatusMsg)
 		}
 		if def, ok := wf["definition"].(map[string]any); ok {
+			// llm_description is deliberately NOT projected here, even though it is
+			// the field that says when to use an automation. This endpoint returns
+			// the DRAFT definition, so what it carries is AI text nobody published —
+			// and offering it made the model treat the listing as good enough for
+			// "which automation fits this symptom", skipping workflow_search in half
+			// of observed runs and once triggering an automation chosen from unpublished
+			// text. workflow_search reads the live version and is the only place that
+			// question is answered. Everything else projected here (ai_invocable,
+			// status) is a workflow-level column, so the listing stays accurate.
 			if triggers, ok := def["triggers"].([]any); ok && len(triggers) > 0 {
 				types := make([]string, 0, len(triggers))
 				for _, tr := range triggers {
@@ -430,7 +454,7 @@ func compactWorkflowResponse(resp []byte) string {
 			compactParams := make(map[string]interface{}, len(params))
 			for k, v := range params {
 				if strVal, ok := v.(string); ok && len(strVal) > 200 {
-					compactParams[k] = strVal[:200] + "...(truncated)"
+					compactParams[k] = common.TruncateHead(strVal, 200) + "...(truncated)"
 				} else {
 					compactParams[k] = v
 				}
@@ -465,7 +489,11 @@ func (t WorkflowTriggerTool) InferToolRequestType(_ *security.RequestContext, _,
 
 func (t WorkflowTriggerTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowTriggerTool) Description() string {
-	return "Triggers an automation execution. Args: id (string, required), inputs (object, optional)."
+	return "Runs an automation and waits for it to finish, returning its final status and result. " +
+		"If it is still running after a few minutes, or is paused waiting for someone's approval, " +
+		"returns the current status with a note — check back later with workflow_execution_get. " +
+		"Only automations the account has opted in to AI invocation can be run this way. " +
+		"Args: id (string, required), inputs (object, optional)."
 }
 func (t WorkflowTriggerTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
@@ -488,11 +516,57 @@ func (t WorkflowTriggerTool) Call(ctx core.NbToolContext, input core.NBToolCallR
 		inputs = map[string]any{}
 	}
 
-	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/trigger", id), inputs, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	tenantId := ctx.Ctx.GetSecurityContext().GetTenantId()
+	userId := ctx.Ctx.GetSecurityContext().GetUserId()
+
+	// Refuse rather than run as nobody. DoRunbookRequest omits X-User-ID when it
+	// is empty or nil, and runbook-server reads a missing user as a system call
+	// and grants tenant-account-admin — so an anonymous run would execute with
+	// more authority than the person who asked for it, skipping their own
+	// canRunWorkflows check. Reads are unaffected; only execution demands an
+	// identity to attribute and authorize against.
+	if userId == "" || userId == uuid.Nil.String() {
+		ctx.Ctx.GetLogger().Warn("workflow: refused AI run with no identified user",
+			"outcome", "refused_no_user", "workflow_id", id, "account_id", ctx.AccountId)
+		return core.NBToolResponse{}, errors.New("cannot run an automation without an identified user")
+	}
+
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/trigger", id), inputs, ctx.AccountId, tenantId, userId)
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+
+	// The trigger response only carries ids; wait for the run so the user is told
+	// what actually happened instead of an execution id they cannot interpret.
+	var triggered struct {
+		WorkflowID  string `json:"workflow_id"`
+		ExecutionID string `json:"execution_id"`
+	}
+	if err := common.UnmarshalJson(resp, &triggered); err != nil || triggered.ExecutionID == "" {
+		// Started, but the response was not in the expected shape — hand back the
+		// raw body rather than inventing an outcome.
+		return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+	}
+	if triggered.WorkflowID == "" {
+		triggered.WorkflowID = id
+	}
+
+	outcome := waitForExecution(ctx.GoContext(), triggered.WorkflowID, triggered.ExecutionID, ctx.AccountId, tenantId, userId)
+
+	// One structured line per AI-initiated run. These fields are the feature's
+	// blast-radius signal during rollout — how often the AI runs automations, and
+	// how those runs end — queried from Loki. llm-server has no application
+	// metrics registry, so logs are the observability surface here.
+	ctx.Ctx.GetLogger().Info("workflow: AI-initiated run finished watching",
+		"outcome", "completed_watch",
+		"workflow_id", triggered.WorkflowID,
+		"execution_id", triggered.ExecutionID,
+		"account_id", ctx.AccountId,
+		"execution_status", outcome.Status,
+		"terminal", outcome.Note == "",
+		"note", outcome.Note)
+
+	return core.NBToolResponse{Data: marshalOutcome(outcome), Type: core.NBToolResponseTypeJson}, nil
 }
 
 // --- Workflow Create Tool ---

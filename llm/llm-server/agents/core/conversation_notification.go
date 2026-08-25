@@ -32,6 +32,16 @@ func renderFollowupQuestion(question string, sessionId string) string {
 	return question
 }
 
+// renderFinalResponse is renderFollowupQuestion's counterpart for the "final"
+// response text - same gate, same reasoning: only Slack needs mrkdwn
+// conversion, Teams/Google-Chat render GitHub markdown closer to natively.
+func renderFinalResponse(response string, sessionId string) string {
+	if isSlackRequest(NBAgentRequest{SessionId: sessionId}) {
+		return convertMarkdownToSlackMarkdown(response)
+	}
+	return response
+}
+
 func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NBAgentRequest, response NBAgentResponse, err error) {
 	if response.AgentName == "router" {
 		return
@@ -94,9 +104,7 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 	default:
 		notificationRequest["type"] = "final"
 		if len(response.Response) > 0 {
-			response := response.Response[0]
-			response = convertMarkdownToSlackMarkdown(response)
-			notificationRequest["response"] = response
+			notificationRequest["response"] = renderFinalResponse(response.Response[0], sessionId)
 		} else {
 			notificationRequest["response"] = ""
 		}

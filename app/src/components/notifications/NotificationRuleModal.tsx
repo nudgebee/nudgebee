@@ -8,6 +8,7 @@ import { Modal } from '@ui/Modal';
 import { Link } from '@ui/Link';
 import React, { useEffect, useState } from 'react';
 import SafeIcon from '@shared/icons/SafeIcon';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiUser from '@api1/user';
 import {
   SlackIcon,
@@ -19,7 +20,7 @@ import {
   SLOInspectionWhiteIcon,
   SLOInspectionBlackIcon,
   EmailIconBlack,
-  EmaiIconWhite,
+  EmailIconWhite,
   GChatIcon,
   DiscordIcon,
   EmailIcon,
@@ -50,6 +51,8 @@ interface NotificationRuleModalProps {
   editingSource?: string;
 }
 
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 const isValidString = (s: string) => {
   const pattern = /^[A-Za-z0-9][\w\s_-]*$/;
   return pattern.test(s);
@@ -78,6 +81,14 @@ interface Option {
   value: string;
   label: string;
 }
+
+// Sources that describe the whole tenant rather than one account, so the rule
+// carries no cluster/namespace/workload scope — see #28130. Named rather than
+// repeated inline: the same membership test drives account-requirement
+// validation, the divider and the cluster selector, and adding a source by
+// editing two of those three sites is a silent bug.
+const TENANT_WIDE_SOURCES = ['daily_recap', 'optimize', 'weekly_digest'];
+const isTenantWideSource = (source: string) => TENANT_WIDE_SOURCES.includes(source);
 
 const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   open = false,
@@ -269,6 +280,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         const clusters = filteredResponse.map((item: any) => ({
           label: item.account_name,
           value: item.id,
+          group: item.cloud_provider || 'Other',
         }));
         setClusterOption(clusters);
       } else {
@@ -594,8 +606,10 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   }, [installedPlatforms]);
 
   // Google Chat destinations are bound spaces (service-account model), independent
-  // of any MessagingPlatform install — load once on mount.
+  // of any MessagingPlatform install — fetch on every open since the list is
+  // cleared on close and the modal stays mounted between opens.
   useEffect(() => {
+    if (!open) return;
     setLoadingChannelList((prev) => ({ ...prev, google_chat: true }));
     apiAccount
       .getNotificationChannelList('google_chat')
@@ -606,7 +620,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
       .finally(() => {
         setLoadingChannelList((prev) => ({ ...prev, google_chat: false }));
       });
-  }, []);
+  }, [open]);
 
   const fetchCluster = (notificationRuleObject: any) => {
     getClustersData();
@@ -757,8 +771,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   const handleSubmit = () => {
     const error: any = {};
 
-    // "daily_recap" and "optimize" are tenant-wide (no account scope) — see #28130.
-    if (basedOnValue !== 'daily_recap' && basedOnValue !== 'optimize' && !selectedCluster) {
+    if (!isTenantWideSource(basedOnValue) && !selectedCluster) {
       error.cluster = 'Account selection is required';
     }
 
@@ -1178,21 +1191,6 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           SLO
         </Button>
         <Button
-          className={basedOnValue === 'daily_recap' ? 'active' : undefined}
-          sx={styles?.tabButton}
-          onClick={() => {
-            if (!isEditing) {
-              storeOldStates();
-              setBasedOnValue('daily_recap');
-            }
-          }}
-          disabled={isEditing && basedOnValue !== 'daily_recap'}
-          id={'tab-daily-recap'}
-        >
-          <SafeIcon src={basedOnValue === 'daily_recap' ? EmaiIconWhite : EmailIconBlack} alt='' width={20} height={20} />
-          Daily Highlight
-        </Button>
-        <Button
           className={basedOnValue === 'cloud' ? 'active' : undefined}
           sx={styles?.tabButton}
           onClick={() => {
@@ -1208,6 +1206,41 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         >
           <SafeIcon src={basedOnValue === 'cloud' ? CloudAccountIcon : CloudIconBlackOutline} alt='' width={20} height={20} />
           Cloud
+        </Button>
+        {/* The two scheduled tenant-wide summaries sit last and together, on the
+            same icon: everything before them is an account-scoped alert source,
+            and these two are one cadence choice rather than two categories. */}
+        <Button
+          className={basedOnValue === 'daily_recap' ? 'active' : undefined}
+          sx={styles?.tabButton}
+          onClick={() => {
+            if (!isEditing) {
+              storeOldStates();
+              setBasedOnValue('daily_recap');
+            }
+          }}
+          disabled={isEditing && basedOnValue !== 'daily_recap'}
+          id={'tab-daily-recap'}
+        >
+          <SafeIcon src={basedOnValue === 'daily_recap' ? EmailIconWhite : EmailIconBlack} alt='' width={20} height={20} />
+          Daily Highlight
+        </Button>
+        <Button
+          className={basedOnValue === 'weekly_digest' ? 'active' : undefined}
+          sx={styles?.tabButton}
+          onClick={() => {
+            if (!isEditing) {
+              if (basedOnValue === 'daily_recap') {
+                restoreOldStates();
+              }
+              setBasedOnValue('weekly_digest');
+            }
+          }}
+          disabled={isEditing && basedOnValue !== 'weekly_digest'}
+          id={'tab-weekly-digest'}
+        >
+          <SafeIcon src={basedOnValue === 'weekly_digest' ? EmailIconWhite : EmailIconBlack} alt='' width={20} height={20} />
+          Weekly Digest
         </Button>
       </Box>
 
@@ -1240,7 +1273,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           </Box>
         </Box>
 
-        {basedOnValue !== 'daily_recap' && basedOnValue !== 'optimize' && <Divider sx={{ my: ds.space[1] }} />}
+        {!isTenantWideSource(basedOnValue) && <Divider sx={{ my: ds.space[1] }} />}
 
         {/* Scope Section */}
         {basedOnValue === 'cloud' && (
@@ -1264,6 +1297,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                     }}
                     value={selectedCluster || null}
                     options={clusterOption}
+                    grouped
+                    groupIcon={renderAccountGroupIcon}
                     loading={loadingDropdown.clusters}
                     size='sm'
                   />
@@ -1273,7 +1308,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
             </Box>
           </Box>
         )}
-        {basedOnValue !== 'daily_recap' && basedOnValue !== 'cloud' && basedOnValue !== 'optimize' && (
+        {!isTenantWideSource(basedOnValue) && basedOnValue !== 'cloud' && (
           <Box>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
               <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}>
@@ -1295,6 +1330,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                     }}
                     value={selectedCluster || null}
                     options={clusterOption}
+                    grouped
+                    groupIcon={renderAccountGroupIcon}
                     loading={loadingDropdown.clusters}
                     size='sm'
                   />

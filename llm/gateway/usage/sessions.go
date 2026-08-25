@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"nudgebee/llm-gateway/common"
+	"nudgebee/llm-gateway/metering"
 )
 
 // SessionRow is one conversation/session, aggregated from its requests — the row of
@@ -26,6 +27,11 @@ type SessionRow struct {
 	Providers         []string  `json:"providers"`
 	FirstSeen         time.Time `json:"first_seen"`
 	LastSeen          time.Time `json:"last_seen"`
+	// FirstMessage is a short preview of the session's opening user message, extracted
+	// from the earliest captured request body. Empty unless body-capture is on AND the
+	// viewer may see it (their own session, or a tenant admin) — same policy as the
+	// body view. PHI-gated, so never shown for another user's session to a non-admin.
+	FirstMessage string `json:"first_message"`
 }
 
 // SessionList is a page of sessions plus the unpaged total (distinct sessions).
@@ -43,8 +49,12 @@ type ListSessionsRequest struct {
 	EndDate   time.Time
 	UserID    string // optional; scope to one user
 	Search    string // optional; session_id contains (case-insensitive)
-	Limit     int
-	Offset    int
+	// Body-view policy for the first-message preview: a caller sees their own sessions'
+	// opening message; a tenant admin sees any within the tenant.
+	CallerUserID  string
+	CallerIsAdmin bool
+	Limit         int
+	Offset        int
 }
 
 type sessScan struct {
@@ -62,6 +72,7 @@ type sessScan struct {
 	Providers     string    `db:"providers"` // comma-joined DISTINCT
 	FirstSeen     time.Time `db:"first_seen"`
 	LastSeen      time.Time `db:"last_seen"`
+	FirstMessage  string    `db:"first_message"`
 }
 
 // sessionsFilter builds the WHERE for the session aggregation: tenant + window +
@@ -87,6 +98,12 @@ func splitNonEmpty(s string) []string {
 	return strings.Split(s, ",")
 }
 
+// cleanSnippet collapses whitespace/newlines in a first-message preview to a single
+// line so it renders tidily in the table (it is already length-capped in SQL).
+func cleanSnippet(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // ListSessions aggregates the tenant's usage rows into one row per session, newest
 // active first. Session-source is max()'d (constant per session in practice), models/
 // providers are the distinct set touched.
@@ -108,6 +125,26 @@ func ListSessions(ctx context.Context, db *common.DatabaseManager, req ListSessi
 		return nil, fmt.Errorf("usage: session count: %w", err)
 	}
 
+	// First-message preview: read the precomputed first_user_message column of the
+	// session's EARLIEST captured request (extracted at capture; indexed by
+	// (session_id, created_at) — a cheap column read, no body parsing per query). Only
+	// when body-capture is on, and gated PER ROW to the body-view policy: the caller's
+	// own session, or a tenant admin (same tenant).
+	firstMsgSelect, firstMsgJoin := "'' AS first_message", ""
+	if metering.BodyLoggingEnabled() {
+		args = append(args, req.CallerUserID)
+		firstMsgSelect = fmt.Sprintf(
+			`CASE WHEN (%t OR max(g.user_id) = $%d) THEN max(fb.first_user_message) ELSE '' END AS first_message`,
+			req.CallerIsAdmin, len(args))
+		firstMsgJoin = `LEFT JOIN LATERAL (
+			SELECT rl.first_user_message
+			FROM llm_gateway_request_log rl
+			WHERE rl.session_id = g.session_id AND rl.tenant_id = g.tenant_id
+			  AND rl.deleted_at IS NULL AND rl.expires_at > now()
+			ORDER BY rl.created_at LIMIT 1
+		) fb ON true`
+	}
+
 	// GROUP BY session_id ONLY (with max() on the user fields), so a session is exactly
 	// one row even in the unlikely case its rows carry differing user details — that
 	// keeps the row count consistent with the total (count(DISTINCT session_id)) and the
@@ -125,13 +162,15 @@ func ListSessions(ctx context.Context, db *common.DatabaseManager, req ListSessi
 		       COALESCE(sum(g.cost_usd),0) AS cost_usd,
 		       COALESCE(string_agg(DISTINCT g.model, ','),'') AS models,
 		       COALESCE(string_agg(DISTINCT g.provider, ','),'') AS providers,
-		       min(g.created_at) AS first_seen, max(g.created_at) AS last_seen
+		       min(g.created_at) AS first_seen, max(g.created_at) AS last_seen,
+		       %s
 		FROM llm_gateway_usage g
 		LEFT JOIN users u ON u.id::text = g.user_id
+		%s
 		WHERE %s
 		GROUP BY g.session_id
 		ORDER BY last_seen DESC
-		LIMIT %d OFFSET %d`, where, limit, offset)
+		LIMIT %d OFFSET %d`, firstMsgSelect, firstMsgJoin, where, limit, offset)
 
 	var rows []sessScan
 	if err := db.QueryAndScan(&rows, q, args...); err != nil {
@@ -152,7 +191,8 @@ func ListSessions(ctx context.Context, db *common.DatabaseManager, req ListSessi
 			User: user, UserID: r.UserID,
 			Requests: r.Requests, InputTokens: r.Input, OutputTokens: r.Output,
 			CachedInputTokens: r.CacheRead, CostUsd: r.Cost,
-			Models: splitNonEmpty(r.Models), Providers: splitNonEmpty(r.Providers),
+			FirstMessage: cleanSnippet(r.FirstMessage),
+			Models:       splitNonEmpty(r.Models), Providers: splitNonEmpty(r.Providers),
 			FirstSeen: r.FirstSeen, LastSeen: r.LastSeen,
 		})
 	}

@@ -49,7 +49,11 @@ func GetConversationDelta(rc *security.RequestContext, req GetConversationDeltaR
 	if tenantId == "" {
 		return nil, errors.New("unauthorized: tenant_id missing from request context")
 	}
-	if !rc.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+	// Read is authorized by a built-in account role OR an ai_conversations:Read
+	// (or Write) custom grant — the latter lets a pure custom-role user view a
+	// conversation tenant-wide, matching the query-engine PermissionModule skip
+	// on the llm_conversation_* tables.
+	if !rc.GetSecurityContext().CanReadAccountData(req.AccountId, "ai_conversations") {
 		return nil, errors.New("unauthorized")
 	}
 

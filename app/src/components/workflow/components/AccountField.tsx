@@ -4,6 +4,9 @@ import { ArrowDropDown, Code } from '@mui/icons-material';
 import { FormField } from '@shared/NewReusabeFormComponents';
 import CustomTooltip from '@shared/CustomTooltip';
 import TemplateTextField from './TemplateTextField';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 type FieldMode = 'select' | 'expression';
 
@@ -57,8 +60,8 @@ interface AccountFieldProps {
  * AccountField wraps the standard account dropdown with a Select / Expression
  * mode toggle so users can either pick from cloudAccounts or author a Jinja
  * template (e.g. {{ Configs.k8s_dev_account_id }}). Mirrors HybridField but
- * preserves the account-specific rendering (groupByCloudProvider, defensive
- * sanitization of stale UUIDs).
+ * preserves the account-specific rendering (provider-grouped options via
+ * ds/Select's `grouped`, defensive sanitization of stale UUIDs).
  */
 const AccountField: React.FC<AccountFieldProps> = ({
   fieldName,
@@ -208,6 +211,8 @@ const AccountField: React.FC<AccountFieldProps> = ({
           error={error || ''}
           fieldType='dropdown'
           options={options as any}
+          grouped
+          groupIcon={renderAccountGroupIcon}
           required={required}
           minWidth='100%'
           maxLength={0}

@@ -121,6 +121,16 @@ type ReActPlanner struct {
 	// fixer attempt N → N+1). Consumed by the next Plan() call.
 	seedLedger *Ledger
 
+	// compactionTriggerPct is the percentage of maxContextTokens at which the
+	// conversation window is compacted. See shouldCompact.
+	compactionTriggerPct int
+	// compactionMaxMessages is the message-count backstop for compaction. It is
+	// derived from maxIterations rather than fixed, so raising the iteration
+	// budget doesn't silently start compacting every run mid-flight.
+	compactionMaxMessages int
+	// compactionMinRemainingIters suppresses discretionary compaction near the
+	// end of a run, where it can never repay its own cost. See shouldCompact.
+	compactionMinRemainingIters int
 	// agingBudgetTokens is the estimated prompt size at which observation aging
 	// activates. Below it aging is a strict no-op — normal runs see full raw
 	// context and are byte-identical to aging-off. See agingBudgetTokensFromEnv.
@@ -143,6 +153,17 @@ type ReActPlanner struct {
 	// genai path — and the identity makes the stub self-describing so the model
 	// knows exactly what was elided and how to re-fetch it.
 	toolMsgMeta []toolMsgMeta
+
+	// stubbedObs holds indices into toolMsgMeta of Tool messages already SENT
+	// in stubbed form. Monotonic per Plan() run — the pressure gate may only
+	// ADD entries, never remove: un-stubbing a previously-stubbed message
+	// rewrites the sent prefix mid-history, which invalidates Gemini's
+	// implicit prompt cache from that point (measured 58-62% hit rate on
+	// aging-heavy runs vs 79-87% without). Keyed by meta index, not message
+	// index, so the set survives compaction (meta indices are append-only;
+	// entries for compacted-away messages just go unreferenced). Lazy-init so
+	// directly-constructed test planners work.
+	stubbedObs map[int]bool
 
 	// Deduplication tracking
 	executedCallHashes map[string]int // hash -> execution count
@@ -432,11 +453,14 @@ func NewReActPlanner(llmClient *llm.Client, tools []core.NBTool, maxIterations i
 		analysisLoopCount:           0,
 		maxAnalysisLoops:            3, // Force submit after 3 detected loops
 		submitRetryCount:            0,
-		maxSubmitRetries:            2,                    // Allow 2 retries for submit_analysis
+		maxSubmitRetries:            3,                    // Matches the orchestrator's maxInloopRejects: the gate must be able to reject 3 times (then release for honest failure handling) before the planner gives up — at 2 the planner killed the run one reject early
 		consecutiveToolFailures:     make(map[string]int), // Circuit breaker tracking
 		maxConsecutiveFailures:      defaultMaxConsecutiveFailures,
 		maxObservationLines:         500,
-		maxContextTokens:            200000,
+		maxContextTokens:            maxContextTokensFromEnv(),
+		compactionTriggerPct:        compactionTriggerPctFromEnv(),
+		compactionMaxMessages:       compactionMaxMessagesFromEnv(maxIterations),
+		compactionMinRemainingIters: compactionMinRemainingItersFromEnv(),
 		recentObservationWindow:     recentObservationWindowFromEnv(),
 		agingBudgetTokens:           agingBudgetTokensFromEnv(),
 		executedCallHashes:          make(map[string]int),
@@ -689,6 +713,7 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 	// instead of stomping on a shared one.
 	p.genaiSession = llm.NewGenAISession()
 	p.toolMsgMeta = nil
+	p.stubbedObs = nil
 	p.lastReflectedStep = 0
 
 	// Initialize step tracking and reset submit_analysis data
@@ -778,9 +803,7 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 		result.Iterations = iteration + 1
 		stepNumber := iteration + 1
 
-		// Token-aware compaction: compact when estimated tokens exceed 70% of budget
-		// or message count exceeds 40 (fallback for models without token counting).
-		if estimateMessageTokens(llmConversation) > p.maxContextTokens*70/100 || len(llmConversation) > 40 {
+		if p.shouldCompact(llmConversation, iteration) {
 			llmConversation = p.compactConversationWindow(ctx, llmConversation)
 		}
 
@@ -2036,6 +2059,129 @@ func agingBudgetTokensFromEnv() int {
 	return n
 }
 
+// shouldCompact decides whether to compact the conversation window before this
+// iteration's LLM call.
+//
+// Compaction is expensive in a way the old trigger did not account for: it
+// rewrites the head and middle of the prompt, so the shared prefix with the
+// previous request collapses to two messages and Gemini's implicit cache
+// restarts from cold. It also costs an extra, uncacheable summariser call.
+//
+// The old condition was `estTokens > maxContextTokens*70/100 || len(msgs) > 40`.
+// The token arm never fired — SetMaxContextTokens is never called, so the
+// threshold sat at 140K — which left the hardcoded 40-message arm as the only
+// live trigger. That trips around iteration 20 regardless of how large the
+// messages actually are, which is why cache hit collapsed in the run tail.
+//
+// Four arms now, in precedence order:
+//
+//  1. Hard ceiling — never suppressed. The safety net that makes relaxing the
+//     rest safe.
+//  2. Soft token budget — the real trigger, and reachable: a Tool message
+//     carries every parallel tool response at the 15000-char cap, so three
+//     parallel calls run ~11K tokens per round.
+//  3. Message-count backstop — derived from the iteration budget rather than
+//     frozen at 40, for models without meaningful token accounting.
+//  4. Amortisation guard — suppresses 2 and 3 near the end of a run, where a
+//     compaction pays a summariser call plus a cold cache and has too few
+//     remaining calls to earn either back.
+func (p *ReActPlanner) shouldCompact(messages []llms.MessageContent, iteration int) bool {
+	est := estimateMessageTokens(messages)
+	if p.maxContextTokens > 0 && est > p.maxContextTokens*90/100 {
+		return true
+	}
+
+	overSoftBudget := p.maxContextTokens > 0 && p.compactionTriggerPct > 0 &&
+		est > p.maxContextTokens*p.compactionTriggerPct/100
+	overMessageCap := p.compactionMaxMessages > 0 && len(messages) > p.compactionMaxMessages
+	if !overSoftBudget && !overMessageCap {
+		return false
+	}
+
+	if remaining := p.maxIterations - iteration; p.compactionMinRemainingIters > 0 &&
+		remaining <= p.compactionMinRemainingIters {
+		// Logged because "no compaction happened" is otherwise indistinguishable
+		// from "the check is broken".
+		if p.logger != nil {
+			p.logger.Log(common.EventPlanningProgress, "Compaction suppressed near end of run", map[string]any{
+				"estimated_tokens":     est,
+				"message_count":        len(messages),
+				"iterations_remaining": remaining,
+			})
+		}
+		return false
+	}
+	return true
+}
+
+// maxContextTokensFromEnv reads REACT_MAX_CONTEXT_TOKENS — the assumed usable
+// context budget that the compaction thresholds are a percentage of. The
+// default is unchanged from the previous hardcoded value; it is now overridable
+// because it was only ever settable through a setter nothing called.
+func maxContextTokensFromEnv() int {
+	const def = 200000
+	v := strings.TrimSpace(os.Getenv("REACT_MAX_CONTEXT_TOKENS"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+// compactionTriggerPctFromEnv reads COMPACTION_TRIGGER_PCT — the percentage of
+// the context budget at which compaction becomes discretionary. Clamped below
+// the hard ceiling so the two arms cannot invert.
+func compactionTriggerPctFromEnv() int {
+	const def = 70
+	v := strings.TrimSpace(os.Getenv("COMPACTION_TRIGGER_PCT"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 89 {
+		return def
+	}
+	return n
+}
+
+// compactionMaxMessagesFromEnv reads COMPACTION_MAX_MESSAGES — the message-count
+// backstop. Empty or 0 derives it from the iteration budget: two messages per
+// round plus headroom for ledger hints, nudges and system pivots, floored so a
+// short budget still allows a reasonable window. At the default 30 iterations
+// this is 90, well clear of the ~70 a full run actually reaches, so it acts as
+// a backstop rather than a scheduled event.
+func compactionMaxMessagesFromEnv(maxIterations int) int {
+	if v := strings.TrimSpace(os.Getenv("COMPACTION_MAX_MESSAGES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	derived := 2*maxIterations + 30
+	if derived < 60 {
+		return 60
+	}
+	return derived
+}
+
+// compactionMinRemainingItersFromEnv reads COMPACTION_MIN_REMAINING_ITERS — how
+// many iterations must remain for a discretionary compaction to be worth its
+// cost. 0 disables the guard. The hard ceiling ignores it either way.
+func compactionMinRemainingItersFromEnv() int {
+	const def = 4
+	v := strings.TrimSpace(os.Getenv("COMPACTION_MIN_REMAINING_ITERS"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
 // stubObservation replaces a large observation body with its tool+args
 // identity, a short head, a pointer to the ledger, and a re-fetch hint.
 // Deterministic in its inputs, so an aged observation produces the same bytes
@@ -2073,15 +2219,22 @@ func stubObservation(tool, desc, content string) string {
 // append time) and suffix-aligned, so a head-side compaction that removed early
 // messages cannot misattribute steps. Anything unmapped counts as NOT distilled
 // — never drop what we can't prove was preserved.
+// The function runs in two phases and mutates p.stubbedObs (single goroutine
+// per Plan(), same model as the toolMsgMeta appends):
+//
+//	Phase 1 (unconditional): messages whose meta index is already in
+//	p.stubbedObs are re-sent stubbed, bypassing the watermark early-out, the
+//	pressure gate and the recent-K exemption — once a stub has been sent, the
+//	sent bytes must never flip back (stubObservation is deterministic, so the
+//	replay is byte-stable and cache-friendly).
+//
+//	Phase 2 (gated as before): NEW stubs are admitted only when a reflection
+//	has distilled facts, the Tool count exceeds the recent-K window, and the
+//	prompt — measured POST-sticky, which gives natural hysteresis — is at or
+//	above the aging budget.
 func (p *ReActPlanner) ageOldObservations(messages []llms.MessageContent) []llms.MessageContent {
-	if p.recentObservationWindow <= 0 || p.lastReflectedStep <= 0 {
-		return messages
-	}
-	// Pressure gate: below the budget the prompt is small enough that raw
-	// context is strictly better — aging is a no-op and normal runs are
-	// byte-identical to aging-off. Above it, the O(N^2) resend is what both
-	// costs and rots; stubbing distilled-old observations bounds the tail.
-	if p.agingBudgetTokens > 0 && estimateMessageTokens(messages) < p.agingBudgetTokens {
+	if p.recentObservationWindow <= 0 {
+		// Aging disabled: the sticky set can never become non-empty.
 		return messages
 	}
 	var toolIdx []int
@@ -2090,52 +2243,83 @@ func (p *ReActPlanner) ageOldObservations(messages []llms.MessageContent) []llms
 			toolIdx = append(toolIdx, i)
 		}
 	}
-	if len(toolIdx) <= p.recentObservationWindow {
+	if len(toolIdx) == 0 {
 		return messages
-	}
-	oldEnough := make(map[int]bool, len(toolIdx)-p.recentObservationWindow)
-	for _, idx := range toolIdx[:len(toolIdx)-p.recentObservationWindow] {
-		oldEnough[idx] = true
 	}
 	// Suffix-align recorded metadata with the Tool messages present: the last
 	// len(toolIdx) records correspond 1:1 to the last len(toolIdx) Tool
 	// messages even if earlier messages were compacted away.
 	align := len(p.toolMsgMeta) - len(toolIdx)
-	metaOfToolMsg := func(j int) toolMsgMeta { // j = ordinal among Tool messages
+	metaIdxOfToolMsg := func(j int) int { // j = ordinal among Tool messages
 		k := align + j
 		if k < 0 || k >= len(p.toolMsgMeta) {
-			return toolMsgMeta{} // unmapped -> not provably distilled
+			return -1 // unmapped -> not provably distilled, never stubbed
 		}
-		return p.toolMsgMeta[k]
+		return k
 	}
-	ordinal := make(map[int]int, len(toolIdx)) // message index -> ordinal
-	for j, idx := range toolIdx {
-		ordinal[idx] = j
-	}
-	out := make([]llms.MessageContent, len(messages))
-	for i, m := range messages {
-		if !oldEnough[i] {
-			out[i] = m
-			continue
-		}
-		meta := metaOfToolMsg(ordinal[i])
-		if meta.maxStep <= 0 || meta.maxStep > p.lastReflectedStep {
-			out[i] = m // not yet distilled into the ledger — keep raw
-			continue
-		}
+
+	stubToolMsg := func(m llms.MessageContent, desc string) llms.MessageContent {
 		newParts := make([]llms.ContentPart, 0, len(m.Parts))
 		for _, part := range m.Parts {
 			if tr, ok := part.(llms.ToolCallResponse); ok {
 				newParts = append(newParts, llms.ToolCallResponse{
 					ToolCallID: tr.ToolCallID,
 					Name:       tr.Name,
-					Content:    stubObservation(tr.Name, meta.desc, tr.Content),
+					Content:    stubObservation(tr.Name, desc, tr.Content),
 				})
 			} else {
 				newParts = append(newParts, part)
 			}
 		}
-		out[i] = llms.MessageContent{Role: m.Role, Parts: newParts}
+		return llms.MessageContent{Role: m.Role, Parts: newParts}
+	}
+
+	// Phase 1 — replay existing stubs unconditionally.
+	out := make([]llms.MessageContent, len(messages))
+	copy(out, messages)
+	stickyCount := 0
+	for j, idx := range toolIdx {
+		if k := metaIdxOfToolMsg(j); k >= 0 && p.stubbedObs[k] {
+			out[idx] = stubToolMsg(messages[idx], p.toolMsgMeta[k].desc)
+			stickyCount++
+		}
+	}
+
+	// Phase 2 — admit NEW stubs only under the original gates.
+	if p.lastReflectedStep <= 0 || len(toolIdx) <= p.recentObservationWindow {
+		return out
+	}
+	// Pressure gate: below the budget the prompt is small enough that raw
+	// context is strictly better. Above it, the O(N^2) resend is what both
+	// costs and rots; stubbing distilled-old observations bounds the tail.
+	// Measured on the sticky-applied copy: once existing stubs push the
+	// prompt under budget, no further stubs are added and the bytes freeze.
+	if p.agingBudgetTokens > 0 && estimateMessageTokens(out) < p.agingBudgetTokens {
+		return out
+	}
+	newStubs := 0
+	for j, idx := range toolIdx[:len(toolIdx)-p.recentObservationWindow] {
+		k := metaIdxOfToolMsg(j)
+		if k < 0 || p.stubbedObs[k] {
+			continue // unmapped, or already handled in phase 1
+		}
+		meta := p.toolMsgMeta[k]
+		if meta.maxStep <= 0 || meta.maxStep > p.lastReflectedStep {
+			continue // not yet distilled into the ledger — keep raw
+		}
+		if p.stubbedObs == nil {
+			p.stubbedObs = make(map[int]bool)
+		}
+		p.stubbedObs[k] = true
+		out[idx] = stubToolMsg(messages[idx], meta.desc)
+		newStubs++
+	}
+	if newStubs > 0 && p.logger != nil {
+		p.logger.Log(common.EventPlanningProgress, "Observation aging admitted new stubs", map[string]any{
+			"sticky_count":     stickyCount,
+			"new_stubs":        newStubs,
+			"estimated_tokens": estimateMessageTokens(out),
+		})
 	}
 	return out
 }
@@ -2166,6 +2350,10 @@ func (p *ReActPlanner) injectLedgerBlock(messages []llms.MessageContent) []llms.
 	})
 }
 
+// toolCallTypeFunction is the OpenAI tool-call discriminator. Every ToolCall we
+// put back into the conversation must carry it.
+const toolCallTypeFunction = "function"
+
 // updateConversationMessagesMulti builds a single AI message with all ToolCalls
 // and a single Tool message with all ToolCallResponses, preserving IDs.
 func (p *ReActPlanner) updateConversationMessagesMulti(
@@ -2184,6 +2372,11 @@ func (p *ReActPlanner) updateConversationMessagesMulti(
 		argsJSON, _ := json.Marshal(s.ActionInput)
 		aiParts = append(aiParts, llms.ToolCall{
 			ID: s.ToolCallID,
+			// Type must be set: langchaingo's OpenAI client serializes it
+			// without omitempty, and OpenAI-compatible servers (vLLM behind the
+			// HuggingFace endpoints) discriminate the tool-call union on it —
+			// an empty type is a 400, not a default.
+			Type: toolCallTypeFunction,
 			FunctionCall: &llms.FunctionCall{
 				Name:      s.Action,
 				Arguments: string(argsJSON),
@@ -2299,7 +2492,7 @@ func (p *ReActPlanner) summarizeMiddle(ctx context.Context, middle []llms.Messag
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart(instr + transcript)},
 	}}
-	resp, err := p.llmClient.GenerateContent(ctx, msgs)
+	resp, err := p.llmClient.GenerateContent(llm.WithCallPhase(ctx, llm.CallPhaseCompaction), msgs)
 	if err != nil || resp == nil || len(resp.Choices) == 0 {
 		return "", false
 	}
@@ -2383,7 +2576,8 @@ func (p *ReActPlanner) compactConversationWindow(ctx context.Context, messages [
 					// Keep tool call name + compact arguments summary
 					if p.FunctionCall != nil {
 						compactParts = append(compactParts, llms.ToolCall{
-							ID: p.ID,
+							ID:   p.ID,
+							Type: toolCallTypeFunction,
 							FunctionCall: &llms.FunctionCall{
 								Name:      p.FunctionCall.Name,
 								Arguments: compactJSONArgs(p.FunctionCall.Arguments, 200),
@@ -3054,7 +3248,7 @@ Keep the response concise.`, investigationSummary.String())
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart(prompt)}},
 	}
 
-	response, err := p.llmClient.GenerateContent(ctx, messages)
+	response, err := p.llmClient.GenerateContent(llm.WithCallPhase(ctx, llm.CallPhaseFinalAnswer), messages)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate LLM summary: %w", err)
 	}
@@ -3167,6 +3361,18 @@ func (p *ReActPlanner) isRetriableSubmitError(errorMsg string) bool {
 // generateRetryGuidance provides specific guidance for fixing submit_analysis errors
 func (p *ReActPlanner) generateRetryGuidance(step Step) string {
 	errorLower := strings.ToLower(step.Error)
+
+	if strings.Contains(errorLower, "build verification failed") {
+		// The gate rejection already carries the verbatim build evidence in
+		// step.Error/Observation — the retry must FIX THE CODE, not reshape
+		// the payload. The generic required-fields fallback below actively
+		// misleads here.
+		return `
+🔄 RETRY INSTRUCTION: Build verification failed on your changes — the errors are shown verbatim above.
+
+1. Fix exactly those errors in the code (file_view the failing locations, then replace). Iterate on your CURRENT changes — do not start over and do not revert unrelated work.
+2. Then call submit_analysis again with your fields updated only where the fix changed them (files_modified, execution_summary). Do not restate or reshape the rest of the payload.`
+	}
 
 	if strings.Contains(errorLower, "title is required") || strings.Contains(errorLower, "missing analysis title") {
 		return `

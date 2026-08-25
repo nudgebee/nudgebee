@@ -45,8 +45,8 @@ export function KpiRow({ current, previous, storageCost = 0 }: KpiRowProps) {
   const cacheHitDelta = Number((current.cacheHitRatePct - previous.cacheHitRatePct).toFixed(1));
   const cacheSavingsDelta = pctDelta(current.cacheSavingsUsd, previous.cacheSavingsUsd);
   // All-in = token cost + prorated cache-storage cost. The hero shows this so
-  // the headline isn't under-reporting; the split is spelled out on hover and in
-  // the dedicated storage card.
+  // the headline isn't under-reporting; the storage portion is broken out in the
+  // dedicated storage card.
   const allInCost = current.totalCost + storageCost;
 
   return (
@@ -59,7 +59,10 @@ export function KpiRow({ current, previous, storageCost = 0 }: KpiRowProps) {
           value={fmtCost(allInCost)}
           delta={pctDeltaProps(costDelta, costDelta > 0 ? 'waste' : 'savings')}
           deltaPlacement='inline'
-          info={{ tooltip: `Tokens ${fmtCost(current.totalCost)} + cache storage ${fmtCost(storageCost)} (prorated to the window).` }}
+          info={{
+            tooltip:
+              'All-in AI spend over the selected window: token usage cost plus prorated cache-storage cost. Token cost follows the current filters; storage is scoped by account + model only.',
+          }}
         />
       </Card>
 

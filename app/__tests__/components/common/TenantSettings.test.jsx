@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import TenantSettings from '@shared/settings/TenantSettings';
 
 jest.mock('src/utils/colors', () => ({
@@ -29,6 +29,11 @@ jest.mock('@lib/UserService', () => ({
 
 jest.mock('@lib/auth', () => ({
   fetchFeatureFlagsForTenant: jest.fn().mockResolvedValue([]),
+  // Default to the editable persona so the existing assertions (Save button,
+  // enabled fields) keep describing a tenant admin. The read-only persona is
+  // covered by its own describe block below.
+  canEditTenantSettings: jest.fn(() => true),
+  missingPermissionMessage: jest.fn((perm) => `You need the "${perm}" permission. Ask an admin to grant it.`),
 }));
 
 jest.mock('@api1/user', () => ({
@@ -224,6 +229,70 @@ describe('TenantSettings', () => {
 
     await waitFor(() => {
       expect(snackbar.error).toHaveBeenCalledWith('Allowed Domains field cannot be empty when domain login is enabled.');
+    });
+  });
+
+  describe('read-only viewer (tenants:Read, no write grant)', () => {
+    const { canEditTenantSettings } = require('@lib/auth');
+
+    beforeEach(() => canEditTenantSettings.mockReturnValue(false));
+    afterEach(() => canEditTenantSettings.mockReturnValue(true));
+
+    it('drops Save and offers Close instead of Cancel', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      expect(screen.queryByTestId('btn-Save')).not.toBeInTheDocument();
+      expect(screen.getByTestId('btn-Close')).toBeInTheDocument();
+    });
+
+    it('explains why, naming the grant to ask for', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      expect(screen.getByText(/You need the "tenants:Write" permission/)).toBeInTheDocument();
+    });
+
+    it('renders the tenant name field read-only', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      // The whole form is inert for a viewer, so the backend write gate is never
+      // reached from the UI — Tenant Name stands in for every field here.
+      const input = screen.getByLabelText(/Tenant Name/i);
+      expect(input).toBeDisabled();
+    });
+  });
+
+  describe('read-only viewer (tenants:Read, no write grant)', () => {
+    const { canEditTenantSettings } = require('@lib/auth');
+
+    beforeEach(() => canEditTenantSettings.mockReturnValue(false));
+    afterEach(() => canEditTenantSettings.mockReturnValue(true));
+
+    it('drops Save and offers Close instead of Cancel', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      expect(screen.queryByTestId('btn-Save')).not.toBeInTheDocument();
+      expect(screen.getByTestId('btn-Close')).toBeInTheDocument();
+    });
+
+    it('explains why, naming the grant to ask for', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      expect(screen.getByText(/You need the "tenants:Write" permission/)).toBeInTheDocument();
+    });
+
+    it('renders the tenant name field read-only', async () => {
+      await act(async () => {
+        render(<TenantSettings {...defaultProps} />);
+      });
+      // The whole form is inert for a viewer, so the backend write gate is never
+      // reached from the UI — Tenant Name stands in for every field here.
+      const input = screen.getByLabelText(/Tenant Name/i);
+      expect(input).toBeDisabled();
     });
   });
 });

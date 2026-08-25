@@ -28,6 +28,7 @@ import { Chip } from '@ui/Chip';
 import { Label } from '@ui/Label';
 import { CostCallout } from '@ui/CostCallout';
 import { EmptyState } from '@ui/EmptyState';
+import { Skeleton } from '@ui/Skeleton';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import FilterDropdown from '@ui/FilterDropdown';
 import HeaderLabel from '../components/HeaderLabel';
@@ -431,20 +432,25 @@ export function AgentsView({ accountId, filters, agentOptions = [], onSelectRun 
 
         {state.error && <Banner tone='critical' title='Could not load agents' message={state.error} />}
 
-        {!state.error && state.profiles.length > 0 && (
+        {!state.error && (state.profiles.length > 0 || state.loading) && (
           <Box>
             <SectionHeader
               title='Agent latency profile'
               icon={<TimerOutlinedIcon />}
               subtitle='p50 / p90 / p99 of total invocation latency per agent. Dashed line = selected pXX threshold (24h baseline). Click a bar to filter the table.'
             />
-            <AgentLatencyBars
-              id='agent-latency-bars'
-              profiles={state.profiles}
-              thresholdSeconds={state.thresholdSec}
-              percentile={state.appliedPctile}
-              onSelectAgent={(name) => setIncludeAgents(name ? [name] : [])}
-            />
+            {state.profiles.length > 0 ? (
+              <AgentLatencyBars
+                id='agent-latency-bars'
+                profiles={state.profiles}
+                thresholdSeconds={state.thresholdSec}
+                percentile={state.appliedPctile}
+                onSelectAgent={(name) => setIncludeAgents(name ? [name] : [])}
+                loading={state.loading}
+              />
+            ) : (
+              <Skeleton shape='rect' height={200} width='100%' />
+            )}
           </Box>
         )}
 

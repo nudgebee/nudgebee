@@ -74,7 +74,7 @@ func TestMergeEgressConfigUpdate_PartialAndInvalid(t *testing.T) {
 }
 
 func TestEgressConfigResponse_Keys(t *testing.T) {
-	resp := egressConfigResponse(egressfilter.ModeEnforce, true, true, nil)
+	resp := egressConfigResponse(nil, egressfilter.ModeEnforce, true, true, nil)
 	assert.Equal(t, "enforce", resp["mode"])
 	assert.Equal(t, true, resp["enabled"])
 	assert.Equal(t, true, resp["has_override"])
@@ -82,10 +82,24 @@ func TestEgressConfigResponse_Keys(t *testing.T) {
 	patterns, ok := resp["custom_patterns"].([]egressfilter.CustomRule)
 	assert.True(t, ok, "custom_patterns present and typed")
 	assert.Empty(t, patterns)
-	for _, k := range []string{"master_enabled", "secrets_enabled", "env_default_mode"} {
+	for _, k := range []string{
+		"master_enabled", "secrets_enabled", "env_default_mode",
+		"env_pii_ner_enabled", "env_pii_default_mode",
+		"pii_enabled", "pii_mode", "pii_ner_enabled", "pii_disabled_categories",
+	} {
 		_, ok := resp[k]
 		assert.True(t, ok, "response missing platform-context key %q", k)
 	}
+	// env_pii_enabled was removed 2026-07-30 (PII moved to per-tenant
+	// opt-in with no platform-level enable flag). Pin its absence so a
+	// regression that re-adds the key gets caught.
+	_, hasEnvPIIEnabled := resp["env_pii_enabled"]
+	assert.False(t, hasEnvPIIEnabled, "env_pii_enabled must not be re-added to the response")
+	// cfg == nil path: nullable bools out as JSON null; categories as empty [].
+	assert.Nil(t, resp["pii_enabled"])
+	assert.Nil(t, resp["pii_ner_enabled"])
+	assert.Equal(t, "", resp["pii_mode"])
+	assert.Empty(t, resp["pii_disabled_categories"])
 }
 
 func TestSetCustomRulesAndPatternsRoundTrip(t *testing.T) {

@@ -273,10 +273,11 @@ func (e *LoadBalancerPodTargetEnricher) enrichLoadBalancerWithTargets(
 			environment = lbEnv
 		}
 
+		uniqueKey := core.BuildUniqueKey(core.CloudProviderK8s, k8sAccountID, "", core.NodeTypeService, k8sNamespace, k8sServiceName)
 		ingressNode := &core.DbNode{
-			ID:             uuid.New().String(),
+			ID:             core.NodeIDFor(uniqueKey, tenantID, k8sAccountID),
 			NodeType:       core.NodeTypeService,
-			UniqueKey:      core.BuildUniqueKey(core.CloudProviderK8s, k8sAccountID, "", core.NodeTypeService, k8sNamespace, k8sServiceName),
+			UniqueKey:      uniqueKey,
 			CloudAccountID: k8sAccountID,
 			TenantID:       tenantID,
 			Level:          "Tenant",
@@ -653,9 +654,10 @@ func (e *LoadBalancerPodTargetEnricher) enrichLoadBalancerWithTargets(
 					properties["labels"] = labels
 				}
 
+				uniqueKey := core.BuildUniqueKey(core.CloudProviderK8s, k8sAccountID, k8sCluster, core.NodeTypePod, namespace, ownerName)
 				targetNode = &core.DbNode{
-					ID:              uuid.New().String(),
-					UniqueKey:       core.BuildUniqueKey(core.CloudProviderK8s, k8sAccountID, k8sCluster, core.NodeTypePod, namespace, ownerName),
+					ID:              core.NodeIDFor(uniqueKey, tenantID, k8sAccountID),
+					UniqueKey:       uniqueKey,
 					NodeType:        core.NodeTypePod,
 					CloudAccountID:  k8sAccountID,
 					TenantID:        tenantID,

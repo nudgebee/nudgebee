@@ -82,6 +82,21 @@ Maybe you meant:
 			rawError: `ERROR: (gcloud.monitoring) Invalid choice: 'timeseries'.`,
 			want:     "gcloud <parent> --help",
 		},
+		{
+			// Follow-up to #34915: bare `--format=table` (no column spec)
+			// hits a gcloud-layer error distinct from the parens-shell class.
+			// Regression fixture for issue #34369.
+			name:     "bare --format=table missing projection — column-list hint",
+			rawError: `ERROR: (gcloud.billing.accounts.list) Format [table] requires a non-empty projection. Use key parameters to specify a projection like 'table(foo, bar.baz)'`,
+			want:     "explicit column list",
+		},
+		{
+			// The same projection error fires for csv/value formats too — hint
+			// must be format-agnostic, not specific to `table`.
+			name:     "bare --format=csv missing projection — same hint fires",
+			rawError: `ERROR: (gcloud.compute.instances.list) Format [csv] requires a non-empty projection.`,
+			want:     "explicit column list",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -123,6 +123,7 @@ type Event struct {
 	SubjectNamespace string          `json:"subject_namespace,omitempty"`
 	SubjectNode      string          `json:"subject_node,omitempty"`
 	SubjectOwner     string          `json:"subject_owner,omitempty"`
+	SubjectOwnerKind string          `json:"subject_owner_kind,omitempty"`
 	EndsAt           *time.Time      `json:"ends_at,omitempty"`
 	StartsAt         *time.Time      `json:"starts_at,omitempty"`
 	Fingerprint      string          `json:"fingerprint,omitempty"`
@@ -149,7 +150,11 @@ type InvestigateData struct {
 	// ErrorLogData is []string on the wire in the happy path, but upstream
 	// producers occasionally send heterogeneous shapes (objects, mixed arrays
 	// with trace spans embedded). See UnmarshalJSON below for the tolerance rules.
-	ErrorLogData     []string                 `json:"error_log_data,omitempty"`
+	ErrorLogData []string `json:"error_log_data,omitempty"`
+	// LogSummary is the log enricher's pattern digest (top templates with
+	// counts, level breakdown) carried from the evidence block's
+	// additional_info so consumers can surface it without re-mining LogData.
+	LogSummary       any                      `json:"log_summary,omitempty"`
 	PodMetrics       []InvestigateDataInsight `json:"pod_metrics"`
 	NodeMetrics      []InvestigateDataInsight `json:"node_metrics"`
 	PodData          InvestigateDataInsight   `json:"pod_data"`

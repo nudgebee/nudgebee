@@ -4,6 +4,9 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import apiKubernetes from '@api1/kubernetes';
 import RCAIcon from '@assets/investigation/rca-icon.svg';
 import { ds } from '@utils/colors';
+import { Button } from '@ui/Button';
+import { Chip } from '@ui/Chip';
+import { toast as snackbar } from '@ui/Toast';
 
 const RCAInProgress = () => {
   return (
@@ -211,9 +214,90 @@ const RCANoData = () => {
   );
 };
 
+const FORMAT_SOURCE_LABELS = {
+  rule: 'Rule format',
+  account: 'Account format',
+  default: 'Default format',
+};
+
+// Action row above the completed report: which format level applies, plus
+// copy-as-markdown, download and (write access only) regenerate.
+const RCAReportToolbar = ({ report, formatSource, onRegenerate, eventId }) => {
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(report);
+      snackbar.success('RCA report copied as Markdown');
+    } catch (error) {
+      console.error('Failed to copy RCA report:', error);
+      snackbar.error('Failed to copy the report');
+    }
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([report], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rca-report-${eventId || 'event'}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', mb: 'var(--ds-space-3)' }}>
+      {formatSource ? (
+        <Chip size='sm' tone='neutral'>
+          {FORMAT_SOURCE_LABELS[formatSource] || formatSource}
+        </Chip>
+      ) : null}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', ml: 'auto' }}>
+        <Button tone='secondary' size='xs' onClick={handleCopy} data-testid='rca-copy-btn'>
+          Copy
+        </Button>
+        <Button tone='secondary' size='xs' onClick={handleDownload} data-testid='rca-download-btn'>
+          Download
+        </Button>
+        {onRegenerate && (
+          <Button tone='secondary' size='xs' onClick={() => onRegenerate()} data-testid='rca-regenerate-btn'>
+            Regenerate
+          </Button>
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+// Shown when an input analysis (summary / investigation / log) was updated
+// after this report was generated — the report may no longer match findings.
+const RCAOutdatedBanner = ({ onRegenerate }) => (
+  <Box
+    sx={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 'var(--ds-space-3)',
+      p: 'var(--ds-space-3) var(--ds-space-4)',
+      mb: 'var(--ds-space-4)',
+      backgroundColor: ds.yellow[100],
+      border: `1px solid ${ds.amber[300]}`,
+      borderRadius: 'var(--ds-radius-lg)',
+    }}
+  >
+    <Typography sx={{ flex: 1, fontSize: 'var(--ds-text-body)', color: ds.gray[700] }}>
+      The investigation has been updated since this report was generated, so it may not reflect the latest findings.
+    </Typography>
+    {onRegenerate && (
+      <Button tone='secondary' size='xs' onClick={() => onRegenerate()} data-testid='rca-outdated-regenerate-btn'>
+        Regenerate
+      </Button>
+    )}
+  </Box>
+);
+
 // Component to render the RCA report content
 // Polling is handled at page level (useRcaPolling in investigate.jsx)
-const RCAReport = ({ data = {} }) => {
+const RCAReport = ({ data = {}, onRegenerate, eventId }) => {
   const status = data?.status?.toUpperCase();
 
   if (status === 'IN_PROGRESS') {
@@ -231,7 +315,13 @@ const RCAReport = ({ data = {} }) => {
     if (typeof summary === 'string' && summary.startsWith('```') && summary.endsWith('```')) {
       summary = summary.slice(3, -3).trim();
     }
-    return <MarkDowns data={summary} sx={{ maxHeight: '100%', width: '100%', overflowY: 'auto' }} />;
+    return (
+      <Box sx={{ width: '100%' }}>
+        <RCAReportToolbar report={summary} formatSource={data?.format_source} onRegenerate={onRegenerate} eventId={eventId} />
+        {data?.outdated ? <RCAOutdatedBanner onRegenerate={onRegenerate} /> : null}
+        <MarkDowns data={summary} sx={{ maxHeight: '100%', width: '100%', overflowY: 'auto' }} />
+      </Box>
+    );
   } catch (error) {
     console.error('Error parsing RCA data:', error);
     return (
@@ -254,6 +344,8 @@ class RCACard {
     this.isBeta = true;
     this.event = {};
     this.onDataUpdate = null;
+    // Set by the page (write access only); triggers a regenerate=true run.
+    this.onRegenerate = null;
     this.refreshRenderId = 0;
   }
 
@@ -289,6 +381,8 @@ class RCACard {
             status: rcaData.status,
             summary: rcaData.summary,
             analysis: rcaData.analysis,
+            outdated: rcaData.outdated,
+            format_source: rcaData.format_source,
           };
         } catch (error) {
           console.error('Error parsing RCA summary for insights:', error);
@@ -314,7 +408,7 @@ class RCACard {
   };
 
   getContentComponents = () => {
-    return [() => <RCAReport data={this.rcaData} />];
+    return [() => <RCAReport data={this.rcaData} onRegenerate={this.onRegenerate} eventId={this.event?.id} />];
   };
 }
 

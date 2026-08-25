@@ -244,8 +244,10 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
         account_id = payload.get("account_id")
         channel_id = payload.get("channel_id")
         session_id = payload.get("session_id")
+        bind_session_id = payload.get("bind_session_id")
         team_id = payload.get("team_id")
         text = payload.get("text")
+        bind_account = bool(payload.get("bind_account", False))
 
         # Validate required fields
         if not platform or not account_id or not channel_id:
@@ -273,8 +275,10 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
                 tenant_id=tenant_id,
                 channel_id=channel_id,
                 session_id=session_id,
+                bind_session_id=bind_session_id,
                 team_id=team_id,
                 text=text,
+                bind_account=bind_account,
             )
 
             if "error" in result:

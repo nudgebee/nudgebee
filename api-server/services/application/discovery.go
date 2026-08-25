@@ -118,6 +118,12 @@ func discoverAndUpdateExternalVMs(ctx *security.RequestContext, tenantId, accoun
 		}
 		resourceMap[resourceId] = id
 	}
+	// Without this, a mid-scan error leaves resourceMap partial and the reconcile
+	// below re-INSERTs cloud_resourses rows that already exist.
+	if err := resourceRows.Err(); err != nil {
+		ctx.GetLogger().Error("discovery: error iterating external resources", "error", err, "tenant", tenantId, "account", accountId)
+		return err
+	}
 
 	foundResources := map[string]map[string]string{}
 
@@ -272,6 +278,12 @@ func discoverAndUpdateExternalApps(ctx *security.RequestContext, tenantId, accou
 			return err
 		}
 		resourceMap[resourceId] = id
+	}
+	// Without this, a mid-scan error leaves resourceMap partial and the reconcile
+	// below re-INSERTs cloud_resourses rows that already exist.
+	if err := resourceRows.Err(); err != nil {
+		ctx.GetLogger().Error("discovery: error iterating external resources", "error", err, "tenant", tenantId, "account", accountId)
+		return err
 	}
 
 	foundResources := map[string]map[string]string{}

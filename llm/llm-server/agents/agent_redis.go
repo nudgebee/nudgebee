@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -10,23 +9,14 @@ import (
 
 const RedisAgentName = "redis"
 
-func init() {
-	// This describes the 'redis' agent when it is used as a tool by another agent.
-	toolDescription := `Executes Redis operations by translating natural language questions into redis-cli commands. This tool is "smart" and handles its own instance discovery. Use this agent directly to query, update, or check Redis status and health without needing separate reconnaissance. Returns command results or summaries for automation and troubleshooting.`
-	toolInput := "Provide a question in natural language to query, update, or check the status of Redis."
-	toolOutput := "Returns command results or summaries for Redis operations."
+// Phase 3c (#32503): agent registration removed. Guidance now lives on
+// RedisExecuteTool.ToolPrompt(); the wrapping agent added a ReAct-loop hop with
+// no data-transformation of its own. Kept type/methods for one release so
+// external references to RedisAgentName still compile; delete after bake.
 
-	core.RegisterNBAgentFactoryAndTool(RedisAgentName, func(accountId string) (core.NBAgent, error) {
-		return RedisAgent{
-			accountId: accountId,
-		}, nil
-	}, toolDescription, toolInput, toolOutput)
-
-}
-
-type RedisAgent struct {
-	accountId string
-}
+// RedisAgent is deprecated (Phase 3c #32503). Type kept for Flattenable-path
+// tests; runtime registration and guidance live on RedisExecuteTool now.
+type RedisAgent struct{}
 
 func (l RedisAgent) GetName() string {
 	return RedisAgentName
@@ -70,13 +60,11 @@ func (l RedisAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteRedisCommand] = []string{
-			"Executes Redis commands using `redis-cli`.",
-			"Input: A valid Redis command.",
-			"Output: Data returned by Redis.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the redis output.",
-		}
+	toolUsage[tools.ToolExecuteRedisCommand] = []string{
+		"Executes Redis commands using `redis-cli`.",
+		"Input: A valid Redis command.",
+		"Output: Data returned by Redis.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the redis output.",
 	}
 
 	examples := []core.NBAgentPromptExample{

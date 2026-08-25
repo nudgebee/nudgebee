@@ -3,9 +3,6 @@ import { CommonLocators } from "../GlobalLocators";
 import { checkIntegrationWithCache } from "../utils/IntegrationStatusCache";
 
 export class CloudAccountLocators extends CommonLocators {
-  // Sidenav
-  readonly CloudBtn: Locator;
-
   // Cloud Account Details - Anchor tabs
   readonly AnchorTabSummary: Locator;
   readonly AnchorTabOptimize: Locator;
@@ -60,9 +57,6 @@ export class CloudAccountLocators extends CommonLocators {
 
   constructor(page: Page) {
     super(page);
-
-    // Sidenav
-    this.CloudBtn = page.locator("#cloud-sidenavbutton");
 
     // Cloud Account Details - Anchor tabs (using AnchorComponent IDs)
     this.AnchorTabSummary = page.locator("#anchor-tab-Summary");
@@ -169,44 +163,17 @@ export class CloudAccountLocators extends CommonLocators {
       return;
     }
 
-    // 2. Click Cloud sidenav button.
+    // 2. Open Infra > Cloud from the sidenav flyout.
     //    /cloud-account/index.jsx auto-redirects to /cloud-account/details/{id}.
-    const cloudSidenavBtn = this.page.locator("#cloud-sidenavbutton");
-    await cloudSidenavBtn.click();
-    await this.page.waitForURL(/cloud-account/, { timeout: 15000 });
-    await this.page.waitForLoadState("networkidle");
-    // Move mouse away to prevent AnchorComponent tab hover side-effects.
-    await this.page.mouse.move(0, 0);
+    await this.openCloudAccountsFromSidenav();
     console.log("Navigated to cloud account via sidenav");
 
-    // 3. Type in the global cluster autocomplete to select the GCP cloud account.
-    //    Uses the same [role='option'] + hasText pattern as LoginPage.selectCluster()
-    //    because MUI renders a "No options available" div (no [role='listbox']) when
-    //    the filter returns zero matches, causing waitForSelector('[role=listbox]') to
-    //    time out. A brief wait after navigation lets the dropdown data stabilise.
+    // 3. Select the GCP cloud account in the global account autocomplete.
+    //    A brief wait after navigation lets the dropdown data stabilise.
     const gcpSearchTerm = process.env.GCP_CLUSTER_NAME || "iteration-gcp";
     await this.page.waitForTimeout(500);
-    const clusterInput = this.page.locator("#auto-complete-global-cluster");
-    // Triple-click selects all existing text so typing replaces it entirely.
-    await clusterInput.click({ clickCount: 3 });
-    await clusterInput.pressSequentially(gcpSearchTerm, { delay: 50 });
-    console.log(`Typed '${gcpSearchTerm}' in global cluster autocomplete`);
+    await this.selectCloudAccount(gcpSearchTerm);
 
-    // Wait for the matching option to appear (confirms the filter returned results).
-    await this.page
-      .locator("[role='option']")
-      .filter({ hasText: gcpSearchTerm })
-      .first()
-      .waitFor({ state: "visible", timeout: 10000 });
-
-    // Select via keyboard so the mouse cursor never moves into the dropdown area.
-    // A direct .click() on the option leaves the cursor where the dropdown was,
-    // which overlaps with the AnchorComponent tabs after re-render and triggers them.
-    await this.page.keyboard.press("ArrowDown");
-    await this.page.keyboard.press("Enter");
-    console.log("Selected GCP cloud account option via keyboard");
-
-    await this.page.mouse.move(0, 0);
     await this.page.waitForURL(/cloud-account/, { timeout: 15000 });
     await this.page.waitForLoadState("networkidle");
     console.log("GCP cloud account detail page loaded");

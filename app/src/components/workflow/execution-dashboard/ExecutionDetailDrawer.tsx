@@ -5,6 +5,8 @@ import { Button } from '@ui/Button';
 import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
 import { Skeleton } from '@ui/Skeleton';
+import { CodeBlock } from '@ui/CodeBlock';
+import CopyButton from '@shared/buttons/CopyButton';
 import apiWorkflow from '@api1/workflow';
 import type { AccountExecutionItem } from '@api1/workflow/types';
 import { getDuration, getStatusTone } from '../utils/executionStatus';
@@ -12,7 +14,6 @@ import { executionUserLabel } from './constants';
 
 interface ExecutionDetailDrawerProps {
   execution: AccountExecutionItem | null;
-  accountId?: string;
   onClose: () => void;
 }
 
@@ -28,7 +29,10 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
  * error (with stack) is fetched lazily here via workflow_get_execution rather
  * than being loaded for every row of every page.
  */
-const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution, accountId, onClose }) => {
+const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution, onClose }) => {
+  // The drawer follows whichever run is selected, so the account comes off the
+  // row rather than the page — the dashboard spans accounts now.
+  const accountId = execution?.account_id;
   const [detail, setDetail] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
@@ -56,7 +60,9 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
 
   if (!execution) return null;
 
-  const fullViewHref = `/workflow/${execution.workflow_id}?accountId=${accountId}&executionId=${execution.id}#executions`;
+  // Same caveat as the table's link: without an account there is no valid
+  // builder URL, so offer the button only when the row carries one.
+  const fullViewHref = accountId ? `/automation/${execution.workflow_id}?accountId=${accountId}&executionId=${execution.id}#executions` : '';
 
   return (
     <CustomDrawer open onClose={onClose} variant='modern' width='640px' storageKey='nb.executionDashboardDrawer.width' title='Execution details'>
@@ -69,7 +75,12 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
         </Box>
 
         <Field label='Execution ID'>
-          <Typography sx={{ fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-text-caption)' }}>{execution.id}</Typography>
+          {/* The table no longer shows the id, so this is the only place to
+              read or copy it from. */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+            <Typography sx={{ fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-text-caption)' }}>{execution.id}</Typography>
+            <CopyButton text={execution.id} size='xs' />
+          </Box>
         </Field>
         <Field label='Started'>
           <Datetime value={execution.start_time} />
@@ -85,37 +96,26 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
             <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-red-600)' }}>
               Execution error
             </Typography>
-            <Box
-              sx={{
-                mt: 'var(--ds-space-1)',
-                fontFamily: 'monospace',
-                fontSize: 'var(--ds-text-caption)',
-                color: 'var(--ds-red-600)',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                backgroundColor: 'var(--ds-red-100)',
-                padding: 'var(--ds-space-2)',
-                borderRadius: 'var(--ds-radius-sm)',
-                border: '1px solid var(--ds-red-200)',
-                maxHeight: '260px',
-                overflow: 'auto',
-              }}
-            >
-              {detail.error}
+            <Box sx={{ mt: 'var(--ds-space-1)' }}>
+              {/* The row only carries a clamped one-liner; the whole message
+                  (with stack) is read here — wrapped, scrollable, copyable. */}
+              <CodeBlock code={detail.error} wrap maxHeight={260} copyToast='Error copied.' />
             </Box>
           </Box>
         )}
 
-        <Button
-          tone='secondary'
-          size='sm'
-          data-testid='execution-dashboard-open-full-view-btn'
-          // New tab, same reasoning as the table's automation links: keep the
-          // filtered dashboard behind you.
-          onClick={() => window.open(fullViewHref, '_blank', 'noopener,noreferrer')}
-        >
-          Open full execution view
-        </Button>
+        {fullViewHref && (
+          <Button
+            tone='secondary'
+            size='sm'
+            data-testid='execution-dashboard-open-full-view-btn'
+            // New tab, same reasoning as the table's automation links: keep the
+            // filtered dashboard behind you.
+            onClick={() => window.open(fullViewHref, '_blank', 'noopener,noreferrer')}
+          >
+            Open full execution view
+          </Button>
+        )}
       </Box>
     </CustomDrawer>
   );

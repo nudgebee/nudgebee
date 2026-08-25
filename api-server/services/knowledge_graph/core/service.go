@@ -1857,8 +1857,18 @@ func (s *Service) markInactiveNodes(
 	}
 
 	if len(accountIDs) > 0 {
-		query += fmt.Sprintf(" AND cloud_account_id = ANY($%d::uuid[])", len(args)+1)
-		args = append(args, pq.Array(accountIDs))
+		// cloud_account_id scoping only applies to per-cloud-account sources
+		// (aws/gcp/azure/k8s). Tenant/integration sources stamp cloud_account_id to
+		// the tenant ID or integration ID — never a member of accountIDs — so without
+		// this exception their stale rows could never be tombstoned (#35519).
+		tenantScopedSources := []string{"identity", "ownership", "github", "gitlab", "pagerduty"}
+		accountIdx := len(args) + 1
+		tenantSourceIdx := len(args) + 2
+		query += fmt.Sprintf(` AND (
+			cloud_account_id = ANY($%d::uuid[])
+			OR (properties->>'source') = ANY($%d::text[])
+		)`, accountIdx, tenantSourceIdx)
+		args = append(args, pq.Array(accountIDs), pq.Array(tenantScopedSources))
 	}
 
 	s.logger.Info("marking inactive nodes",
@@ -3253,10 +3263,16 @@ func (s *Service) GetMultipleNodeNeighbors(reqCtx *security.RequestContext, node
 		}, nil
 	}
 
-	// Step 1: Use recursive CTE to discover all node IDs up to N levels.
-	// Also returns the edges the BFS walked and each node's minimum BFS depth, used by
-	// the spanning-tree edge filter when subgraph is false.
-	discoveredNodeIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverNeighborNodesRecursive(tenantID, realSeeds, levels, nodeTypes)
+	// Step 1: BFS to discover all node IDs up to N levels (both directions,
+	// tenant-scoped, neighbour type filter). Also returns the edges the BFS walked
+	// and each node's minimum BFS depth, used by the spanning-tree edge filter when
+	// subgraph is false.
+	discoveredNodeIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverBFS(realSeeds, traverseOptions{
+		Direction:        TraverseDirectionBoth,
+		Levels:           levels,
+		IncludeNodeTypes: nodeTypes,
+		TenantID:         tenantID,
+	})
 	if err != nil {
 		return KnowledgeGraph{}, fmt.Errorf("failed to discover neighbor nodes: %w", err)
 	}
@@ -3385,44 +3401,50 @@ func (s *Service) GetMultipleNodeNeighbors(reqCtx *security.RequestContext, node
 	}, nil
 }
 
-// discoverNeighborNodesRecursive uses a PostgreSQL recursive CTE to find all nodes
-// within N levels of the input nodes, handling cycles automatically via visited_path array.
-// nodeTypes filters neighbor nodes by type (original nodes are always included regardless of type).
-//
-// tenantID scopes every traversal step (seed nodes, recursive nodes, and walked edges) to
-// the caller's tenant — required to prevent cross-tenant data exfiltration via guessed UUIDs.
+// traverseOptions configures discoverBFS. Empty slice / zero fields disable the
+// corresponding filter: no RelationshipTypes ⇒ follow every link; no
+// IncludeNodeTypes ⇒ keep every neighbour type; no ExcludeNodeTypes ⇒ skip none;
+// empty TenantID ⇒ do not scope hops to a tenant. Direction picks which edges to
+// follow (downstream = source→dest, upstream = dest→source, both = either). No
+// caller sets both IncludeNodeTypes and ExcludeNodeTypes; the engine supports both.
+type traverseOptions struct {
+	Direction         TraverseDirection
+	Levels            int
+	RelationshipTypes []string
+	IncludeNodeTypes  []NodeType
+	ExcludeNodeTypes  []NodeType
+	TenantID          string
+}
+
+// discoverBFS is the single traversal engine behind every persisted-graph walk:
+// GetMultipleNodeNeighbors (direction=Both, include filter, tenant-scoped),
+// TraverseDirectional / kg_traverse, and impact analysis (directional, exclude +
+// relationship filters). It runs a level-by-level BFS with one global visited set
+// (nodeMinDepth): each node is expanded exactly once, so cost is O(edges in the
+// k-hop neighbourhood) rather than the O(paths) of a visited-path recursive CTE
+// (which re-expands a node once per route that reaches it). Behaviour is entirely
+// determined by opts.
 //
 // Returns:
-//   - discoveredIDs: the set of node IDs reached from any seed (seeds themselves + neighbours).
-//   - traversedEdgeIDs: edge IDs the BFS actually walked (empty for the base case).
-//   - nodeMinDepth: minimum hop count from any seed to each discovered node. Used by the
-//     spanning-tree edge filter (filterLayeredEdges) when callers want a tree response
-//     instead of the induced subgraph.
-func (s *Service) discoverNeighborNodesRecursive(tenantID string, nodeIDs []string, levels int, nodeTypes []NodeType) (discoveredIDs []string, traversedEdgeIDs []string, nodeMinDepth map[string]int, err error) {
-	// Convert NodeType slice to string slice for PostgreSQL (neighbour filter only).
-	nodeTypeStrings := make([]string, len(nodeTypes))
-	for i, nt := range nodeTypes {
-		nodeTypeStrings[i] = string(nt)
-	}
-
-	// Level-by-level BFS with a single global visited set: each node is expanded
-	// exactly once, so cost is O(edges in the k-hop neighbourhood) rather than the
-	// O(paths) of a visited_path recursive CTE (which re-expands a node once per
-	// route that reaches it). The three return values are unchanged: the distinct
-	// discovered node ids, the distinct walked-edge ids, and each node's minimum
-	// BFS depth.
+//   - discoveredIDs: the set of node IDs reached from any seed (seeds + neighbours) —
+//     exactly the keys of nodeMinDepth.
+//   - traversedEdgeIDs: edge IDs the BFS walked (incl. cross/back edges; the
+//     layered-tree filter prunes them to consecutive layers downstream).
+//   - nodeMinDepth: minimum hop count from any seed to each discovered node.
+func (s *Service) discoverBFS(seeds []string, opts traverseOptions) (discoveredIDs []string, traversedEdgeIDs []string, nodeMinDepth map[string]int, err error) {
 	nodeMinDepth = make(map[string]int)
 	edgeIDSet := make(map[string]struct{})
 
-	// Depth 0: validate seeds against tenant/level/is_active (the CTE's base case).
-	// Seeds are never type-filtered; an isolated seed (no edges) still appears. The
-	// seed cursor is closed inside the helper (before the BFS opens its own queries).
-	seeds, err := s.fetchActiveSeedNodeIDs(tenantID, nodeIDs)
+	// Depth 0: validate seeds against level/is_active (and tenant when scoped) —
+	// the base case. Seeds are never type-filtered; an isolated seed (no edges)
+	// still appears. The seed cursor is closed inside the helper before the BFS
+	// opens its own per-level queries.
+	validSeeds, err := s.fetchTraversalSeeds(seeds, opts.TenantID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	var frontier []string
-	for _, id := range seeds {
+	for _, id := range validSeeds {
 		if _, ok := nodeMinDepth[id]; !ok {
 			nodeMinDepth[id] = 0
 			frontier = append(frontier, id)
@@ -3432,8 +3454,8 @@ func (s *Service) discoverNeighborNodesRecursive(tenantID string, nodeIDs []stri
 	// Expand one level at a time (levels <= 3), each a single indexed edge query
 	// over the whole current frontier. A node already in nodeMinDepth is never
 	// re-expanded — that is what removes the recursive CTE's path explosion.
-	for depth := 0; depth < levels && len(frontier) > 0; depth++ {
-		frontier, err = s.expandNeighborFrontier(tenantID, frontier, depth, nodeTypeStrings, nodeMinDepth, edgeIDSet)
+	for depth := 0; depth < opts.Levels && len(frontier) > 0; depth++ {
+		frontier, err = s.expandFrontier(frontier, depth, opts, nodeMinDepth, edgeIDSet)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -3450,15 +3472,24 @@ func (s *Service) discoverNeighborNodesRecursive(tenantID string, nodeIDs []stri
 	return discoveredIDs, traversedEdgeIDs, nodeMinDepth, nil
 }
 
-// fetchActiveSeedNodeIDs returns the subset of nodeIDs that exist for the tenant and
-// are active Tenant-level nodes — the recursive CTE's base case. It closes its cursor
-// via defer before returning, so the seed connection is released before the BFS loop
-// opens its own per-level queries.
-func (s *Service) fetchActiveSeedNodeIDs(tenantID string, nodeIDs []string) ([]string, error) {
-	rows, err := s.dbManager.Query(`
+// fetchTraversalSeeds returns the subset of ids that are active Tenant-level nodes —
+// the BFS base case. When tenantID is non-empty the seeds are also scoped to that
+// tenant (defense in depth against cross-tenant UUID guessing on the neighbours
+// path). Closes its cursor via defer before returning, so the seed connection is
+// released before the BFS loop opens its own per-level queries.
+func (s *Service) fetchTraversalSeeds(ids []string, tenantID string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	query := `
 		SELECT id::text FROM knowledge_graph_node
-		WHERE id = ANY($1::uuid[]) AND tenant_id = $2 AND level = 'Tenant' AND is_active = true
-	`, pq.Array(nodeIDs), tenantID)
+		WHERE id = ANY($1::uuid[]) AND level = 'Tenant' AND is_active = true`
+	args := []interface{}{pq.Array(ids)}
+	if tenantID != "" {
+		query += " AND tenant_id = $2"
+		args = append(args, tenantID)
+	}
+	rows, err := s.dbManager.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("seed validation query failed: %w", err)
 	}
@@ -3482,29 +3513,68 @@ func (s *Service) fetchActiveSeedNodeIDs(tenantID string, nodeIDs []string) ([]s
 	return seeds, nil
 }
 
-// expandNeighborFrontier runs one BFS level for discoverNeighborNodesRecursive: it
-// fetches every active tenant edge incident to a frontier node, records each such
-// walked edge, and returns the neighbours newly discovered at depth+1 (registering
-// them in nodeMinDepth). The walk is bidirectional (source OR destination). When
-// nodeTypeStrings is non-empty the neighbour is filtered by node type (seeds are
-// not). The walked edge is recorded even when the far endpoint was already visited
-// (cross/back edges), matching the previous CTE's walked-edge set; filterLayeredEdges
-// prunes it to consecutive layers downstream.
-func (s *Service) expandNeighborFrontier(tenantID string, frontier []string, depth int, nodeTypeStrings []string, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}) ([]string, error) {
-	// otherEnd projects the endpoint of e that is NOT the frontier node.
-	const otherEnd = `CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END`
-	query := `
-		SELECT e.id::text, (` + otherEnd + `)::text AS other_id
-		FROM knowledge_graph_edge e
-		JOIN knowledge_graph_node n ON n.id = ` + otherEnd + `
-		WHERE (e.source_node_id = ANY($1::uuid[]) OR e.destination_node_id = ANY($1::uuid[]))
-		  AND e.tenant_id = $2 AND e.level = 'Tenant' AND e.is_active = true
-		  AND n.tenant_id = $2 AND n.level = 'Tenant' AND n.is_active = true`
-	args := []interface{}{pq.Array(frontier), tenantID}
-	if len(nodeTypeStrings) > 0 {
-		query += ` AND n.node_type = ANY($3::text[])`
-		args = append(args, pq.Array(nodeTypeStrings))
+// expandFrontier runs one BFS level for discoverBFS: it fetches every active
+// Tenant-level edge incident to a frontier node in the requested direction, records
+// each walked edge, and returns the neighbours newly discovered at depth+1
+// (registering them in nodeMinDepth). The endpoint node is joined and status-checked
+// (active Tenant-level): an active edge can point at a tombstoned node, so this
+// filter is load-bearing. Optional per-hop filters: tenant (when opts.TenantID set),
+// relationship type, and include/exclude node type — the far endpoint is filtered,
+// seeds are not. The walked edge is recorded even when the far endpoint was already
+// visited (cross/back edges), matching the previous CTE's walked-edge set;
+// filterLayeredEdges prunes it to consecutive layers downstream.
+func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOptions, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}) ([]string, error) {
+	// Direction-specific incidence predicate + projection of the far endpoint.
+	// $1 is always the frontier array.
+	var incidence, otherEnd string
+	switch opts.Direction {
+	case TraverseDirectionDownstream:
+		incidence = "e.source_node_id = ANY($1::uuid[])"
+		otherEnd = "e.destination_node_id"
+	case TraverseDirectionUpstream:
+		incidence = "e.destination_node_id = ANY($1::uuid[])"
+		otherEnd = "e.source_node_id"
+	default: // TraverseDirectionBoth
+		incidence = "(e.source_node_id = ANY($1::uuid[]) OR e.destination_node_id = ANY($1::uuid[]))"
+		otherEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END"
 	}
+
+	args := []interface{}{pq.Array(frontier)}
+	argIdx := 2
+	var clauses []string
+	if opts.TenantID != "" {
+		clauses = append(clauses, fmt.Sprintf("e.tenant_id = $%d AND n.tenant_id = $%d", argIdx, argIdx))
+		args = append(args, opts.TenantID)
+		argIdx++
+	}
+	if len(opts.RelationshipTypes) > 0 {
+		clauses = append(clauses, fmt.Sprintf("e.relationship_type = ANY($%d::text[])", argIdx))
+		args = append(args, pq.Array(opts.RelationshipTypes))
+		argIdx++
+	}
+	if len(opts.IncludeNodeTypes) > 0 {
+		clauses = append(clauses, fmt.Sprintf("n.node_type = ANY($%d::text[])", argIdx))
+		args = append(args, pq.Array(nodeTypesToStrings(opts.IncludeNodeTypes)))
+		argIdx++
+	}
+	if len(opts.ExcludeNodeTypes) > 0 {
+		clauses = append(clauses, fmt.Sprintf("NOT n.node_type = ANY($%d::text[])", argIdx))
+		args = append(args, pq.Array(nodeTypesToStrings(opts.ExcludeNodeTypes)))
+		argIdx++
+	}
+	_ = argIdx // keep the counter advanced for whatever clause is appended next
+	extra := ""
+	if len(clauses) > 0 {
+		extra = " AND " + strings.Join(clauses, " AND ")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT e.id::text, (%s)::text AS other_id
+		FROM knowledge_graph_edge e
+		JOIN knowledge_graph_node n ON n.id = %s
+		WHERE %s
+		  AND e.level = 'Tenant' AND e.is_active = true
+		  AND n.level = 'Tenant' AND n.is_active = true%s`, otherEnd, otherEnd, incidence, extra)
 
 	rows, err := s.dbManager.Query(query, args...)
 	if err != nil {
@@ -3532,6 +3602,15 @@ func (s *Service) expandNeighborFrontier(tenantID string, frontier []string, dep
 		return nil, fmt.Errorf("error iterating frontier rows at depth %d: %w", depth, err)
 	}
 	return next, nil
+}
+
+// nodeTypesToStrings converts a NodeType slice to the []string form pq.Array needs.
+func nodeTypesToStrings(types []NodeType) []string {
+	out := make([]string, len(types))
+	for i, nt := range types {
+		out[i] = string(nt)
+	}
+	return out
 }
 
 // fetchNodesByIDs retrieves node details for a list of node IDs
@@ -4952,8 +5031,15 @@ func (s *Service) TraverseDirectional(tenantID string, params TraverseParams) (*
 		}
 	}
 
-	// Discover nodes via directional CTE
-	discoveredIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverDirectional(seedNodeIDs, params.Direction, params.MaxDepth, params.RelationshipTypes, params.NodeTypes, params.ExcludeNodeTypes)
+	// Discover nodes via directional BFS. NodeTypes (include) is intentionally not
+	// passed to the walk — it is applied as a post-traversal filter below so the BFS
+	// can still reach targets through intermediate types.
+	discoveredIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverBFS(seedNodeIDs, traverseOptions{
+		Direction:         params.Direction,
+		Levels:            params.MaxDepth,
+		RelationshipTypes: params.RelationshipTypes,
+		ExcludeNodeTypes:  params.ExcludeNodeTypes,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("directional traversal failed: %w", err)
 	}
@@ -5111,144 +5197,6 @@ func (s *Service) TraverseDirectional(tenantID string, params TraverseParams) (*
 		Truncated:       truncated,
 		TotalDiscovered: totalDiscovered,
 	}, nil
-}
-
-// discoverDirectional uses a PostgreSQL recursive CTE with direction control.
-// It returns:
-//   - discoveredIDs: the set of node IDs reached from any seed.
-//   - traversedEdgeIDs: edge IDs the BFS actually walked.
-//   - nodeMinDepth: minimum hop count from any seed to each discovered node.
-//     Used by the strict-tree edge filter to keep only edges that connect
-//     consecutive BFS layers (and drop sibling-to-sibling edges that the CTE
-//     happens to walk on longer paths).
-//
-// Seed-anchor rows contribute no edge ID; only the recursive step does.
-func (s *Service) discoverDirectional(
-	nodeIDs []string,
-	direction TraverseDirection,
-	levels int,
-	relationshipTypes []string,
-	includeNodeTypes []NodeType,
-	excludeNodeTypes []NodeType,
-) (discoveredIDs []string, traversedEdgeIDs []string, nodeMinDepth map[string]int, err error) {
-	// Build the direction-specific edge join and next-node expressions
-	var edgeJoin, nextNode string
-	switch direction {
-	case TraverseDirectionDownstream:
-		edgeJoin = "e.source_node_id = t.node_id"
-		nextNode = "e.destination_node_id"
-	case TraverseDirectionUpstream:
-		edgeJoin = "e.destination_node_id = t.node_id"
-		nextNode = "e.source_node_id"
-	case TraverseDirectionBoth:
-		edgeJoin = "(e.source_node_id = t.node_id OR e.destination_node_id = t.node_id)"
-		nextNode = "CASE WHEN e.source_node_id = t.node_id THEN e.destination_node_id ELSE e.source_node_id END"
-	}
-
-	// Build optional WHERE clauses for the recursive part.
-	// NOTE: include_node_types is NOT applied inside the CTE — it must allow
-	// traversal through intermediate types (e.g., Namespace) to reach targets
-	// (e.g., Workload) at depth > 1. The full subgraph is returned so the
-	// agent can see the connectivity path. exclude_node_types IS applied in
-	// the CTE to prune noisy branches (e.g., SecurityGroup, NetworkInterface).
-	var filterClauses []string
-	args := []interface{}{pq.Array(nodeIDs), levels}
-	argIdx := 3
-
-	if len(relationshipTypes) > 0 {
-		filterClauses = append(filterClauses, fmt.Sprintf("e.relationship_type = ANY($%d::text[])", argIdx))
-		args = append(args, pq.Array(relationshipTypes))
-		argIdx++
-	}
-
-	excludeTypeStrings := make([]string, len(excludeNodeTypes))
-	for i, nt := range excludeNodeTypes {
-		excludeTypeStrings[i] = string(nt)
-	}
-	if len(excludeTypeStrings) > 0 {
-		filterClauses = append(filterClauses, fmt.Sprintf("NOT n.node_type = ANY($%d::text[])", argIdx))
-		args = append(args, pq.Array(excludeTypeStrings))
-	}
-
-	additionalFilters := ""
-	if len(filterClauses) > 0 {
-		additionalFilters = " AND " + strings.Join(filterClauses, " AND ")
-	}
-
-	query := fmt.Sprintf(`
-		WITH RECURSIVE traversal AS (
-			SELECT id AS node_id, NULL::uuid AS edge_id, 0 AS depth, ARRAY[id] AS visited
-			FROM knowledge_graph_node
-			WHERE id = ANY($1::uuid[])
-			  AND level = 'Tenant'
-			  AND is_active = true
-
-			UNION
-
-			SELECT %s AS node_id,
-				   e.id AS edge_id,
-				   t.depth + 1 AS depth,
-				   t.visited || %s AS visited
-			FROM traversal t
-			JOIN knowledge_graph_edge e ON %s
-			JOIN knowledge_graph_node n ON n.id = %s
-			WHERE t.depth < $2
-			  AND e.level = 'Tenant'
-			  AND e.is_active = true
-			  AND n.level = 'Tenant'
-			  AND n.is_active = true
-			  AND NOT (%s = ANY(t.visited))
-			  %s
-		)
-		SELECT DISTINCT node_id::text, edge_id::text, depth FROM traversal
-	`, nextNode, nextNode, edgeJoin, nextNode, nextNode, additionalFilters)
-
-	rows, err := s.dbManager.Query(query, args...)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("directional CTE query failed: %w", err)
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			slog.Warn("Failed to close rows", "error", closeErr)
-		}
-	}()
-
-	// The CTE emits one row per (node_id, edge_id, depth) triple. A node at
-	// depth d reached from k parents at depth d-1 produces k rows (one per
-	// incoming edge); a node reachable on multiple paths of different lengths
-	// can also appear at multiple depths. Dedupe per-column in Go and collapse
-	// per-node depth to its minimum — the layered-DAG edge filter relies on
-	// each node having a single canonical depth.
-	edgeIDSet := make(map[string]struct{})
-	nodeMinDepth = make(map[string]int)
-	for rows.Next() {
-		var nodeID string
-		var edgeID sql.NullString
-		var depth int
-		if err := rows.Scan(&nodeID, &edgeID, &depth); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to scan traversal row: %w", err)
-		}
-		if cur, ok := nodeMinDepth[nodeID]; !ok || depth < cur {
-			nodeMinDepth[nodeID] = depth
-		}
-		if edgeID.Valid {
-			edgeIDSet[edgeID.String] = struct{}{}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, nil, fmt.Errorf("error iterating discovered nodes: %w", err)
-	}
-
-	discoveredIDs = make([]string, 0, len(nodeMinDepth))
-	for id := range nodeMinDepth {
-		discoveredIDs = append(discoveredIDs, id)
-	}
-	traversedEdgeIDs = make([]string, 0, len(edgeIDSet))
-	for id := range edgeIDSet {
-		traversedEdgeIDs = append(traversedEdgeIDs, id)
-	}
-
-	return discoveredIDs, traversedEdgeIDs, nodeMinDepth, nil
 }
 
 // filterLayeredEdges keeps only edges that connect consecutive BFS layers in

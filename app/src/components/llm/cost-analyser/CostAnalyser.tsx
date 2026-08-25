@@ -10,6 +10,7 @@
  * mock fixtures and are tagged "sample data" so the gap is explicit.
  */
 import * as React from 'react';
+import { useRouter } from 'next/router';
 import { Box, CircularProgress } from '@mui/material';
 import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
@@ -18,9 +19,9 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
 import RateReviewOutlinedIcon from '@mui/icons-material/RateReviewOutlined';
-import CustomTabs from '@shared/CustomTabs';
+import AccountBalanceWalletOutlinedIcon from '@mui/icons-material/AccountBalanceWalletOutlined';
+import CustomTabs from '@shared/navigation/Tabs';
 import { Banner } from '@ui/Banner';
-import { Chip } from '@ui/Chip';
 import { Modal } from '@ui/Modal';
 import FilterBar from './FilterBar';
 import OverviewView from './views/OverviewView';
@@ -30,6 +31,9 @@ import ModelsView from './views/ModelsView';
 import AgentsView from './views/AgentsView';
 import ToolsView from './views/ToolsView';
 import UsersView from './views/UsersView';
+import CostReportView from './views/CostReportView';
+import CostReportTabDisabled from './views/CostReportTabDisabled';
+import { hasFeatureAccess, isTenantWideRole } from '@lib/auth';
 import CritiqueAnalyser from '@components/llm/critique-analyser/CritiqueAnalyser';
 import { rowToRun } from './adapt';
 import { useConversationTree, useCostData } from './useCostData';
@@ -70,9 +74,12 @@ function defaultFilters(): CostFilters {
   };
 }
 
-type TabId = 'overview' | 'conversations' | 'models' | 'agents' | 'tools' | 'users' | 'critiques';
+type TabId = 'overview' | 'conversations' | 'models' | 'agents' | 'tools' | 'users' | 'cost-report' | 'critiques';
+
+const VALID_TAB_IDS: TabId[] = ['overview', 'conversations', 'models', 'agents', 'tools', 'users', 'cost-report', 'critiques'];
 
 export function CostAnalyser({ accountId }: CostAnalyserProps) {
+  const router = useRouter();
   const [filters, setFilters] = React.useState<CostFilters>(() => defaultFilters());
   const [tab, setTab] = React.useState<TabId>('overview');
   // The open conversation: its session id + its own account (the tree endpoint
@@ -86,6 +93,82 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   } | null>(null);
   // Account scope picked in the filter bar ('' = all accounts the tenant can read).
   const [selectedAccountId, setSelectedAccountId] = React.useState<string>('');
+  // Bumped whenever the date range is set programmatically — a cost-over-time bar
+  // click, or Reset. The filter bar keys its date picker on this so the picker
+  // re-derives its trigger label from the new range instead of keeping a stale
+  // one ("Current Week", or the custom range Reset just cleared) — the picker
+  // only seeds from props on mount. A click on the picker's own shortcuts leaves
+  // this untouched, so their labels stay put.
+  const [dateResetNonce, setDateResetNonce] = React.useState(0);
+  // hasAiCostReportAccess mirrors the same AI_COST_REPORT flag the daily Slack
+  // digest cron checks per tenant (llm-server's RunAiCostDailyDigest) — it
+  // gates the *data* (the real CostReportView), not the tab's visibility. The
+  // tab itself stays visible to every tenant-wide-role user regardless of the
+  // flag (see showCostReportTab below) so an admin who hasn't enabled the
+  // feature yet can discover it and learn how, instead of it silently not
+  // existing.
+  const [hasAiCostReportAccess, setHasAiCostReportAccess] = React.useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    hasFeatureAccess('AI_COST_REPORT').then((res) => {
+      if (!cancelled) setHasAiCostReportAccess(Boolean(res));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Same audience as before the flag existed on this tab: even with
+  // AI_COST_REPORT on, only tenant-wide roles can see the Cost Report tab, so
+  // showing the "how to enable" teaser to anyone else would advertise a tab
+  // they could never actually use.
+  const showCostReportTab = isTenantWideRole();
+  const canViewCostReportTab = hasAiCostReportAccess && showCostReportTab;
+
+  // The Cost Report tab's "as of" date is deliberately its own state, not part
+  // of the shared `filters` — that object also drives every other tab's date
+  // range via FilterBar, and routing the Cost Report date picker through it
+  // would silently move Overview/Conversations/etc.'s range whenever someone
+  // picked a date on the Cost Report tab.
+  const [costReportReferenceDate, setCostReportReferenceDate] = React.useState<string>(() => anchorToday());
+
+  // Deep-link support: a URL like #cost-analyser/cost-report (e.g. the Slack
+  // digest's "View in Cost Analyser" link) should land directly on that
+  // sub-tab instead of always defaulting to Overview. Consumed once the
+  // router is ready; after that, tab switches are driven by clicking
+  // CustomTabs, not the URL — mirrors the outer Optimise page's own
+  // fragment/subFragment handling for its "Auto Optimize" sub-tabs. The Cost
+  // Report tab is itself role gated (see showCostReportTab), so a deep link to
+  // it must not bypass that — showCostReportTab is a dependency here so that
+  // this effect re-runs and honors a link that arrived before the router was
+  // ready. Landing here with the flag still off is fine — the tab renders
+  // the "how to enable" teaser rather than data.
+  React.useEffect(() => {
+    if (!router.isReady) return;
+    const hash = router.asPath.split('#')[1];
+    if (!hash) return;
+    const [, subFragment] = hash.split('/');
+    if (!subFragment || !VALID_TAB_IDS.includes(subFragment as TabId)) return;
+    if (subFragment === 'cost-report' && !showCostReportTab) return;
+    setTab(subFragment as TabId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady, showCostReportTab]);
+
+  // Pin the report to an exact date via ?asOf=YYYY-MM-DD (e.g. the Slack
+  // digest's "View in Cost Analyser" link) instead of defaulting to today.
+  // Without this, the Cost Report tab shows live/partial-day numbers that can
+  // differ from what the digest just reported — the digest always reports
+  // on the last fully-completed day, never today's still-in-progress total.
+  // Scoped to costReportReferenceDate only — see the note above on why this
+  // must not touch the shared `filters`.
+  React.useEffect(() => {
+    if (!router.isReady) return;
+    const asOf = router.query.asOf;
+    if (typeof asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+      setCostReportReferenceDate(asOf);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady]);
 
   const effectiveAccountId = selectedAccountId || accountId;
 
@@ -93,16 +176,17 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const reset = () => {
     setFilters(defaultFilters());
     setSelectedAccountId('');
+    // Every other control is driven by `filters`, so it clears with the state
+    // above; the date picker owns its trigger label internally and only seeds
+    // from props on mount, so it needs the remount to stop showing the range
+    // Reset just discarded.
+    setDateResetNonce((n) => n + 1);
   };
 
-  // The Conversations tab pages the list itself (server-side), so the shared
-  // top-200 window — which only backs Overview's "most expensive" table — isn't
-  // fetched while that tab is open.
-  const { loading, error, usageFilters, metrics, prevTotals, conversations, listCap } = useCostData(
-    effectiveAccountId,
-    filters,
-    tab === 'conversations'
-  );
+  // Fetches are keyed on the active tab — the Conversations tab pages the list
+  // itself (server-side), so the shared window (which only backs Overview's
+  // "recent runs" table) isn't fetched while that tab is open.
+  const { loading, error, usageFilters, metrics, prevTotals, conversations, listCap } = useCostData(effectiveAccountId, filters, tab);
 
   // Adapt the API rows into the UI's Run shape (already cost-desc from the list call).
   const runs = React.useMemo(() => (conversations?.rows ?? []).map(rowToRun), [conversations]);
@@ -145,33 +229,43 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   // renders them with the `.tab-icon` class — this routes them through
   // CustomTabs' built-in icon styling (idle grey, selected color change),
   // matching how every other CustomTabs usage feeds in its icons.
+  // fragment mirrors value on every entry — CustomTabs' `behavior='router'`
+  // mode uses it to build the URL hash (#cost-analyser/{fragment}) so the tab
+  // strip actually navigates instead of only updating local state (that's
+  // also what the deep-link effect above reads back on load).
   const tabOptions = [
-    { value: 'overview', text: 'Overview', icon: DashboardOutlinedIcon, iconSize: 16 },
-    { value: 'conversations', text: 'Conversations', icon: ForumOutlinedIcon, iconSize: 16 },
-    { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
-    { value: 'agents', text: 'Agents', icon: SmartToyOutlinedIcon, iconSize: 16 },
-    { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
-    { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
-    { value: 'critiques', text: 'Critiques', icon: RateReviewOutlinedIcon, iconSize: 16 },
-  ];
+    { value: 'overview', fragment: 'overview', text: 'Overview', icon: DashboardOutlinedIcon, iconSize: 16 },
+    { value: 'conversations', fragment: 'conversations', text: 'Conversations', icon: ForumOutlinedIcon, iconSize: 16 },
+    { value: 'models', fragment: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
+    { value: 'agents', fragment: 'agents', text: 'Agents', icon: SmartToyOutlinedIcon, iconSize: 16 },
+    { value: 'tools', fragment: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
+    { value: 'users', fragment: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
+    showCostReportTab && {
+      value: 'cost-report',
+      fragment: 'cost-report',
+      text: 'Cost Report',
+      icon: AccountBalanceWalletOutlinedIcon,
+      iconSize: 16,
+    },
+    { value: 'critiques', fragment: 'critiques', text: 'Critiques', icon: RateReviewOutlinedIcon, iconSize: 16 },
+  ].filter(Boolean);
 
   return (
     <Box id='cost-analyser-root' sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)', pb: 'var(--ds-space-5)' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
         <CustomTabs
-          options={{ tabOptions }}
+          options={{ tabOptions, fragment: 'cost-analyser' }}
           value={tab}
           onChange={(next: string) => setTab(next as TabId)}
-          behavior='filter'
+          behavior='router'
           ariaLabel='Cost Analyser screens'
         />
-        <Chip size='xs' variant='tag' tone='info'>
-          Live data
-        </Chip>
       </Box>
 
-      {/* Hidden for Critiques — that tab has its own cross-tenant filter bar, no account concept. */}
-      {tab !== 'critiques' && (
+      {/* Hidden for Critiques (own cross-tenant filter bar, no account concept) and
+          Cost Report (an account-level daily/MTD/prev-month rollup with no per-dimension
+          breakdown — every filter here would silently no-op). */}
+      {tab !== 'critiques' && tab !== 'cost-report' && (
         <FilterBar
           filters={filters}
           onChange={patch}
@@ -179,11 +273,19 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
           options={usageFilters}
           accountId={selectedAccountId}
           onAccountChange={setSelectedAccountId}
-          anchorDate={anchorToday()}
+          dateResetNonce={dateResetNonce}
           // The Agents tab owns local include/exclude agent controls (with a curated
           // default exclude), so the shared Agent filter would be a redundant, no-op
           // third control there — hide it and let that tab's own filters stand.
           showAgents={tab !== 'agents'}
+          // The Users tab IS the per-user breakdown — filtering it down to one user
+          // would collapse the leaderboard to a single row. Hide it rather than leave
+          // it visibly inert (#35797).
+          showUser={tab !== 'users'}
+          // Only Overview and Models read `metrics` (METRICS_TABS in useCostData.ts),
+          // whose time_series is what the granularity toggle drives — it's a dead
+          // control everywhere else (Conversations, Agents, Tools, Users).
+          showGranularity={tab === 'overview' || tab === 'models'}
         />
       )}
 
@@ -196,6 +298,18 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
         <ToolsView accountId={effectiveAccountId} filters={filters} onSelectRun={openRunDirect} />
       ) : tab === 'users' ? (
         <UsersView accountId={effectiveAccountId} filters={filters} userOptions={usageFilters?.users ?? []} onSelectUser={openUser} />
+      ) : tab === 'cost-report' ? (
+        canViewCostReportTab ? (
+          <CostReportView
+            accountId={effectiveAccountId}
+            onAccountChange={setSelectedAccountId}
+            accountOptions={usageFilters?.accounts ?? []}
+            referenceDate={costReportReferenceDate}
+            onReferenceDateChange={setCostReportReferenceDate}
+          />
+        ) : (
+          <CostReportTabDisabled />
+        )
       ) : (
         <>
           {error && <Banner tone='critical' title='Could not load cost data' message={error} />}
@@ -221,7 +335,10 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
                     accountNameById={accountNameById}
                     onSelectModel={(model) => patch({ models: [model] })}
                     onSelectSource={(source) => patch({ sources: [source] })}
-                    onSelectPeriod={(startDate, endDate) => patch({ startDate, endDate })}
+                    onSelectPeriod={(startDate, endDate) => {
+                      patch({ startDate, endDate });
+                      setDateResetNonce((n) => n + 1);
+                    }}
                   />
                 ))}
               {tab === 'conversations' && (

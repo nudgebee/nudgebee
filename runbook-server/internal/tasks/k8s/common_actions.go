@@ -99,9 +99,9 @@ func HandleGitOpsOrTicket(
 			resolverType = "AutoRunbook"
 		}
 
-		result := map[string]any{}
+		result := copyMap(baseResult)
 		if resolverType == "AutoOptimize" {
-			resolutionID, err := service.RecommendationResolve(taskCtx.GetNewRequestContext(), service.RecommendationResolutionRequest{
+			resolved, err := service.RecommendationResolve(taskCtx.GetNewRequestContext(), service.RecommendationResolutionRequest{
 				AccountID:        accountID,
 				RecommendationID: recommendationID,
 				Data:             prData,
@@ -112,12 +112,19 @@ func HandleGitOpsOrTicket(
 				},
 				ResolverType: resolverType,
 				ResolverID:   resolverID,
+				// Only a scheduled auto optimize opts into refreshing an open PR:
+				// it owns the PR end to end and re-derives these values every run.
+				// A PR someone raised by hand is left alone (#34959).
+				RefreshOpenPRChangePct: ruleChangeThresholds(params),
 			})
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to resolve recommendation: %w", err)
 			}
 			result["status"] = "resolved"
-			result["resolution_id"] = resolutionID
+			result["resolution_id"] = resolved.ID
+			// Carried through so the run's notification can tell a pull request this
+			// run raised or rewrote from one it was simply handed back.
+			result["pr_action"] = resolved.PRAction
 			result["description"] = description
 		} else {
 			prInput := service.GitPushRequest{
@@ -141,7 +148,6 @@ func HandleGitOpsOrTicket(
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to create pull request: %w", err)
 			}
-			result := copyMap(baseResult)
 			result["status"] = "pr_created"
 			result["resolution_id"] = resolutionID
 			result["description"] = description
@@ -230,6 +236,45 @@ func copyMap(m map[string]any) map[string]any {
 		cp[k] = v
 	}
 	return cp
+}
+
+// ruleChangeThresholds pulls each dimension's trigger threshold out of the task
+// rule, so an already-open pull request can be judged stale by the same number
+// the auto optimize uses to decide whether a change is worth making at all
+// (#34959). The rule reaches here as the task's meta, shaped
+// {"cpu": {"trigger": {"change_pct": 10}}, "memory": {...}}.
+//
+// Returns nil when no dimension declares a threshold — callers treat that as
+// "never refresh", so a malformed or older rule leaves today's behaviour intact
+// rather than rewriting a pull request on a guessed threshold.
+func ruleChangeThresholds(params map[string]any) map[string]float64 {
+	thresholds := map[string]float64{}
+	for _, dimension := range []string{"cpu", "memory"} {
+		rule, ok := params[dimension].(map[string]any)
+		if !ok {
+			continue
+		}
+		trigger, ok := rule["trigger"].(map[string]any)
+		if !ok {
+			continue
+		}
+		// JSON numbers arrive as float64; an int is possible if the rule was built
+		// in Go rather than unmarshalled, so accept both.
+		switch v := trigger["change_pct"].(type) {
+		case float64:
+			if v > 0 {
+				thresholds[dimension] = v
+			}
+		case int:
+			if v > 0 {
+				thresholds[dimension] = float64(v)
+			}
+		}
+	}
+	if len(thresholds) == 0 {
+		return nil
+	}
+	return thresholds
 }
 
 func GetTraceabilityAnnotation(taskCtx types.TaskContext, resolverType, resolverID, moduleName string) (string, string, error) {

@@ -7,13 +7,88 @@ from typing import Dict, Optional
 from rag.core.types import Document, LLM
 
 from rag.core.embeddings.generator import get_llm
+from rag.core.llm import circuit_breaker
 from rag.core.llm.prompts import get_prompt_for_module
-from rag.core.utils.db_query import get_tenant_id_for_account
+from rag.core.utils.db_query import get_live_kb_collection_names, get_tenant_id_for_account
 from rag.qdrant.client import list_collections_optimized
 from utils.config import Config
 from utils.shared import get_provider_name
 
 logger = logging.getLogger(__name__)
+
+# Collection-name shapes owned by an ``llm_knowledgebases`` row. Anything else
+# (``nudgebee_docs``, per-module collections, …) is not KB-backed and is never
+# subject to the live-KB check.
+_MANUAL_KB_PREFIX = "kb_"
+_INTEGRATION_KB_SUFFIX = "_knowledge_base"
+
+
+def _is_kb_backed_collection(collection, tenant_id):
+    """True when a collection is attributable to an ``llm_knowledgebases`` row.
+
+    Only attributable collections may be dropped — an unrecognised one is kept,
+    so we never silently stop searching data we cannot account for.
+
+    ``<uuid>_knowledge_base`` is shared by three writers, and two of them are
+    *not* integration KBs:
+
+    - the tenant-level user KB, ``<tenant_id>_knowledge_base``
+      (``loaders.account.load_tenant_knowledge_base_docs``); and
+    - legacy per-account collections renamed from ``<account_id>_docs`` by
+      ``module_retag_migration``, which carry an ``account`` tag because they
+      predate tenant scoping.
+
+    Both are excluded here; what remains under that suffix is integration-owned.
+    """
+    name = collection.name
+    if name.startswith(_MANUAL_KB_PREFIX):
+        return True
+    if not name.endswith(_INTEGRATION_KB_SUFFIX):
+        return False
+    owner = name[: -len(_INTEGRATION_KB_SUFFIX)]
+    if tenant_id and owner == str(tenant_id):
+        return False
+    return not (collection.metadata or {}).get("account")
+
+
+def _drop_dead_kb_collections(collections, account_id, tenant_id):
+    """Return the names of ``collections``, minus the dead knowledge-base ones.
+
+    A collection is dropped only when it is KB-attributable *and* absent from
+    the account's live set — i.e. its knowledge base was archived, or its
+    integration was disabled or deleted (deleting an integration cascades the
+    KB row away, stranding the vector collection). Without this, every search
+    keeps reading collections whose integration no longer exists, which
+    multiplies duplicate copies of the same page across the result set.
+
+    Storage cleanup is a separate concern: dropping at read time means
+    correctness does not wait on a Qdrant sweep.
+    """
+    kb_backed = {collection.name for collection in collections if _is_kb_backed_collection(collection, tenant_id)}
+    if not kb_backed:
+        return [collection.name for collection in collections]
+
+    live_names = get_live_kb_collection_names(account_id, tenant_id)
+    if live_names is None:
+        logger.warning(
+            "Could not resolve live knowledge bases for account %s / tenant %s - "
+            "searching all %d matched collections",
+            account_id,
+            tenant_id,
+            len(collections),
+        )
+        return [collection.name for collection in collections]
+
+    kept, dropped = [], []
+    for collection in collections:
+        if collection.name in kb_backed and collection.name not in live_names:
+            dropped.append(collection.name)
+        else:
+            kept.append(collection.name)
+
+    if dropped:
+        logger.info(f"Skipping {len(dropped)} collections with no live knowledge base: {dropped}")
+    return kept
 
 
 def _filter_collections_for_module_and_account(collections, module, account_id, collection_name, tenant_id=None):
@@ -30,8 +105,12 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
 
     The tenant path lets tenant-level integrations surface for every cloud
     account in the tenant without listing every account on the collection.
+
+    Visible is not the same as live: a matched collection is dropped again by
+    ``_drop_dead_kb_collections`` when its knowledge base is gone. An explicitly
+    requested ``collection_name`` bypasses both passes — the caller named it.
     """
-    collection_names = []
+    matched = []
     for collection in collections:
         metadata = collection.metadata
         if not metadata:
@@ -47,7 +126,9 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
         )
 
         if is_matching_account or is_global_account or is_matching_tenant:
-            collection_names.append(collection.name)
+            matched.append(collection)
+
+    collection_names = _drop_dead_kb_collections(matched, account_id, tenant_id)
     if collection_name and collection_name not in collection_names:
         collection_names.append(collection_name)
     return collection_names
@@ -248,10 +329,20 @@ def rerank_with_llm(user_question: str, module: str | None, docs: list, llm: LLM
         "stop_reason": "FinishReasonStop",
     }
 
+    # Fail fast if the per-pod breaker is open — the endpoint is known not-ready, so skip
+    # the LLM call and return the docs unranked rather than hanging on client retries.
+    cb_provider = get_provider_name(llm.__class__.__name__)
+    cb_model = llm.model
+    if circuit_breaker.is_open(cb_provider, cb_model):
+        logger.warning("rerank: circuit open for %s/%s — skipping LLM rerank", cb_provider, cb_model)
+        token_usage["request_status"] = "circuit_open"
+        return docs, token_usage
+
     start_time = time.time()
 
     try:
         result = llm.generate(llm_input)
+        circuit_breaker.record_success(cb_provider, cb_model)
         latency = time.time() - start_time
 
         response_content = result.text
@@ -286,6 +377,8 @@ def rerank_with_llm(user_question: str, module: str | None, docs: list, llm: LLM
         return [(doc[0], score) for doc, score in ranked_docs_with_scores], token_usage
 
     except Exception as e:
+        if circuit_breaker.is_tripping_error(e):
+            circuit_breaker.record_failure(cb_provider, cb_model)
         logger.warning(f"LLM failed to rank documents: {e}, using original order")
         token_usage["request_status"] = "failure"
         token_usage["error_message"] = str(e)

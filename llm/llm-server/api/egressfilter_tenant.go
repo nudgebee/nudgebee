@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -26,9 +27,21 @@ import (
 // SetTenantConfigTTL (default 5m).
 
 const (
-	maxAllowlistEntries     = 500
-	maxDisabledRulesEntries = 100
+	maxAllowlistEntries          = 500
+	maxDisabledRulesEntries      = 100
+	maxPIIDisabledCategoryValues = 8 // hard cap; the ml-k8s token namespace has ~4 today
 )
+
+// validPIICategories is the closed set the ml-k8s /scrub API emits today
+// (see ml-k8s-server/server/ee/scrubbing/scrubber.py). Admin API rejects
+// anything outside this set so ops can't silently push a value the
+// scrubber will never produce. Upper-cased for case-insensitive matching.
+var validPIICategories = map[string]struct{}{
+	"EMAIL":    {},
+	"PERSON":   {},
+	"PHONE":    {},
+	"LOCATION": {},
+}
 
 // DAO function variables — set to the egressfilter package functions at
 // init() time; tests overwrite them with stubs so the handlers can be
@@ -95,6 +108,13 @@ type upsertBody struct {
 	Enabled       *bool    `json:"enabled,omitempty"`
 	Allowlist     []string `json:"allowlist,omitempty"`
 	DisabledRules []string `json:"disabled_rules,omitempty"`
+	// PII sibling detector (V827). All fields optional; omitting them
+	// leaves the tenant's existing PII posture untouched (nil-ish values
+	// mean "inherit env" on the wrapper side).
+	PIIEnabled            *bool     `json:"pii_enabled,omitempty"`
+	PIIMode               *string   `json:"pii_mode,omitempty"`
+	PIINerEnabled         *bool     `json:"pii_ner_enabled,omitempty"`
+	PIIDisabledCategories *[]string `json:"pii_disabled_categories,omitempty"`
 }
 
 func upsertTenantConfig(c *gin.Context) {
@@ -126,6 +146,10 @@ func upsertTenantConfig(c *gin.Context) {
 	if body.Enabled != nil {
 		cfg.Enabled = *body.Enabled
 	}
+	if errResp := applyPIIToConfig(cfg, body.PIIEnabled, body.PIIMode, body.PIINerEnabled, body.PIIDisabledCategories); errResp != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errResp})
+		return
+	}
 	if err := validateBudgets(cfg); err != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err})
 		return
@@ -150,6 +174,56 @@ type patchBody struct {
 	AllowlistRemove     []string `json:"allowlist_remove,omitempty"`
 	DisabledRulesAdd    []string `json:"disabled_rules_add,omitempty"`
 	DisabledRulesRemove []string `json:"disabled_rules_remove,omitempty"`
+	// PII sibling detector (V827). PATCH tri-state semantics via IsPresent:
+	//   - field absent            → leave existing DB value
+	//   - field present, non-null → replace with value
+	//   - field present, null     → clear back to "inherit env"
+	// Absent-vs-null cannot be told apart from a nil *bool alone (json.Unmarshal
+	// zeroes both), so the custom UnmarshalJSON records the top-level key set
+	// and IsPresent(name) reads from it. pii_disabled_categories is a set-
+	// replace (not add/remove) — the set is small (max 4) so replace matches
+	// how the UI renders it (checkbox group).
+	PIIEnabled            *bool     `json:"pii_enabled,omitempty"`
+	PIIMode               *string   `json:"pii_mode,omitempty"`
+	PIINerEnabled         *bool     `json:"pii_ner_enabled,omitempty"`
+	PIIDisabledCategories *[]string `json:"pii_disabled_categories,omitempty"`
+
+	presentKeys map[string]struct{} `json:"-"`
+}
+
+// UnmarshalJSON captures the set of top-level keys the caller actually
+// included in the request body BEFORE decoding into the typed fields.
+// This is the only way to distinguish `{"pii_enabled": null}` (clear)
+// from `{}` (leave untouched) — both produce a nil *bool otherwise.
+//
+// json.Unmarshal into a raw map first, then into the typed alias to avoid
+// infinite recursion via UnmarshalJSON. presentKeys is populated on the
+// receiver so handler code can query `body.IsPresent("pii_mode")`.
+func (p *patchBody) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	present := make(map[string]struct{}, len(raw))
+	for k := range raw {
+		present[k] = struct{}{}
+	}
+	type alias patchBody
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	*p = patchBody(tmp)
+	p.presentKeys = present
+	return nil
+}
+
+// IsPresent reports whether the caller included this top-level key in the
+// PATCH body. Used to implement tri-state semantics (present-null vs absent)
+// for the nullable PII fields.
+func (p *patchBody) IsPresent(key string) bool {
+	_, ok := p.presentKeys[key]
+	return ok
 }
 
 func patchTenantConfig(c *gin.Context) {
@@ -192,6 +266,39 @@ func patchTenantConfig(c *gin.Context) {
 	cfg.Allowlist = applyAddRemove(cfg.Allowlist, body.AllowlistAdd, body.AllowlistRemove)
 	cfg.DisabledRules = applyAddRemove(cfg.DisabledRules, body.DisabledRulesAdd, body.DisabledRulesRemove)
 
+	// PATCH tri-state semantics: absent = leave; present-value = set;
+	// present-null = clear back to "inherit env". applyPIIToConfig can't
+	// tell absent from null so we inline the per-field logic here.
+	if body.IsPresent("pii_enabled") {
+		cfg.PIIEnabled = body.PIIEnabled // nil = clear
+	}
+	if body.IsPresent("pii_ner_enabled") {
+		cfg.PIINerEnabled = body.PIINerEnabled // nil = clear
+	}
+	if body.IsPresent("pii_mode") {
+		if body.PIIMode == nil {
+			cfg.PIIMode = "" // clear
+		} else {
+			normalized, errMsg := parsePIIMode(*body.PIIMode)
+			if errMsg != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": errMsg})
+				return
+			}
+			cfg.PIIMode = normalized
+		}
+	}
+	if body.IsPresent("pii_disabled_categories") {
+		if body.PIIDisabledCategories == nil {
+			cfg.PIIDisabledCategories = nil // clear (DAO coerces to '{}')
+		} else {
+			normalized, errMsg := validatePIICategories(*body.PIIDisabledCategories)
+			if errMsg != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": errMsg})
+				return
+			}
+			cfg.PIIDisabledCategories = normalized
+		}
+	}
 	if err := validateBudgets(cfg); err != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err})
 		return
@@ -315,16 +422,117 @@ func validateBudgets(cfg *egressfilter.TenantConfig) string {
 	if len(cfg.DisabledRules) > maxDisabledRulesEntries {
 		return "disabled_rules exceeds max entries (100)"
 	}
+	if len(cfg.PIIDisabledCategories) > maxPIIDisabledCategoryValues {
+		return "pii_disabled_categories exceeds max entries (8)"
+	}
 	return ""
 }
 
-func configResponse(cfg *egressfilter.TenantConfig) gin.H {
-	return gin.H{
-		"tenant_id":      cfg.TenantID.String(),
-		"mode":           string(cfg.Mode),
-		"enabled":        cfg.Enabled,
-		"allowlist":      cfg.Allowlist,
-		"disabled_rules": cfg.DisabledRules,
-		"updated_at":     cfg.UpdatedAt,
+// applyPIIToConfig writes the PII sibling fields onto cfg. Only sets fields
+// the caller actually provided (nil = leave existing value). Returns "" on
+// success, a human-readable error on validation failure.
+//
+// Semantics parity with the secrets *_add/*_remove pattern is not needed
+// here — the PII fields are all scalar / small-set, and admin UIs render
+// them as toggles or checkbox groups where a full-value replace matches
+// the interaction shape.
+//
+// The empty-string case for pii_mode is treated as "clear back to inherit
+// env" — the CHECK constraint on the DB column rejects arbitrary strings,
+// so validate here and translate any allowed string into the canonical
+// lowercase form.
+func applyPIIToConfig(
+	cfg *egressfilter.TenantConfig,
+	piiEnabled *bool,
+	piiMode *string,
+	piiNerEnabled *bool,
+	piiDisabledCategories *[]string,
+) string {
+	if piiEnabled != nil {
+		v := *piiEnabled
+		cfg.PIIEnabled = &v
 	}
+	if piiMode != nil {
+		normalized, errMsg := parsePIIMode(*piiMode)
+		if errMsg != "" {
+			return errMsg
+		}
+		cfg.PIIMode = normalized
+	}
+	if piiNerEnabled != nil {
+		v := *piiNerEnabled
+		cfg.PIINerEnabled = &v
+	}
+	if piiDisabledCategories != nil {
+		normalized, errMsg := validatePIICategories(*piiDisabledCategories)
+		if errMsg != "" {
+			return errMsg
+		}
+		cfg.PIIDisabledCategories = normalized
+	}
+	return ""
+}
+
+// parsePIIMode validates + normalizes the mode string. Accepts "detect",
+// "enforce", or "" (clear back to inherit env). Case-insensitive. Any
+// other input is rejected with a caller-friendly message.
+func parsePIIMode(raw string) (string, string) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	switch trimmed {
+	case "", "detect", "enforce":
+		return trimmed, ""
+	default:
+		return "", "pii_mode must be one of: detect, enforce (or empty to inherit env default)"
+	}
+}
+
+// validatePIICategories uppercases + dedupes the input and rejects any value
+// outside validPIICategories (the closed set the ml-k8s /scrub API emits).
+func validatePIICategories(in []string) ([]string, string) {
+	if len(in) == 0 {
+		return nil, ""
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		v := strings.ToUpper(strings.TrimSpace(raw))
+		if v == "" {
+			continue
+		}
+		if _, ok := validPIICategories[v]; !ok {
+			return nil, "pii_disabled_categories contains unknown value: " + raw + " (allowed: EMAIL, PERSON, PHONE, LOCATION)"
+		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out, ""
+}
+
+func configResponse(cfg *egressfilter.TenantConfig) gin.H {
+	resp := gin.H{
+		"tenant_id":               cfg.TenantID.String(),
+		"mode":                    string(cfg.Mode),
+		"enabled":                 cfg.Enabled,
+		"allowlist":               cfg.Allowlist,
+		"disabled_rules":          cfg.DisabledRules,
+		"pii_mode":                cfg.PIIMode, // "" = inherit env
+		"pii_disabled_categories": cfg.PIIDisabledCategories,
+		"updated_at":              cfg.UpdatedAt,
+	}
+	// Nullable bools: emit null when unset so the UI can distinguish
+	// "inherit env" from "explicit false" without a second flag.
+	if cfg.PIIEnabled != nil {
+		resp["pii_enabled"] = *cfg.PIIEnabled
+	} else {
+		resp["pii_enabled"] = nil
+	}
+	if cfg.PIINerEnabled != nil {
+		resp["pii_ner_enabled"] = *cfg.PIINerEnabled
+	} else {
+		resp["pii_ner_enabled"] = nil
+	}
+	return resp
 }

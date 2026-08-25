@@ -8,12 +8,12 @@ import { Button as DsButton } from '@ui/Button';
 import Tooltip from '@ui/Tooltip';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import zlib from 'zlib';
-import { convertStringCase, generateRandomUUID, type CustomDropDownProps } from 'src/utils/common';
+import { generateRandomUUID, type CustomDropDownProps } from 'src/utils/common';
 import apiKubernetes1 from '@api1/kubernetes1';
 import SvgRenderer from '@shared/viewers/SvgRenderer';
 import { StackedLineChartOutlined } from '@mui/icons-material';
-import { KubernetesPodProfilerHistory } from '@components/k8s/common/KubernetesTable2';
-import ConversationPopup from '@components/llm/ConversationPopup';
+import { KubernetesPodProfilerHistory } from '@components/k8s/common/KubernetesTable';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
@@ -68,10 +68,7 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
   const [profileTaskStatus, setProfileTaskStatus] = useState('');
   const [profileDuration, setProfileDuration] = useState('15');
   const [showTrendChart, setShowTrendChart] = useState(false);
-  const [analysisModalOpen, setAnalysisModalOpen] = useState(false);
-  const [analysisQuery, setAnalysisQuery] = useState('');
-  const [analysisType, setAnalysisType] = useState('');
-  const [sessionId, setSessionId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   const pollingRef = useRef<any>({});
 
@@ -436,12 +433,6 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
     });
   };
 
-  const handleCloseConversationPopup = () => {
-    setAnalysisQuery('');
-    setSessionId('');
-    setAnalysisModalOpen(false);
-  };
-
   const handleGenerateAnalysis = (type: string, data: Base64Data) => {
     let queryPrompt = '';
 
@@ -460,10 +451,11 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
         queryPrompt = `@llm Analyse this profiler data on pod ${query?.pod_name} and namespace ${query?.namespace_name}:\n\n${truncatedData}`;
     }
 
-    setAnalysisQuery(queryPrompt);
-    setAnalysisType(type);
-    setSessionId(generateRandomUUID(`${query.pod_name}-${type}`));
-    setAnalysisModalOpen(true);
+    openNubiChat({
+      accountId,
+      sessionId: generateRandomUUID(`${query.pod_name}-${type}`),
+      query: queryPrompt,
+    });
   };
 
   const renderContent = () => {
@@ -573,14 +565,6 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
 
   return (
     <div style={{ paddingTop: 'var(--ds-space-2)', paddingLeft: 'var(--ds-space-2)' }}>
-      <ConversationPopup
-        open={analysisModalOpen}
-        query={analysisQuery}
-        sessionId={sessionId}
-        accountId={accountId}
-        handleClose={handleCloseConversationPopup}
-        title={analysisType ? `${convertStringCase(analysisType)} Analysis` : 'Analysis'}
-      />
       <ListingLayout id='pod-profiler'>
         <ListingLayout.Toolbar
           actions={

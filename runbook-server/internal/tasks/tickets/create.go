@@ -114,6 +114,22 @@ func (t *TicketsCreateTask) Execute(taskCtx types.TaskContext, params map[string
 		delete(additionalFields, "urgency")
 	}
 
+	// Dry run: validate params but never reach the ticketing platform. The
+	// placeholder satisfies OutputSchema so downstream tasks can render values.
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket creation")
+		return map[string]any{
+			"id":           "dry-run",
+			"platform":     "",
+			"reference_id": referenceId,
+			"severity":     severity,
+			"status":       "dry_run",
+			"ticket_id":    "dry-run",
+			"url":          "",
+			"action":       "dry_run",
+		}, nil
+	}
+
 	request := ticket.CreateTicketRequest{
 		IntegrationId:    integrationId,
 		Title:            title,

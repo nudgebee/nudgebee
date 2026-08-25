@@ -75,3 +75,50 @@ name: "Test Workflow"
 		assert.Error(t, err)
 	})
 }
+
+// TestParseAIMetadata covers the AI-invocation metadata added alongside the
+// per-workflow "Allow Nubi to invoke" toggle, including the top-level
+// `description:` key. That key has appeared in workflow YAML (and in this
+// repo's own test fixtures) all along, but model.Workflow had no field for it
+// so yaml.v3 silently discarded it — this locks in that it now survives.
+func TestParseAIMetadata(t *testing.T) {
+	t.Run("parses description and AI metadata", func(t *testing.T) {
+		yamlData := `
+name: "Restart payment consumers"
+description: "Restarts consumers and drains the stuck queue."
+ai_invocable: true
+definition:
+  llm_description: "Use when payment-service pods are crashlooping with RabbitMQ timeouts."
+  triggers:
+    - type: manual
+  tasks:
+    - id: "restart"
+      type: "run_script"
+`
+		wf, err := Parse([]byte(yamlData))
+		require.NoError(t, err)
+		require.NotNil(t, wf.Description)
+		assert.Equal(t, "Restarts consumers and drains the stuck queue.", *wf.Description)
+		assert.True(t, wf.AIInvocable)
+		assert.Equal(t, "Use when payment-service pods are crashlooping with RabbitMQ timeouts.", wf.Definition.LLMDescription)
+		assert.True(t, wf.Definition.HasManualTrigger())
+	})
+
+	t.Run("omitting AI metadata leaves the workflow closed to the AI", func(t *testing.T) {
+		yamlData := `
+name: "Nightly cleanup"
+definition:
+  triggers:
+    - type: schedule
+  tasks:
+    - id: "cleanup"
+      type: "run_script"
+`
+		wf, err := Parse([]byte(yamlData))
+		require.NoError(t, err)
+		assert.Nil(t, wf.Description)
+		assert.False(t, wf.AIInvocable)
+		assert.Empty(t, wf.Definition.LLMDescription)
+		assert.False(t, wf.Definition.HasManualTrigger())
+	})
+}

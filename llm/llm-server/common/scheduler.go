@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/config"
+	"testing"
 	"time"
 
 	"github.com/go-co-op/gocron/v2"
@@ -17,6 +18,9 @@ var leaderScheduler gocron.Scheduler
 var schedulerInitialized = false
 
 func init() {
+	if testing.Testing() {
+		return
+	}
 	slog.Info("scheduler: starting")
 	error := startScheduler()
 	if error != nil {

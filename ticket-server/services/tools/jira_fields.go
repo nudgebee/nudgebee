@@ -10,9 +10,9 @@ import (
 //
 //  1. normalizeJiraFieldType maps Jira's open-ended create-meta schemas onto
 //     the closed vocabulary the UIs render: string, text, number, select,
-//     multiselect, array (free strings), datetime, datepicker (multicheckboxes
-//     is a legacy alias of multiselect). Unrenderable types are omitted rather
-//     than emitted under a name no renderer understands.
+//     multiselect, array (free strings), datetime, datepicker. Unrenderable
+//     types are omitted rather than emitted under a name no renderer
+//     understands.
 //
 //  2. EncodeJiraAdditionalFields converts collected values into Jira wire
 //     shapes at create time using the same meta that drove rendering. Rules
@@ -90,10 +90,8 @@ func normalizeJiraCustomType(custom string) (string, bool) {
 		return "text", true
 	case "select", "radiobuttons":
 		return "select", true
-	case "multiselect":
+	case "multiselect", "multicheckboxes":
 		return "multiselect", true
-	case "multicheckboxes":
-		return "multicheckboxes", true
 	case "labels":
 		return "array", true
 	case "float":
@@ -163,6 +161,8 @@ func EncodeJiraAdditionalFields(fields map[string]FieldInfo, additionalFields ma
 		switch fieldInfo.Type {
 		case "select":
 			out[key] = jiraOptionRef(value)
+		// multicheckboxes is no longer emitted, but create-meta cached before the
+		// rename still carries it until the entry expires.
 		case "multiselect", "multicheckboxes":
 			out[key] = jiraOptionRefs(value)
 		case "array":

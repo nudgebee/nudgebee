@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -42,12 +41,6 @@ func newKubectlTestEnv(t *testing.T) func(conversationId, command string) (toolc
 	if tenant == "" || account == "" || user == "" {
 		t.Skip("TEST_TENANT / TEST_ACCOUNT / TEST_USER not set; kubectl workspace e2e tests skipped")
 	}
-
-	originalWorkspaceEnabled := config.Config.LlmServerWorkspaceEnabled
-	config.Config.LlmServerWorkspaceEnabled = true
-	t.Cleanup(func() {
-		config.Config.LlmServerWorkspaceEnabled = originalWorkspaceEnabled
-	})
 
 	tool := KubectlExecuteTool{}
 	return func(conversationId, command string) (toolcore.NBToolResponse, error) {

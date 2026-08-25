@@ -40,6 +40,8 @@ const CustomTablePagination = ({ page = 1, totalPages = 1, totalRows = 1, rowsPe
     <Box
       sx={{
         display: 'flex',
+        flexWrap: 'wrap',
+        rowGap: 'var(--ds-space-2)',
         justifyContent: 'space-between',
         alignItems: 'center',
         gap: 'var(--ds-space-4)',
@@ -148,7 +150,7 @@ const CustomTablePagination = ({ page = 1, totalPages = 1, totalRows = 1, rowsPe
             >
               Rows
             </Typography>
-            <Box sx={{ width: ds.space.mul(0, 36), paddingRight: ds.space[4], flexShrink: 0 }}>
+            <Box sx={{ width: ds.space.mul(0, 36), flexShrink: 0 }}>
               <Select
                 required
                 value={String(rowsPerPageState)}

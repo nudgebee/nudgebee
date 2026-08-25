@@ -4,8 +4,10 @@ import ErrorBoundary from '@shared/ErrorBoundary';
 import KubernetesEventsTable, { TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY } from '@components/events/KubernetesEvents';
 import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
 import TroubleshootSummary from '@components/troubleshoot/TroubleshootSummary';
+import NubiBriefing from '@components/troubleshoot/briefing/NubiBriefing';
+import BriefingFilters from '@components/troubleshoot/briefing/BriefingFilters';
 import { Box, CircularProgress } from '@mui/material';
-import { useState, useEffect } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import AutoInvestigated from '@components/troubleshoot/AutoInvestigated';
 import ManualInvestigated from '@components/troubleshoot/ManualInvestigated';
 import EventResolutions from '@components/troubleshoot/EventResolutions';
@@ -26,6 +28,7 @@ import ThresholdSuggestionsManager from '@components/triage/ThresholdSuggestions
 import { useRouter } from 'next/router';
 import { clearPersistedFilters } from '@hooks/usePersistedFilters';
 import { getLast24Hrs } from '@lib/datetime';
+import { isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
 
 // Knowledge Graph pulls in reactflow and only renders under the third tab, so a
 // static import shipped the graph bundle in this page's chunk for every visitor
@@ -90,8 +93,8 @@ const filterOptions = [
 // sub-tab row instead — with the summary widget cards sandwiched in between —
 // so strip `tabOptions` before handing the list to AnchorComponent to avoid a
 // duplicate second tab row. It only needs the plain fragment/value pairs to
-// highlight the correct top-level pill.
-const anchorFilterOptions = filterOptions.map(({ tabOptions: _tabOptions, ...rest }) => rest);
+// highlight the correct top-level pill. The per-user disabled flags for the
+// Investigations / Knowledge Graph tabs are stamped inside the component below.
 
 const TroubleshootPage = () => {
   // selectedTab is the parent-tab selection (0 = All Events, 1 = Investigations,
@@ -118,6 +121,30 @@ const TroubleshootPage = () => {
   });
   const router = useRouter();
 
+  // The page-level scope, as a string, so it can drive the sub-tab remount key.
+  const scopeKey = `${router.query.accountIds ?? ''}|${router.query.start_time ?? ''}|${router.query.end_time ?? ''}`;
+
+  // Gate the Investigations and Knowledge Graph tabs on the permission backing
+  // each tab's primary API: Investigations reads ai_list_conversations
+  // (→ ai_conversations:Read); Knowledge Graph reads kg_get_complete_graph
+  // (→ kg:Read). Only grants-only custom-role users are gated — tenant-wide
+  // admins and any account user keep access (their role authorizes the API); a
+  // grants-only user lacking the grant sees the tab disabled (not hidden) with a
+  // request-access tooltip. All Events (value 0) is never gated.
+  const grantsOnlyUser = isGrantsOnlyUser();
+  const canAccessInvestigations = !grantsOnlyUser || hasPermission('ai_conversations', 'Read');
+  const canAccessKg = !grantsOnlyUser || hasPermission('kg', 'Read');
+
+  const anchorFilterOptions = useMemo(
+    () =>
+      filterOptions.map(({ tabOptions: _tabOptions, ...rest }) => {
+        const disabled = (rest.value === 1 && !canAccessInvestigations) || (rest.value === 2 && !canAccessKg);
+        const requiredPermission = rest.value === 1 ? 'ai_conversations:Read' : 'kg:Read';
+        return { ...rest, disabled, disabledTooltip: disabled ? missingPermissionMessage(requiredPermission) : undefined };
+      }),
+    [canAccessInvestigations, canAccessKg]
+  );
+
   // Drill-down from a summary widget: open the flat Events list filtered by the
   // widget's metric. The Events table (KubernetesEvents) reads eventPriority /
   // status / nbStatus / issueType from router.query on mount.
@@ -132,15 +159,17 @@ const TroubleshootPage = () => {
     // (only the widget's own filter), the list then matches the card exactly.
     clearPersistedFilters(TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY);
 
-    // Pin the cards' frozen 24h window onto the drill-down. The troubleshoot
-    // Events list otherwise defaults to the current week (KubernetesEvents
-    // getInitialTime), so a click would count 7 days against the card's 24h.
-    // start_time/end_time take precedence over that default and over persisted
-    // ranges (which we just cleared), so the list window matches the card.
+    // Pin the clicked widget's own window onto the drill-down. The briefing
+    // sends the window it counted over (it has a range picker of its own, so a
+    // frozen 24h would land the list on a different population than the number
+    // that was clicked); anything without one falls back to the frozen summary
+    // window. Either way start_time/end_time take precedence over
+    // KubernetesEvents' own default and over persisted ranges (just cleared),
+    // so the list window matches the widget.
     const rangedQuery = {
       ...query,
-      start_time: String(summaryRange.startDate.getTime()),
-      end_time: String(summaryRange.endDate.getTime()),
+      start_time: query.start_time ?? String(summaryRange.startDate.getTime()),
+      end_time: query.end_time ?? String(summaryRange.endDate.getTime()),
     };
 
     // Write the filter into the URL BEFORE switching to the Events tab and
@@ -185,10 +214,13 @@ const TroubleshootPage = () => {
     const decoded = decodeURIComponent(hash);
     const [fragment, subFragment] = decoded.split('/');
 
-    // Unknown top-level fragment (stale/typo'd link) — fall back to All Events
-    // and canonicalize the URL to match.
+    // Unknown top-level fragment (stale/typo'd link) — or a permission-gated tab
+    // the user can't access (a bookmarked/deep-linked #investigations or #kg) —
+    // fall back to All Events and canonicalize the URL, so a disabled tab can't
+    // be reached by URL and 403 on its API.
     const parent = filterOptions.find((option) => option.fragment === fragment);
-    if (!parent) {
+    const gated = parent && ((parent.value === 1 && !canAccessInvestigations) || (parent.value === 2 && !canAccessKg));
+    if (!parent || gated) {
       setSelectedTab(0);
       setSelectedSubTab(0);
       replaceHash(`${filterOptions[0].fragment}/${filterOptions[0].tabOptions[0].fragment}`);
@@ -211,7 +243,7 @@ const TroubleshootPage = () => {
         replaceHash(`${parent.fragment}/${parent.tabOptions[0].fragment}`);
       }
     }
-  }, [router.asPath]);
+  }, [router.asPath, canAccessInvestigations, canAccessKg]);
 
   return (
     <>
@@ -223,9 +255,12 @@ const TroubleshootPage = () => {
 
       {selectedTab === 0 && (
         <div style={{ margin: '0px var(--ds-space-6)' }}>
-          <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center', marginTop: 'var(--ds-space-4)' }}>
-            <TroubleshootSummary range={summaryRange} onWidgetFilter={applyWidgetFilter} />
-          </Box>
+          {selectedSubTab <= 3 && (
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'var(--ds-space-4)' }}>
+              <BriefingFilters />
+            </Box>
+          )}
+          <NubiBriefing onDrillDown={applyWidgetFilter} />
           <Box id='troubleshoot-event-tabs' sx={{ marginBottom: 'var(--ds-space-2)' }}>
             <Tabs
               value={selectedSubTab}
@@ -236,11 +271,11 @@ const TroubleshootPage = () => {
               ariaLabel='Event grouping options'
             />
           </Box>
-          <ErrorBoundary key={`${selectedSubTab}-${widgetNonce}`}>
-            {selectedSubTab === 0 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='fingerprint' />}
-            {selectedSubTab === 1 && <KubernetesEventsTable isTroubleshootPage={true} />}
-            {selectedSubTab === 2 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='event_type' />}
-            {selectedSubTab === 3 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='app' />}
+          <ErrorBoundary key={`${selectedSubTab}-${widgetNonce}-${scopeKey}`}>
+            {selectedSubTab === 0 && <KubernetesGroupedEventsTable isTroubleshootPage={true} hideScopeFilters groupEventType='fingerprint' />}
+            {selectedSubTab === 1 && <KubernetesEventsTable isTroubleshootPage={true} hideScopeFilters />}
+            {selectedSubTab === 2 && <KubernetesGroupedEventsTable isTroubleshootPage={true} hideScopeFilters groupEventType='event_type' />}
+            {selectedSubTab === 3 && <KubernetesGroupedEventsTable isTroubleshootPage={true} hideScopeFilters groupEventType='app' />}
             {selectedSubTab === 4 && <TriageRulesManager />}
             {selectedSubTab === 5 && <ThresholdSuggestionsManager />}
             {selectedSubTab === 6 && <EventResolutions />}
@@ -251,7 +286,7 @@ const TroubleshootPage = () => {
       {selectedTab === 1 && (
         <div style={{ margin: '0px var(--ds-space-6)' }}>
           <Box sx={{ marginTop: 'var(--ds-space-4)' }}>
-            <TroubleshootSummary type='investigations' tab={selectedSubTab === 1 ? 'manual' : 'auto'} range={summaryRange} />
+            <TroubleshootSummary tab={selectedSubTab === 1 ? 'manual' : 'auto'} range={summaryRange} />
           </Box>
           <Box sx={{ marginBottom: 'var(--ds-space-2)' }}>
             <Tabs value={selectedSubTab} smallSize={true} onChange={setSelectedSubTab} options={filterOptions[1]} />

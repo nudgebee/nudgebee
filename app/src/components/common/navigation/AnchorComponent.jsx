@@ -8,11 +8,14 @@ import PropTypes from 'prop-types';
 import { Chip } from '@ui/Chip';
 import { ds } from '@utils/colors';
 import Tabs from './Tabs';
+import Tooltip from '@ui/Tooltip';
 import Link from 'next/link';
 
 const AnchorComponent = ({
   p = `${ds.space.mul(0, 3)} ${ds.space[6]} 0 ${ds.space[6]}`,
-  filterOptions = [],
+  // Cast so TypeScript callers aren't inferred against the empty default's
+  // `never[]` — the shape is documented by propTypes below, not by this default.
+  filterOptions = /** @type {any[]} */ ([]),
   marginTop = 0,
   onChangeFilter,
   boxShadow = `0px ${ds.space[0]} ${ds.space[5]} ${ds.space[0]} ${ds.gray.alpha[200]}`,
@@ -151,6 +154,9 @@ const AnchorComponent = ({
     // `integration` is sub-navigation state scoped to the Integrations tab; drop it
     // when building other top-level tab URLs so it doesn't leak across tabs.
     searchParams.delete('integration');
+    // Same for `dashboard` — it names the open custom dashboard on the K8s
+    // Dashboards tab, and leaving it set would reopen that one on return.
+    searchParams.delete('dashboard');
 
     return { path, searchParams };
   };
@@ -243,26 +249,25 @@ const AnchorComponent = ({
       const options = filterOptions[activeDropdownTab]?.tabOptions || [];
       const totalLength = options.length;
 
-      if (activeDropdownTab === 5) {
-        if (activeDropdownSubtab >= 0 && activeDropdownSubtab <= 2) {
-          setRange([0, 3]);
-        } else if (activeDropdownSubtab >= 3 && activeDropdownSubtab <= 6) {
-          setRange([3, 7]);
-        } else {
-          setRange([0, totalLength]);
+      // In grouped mode the row is sliced down to the group the active sub-tab
+      // belongs to, and Tabs.jsx labels that row from tabOptions[0].tabName.
+      // Derive the slice from the active option's own tabName (groups are stored
+      // contiguously) instead of hardcoded index windows — those silently fell
+      // through to "show every sub-tab under the first group's label" whenever a
+      // sub-tab was added past the last window.
+      const activeIndex = options.findIndex((option) => option.value === activeDropdownSubtab);
+      const activeTabName = activeIndex >= 0 ? options[activeIndex].tabName : undefined;
+
+      if (activeTabName) {
+        let start = activeIndex;
+        while (start > 0 && options[start - 1].tabName === activeTabName) {
+          start -= 1;
         }
-      } else if (activeDropdownTab === 4) {
-        if (activeDropdownSubtab >= 0 && activeDropdownSubtab <= 1) {
-          setRange([0, 2]);
-        } else if (activeDropdownSubtab >= 2 && activeDropdownSubtab <= 3) {
-          setRange([2, 4]);
-        } else if (activeDropdownSubtab >= 4 && activeDropdownSubtab <= 7) {
-          setRange([4, 8]);
-        } else if (activeDropdownSubtab >= 8 && activeDropdownSubtab <= 9) {
-          setRange([8, 10]);
-        } else {
-          setRange([0, totalLength]);
+        let end = activeIndex + 1;
+        while (end < options.length && options[end].tabName === activeTabName) {
+          end += 1;
         }
+        setRange([start, end]);
       } else {
         setRange([0, totalLength]);
       }
@@ -474,110 +479,121 @@ const AnchorComponent = ({
                 {filterOptions.map((opt, _idx) => {
                   if (opt.hidden) return null;
                   const selected = activeDropdownTab === opt.value;
-                  return (
-                    <Box key={opt?.name} display='flex' flexDirection='column' zIndex={1} position='relative'>
-                      <Button
-                        component={Link}
-                        href={getTabUrl(opt)}
-                        disableRipple
-                        disableFocusRipple
-                        data-tab-selected={selected ? 'true' : 'false'}
-                        data-popover-open={currentOpt?.value === opt.value && Boolean(anchorEl) ? 'true' : 'false'}
-                        onClick={() => {
-                          setActiveDropdownTab(currentOpt.value);
-                          setActiveDropdownSubtab(0);
-                        }}
-                        id={`anchor-tab-${opt?.id || opt?.name}`}
-                        sx={{
-                          position: 'relative',
-                          width: 'max-content',
-                          textTransform: 'none',
-                          cursor: 'pointer',
-                          fontFamily: 'var(--ds-font-display)',
-                          fontSize: 'var(--ds-text-small)',
-                          lineHeight: 1,
-                          fontWeight: selected ? 'var(--ds-font-weight-semibold)' : 'var(--ds-font-weight-regular)',
-                          height: ds.space.mul(0, 17),
-                          padding: `0 ${ds.space[2]}`,
-                          borderRadius: 'var(--ds-radius-md)',
-                          backgroundColor: 'transparent',
-                          color: selected ? 'var(--ds-tab-active, var(--ds-brand-700))' : 'var(--ds-gray-700)',
-                          transition: 'color 200ms ease, background-color 200ms ease',
+                  const tabButton = (
+                    <Button
+                      component={Link}
+                      href={getTabUrl(opt)}
+                      disableRipple
+                      disableFocusRipple
+                      data-tab-selected={selected ? 'true' : 'false'}
+                      data-popover-open={currentOpt?.value === opt.value && Boolean(anchorEl) ? 'true' : 'false'}
+                      onClick={() => {
+                        setActiveDropdownTab(currentOpt.value);
+                        setActiveDropdownSubtab(0);
+                      }}
+                      id={`anchor-tab-${opt?.id || opt?.name}`}
+                      sx={{
+                        position: 'relative',
+                        width: 'max-content',
+                        textTransform: 'none',
+                        cursor: 'pointer',
+                        fontFamily: 'var(--ds-font-display)',
+                        fontSize: 'var(--ds-text-small)',
+                        lineHeight: 1,
+                        fontWeight: selected ? 'var(--ds-font-weight-semibold)' : 'var(--ds-font-weight-regular)',
+                        height: ds.space.mul(0, 17),
+                        padding: `0 ${ds.space[2]}`,
+                        borderRadius: 'var(--ds-radius-md)',
+                        backgroundColor: 'transparent',
+                        color: selected ? 'var(--ds-tab-active, var(--ds-brand-700))' : 'var(--ds-gray-700)',
+                        transition: 'color 200ms ease, background-color 200ms ease',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 'var(--ds-space-1)',
+                        '& .tab-icon': {
+                          width: ds.space.mul(0, 11),
+                          height: ds.space.mul(0, 11),
                           display: 'inline-flex',
                           alignItems: 'center',
-                          gap: 'var(--ds-space-1)',
-                          '& .tab-icon': {
-                            width: ds.space.mul(0, 11),
-                            height: ds.space.mul(0, 11),
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: selected ? 'var(--ds-gray-700)' : 'var(--ds-gray-600)',
-                            filter: selected ? 'grayscale(1) brightness(0.45)' : 'grayscale(1) brightness(0.85)',
-                            transition: 'filter 200ms ease, color 200ms ease',
-                            '& img': { objectFit: 'contain' },
-                            '& svg': { maxWidth: '100%', maxHeight: '100%' },
-                            '& svg path, & svg circle, & svg rect, & svg polygon, & svg line': {
-                              stroke: selected ? 'var(--ds-gray-700)' : 'var(--ds-gray-600)',
-                            },
+                          justifyContent: 'center',
+                          color: selected ? 'var(--ds-gray-700)' : 'var(--ds-gray-600)',
+                          filter: selected ? 'grayscale(1) brightness(0.45)' : 'grayscale(1) brightness(0.85)',
+                          transition: 'filter 200ms ease, color 200ms ease',
+                          '& img': { objectFit: 'contain' },
+                          '& svg': { maxWidth: '100%', maxHeight: '100%' },
+                          '& svg path, & svg circle, & svg rect, & svg polygon, & svg line': {
+                            stroke: selected ? 'var(--ds-gray-700)' : 'var(--ds-gray-600)',
                           },
-                          '&:hover .arrow-icon, &[data-popover-open="true"] .arrow-icon': { transform: 'rotate(180deg)' },
-                          '& .arrow-icon': {
-                            transition: 'transform 0.3s ease',
-                            color: selected ? 'var(--ds-tab-active, var(--ds-brand-700))' : 'var(--ds-gray-500)',
-                          },
-                          '&:hover:not([data-tab-selected="true"]), &[data-popover-open="true"]:not([data-tab-selected="true"])': {
-                            backgroundColor: 'var(--ds-gray-100)',
-                            color: 'var(--ds-tab-active, var(--ds-brand-700))',
-                          },
-                          '&:hover': {
-                            // selected tab keeps the sliding pill as its visual; no hover bg
-                            backgroundColor: 'transparent',
-                          },
-                          '&:focus-visible': {
-                            outline: 'none',
-                            boxShadow: '0 0 0 3px var(--ds-blue-100)',
-                          },
-                          '&.Mui-disabled': { opacity: 0.5, pointerEvents: 'none' },
-                        }}
-                        disabled={opt.disabled || false}
-                        aria-owns={anchorEl ? 'mouse-over-popover' : undefined}
-                        aria-haspopup='true'
-                        aria-current={selected ? 'page' : undefined}
-                        onMouseOver={(e) => {
-                          handlePopoverOpen(e, opt);
-                        }}
-                      >
+                        },
+                        '&:hover .arrow-icon, &[data-popover-open="true"] .arrow-icon': { transform: 'rotate(180deg)' },
+                        '& .arrow-icon': {
+                          transition: 'transform 0.3s ease',
+                          color: selected ? 'var(--ds-tab-active, var(--ds-brand-700))' : 'var(--ds-gray-500)',
+                        },
+                        '&:hover:not([data-tab-selected="true"]), &[data-popover-open="true"]:not([data-tab-selected="true"])': {
+                          backgroundColor: 'var(--ds-gray-100)',
+                          color: 'var(--ds-tab-active, var(--ds-brand-700))',
+                        },
+                        '&:hover': {
+                          // selected tab keeps the sliding pill as its visual; no hover bg
+                          backgroundColor: 'transparent',
+                        },
+                        '&:focus-visible': {
+                          outline: 'none',
+                          boxShadow: '0 0 0 3px var(--ds-blue-100)',
+                        },
+                        '&.Mui-disabled': { opacity: 0.5, pointerEvents: 'none' },
+                      }}
+                      disabled={opt.disabled || false}
+                      aria-owns={anchorEl ? 'mouse-over-popover' : undefined}
+                      aria-haspopup='true'
+                      aria-current={selected ? 'page' : undefined}
+                      onMouseOver={(e) => {
+                        handlePopoverOpen(e, opt);
+                      }}
+                    >
+                      <SafeIcon
+                        src={opt.icon}
+                        alt={opt.name}
+                        className='tab-icon'
+                        {...(opt.iconSize && { width: opt.iconSize, height: opt.iconSize, style: { width: opt.iconSize, height: opt.iconSize } })}
+                      />
+                      <Box display={'inline-flex'} alignItems={'center'} gap={'var(--ds-space-2)'}>
+                        <span>{opt.name}</span>
+                        {opt.count && (
+                          <Chip variant='count' size='xs' tone={selected ? 'info' : 'neutral'}>
+                            {opt.count > 99 ? '99+' : opt.count}
+                          </Chip>
+                        )}
+                      </Box>
+                      {opt.betaIcon && (
                         <SafeIcon
-                          src={opt.icon}
-                          alt={opt.name}
-                          className='tab-icon'
-                          {...(opt.iconSize && { width: opt.iconSize, height: opt.iconSize, style: { width: opt.iconSize, height: opt.iconSize } })}
+                          src={BetaIcon}
+                          alt='Beta icon'
+                          style={{ height: ds.space.mul(0, 10), width: ds.space.mul(0, 10), marginTop: ds.space.mul(0, -5) }}
                         />
-                        <Box display={'inline-flex'} alignItems={'center'} gap={'var(--ds-space-2)'}>
-                          <span>{opt.name}</span>
-                          {opt.count && (
-                            <Chip variant='count' size='xs' tone={selected ? 'info' : 'neutral'}>
-                              {opt.count > 99 ? '99+' : opt.count}
-                            </Chip>
-                          )}
-                        </Box>
-                        {opt.betaIcon && (
-                          <SafeIcon
-                            src={BetaIcon}
-                            alt='Beta icon'
-                            style={{ height: ds.space.mul(0, 10), width: ds.space.mul(0, 10), marginTop: ds.space.mul(0, -5) }}
-                          />
-                        )}
-                        {opt.tabOptions && (
-                          <SafeIcon
-                            src={MenuArrowDownIcon}
-                            alt='down arrow'
-                            className='arrow-icon'
-                            style={{ height: ds.space[4], width: ds.space[4] }}
-                          />
-                        )}
-                      </Button>
+                      )}
+                      {opt.tabOptions && (
+                        <SafeIcon
+                          src={MenuArrowDownIcon}
+                          alt='down arrow'
+                          className='arrow-icon'
+                          style={{ height: ds.space[4], width: ds.space[4] }}
+                        />
+                      )}
+                    </Button>
+                  );
+                  return (
+                    <Box key={opt?.name} display='flex' flexDirection='column' zIndex={1} position='relative'>
+                      {/* A disabled tab needs a <span> wrapper so the Tooltip still
+                          gets hover events (the disabled Button has pointer-events:none). */}
+                      {opt.disabled && opt.disabledTooltip ? (
+                        <Tooltip title={opt.disabledTooltip}>
+                          <span style={{ display: 'inline-flex' }}>{tabButton}</span>
+                        </Tooltip>
+                      ) : (
+                        tabButton
+                      )}
                     </Box>
                   );
                 })}

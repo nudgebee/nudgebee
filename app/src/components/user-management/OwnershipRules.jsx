@@ -9,7 +9,7 @@ import { Modal } from '@ui/Modal';
 import Tooltip from '@ui/Tooltip';
 import Text from '@shared/format/Text';
 import { toast as snackbar } from '@ui/Toast';
-import { isTenantAdmin } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import apiOwnership from '@api1/ownership';
 import apiUserManagement from '@api1/user';
@@ -24,11 +24,12 @@ const RULE_MENU_ITEMS = [
 // Ownership rules management — a tab on /user-management. Lists ownership_rules,
 // each mapping a workload label/namespace to a user/group owner. Rules are
 // evaluated lazily server-side, so a change here reflects on the workloads Owner
-// column on the next resolve (no sync). Tenant-admin only for writes.
+// column on the next resolve (no sync). Writes require tenant-admin or a custom
+// ownership:Write grant (mirrors the backend CanManage gate).
 const HEADERS = [{ name: 'Name' }, { name: 'Match' }, { name: 'Account scope' }, { name: 'Owner' }, { name: 'Enabled' }, ''];
 
 export default function OwnershipRules() {
-  const canWrite = isTenantAdmin();
+  const canWrite = canManage('ownership', 'Write');
   const { ownerLabel } = useOwnerDirectory();
   const [rules, setRules] = useState([]);
   const [accounts, setAccounts] = useState({});

@@ -96,7 +96,10 @@ func (p *ReActPlanner) reflect(ctx context.Context, goal *Goal, prior *Ledger, r
 
 	prompt := buildReflectionPrompt(goal, prior, recentSteps)
 
-	rctx, cancel := context.WithTimeout(ctx, reflectionTimeout)
+	// Label every call under this context as reflection so its spend is
+	// separable from the ReAct loop's — reflection fires every few steps with a
+	// fresh, uncacheable prompt and is a large share of a long run's overhead.
+	rctx, cancel := context.WithTimeout(llm.WithCallPhase(ctx, llm.CallPhaseReflection), reflectionTimeout)
 	defer cancel()
 
 	messages := []llms.MessageContent{

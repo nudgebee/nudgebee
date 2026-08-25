@@ -866,14 +866,20 @@ func ExecuteProxy(accountID string, action string, datasourceID string, params m
 		return nil, err
 	}
 
-	dataStr, ok := response["data"].(string)
-	if !ok {
-		return nil, errors.New("proxy response missing 'data' field")
-	}
-
 	var result map[string]any
-	if err := json.Unmarshal([]byte(dataStr), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse proxy response data: %w", err)
+	if dataStr, ok := response["data"].(string); ok {
+		if err := json.Unmarshal([]byte(dataStr), &result); err != nil {
+			return nil, fmt.Errorf("failed to parse proxy response data: %w", err)
+		}
+	} else if _, hasResult := response["result"]; hasResult {
+		// Some proxy actions (e.g. forager's discovery_sweep/discovery_inventory)
+		// return their {action, request_id, result, status_code} envelope
+		// directly at the top level rather than wrapping it in
+		// {"data": "<json-string>"} the way ssh_command/http_request/db_query
+		// proxies do — accept both shapes instead of erroring.
+		result = response
+	} else {
+		return nil, errors.New("proxy response missing 'data' field")
 	}
 
 	if errMsg, ok := result["error"].(string); ok && errMsg != "" {

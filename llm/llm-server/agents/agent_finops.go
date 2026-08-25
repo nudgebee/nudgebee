@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -9,9 +10,9 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -20,13 +21,26 @@ import (
 const FinOpsAgentName = "finops"
 
 // finOpsAccountContextCacheNS caches the rendered <account_context> block per
-// account. Spend and recommendation figures change on billing-ingest / scan
-// cycles (hours), so a 5-minute TTL keeps the prompt fresh without re-querying
-// on every conversation turn.
+// account.
 const finOpsAccountContextCacheNS = "llm_finops_account_ctx"
 
+const (
+	// Freshness decides when a rebuild is triggered; retention keeps the previous
+	// render servable while that rebuild runs. Retention has to outlive freshness
+	// by a lot — FinOps turns are sparse, so a short one would put the build back
+	// in front of a user on the first turn of every session.
+	finOpsContextFreshFor  = 30 * time.Minute
+	finOpsContextRetainFor = 24 * time.Hour
+
+	// Ceilings: how long a first build may block a turn, how long a background
+	// build may run, and how long its aggregates get.
+	finOpsContextFirstBuildBudget = 1500 * time.Millisecond
+	finOpsContextBuildTimeout     = 30 * time.Second
+	finOpsSpendQueryTimeout       = 10 * time.Second
+)
+
 func init() {
-	common.CacheCreateNamespace(finOpsAccountContextCacheNS, common.CacheNamespaceWithExpiration(5*time.Minute))
+	common.CacheCreateNamespace(finOpsAccountContextCacheNS, common.CacheNamespaceWithExpiration(finOpsContextRetainFor))
 
 	toolDescription := `Answers questions about cloud cost, spend, savings, budgets, optimization opportunities, ` +
 		`rightsizing financial impact, idle/unattached resources, cost anomalies, and commitment coverage. ` +
@@ -74,12 +88,18 @@ func (a *FinOpsAgent) GetCacheScope() core.CacheScope {
 }
 
 func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentFinops)
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptFinops, query.AccountId)
+	if promptErr != nil {
+		// An empty system prompt would silently degrade the agent, so surface the
+		// failure. MustResolveAll covers default/v1 at startup; this catches a
+		// malformed provider- or version-specific override added later.
+		ctx.GetLogger().Error("finops: system prompt failed to load", "error", promptErr)
+	}
 
 	tmplData := map[string]any{
-		"data_protection_rules": prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
-		"code_analysis_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
-		"time_handling_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
+		"data_protection_rules": prompts.GetPrompt(ctx.GetContext(), prompts.PromptDataProtectionRules, ""),
+		"code_analysis_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptCodeAnalysisRules, ""),
+		"time_handling_rules":   prompts.GetPrompt(ctx.GetContext(), prompts.PromptTimeHandlingRules, ""),
 		"account_context":       a.fetchFinOpsAccountContext(ctx),
 	}
 	if t, err := template.New("finops").Option("missingkey=zero").Parse(promptText); err == nil {
@@ -96,10 +116,10 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 	instructions := strings.Split(promptText, "\n")
 
 	constraints := []string{
-		"This agent is READ-ONLY. Never execute infrastructure changes or modify cloud resources. To help a user act on a recommendation, hand them off to the optimise UI with the propose_recommendation_apply tool.",
+		"You hold no credentials and change nothing except through the platform's typed write tools (recommendation_apply, recommendation_execute_cli, recommendation_record_ticket_resolution, ticket_master_v2), each of which pauses for the user's explicit per-action approval. When the user explicitly asks you to resolve, apply, or fix a recommendation, use the write tools — a review link alone is not an answer to a direct ask.",
 		"Every cost answer MUST include a dollar figure. If data is unavailable, state that explicitly.",
 		"Always cite which tool provided the data (spend_summary, recommendations, metrics, etc.).",
-		"The metrics, kubectl, and resource_search tools are full investigators, not raw query executors: give each a specific, self-contained question (e.g. \"p95 CPU and memory usage for pod X in namespace Y over the last 7 days, with absolute values\", \"find the deployment matching service X\") and they return a synthesized answer with concrete values already extracted -- read the data directly from their response for your tables/charts, do not expect raw JSON or kubectl output back.",
+		"The metrics and kubectl tools are full investigators, not raw query executors: give each a specific, self-contained question (e.g. \"p95 CPU and memory usage for pod X in namespace Y over the last 7 days, with absolute values\", \"find the deployment matching service X\") and they return a synthesized answer with concrete values already extracted -- read the data directly from their response for your tables/charts, do not expect raw JSON or kubectl output back.",
 		"Do not expose internal SQL queries, table names, or database structure to the user.",
 		"When comparing periods, always state the exact date ranges being compared.",
 		"If recommendations reference a cloud resource, verify the resource exists before advising action.",
@@ -109,8 +129,11 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"Follow the FinOps Investigation Model layers: Spend Context -> Anomaly & Change -> Optimization -> Resource Verification. Do not skip layers.",
 		"For spike/increase questions, NEVER guess the cause. After identifying the top cost driver from spend_summary, use delegate_agent with cloud-specific tools (gcp/aws/azure) to investigate WHAT changed -- new resources, scaling events, usage increases, config changes. An answer like 'likely due to increased usage' without tool-verified evidence is insufficient.",
 		"Only count recommendations with status='Open' as actionable savings. Archive/Closed recommendations were already handled. If total savings exceeds current spend, flag this and verify the numbers.",
-		"To help a user act on a recommendation, ALWAYS first present its safety band (safe/review/risky/unknown), its blast radius (dependent services / production dependents), and the estimated monthly savings, read from the recommendation data; then use propose_recommendation_apply to give the user a review-and-apply link. You do not apply changes yourself -- the user applies in the UI.",
-		"For a recommendation whose safety band is 'risky' or 'unknown', call out the impact explicitly before handing off. Never imply a recommendation has been applied; you only propose and link.",
+		"To help a user act on a recommendation, ALWAYS first present its safety band (safe/review/risky/unknown), its blast radius (dependent services / production dependents), and the estimated monthly savings, read from the recommendation data. Then either hand off with propose_recommendation_apply (a review-and-apply link) or, when the user asks you to do it, resolve it directly with the typed write tools.",
+		"Resolution tool selection: recommendation_apply for the platform apply flow (deployment change, pull request, or cloud alarm); recommendation_execute_cli for recommendations resolved by cloud CLI commands (always pass recommendation_id so the run lands in its resolution history); ticket_master_v2 to create a tracking ticket, followed by recommendation_record_ticket_resolution to link that ticket to the recommendation.",
+		"Before recommendation_apply: fetch that recommendation's concrete values first (its `recommendation` details) — the backend applies EXACTLY the `data` payload, with no fallback to the recommendation's own values, so for rightsizing `data` (per-container current → proposed) is required and an empty payload changes nothing. Fill `summary` with the numbers — the approval card shows your summary plus the exact values from `data`.",
+		"Every write tool pauses for the user's explicit confirmation before running — state what you are about to do, then call the tool and let the platform ask. Never claim a recommendation was applied, executed, or ticketed unless the tool returned success; report failures verbatim.",
+		"For a recommendation whose safety band is 'risky' or 'unknown', call out the impact explicitly and prefer the propose_recommendation_apply hand-off; use the direct write tools only when the user insists after seeing the risk.",
 	}
 
 	schema := []string{
@@ -127,7 +150,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 2. **Every row is actionable.** Each row ends in a risk label (Low/Medium/High + reason), a concrete next step (verb + object, e.g. "Resize to 40Gi"), or a status signal (NEW/GONE/STABLE/ANOMALY).
 3. **Column shapes by answer type (adapt as needed):**
    - Spend breakdown: Resource/Service | Current ($) | Previous ($) | Change (%) | Signal | Savings Available ($)
-   - Optimization/rightsizing: Resource | Namespace | Provisioned (current) | Used (p95) | Utilization % | Recommended Target | Est. Saving ($/mo) | Risk | Action
+   - Optimization/rightsizing: Resource | Namespace (K8s rows) or Service (cloud rows, short name: AmazonRDS -> RDS) | Provisioned (current) | Used (p95) | Utilization % | Recommended Target | Est. Saving ($/mo) | Risk | Action — never show a Namespace column for cloud resources; they have none
    - Spike/anomaly: Service | Spike Amount ($) | % Change | Start Date | Root-Cause Signal | Recommended Action
    - Forecast: Metric | Value | vs Last Month | Signal
    - Resource drill-down: Attribute | Current | Recommended | Reason
@@ -135,7 +158,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 5. **One short paragraph after the table** — headline finding + top 1-2 next steps. No bullet lists restating rows.
 6. **Surface data quality.** Null or clearly-wrong values render as "—"/"⚠" with a footnote; never present corrupt data as fact, never silently drop it.
 7. **Cite inline.** Append the source tool in the cell or header: [spend_summary], [recommendations], [anomaly_execute], [metrics], [kubectl].
-8. **Make rows clickable.** For optimization/rightsizing/recommendation tables, the Action cell is a Markdown link [<label>](<url>): <label> is a DYNAMIC, intent-aware next step for that row (e.g. "Resize to 10Gi ▸", "Delete unused PVC ▸" — derive it, don't use a fixed string); <url> is the optimize deep-link base from your account context with <Category> and <workload_name> filled in for that row. <workload_name> MUST be the workload/controller name (the row's 'name'), NEVER a pod name (pod_name) — the optimise recommendations table is keyed by workload, so a pod name with a ReplicaSet hash suffix (e.g. 'web-7d9f8b6c5-abcde') matches zero recommendations. If a row is a pod, use its owning workload's name. One click takes the user into the optimise workflow filtered to that resource. Omit the link for purely informational rows.
+8. **Make rows clickable.** For optimization/rightsizing/recommendation tables, the Action cell is a Markdown link [<label>](<url>): <label> is a DYNAMIC, intent-aware next step for that row (e.g. "Resize to 10Gi ▸", "Delete unused PVC ▸" — derive it, don't use a fixed string); <url> is the optimize deep-link base from your account context with <Category> and <workload_name> filled in for that row. <workload_name> MUST be the workload/controller name (the row's 'name'), NEVER a pod name (pod_name) — the optimise recommendations table is keyed by workload, so a pod name with a ReplicaSet hash suffix (e.g. 'web-7d9f8b6c5-abcde') matches zero recommendations. If a row is a pod, use its owning workload's name. One click takes the user into the optimise workflow filtered to that resource. Omit the link for purely informational rows. A summary-level link for a whole table follows the same substitution rule: set <Category> to the rows' category when every row shares one (drop the category parameter only for genuinely mixed results) and drop the search parameter rather than leaving it empty. NEVER emit a link with an unreplaced placeholder or an empty parameter value like 'category=&search=' — the page must open filtered to what your table shows.
 9. **Chart when it helps.** When a visual makes the finding land faster, embed ONE ` + "```nb-chart" + ` fenced JSON block right after the table, choosing type and data DYNAMICALLY: bar (compare a measure across resources, e.g. provisioned vs used), doughnut/pie (share of a total, e.g. spend by service), line/area (trend over time). Spec: {"type":"bar","title":"...","labels":[...],"series":[{"key":"Provisioned","data":[...]},{"key":"Used","data":[...]}],"format":"gi|usd|percent|number"} — doughnut/pie use "values":[...] instead of series. Keep it ≤12 labels / ≤4 series and reuse the table's own numbers (never raw time-series). Skip the chart for single-row, clarification, or pure-text answers.
 
 Mark rows (stable) for <5% change, NEW for absent-in-prior-period, GONE for terminated. Every cost answer includes a dollar figure (state explicitly if unavailable).`
@@ -166,21 +189,105 @@ type topServiceRow struct {
 	Amount      float64 `db:"amount"`
 }
 
-// fetchFinOpsAccountContext builds the live <account_context> block injected into
-// the system prompt. It gives the LLM the account's cloud footprint and spend
+// fetchFinOpsAccountContext returns the <account_context> block injected into the
+// system prompt. It gives the LLM the account's cloud footprint and spend
 // baseline up front so it can skip orientation tool calls and lead answers with
-// the right figures. The rendered block is cached per account (5-min TTL).
+// the right figures.
+//
+// Building it runs three metastore aggregates, and this is called while the
+// system prompt is assembled — on the user's critical path. So a build never
+// blocks a turn that has anything cached: a stale block is served immediately
+// and refreshed behind the turn, and only an account's first build is awaited.
 //
 // It degrades gracefully: the cloud-footprint section (from the already-cached
 // AccountConfigSummary) is always present, while the spend / recommendation
 // sections are omitted silently if their queries fail — a partial context is
 // more useful to the agent than none.
 func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) string {
-	cacheKey := "finops_ctx:" + a.accountId
+	cacheKey := finOpsContextKey(a.accountId)
+
 	if cached, found := common.CacheGet(finOpsAccountContextCacheNS, cacheKey); found {
+		if _, fresh := common.CacheGet(finOpsAccountContextCacheNS, finOpsContextFreshKey(a.accountId)); !fresh {
+			a.refreshAccountContext(ctx, nil)
+		}
 		return string(cached)
 	}
 
+	// Nothing cached yet. A first build already in flight (marker claimed, content
+	// not written) means waiting would land on the footprint-only block anyway.
+	if _, building := common.CacheGet(finOpsAccountContextCacheNS, finOpsContextFreshKey(a.accountId)); building {
+		return a.renderAccountContext(ctx, false)
+	}
+
+	// The build continues in the background whichever branch wins, so the next
+	// turn gets the full block regardless.
+	built := make(chan string, 1)
+	a.refreshAccountContext(ctx, built)
+	select {
+	case rendered := <-built:
+		return rendered
+	case <-ctx.GetContext().Done():
+		return a.renderAccountContext(ctx, false)
+	case <-time.After(finOpsContextFirstBuildBudget):
+		ctx.GetLogger().Info("finops: account context build exceeded its budget, using footprint-only context for this turn",
+			"account_id", a.accountId, "budget", finOpsContextFirstBuildBudget.String())
+		return a.renderAccountContext(ctx, false)
+	}
+}
+
+func finOpsContextKey(accountId string) string      { return "finops_ctx:" + accountId }
+func finOpsContextFreshKey(accountId string) string { return "finops_ctx_fresh:" + accountId }
+
+// releaseAccountContextMarker drops the freshness marker after a build that
+// cached nothing, so the next turn retries rather than honouring a guard for
+// work that never landed.
+func (a *FinOpsAgent) releaseAccountContextMarker(reason string) {
+	if err := common.CacheDelete(finOpsAccountContextCacheNS, finOpsContextFreshKey(a.accountId)); err != nil {
+		slog.Warn("finops: failed to clear account context marker", "error", err, "reason", reason, "account_id", a.accountId)
+	}
+}
+
+// refreshAccountContext rebuilds and caches the block on a goroutine detached
+// from the request, which returns long before it finishes. built, when non-nil,
+// receives the render — buffered, so a caller that stopped waiting can't block it.
+//
+// The freshness marker is claimed up front rather than on completion so it also
+// guards against concurrent turns each starting their own rebuild.
+func (a *FinOpsAgent) refreshAccountContext(ctx *security.RequestContext, built chan<- string) {
+	if err := common.CacheSet(finOpsAccountContextCacheNS, finOpsContextFreshKey(a.accountId), []byte("1"),
+		common.CacheSetWithExpiration(finOpsContextFreshFor)); err != nil {
+		slog.Warn("finops: failed to mark account context fresh", "error", err, "account_id", a.accountId)
+	}
+
+	// WithoutCancel keeps the request's values while dropping its cancellation.
+	goCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), finOpsContextBuildTimeout)
+	bgCtx := security.NewRequestContext(goCtx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+
+	go func() {
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("finops: panic while building account context", "panic", r, "account_id", a.accountId)
+				a.releaseAccountContextMarker("panic")
+			}
+		}()
+
+		rendered := a.renderAccountContext(bgCtx, true)
+		if err := common.CacheSet(finOpsAccountContextCacheNS, finOpsContextKey(a.accountId), []byte(rendered),
+			common.CacheSetWithExpiration(finOpsContextRetainFor)); err != nil {
+			slog.Warn("finops: failed to cache account context", "error", err, "account_id", a.accountId)
+			a.releaseAccountContextMarker("cache write failure")
+		}
+		if built != nil {
+			built <- rendered
+		}
+	}()
+}
+
+// renderAccountContext renders the block. withSpend gates the metastore
+// aggregates; the footprint-only form is cheap because AccountConfigSummary is
+// already cached, and is what a turn falls back to when a first build overruns.
+func (a *FinOpsAgent) renderAccountContext(ctx *security.RequestContext, withSpend bool) string {
 	var b strings.Builder
 	b.WriteString("<account_context>\n")
 
@@ -205,7 +312,9 @@ func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) st
 
 	// Spend baseline + recommendation summary — best-effort. Any failure leaves
 	// the cloud-footprint section intact and is logged, not surfaced.
-	a.appendSpendContext(&b)
+	if withSpend {
+		a.appendSpendContext(ctx, &b)
+	}
 
 	// Optimize-page deep-link base. Surfaced so the agent can render per-row
 	// "Action" links that jump the user straight to the optimise recommendations
@@ -217,21 +326,18 @@ func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) st
 	}
 	fmt.Fprintf(&b, "Optimize page deep-link base: %s/optimise?account=%s&category=<Category>&search=<workload_name>#recommendations\n", baseURL, a.accountId)
 	b.WriteString("For the deep-link 'search' param use the workload/controller name (the resource 'name'), NEVER pod_name — the optimise table is keyed by workload, so a pod name matches no recommendations.\n")
+	b.WriteString("Before emitting any deep-link, replace every placeholder with a real value or drop that query parameter entirely — never output '<Category>', '<workload_name>', or empty values like 'category=&search='.\n")
 
 	b.WriteString("As of: " + time.Now().UTC().Format("2006-01-02") + "\n")
 	b.WriteString("</account_context>")
 
-	rendered := b.String()
-	if err := common.CacheSet(finOpsAccountContextCacheNS, cacheKey, []byte(rendered), common.CacheSetWithExpiration(5*time.Minute)); err != nil {
-		slog.Warn("finops: failed to cache account context", "error", err, "account_id", a.accountId)
-	}
-	return rendered
+	return b.String()
 }
 
 // appendSpendContext writes the 30-day spend, top services, and open
 // recommendation lines. Each query is independent and best-effort: a failure
 // logs and skips only its own line.
-func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
+func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *strings.Builder) {
 	tenantId, err := security.GetTenantIdFromAccountId(a.accountId)
 	if err != nil || tenantId == "" {
 		slog.Warn("finops: cannot resolve tenant for account context", "error", err, "account_id", a.accountId)
@@ -243,15 +349,20 @@ func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
 		return
 	}
 
+	// Shared deadline: each aggregate is best-effort per line already, so a slow
+	// metastore drops what it cannot produce in time.
+	queryCtx, cancel := context.WithTimeout(ctx.GetContext(), finOpsSpendQueryTimeout)
+	defer cancel()
+
 	now := time.Now().UTC()
 	windowEnd := now.Truncate(24 * time.Hour)
 	windowStart := windowEnd.AddDate(0, 0, -30)
 
 	// 30-day spend.
 	var spend float64
-	if err := dbManager.Db.Get(&spend,
+	if err := dbManager.Db.GetContext(queryCtx, &spend,
 		`SELECT COALESCE(SUM(amount), 0) FROM spends
-		 WHERE tenant = $1 AND cloud_account = $2 AND date >= $3 AND date < $4`,
+		 WHERE tenant = $1 AND cloud_account = $2 AND date >= $3 AND date < $4 AND exclude_aggregate = false`,
 		tenantId, a.accountId, windowStart, windowEnd); err != nil {
 		slog.Warn("finops: 30-day spend query failed for account context", "error", err, "account_id", a.accountId)
 	} else {
@@ -260,12 +371,12 @@ func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
 
 	// Top 3 services by 30-day spend.
 	topServices := []topServiceRow{}
-	if err := dbManager.Db.Select(&topServices,
+	if err := dbManager.Db.SelectContext(queryCtx, &topServices,
 		`SELECT cr.service_name AS service_name, ROUND(SUM(s.amount)::numeric, 2)::float AS amount
 		 FROM spends s
 		 JOIN cloud_resourses cr ON cr.id = s.cloud_resource_id
 		 WHERE s.tenant = $1 AND s.cloud_account = $2 AND s.date >= $3 AND s.date < $4
-		   AND cr.service_name IS NOT NULL AND s.amount > 0
+		   AND s.exclude_aggregate = false AND cr.service_name IS NOT NULL AND s.amount > 0
 		 GROUP BY cr.service_name
 		 ORDER BY SUM(s.amount) DESC
 		 LIMIT 3`,
@@ -285,7 +396,7 @@ func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
 		Quantified   int     `db:"quantified"`
 		TotalSavings float64 `db:"total_savings"`
 	}
-	if err := dbManager.Db.Get(&rec,
+	if err := dbManager.Db.GetContext(queryCtx, &rec,
 		`SELECT COUNT(*) AS cnt,
 		        COUNT(*) FILTER (WHERE estimated_savings > 0) AS quantified,
 		        COALESCE(SUM(estimated_savings) FILTER (WHERE estimated_savings > 0), 0) AS total_savings
@@ -326,19 +437,38 @@ func (a *FinOpsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore
 		// wrapping agent carries guardrails (PromQL construction, kubectl safety
 		// rules, multi-platform resource fan-out) that live only in that agent's
 		// system prompt and are invisible to FinOps when calling the raw tool
-		// directly. See agent_metrics.go, agent_kubectl.go, agent_resource_search.go.
+		// directly. See agent_metrics.go, agent_kubectl.go.
 		// MetricsAgentName routes to the account's configured metrics provider
 		// (Prometheus/Datadog/Elasticsearch) instead of hardcoding Prometheus.
 		MetricsAgentName,
-		KubectlAgentName,
-		ResourceSearchAgentName,
+		// TODO(#32503 Phase 3): kubectl safety rules were previously in
+		// agent_kubectl.go's system prompt; migrate to KubectlExecuteTool.ToolPrompt().
+		tools.ToolExecuteKubectlCommand,
+		// Resource discovery via the direct DB tool (resource_search agent removed,
+		// #32503 Phase 2). cloud_resource_search_execute resolves across the unified
+		// cloud_resourses inventory (all providers) with cost-relevant fields
+		// (service/region/account); the multi-platform + relevance guardrails that
+		// used to live in the agent's prompt now live in the tool (#36078 relevance
+		// filter + unified-table query).
+		tools.ToolCloudResourceSearch,
 
 		// Existing direct tools (reused unchanged)
 		tools.ToolAnomalyExecuteSql,
 
 		// Hand-off tool (read-only): returns a deep link to the optimise UI's
-		// review-and-apply flow. The agent proposes; the user applies in the UI.
+		// review-and-apply flow for users who prefer applying there.
 		tools.ToolProposeRecommendationApply,
+
+		// Typed resolution write tools: each funnels through an api-server RPC
+		// under the requesting user's role (the agent holds no credentials),
+		// classifies as a write so the executor pauses for confirmation, and
+		// keys that confirmation per action (ToolConfirmationScope) so every
+		// distinct apply/execution/linkage is approved individually.
+		tools.ToolRecommendationApply,
+		tools.ToolRecommendationExecuteCli,
+		tools.ToolRecommendationRecordTicketResolution,
+		// Ticket creation itself: the existing config-aware ticket tool.
+		tools.TicketMasterToolNameV2,
 	}
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, a.accountId)

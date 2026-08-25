@@ -74,8 +74,8 @@ func (e *PodRightSizingExporter) ValidateFilters(filters ExportFilters) error {
 	if filters.AccountID == "" {
 		return fmt.Errorf("account_id is required")
 	}
-	if filters.Category != "RightSizing" {
-		return fmt.Errorf("category must be RightSizing for pod right sizing export")
+	if filters.Category != "RightSizing" && filters.Category != "Configuration" {
+		return fmt.Errorf("category must be RightSizing or Configuration for pod right sizing export")
 	}
 	if filters.RuleName != "pod_right_sizing" {
 		return fmt.Errorf("rule_name must be pod_right_sizing")

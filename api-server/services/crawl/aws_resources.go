@@ -292,6 +292,8 @@ func AWsResourceMeta(ctx *security.RequestContext) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = regionRows.Close() }()
+
 	regions := make([]string, 0)
 	for regionRows.Next() {
 		var region string

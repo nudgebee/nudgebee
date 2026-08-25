@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -59,6 +58,39 @@ func (m RabbitExecuteTool) Description() string {
 		* curl URLs must target the management API on $RABBITMQ_HOST:$RABBITMQ_PORT (do NOT hardcode a port).
 		* Use the output of this tool to inform your responses and suggestions to the user.
 		`
+}
+
+// ToolPrompt implements core.NBToolPromptProvider — carries the rabbitmq
+// how-to guidance that today lives in RabbitMQAgent.GetSystemPrompt(). The tool
+// exposes TWO invocation shapes (rabbitmqadmin CLI + rabbitmq-api HTTP shim);
+// both are covered here so a delegate naming this tool directly (post-3c) knows
+// which to reach for and how to compose the corresponding jq filters.
+func (m RabbitExecuteTool) ToolPrompt() []string {
+	return []string{
+		// Overall shape and constraints
+		"**Two invocation shapes through this tool:** Use `rabbitmqadmin` for list/declare/delete and column-selectable queries. Use `rabbitmq-api METHOD /path [extra curl args]` for the RabbitMQ HTTP Management API (message rates, cluster overview, per-queue consumer detail, health/aliveness, and any mutation the CLI can't express). The `rabbitmq-api` shim targets the configured broker automatically — write just the path (`rabbitmq-api GET /api/overview`), no host or port. Credentials are injected for both; never add them yourself.",
+		"**No Credentials:** Do not include user/password/host/port arguments in any command.",
+		"**rabbitmq-api scope:** The shim is locked to `$RABBITMQ_HOST:${RABBITMQ_MGMT_PORT:-15672}` — you cannot redirect it to another host. Supported methods: GET/POST/PUT/DELETE/PATCH/HEAD. Path must start with `/`. Extra curl flags after the path pass through (`-d '{...}'` for a JSON body, `-H '...'` for headers). A plain `curl http://$RABBITMQ_HOST:$RABBITMQ_PORT/api/...` still works for legacy scripts, but prefer `rabbitmq-api`.",
+		"**Choose the right shape:** rabbitmqadmin for listing/mutating queues/exchanges/bindings/consumers/nodes; rabbitmq-api for /api/overview (message rates), /api/queues/%2F/{name} (per-queue consumer_details), /api/aliveness-test/%2F (health), and PUT/DELETE mutations like policies.",
+		"**jq for processing:** Pipe `rabbitmqadmin -f raw_json ...` or `rabbitmq-api GET ...` output through `jq` to extract only the fields the user needs (group_by, select, sort_by, map).",
+		"**Error Handling:** Handle errors gracefully. If a queue name is not found (HTTP 404), tell the user clearly.",
+		"Use ONLY `rabbitmqadmin` or `rabbitmq-api` (or a plain `curl` against the management API for legacy scripts) — no other tools or commands.",
+		"`rabbitmq-api` path must start with `/` and contain only URL-legal characters — the shim rejects anything that could break out of the scope-locked URL.",
+		// rabbitmqadmin examples
+		"Example (rabbitmqadmin) — list all queues: `{\"args\": \"list queues\"}`",
+		"Example (rabbitmqadmin) — list all connections: `{\"args\": \"list connections\"}`",
+		"Example (rabbitmqadmin) — target a specific pod: `{\"args\": \"list queues\", \"instance\": \"rabbit-0.rabbit.svc.cluster.local\"}`",
+		"Example (rabbitmqadmin) — queue health/backlog: `{\"args\": \"-f raw_json list queues name messages messages_ready messages_unacknowledged consumers state | jq '[.[] | {name: .name, messages: .messages, ready: .messages_ready, unacked: .messages_unacknowledged, consumers: .consumers, state: .state}] | sort_by(-.messages)'\"}`",
+		"Example (rabbitmqadmin) — consumers for one queue with pod IPs: `{\"args\": \"-f raw_json list consumers | jq '[.[] | select(.queue.name == \\\"anomaly_processing\\\") | {consumer_tag: .consumer_tag, pod_ip: .channel_details.peer_host, active: .active}]'\"}`",
+		"Example (rabbitmqadmin) — orphan queues (no consumers): `{\"args\": \"-f raw_json list queues name messages consumers state | jq '[.[] | select(.consumers == 0 and (.name | startswith(\\\"amq.gen-\\\") | not)) | {name: .name, messages: .messages, state: .state}]'\"}`",
+		"Example (rabbitmqadmin) — node health: `{\"args\": \"-f raw_json list nodes name running mem_used mem_limit disk_free fd_used fd_total sockets_used | jq '.[] | {name: .name, mem_used_mb: (.mem_used/1048576|floor), disk_free_gb: (.disk_free/1073741824|floor), fd_used: .fd_used, fd_total: .fd_total}'\"}`",
+		// rabbitmq-api examples
+		"Example (rabbitmq-api) — cluster overview + rates: `{\"args\": \"rabbitmq-api GET /api/overview | jq '{rabbitmq_version: .rabbitmq_version, totals: .object_totals, queue_totals: .queue_totals, message_stats: .message_stats}'\"}`",
+		"Example (rabbitmq-api) — publish/deliver rates: `{\"args\": \"rabbitmq-api GET /api/overview | jq '.message_stats | {publish: .publish_details.rate, deliver: .deliver_details.rate, ack: .ack_details.rate}'\"}`",
+		"Example (rabbitmq-api) — per-queue consumer_details: `{\"args\": \"rabbitmq-api GET /api/queues/%2F/anomaly_processing | jq '.consumer_details[] | {tag: .consumer_tag, pod_ip: .channel_details.peer_host, prefetch: .prefetch_count, active: .active}'\"}`",
+		"Example (rabbitmq-api) — aliveness check: `{\"args\": \"rabbitmq-api GET /api/aliveness-test/%2F\"}` (returns {\"status\":\"ok\"} when healthy)",
+		"Example (rabbitmq-api) — set a max-length policy: `{\"args\": \"rabbitmq-api PUT /api/policies/%2F/events-max-length -d '{\\\"pattern\\\":\\\"events-.*\\\",\\\"definition\\\":{\\\"max-length\\\":10000},\\\"priority\\\":0,\\\"apply-to\\\":\\\"queues\\\"}' -H 'content-type: application/json'\"}`",
+	}
 }
 
 func (m RabbitExecuteTool) InputSchema() core.ToolSchema {
@@ -146,116 +178,79 @@ func (m RabbitExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 		commandStr = strings.TrimSpace(command.Command + " " + command.Args)
 	}
 
-	// Workspace-enabled path (post-shim restoration): run through the workspace
-	// shell so `rabbitmqadmin` and `rabbitmq-api` (both shimmed in the workspace
-	// pod via PR #35005) can compose with local shell primitives — redirects to
-	// `/workspace/*.json`, pipes to local `jq`, `&&` chains — and downstream
-	// tools like `code_agent` can read the resulting files in follow-up calls
-	// (Kind-B cross-boundary chaining, the whole point of restoring this path).
+	// Run through the workspace shell so `rabbitmqadmin` and `rabbitmq-api`
+	// (both shimmed in the workspace pod via PR #35005) can compose with
+	// local shell primitives — redirects to `/workspace/*.json`, pipes to
+	// local `jq`, `&&` chains — and downstream tools like `code_agent` can
+	// read the resulting files in follow-up calls (Kind-B cross-boundary
+	// chaining, the whole point of restoring this path).
 	//
 	// The one exception is `curl` against the RabbitMQ HTTP Management API.
-	// `curl` is NOT shimmed in the workspace pod (it's a general-purpose binary
-	// with many non-rabbit uses); running it there means no $RABBITMQ_HOST /
-	// credentials / customer-network route — the exact silent-fail that PR
-	// #34906 stopgap-fixed by routing everything through the relay. LLMs
-	// following the updated prompt use `rabbitmq-api` instead, but this
-	// carve-out preserves back-compat for cached / stored completions that
-	// still emit raw curl. The carve-out dispatches such curl commands
-	// directly to the relay, where common_relay.go's RelayJobRabbitmq rewrite
-	// injects basic-auth against the customer's broker.
-	if config.Config.LlmServerWorkspaceEnabled {
-		if strings.Contains(commandStr, "curl") && strings.Contains(commandStr, "/api/") {
-			response, err := ExecuteContainerJob(nbRequestContext, RelayJobRabbitmq, commandStr, nbRequestContext.AccountId, map[string]any{}, false)
-			if err != nil {
-				nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute curl command via relay", "error", err.Error())
-				responseData := ""
-				if response != nil {
-					if responseData1, ok := response.(string); ok {
-						responseData = responseData1
-					}
+	// `curl` is NOT shimmed in the workspace pod (it's a general-purpose
+	// binary with many non-rabbit uses); running it there means no
+	// $RABBITMQ_HOST / credentials / customer-network route — the exact
+	// silent-fail that PR #34906 stopgap-fixed by routing everything through
+	// the relay. LLMs following the updated prompt use `rabbitmq-api`
+	// instead, but this carve-out preserves back-compat for cached / stored
+	// completions that still emit raw curl. The carve-out dispatches such
+	// curl commands directly to the relay, where common_relay.go's
+	// RelayJobRabbitmq rewrite injects basic-auth against the customer's
+	// broker.
+	if strings.Contains(commandStr, "curl") && strings.Contains(commandStr, "/api/") {
+		response, err := ExecuteContainerJob(nbRequestContext, RelayJobRabbitmq, commandStr, nbRequestContext.AccountId, map[string]any{}, false)
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute curl command via relay", "error", err.Error())
+			responseData := ""
+			if response != nil {
+				if responseData1, ok := response.(string); ok {
+					responseData = responseData1
 				}
-				return core.NBToolResponse{
-					Data:   responseData,
-					Status: core.NBToolResponseStatusError,
-				}, err
 			}
-			data := response.(string)
 			return core.NBToolResponse{
-				Data:   data,
-				Type:   core.NBToolResponseTypeText,
-				Status: core.NBToolResponseStatusSuccess,
-			}, nil
-		}
-
-		wm := workspace.NewWorkspaceManager()
-		wsResponse, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, commandStr, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute shell script", "error", err.Error(), "command", commandStr)
-			if wsResponse == "" {
-				wsResponse = err.Error()
-			}
-			// rabbitmqctl uses `help` as a subcommand (no dashes),
-			// e.g. `rabbitmqctl help list_queues`.
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(wsResponse, "", "rabbitmqctl", "rabbitmqctl help <command>"),
+				Data:   responseData,
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
-
-		// Wrap in JSON to be consistent with non-workspace mode
-		outputformat := map[string]string{
-			"stdout": wsResponse,
-		}
-		outputformatBytes, err := common.MarshalJson(outputformat)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to marshal response", "error", err.Error())
-			return core.NBToolResponse{
-				Data:   wsResponse,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-		wsResponse = string(outputformatBytes)
-
+		data := response.(string)
 		return core.NBToolResponse{
-			Data:   wsResponse,
+			Data:   data,
 			Type:   core.NBToolResponseTypeText,
 			Status: core.NBToolResponseStatusSuccess,
 		}, nil
 	}
 
-	// Workspace-disabled path: dispatch every command directly through the
-	// relay. common_relay.go's RelayJobRabbitmq rewrite handles rabbitmqadmin /
-	// rabbitmq-api / curl uniformly and injects credentials against the
-	// customer's broker. Kind-B chaining is not available on this path
-	// (there is no local shell to redirect / pipe against), but shell pipes
-	// still work end-to-end because the full command runs in the relay pod.
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobRabbitmq, commandStr, nbRequestContext.AccountId, map[string]any{}, false)
+	wm := workspace.NewWorkspaceManager()
+	wsResponse, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, commandStr, map[string]string{
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute shell script", "error", err.Error())
-		responseData := ""
-		if response != nil {
-			if responseData1, ok := response.(string); ok {
-				responseData = responseData1
-			}
+		nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute shell script", "error", err.Error(), "command", commandStr)
+		if wsResponse == "" {
+			wsResponse = err.Error()
 		}
-		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
-		// non-string response, so the LLM always sees the failure reason
-		// rather than an empty envelope.
-		if responseData == "" {
-			responseData = err.Error()
-		}
+		// rabbitmqctl uses `help` as a subcommand (no dashes),
+		// e.g. `rabbitmqctl help list_queues`.
 		return core.NBToolResponse{
-			Data:   cliRecoveryEnvelope(responseData, "", "rabbitmqctl", ""),
+			Data:   cliRecoveryEnvelope(wsResponse, "", "rabbitmqctl", "rabbitmqctl help <command>"),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	data := response.(string)
+	outputformat := map[string]string{
+		"stdout": wsResponse,
+	}
+	outputformatBytes, err := common.MarshalJson(outputformat)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to marshal response", "error", err.Error())
+		return core.NBToolResponse{
+			Data:   wsResponse,
+			Status: core.NBToolResponseStatusError,
+		}, err
+	}
+	wsResponse = string(outputformatBytes)
 
 	return core.NBToolResponse{
-		Data:   data,
+		Data:   wsResponse,
 		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil

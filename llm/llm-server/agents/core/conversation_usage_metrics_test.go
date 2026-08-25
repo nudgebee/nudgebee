@@ -278,7 +278,7 @@ func TestModelUsageStatsCalculation(t *testing.T) {
 		},
 	}
 
-	stats := calculateModelUsageStats(records)
+	stats := calculateModelUsageStats(records, "")
 
 	// Should have 2 models
 	assert.Equal(t, 2, len(stats))
@@ -329,7 +329,7 @@ type fixedPricingDao struct {
 	pricing map[string]modelPricing
 }
 
-func (d *fixedPricingDao) GetConversationCosts(models []string) (map[string]modelPricing, error) {
+func (d *fixedPricingDao) GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error) {
 	return d.pricing, nil
 }
 
@@ -362,7 +362,7 @@ func TestModelUsageStatsCalculation_PerCallTiering(t *testing.T) {
 		{LLMProvider: "googleai", LLMModel: "gemini-3.1-pro-preview", InputTokens: 150_000, RequestStatus: "success"},
 	}
 
-	stats := calculateModelUsageStats(records)
+	stats := calculateModelUsageStats(records, "")
 	assert.Equal(t, 1, len(stats))
 
 	// Correct (per-call): both calls priced at the standard $2/M rate.
@@ -407,7 +407,7 @@ func TestModelUsageStatsCalculation_PrefersStoredCost(t *testing.T) {
 		},
 	}
 
-	stats := calculateModelUsageStats(records)
+	stats := calculateModelUsageStats(records, "")
 	assert.Equal(t, 1, len(stats))
 	// 0.0098 stored + 1M input × $5/M recomputed. Pricing the first call live
 	// would have charged it $0.53 instead of the $0.0098 it was billed.

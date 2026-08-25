@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import PropTypes from 'prop-types';
-import { Drawer, Box, Typography, Paper } from '@mui/material';
+import { Drawer, Box, Typography, Paper, useTheme } from '@mui/material';
 import { useForkRef } from '@mui/material/utils';
 import { Button } from '@ui/Button';
 import { Transition } from 'react-transition-group';
@@ -77,6 +77,9 @@ const resolveInitialWidth = (raw) => {
   if (raw.endsWith('%') && typeof window !== 'undefined') {
     return Math.round((parseFloat(raw) / 100) * window.innerWidth);
   }
+  if (raw.endsWith('vw') && typeof window !== 'undefined') {
+    return Math.round((parseFloat(raw) / 100) * window.innerWidth);
+  }
   const n = parseFloat(raw);
   return Number.isFinite(n) ? n : 880;
 };
@@ -102,6 +105,20 @@ const useDrawerResize = (defaultWidth, storageKey = STORAGE_KEY, enabled = true)
   const isResizingRef = useRef(false);
   const widthRef = useRef(width);
   const storageKeyRef = useRef(storageKey);
+
+  // Reset the width only when `defaultWidth` actually changes — not on mount
+  // (which would clobber the persisted width) and not on StrictMode's throwaway
+  // remount. A mount-flag ref can't express this: it survives the remount, so
+  // the second run falls through and overwrites the persisted width with the
+  // default. Comparing the value itself is correct in all three cases.
+  const prevDefaultWidthRef = useRef(defaultWidth);
+  useEffect(() => {
+    if (prevDefaultWidthRef.current === defaultWidth) {
+      return;
+    }
+    prevDefaultWidthRef.current = defaultWidth;
+    setWidth(resolveInitialWidth(defaultWidth));
+  }, [defaultWidth]);
 
   useEffect(() => {
     widthRef.current = width;
@@ -233,7 +250,7 @@ DrawerHeader.propTypes = {
   onClose: PropTypes.func.isRequired,
 };
 
-const MODERN_INSET = 16;
+const MODERN_INSET = 10;
 const MODERN_RADIUS = 10;
 
 const CustomDrawer = ({
@@ -248,10 +265,16 @@ const CustomDrawer = ({
   bare = false,
   storageKey = STORAGE_KEY,
   nonModal = false,
+  aboveModal = false,
 }) => {
+  const theme = useTheme();
   const { width: drawerWidth, handleMouseDown } = useDrawerResize(width, storageKey, resizable);
   const effectiveWidth = drawerWidth;
   const isModern = variant === 'modern';
+  // Opened from inside a Dialog, the default 1200 loses to theme.zIndex.modal (1300)
+  // and the drawer renders behind the modal that launched it. The host Dialog must
+  // also pass `disableEnforceFocus`, or its focus trap steals every keystroke.
+  const drawerZIndex = aboveModal ? theme.zIndex.modal + 1 : 1200;
 
   useEffect(() => {
     onWidthChange?.(effectiveWidth);
@@ -266,7 +289,7 @@ const CustomDrawer = ({
       // In non-modal mode the Modal root would still cover the viewport and
       // swallow clicks, so make the root click-through and re-enable pointer
       // events on the Paper only — letting the user work with the page behind.
-      sx={{ zIndex: 1200, ...(nonModal && { pointerEvents: 'none' }) }}
+      sx={{ zIndex: drawerZIndex, ...(nonModal && { pointerEvents: 'none' }) }}
       TransitionComponent={SoftDrawerTransition}
       transitionDuration={DRAWER_MS}
       hideBackdrop={nonModal}
@@ -303,7 +326,10 @@ const CustomDrawer = ({
                 height: 'auto',
                 borderRadius: `${MODERN_RADIUS}px`,
                 backgroundColor: ds.background[200],
-                boxShadow: `0 ${ds.space[3]} ${ds.space[4]} color-mix(in srgb, ${ds.gray[700]} 16%, transparent)`,
+                boxShadow: `0 ${ds.space[1]} ${ds.space[3]} color-mix(in srgb, ${ds.gray[700]} 14%, transparent), 0 ${ds.space[4]} ${ds.space.mul(
+                  6,
+                  2
+                )} color-mix(in srgb, ${ds.gray[700]} 24%, transparent)`,
               }
             : {
                 boxShadow: `${ds.space.mul(1, -1)} 0 ${ds.space[3]} ${ds.gray.alpha[200]}`,
@@ -336,6 +362,7 @@ CustomDrawer.propTypes = {
   bare: PropTypes.bool,
   storageKey: PropTypes.string,
   nonModal: PropTypes.bool,
+  aboveModal: PropTypes.bool,
 };
 
 const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth = '40%', children, variant = 'default' }) => {
@@ -414,7 +441,10 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
           ...(isModern
             ? {
                 borderRadius: `${MODERN_RADIUS}px`,
-                boxShadow: `0 ${ds.space[3]} ${ds.space[6]} color-mix(in srgb, ${ds.gray[700]} 16%, transparent)`,
+                boxShadow: `0 ${ds.space[1]} ${ds.space[3]} color-mix(in srgb, ${ds.gray[700]} 14%, transparent), 0 ${ds.space[5]} ${ds.space.mul(
+                  6,
+                  2
+                )} color-mix(in srgb, ${ds.gray[700]} 30%, transparent)`,
               }
             : {
                 boxShadow: `${ds.space.mul(1, -1)} 0 ${ds.space[3]} ${ds.gray.alpha[200]}`,

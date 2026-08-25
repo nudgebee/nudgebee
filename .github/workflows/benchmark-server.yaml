@@ -43,21 +43,18 @@ jobs:
 
       - name: Install dependencies with uv
         working-directory: ./llm/benchmark
-        run: |
-          # Verify and install from lock file first
-          uv pip install --system -r uv.lock
-
-          # Install in editable mode
-          uv pip install --system -e .
+        # --frozen fails if uv.lock is out of date with pyproject.toml,
+        # so a pin change without a lock regen can't slip through CI.
+        run: uv sync --frozen
 
       - name: Check formatting
         working-directory: ./llm/benchmark
-        run: python -m black --check benchmark_server
+        run: uv run black --check benchmark_server
 
       - name: Run lint
         working-directory: ./llm/benchmark
-        run: python -m flake8 benchmark_server
+        run: uv run flake8 benchmark_server
 
       - name: Run unit tests
         working-directory: ./llm/benchmark
-        run: python -m pytest benchmark_server/tests -m "not benchmark"
+        run: uv run pytest benchmark_server/tests -m "not benchmark"

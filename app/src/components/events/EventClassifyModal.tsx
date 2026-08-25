@@ -84,47 +84,68 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
   }, [open, defaultClassification]);
 
   // Fetch preview when classification or scope changes
-  const fetchPreview = useCallback(async () => {
-    if (!classification || !applyScope || !event.id) {
-      return;
-    }
+  const fetchPreview = useCallback(
+    async (isCancelled: () => boolean = () => false) => {
+      if (!classification || !applyScope || !event.id) {
+        return;
+      }
 
-    setPreviewLoading(true);
-    try {
-      const applyUntilHours = applyUntilDate ? Math.ceil((applyUntilDate.getTime() - Date.now()) / (1000 * 60 * 60)) : undefined;
+      setPreviewLoading(true);
+      try {
+        const applyUntilHours = applyUntilDate ? Math.ceil((applyUntilDate.getTime() - Date.now()) / (1000 * 60 * 60)) : undefined;
 
-      const result = await apiTriage.classifyPreview({
-        event_id: event.id,
-        classification,
-        apply_scope: applyScope,
-        apply_until_hours: applyScope === 'time_limited' ? applyUntilHours : undefined,
-      });
-      setPreview(result);
-    } catch (error) {
-      console.error('Failed to fetch preview:', error);
-    } finally {
-      setPreviewLoading(false);
-    }
-  }, [classification, applyScope, applyUntilDate, event.id]);
+        const result = await apiTriage.classifyPreview({
+          event_id: event.id,
+          classification,
+          apply_scope: applyScope,
+          apply_until_hours: applyScope === 'time_limited' ? applyUntilHours : undefined,
+        });
+        if (!isCancelled()) {
+          setPreview(result);
+        }
+      } catch (error) {
+        console.error('Failed to fetch preview:', error);
+      } finally {
+        if (!isCancelled()) {
+          setPreviewLoading(false);
+        }
+      }
+    },
+    [classification, applyScope, applyUntilDate, event.id]
+  );
 
   useEffect(() => {
     if (open && classification && applyScope) {
-      const debounceTimer = setTimeout(fetchPreview, 500);
-      return () => clearTimeout(debounceTimer);
+      let cancelled = false;
+      const debounceTimer = setTimeout(() => fetchPreview(() => cancelled), 500);
+      return () => {
+        cancelled = true;
+        clearTimeout(debounceTimer);
+      };
     }
   }, [open, classification, applyScope, applyUntilDate, fetchPreview]);
 
   // Fetch duplicate suggestions when classification is duplicate
   useEffect(() => {
     if (classification === 'duplicate' && event.id) {
+      let cancelled = false;
       setDuplicatesLoading(true);
       apiTriage
         .getDuplicates(event.id)
         .then((result) => {
-          setDuplicates(result?.suggestions || []);
+          if (!cancelled) {
+            setDuplicates(result?.suggestions || []);
+          }
         })
         .catch(console.error)
-        .finally(() => setDuplicatesLoading(false));
+        .finally(() => {
+          if (!cancelled) {
+            setDuplicatesLoading(false);
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
     }
   }, [classification, event.id]);
 

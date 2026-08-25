@@ -81,6 +81,7 @@ func TestTracesFlowSource_MatchServiceApplicationToNode_Node(t *testing.T) {
 	}
 	if node == nil {
 		t.Fatalf("matchServiceApplicationToNode() = nil, nil, want a match against the existing Node")
+		return
 	}
 	if node.UniqueKey != existingNodes[0].UniqueKey {
 		t.Errorf("matchServiceApplicationToNode() matched %q, want %q", node.UniqueKey, existingNodes[0].UniqueKey)
@@ -618,6 +619,7 @@ func TestTracesFlowSource_ResolvesBarePodNameToWorkload(t *testing.T) {
 	got := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "redis", resolver)
 	if got == nil {
 		t.Fatalf("expected redis-master-0 to resolve to the redis-master StatefulSet, got nil (would create an ExternalService)")
+		return
 	}
 	if got.UniqueKey != redisMaster.UniqueKey {
 		t.Errorf("expected %q, got %q", redisMaster.UniqueKey, got.UniqueKey)

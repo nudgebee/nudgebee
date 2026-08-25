@@ -21,6 +21,10 @@ func TestAssembleTiers(t *testing.T) {
 		{ID: "seed-deploy", SubjectNamespace: "ns", SubjectOwner: "llm-server", IsConfigChange: true, TsOffsetS: -1800},
 		{ID: "up-deploy", SubjectNamespace: "ns", SubjectOwner: "workflow-server", IsConfigChange: true, TsOffsetS: -1200},
 		{ID: "up-alert", SubjectNamespace: "ns", SubjectOwner: "workflow-server", AggregationKey: "ApplicationAPIFailures", TsOffsetS: -120},
+		// A callee's own alert commonly fires just after its caller's — the caller's
+		// client-side rule trips first. Inside the grace it is still a cause.
+		{ID: "up-alert-lagging", SubjectNamespace: "ns", SubjectOwner: "workflow-server", AggregationKey: "OtelDemoGRPCServerErrorRate", TsOffsetS: 30},
+		{ID: "up-alert-too-late", SubjectNamespace: "ns", SubjectOwner: "workflow-server", AggregationKey: "OOMKilled", TsOffsetS: CauseLagGraceSeconds + 1},
 		{ID: "down-rare", SubjectNamespace: "ns", SubjectOwner: "services-server", AggregationKey: "OOMKilled", TsOffsetS: 90},
 		{ID: "down-chronic", SubjectNamespace: "ns", SubjectOwner: "services-server", AggregationKey: "HighP95Latency", TsOffsetS: 90},
 		{ID: "down-burst", SubjectNamespace: "ns", SubjectOwner: "db-writer", AggregationKey: "HighP95Latency", TsOffsetS: 90},
@@ -40,15 +44,17 @@ func TestAssembleTiers(t *testing.T) {
 	got := AssembleTiers(seed, cands, dependsOn, rates)
 
 	want := map[string]string{
-		"same":         TierCore,    // same subject
-		"same-hash":    TierCore,    // hash-variant of same subject
-		"seed-deploy":  TierCause,   // config change on seed, in lead-in
-		"up-deploy":    TierCause,   // config change on upstream, in lead-in
-		"up-alert":     TierCause,   // upstream alert before root
-		"down-rare":    TierImpact,  // rare downstream alert after root
-		"down-chronic": TierChronic, // chronic downstream -> folded
-		"down-burst":   TierImpact,  // bursting past baseline -> stays impact
-		"own-anomaly":  TierCore,    // derived signal on the seed's own subject is context
+		"same":        TierCore,  // same subject
+		"same-hash":   TierCore,  // hash-variant of same subject
+		"seed-deploy": TierCause, // config change on seed, in lead-in
+		"up-deploy":   TierCause, // config change on upstream, in lead-in
+		"up-alert":    TierCause, // upstream alert before root
+
+		"up-alert-lagging": TierCause,   // upstream alert just after root, inside the lag grace
+		"down-rare":        TierImpact,  // rare downstream alert after root
+		"down-chronic":     TierChronic, // chronic downstream -> folded
+		"down-burst":       TierImpact,  // bursting past baseline -> stays impact
+		"own-anomaly":      TierCore,    // derived signal on the seed's own subject is context
 		// "old-deploy":  excluded (deploy older than the 2h lead-in)
 		// "unrelated":   excluded (not seed / upstream / downstream)
 		// "up-anomaly":  excluded (derived signal never becomes a cause)
@@ -64,6 +70,11 @@ func TestAssembleTiers(t *testing.T) {
 	}
 	if _, ok := got["unrelated"]; ok {
 		t.Errorf("unrelated should be excluded, got %q", got["unrelated"])
+	}
+	// The grace is a bound, not an open door: past it an upstream alert is no longer
+	// evidence of cause, and it is not a dependent either, so it drops out entirely.
+	if tier, ok := got["up-alert-too-late"]; ok {
+		t.Errorf("up-alert-too-late should be excluded (past the %ds lag grace), got %q", CauseLagGraceSeconds, tier)
 	}
 	// Derived signals (SLO / anomaly) must never be offered as cause or impact, even
 	// though their subject and timing would otherwise qualify.
@@ -94,5 +105,34 @@ func TestWorkloadName(t *testing.T) {
 		if got := WorkloadName(tt.in); got != tt.want {
 			t.Errorf("WorkloadName(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// A candidate wired to the seed in BOTH directions keeps the strict "at or before the
+// root" bound on the cause lane. Timing is the only thing separating cause from impact
+// for a mutual pair, so letting the cause window run past the root would relabel every
+// downstream alert on such a pair as a possible cause.
+func TestAssembleTiersMutualEdgeKeepsImpactAfterRoot(t *testing.T) {
+	seed := AlertIdentity{ID: "seed", SubjectNamespace: "ns", SubjectOwner: "a", AggregationKey: "ApplicationAPIFailures"}
+	dependsOn := map[string][]string{
+		"ns|a": {"ns|b"}, // a calls b
+		"ns|b": {"ns|a"}, // ...and b calls a
+	}
+	cands := []AlertIdentity{
+		{ID: "mutual-after", SubjectNamespace: "ns", SubjectOwner: "b", AggregationKey: "OOMKilled", TsOffsetS: 30},
+		{ID: "mutual-before", SubjectNamespace: "ns", SubjectOwner: "b", AggregationKey: "HighP95Latency", TsOffsetS: -30},
+	}
+
+	got := AssembleTiers(seed, cands, dependsOn, map[string]Rate{})
+
+	if got["mutual-after"] != TierImpact {
+		t.Errorf("mutual candidate after the root: got %q, want %q", got["mutual-after"], TierImpact)
+	}
+	if got["mutual-before"] != TierCause {
+		t.Errorf("mutual candidate before the root: got %q, want %q", got["mutual-before"], TierCause)
+	}
+	// The ambiguity is surfaced rather than hidden, so the UI can say which it is.
+	if rel := RelationTo(seed, cands[0], dependsOn); rel != RelationMutual {
+		t.Errorf("relation: got %q, want %q", rel, RelationMutual)
 	}
 }

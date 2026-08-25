@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
 	"github.com/tmc/langchaingo/llms"
@@ -267,7 +267,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 	}
 	args := []any{sessionID, accountID}
 
-	pricing, err := chat.GetConversationCosts(nil)
+	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
 	if err != nil {
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile pricing: %w", err)
 	}
@@ -340,7 +340,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 			COALESCE(child_agent_id::text, '') AS child_agent_id,
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_tool_calls
-		WHERE %s`, convScopeCTE)
+		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL`, convScopeCTE)
 	if err := chat.dbManager.Db.Select(&toolScans, toolQuery, args...); err != nil {
 		slog.Error("GetConversationOptimizationProfile: tool_calls query failed", "error", err)
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile tool_calls: %w", err)
@@ -765,8 +765,12 @@ func GenerateConversationOptimization(ctx *security.RequestContext, sessionID, a
 		return ConversationOptimization{}, fmt.Errorf("GenerateConversationOptimization marshal: %w", err)
 	}
 
+	optimizerPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptCostOptimizationAnalysis, accountID)
+	if err != nil {
+		return ConversationOptimization{}, fmt.Errorf("GenerateConversationOptimization: loading prompt: %w", err)
+	}
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, prompts_repo.GetPrompt(prompts_repo.PromptCostOptimization)),
+		llms.TextParts(llms.ChatMessageTypeSystem, optimizerPrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, string(profileJSON)),
 	}
 	// Track this analysis call's token usage against the OPTIMIZER conversation

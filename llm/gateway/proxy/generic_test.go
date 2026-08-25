@@ -43,6 +43,49 @@ func TestHandleChat_UnresolvableModelIs400(t *testing.T) {
 	assert.Contains(t, sink.Events()[0].Attributes, "unknown_model")
 }
 
+// TestHandleChat_CustomUpstreamBeatsProviderAlias locks the resolution precedence: a model
+// id that COLLIDES with a built-in provider alias ("google/…" → Gemini) but which a tenant
+// configured as a custom upstream (e.g. vertex_openai) must route on the tenant's lane, NOT
+// be hijacked by the alias and sent to Gemini generateContent. Regression for the MaaS id
+// "google/gemma-…-maas" being stripped to a bare Gemini model.
+func TestHandleChat_CustomUpstreamBeatsProviderAlias(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prev := config.Config.MaxRequestBodyBytes
+	config.Config.MaxRequestBodyBytes = 1 << 20
+	defer func() { config.Config.MaxRequestBodyBytes = prev }()
+
+	const colliding = "google/gemma-3-27b-it-maas" // "google/" also matches the Gemini alias
+	prevHook := customProviderHook
+	RegisterCustomProviderResolver(func(_, model string) (schemas.ModelProvider, schemas.Key, string, bool) {
+		if model != colliding {
+			return "", schemas.Key{}, "", false
+		}
+		// A refused-port URL so dispatch fails fast (no network) AFTER routing is decided.
+		return schemas.VLLM, schemas.Key{ID: "k", Models: schemas.WhiteList{"*"},
+				VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: schemas.SecretVar{Val: "http://127.0.0.1:1"}, ModelName: model}},
+			"/v1/projects/p/locations/global/endpoints/openapi/chat/completions", true
+	})
+	t.Cleanup(func() { customProviderHook = prevHook })
+
+	eng, err := engine.New(context.Background(), nil)
+	require.NoError(t, err)
+	defer eng.Shutdown()
+	sink := &metering.CapturingSink{}
+	h := &handler{client: eng.Client, sink: sink, pipeline: NewPipeline(resolverStage{})}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest("POST", chatCompletionsPath, strings.NewReader(`{"model":"`+colliding+`","messages":[{"role":"user","content":"hi"}]}`))
+	h.handleChat(c)
+
+	events := sink.Events()
+	require.Len(t, events, 1)
+	// Routed + metered on the vLLM (custom) lane — NOT Gemini, which the "google/" alias would
+	// have chosen. The exact configured model id is preserved (not stripped to a bare name).
+	assert.Equal(t, string(schemas.VLLM), events[0].Provider)
+	assert.Equal(t, colliding, events[0].Model)
+}
+
 // TestMarshalOpenAIChat_StripsExtraFields locks that Bifrost's internal extra_fields
 // annotation (operator provider org/project ids + raw provider headers) never leaks
 // to the client on the generic endpoint.

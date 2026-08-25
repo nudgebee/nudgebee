@@ -26,6 +26,10 @@ from notifications_server.message_templates.slack.cloud_cost_summary import (
     get_cloud_cost_message_template,
     get_cloud_cost_summary_message_params,
 )
+from notifications_server.message_templates.slack.ai_cost_daily_report import (
+    get_ai_cost_account_report_message_template,
+    get_ai_cost_account_report_message_params,
+)
 from notifications_server.message_templates.slack.daily_highlight import (
     get_daily_recap_message_template,
     get_daily_recap_message_params,
@@ -145,6 +149,20 @@ from notifications_server.message_templates.discord.recommendation_resolution im
     get_discord_recommendation_resolution_template,
 )
 
+from notifications_server.message_templates.slack.weekly_digest_events import (
+    get_weekly_digest_events_message_params,
+    get_weekly_digest_events_message_template,
+)
+from notifications_server.message_templates.ms_teams.weekly_digest_events import (
+    get_teams_weekly_digest_events_template,
+)
+from notifications_server.message_templates.google_chat.weekly_digest_events import (
+    get_gchat_weekly_digest_events_template,
+)
+from notifications_server.message_templates.discord.weekly_digest_events import (
+    get_discord_weekly_digest_events_template,
+)
+
 template_mapping = {
     "default": {
         "common_params": get_default_message_params,
@@ -216,6 +234,13 @@ template_mapping = {
         "google_chat": get_grouped_slo_alerts_gchat_template,
         "discord": get_discord_grouped_slo_alert_template,
     },
+    "ai_cost_daily_report": {
+        "common_params": get_ai_cost_account_report_message_params,
+        "slack": get_ai_cost_account_report_message_template,
+        "ms_teams": None,
+        "google_chat": None,
+        "discord": None,
+    },
     "cloud_cost_summary": {
         "common_params": get_cloud_cost_summary_message_params,
         "slack": get_cloud_cost_message_template,
@@ -250,5 +275,12 @@ template_mapping = {
         "ms_teams": get_teams_recommendation_resolution_template,
         "google_chat": get_gchat_recommendation_resolution_template,
         "discord": get_discord_recommendation_resolution_template,
+    },
+    "weekly_digest_events": {
+        "common_params": get_weekly_digest_events_message_params,
+        "slack": get_weekly_digest_events_message_template,
+        "ms_teams": get_teams_weekly_digest_events_template,
+        "google_chat": get_gchat_weekly_digest_events_template,
+        "discord": get_discord_weekly_digest_events_template,
     },
 }

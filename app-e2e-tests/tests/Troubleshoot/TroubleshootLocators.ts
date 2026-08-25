@@ -75,6 +75,16 @@ export class TroubleshootLocators extends CommonLocators {
 
         try {
             await tabLocator.waitFor({ state: "visible", timeout: 10000 });
+
+            // Clicking the tab that is already active (All Events is the page
+            // default) is a no-op: no request fires, so an API-validation caller
+            // sees zero operations. Reload so the tab's data is really refetched.
+            if (await this.isTabActive(tab)) {
+                await this.page.reload();
+                await this.page.getByAltText("Loading...").waitFor({ state: "hidden", timeout: 30000 }).catch(() => {});
+                return;
+            }
+
             await tabLocator.click();
             await this.page.mouse.move(0, 0);
             await this.page.waitForTimeout(500);

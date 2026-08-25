@@ -28,18 +28,47 @@ func TestNormalizedCandidates(t *testing.T) {
 }
 
 func TestCostUSD_NormalizationFallback(t *testing.T) {
-	// Catalog holds the NB-normalized (dotted, dated) name...
-	cat := map[string]modelPrice{
-		"claude-sonnet-4.5-20250929": {Input: 3, Output: 15},
-	}
+	// Catalog holds the NB-normalized (dotted, dated) name as a built-in (global) row...
 	p := &Pricer{}
-	p.cur.Store(&cat)
+	p.cur.Store(&catalog{
+		builtin: map[string]modelPrice{
+			"claude-sonnet-4.5-20250929": {Input: 3, Output: 15},
+		},
+		byTenant: map[string]map[string]modelPrice{},
+	})
 
 	// ...a request carrying the provider's real dashed ID still prices via fallback.
-	cost := p.CostUSD("claude-sonnet-4-5-20250929", 1_000_000, 1_000_000, 0, 0)
+	cost := p.CostUSD("", "claude-sonnet-4-5-20250929", 1_000_000, 1_000_000, 0, 0)
 	assert.InDelta(t, 18.0, cost, 1e-9) // 3 (in) + 15 (out)
 
 	// Exact match still works and an unknown model is still 0.
-	assert.InDelta(t, 18.0, p.CostUSD("claude-sonnet-4.5-20250929", 1_000_000, 1_000_000, 0, 0), 1e-9)
-	assert.Equal(t, 0.0, p.CostUSD("totally-unknown-model", 1_000_000, 0, 0, 0))
+	assert.InDelta(t, 18.0, p.CostUSD("", "claude-sonnet-4.5-20250929", 1_000_000, 1_000_000, 0, 0), 1e-9)
+	assert.Equal(t, 0.0, p.CostUSD("", "totally-unknown-model", 1_000_000, 0, 0, 0))
+}
+
+// TestCostUSD_TenantOverrideWinsAndIsolated locks the tenant-scoping contract: a tenant's own
+// price override applies to that tenant, wins over the built-in, and NEVER leaks to another
+// tenant (the bug when the pricer keyed on model_name only, after llm_model_pricing gained
+// per-tenant rows).
+func TestCostUSD_TenantOverrideWinsAndIsolated(t *testing.T) {
+	const model = "google/gemma-3-27b-it-maas"
+	p := &Pricer{}
+	p.cur.Store(&catalog{
+		builtin: map[string]modelPrice{
+			model: {Input: 1, Output: 2}, // global rate → 3.0 for 1M+1M tokens
+		},
+		byTenant: map[string]map[string]modelPrice{
+			"tenant-A": {model: {Input: 10, Output: 20}}, // A's override → 30.0
+			"tenant-C": {"some-other-model": {Input: 99}},
+		},
+	})
+
+	// Tenant A gets its override.
+	assert.InDelta(t, 30.0, p.CostUSD("tenant-A", model, 1_000_000, 1_000_000, 0, 0), 1e-9)
+	// Tenant B has no override → built-in; A's negotiated rate does NOT bleed over.
+	assert.InDelta(t, 3.0, p.CostUSD("tenant-B", model, 1_000_000, 1_000_000, 0, 0), 1e-9)
+	// Tenant C has an override for a DIFFERENT model → falls back to built-in for this one.
+	assert.InDelta(t, 3.0, p.CostUSD("tenant-C", model, 1_000_000, 1_000_000, 0, 0), 1e-9)
+	// Empty tenant (e.g. unattributed) resolves against built-ins only.
+	assert.InDelta(t, 3.0, p.CostUSD("", model, 1_000_000, 1_000_000, 0, 0), 1e-9)
 }

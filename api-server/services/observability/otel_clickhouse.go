@@ -742,7 +742,10 @@ func clickhouseInt64(raw interface{}) int64 {
 }
 
 func (s *OtelClickhouseTraceSource) CheckAccess(ctx *security.RequestContext, accountId string) bool {
-	return ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead)
+	// Honor dynamic-RBAC custom grants (traces:Read) in addition to built-in
+	// account roles — a pure custom-role user has no built-in account scope, so
+	// bare HasAccountAccess would deny them. Mirrors the traces action handler.
+	return ctx.GetSecurityContext().CanReadAccountData(accountId, "traces")
 }
 
 // executeClickhouseQuery runs a ClickHouse query via the relay and maps each row into a

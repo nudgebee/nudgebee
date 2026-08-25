@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Typography, Chip, Tooltip } from '@mui/material';
+import { Box, Typography, Chip } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import { Check, Warning } from '@mui/icons-material';
 import { Input } from '@ui/Input';
 import { DURATION_PRESETS, FIELD_HELPER_TEXT } from './advancedConfigPresets';

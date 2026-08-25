@@ -53,6 +53,52 @@ func TestCloudLogAction(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+// TestGCPLogRawParams covers the scope context forwarded to the collector's resolver.
+// Pure unit test — only reads event labels, no cloud/DB access.
+func TestGCPLogRawParams(t *testing.T) {
+	// Native GKE log alert: the policy id must reach the collector, which resolves the
+	// policy's own log-match filter. Without it the query scopes by gke_nodepool, a
+	// resource type Cloud Logging writes nothing under.
+	nodepool := map[string]string{
+		"gcp_account": "example-project", "gcp_project_id": "example-project",
+		"gcp_alert_type": "log", "gcp_service_name": "Kubernetes Engine",
+		"gcp_event_resource_type": "gke_nodepool",
+		"gcp_policy_id":           "projects/example-project/alertPolicies/1234567890123456789",
+		"gcp_event_instance":      "example-nodepool", "gcp_incident_id": "0.abc123",
+		"resource_cluster_name": "example-cluster", "resource_nodepool_name": "example-nodepool",
+	}
+	params := gcpLogRawParams(nodepool)
+	assert.Equal(t, "projects/example-project/alertPolicies/1234567890123456789", params["policy_id"],
+		"a native log alert must forward its policy id so the collector can use the policy's own filter")
+	assert.Equal(t, "log", params["alert_type"])
+	assert.Equal(t, "gke_nodepool", params["resource_type"])
+	assert.Equal(t, map[string]string{"cluster_name": "example-cluster", "nodepool_name": "example-nodepool"},
+		params["resource_labels"])
+
+	// Metric alert whose only identifier is the incident id: dropped, so the collector
+	// scopes by resource type rather than by a value that matches nothing.
+	lb := map[string]string{
+		"gcp_account": "example-project", "gcp_project_id": "example-project",
+		"gcp_alert_type": "metric", "gcp_service_name": "Cloud Load Balancing",
+		"gcp_event_resource_type": "https_lb_rule",
+		"gcp_metric_type":         "loadbalancing.googleapis.com/https/request_count",
+		"gcp_event_instance":      "0.def456", "gcp_incident_id": "0.def456",
+	}
+	lbParams := gcpLogRawParams(lb)
+	assert.Equal(t, "", lbParams["resource_id"], "incident-id-only instance must be dropped")
+	assert.Equal(t, "https_lb_rule", lbParams["resource_type"])
+	assert.Equal(t, "Logs For - Cloud Load Balancing", lbParams["title"])
+	assert.NotContains(t, lbParams, "log_metric_name", "a real metric alert carries no log-metric name")
+
+	// Log-based metric alert: the metric name is still split out for the collector.
+	logMetric := gcpLogRawParams(map[string]string{
+		"gcp_project_id":  "example-project",
+		"gcp_metric_type": "logging.googleapis.com/user/log4j_exploits",
+	})
+	assert.Equal(t, "log4j_exploits", logMetric["log_metric_name"])
+	assert.Equal(t, "", logMetric["policy_id"], "a metric alert has no log policy to scope by")
+}
+
 // TestGCPEnricherGating covers the region-optional gating and the incident-ID guard
 // for GCP events. Pure unit test — only reads event labels, no cloud/DB access.
 func TestGCPEnricherGating(t *testing.T) {

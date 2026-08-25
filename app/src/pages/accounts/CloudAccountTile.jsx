@@ -11,7 +11,7 @@ import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, canManage } from '@lib/auth';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import SearchInput from '@ui/SearchInput';
@@ -1035,7 +1035,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
             </Stack>
           }
           actions={
-            hasWriteAccess() ? (
+            canManage('integrations', 'Write') ? (
               <Stack direction='row' spacing={1}>
                 {AddOrgModalComponent && addOrgButtonText && (
                   <DsButton

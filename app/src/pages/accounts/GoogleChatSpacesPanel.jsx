@@ -12,7 +12,7 @@ import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiIntegrations from '@api1/integrations';
-import { isTenantAdmin } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import { action } from 'src/utils/actionStyles';
 import { ds } from 'src/utils/colors';
 
@@ -66,7 +66,10 @@ export default function GoogleChatSpacesPanel() {
   const incomingSpaceId = typeof router.query.space_id === 'string' ? router.query.space_id : '';
   const incomingDisplayName = typeof router.query.display_name === 'string' ? router.query.display_name : '';
 
-  const userIsTenantAdmin = isTenantAdmin();
+  // Managing Google Chat space bindings is a messaging-platform write — the same
+  // gate ChannelAccountMapping uses. Tenant admins and custom roles with
+  // messagingplatforms:Write can bind/connect; everyone else sees it read-only.
+  const userCanManage = canManage('messagingplatforms', 'Write');
 
   const [spaces, setSpaces] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -234,7 +237,7 @@ export default function GoogleChatSpacesPanel() {
   };
 
   const getMenuItems = (space) => {
-    if (!userIsTenantAdmin) return [];
+    if (!userCanManage) return [];
     const items = space.isDefault ? [{ label: 'Remove as default', id: 'remove_default' }] : [{ label: 'Set as default', id: 'set_default' }];
     items.push({ label: 'Unbind', id: 'unbind' });
     return items;
@@ -271,7 +274,7 @@ export default function GoogleChatSpacesPanel() {
         { component: space.isDefault ? <Label tone='info' text='Default' size='sm' /> : <Text value='—' /> },
         {
           component:
-            userIsTenantAdmin && busyId !== space.spaceId ? (
+            userCanManage && busyId !== space.spaceId ? (
               <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(space)} data={space} onMenuClick={onMenuClick} />
             ) : busyId === space.spaceId ? (
               <CircularProgress size={16} />
@@ -281,7 +284,7 @@ export default function GoogleChatSpacesPanel() {
         },
       ]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [spaces, busyId, userIsTenantAdmin]
+    [spaces, busyId, userCanManage]
   );
 
   const permissionTone = PERMISSION_TONE[permissionStatus] || 'neutral';
@@ -297,7 +300,7 @@ export default function GoogleChatSpacesPanel() {
               ) : (
                 <Label tone={permissionTone} text={PERMISSION_TEXT[permissionStatus]} size='sm' />
               )}
-              {userIsTenantAdmin ? (
+              {userCanManage ? (
                 <>
                   <DsButton
                     id='gchat-authorize-btn'
@@ -341,7 +344,7 @@ export default function GoogleChatSpacesPanel() {
                     {incomingSpaceId}
                   </Typography>
                 </Box>
-                {userIsTenantAdmin ? (
+                {userCanManage ? (
                   <DsButton data-testid='gchat-connect-submit' disabled={connecting} onClick={handleConnect}>
                     {connecting ? <CircularProgress size={16} /> : 'Connect'}
                   </DsButton>

@@ -246,6 +246,7 @@ func AzureResourceMeta(ctx *security.RequestContext) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = regionRows.Close() }()
 
 	type nodeInfo struct {
 		flavor    string

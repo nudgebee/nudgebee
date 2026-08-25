@@ -187,19 +187,49 @@ func TestSelectSeriesForEvent_MatchesLabels(t *testing.T) {
 func TestIsHistogramSaturated(t *testing.T) {
 	adH := &AlertDefinition{MetricName: "histogram_quantile(0.95, sum by (le) (rate(x_bucket[5m])))"}
 	adG := &AlertDefinition{MetricName: "rate(errors_total[5m])"}
-	sat := DistStats{Count: 100, P95: 600, P99: 600}
-	unsat := DistStats{Count: 100, P95: 400, P99: 600}
-	if !isHistogramSaturated(adH, sat) {
-		t.Error("histogram_quantile with p95==p99 should be saturated")
+
+	// spread builds n strictly-increasing samples below `ceiling`, then pins `atTop` of them to it.
+	spread := func(n, atTop int, ceiling float64) []float64 {
+		out := make([]float64, 0, n)
+		for i := 0; i < n-atTop; i++ {
+			out = append(out, ceiling*float64(i+1)/float64(2*n))
+		}
+		for i := 0; i < atTop; i++ {
+			out = append(out, ceiling)
+		}
+		return out
 	}
-	if isHistogramSaturated(adH, unsat) {
-		t.Error("p95 != p99 is not saturated")
+
+	// Fully saturated: the top bucket dominates.
+	if ok, c := isHistogramSaturated(adH, spread(100, 40, 600)); !ok || c != 600 {
+		t.Errorf("fully saturated histogram should be flagged, got ok=%v ceiling=%v", ok, c)
 	}
-	if isHistogramSaturated(adG, sat) {
+
+	// Partially saturated — the regression this gate was widened for. Only 2% of samples sit on the
+	// ceiling, so p95 != p99 and the old firing-band test let this through as tunable. This is the
+	// shape of the dev HighP95Latency rule (ceiling 10, p95 8.37, p99 10) that produced a confident
+	// "safe / medium confidence, raise 5 → 7.1" off pure bucket interpolation.
+	partial := spread(200, 4, 10) // already ascending
+	if p95, p99 := percentile(partial, 95), percentile(partial, 99); p95 == p99 {
+		t.Fatalf("fixture is not partially saturated: p95=%v p99=%v (want p95 < p99)", p95, p99)
+	}
+	if ok, c := isHistogramSaturated(adH, partial); !ok || c != 10 {
+		t.Errorf("partially saturated histogram should be flagged, got ok=%v ceiling=%v", ok, c)
+	}
+
+	// Unsaturated: a continuous quantile touches its maximum once.
+	if ok, _ := isHistogramSaturated(adH, spread(200, 1, 600)); ok {
+		t.Error("a maximum reached once is not saturation")
+	}
+
+	if ok, _ := isHistogramSaturated(adG, spread(100, 40, 600)); ok {
 		t.Error("non-histogram metric is never saturated")
 	}
-	if isHistogramSaturated(adH, DistStats{Count: 0}) {
-		t.Error("empty firing distribution is not saturated")
+	if ok, _ := isHistogramSaturated(adH, nil); ok {
+		t.Error("empty sample set is not saturated")
+	}
+	if ok, _ := isHistogramSaturated(adH, []float64{0, 0, 0}); ok {
+		t.Error("an all-zero series has no ceiling to saturate")
 	}
 }
 

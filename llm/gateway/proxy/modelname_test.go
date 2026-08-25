@@ -42,6 +42,9 @@ func TestResolveModelProvider(t *testing.T) {
 		{"openrouter/anthropic/claude-3.5-sonnet", schemas.OpenRouter, "anthropic/claude-3.5-sonnet", true},
 		// Azure OpenAI (v1 API) — model name after the prefix.
 		{"azure/gpt-4o", schemas.Azure, "gpt-4o", true},
+		// Vertex AI (`vertexai` is accepted too).
+		{"vertex/gemini-2.5-pro", schemas.Vertex, "gemini-2.5-pro", true},
+		{"vertexai/gemini-2.5-flash", schemas.Vertex, "gemini-2.5-flash", true},
 		// Self-hosted OpenAI-compatible servers.
 		{"ollama/llama3.3", schemas.Ollama, "llama3.3", true},
 		{"vllm/meta-llama/Llama-3.1-8B-Instruct", schemas.VLLM, "meta-llama/Llama-3.1-8B-Instruct", true},

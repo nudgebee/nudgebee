@@ -44,7 +44,7 @@ func TestHandleConversationTimeAggregatesApi_InvalidEndDate(t *testing.T) {
 // explicit account_id the caller cannot read is rejected before the DAO
 // is consulted, preventing cross-account data leaks via this endpoint.
 // The caller is granted one account; the request asks for a different one.
-func TestHandleConversationTimeAggregatesApi_ForbiddenAccount(t *testing.T) {
+func TestHandleConversationTimeAggregatesApi_ForbiddenAccount_LegacyCoverage(t *testing.T) {
 	allowedAccount := "00000000-0000-0000-0000-000000000001"
 	deniedAccount := "11111111-1111-1111-1111-111111111111"
 

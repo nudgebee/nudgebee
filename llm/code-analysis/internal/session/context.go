@@ -30,6 +30,7 @@ type SessionContext struct {
 	AccountID        string                           // Account ID for constructing recommendation URLs
 	BuildConfig      *BuildConfig                     // Optional custom build/lint/test commands for verification
 	Mode             string                           // "explore" (read-only) or "fix"; templates render mode-specific instructions
+	BaseDiff         string                           // Optional prior diff for the same fix (verify-and-adapt, not re-derive); fix-mode only
 	SkillsContext    string                           // Operator-authored skills (rendered <skills> block) forwarded by llm-server; injected into agent prompts
 	RepoFacts        string                           // Stable repository facts (module roots + verify commands) discovered once at clone; injected into every agent's prompt
 	RunMemory        *planners.RunMemory              // Per-run working memory shared across phases (read cache; lifetime = one /analyze run, not persisted across runs)

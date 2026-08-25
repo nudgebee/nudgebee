@@ -24,7 +24,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   setIsLoading,
   reviewAutoOptimize = false,
   approvalData = {},
-  accountOptions = [],
+  accountOptions = /** @type {{value: string, label: string}[]} */ ([]),
   defaultAccountId = '',
 }) => {
   const [activeButton, setActiveButton] = useState('');

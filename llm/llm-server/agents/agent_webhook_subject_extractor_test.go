@@ -1,10 +1,11 @@
 package agents
 
 import (
+	"context"
 	"testing"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -26,7 +27,7 @@ func TestWebhookSubjectExtractor_InterfaceCompliance(t *testing.T) {
 
 func TestWebhookSubjectExtractor_PromptRegistered(t *testing.T) {
 	// The system prompt must be embedded and resolvable.
-	assert.NotEmpty(t, prompts_repo.GetPrompt(prompts_repo.PromptAgentWebhookSubjectExtractor))
+	assert.NotEmpty(t, prompts.GetPrompt(context.Background(), prompts.PromptWebhookSubjectExtractor, ""))
 }
 
 func TestWebhookSubjectExtractor_OptionsAlwaysIncludeNotFound(t *testing.T) {

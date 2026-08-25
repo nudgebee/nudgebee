@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,7 +65,7 @@ func CreateGCPAlertPolicy(ctx providers.CloudProviderContext, account providers.
 		Conditions:           conditions,
 		Combiner:             monitoringpb.AlertPolicy_OR,
 		Enabled:              wrapperspb.Bool(true),
-		NotificationChannels: []string{}, // User must configure notification channels separately
+		NotificationChannels: config.NotificationTargets,
 	}
 
 	// Set comparison in the first condition
@@ -128,6 +129,7 @@ func buildGCPAlarmConfig(resource providers.Resource, template providers.AlarmTe
 		AlarmName:          fmt.Sprintf("%s-%s", template.Name, resource.Id),
 		MetricName:         template.Configuration.MetricName,
 		MetricTypeFilter:   template.Configuration.MetricTypeFilter,
+		MetricLabelFilters: template.Configuration.MetricLabelFilters,
 		ResourceType:       template.Configuration.ResourceType,
 		Namespace:          template.Configuration.Namespace,
 		Statistic:          template.Configuration.Statistic,
@@ -282,6 +284,20 @@ func buildSimpleCondition(config providers.AlarmCreationConfig) (*monitoringpb.A
 		}
 	}
 
+	// Metric-label filters are template constants (e.g. response_code_class="5xx"
+	// on an error-rate alert). Append in sorted key order so identical configs
+	// always build the identical filter string.
+	if len(config.MetricLabelFilters) > 0 {
+		keys := make([]string, 0, len(config.MetricLabelFilters))
+		for k := range config.MetricLabelFilters {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			filter += " AND " + metricLabelClause(k, config.MetricLabelFilters[k])
+		}
+	}
+
 	// Build aggregation
 	aggregation := &monitoringpb.Aggregation{
 		AlignmentPeriod:  durationpb.New(time.Duration(config.Period) * time.Second),
@@ -299,6 +315,38 @@ func buildSimpleCondition(config providers.AlarmCreationConfig) (*monitoringpb.A
 			},
 		},
 	}, nil
+}
+
+// metricLabelClause renders one pinned metric-label comparison for a Cloud
+// Monitoring filter. INT64-typed labels (e.g. the HTTPS load balancer's
+// response_code_class, whose values are 200/300/400/500) must be compared
+// unquoted; string-typed labels stay quoted. The value's shape decides:
+// all-digits renders numeric. A leading "!" marks negation (e.g. "!OK" for
+// GCS request errors renders response_code!="OK") — safe as a convention
+// because GCP label values never begin with "!". Shared by the creator and
+// the checker so both always agree on the rendered form.
+func metricLabelClause(key, value string) string {
+	op := "="
+	if strings.HasPrefix(value, "!") {
+		op = "!="
+		value = value[1:]
+	}
+	if isAllDigits(value) {
+		return fmt.Sprintf(`metric.labels.%s%s%s`, key, op, value)
+	}
+	return fmt.Sprintf(`metric.labels.%s%s"%s"`, key, op, value)
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // buildMQLCondition builds a condition using Monitoring Query Language for metric math
@@ -416,6 +464,13 @@ func convertStatisticToMQLFunction(statistic string) string {
 
 // convertComparisonOperator converts alarm config comparison operator to GCP comparison type
 func convertComparisonOperator(operator string) monitoringpb.ComparisonType {
+	// Alarm templates carry native comparison names ("COMPARISON_GT",
+	// "COMPARISON_LT", ...). Map those verbatim onto the enum — the keyword
+	// mapping below only knows the AWS-style names and silently degrades
+	// everything else to COMPARISON_GT (wrong for less-than templates).
+	if v, ok := monitoringpb.ComparisonType_value[strings.ToUpper(operator)]; ok {
+		return monitoringpb.ComparisonType(v)
+	}
 	switch operator {
 	case "GreaterThanThreshold":
 		return monitoringpb.ComparisonType_COMPARISON_GT
@@ -432,6 +487,13 @@ func convertComparisonOperator(operator string) monitoringpb.ComparisonType {
 
 // convertStatisticToAligner converts alarm config statistic to GCP aligner
 func convertStatisticToAligner(statistic string) monitoringpb.Aggregation_Aligner {
+	// Alarm templates carry native aligner names ("ALIGN_MAX",
+	// "ALIGN_PERCENTILE_99", ...). Map those verbatim onto the enum — the keyword
+	// mapping below only knows mean/sum/min/max/count and silently degrades
+	// everything else to ALIGN_MEAN, which is invalid for distribution metrics.
+	if v, ok := monitoringpb.Aggregation_Aligner_value[strings.ToUpper(statistic)]; ok {
+		return monitoringpb.Aggregation_Aligner(v)
+	}
 	switch strings.ToLower(statistic) {
 	case "average", "avg":
 		return monitoringpb.Aggregation_ALIGN_MEAN

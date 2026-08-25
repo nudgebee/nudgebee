@@ -221,16 +221,19 @@ func (s *Service) GetTenantStatus(ctx context.Context, tenantID string) (*GetSta
 		return nil, err
 	}
 
-	// Get subscription
+	// Get subscription (include entitlement_overrides to avoid re-querying per dimension)
 	var sub Subscription
 	var plan Plan
+	var overridesJSON sql.NullString
 	err = dbm.Db.QueryRowContext(ctx, `
 		SELECT s.id, s.tenant_id, s.plan_id, s.status, s.subscription_start,
+		       s.entitlement_overrides,
 		       p.name, p.display_name, p.plan_type
 		FROM billing_subscriptions s
 		JOIN billing_plans p ON s.plan_id = p.id
 		WHERE s.tenant_id = $1
 	`, tenantID).Scan(&sub.ID, &sub.TenantID, &sub.PlanID, &sub.Status, &sub.SubscriptionStart,
+		&overridesJSON,
 		&plan.Name, &plan.DisplayName, &plan.PlanType)
 
 	if err != nil {
@@ -266,15 +269,48 @@ func (s *Service) GetTenantStatus(ctx context.Context, tenantID string) (*GetSta
 		return nil, err
 	}
 
+	// Parse overrides once — used for both limit resolution and overage check
+	var overrides *EntitlementOverrides
+	if overridesJSON.Valid && overridesJSON.String != "" {
+		var ov EntitlementOverrides
+		if unmarshalErr := json.Unmarshal([]byte(overridesJSON.String), &ov); unmarshalErr != nil {
+			slog.Warn("Failed to unmarshal entitlement_overrides", "tenantID", tenantID, "error", unmarshalErr)
+		} else {
+			overrides = &ov
+		}
+	}
+	overageEnabled := overrides != nil && overrides.OverageEnabled != nil && *overrides.OverageEnabled
+
 	// Get dimension status
-	var dimensions []DimensionStatus
 	mappings, err := s.getAllFeatureMappings(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	// Fetch all plan-specific limits in one query to resolve limits in-memory
+	planLimits := make(map[string]int)
+	limitRows, err := dbm.Db.QueryContext(ctx,
+		"SELECT dimension, included_limit FROM billing_plan_dimension_limits WHERE plan_id = $1", sub.PlanID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = limitRows.Close() }()
+
+	for limitRows.Next() {
+		var dim string
+		var lim int
+		if err := limitRows.Scan(&dim, &lim); err != nil {
+			return nil, err
+		}
+		planLimits[dim] = lim
+	}
+	if err := limitRows.Err(); err != nil {
+		return nil, err
+	}
+
+	dimensions := make([]DimensionStatus, 0, len(mappings))
 	for _, mapping := range mappings {
-		limit, _ := s.getEffectiveLimit(ctx, tenantID, mapping.Dimension)
+		limit := resolveEffectiveLimit(overrides, planLimits, mapping)
 		usage, _ := s.getCurrentUsage(ctx, tenantID, mapping.Dimension, billingPeriod)
 
 		remaining := limit - usage
@@ -294,7 +330,7 @@ func (s *Service) GetTenantStatus(ctx context.Context, tenantID string) (*GetSta
 			Limit:          limit,
 			Remaining:      remaining,
 			OverageCount:   overage,
-			OverageEnabled: s.isOverageEnabled(ctx, tenantID),
+			OverageEnabled: overageEnabled,
 		})
 	}
 
@@ -445,35 +481,50 @@ func (s *Service) getEffectiveLimit(ctx context.Context, tenantID, dimension str
 		return 0, err
 	}
 
-	// 1. Check tenant-level overrides first
 	var overridesJSON sql.NullString
 	err = dbm.Db.QueryRowContext(ctx, `
 		SELECT entitlement_overrides FROM billing_subscriptions WHERE tenant_id = $1
 	`, tenantID).Scan(&overridesJSON)
 
+	var overrides *EntitlementOverrides
 	if err == nil && overridesJSON.Valid && overridesJSON.String != "" {
-		var overrides EntitlementOverrides
-		if unmarshalErr := json.Unmarshal([]byte(overridesJSON.String), &overrides); unmarshalErr != nil {
+		var ov EntitlementOverrides
+		if unmarshalErr := json.Unmarshal([]byte(overridesJSON.String), &ov); unmarshalErr != nil {
 			slog.Warn("Failed to unmarshal entitlement_overrides", "tenantID", tenantID, "error", unmarshalErr)
 		} else {
-			switch dimension {
-			case DimensionIncidents:
-				if overrides.Incidents != nil {
-					return *overrides.Incidents, nil
-				}
-			case DimensionWorkflowExecutions:
-				if overrides.WorkflowExecutions != nil {
-					return *overrides.WorkflowExecutions, nil
-				}
-			case DimensionAIWorkflowSteps:
-				if overrides.AIWorkflowSteps != nil {
-					return *overrides.AIWorkflowSteps, nil
-				}
+			overrides = &ov
+		}
+	}
+
+	return s.getEffectiveLimitWithOverrides(ctx, tenantID, dimension, overrides)
+}
+
+// getEffectiveLimitWithOverrides resolves the limit for a dimension using pre-fetched overrides,
+// avoiding a per-dimension DB round-trip to billing_subscriptions.
+func (s *Service) getEffectiveLimitWithOverrides(ctx context.Context, tenantID, dimension string, overrides *EntitlementOverrides) (int, error) {
+	if overrides != nil {
+		switch dimension {
+		case DimensionIncidents:
+			if overrides.Incidents != nil {
+				return *overrides.Incidents, nil
+			}
+		case DimensionWorkflowExecutions:
+			if overrides.WorkflowExecutions != nil {
+				return *overrides.WorkflowExecutions, nil
+			}
+		case DimensionAIWorkflowSteps:
+			if overrides.AIWorkflowSteps != nil {
+				return *overrides.AIWorkflowSteps, nil
 			}
 		}
 	}
 
-	// 2. Check plan-specific dimension limits
+	dbm, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return 0, err
+	}
+
+	// Check plan-specific dimension limits
 	var planLimit sql.NullInt64
 	err = dbm.Db.QueryRowContext(ctx, `
 		SELECT pdl.included_limit
@@ -486,7 +537,7 @@ func (s *Service) getEffectiveLimit(ctx context.Context, tenantID, dimension str
 		return int(planLimit.Int64), nil
 	}
 
-	// 3. Fall back to default from feature mapping
+	// Fall back to default from feature mapping
 	var defaultLimit sql.NullInt64
 	err = dbm.Db.QueryRowContext(ctx, `
 		SELECT included_limit_default FROM billing_feature_mapping WHERE dimension = $1
@@ -496,8 +547,38 @@ func (s *Service) getEffectiveLimit(ctx context.Context, tenantID, dimension str
 		return int(defaultLimit.Int64), nil
 	}
 
-	// No limit found - return unlimited
 	return -1, nil
+}
+
+// resolveEffectiveLimit resolves the limit for a dimension entirely in-memory
+// using pre-fetched overrides, plan limits, and mapping defaults.
+func resolveEffectiveLimit(overrides *EntitlementOverrides, planLimits map[string]int, mapping FeatureMapping) int {
+	if overrides != nil {
+		switch mapping.Dimension {
+		case DimensionIncidents:
+			if overrides.Incidents != nil {
+				return *overrides.Incidents
+			}
+		case DimensionWorkflowExecutions:
+			if overrides.WorkflowExecutions != nil {
+				return *overrides.WorkflowExecutions
+			}
+		case DimensionAIWorkflowSteps:
+			if overrides.AIWorkflowSteps != nil {
+				return *overrides.AIWorkflowSteps
+			}
+		}
+	}
+
+	if lim, ok := planLimits[mapping.Dimension]; ok {
+		return lim
+	}
+
+	if mapping.IncludedLimitDefault != nil {
+		return *mapping.IncludedLimitDefault
+	}
+
+	return -1
 }
 
 func (s *Service) getCurrentUsage(ctx context.Context, tenantID, dimension string, billingPeriod time.Time) (int, error) {

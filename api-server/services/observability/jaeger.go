@@ -107,7 +107,7 @@ func (j *JaegerSaasTraceSource) CountTraces(ctx *security.RequestContext, req Tr
 // Enhanced to support more labels with static values where Jaeger API doesn't provide them
 func (j *JaegerTraceSource) GetLabelValues(ctx *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	// Check account access
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "traces") {
 		return common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: []string{}}, fmt.Errorf("access denied for account: %s", req.AccountId)
 	}
 
@@ -266,7 +266,7 @@ func (j *JaegerSaasTraceSource) GetQuery(ctx *security.RequestContext, req Trace
 
 // QueryGroupedTraces returns RED metrics grouped by (service, operation) via Jaeger Metrics API (SPM)
 func (j *JaegerTraceSource) QueryGroupedTraces(ctx *security.RequestContext, req TracesV3Request) ([]TraceGroupingValues, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "traces") {
 		return nil, fmt.Errorf("access denied for account: %s", req.AccountId)
 	}
 
@@ -322,7 +322,7 @@ func (j *JaegerSaasTraceSource) QueryGroupedTraces(ctx *security.RequestContext,
 
 // QueryGroupedTracesCount returns count of grouped traces via Jaeger Metrics API (SPM)
 func (j *JaegerTraceSource) QueryGroupedTracesCount(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceGroupCount, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "traces") {
 		return common.OpenTelemetryTraceGroupCount{Count: -1}, fmt.Errorf("access denied for account: %s", req.AccountId)
 	}
 
@@ -643,7 +643,7 @@ func (j *JaegerTraceSource) sortTraces(traces []common.OpenTelemetryTrace, order
 // QueryTraces fetches traces from Jaeger via the K8s agent relay
 func (j *JaegerTraceSource) QueryTraces(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
 	// Check account access
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "traces") {
 		return nil, fmt.Errorf("access denied for account: %s", req.AccountId)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"nudgebee/runbook/config"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -189,6 +190,13 @@ func (s *Server) listWorkflows(c *gin.Context) {
 	if typeParam := c.Query("type"); typeParam != "" {
 		search.TriggerType = typeParam
 	}
+	// The AI-tool discovery listing filters on this; an unparseable value is
+	// ignored rather than rejected, matching how the other filters here behave.
+	if aiParam := c.Query("ai_invocable"); aiParam != "" {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(aiParam)); err == nil {
+			search.AIInvocable = &parsed
+		}
+	}
 
 	if nextPageToken := c.Query("next_page_token"); nextPageToken != "" {
 		search.NextPageToken = nextPageToken
@@ -203,7 +211,9 @@ func (s *Server) listWorkflows(c *gin.Context) {
 		search.Limit = limit
 	}
 
-	workflows, err := s.workflowService.ListWorkflows(sc, accountID, search)
+	// The REST route stays single-account — getRequestDetails already rejects a
+	// blank account id, so this is always a one-element scope.
+	workflows, err := s.workflowService.ListWorkflows(sc, []string{accountID}, search)
 	if err != nil {
 		s.logger.Error("failed to list workflows", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve workflows"})
@@ -395,6 +405,42 @@ func (s *Server) getWorkflowExecution(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, details)
+}
+
+// searchAIInvocableWorkflows ranks the automations the AI assistant may run
+// against a free-text query — normally the symptom a user described, not an
+// automation name.
+//
+// A dedicated endpoint rather than a flag on the listing because the two answer
+// different questions: the listing shows a user their automations from the
+// DRAFT definition, while the AI must see the LIVE version's llm_description —
+// what is published, not what someone is still editing.
+func (s *Server) searchAIInvocableWorkflows(c *gin.Context) {
+	sc, accountID, processRequest := s.getRequestDetails(c)
+	if !processRequest {
+		return
+	}
+
+	limit := 0
+	if raw := c.Query("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+			limit = parsed
+		}
+	}
+
+	result, err := s.workflowService.SearchAIInvocableWorkflows(sc, accountID, c.Query("query"), limit)
+	if err != nil {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
+			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
+			return
+		}
+		s.logger.Error("failed to search AI-invocable workflows", "account_id", accountID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search automations"})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 func (s *Server) triggerWorkflow(c *gin.Context) {
@@ -886,7 +932,13 @@ func (s *Server) validateWorkflow(c *gin.Context) {
 	}
 
 	if err := s.workflowService.ValidateWorkflow(sc, accountID, wf); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "validation failed: " + err.Error()})
+		// Format rather than dumping err.Error(): this is the endpoint the AI automation
+		// builder calls between building and saving, and it feeds the response straight
+		// back to the model to correct itself. A raw go-playground error ("Field
+		// validation for 'params' failed on the 'integration_name_missing' tag") is not
+		// something it can act on. formatValidationError passes non-validator errors
+		// through unchanged.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "validation failed: " + formatValidationError(err)})
 		return
 	}
 

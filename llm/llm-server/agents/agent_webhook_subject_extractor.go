@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -92,7 +92,17 @@ func (a *WebhookSubjectExtractorAgent) GetSupportedTools(ctx *security.RequestCo
 }
 
 func (a *WebhookSubjectExtractorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	instructions := []string{prompts_repo.GetPrompt(prompts_repo.PromptAgentWebhookSubjectExtractor)}
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptWebhookSubjectExtractor, query.AccountId)
+	if promptErr != nil {
+		// Return nothing rather than continue. Unlike the agents that assemble
+		// constraints in Go, this one carries only a Role and the loaded text, so a
+		// failed load leaves nothing worth shipping — just a classifier role with a
+		// blank instruction and some historical patterns. MustResolveAll covers
+		// default/v1 at startup, so this only fires for a malformed override.
+		ctx.GetLogger().Error("webhook subject extractor: system prompt failed to load", "error", promptErr)
+		return core.NBAgentPrompt{}
+	}
+	instructions := []string{promptText}
 
 	if patterns := a.historicalPatterns(ctx); patterns != "" {
 		instructions = append(instructions, "\n## Historical Title -> Service Patterns\n"+patterns)

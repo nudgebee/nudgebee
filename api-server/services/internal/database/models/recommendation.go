@@ -26,6 +26,11 @@ type Recommendation struct {
 	FinOpsScoreBreakdown Json                 `json:"finops_score_breakdown" mapstructure:"finops_score_breakdown"  db:"finops_score_breakdown"`
 	LastNudgedAt         *time.Time           `json:"last_nudged_at" mapstructure:"last_nudged_at"  db:"last_nudged_at"`
 	DedupeGroup          *string              `json:"dedupe_group" mapstructure:"dedupe_group"  db:"dedupe_group"`
+	// SnoozedUntil set together with status Dismissed means "snoozed": every
+	// Open-filtering consumer suppresses the row, and the expiry sweep returns
+	// it to Open once the timestamp passes. NULL on a plain dismissal.
+	SnoozedUntil    *time.Time `json:"snoozed_until" mapstructure:"snoozed_until"  db:"snoozed_until"`
+	VulnerabilityId *string    `json:"vulnerability_id" mapstructure:"vulnerability_id"  db:"vulnerability_id"`
 }
 
 type RecommendationStatus string
@@ -59,6 +64,12 @@ type RecommendationResolution struct {
 	PRLifecycleState  *string                              `json:"pr_lifecycle_state" mapstructure:"pr_lifecycle_state"  db:"pr_lifecycle_state"`
 	LastPRCheckAt     *time.Time                           `json:"last_pr_check_at" mapstructure:"last_pr_check_at"  db:"last_pr_check_at"`
 	PRFollowupPending *bool                                `json:"pr_followup_pending" mapstructure:"pr_followup_pending"  db:"pr_followup_pending"`
+	// ValueRefreshCount and LastValueRefreshAt bound how often an already-open
+	// pull request may be rewritten when its recommendation moves (#34959): a
+	// cooldown so a workload hovering near the threshold cannot rewrite hourly,
+	// and a cap so one that never settles is eventually left for a human.
+	ValueRefreshCount  int        `json:"value_refresh_count" mapstructure:"value_refresh_count" db:"value_refresh_count"`
+	LastValueRefreshAt *time.Time `json:"last_value_refresh_at" mapstructure:"last_value_refresh_at" db:"last_value_refresh_at"`
 }
 
 const (

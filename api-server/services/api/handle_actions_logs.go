@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
-	"nudgebee/services/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -22,6 +21,13 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 	// request payload; enforce account access once up front. tenant_admin
 	// passes for any account in the tenant; account_admin only for its
 	// assigned accounts.
+	//
+	// CanReadAccountData rather than HasAccountAccess: the latter recognises
+	// built-in scoped roles ONLY, so a custom-role holder whose `logs:Read`
+	// grant had already cleared the gateway was then refused here, with no role
+	// they could be given short of account_admin. It adds the dynamic-RBAC arm
+	// (tenant-global grant + account-in-tenant, or an account-scoped grant) and
+	// still starts from HasAccountAccess, so built-in roles are unchanged.
 	reqInput, ok := actionPayload.Input["request"].(map[string]interface{})
 	if !ok {
 		c.JSON(400, common.ErrorActionBadRequest("missing or invalid request input"))
@@ -32,7 +38,7 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 		c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 		return
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "logs") {
 		c.JSON(403, common.ErrorActionForbidden("access denied for account: "+accountId))
 		return
 	}
@@ -52,7 +58,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		resp, err := observability.FetchLogs(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityLogsQueryTimeout, func() (observability.FetchLogsResult, error) {
+			return observability.FetchLogs(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -85,7 +93,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		resp, err := observability.GetLogsQuery(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityLogsQueryTimeout, func() (observability.OutputLogQuery, error) {
+			return observability.GetLogsQuery(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -111,7 +121,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 
 		// FetchLogLabelsOrIndexFields owns the fetch_index fork, so the mode is
 		// decided in one testable place rather than split across the handler.
-		resp, err := observability.FetchLogLabelsOrIndexFields(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputLogLabel, error) {
+			return observability.FetchLogLabelsOrIndexFields(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -136,7 +148,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		resp, err := observability.FetchLogLabelValues(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputLogLabelValue, error) {
+			return observability.FetchLogLabelValues(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -161,7 +175,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		resp, err := observability.FetchLogGroup(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() (observability.LogGroupOutput, error) {
+			return observability.FetchLogGroup(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

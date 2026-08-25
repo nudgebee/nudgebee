@@ -290,7 +290,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
     setLoadState('loading');
     setErrorMessage('');
     try {
-      const response: any = await apiWorkflow.listWorkflows(requestAccountId);
+      const response: any = await apiWorkflow.listWorkflows([requestAccountId]);
       // Drop the response if the active accountId changed while the request was in flight.
       if (currentAccountIdRef.current !== requestAccountId) return;
       const apiError = parseHttpResponseBodyMessage(response);
@@ -378,7 +378,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
 
   const goToExecution = useCallback(
     (ex: TriggeredExecution) => {
-      const url = `/workflow/${ex.workflow_id}?accountId=${accountId}&executionId=${ex.id}#executions`;
+      const url = `/automation/${ex.workflow_id}?accountId=${accountId}&executionId=${ex.id}#executions`;
       window.open(url, '_blank', 'noopener,noreferrer');
     },
     [accountId]

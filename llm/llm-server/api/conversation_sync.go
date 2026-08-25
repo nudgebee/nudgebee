@@ -213,6 +213,11 @@ func syncStuckEventAnalyses() error {
 	}
 	processed := make(map[key]bool)
 
+	// How long a stuck IN_PROGRESS analysis is retried before being abandoned as
+	// FAILED. Distinct from llm_server_event_analysis_freshness_hours, which
+	// bounds how long a COMPLETED analysis may be reused for a new event sharing
+	// its fingerprint — the two are natural to set to the same value but are
+	// unrelated, and tuning that knob does not change stuck-run recovery.
 	const maxRecoveryAge = 24 * time.Hour
 
 	// Don't restart an analysis that was updated very recently — the in-flight
@@ -291,7 +296,7 @@ func syncStuckEventAnalyses() error {
 				"event_id", a.EventId, "session", parentSessionId, "conv_status", conv.Status,
 				"updated_at", a.UpdatedAt, "age", time.Since(a.UpdatedAt).Round(time.Minute))
 			failCtx := security.NewRequestContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), []string{a.AccountId})
-			if updateErr := repo.UpdateEventAnalysisStatus(failCtx, a.EventFingerprint, a.AccountId, a.EventAggregationKey, string(events.AnalysisStatusFailed), "recovery abandoned: analysis stuck for over 24 hours", a.AnalysisType); updateErr != nil {
+			if updateErr := repo.UpdateEventAnalysisStatusById(failCtx, a.ID, string(events.AnalysisStatusFailed), "recovery abandoned: analysis stuck for over 24 hours"); updateErr != nil {
 				slog.Error("sync: failed to mark stale analysis as failed", "error", updateErr, "event_id", a.EventId)
 			}
 			continue

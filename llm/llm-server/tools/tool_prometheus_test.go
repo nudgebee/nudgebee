@@ -476,6 +476,21 @@ func TestValidatePromQLSyntax_ValidQueryReturnsEmpty(t *testing.T) {
 // metrics_label_values
 // ---------------------------------------------------------------------------
 
+// label_values() is a Grafana template-variable function, not PromQL. Observed in
+// prod: the agent needed a label's values, reached for the Grafana idiom, and got
+// back a generic "unknown PromQL function" list that named no way to get them —
+// so it guessed another label name instead and the run ended in "no data".
+func TestValidatePromQLSyntax_LabelValuesPointsAtLabelValuesTool(t *testing.T) {
+	got := validatePromQLSyntax("label_values(node_cpu_seconds_total, instance)")
+	require.NotEmpty(t, got, "label_values() is not PromQL and must produce an error")
+	assert.Contains(t, got, ToolMetricsLabelValues,
+		"hint must name the tool that actually returns label values")
+	assert.Contains(t, got, "Grafana",
+		"hint must explain why label_values() can never parse here")
+	assert.NotContains(t, got, "histogram_quantile()",
+		"must not fall through to the generic unknown-function list, which names no recovery path")
+}
+
 // The generic unknown-function hint must survive for every other bad function —
 // the label_values branch is a narrow carve-out, not a replacement.
 func TestValidatePromQLSyntax_OtherUnknownFunctionKeepsGenericHint(t *testing.T) {
@@ -599,6 +614,21 @@ func TestListMetricsLabelValuesTool_SchemaContract(t *testing.T) {
 	// The descriptions must not blur that, or the planner picks the wrong one.
 	assert.Contains(t, tool.Description(), "VALUES")
 	assert.Contains(t, ListMetricsLabelsTool{}.Description(), "labels")
+}
+
+// The empty-result guidance is the agent's only cue at the exact moment it would
+// otherwise start guessing label names, so it must route both named-resource
+// shapes: workloads to series-match, everything else to label-values.
+func TestPrometheusNoDataMessage_RoutesEachDiscoveryShape(t *testing.T) {
+	msg := prometheusNoDataMessage(`node_cpu_seconds_total{kubernetes_node="worker-1"}`)
+
+	assert.Contains(t, msg, `node_cpu_seconds_total{kubernetes_node="worker-1"}`,
+		"the failing query must be echoed so the agent knows what to change")
+	assert.Contains(t, msg, ToolMetricsSeriesMatch, "workload path")
+	assert.Contains(t, msg, ToolMetricsLabelValues, "non-workload named-resource path")
+	assert.Contains(t, msg, ToolMetricsList, "keyword-discovery path")
+	assert.Contains(t, msg, "do NOT guess another label name",
+		"must explicitly forbid the observed guess-loop")
 }
 
 // TestESNumericFieldTypes_DistinguishMetricsFromDimensions pins the type split that

@@ -78,7 +78,27 @@ type LLMConfig struct {
 	Region         string `mapstructure:"llm_provider_region"`
 	MaxRetries     int    `mapstructure:"llm_provider_max_retries"`
 	EmbeddingModel string `mapstructure:"llm_provider_embedding_model"`
+	// AWS static credentials for Bedrock. Normally supplied per request by
+	// llm-server (which resolves the tenant's integration); the mapstructure
+	// tags also let a local/dev run set them from env. When unset the AWS
+	// default credential chain applies, which is what serves EKS deployments
+	// via the node role or IRSA.
+	AccessKey    string `mapstructure:"llm_provider_access_key"`
+	SecretKey    string `mapstructure:"llm_provider_secret_key"`
+	SessionToken string `mapstructure:"llm_provider_session_token"`
+	// MaxOutputTokens is the per-response token ceiling requested from the
+	// provider. It exists so a model whose ceiling is lower than our default can
+	// be corrected by configuration instead of a release; see
+	// resolveMaxOutputTokens, which additionally clamps families known to reject
+	// anything higher.
+	MaxOutputTokens int `mapstructure:"llm_provider_max_output_tokens"`
 }
+
+// DefaultAutomationCommentMarkers is the shipped value of
+// AgentConfig.AutomationCommentMarkers. It covers jimschubert/labeler, the one
+// PAT-driven automation in this repo; everything else that comments on a PR in
+// practice is a GitHub App and is excluded by author type instead.
+const DefaultAutomationCommentMarkers = "<!-- Labeler (https://github.com/jimschubert/labeler) -->"
 
 type AgentConfig struct {
 	ReActMaxIterations int           `mapstructure:"react_max_iterations"`
@@ -104,6 +124,22 @@ type AgentConfig struct {
 	ModelRouter string `mapstructure:"model_router"`
 	ModelFixer  string `mapstructure:"model_fixer"`
 	ModelReview string `mapstructure:"model_review"`
+	// AutomationCommentMarkers is a comma-separated list of substrings that mark
+	// a PR comment as written by repo automation rather than a human reviewer.
+	//
+	// Most automation (dependabot, renovate, codecov, sonarcloud, github-actions)
+	// is a GitHub App and is already excluded by its "Bot" author type, which
+	// needs no configuration. This list exists only for the residue: automation
+	// driven by a workflow using a *human* personal access token, which GitHub
+	// reports as that human. The default covers jimschubert/labeler, which this
+	// repo runs that way; operators whose repos run something similar should add
+	// its marker here.
+	//
+	// Prefer a marker the tool itself emits — typically a leading HTML comment —
+	// over anything a human might plausibly type, so real review feedback is
+	// never silenced. Override via AGENT_AUTOMATION_COMMENT_MARKERS. Markers
+	// containing a comma cannot be expressed.
+	AutomationCommentMarkers string `mapstructure:"automation_comment_markers"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -161,6 +197,12 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("llm_provider_region", "us-west-2")
 	viper.SetDefault("llm_provider_max_retries", 3)
 	viper.SetDefault("llm_provider_embedding_model", "text-embedding-ada-002")
+	viper.SetDefault("llm_provider_max_output_tokens", 0) // 0 ⇒ use the built-in default
+	// No default credentials: unset means "use the AWS default chain", which is
+	// how EKS deployments authenticate through the node role or IRSA.
+	viper.SetDefault("llm_provider_access_key", "")
+	viper.SetDefault("llm_provider_secret_key", "")
+	viper.SetDefault("llm_provider_session_token", "")
 
 	// Agent specific configs
 	viper.SetDefault("agent.react_max_iterations", 30)
@@ -173,6 +215,7 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("agent.model_router", "")
 	viper.SetDefault("agent.model_fixer", "")
 	viper.SetDefault("agent.model_review", "")
+	viper.SetDefault("agent.automation_comment_markers", DefaultAutomationCommentMarkers)
 
 	// Load secrets file if it exists (e.g., secrets.yaml or secrets.json)
 	// This file should contain sensitive information and should not be committed to VCS.
@@ -207,6 +250,7 @@ func LoadConfig() (*Config, error) {
 
 	// Bind server environment variables
 	_ = viper.BindEnv("server.port", "SERVER_PORT")
+	_ = viper.BindEnv("server.write_timeout", "SERVER_WRITE_TIMEOUT")
 
 	// Explicitly bind environment variables for LLM config (consistent with llm-server)
 	_ = viper.BindEnv("agent.harness_verify", "AGENT_HARNESS_VERIFY")
@@ -214,6 +258,7 @@ func LoadConfig() (*Config, error) {
 	_ = viper.BindEnv("agent.model_router", "AGENT_MODEL_ROUTER")
 	_ = viper.BindEnv("agent.model_fixer", "AGENT_MODEL_FIXER")
 	_ = viper.BindEnv("agent.model_review", "AGENT_MODEL_REVIEW")
+	_ = viper.BindEnv("agent.automation_comment_markers", "AGENT_AUTOMATION_COMMENT_MARKERS")
 	_ = viper.BindEnv("llm_provider", "LLM_PROVIDER")
 	_ = viper.BindEnv("llm_model_name", "LLM_MODEL_NAME")
 	// Also support LLM_MODEL for backward compatibility
@@ -227,6 +272,10 @@ func LoadConfig() (*Config, error) {
 	_ = viper.BindEnv("llm_provider_region", "LLM_PROVIDER_REGION")
 	_ = viper.BindEnv("llm_provider_max_retries", "LLM_PROVIDER_MAX_RETRIES")
 	_ = viper.BindEnv("llm_provider_embedding_model", "LLM_PROVIDER_EMBEDDING_MODEL")
+	_ = viper.BindEnv("llm_provider_max_output_tokens", "LLM_PROVIDER_MAX_OUTPUT_TOKENS")
+	_ = viper.BindEnv("llm_provider_access_key", "LLM_PROVIDER_ACCESS_KEY")
+	_ = viper.BindEnv("llm_provider_secret_key", "LLM_PROVIDER_SECRET_KEY")
+	_ = viper.BindEnv("llm_provider_session_token", "LLM_PROVIDER_SESSION_TOKEN")
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
@@ -246,6 +295,11 @@ type LLMOverride struct {
 	ApiVersion  string
 	ApiType     string
 	Region      string
+	// AWS static credentials for Bedrock, applied as a unit — see
+	// CloneWithLLMOverride.
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
 }
 
 // CloneWithLLMOverride returns a copy of the config with the given LLM fields
@@ -270,6 +324,9 @@ func (c *Config) CloneWithLLMOverride(o LLMOverride) *Config {
 		clone.LLM.ApiVersion = ""
 		clone.LLM.ApiType = ""
 		clone.LLM.Region = ""
+		clone.LLM.AccessKey = ""
+		clone.LLM.SecretKey = ""
+		clone.LLM.SessionToken = ""
 	}
 	if o.Provider != "" {
 		clone.LLM.Provider = o.Provider
@@ -291,6 +348,16 @@ func (c *Config) CloneWithLLMOverride(o LLMOverride) *Config {
 	}
 	if o.Region != "" {
 		clone.LLM.Region = o.Region
+	}
+	// The AWS credential triple is overlaid as a unit rather than field by
+	// field: mixing a forwarded access key with the startup secret key yields a
+	// credential pair that belongs to neither, and the AWS SDK would reject the
+	// half-set static provider outright instead of falling through to the
+	// default chain. The session token rides with the pair it was issued for.
+	if o.AccessKey != "" && o.SecretKey != "" {
+		clone.LLM.AccessKey = o.AccessKey
+		clone.LLM.SecretKey = o.SecretKey
+		clone.LLM.SessionToken = o.SessionToken
 	}
 	return &clone
 }

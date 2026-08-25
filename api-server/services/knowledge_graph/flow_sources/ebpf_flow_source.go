@@ -355,7 +355,8 @@ func (s *EbpfFlowSource) processK8sAccount(
 				"app_name", s.getApplicationName(app))
 		}
 
-		// Process downstream connections (calls from this service to others)
+		// Process downstream connections (services calling this service —
+		// each downstream entry is a caller/dependent, app is the callee).
 		for j := range app.Downstreams {
 			downstream := &app.Downstreams[j]
 
@@ -434,7 +435,8 @@ func (s *EbpfFlowSource) processK8sAccount(
 			}
 		}
 
-		// Process upstream connections (services calling this service)
+		// Process upstream connections (calls from this service to others —
+		// each upstream entry is a dependency/callee, app is the caller).
 		for k := range app.Upstreams {
 			skipNodeSearch := false
 			upstream := &app.Upstreams[k]
@@ -1397,36 +1399,41 @@ func (s *EbpfFlowSource) buildEdgeProperties(
 		properties["protocol"] = downstream.Protocol
 	}
 
-	// Add source metadata
-	properties["source_service"] = sourceApp.Id.Name
-	properties["source_kind"] = sourceApp.Id.Kind
-	if sourceApp.Id.Namespace != "" {
-		properties["source_namespace"] = sourceApp.Id.Namespace
-	}
+	// downstream.Id/destApp is the caller (a dependent of sourceApp — see the
+	// Downstreams loop above), sourceApp is the callee. source_*/dest_*
+	// properties describe caller/callee, matching source_node_id/
+	// destination_node_id on the edge itself.
 
-	// Add destination metadata (if available)
+	// Add source metadata (the caller)
 	if destApp != nil {
-		properties["dest_service"] = destApp.Id.Name
-		properties["dest_kind"] = destApp.Id.Kind
+		properties["source_service"] = destApp.Id.Name
+		properties["source_kind"] = destApp.Id.Kind
 		if destApp.Id.Namespace != "" {
-			properties["dest_namespace"] = destApp.Id.Namespace
+			properties["source_namespace"] = destApp.Id.Namespace
 		}
 
 		// Add service category if available
 		if destApp.Category.Category != "" {
-			properties["dest_category"] = destApp.Category.Category
+			properties["source_category"] = destApp.Category.Category
 		}
 	} else {
-		properties["dest_service"] = downstream.Id.Name
-		properties["dest_kind"] = downstream.Id.Kind
+		properties["source_service"] = downstream.Id.Name
+		properties["source_kind"] = downstream.Id.Kind
 		if downstream.Id.Namespace != "" {
-			properties["dest_namespace"] = downstream.Id.Namespace
+			properties["source_namespace"] = downstream.Id.Namespace
 		}
 	}
 
-	// Add source category if available
+	// Add destination metadata (the callee)
+	properties["dest_service"] = sourceApp.Id.Name
+	properties["dest_kind"] = sourceApp.Id.Kind
+	if sourceApp.Id.Namespace != "" {
+		properties["dest_namespace"] = sourceApp.Id.Namespace
+	}
+
+	// Add destination category if available
 	if sourceApp.Category.Category != "" {
-		properties["source_category"] = sourceApp.Category.Category
+		properties["dest_category"] = sourceApp.Category.Category
 	}
 
 	// Add status if available
@@ -1459,33 +1466,38 @@ func (s *EbpfFlowSource) buildUpstreamEdgeProperties(
 		properties["protocol"] = upstream.Protocol
 	}
 
-	// Add destination metadata
-	properties["dest_service"] = destApp.Id.Name
-	properties["dest_kind"] = destApp.Id.Kind
+	// destApp is the caller (this app — see the Upstreams loop above), the
+	// upstream link is the callee it depends on. source_*/dest_* properties
+	// describe caller/callee, matching source_node_id/destination_node_id
+	// on the edge itself.
+
+	// Add source metadata (the caller)
+	properties["source_service"] = destApp.Id.Name
+	properties["source_kind"] = destApp.Id.Kind
 	if destApp.Id.Namespace != "" {
-		properties["dest_namespace"] = destApp.Id.Namespace
+		properties["source_namespace"] = destApp.Id.Namespace
 	}
 
-	// Add source metadata (from upstream ID string)
+	// Add source category if available
+	if destApp.Category.Category != "" {
+		properties["source_category"] = destApp.Category.Category
+	}
+
+	// Add destination metadata (the callee, from upstream ID string)
 	upstreamID := s.parseUpstreamID(upstream.Id)
 	if upstreamID != nil {
-		properties["source_service"] = upstreamID.Name
-		properties["source_kind"] = upstreamID.Kind
+		properties["dest_service"] = upstreamID.Name
+		properties["dest_kind"] = upstreamID.Kind
 		if upstreamID.Namespace != "" {
-			properties["source_namespace"] = upstreamID.Namespace
+			properties["dest_namespace"] = upstreamID.Namespace
 		}
 	}
 
 	// Add upstream app metadata if available
 	if upstreamApp != nil {
 		if upstreamApp.Category.Category != "" {
-			properties["source_category"] = upstreamApp.Category.Category
+			properties["dest_category"] = upstreamApp.Category.Category
 		}
-	}
-
-	// Add destination category if available
-	if destApp.Category.Category != "" {
-		properties["dest_category"] = destApp.Category.Category
 	}
 
 	// Add status if available

@@ -6,6 +6,7 @@ import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import { Checkbox } from '@ui/Checkbox';
 import { Card } from '@ui/Card';
+import { Banner } from '@ui/Banner';
 import FilterDropdown from '@ui/FilterDropdown';
 import { ds } from '@utils/colors';
 import {
@@ -18,7 +19,7 @@ import {
 } from '@lib/UserService';
 import { toast as snackbar } from '@ui/Toast';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
-import { fetchFeatureFlagsForTenant } from '@lib/auth';
+import { canEditTenantSettings, fetchFeatureFlagsForTenant, missingPermissionMessage } from '@lib/auth';
 import { useSession } from 'next-auth/react';
 import apiUserManagement from '@api1/user';
 
@@ -114,6 +115,13 @@ const TenantSettings = ({ open, title, onClose }) => {
   const [webhookMappingSaved, setWebhookMappingSaved] = useState(false);
   const [webhookMappingModified, setWebhookMappingModified] = useState(false);
 
+  // Read-only mode. Everyone who can OPEN this modal can read it; only a tenant
+  // admin, a super admin, or a `tenants:Write` grant holder may change anything
+  // (see canEditTenantSettings — it mirrors the backend CanManage gate every one
+  // of these writes goes through). Without this, a `tenants:Read` viewer got a
+  // fully live form whose Save only failed at the server.
+  const canEdit = canEditTenantSettings();
+
   useEffect(() => {
     const fetchTenantAttributes = async () => {
       try {
@@ -207,6 +215,10 @@ const TenantSettings = ({ open, title, onClose }) => {
   }, [open]);
 
   const handleSaveSettings = async () => {
+    // Belt-and-braces: the Save button is not rendered without canEdit, but this
+    // handler is the only path to four tenant-wide mutations, so it does not rely
+    // on the button alone.
+    if (!canEdit) return;
     setLoading(true);
     // Success is signalled to the parent (which shows the "saved successfully"
     // toast) only when every backend op below completes without error. Without
@@ -361,9 +373,15 @@ const TenantSettings = ({ open, title, onClose }) => {
       }}
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], pb: ds.space[5] }}>
+        {/* Stated once at the top rather than as a tooltip on each of the ~12
+            controls: EVERY field here is inert for a viewer, so a per-field
+            message would repeat one sentence a dozen times and still only appear
+            on hover. The banner names the exact grant to ask an admin for, the
+            same string the disabled menu entry uses. */}
+        {!canEdit && <Banner tone='info' message={missingPermissionMessage('tenants:Write')} />}
         <Card variant='outlined' elevation='flat' header={<SectionHeader title='Tenant Identity' description='Display name shown across the app.' />}>
           <Box sx={{ width: '40%' }}>
-            <Input size='sm' label='Tenant Name' value={tenantName} onChange={setTenantName} />
+            <Input size='sm' label='Tenant Name' value={tenantName} onChange={setTenantName} disabled={!canEdit} />
           </Box>
         </Card>
 
@@ -378,6 +396,7 @@ const TenantSettings = ({ open, title, onClose }) => {
               checked={checkboxEnabled}
               label='Allow self-onboarding via domain login'
               onChange={() => setCheckboxEnabled((prev) => !prev)}
+              disabled={!canEdit}
             />
             <Box display='flex' flexDirection='column' gap={ds.space[3]}>
               <Box sx={{ width: '40%' }}>
@@ -386,7 +405,7 @@ const TenantSettings = ({ open, title, onClose }) => {
                   label='Allowed Domains'
                   value={allowDomainValue}
                   onChange={setAllowDomainValue}
-                  disabled={!checkboxEnabled}
+                  disabled={!canEdit || !checkboxEnabled}
                   placeholder='Enter allowed login domains, such as gmail.com'
                 />
               </Box>
@@ -397,7 +416,7 @@ const TenantSettings = ({ open, title, onClose }) => {
                   value={defaultAuthRole}
                   instructionText='Only "tenant_admin" or "tenant_admin_readonly" are allowed'
                   onChange={(value) => setDefaultAuthRole(value?.trim())}
-                  disabled={!checkboxEnabled}
+                  disabled={!canEdit || !checkboxEnabled}
                   placeholder='Enter default auth role for self-onboarding'
                 />
               </Box>
@@ -411,13 +430,14 @@ const TenantSettings = ({ open, title, onClose }) => {
           header={<SectionHeader title='Log Label Mapping' description='Map Logs label keys to product concepts.' />}
         >
           <Box display='flex' flexDirection='column' gap={ds.space[3]}>
-            <TenantAccountCommonSettings logSettings={logSettings} setLogSettings={setLogSettings} />
+            <TenantAccountCommonSettings logSettings={logSettings} setLogSettings={setLogSettings} disabled={!canEdit} />
             <Input
               size='sm'
               label='Cluster Label'
               value={logClusterLabel}
               onChange={setLogClusterLabel}
               placeholder='example: {cluster_name="k8s-cluster"}'
+              disabled={!canEdit}
             />
           </Box>
         </Card>
@@ -448,6 +468,7 @@ const TenantSettings = ({ open, title, onClose }) => {
                 setWebhookMappingModified(true);
               }}
               limitTag={3}
+              disabled={!canEdit}
             />
             <FilterDropdown
               multiple
@@ -460,6 +481,7 @@ const TenantSettings = ({ open, title, onClose }) => {
                 setWebhookMappingModified(true);
               }}
               limitTag={3}
+              disabled={!canEdit}
             />
             <FilterDropdown
               multiple
@@ -472,6 +494,7 @@ const TenantSettings = ({ open, title, onClose }) => {
                 setWebhookMappingModified(true);
               }}
               limitTag={3}
+              disabled={!canEdit}
             />
           </Box>
         </Card>
@@ -501,6 +524,7 @@ const TenantSettings = ({ open, title, onClose }) => {
                 checked={selectedFeatures.includes(f.value)}
                 label={f.description || f.value}
                 onChange={() => handleCheckBoxChange(f.value)}
+                disabled={!canEdit}
               />
             ))}
           </Box>
@@ -522,11 +546,16 @@ const TenantSettings = ({ open, title, onClose }) => {
         }}
       >
         <Button tone='secondary' size='md' onClick={handleClose}>
-          Cancel
+          {canEdit ? 'Cancel' : 'Close'}
         </Button>
-        <Button size='md' onClick={handleSaveSettings} disabled={loading}>
-          Save
-        </Button>
+        {/* Dropped entirely rather than disabled for a read-only viewer: with every
+            field already inert there is nothing for Save to act on, so a greyed
+            button would only ask "why can't I press this?" */}
+        {canEdit && (
+          <Button size='md' onClick={handleSaveSettings} disabled={loading}>
+            Save
+          </Button>
+        )}
       </Box>
     </Modal>
   );

@@ -6,10 +6,127 @@ import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common'; 
 import { buildWorkflowConversationMessages } from '@components/workflow/utils';
 import apiWorkflow from '@api1/workflow';
 import { getUserSession } from '@lib/auth';
+import { configKeyForSource, isWholeConfigSource } from '@utils/llmConfigSource';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
 
 const NULL_AGENT_ID = '00000000-0000-0000-0000-000000000000';
+
+const parseReferences = (raw) => {
+  const parsed = typeof raw === 'string' ? safeJSONParse(raw) : raw;
+  return Array.isArray(parsed) ? parsed : [];
+};
+const buildDrawerTasks = (agents, message) => {
+  const list = (agents || []).filter((agent) => agent.agent_name !== 'router');
+
+  // child agent id -> the tool call that spawned it, so a sub-agent nests under its invocation.
+  const spawnerToolByChildAgent = new Map();
+  list.forEach((agent) => {
+    (agent.llm_conversation_tool_calls || []).forEach((t) => {
+      if (t.child_agent_id) {
+        spawnerToolByChildAgent.set(String(t.child_agent_id), String(t.id));
+      }
+    });
+  });
+
+  const tasks = [];
+
+  if (message?.ack_message?.trim()) {
+    tasks.push({
+      id: message.id + '-acknowledgment',
+      tool_id: message.id + '-acknowledgment',
+      parentId: null,
+      type: 'acknowledgment',
+      text: message.ack_message,
+      content: message.ack_message,
+      created_at: message.created_at,
+      updated_at: message.updated_at,
+      user: message?.user?.display_name || 'System',
+    });
+  }
+
+  list.forEach((agent) => {
+    const toolCalls = agent.llm_conversation_tool_calls || [];
+    const agentReferences = toolCalls.flatMap((t) => parseReferences(t.references)).concat(parseReferences(agent.references));
+    const parentAgentId = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? String(agent.parent_agent_id) : null;
+    const parentId = spawnerToolByChildAgent.get(String(agent.id)) || parentAgentId;
+    const isRootAgent = !parentId; // the top-level orchestrator — the drawer renders it as a container header
+    tasks.push({
+      id: agent.id,
+      tool_id: agent.id,
+      parentId,
+      nodeKind: 'agent',
+      type: 'tool_call',
+      tool: agent.agent_name,
+      agentName: isRootAgent ? undefined : agent.agent_name,
+      text: isRootAgent ? agent.agent_name : undefined,
+      response_status: agent.status,
+      response_summary: agent.response_summary,
+      log: (agent.thought || '').split('\n\nAction:')[0],
+      thought: agent.thought,
+      query: agent.query,
+      response: { type: 'tool_call_response', text: agent.response },
+      references: agentReferences.length > 0 ? agentReferences : undefined,
+      created_at: agent.created_at,
+      updated_at: agent.updated_at,
+    });
+
+    // Sub-step rows (inventory queries, cluster commands) name the tool call that
+    // produced them. They belong *inside* that tool's details — a lookup that
+    // fanned out to twenty kubectl calls is one step you expand, not twenty
+    // siblings burying the rest of the investigation in the task list.
+    const parentToolCallId = (t) => {
+      let meta = t.metadata;
+      if (typeof meta === 'string') {
+        try {
+          meta = JSON.parse(meta);
+        } catch {
+          return null;
+        }
+      }
+      return meta?.parent_tool_call_id || null;
+    };
+    const stepsByParent = new Map();
+    toolCalls.forEach((t) => {
+      const parent = parentToolCallId(t);
+      if (!parent) {
+        return;
+      }
+      const list = stepsByParent.get(parent) || [];
+      list.push(t);
+      stepsByParent.set(parent, list);
+    });
+
+    toolCalls.forEach((t) => {
+      if (!t.id || parentToolCallId(t)) {
+        return; // sub-steps render under their parent, not as their own task
+      }
+      const toolRefs = parseReferences(t.references);
+      tasks.push({
+        id: t.id,
+        tool_id: t.id,
+        parentId: agent.id,
+        childSteps: stepsByParent.get(t.tool_id) || undefined,
+        nodeKind: 'tool',
+        type: 'tool_call',
+        tool: t.tool_name,
+        response_status: t.status,
+        log: (t.thought || '').split('\n\nAction:')[0],
+        thought: t.thought,
+        text: t.parameters,
+        toolParameters: safeJSONParse(t.parameters) || {},
+        references: toolRefs.length > 0 ? toolRefs : undefined,
+        response: { type: 'tool_call_response', text: t.response },
+        // Execution telemetry (exit status, duration, DB/relay split) — the
+        // details header renders it, and this node is the only object it gets.
+        metadata: t.metadata,
+        created_at: t.created_at,
+        updated_at: t.updated_at,
+      });
+    });
+  });
+  return tasks;
+};
 
 const parseConversationMessages = (conversationMessages, accountId) => {
   const allMessages = [];
@@ -215,6 +332,11 @@ const parseConversationMessages = (conversationMessages, accountId) => {
                 // (those live in `toolParameters` and render as the "Query" box).
                 log: (t.thought || '').split('\n\nAction:')[0],
                 thought: t.thought,
+                // getCardTitle's in_progress branch reads `query`, not `text` — without
+                // this, the row renders an empty title (just "-") for every poll between
+                // this tool_call being created and its `child_agent_id` getting linked to
+                // the spawned agent (whose own row does carry `query` and replaces this one).
+                query: t.parameters,
                 tool: t.tool_name,
                 tool_id: t.id,
                 type: 'tool_call',
@@ -222,10 +344,6 @@ const parseConversationMessages = (conversationMessages, accountId) => {
                 references: t.references,
                 created_at: t.created_at,
                 updated_at: t.updated_at,
-                // Lineage for the Tasks-drawer tree only (inline stream ignores these):
-                // this tool call belongs to the orchestrator `agent`, so the drawer nests
-                // it under a synthesized collapsible group for that orchestrator.
-                orchestratorParent: { id: agent.id, name: agent.agent_name, created_at: agent.created_at, status: agent.status },
                 response: { type: 'tool_call_response', text: t.response },
               };
               messageSequence.push(t.tool_id);
@@ -295,7 +413,6 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           }
         }
         const parentAgentsList = getParentAgents(agent);
-        const rawParentAgent = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? agentIdMap[agent.parent_agent_id] : null;
         toolRequestResponse[agent.id] = {
           // Map Agent to Message
           response_text: agent.response,
@@ -310,15 +427,6 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           thought: agent.thought,
           query: agent.query,
           parentAgents: parentAgentsList,
-          // Raw lineage for the Tasks-drawer tree only (inline stream ignores these).
-          // parentAgentId nests this task under its parent task when that parent is
-          // also rendered; orchestratorParent lets the drawer synthesize a collapsible
-          // group when the (hidden) parent is an orchestrator whose children are hoisted.
-          parentAgentId: rawParentAgent ? rawParentAgent.id : null,
-          orchestratorParent:
-            rawParentAgent && isOrchestratorAgent(rawParentAgent.agent_name)
-              ? { id: rawParentAgent.id, name: rawParentAgent.agent_name, created_at: rawParentAgent.created_at, status: rawParentAgent.status }
-              : undefined,
           plannerId: plannerIdChildMapping[agent.id],
           type: 'tool_call',
           toolParameters: parameters,
@@ -381,6 +489,9 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           // this passthrough the chip never renders because this hook rebuilds
           // the UI object from scratch and drops every field it doesn't list.
           metadata: conversationMessage.metadata,
+          // Full per-call tree for the Tasks drawer (every agent + tool call, parent-linked). The
+          // inline stream renders the curated task cards above; the drawer renders this fuller view.
+          drawerTasks: buildDrawerTasks(conversationMessage.llm_conversation_agents, conversationMessage),
         };
       }
       const finalData = messageSequence.map((s) => toolRequestResponse[s]).filter(Boolean);
@@ -393,6 +504,47 @@ const parseConversationMessages = (conversationMessages, accountId) => {
   return { allMessages };
 };
 
+// Each task pick is a complete (credential, model) choice, so the credential
+// travels with it — otherwise the task resolves its model through whatever
+// credential the conversation-wide pin names.
+const serializeTierModels = (picks) =>
+  Object.fromEntries(
+    Object.entries(picks).map(([tier, m]) => [
+      tier,
+      {
+        provider: m.provider,
+        model: m.model,
+        ...(m.configSource && { llm_config_source: m.configSource }),
+      },
+    ])
+  );
+
+// Drops selections the newly-loaded account cannot serve. Switching account
+// refetches the model list but the picks are sticky, so a db pin from the
+// previous account would survive and be rejected downstream — llm-server
+// refuses an integration uuid the account can't see, so the next turn fails
+// with a confusing error instead of just falling back.
+//
+// Kept deliberately: picks with no configSource (they predate pinning and
+// carry no account-bound id to check), and everything at all when the new list
+// is empty — a failed fetch must not wipe a valid selection.
+function pruneSelectionsForModels(state, models) {
+  if (!models || models.length === 0) return state;
+  const keys = new Set(models.map((m) => configKeyForSource(m.configSource)).filter(Boolean));
+  const servable = (pick) => !pick?.configSource || keys.has(configKeyForSource(pick.configSource));
+
+  const next = {};
+  if (state.selectedModel && !servable(state.selectedModel)) next.selectedModel = null;
+  if (state.selectedConfig && !servable(state.selectedConfig)) next.selectedConfig = null;
+  if (state.selectedTierModels) {
+    const kept = Object.fromEntries(Object.entries(state.selectedTierModels).filter(([, p]) => servable(p)));
+    if (Object.keys(kept).length !== Object.keys(state.selectedTierModels).length) {
+      next.selectedTierModels = Object.keys(kept).length > 0 ? kept : null;
+    }
+  }
+  return Object.keys(next).length > 0 ? { ...state, ...next } : state;
+}
+
 // --- Reducer ---
 
 const initialState = {
@@ -404,12 +556,23 @@ const initialState = {
   conversationTitle: '',
   conversationIdAtDb: '',
   isLoading: false,
+  availableCredentials: [],
+  // Flat (config, model) rows straight from the server. Unlike
+  // availableCredentials this keeps every config's own name, so the picker can
+  // list configs rather than the credential groups they collapse into.
   availableModels: [],
   defaultModel: null,
-  // selectedModel and selectedTierModels are mutually exclusive — the
-  // reducer clears one when the other is set.
+  // The three selections are mutually exclusive — the reducer clears the other
+  // two when one is set. selectedModel pins one model for every call,
+  // selectedTierModels one per task, and selectedConfig hands the whole config
+  // over so its own per-task models apply.
   selectedModel: null,
   selectedTierModels: null,
+  selectedConfig: null,
+  // "Clear all" in the picker. Distinct from both selections being null, which
+  // is also the never-picked state and inherits the conversation's stored
+  // config. Rides along with the next submitted turn, then resets.
+  configCleared: false,
   // Server-advertised image capability (from ai_list_models). Defaults to
   // disabled so the attach UI stays hidden until the backend confirms support.
   imageSupport: { enabled: false, maxPerMessage: 0, maxSizeMb: 0, allowedMimeTypes: [] },
@@ -433,16 +596,46 @@ function investigationReducer(state, action) {
     case 'SET_IS_LOADING':
       return { ...state, isLoading: action.payload };
     case 'SET_SELECTED_MODEL':
-      return { ...state, selectedModel: action.payload, selectedTierModels: null };
-    case 'SET_SELECTED_TIER_MODELS':
-      return { ...state, selectedTierModels: action.payload, selectedModel: null };
-    case 'SET_MODELS':
       return {
         ...state,
-        availableModels: action.availableModels,
-        defaultModel: action.defaultModel,
-        imageSupport: action.imageSupport ?? state.imageSupport,
+        selectedModel: action.payload,
+        selectedTierModels: null,
+        selectedConfig: null,
+        configCleared: action.payload ? false : state.configCleared,
       };
+    case 'SET_SELECTED_TIER_MODELS':
+      return {
+        ...state,
+        selectedTierModels: action.payload,
+        selectedModel: null,
+        selectedConfig: null,
+        configCleared: action.payload ? false : state.configCleared,
+      };
+    case 'SET_SELECTED_CONFIG':
+      return {
+        ...state,
+        selectedConfig: action.payload,
+        selectedModel: null,
+        selectedTierModels: null,
+        configCleared: action.payload ? false : state.configCleared,
+      };
+    case 'SET_CONFIG_CLEARED':
+      // Clearing is one transition, not three: nulling both selections here
+      // means callers can't half-apply it by firing only some of the callbacks.
+      return action.payload
+        ? { ...state, configCleared: true, selectedModel: null, selectedTierModels: null, selectedConfig: null }
+        : { ...state, configCleared: false };
+    case 'SET_MODELS':
+      return pruneSelectionsForModels(
+        {
+          ...state,
+          availableCredentials: action.availableCredentials,
+          availableModels: action.availableModels ?? state.availableModels,
+          defaultModel: action.defaultModel,
+          imageSupport: action.imageSupport ?? state.imageSupport,
+        },
+        action.availableModels
+      );
     case 'UPDATE_CONVERSATION_META':
       // Atomic update for title + id + status (used in fetchConversation)
       return { ...state, ...action.fields };
@@ -452,6 +645,7 @@ function investigationReducer(state, action) {
       return {
         ...initialState,
         // Preserve loaded model list + capabilities across resets
+        availableCredentials: state.availableCredentials,
         availableModels: state.availableModels,
         defaultModel: state.defaultModel,
         imageSupport: state.imageSupport,
@@ -473,10 +667,13 @@ export const useLLMInvestigationControl = (accountId) => {
     conversationTitle,
     conversationIdAtDb,
     isLoading,
+    availableCredentials,
     availableModels,
     defaultModel,
     selectedModel,
     selectedTierModels,
+    selectedConfig,
+    configCleared,
     imageSupport,
   } = state;
 
@@ -527,7 +724,34 @@ export const useLLMInvestigationControl = (accountId) => {
       .listModels(accountId)
       .then((res) => {
         if (!isMountedRef.current || cancelled) return;
-        const availableModels = res?.data?.models || [];
+        // credentials[] is the server's collapsed view: one entry per distinct
+        // destination (provider + endpoint + key + type + version + region +
+        // aws creds + adapter), each carrying the models reachable through it.
+        // Only the server can compute this — endpoints and api keys are never
+        // serialized — so no grouping happens here.
+        //
+        // sources[] is not for display. It maps every configured slot that
+        // resolves to this credential, so a conversation pinned to e.g.
+        // '…:tier:summary' still resolves to the credential that now
+        // represents it.
+        const availableCredentials = (res?.data?.credentials || []).map((c) => ({
+          id: c.id,
+          name: c.name,
+          provider: c.provider,
+          configSource: c.llm_config_source,
+          sources: (c.sources || []).map((s) => s.llm_config_source),
+          models: (c.models || []).map((m) => ({ model: m.model })),
+        }));
+        // models[] is the ungrouped view: one row per configured slot, each
+        // naming its own config. credentials[] folds these together by
+        // destination, which loses the per-config names the picker lists.
+        const availableModels = (res?.data?.models || []).map((m) => ({
+          model: m.model,
+          provider: m.provider,
+          configSource: m.llm_config_source,
+          configName: m.config_name,
+          isFallback: !!m.is_fallback,
+        }));
         const defaultModel = res?.data?.default || null;
         const rawImageSupport = res?.data?.image_support;
         const imageSupport = rawImageSupport
@@ -538,7 +762,7 @@ export const useLLMInvestigationControl = (accountId) => {
               allowedMimeTypes: rawImageSupport.allowed_mime_types || [],
             }
           : undefined;
-        dispatch({ type: 'SET_MODELS', availableModels, defaultModel, imageSupport });
+        dispatch({ type: 'SET_MODELS', availableCredentials, availableModels, defaultModel, imageSupport });
       })
       .catch((err) => console.error('Failed to fetch models', err));
 
@@ -551,6 +775,15 @@ export const useLLMInvestigationControl = (accountId) => {
   const stopInvestigation = useCallback(
     async (conversationId, currentStatus, onStopSuccess) => {
       if (currentStatus === 'COMPLETED' || currentStatus === 'FAILED' || currentStatus === 'TERMINATED' || !allowStop) {
+        return;
+      }
+      if (!conversationId) {
+        // Safety net: the Stop button is gated at render time (allowStop also
+        // requires conversationIdAtDb), so this branch is unreachable from the
+        // primary UI. Kept because other callers of this hook could still fire
+        // it, and firing the mutation with an empty id would surface the
+        // backend's "conversation_id is required" 400 as a scary snackbar.
+        snackbar.info('Stop is not available yet — the investigation is still being recorded. Try again in a moment.');
         return;
       }
 
@@ -598,12 +831,17 @@ export const useLLMInvestigationControl = (accountId) => {
         ...(selectedModel && {
           llm_provider: selectedModel.provider,
           llm_model_name: selectedModel.model,
+          ...(selectedModel.configSource && { llm_config_source: selectedModel.configSource }),
         }),
         ...(!selectedModel &&
           selectedTierModels &&
           Object.keys(selectedTierModels).length > 0 && {
-            llm_tier_models: selectedTierModels,
+            llm_tier_models: serializeTierModels(selectedTierModels),
           }),
+        // A whole-config pin carries no model: the config's own per-task models
+        // decide, and the server rejects a model sent alongside it.
+        ...(!selectedModel && !selectedTierModels && selectedConfig && { llm_config_source: selectedConfig.configSource }),
+        ...(configCleared && !selectedModel && !selectedTierModels && !selectedConfig && { llm_config_reset: true }),
         ...(workflowId && { workflow_id: workflowId }),
         ...(!workflowId && workflowDefinition && { workflow_definition: workflowDefinition }),
         // Default the automation to the cluster/account the user is currently viewing so the
@@ -648,11 +886,15 @@ export const useLLMInvestigationControl = (accountId) => {
       });
       dispatch({ type: 'SET_MESSAGES', payload: (prev) => [...prev, ...newMessages] });
 
+      // One-shot, same as the chat path above.
+      if (configCleared) {
+        dispatch({ type: 'SET_CONFIG_CLEARED', payload: false });
+      }
       if (onSuccess) {
         onSuccess(sessionIdToUse);
       }
     },
-    [accountId, conversationIdAtDb, selectedModel, selectedTierModels]
+    [accountId, conversationIdAtDb, selectedModel, selectedTierModels, selectedConfig, configCleared]
   );
 
   const handleInvestigationGeneration = useCallback(
@@ -668,11 +910,20 @@ export const useLLMInvestigationControl = (accountId) => {
         requestPayload.config = {
           llm_provider: selectedModel.provider,
           llm_model_name: selectedModel.model,
+          ...(selectedModel.configSource && { llm_config_source: selectedModel.configSource }),
         };
       } else if (selectedTierModels && Object.keys(selectedTierModels).length > 0) {
         requestPayload.config = {
-          llm_tier_models: selectedTierModels,
+          llm_tier_models: serializeTierModels(selectedTierModels),
         };
+      } else if (selectedConfig) {
+        // No provider/model: the config's own per-task models decide, and the
+        // server rejects a model sent alongside a whole-config pin.
+        requestPayload.config = { llm_config_source: selectedConfig.configSource };
+      } else if (configCleared) {
+        // Carries the picker's "Clear all" to the server. Sending nothing would
+        // leave the conversation's stored config in force.
+        requestPayload.config = { llm_config_reset: true };
       }
 
       if (categorySource) {
@@ -697,11 +948,17 @@ export const useLLMInvestigationControl = (accountId) => {
       }
 
       dispatch({ type: 'SET_CONVERSATION_STATUS', payload: 'IN_PROGRESS' });
+      // The reset is one-shot: it has reached the server, and re-sending it on
+      // every later turn would keep clearing a config the user may have since
+      // re-picked elsewhere.
+      if (configCleared) {
+        dispatch({ type: 'SET_CONFIG_CLEARED', payload: false });
+      }
       if (onSuccess) {
         onSuccess(llmSessionId);
       }
     },
-    [accountId, selectedModel, selectedTierModels]
+    [accountId, selectedModel, selectedTierModels, selectedConfig, configCleared]
   );
 
   const startInvestigation = useCallback(
@@ -872,12 +1129,46 @@ export const useLLMInvestigationControl = (accountId) => {
                 : await apiAskNudgebee.getModelConfig(accountId, conversationResponses[0].id, signal);
               if (!isStale() && modelConfigRes?.data && !modelConfigRes?.errors?.length) {
                 const modelConfig = modelConfigRes.data;
-                if (modelConfig.is_custom && modelConfig.current) {
+                const tierOverrides = modelConfig.tier_overrides;
+                if (tierOverrides && Object.keys(tierOverrides).length > 0) {
+                  // Per-task mode. The server reports `current` as the default
+                  // model here, not a pick — hydrating it as a blanket
+                  // selection would show a model the user never chose and, on
+                  // the next turn, overwrite these picks.
+                  dispatch({
+                    type: 'SET_SELECTED_TIER_MODELS',
+                    payload: Object.fromEntries(
+                      Object.entries(tierOverrides).map(([tier, p]) => [
+                        tier,
+                        {
+                          provider: p.provider,
+                          model: p.model,
+                          ...(p.llm_config_source && { configSource: p.llm_config_source }),
+                        },
+                      ])
+                    ),
+                  });
+                } else if (isWholeConfigSource(modelConfig.config_source)) {
+                  // A ':all' pin hands the whole config over, so there is no
+                  // model to hydrate — `current` here is whatever that config
+                  // resolved for the last call, not a pick.
+                  dispatch({
+                    type: 'SET_SELECTED_CONFIG',
+                    payload: { configSource: modelConfig.config_source },
+                  });
+                } else if (modelConfig.is_custom && modelConfig.current) {
                   dispatch({
                     type: 'SET_SELECTED_MODEL',
                     payload: {
                       provider: modelConfig.current.provider,
                       model: modelConfig.current.model,
+                      // config_source is reported independently of current —
+                      // it lives in the message config, not on the conversation
+                      // row — so a conversation can be pinned to a slot with or
+                      // without a provider/model override. The picker resolves
+                      // the slot's display name from the loaded rows, which may
+                      // still be in flight at this point.
+                      ...(modelConfig.config_source && { configSource: modelConfig.config_source }),
                     },
                   });
                 }
@@ -1012,12 +1303,16 @@ export const useLLMInvestigationControl = (accountId) => {
     fetchConversation,
     resetInvestigationState,
     checkConversationExists,
+    availableCredentials,
     availableModels,
     defaultModel,
     selectedModel,
     setSelectedModel,
     selectedTierModels,
     setSelectedTierModels: (picks) => dispatch({ type: 'SET_SELECTED_TIER_MODELS', payload: picks }),
+    selectedConfig,
+    setSelectedConfig: (cfg) => dispatch({ type: 'SET_SELECTED_CONFIG', payload: cfg }),
+    clearModelConfig: () => dispatch({ type: 'SET_CONFIG_CLEARED', payload: true }),
     imageSupport,
   };
 };

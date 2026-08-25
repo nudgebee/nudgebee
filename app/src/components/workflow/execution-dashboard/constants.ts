@@ -12,13 +12,19 @@ export const EXECUTION_STATUS_OPTIONS = [
 ];
 
 export const TABLE_HEADERS = [
-  { name: 'Date/Time', width: '13%' },
-  { name: 'Automation', width: '20%' },
-  { name: 'Execution ID', width: '12%' },
+  { name: 'Date/Time', width: '12%' },
+  { name: 'Automation', width: '21%' },
+  // A page spans accounts now, and automation names are only unique within
+  // one — without this column two rows can read identically.
+  { name: 'Account', width: '12%' },
   { name: 'Status', width: '10%' },
+  // Carries the trigger as a second line: how a run started is only ever read
+  // together with who started it, and it does not earn a column of its own.
   { name: 'User', width: '13%' },
   { name: 'Duration', width: '8%' },
-  'Details',
+  // Failures only. A success has no error, and putting the trigger type here
+  // as a stand-in made the column read as two unrelated things.
+  'Error',
 ];
 
 /**
@@ -27,9 +33,6 @@ export const TABLE_HEADERS = [
  * other table reads); this only applies when nothing is stored yet.
  */
 export const DEFAULT_PAGE_SIZE = 20;
-
-/** Server refuses paging past this many rows (model.MaxExecutionDeepPageRows). */
-export const MAX_PAGEABLE_ROWS = 1000;
 
 /**
  * How far back the table looks by default. Mirrors the deployed Temporal

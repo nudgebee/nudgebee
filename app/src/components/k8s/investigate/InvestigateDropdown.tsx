@@ -17,6 +17,14 @@ interface InvestigateDropdownProps {
   subjectName: string;
   subjectNamespace: string;
   resetStateWhenItemSelected: () => void;
+  // When provided, the dropdown renders these options instead of fetching
+  // same-subject events itself (used for the same-incident group, #34655).
+  optionsOverride?: SelectOption[];
+  // Events to omit from the fetched list — e.g. incident-group members, so
+  // "Related Events" means "on this subject but outside this incident".
+  excludeIds?: string[];
+  title?: string;
+  placeholder?: string;
 }
 
 const InvestigateDropdown: React.FC<InvestigateDropdownProps> = ({
@@ -25,6 +33,10 @@ const InvestigateDropdown: React.FC<InvestigateDropdownProps> = ({
   subjectName,
   subjectNamespace,
   resetStateWhenItemSelected,
+  optionsOverride,
+  excludeIds,
+  title = 'Related Events',
+  placeholder = 'No related events found',
 }) => {
   const router = useRouter();
   const [optionsData, setOptionsData] = useState<SelectOption[]>([]);
@@ -37,6 +49,10 @@ const InvestigateDropdown: React.FC<InvestigateDropdownProps> = ({
   }, [router.query.accountId]);
 
   useEffect(() => {
+    if (optionsOverride) {
+      setOptionsData(optionsOverride);
+      return;
+    }
     if (!query.id) {
       return;
     }
@@ -56,18 +72,20 @@ const InvestigateDropdown: React.FC<InvestigateDropdownProps> = ({
       k8sApi
         .getK8sEventsName(10, 0, queryParams)
         .then((res: any) => {
-          const options: SelectOption[] = (res?.data?.events ?? []).map((item: any) => ({
-            value: String(item.id),
-            label: item.title,
-            subtext: dayjs(item.starts_at).fromNow(),
-          }));
+          const options: SelectOption[] = (res?.data?.events ?? [])
+            .filter((item: any) => !excludeIds?.includes(String(item.id)))
+            .map((item: any) => ({
+              value: String(item.id),
+              label: item.title,
+              subtext: dayjs(item.starts_at).fromNow(),
+            }));
           setOptionsData(options);
         })
         .catch((e) => {
           console.error(e);
         });
     }
-  }, [query, accountId]);
+  }, [query, accountId, optionsOverride, excludeIds]);
 
   const handleChange = (next: string) => {
     if (next) {
@@ -100,7 +118,7 @@ const InvestigateDropdown: React.FC<InvestigateDropdownProps> = ({
             whiteSpace: 'nowrap',
           }}
         >
-          Related Events
+          {title}
         </Typography>
       </Box>
       <Select
@@ -110,7 +128,7 @@ const InvestigateDropdown: React.FC<InvestigateDropdownProps> = ({
         minWidth={inputMaxWidth ?? '100%'}
         size='sm'
         id='investigate-other-events'
-        placeholder='No related events found'
+        placeholder={placeholder}
       />
     </Box>
   );

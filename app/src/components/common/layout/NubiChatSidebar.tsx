@@ -393,6 +393,8 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
               categorySource={categorySource}
               showBorder={false}
               apiMode={apiModeProp || (context?.type === 'workflow' || context?.type === 'workflowbuilder' ? 'workflow' : 'investigate')}
+              // Session comes from props; the shared pointer would load another workflow's chat.
+              persistLastSession={false}
               workflowId={context?.data?.id || ''}
               workflowDefinition={context?.data?.definition || null}
               // @ts-expect-error JSX component lacks type annotations for this callback prop

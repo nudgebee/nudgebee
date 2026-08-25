@@ -87,14 +87,14 @@ func TestCacheKeyFormat(t *testing.T) {
 // TestCacheTTLConfiguration verifies cache TTL configuration
 func TestCacheTTLConfiguration(t *testing.T) {
 	// Test default TTL for conversation scope
-	ttl := getCacheTTL(CacheScopeConversation)
+	ttl := getCacheTTL(CacheScopeConversation, "")
 	assert.Greater(t, ttl.Minutes(), float64(0), "Cache TTL should be greater than 0")
 
 	// Global/Account scopes should have longer TTL (defaultStaticCacheTTL)
-	globalTTL := getCacheTTL(CacheScopeGlobal)
+	globalTTL := getCacheTTL(CacheScopeGlobal, "")
 	assert.Equal(t, defaultStaticCacheTTL, globalTTL, "Global scope should use defaultStaticCacheTTL")
 
-	accountTTL := getCacheTTL(CacheScopeAccount)
+	accountTTL := getCacheTTL(CacheScopeAccount, "")
 	assert.Equal(t, defaultStaticCacheTTL, accountTTL, "Account scope should use defaultStaticCacheTTL")
 }
 
@@ -331,14 +331,12 @@ func TestAnthropicCacheProvider_ToolCallPartsNotWrapped(t *testing.T) {
 
 			// Count cache markers and verify placement constraints
 			markerCount := 0
-			markedText := ""
-			markedRole := llms.ChatMessageType("")
+			var markedTexts []string
 			for msgIdx, msg := range resp.Messages {
 				for partIdx, part := range msg.Parts {
 					switch cached := part.(type) {
 					case llms.CachedContent:
 						markerCount++
-						markedRole = msg.Role
 
 						// Verify marker is only on Human or System messages
 						assert.True(t, msg.Role == llms.ChatMessageTypeHuman || msg.Role == llms.ChatMessageTypeSystem,
@@ -347,9 +345,9 @@ func TestAnthropicCacheProvider_ToolCallPartsNotWrapped(t *testing.T) {
 
 						switch inner := cached.ContentPart.(type) {
 						case llms.TextContent:
-							markedText = inner.Text
+							markedTexts = append(markedTexts, inner.Text)
 						case llms.BinaryContent:
-							markedText = "(binary)"
+							markedTexts = append(markedTexts, "(binary)")
 						default:
 							t.Errorf("message[%d].part[%d]: CachedContent wraps unsupported type %T — "+
 								"this will crash the Anthropic API with 'unsupported cached content part type'",
@@ -359,16 +357,19 @@ func TestAnthropicCacheProvider_ToolCallPartsNotWrapped(t *testing.T) {
 				}
 			}
 
-			// Exactly one cache marker must exist for Anthropic caching to work
-			assert.Equal(t, 1, markerCount, "Expected exactly 1 cache_control marker, got %d", markerCount)
+			// Between 1 and 3 cache markers must exist for Anthropic multi-breakpoint caching
+			assert.True(t, markerCount >= 1 && markerCount <= 3, "Expected 1-3 cache_control markers, got %d", markerCount)
 
-			// The marker should be on the expected text part
-			assert.Equal(t, tt.expectedMarkerText, markedText,
-				"Cache marker should be on the deepest text/binary part in cacheable Human/System messages")
-
-			// The marker should be in the expected message role
-			assert.Equal(t, tt.expectedMarkerRole, markedRole,
-				"Cache marker should be in a %s message", tt.expectedMarkerRole)
+			// The expected marker should be included among the marked text parts
+			foundExpected := false
+			for _, mText := range markedTexts {
+				if mText == tt.expectedMarkerText {
+					foundExpected = true
+					break
+				}
+			}
+			assert.True(t, foundExpected,
+				"Expected marker %q to be among marked parts %v", tt.expectedMarkerText, markedTexts)
 		})
 	}
 }

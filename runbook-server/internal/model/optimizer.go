@@ -59,6 +59,13 @@ const (
 	RecommendationResolutionStatusFailed     RecommendationResolutionStatus = "Failed"
 )
 
+// RecommendationResolutionResolverTypeAutoOptimize mirrors the api-server
+// resolver type (models.RecommendationResolutionResolverTypeAutoOptimize) for a
+// resolution a scheduled auto optimize raised and therefore owns end to end.
+// Only these pull requests are eligible for an in-place value refresh; one a
+// person raised by hand is left alone (#34959).
+const RecommendationResolutionResolverTypeAutoOptimize = "AutoOptimize"
+
 type RecommendationStatus string
 
 const (
@@ -306,7 +313,19 @@ type AutoOptimizeTaskAttributes struct {
 	Response     map[string]any `json:"response,omitempty"`
 	TicketLink   *string        `json:"ticket_link,omitempty"`
 	PRLink       *string        `json:"pr_link,omitempty"`
+	// PRAction is what the apply did to the pull request: "created", "refreshed",
+	// "unchanged", or "" when the api-server did not say. A task holding a
+	// resolution id is not by itself evidence the run changed anything — the
+	// open-PR guard returns the existing resolution untouched — so this is what
+	// separates the two. See notifications.go:classifyTask.
+	PRAction string `json:"pr_action,omitempty"`
 }
+
+// PRAction values, mirroring the api-server's recommendation.PRAction. Only the
+// one the optimizer branches on is named; the others travel through as data.
+const (
+	PRActionUnchanged = "unchanged"
+)
 
 // AutoOptimizeTask represents a task execution.
 type AutoOptimizeTask struct {

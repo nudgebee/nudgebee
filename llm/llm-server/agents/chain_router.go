@@ -146,6 +146,11 @@ func (l RouterAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Explanation: `Matches FinOpsAgent based on the keyword "spending" and cloud cost context.`,
 		},
 		{
+			Question:    "Why did our cloud bill go up?",
+			Answer:      "finops",
+			Explanation: `Matches FinOpsAgent — cost and billing questions route to finops even when phrased as an investigation.`,
+		},
+		{
 			Question:    "Create an automation to restart pods when OOM occurs",
 			Answer:      "automation",
 			Explanation: `Matches automation agent because user explicitly wants to create an automation.`,
@@ -160,7 +165,8 @@ func (l RouterAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 	plannerAgentName := GetDebugAgentName(query.AccountId)
 
 	constrains := []string{
-		fmt.Sprintf("- If user is asking for investigation, troubleshooting, optimization etc, then always prefer '%s' agent", plannerAgentName),
+		fmt.Sprintf("- If user is asking for investigation, troubleshooting, optimization etc, then always prefer '%s' agent — unless the question is about cloud cost, spend, billing, budgets, or savings", plannerAgentName),
+		fmt.Sprintf("- Questions about cloud cost, spend, billing, budgets, or savings always route to '%s', even when phrased as an investigation (e.g. \"why did our cloud bill go up?\")", FinOpsAgentName),
 		"- if user question is not related to sre/devops/software development domains, then use generalagent",
 	}
 
@@ -183,6 +189,9 @@ func (l RouterAgent) Execute(ctx *security.RequestContext, request core.NBAgentR
 	plannerAgent := GetDebugAgentName(request.AccountId)
 	// check for @<agent> in the start and return agent
 	// observed during testing, that pure llm solution failes sometimes because of history && other data
+	// Explicit @-invocation is honoured verbatim — the K8s-native upgrade below
+	// deliberately does not fire here so a user who typed @k8s_orchestrator gets
+	// the standard variant even when the mode signal is on.
 	// Only the FIRST mention routes ("@a @b q" -> a); trailing punctuation isn't
 	// part of the name ("@a, q" -> a). See common.ParseAgentMention.
 	if name, _ := common.ParseAgentMention(request.Query); name != "" {
@@ -198,11 +207,58 @@ func (l RouterAgent) Execute(ctx *security.RequestContext, request core.NBAgentR
 	if len(chatHistory) > 0 && chatHistory[0]["response"] != "" {
 		previousRouterAgent := strings.TrimSpace(chatHistory[0]["response"])
 		if previousRouterAgent != "" && previousRouterAgent != core.RouterAgentName {
-			return core.NBAgentResponse{Response: []string{previousRouterAgent}}, nil
+			plannerAgent = previousRouterAgent
+		}
+	}
+	// Normalize into a SEPARATE local for the K8s variant check + override
+	// comparison — do NOT mutate plannerAgent itself, since custom or
+	// user-defined agent names may legitimately carry mixed case that
+	// downstream lookups depend on. Stored history occasionally has case
+	// drift on the built-in K8s names ("K8s_Orchestrator"); the switch
+	// below matches lowercase, so a case-drifted entry would silently skip
+	// the mode upgrade without this normalized-only comparison.
+	plannerAgentNormalized := strings.ToLower(strings.TrimSpace(plannerAgent))
+
+	// K8s orchestrator mode upgrade: when the router landed on a K8s
+	// variant and a per-request or env mode signal names a specific variant
+	// ("native" / "direct" / "lean"), swap the selection to the corresponding
+	// always-that-variant handle. Non-K8s orchestrators (aws/gcp/azure) are
+	// left alone — the signal is scoped to K8s routing.
+	if isK8sOrchestratorVariant(plannerAgentNormalized) {
+		if override := ResolveK8sOrchestratorOverride(request); override != "" && override != plannerAgentNormalized {
+			ctx.GetLogger().Info("router: K8s orchestrator mode signal, upgrading agent",
+				"original", plannerAgent, "override", override)
+			plannerAgent = override
 		}
 	}
 
 	return core.NBAgentResponse{Response: []string{plannerAgent}}, nil
+}
+
+// isK8sOrchestratorVariant reports whether the router-picked agent name is
+// any of the surviving K8s orchestrator variants (primary + native + legacy
+// aliases that used to point at delegating/direct/lean handles). Only these
+// get upgraded by the K8s orchestrator mode signal. Legacy aliases stay
+// listed so stored history that mentions the old names is still recognised as
+// a K8s variant and eligible for override (they all now resolve to the primary).
+func isK8sOrchestratorVariant(name string) bool {
+	// Normalize case + whitespace so a stored-history entry with drifted
+	// casing ("K8s_Orchestrator", "K8S_DEBUG") still matches. The
+	// registration side uses lowercase names consistently.
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case AgentK8sOrchestratorName,
+		AgentK8sOrchestratorNativeName,
+		"k8s_debug",
+		"k8s_debug_native",
+		// Legacy names from the pre-collapse era (#32503 Phase 1) — kept so
+		// stored conversation history still routes through the K8s mode
+		// override path instead of silently missing it.
+		"k8s_orchestrator_delegating", "k8s_orchestrator_direct", "k8s_orchestrator_lean",
+		"k8s_debug_delegating", "k8s_debug_direct", "k8s_debug_lean",
+		"k8s_orchestrator_2", "k8s_debug_2":
+		return true
+	}
+	return false
 }
 
 // getTicketAgentName returns the appropriate ticket agent name based on the feature flag.
@@ -211,6 +267,14 @@ func getTicketAgentName() string {
 		return TicketsV2AgentName
 	}
 	return TicketsAgentName
+}
+
+// getEventsAgentName returns the appropriate events agent name based on the feature flag.
+func getEventsAgentName() string {
+	if config.Config.EventsV2Enabled {
+		return EventsV2AgentName
+	}
+	return EventsAgentName
 }
 
 func getAgent(ctx *security.RequestContext, agent string, accountId string) (core.NBAgent, bool) {
@@ -233,10 +297,11 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 	case "recommendationschain", "recommendation", "recommendationsagent", RecommendationsAgentName:
 		agentName = RecommendationsAgentName
 	case "eventschain", "event", "eventchain", EventsAgentName:
-		agentName = EventsAgentName
+		agentName = getEventsAgentName()
 	case FinOpsAgentName, "finopschain", "finopsagent", "cost", "spend":
 		agentName = FinOpsAgentName
-
+	case EventsV2AgentName:
+		agentName = EventsV2AgentName
 	case "ticket", "jira", "bugs", "issues", "ticketagent", "ticketmaster", "create_ticket", "ticket_create", TicketsAgentName:
 		agentName = getTicketAgentName()
 	case TicketsV2AgentName:
@@ -247,7 +312,7 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 		agentName = AgentLogAnalysisName
 	case "automation", "automationmanager", "workflow", "workflowmanager", "automation_builder":
 		agentName = WorkflowAgentName
-	case "code", AgentCodeAnalyzer, "code_debugger", "code_rca_agent", agentCodeAnalyzerLegacyName:
+	case "code", "code_debugger", "code_rca_agent", agentCodeAnalyzerLegacyName, AgentCodeAnalyzer:
 		agentName = AgentCodeAnalyzer
 	case "nudgebee_docs", "nudgebee", "nubidocs", "product_docs", "nudgebeedocsagent",
 		"knowledge_base", "kb", "knowledgebase",

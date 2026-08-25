@@ -32,6 +32,15 @@ func TestSlackJoinChannelTask_Execute(t *testing.T) {
 			},
 			expectErr: false,
 		},
+		{
+			name: "Join Channel With Account Binding",
+			params: map[string]any{
+				"channel_id":      os.Getenv("TEST_NOTIFICATION_SLACK_CHANNEL_ID"),
+				"bind_account":    true,
+				"bind_session_id": "test-fingerprint-" + os.Getenv("TEST_ACCOUNT_ID"),
+			},
+			expectErr: false,
+		},
 	}
 
 	for _, tc := range testCases {

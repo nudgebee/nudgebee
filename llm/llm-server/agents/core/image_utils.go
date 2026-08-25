@@ -29,11 +29,6 @@ var allowedImageMIMETypes = map[string]bool{
 	"image/jpeg": true,
 }
 
-// IsImageSupportEnabled returns whether image attachment support is enabled.
-func IsImageSupportEnabled() bool {
-	return config.Config.LlmServerImageSupportEnabled
-}
-
 // GetImageMaxPerMessage returns the maximum number of images allowed per message.
 func GetImageMaxPerMessage() int {
 	return config.Config.GetInt("llm_server_image_max_per_message", defaultImageMaxPerMessage)
@@ -256,8 +251,18 @@ func compileVisionDenyPatterns(patterns []string) []*regexp.Regexp {
 }
 
 // IsVisionCapableModel returns true if the given model supports multimodal (image) input.
-// Uses anchored regex patterns to avoid substring-match footguns. Per-account
-// overrides via config key "llm_server_non_vision_models" (comma-separated patterns).
+// Resolution order:
+//  1. "llm_server_non_vision_models" config override (comma-separated regex
+//     patterns, deny-only) — falls back to the built-in defaultNonVisionPatterns
+//     deny-list when unset. Anchored regexes avoid substring-match footguns.
+//     Checked first so it can deny a model even if the DB says otherwise
+//     (e.g. an emergency override without touching data).
+//  2. An explicit verdict from llm_model_pricing.supports_image_input, when
+//     recorded — this is the authoritative, DB-backed source of truth.
+//  3. Default-deny. Without a positive DB record, a model is NOT treated as
+//     vision-capable — absence of evidence in the deny-list is not evidence
+//     of vision support. Callers that want a model to drive image-based
+//     investigation must record supports_image_input = true for it.
 func IsVisionCapableModel(provider, model string) bool {
 	nonVisionCSV := config.Config.GetString("llm_server_non_vision_models", "")
 
@@ -278,7 +283,12 @@ func IsVisionCapableModel(provider, model string) bool {
 			return false
 		}
 	}
-	return true
+
+	if supported, known := imageSupport.lookup(provider, model); known {
+		return supported
+	}
+
+	return false
 }
 
 // hasImageParts scans messages for any BinaryContent or ImageURLContent parts.
@@ -353,7 +363,7 @@ func ImageAttachmentToContentPart(img ImageAttachment) llms.ContentPart {
 // AppendImagesToLastHumanMessage appends image content parts to the last human message in the list.
 // If no human message exists, a new one is added. This is the shared helper used by all planners.
 func AppendImagesToLastHumanMessage(mcList []llms.MessageContent, images []ImageAttachment) []llms.MessageContent {
-	if len(images) == 0 || !IsImageSupportEnabled() {
+	if len(images) == 0 {
 		return mcList
 	}
 
@@ -379,12 +389,46 @@ func AppendImagesToLastHumanMessage(mcList []llms.MessageContent, images []Image
 	return mcList
 }
 
+// resolveVisionCapableTier decides whether attached images can be sent to an
+// LLM at all, and if so, whether the lite/summary tier should handle it.
+// Prefers the lite model (cheaper/faster) when it's vision-capable; falls
+// back to the main model. ok is false if neither model supports vision —
+// callers should skip the vision call entirely in that case.
+func resolveVisionCapableTier(provider, model string) (useLite bool, ok bool) {
+	if liteModel := config.Config.LlmModelLite; liteModel != "" && IsVisionCapableModel(provider, liteModel) {
+		return true, true
+	}
+	return false, IsVisionCapableModel(provider, model)
+}
+
+// resolveEffectiveVisionProvider returns the provider/model that will actually
+// generate this request's response — honoring any per-request or
+// conversation-level override via ResolveLLMConfig — falling back to the raw
+// global default only if resolution errors. The vision-capability gate must
+// check this, not config.Config.LlmProvider/LlmModel directly: a conversation
+// can be pinned to an explicitly-chosen vision-capable model while the
+// process-wide default is a different (non-vision) fallback model, and
+// checking the global default alone wrongly blocks image attachments in that
+// case even though the model that will actually handle the request supports
+// them.
+func resolveEffectiveVisionProvider(ctx *security.RequestContext, accountId, agentName, conversationId string) (provider, model string) {
+	if res, err := ResolveLLMConfig(ctx, accountId, agentName, conversationId); err == nil {
+		return res.Provider, res.Model
+	}
+	return config.Config.LlmProvider, config.Config.LlmModel
+}
+
 // --- Image Context Extraction (Pre-Planner) ---
 
-const imageContextExtractionPrompt = `You are a visual analysis assistant for a DevOps/SRE troubleshooting platform.
-Extract ALL actionable technical details from the attached image(s) that would help an investigation agent.
+const imageContextExtractionPrompt = `You are a visual analysis assistant. Describe exactly what is shown in the
+attached image(s) — this is the ONLY description of these images the rest of the system will ever see, so it
+must stand on its own. Never respond with just a category label (e.g. "a non-technical image") without also
+saying what the image actually contains.
 
-Focus on:
+Always transcribe verbatim any text visible in the image (titles, questions, labels, captions, error messages) —
+do not paraphrase or summarize away specific wording, numbers, or names.
+
+If the image is relevant to DevOps/SRE troubleshooting, also extract technical details:
 - Service/application names, namespaces, pod names, container names
 - Error messages, error codes, exception types, stack traces
 - Metric values, thresholds, anomalies (CPU, memory, latency, error rates)
@@ -393,9 +437,24 @@ Focus on:
 - Dashboard names, alert names, severity levels
 - Any other technical identifiers visible (IPs, ports, URLs, cluster names)
 
-Output ONLY a concise factual summary of what is visible. No speculation. No recommendations.
-If multiple items are shown (e.g. a list of alerts), enumerate each one.
-Keep the output under 500 characters.`
+If the image is NOT technical (e.g. a riddle, diagram, photo, or other non-DevOps content), describe its actual
+content faithfully instead — what it shows, and any text it contains — rather than only noting that it is
+non-technical.
+
+Be factual. No speculation. No recommendations. If multiple items are shown within one image (e.g. a list of
+alerts, or several questions), enumerate each one.
+
+Respond in exactly this format, with no other text before or after:
+
+<summary>
+{a factual summary of everything shown across every image — technical details and/or verbatim text/content}
+</summary>
+<descriptions>
+1. {a 1-2 sentence description of image 1: what it shows, including any visible text verbatim}
+2. {a 1-2 sentence description of image 2, if present}
+</descriptions>
+
+Include exactly one numbered line per attached image, in the order the images were attached.`
 
 // ExtractImageContext performs a synchronous vision LLM call to extract actionable text
 // from attached images. The extracted context is appended to the user's query so the
@@ -406,17 +465,10 @@ func ExtractImageContext(ctx *security.RequestContext, request NBAgentRequest) s
 		return request.Query
 	}
 
-	provider := config.Config.LlmProvider
+	provider, model := resolveEffectiveVisionProvider(ctx, request.AccountId, "", request.ConversationId)
 
-	// Determine effective model: prefer lite model if it supports vision
-	model := config.Config.LlmModel
-	useLite := false
-	if liteModel := config.Config.LlmModelLite; liteModel != "" && IsVisionCapableModel(provider, liteModel) {
-		model = liteModel
-		useLite = true
-	}
-
-	if !IsVisionCapableModel(provider, model) {
+	useLite, ok := resolveVisionCapableTier(provider, model)
+	if !ok {
 		ctx.GetLogger().Debug("image: skipping context extraction, model not vision-capable",
 			"provider", provider, "model", model)
 		return request.Query
@@ -460,35 +512,113 @@ func ExtractImageContext(ctx *security.RequestContext, request NBAgentRequest) s
 		return request.Query
 	}
 
-	extracted := strings.TrimSpace(completion.Choices[0].Content)
+	summary, perImageDescriptions := parseImageContextResponse(completion.Choices[0].Content)
+
+	extracted := summary
 	if len(extracted) > 1000 {
-		extracted = extracted[:997] + "..."
+		extracted = TruncateHead(extracted, 997) + "..."
 	}
 
 	ctx.GetLogger().Info("image: extracted context from image(s)",
 		"extracted_length", len(extracted))
 
-	// Store the extracted context as attachment descriptions so the async
-	// GenerateImageDescriptionsAsync path can skip the redundant LLM call.
-	if dao := GetAttachmentDAO(); dao != nil {
-		attachments, err := dao.LoadAttachments(request.MessageId, request.AccountId)
-		if err == nil {
-			desc := extracted
-			if len(desc) > 500 {
-				desc = desc[:497] + "..."
-			}
-			for _, att := range attachments {
-				if att.Description == nil || *att.Description == "" {
-					if updateErr := dao.UpdateAttachmentDescription(att.ID.String(), request.AccountId, desc); updateErr != nil {
-						ctx.GetLogger().Warn("image: failed to save extracted context as description",
-							"attachment_id", att.ID, "error", updateErr)
-					}
-				}
-			}
-		}
-	}
+	// Write per-image descriptions directly from this same call, one LLM
+	// call covering both query enrichment and per-attachment descriptions.
+	// GenerateImageDescriptionsAsync (per-image, separate LLM calls) remains
+	// as the fallback for attachments left without a description here — e.g.
+	// this call failed, or the model didn't follow the numbered format.
+	saveImageDescriptions(ctx, request, perImageDescriptions)
 
 	return request.Query + "\n\n[Attached image context: " + extracted + "]"
+}
+
+// summaryTagRe / descriptionsTagRe extract the two sections of the structured
+// response requested by imageContextExtractionPrompt. numberedLineRe splits
+// the descriptions section into one entry per numbered line.
+var (
+	summaryTagRe      = regexp.MustCompile(`(?is)<summary>\s*(.*?)\s*</summary>`)
+	descriptionsTagRe = regexp.MustCompile(`(?is)<descriptions>\s*(.*?)\s*</descriptions>`)
+	numberedLineRe    = regexp.MustCompile(`(?m)^\s*\d+\.\s*(.+?)\s*$`)
+)
+
+// parseImageContextResponse splits a vision completion into the combined
+// summary (for query enrichment) and the per-image descriptions (for
+// attachment records), per the format requested by imageContextExtractionPrompt.
+// Falls back to treating the whole response as the summary if the model
+// didn't follow the tagged format — callers must tolerate a nil/short
+// perImageDescriptions slice (the async description path picks up the rest).
+func parseImageContextResponse(content string) (summary string, perImageDescriptions []string) {
+	content = strings.TrimSpace(content)
+	summary = content
+	if m := summaryTagRe.FindStringSubmatch(content); m != nil {
+		summary = strings.TrimSpace(m[1])
+	}
+
+	if m := descriptionsTagRe.FindStringSubmatch(content); m != nil {
+		for _, line := range numberedLineRe.FindAllStringSubmatch(m[1], -1) {
+			perImageDescriptions = append(perImageDescriptions, strings.TrimSpace(line[1]))
+		}
+	}
+	return summary, perImageDescriptions
+}
+
+// contentHashForImage computes the same content-addressed hash used when the
+// attachment was persisted (see AttachmentDAO.SaveAttachments), so a request
+// image can be matched back to its stored attachment record. Returns "" for
+// an image with neither Data nor URL set.
+func contentHashForImage(img ImageAttachment) string {
+	if img.Data != "" {
+		return computeContentHash([]byte(stripDataURIPrefix(img.Data)))
+	}
+	if img.URL != "" {
+		return computeContentHash([]byte(img.URL))
+	}
+	return ""
+}
+
+// saveImageDescriptions writes one description per request image to its
+// matching attachment record, when the count lines up 1:1 with request.Images
+// (same order they were sent to the LLM in). Attachments that already have a
+// description, or that have no corresponding parsed description, are left
+// alone — GenerateImageDescriptionsAsync fills those in later.
+func saveImageDescriptions(ctx *security.RequestContext, request NBAgentRequest, descriptions []string) {
+	if len(descriptions) != len(request.Images) {
+		if len(descriptions) > 0 {
+			ctx.GetLogger().Warn("image: per-image description count mismatch, deferring to async fallback",
+				"images", len(request.Images), "descriptions", len(descriptions))
+		}
+		return
+	}
+
+	dao := GetAttachmentDAO()
+	if dao == nil {
+		return
+	}
+	attachments, err := dao.LoadAttachments(request.MessageId, request.AccountId)
+	if err != nil {
+		ctx.GetLogger().Warn("image: failed to load attachments for description write", "error", err)
+		return
+	}
+
+	for i, img := range request.Images {
+		hash := contentHashForImage(img)
+		if hash == "" {
+			continue
+		}
+		desc := descriptions[i]
+		if len(desc) > 500 {
+			desc = TruncateHead(desc, 497) + "..."
+		}
+		for _, att := range attachments {
+			if att.ContentHash != hash || (att.Description != nil && *att.Description != "") {
+				continue
+			}
+			if updateErr := dao.UpdateAttachmentDescription(att.ID.String(), request.AccountId, desc); updateErr != nil {
+				ctx.GetLogger().Warn("image: failed to save description", "attachment_id", att.ID, "error", updateErr)
+			}
+			break
+		}
+	}
 }
 
 // --- Phase 6: Image Description Generation ---
@@ -504,13 +634,10 @@ Be factual and specific. Do not speculate beyond what is visible. Keep the descr
 // generateImageDescription uses a lightweight LLM call to describe a single image.
 // Returns an empty string if the description cannot be generated or the model lacks vision.
 func generateImageDescription(ctx *security.RequestContext, accountId, conversationId, messageId, userId string, img ImageAttachment) string {
-	provider := config.Config.LlmProvider
+	provider, model := resolveEffectiveVisionProvider(ctx, accountId, "", conversationId)
 
-	// Check that the effective model supports vision before sending images
-	useLite := false
-	if liteModel := config.Config.LlmModelLite; liteModel != "" && IsVisionCapableModel(provider, liteModel) {
-		useLite = true
-	} else if !IsVisionCapableModel(provider, config.Config.LlmModel) {
+	useLite, ok := resolveVisionCapableTier(provider, model)
+	if !ok {
 		ctx.GetLogger().Debug("image: skipping description generation, no vision-capable model available")
 		return ""
 	}
@@ -554,7 +681,7 @@ func generateImageDescription(ctx *security.RequestContext, accountId, conversat
 	desc := strings.TrimSpace(completion.Choices[0].Content)
 	// Cap description length for DB storage
 	if len(desc) > 500 {
-		desc = desc[:497] + "..."
+		desc = TruncateHead(desc, 497) + "..."
 	}
 	return desc
 }
@@ -603,19 +730,9 @@ func GenerateImageDescriptionsAsync(ctx *security.RequestContext, request NBAgen
 			// Find the matching ImageAttachment from the request to pass to the LLM
 			var matchedImg *ImageAttachment
 			for i, img := range request.Images {
-				if img.Data != "" {
-					raw := stripDataURIPrefix(img.Data)
-					hash := computeContentHash([]byte(raw))
-					if hash == att.ContentHash {
-						matchedImg = &request.Images[i]
-						break
-					}
-				} else if img.URL != "" {
-					hash := computeContentHash([]byte(img.URL))
-					if hash == att.ContentHash {
-						matchedImg = &request.Images[i]
-						break
-					}
+				if hash := contentHashForImage(img); hash != "" && hash == att.ContentHash {
+					matchedImg = &request.Images[i]
+					break
 				}
 			}
 

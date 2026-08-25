@@ -210,6 +210,112 @@ def _enrich_pod_owner(finding: dict, tenant: str, cloud_account_id: str) -> None
         logger.exception("Failed to look up workload owner for pod %s", subject_name)
 
 
+# Prometheus `service`/`service_name` values that name a scrape exporter, not a
+# workload (mirrors isScrapeExporter in k8s-agent and isPrometheusScrapeJob in
+# api-server).
+_SCRAPE_EXPORTERS = {"kubelet", "kube-state-metrics", "node-exporter", "cadvisor"}
+
+
+def _is_scrape_exporter(value: str) -> bool:
+    lowered = value.lower()
+    if lowered in _SCRAPE_EXPORTERS:
+        return True
+    return "kube-state-metrics" in lowered or "node-exporter" in lowered
+
+
+def _lookup_workload_kind(name: str, namespace: str, tenant: str, cloud_account_id: str) -> str:
+    """Return the k8s_workloads kind for a workload, or '' when unknown. Cached."""
+    if not name or not namespace:
+        return ""
+    cache_key = f"wl:{cloud_account_id}:{namespace}:{name}"
+    cached = _get_cached_owner(cache_key)
+    if cached is not None:
+        return "" if cached is _OWNER_NOT_FOUND else cached
+    try:
+        rows = database.run_query(
+            "SELECT kind FROM k8s_workloads WHERE tenant_id=%s AND cloud_account_id=%s "
+            "AND name=%s AND namespace=%s LIMIT 1",
+            [tenant, cloud_account_id, name, namespace],
+        )
+        if rows and len(rows) > 0 and rows[0][0]:
+            kind = rows[0][0]
+            _set_cached_owner(cache_key, kind)
+            return kind
+        _set_cached_owner(cache_key, _OWNER_NOT_FOUND)
+    except Exception:
+        logger.exception("Failed to look up workload kind for %s/%s", namespace, name)
+    return ""
+
+
+def _resolve_prometheus_subject(
+    finding: dict, alert_labels: Dict[str, str], tenant: str, cloud_account_id: str
+) -> None:
+    """Backstop for agent alerts that fell back to alertname-as-subject.
+
+    The Go agent's alertSubject() only walks k8s workload-level labels
+    (deployment/statefulset/daemonset/.../pod). Alerts whose only workload hint
+    is a mesh-style label (`destination_workload_name` — ApplicationAPIFailures),
+    a `container_id` (/k8s/{namespace}/{pod}/{container}) or a `service` label
+    (NBLLMLatencyP95High) arrive here with subject_name=<alertname> and an empty
+    subject_type. Resolve the real workload from those labels — same walk as the
+    api-server's resolveSubjectFromLabels — so the event, its service_key and
+    downstream correlation point at the right subject.
+    """
+    for key, kind in (
+        ("destination_workload_name", ""),
+        ("src_workload_name", ""),
+        ("deployment", "deployment"),
+        ("k8s_deployment_name", "deployment"),
+        ("daemonset", "daemonset"),
+        ("statefulset", "statefulset"),
+    ):
+        workload = alert_labels.get(key) or ""
+        # Exact-match guard: the bare kube-state-metrics exporter never names a
+        # real workload (helm-prefixed variants like victoria-kube-state-metrics do)
+        if not workload or workload == "kube-state-metrics":
+            continue
+        namespace = (
+            alert_labels.get("destination_workload_namespace")
+            or alert_labels.get("namespace")
+            or finding.get("subject_namespace")
+            or ""
+        )
+        finding["subject_name"] = workload
+        finding["subject_namespace"] = namespace
+        finding["subject_type"] = kind or _lookup_workload_kind(workload, namespace, tenant, cloud_account_id).lower()
+        finding["service_key"] = f"{namespace}/{workload}"
+        return
+
+    container_id = alert_labels.get("container_id") or ""
+    if container_id.startswith("/k8s/"):
+        pod_info = get_pod_info(container_id, cloud_account_id, tenant)
+        if pod_info:
+            finding["subject_name"] = pod_info[0]["name"]
+            finding["subject_type"] = (pod_info[0]["workload_type"] or "").lower()
+            finding["subject_namespace"] = pod_info[0]["namespace"]
+            finding["service_key"] = f"{pod_info[0]['namespace']}/{pod_info[0]['name']}"
+            return
+        split = container_id.split("/")
+        if len(split) >= 5 and split[2] and split[4]:
+            # Pod no longer in inventory — the container segment still names the workload
+            namespace, workload = split[2], split[4]
+            finding["subject_name"] = workload
+            finding["subject_namespace"] = namespace
+            finding["subject_type"] = _lookup_workload_kind(workload, namespace, tenant, cloud_account_id).lower()
+            finding["service_key"] = f"{namespace}/{workload}"
+            return
+
+    for key in ("service", "service_name"):
+        service = alert_labels.get(key) or ""
+        if not service or _is_scrape_exporter(service):
+            continue
+        namespace = finding.get("subject_namespace") or alert_labels.get("namespace") or ""
+        finding["subject_name"] = service
+        finding["subject_type"] = _lookup_workload_kind(service, namespace, tenant, cloud_account_id).lower()
+        finding["service_key"] = f"{namespace}/{service}"
+        return
+
+
 _WARNING_REASON_RE = re.compile(r"^(.+?)\s+Warning\s+for\s+", re.IGNORECASE)
 
 
@@ -248,11 +354,15 @@ def _enrich_and_normalize_fingerprint(finding: dict, tenant: str, cloud_account_
 
     is_job_event = subject_type == "job" and aggregation_key in _JOB_WARNING_AGGREGATION_KEYS
     is_pod_event = subject_type == "pod" and aggregation_key in _POD_AGGREGATION_KEYS
+    # Prometheus alerts about a single pod (any alertname, e.g. custom rules
+    # aggregated by `pod`) get the same owner enrichment, but keep their
+    # Alertmanager fingerprint so FIRING/RESOLVED pairs still match.
+    is_prometheus_pod = subject_type == "pod" and not is_pod_event and finding.get("source") == "prometheus"
 
     if not subject_owner:
         if is_job_event:
             _enrich_job_owner(finding, tenant, cloud_account_id)
-        elif is_pod_event:
+        elif is_pod_event or is_prometheus_pod:
             _enrich_pod_owner(finding, tenant, cloud_account_id)
 
     subject_owner = finding.get("subject_owner") or ""
@@ -446,6 +556,11 @@ def run_event_handler_async(content: str | dict) -> None:
     if finding.get("subject_type"):
         finding["subject_type"] = finding["subject_type"].lower()
 
+    alert_labels = get_event_labels(data["evidence"])
+
+    if finding.get("source") == "prometheus" and not finding.get("subject_type"):
+        _resolve_prometheus_subject(finding, alert_labels, tenant, cloud_account_id)
+
     _enrich_and_normalize_fingerprint(finding, tenant, cloud_account_id)
 
     resource_key, resources_data = get_resource_info(cloud_account_id, finding, tenant)
@@ -464,7 +579,6 @@ def run_event_handler_async(content: str | dict) -> None:
     config_change_event = get_last_config_change(config_change_event, data, finding)
     evidence = format_evidence(data["evidence"], config_change_event, finding["aggregation_key"])
     handle_triggers(tenant, cloud_account_id, evidence, finding)
-    alert_labels = get_event_labels(data["evidence"])
     resources_map = {}
     for r in resources_data:
         resources_map[r[1]] = r
@@ -697,11 +811,23 @@ def handle_existing_resolved_event(cloud_account_id, existing_event):
         # Don't fail - history is not critical, continue with UPDATE
 
     # Then UPDATE the event (triggers webhook, but deterministic ID prevents duplicate)
-    database.run_query(
+    resolved_rows = database.run_query(
         "update events set status = 'CLOSED' , ends_at = now() where cloud_account_id=%s and id=%s and"
-        " status != 'CLOSED'",
+        " status != 'CLOSED' returning id",
         [cloud_account_id, existing_event["id"]],
     )
+    # Only a genuine open->closed transition notifies; api-server routes it to
+    # the resolved Slack reply, threaded under the original alert message.
+    if resolved_rows:
+        try:
+            rabbitmq_client.publish_message(
+                Configs.RABBIT_MQ_EVENT_POST_PROCESS_EXCHANGE,
+                Configs.RABBIT_MQ_EVENT_POST_PROCESS_QUEUE,
+                {"event_id": existing_event["id"], "notify_resolved": True},
+                message_ttl=60 * 60 * 1000,
+            )
+        except Exception:
+            logging.exception(f"Failed to publish resolved notification for event {existing_event['id']}")
     try:
         existing_event["status"] = "CLOSED"
         _write_events_to_clickhouse([existing_event])
@@ -789,7 +915,8 @@ def handle_krr_report(content: dict, tenant: str, cloud_account_id: str, account
         on_conflict = (
             "ON CONFLICT (cloud_account_id, rule_name, resource_id, category,account_object_id) DO UPDATE SET "
             "recommendation =EXCLUDED.recommendation, estimated_savings =EXCLUDED.estimated_savings, "
-            "status = EXCLUDED.status"
+            "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') "
+            "THEN recommendation.status ELSE EXCLUDED.status END"
         )
         resource_map = {}
         for resource in resource_list:
@@ -1077,6 +1204,47 @@ def generate_recommendation_summary(recommendation: dict):
         return f"CIS-{recommendation['account_object_id']} {description}"
 
 
+def _has_allocated_request(entry):
+    """True iff this KRR content entry carries a real allocated request.
+
+    None (unset), a missing key, "?" (KRR's NaN placeholder) and 0 all count as
+    NOT set — matching the truthiness test process_resource_recommendation uses,
+    which keeps the invariant "fully unset => estimated_savings == 0".
+    """
+    if not isinstance(entry, dict):
+        return False
+    allocated = entry.get("allocated")
+    if not isinstance(allocated, dict):
+        return False
+    request = allocated.get("request")
+    if isinstance(request, bool):
+        return False
+    return isinstance(request, (int, float)) and request > 0
+
+
+def classify_pod_right_sizing_category(merged_content):
+    """Category for a pod_right_sizing row, from its merged workload payload.
+
+    merged_content is the workload-level JSONB shape {container: [entry, ...]}.
+    A workload where no container has any cpu/memory request set is a
+    best-practice finding ("set requests"), not a cost one, so it lands under
+    Configuration; any set request keeps the row under RightSizing. Keep in
+    sync with the twin in ml-k8s-server vertical_rightsizing/__init__.py and
+    with the backfill migration's SQL predicate.
+    """
+    if not isinstance(merged_content, dict):
+        return "RightSizing"
+    saw_entry = False
+    for entries in merged_content.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            saw_entry = True
+            if _has_allocated_request(entry):
+                return "RightSizing"
+    return "Configuration" if saw_entry else "RightSizing"
+
+
 def generate_krr_recommendation(cloud_account_id, report, resource_map, tenant):
     recommendations = {}
     settings = get_recommendation_settings(cloud_account_id, "pod_right_sizing")
@@ -1099,6 +1267,10 @@ def generate_krr_recommendation(cloud_account_id, report, resource_map, tenant):
             recommendations[resource_id[0]] = recommendation
         else:
             recommendations[resource_id[0]] = recommendation
+    # Classify on the MERGED payload — a per-container pass would let the last
+    # container win for mixed workloads.
+    for row in recommendations.values():
+        row["category"] = classify_pod_right_sizing_category(json.loads(row["recommendation"]))
     return recommendations
 
 
@@ -1425,11 +1597,16 @@ def get_existing_resource(cloud_account_id, report, tenant):
 
 
 def archive_existing_recommendation(cloud_account_id, tenant):
+    # pod_right_sizing rows live under RightSizing or Configuration (requests-unset
+    # workloads); sweep both so a workload whose category flips between scans
+    # cannot leave a stale Open row behind under the old category.
     update_to_archieve = (
-        "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and category = %s and"
-        " rule_name = %s and status not in  ('Closed', 'InProgress')"
+        "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and"
+        " category = ANY(%s) and rule_name = %s and status = 'Open'"
     )
-    database.run_query(update_to_archieve, ["Archive", tenant, cloud_account_id, "RightSizing", "pod_right_sizing"])
+    database.run_query(
+        update_to_archieve, ["Archive", tenant, cloud_account_id, ["RightSizing", "Configuration"], "pod_right_sizing"]
+    )
 
 
 def handle_krr_score(cloud_account_id, score, tenant):
@@ -1490,6 +1667,7 @@ def format_evidence(evidence, config_change_event: List, aggregation_key: str):
 
 def get_event_labels(evidence) -> Dict[str, str]:
     labels = {}
+    json_labels = {}
     for data in evidence:
         if "data" in data and isinstance(data["data"], str):
             data = json.loads(data["data"])
@@ -1498,7 +1676,17 @@ def get_event_labels(evidence) -> Dict[str, str]:
                 events = item["data"]
                 for row in events["rows"]:
                     labels[row[0]] = row[1]
-    return labels
+            elif item["type"] == "json" and isinstance(item.get("data"), str):
+                # Go-agent alert evidence: the raw Alertmanager alert JSON with a `labels` map
+                try:
+                    raw_alert = json.loads(item["data"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(raw_alert, dict) and isinstance(raw_alert.get("labels"), dict):
+                    for key, value in raw_alert["labels"].items():
+                        json_labels[str(key)] = str(value)
+    # An explicit "*Alert labels*" table wins over labels recovered from raw alert JSON
+    return {**json_labels, **labels}
 
 
 def _parse_json_dict(data):
@@ -2000,9 +2188,12 @@ def handle_existing_resource_best_practices(
 
 
 def archive_existing_with_rule(cloud_account_id, tenant, category, rule_name):
+    # Tombstone Open rows only, so a re-scan never overwrites a user-owned state
+    # (Dismissed/snoozed, InProgress, Closed). The upsert's CASE guard resurrects
+    # a still-present Open finding; a user decision must outlive the scan.
     update_to_archieve = (
         "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and category = %s and"
-        " rule_name = %s"
+        " rule_name = %s and status = 'Open'"
     )
     database.run_query(update_to_archieve, ["Archive", tenant, cloud_account_id, category, rule_name])
 
@@ -2013,7 +2204,7 @@ def archive_existing_with_rules(cloud_account_id, tenant, category, rule_names):
     placeholders = ",".join(["%s"] * len(rule_names))
     update_to_archieve = (
         "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and"
-        f" category = %s and rule_name in ({placeholders})"
+        f" category = %s and rule_name in ({placeholders}) and status = 'Open'"
     )
     database.run_query(update_to_archieve, ["Archive", tenant, cloud_account_id, category] + list(rule_names))
 
@@ -2027,10 +2218,14 @@ def archive_existing_with_object_id(cloud_account_id, tenant, category, account_
 
 
 def archive_image_scan_recommendations(cloud_account_id, tenant, image_name):
+    # Tombstone Open rows only. A user-set state (Dismissed/snoozed, InProgress,
+    # Closed) must survive the rescan so the upsert's CASE guard can preserve it;
+    # `status != 'Archive'` used to flip a Dismissed row to Archive first, which
+    # let the finding reappear as Open.
     query = (
         "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s "
         "and category = 'Security' and rule_name = 'image_scan' "
-        "and recommendation->>'image_name' = %s and status != 'Archive'"
+        "and recommendation->>'image_name' = %s and status = 'Open'"
     )
     database.run_query(query, ["Archive", tenant, cloud_account_id, image_name])
 
@@ -2040,7 +2235,8 @@ def upsert_recommendations(recommendations):
     on_conflict = (
         "ON CONFLICT (cloud_account_id, rule_name, resource_id, category, account_object_id) DO UPDATE SET "
         "recommendation = EXCLUDED.recommendation, estimated_savings =EXCLUDED.estimated_savings, "
-        "status=EXCLUDED.status"
+        "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') "
+        "THEN recommendation.status ELSE EXCLUDED.status END"
     )
     try:
         database.insert_data("recommendation", recommendations, on_conflict=on_conflict)

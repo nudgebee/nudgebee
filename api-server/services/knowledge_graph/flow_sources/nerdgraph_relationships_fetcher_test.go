@@ -299,6 +299,7 @@ func TestNerdGraphFetcher_HTTPErrorPropagates(t *testing.T) {
 		"key-err", "8031798", "us", "tenant-err", slog.Default(), stub.doer())
 	if err == nil {
 		t.Fatal("expected error on 500 response")
+		return
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("error should mention status 500, got: %v", err)

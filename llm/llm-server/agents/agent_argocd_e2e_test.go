@@ -44,7 +44,7 @@ func TestArgoCDAgent_Execute(t *testing.T) {
 			},
 		}
 	for _, tc := range testCases {
-		argoCDAgent := newArgoCDAgent(tc.AccountId)
+		argoCDAgent := ArgoCDAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)

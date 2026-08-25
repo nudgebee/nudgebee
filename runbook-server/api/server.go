@@ -118,6 +118,9 @@ func (s *Server) setupRoutes() {
 	{
 		workflows.POST("", s.createWorkflow)
 		workflows.GET("", s.listWorkflows)
+		// Static segment registered before /:id — gin matches static routes first,
+		// so "ai-search" is never mistaken for a workflow id.
+		workflows.GET("/ai-search", s.searchAIInvocableWorkflows)
 		workflows.GET("/:id", s.getWorkflow)
 		workflows.GET("/:id/state", s.getWorkflowState)
 		workflows.PUT("/:id", s.updateWorkflow)

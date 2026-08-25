@@ -132,22 +132,32 @@ func resolveEventSubjectNodeID(kg *core.Service, tenantID, accountID, name, name
 		add(podHashSuffix.ReplaceAllString(name, ""))
 		add(rsHashSuffix.ReplaceAllString(name, ""))
 	}
+	// A load-balancer alarm names its subject with the CloudWatch dimension
+	// ("app/my-lb/1a2b3c") while the node is "my-lb".
+	add(core.ELBV2LoadBalancerName(name))
 	add(name)
 
 	// Try node types in priority order (Workload first). A workload and its K8sService /
 	// Service share the same name+namespace, so searching all types at once returns >1 and
 	// resolves nothing — the workload is the right seed for a blast radius.
-	nodeTypeGroups := [][]core.NodeType{
-		{core.NodeTypeWorkload},
-		{core.NodeTypeService},
-		{core.NodeTypeK8sService},
-	}
+	//
+	// Each group holds a single type for that reason, and the same applies to cloud
+	// resources: an AWS resource routinely shares its name with a security group
+	// (`nb-demo-db` is both a Database and a SecurityGroup), so a combined group
+	// would return 2 and resolve nothing.
+	groups := seedNodeTypeGroups()
 	for _, cand := range candidates {
-		for _, nts := range nodeTypeGroups {
+		for _, group := range groups {
 			params := core.SearchNodesParams{
-				Name:      cand,
-				Namespace: namespace,
-				NodeTypes: nts,
+				Name: cand,
+				// Kubernetes names are unique only within a namespace, so the
+				// namespace must be part of the match. Cloud events carry the
+				// provider's service code there instead (AmazonRDS, AWSELB) while
+				// cloud nodes carry no namespace at all, so matching on it could
+				// only ever fail — those groups are searched namespace-blind, and
+				// the node-type filter keeps that from reaching K8s nodes.
+				Namespace: group.namespace(namespace),
+				NodeTypes: []core.NodeType{group.nodeType},
 				Limit:     2,
 			}
 			if accountID != "" {
@@ -161,6 +171,56 @@ func resolveEventSubjectNodeID(kg *core.Service, tenantID, accountID, name, name
 	}
 	return "", false
 }
+
+// seedNodeTypeGroup is one attempt at resolving a subject: a node type plus
+// whether the event's namespace applies to it.
+type seedNodeTypeGroup struct {
+	nodeType   core.NodeType
+	namespaced bool
+}
+
+func (g seedNodeTypeGroup) namespace(eventNamespace string) string {
+	if g.namespaced {
+		return eventNamespace
+	}
+	return ""
+}
+
+// k8sSeedPriority is the order Kubernetes types are tried in, and the set that is
+// matched with the event's namespace. It is explicit because the ordering encodes
+// a real preference — a workload is a better blast-radius seed than the service
+// in front of it — which no generic rule would reproduce.
+var k8sSeedPriority = []core.NodeType{
+	core.NodeTypeWorkload,
+	core.NodeTypeService,
+	core.NodeTypeK8sService,
+}
+
+// seedNodeTypeGroups lists every resolvable seed type: the Kubernetes ones in
+// preference order, then every other type the knowledge graph defines a
+// blast-radius traversal for. Deriving the remainder from
+// core.ImpactSeedNodeTypes keeps this from becoming a second list that drifts —
+// a node type gains a traversal and becomes resolvable in the same edit.
+// Built once at init: both inputs are static, and this sits on the event
+// resolution path. The slice is shared rather than copied per call — it is
+// unexported, read-only at every use, and the elements are value types.
+var seedGroups = func() []seedNodeTypeGroup {
+	seen := make(map[core.NodeType]bool, len(k8sSeedPriority))
+	groups := make([]seedNodeTypeGroup, 0, len(k8sSeedPriority))
+	for _, nodeType := range k8sSeedPriority {
+		seen[nodeType] = true
+		groups = append(groups, seedNodeTypeGroup{nodeType: nodeType, namespaced: true})
+	}
+	for _, nodeType := range core.ImpactSeedNodeTypes() {
+		if seen[nodeType] {
+			continue
+		}
+		groups = append(groups, seedNodeTypeGroup{nodeType: nodeType})
+	}
+	return groups
+}()
+
+func seedNodeTypeGroups() []seedNodeTypeGroup { return seedGroups }
 
 // annotateImpactedWithActiveAlerts is the topology-driven correlation step: it cross-
 // references the root's topological dependents against events that actually fired in the
@@ -360,9 +420,22 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		"depends_on":            dependsOn,       // what the subject depends on = possible cause
 		"dependent_count":       impact.DependentCount,
 		"production_dependents": impact.ProductionDependents,
-		"coverage_confidence":   string(impact.CoverageConfidence),
-		"truncated":             impact.Truncated,
-		"assembly":              assembly, // four-tier incident story (#34658)
+		// Dependents that were traversed but are not application-level types.
+		// Reported separately because "not a service that breaks" assumes a
+		// Kubernetes-shaped split between infrastructure and workloads: on a VM
+		// deployment the ComputeInstance calling the database is the application,
+		// and omitting it makes a real blast radius read as "nothing impacted".
+		// Deliberately not folded into dependent_count — that feeds the FinOps
+		// safety band.
+		// Normalised but deliberately NOT namespace-scoped: infrastructure nodes
+		// are cluster- or account-scoped and carry no namespace (a cloud resource
+		// has none at all, a k8s Node is cluster-wide), so scoping them by the
+		// event's namespace discards every one of them.
+		"infrastructure_impacted": scopeAndNormalize(impact.InfrastructureDependents, ""),
+		"infrastructure_count":    impact.InfrastructureCount,
+		"coverage_confidence":     string(impact.CoverageConfidence),
+		"truncated":               impact.Truncated,
+		"assembly":                assembly, // four-tier incident story (#34658)
 	})
 }
 
@@ -411,13 +484,14 @@ type windowRow struct {
 func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, seed triage.AlertIdentity, dependsOn map[string][]string) gin.H {
 	windowMeta := gin.H{"lead_in_s": 7200, "core_s": 7200, "impact_s": 7200}
 	empty := gin.H{
-		"root_identity": triage.SubjectKey(seed),
-		"same_incident": []tierItem{},
-		"cause":         gin.H{"config_changes": []tierItem{}, "upstream": []tierItem{}},
-		"impact":        []tierItem{},
-		"chronic":       []tierItem{},
-		"window":        windowMeta,
-		"truncated":     false,
+		"root_identity":    triage.SubjectKey(seed),
+		"same_incident":    []tierItem{},
+		"cause":            gin.H{"config_changes": []tierItem{}, "upstream": []tierItem{}},
+		"impact":           []tierItem{},
+		"chronic":          []tierItem{},
+		"window":           windowMeta,
+		"truncated":        false,
+		"seed_occurrences": 1,
 	}
 	if db == nil || accountID == "" {
 		return empty
@@ -448,11 +522,17 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 		count int
 		src   map[string]bool
 	}
+	seedOccurrences := 1 // the seed row itself, which is never part of wr
+
 	seen := map[ckey]int{}
 	var items []citem
 	for _, r := range wr {
 		tier, ok := tiers[r.id.ID]
 		if !ok {
+			continue
+		}
+		if tier == triage.TierCore && isSeedRefiring(seed, r.id) {
+			seedOccurrences++
 			continue
 		}
 		k := ckey{tier, triage.SubjectKey(r.id), r.id.AggregationKey}
@@ -494,14 +574,31 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 	}
 
 	return gin.H{
-		"root_identity": triage.SubjectKey(seed),
-		"same_incident": sameIncident,
-		"cause":         gin.H{"config_changes": configChanges, "upstream": upstream},
-		"impact":        impact,
-		"chronic":       chronic,
-		"window":        windowMeta,
-		"truncated":     truncated,
+		"root_identity":    triage.SubjectKey(seed),
+		"same_incident":    sameIncident,
+		"cause":            gin.H{"config_changes": configChanges, "upstream": upstream},
+		"impact":           impact,
+		"chronic":          chronic,
+		"window":           windowMeta,
+		"truncated":        truncated,
+		"seed_occurrences": seedOccurrences,
 	}
+}
+
+// isSeedRefiring reports whether a window row is a later firing of the seed's OWN alert
+// rather than a different alert on the same subject.
+//
+// The seed's row is excluded from the window fetch by id, but a re-firing an hour later
+// is a separate row with a separate id. Left in, it renders under "more alerts on
+// <service>" carrying the exact title of the alert the viewer already has open — the
+// panel claims two more alerts on checkout, and one of them IS checkout's alert.
+//
+// Identity is (subject, aggregation_key): the aggregation key is the alert rule, so the
+// same rule on the same workload is the same alert. A row is NOT matched when the seed
+// has no aggregation key — that would swallow every core row on the seed's subject.
+func isSeedRefiring(seed, cand triage.AlertIdentity) bool {
+	return seed.AggregationKey != "" && cand.AggregationKey == seed.AggregationKey &&
+		triage.SubjectKey(cand) == triage.SubjectKey(seed)
 }
 
 // windowFetchLimit bounds the window fetch; hitting it sets assembly.truncated.

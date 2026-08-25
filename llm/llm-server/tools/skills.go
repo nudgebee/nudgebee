@@ -75,7 +75,7 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 	ctx.Ctx.GetLogger().Info("tool: load_skills called", "skill_name", skillName)
 
 	if skillName == "" {
-		common.MetricsToolOperationsTotal(m.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, m.Name(), "error", ctx.AccountId)
 		return core.NBToolResponse{
 			Status: core.NBToolResponseStatusError,
 			Data:   "skill_name is required",
@@ -84,14 +84,14 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		common.MetricsToolOperationsTotal(m.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, m.Name(), "error", ctx.AccountId)
 		return core.NBToolResponse{Status: core.NBToolResponseStatusError}, err
 	}
 
 	// Parse and deduplicate requested skill names.
 	requestedNames := m.parseSkillNames(skillName)
 	if len(requestedNames) == 0 {
-		common.MetricsToolOperationsTotal(m.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, m.Name(), "error", ctx.AccountId)
 		return core.NBToolResponse{
 			Status: core.NBToolResponseStatusError,
 			Data:   "skill_name is required",
@@ -198,7 +198,7 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 	}
 
 	if loadedCount == 0 {
-		common.MetricsToolOperationsTotal(m.Name(), "not_found", ctx.AccountId)
+		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, m.Name(), "not_found", ctx.AccountId)
 		errorMsg := fmt.Sprintf("Skills '%s' not found or not available for this agent.", skillName)
 		if available := m.listAvailableSkills(ctx, dbms); len(available) > 0 {
 			errorMsg += fmt.Sprintf(" Available skills for this account/agent are: %s", strings.Join(available, ", "))
@@ -217,7 +217,7 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 	}
 
 	ctx.Ctx.GetLogger().Info("tool: load_skills success", "loaded_count", loadedCount, "missing_count", len(missingNames))
-	common.MetricsToolOperationsTotal(m.Name(), "success", ctx.AccountId)
+	common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, m.Name(), "success", ctx.AccountId)
 	return core.NBToolResponse{
 		Status:     core.NBToolResponseStatusSuccess,
 		Data:       aggregatedOutput.String(),
@@ -593,7 +593,7 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 		query = strings.TrimSpace(input.Command)
 	}
 	if query == "" {
-		common.MetricsToolOperationsTotal(s.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "error", ctx.AccountId)
 		return core.NBToolResponse{
 			Status: core.NBToolResponseStatusError,
 			Data:   "query is required",
@@ -604,7 +604,7 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		common.MetricsToolOperationsTotal(s.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "error", ctx.AccountId)
 		return core.NBToolResponse{Status: core.NBToolResponseStatusError}, err
 	}
 
@@ -665,7 +665,7 @@ collect:
 	finalResults = append(finalResults, ragOut.results...)
 
 	if len(finalResults) == 0 {
-		common.MetricsToolOperationsTotal(s.Name(), "not_found", ctx.AccountId)
+		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "not_found", ctx.AccountId)
 		return core.NBToolResponse{
 			Status: core.NBToolResponseStatusSuccess,
 			Data:   "No matching skills or knowledge base entries found for the given query.",
@@ -675,7 +675,7 @@ collect:
 
 	ctx.Ctx.GetLogger().Info("tool: search_skills success",
 		"manual_results", len(manualOut.results), "rag_results", len(ragOut.results))
-	common.MetricsToolOperationsTotal(s.Name(), "success", ctx.AccountId)
+	common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "success", ctx.AccountId)
 	return core.NBToolResponse{
 		Status:     core.NBToolResponseStatusSuccess,
 		Data:       strings.Join(finalResults, "\n\n---\n\n"),

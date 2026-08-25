@@ -74,6 +74,8 @@ type TimeSeries struct {
 type ToolRow struct {
 	Tool              string   `json:"tool"`
 	Requests          int64    `json:"requests"` // requests that offered this tool
+	Calls             int64    `json:"calls"`    // times the tool was actually invoked
+	Failures          int64    `json:"failures"` // calls whose result was an error (Anthropic is_error)
 	AvgLatencySeconds float64  `json:"avg_latency_seconds"`
 	Models            []string `json:"models"` // distinct models that offered this tool
 }
@@ -365,33 +367,54 @@ func byUser(db *common.DatabaseManager, req Request) ([]GroupRow, error) {
 type toolScan struct {
 	Tool       string `db:"tool"`
 	Requests   int64  `db:"requests"`
+	Calls      int64  `db:"calls"`
+	Failures   int64  `db:"failures"`
 	LatencySum int64  `db:"latency_ms_sum"`
 	Models     string `db:"models"` // comma-joined distinct models (split in Go)
 }
 
-// byTool breaks usage down by the tools a request OFFERED (attributes.actual.
-// tool_names), unnesting the array so each offered tool counts once per request.
-// The `attributes LIKE '%tool_names%'` prefilter narrows the jsonb cast to rows
-// that actually carry the array (attributes is JSON text; empty/absent rows are
-// skipped). Reports offered tools + latency + the distinct models that offered
-// each (model names carry no comma, so a comma-join round-trips cleanly). Which
-// tools were actually CALLED is a later phase.
+// byTool breaks usage down by tool, per the tools a request OFFERED (attributes.actual.
+// tool_names) plus how many were actually CALLED and FAILED (actual.called_tools /
+// failed_tools — extracted from the conversation tail at capture; see proxy.
+// extractToolActivity). Each array is unnested so a tool counts once per occurrence:
+// offered → requests, called → calls, failed → failures. The `attributes LIKE '%tool%'`
+// prefilter narrows the jsonb cast to rows carrying any tool array (attributes is JSON
+// text). Rows are keyed on offered tools (a tool must be offered to be called), with
+// calls/failures LEFT-JOINed in. Models are the distinct models that offered each tool
+// (names carry no comma, so the comma-join round-trips cleanly).
 func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
 	const q = `
-		SELECT tool, count(*) AS requests, COALESCE(sum(latency_ms),0) AS latency_ms_sum,
-		       COALESCE(string_agg(DISTINCT NULLIF(model,''), ',' ORDER BY NULLIF(model,'')),'') AS models
-		FROM (
-			SELECT jsonb_array_elements_text(a #> '{actual,tool_names}') AS tool, latency_ms, model
-			FROM (
-				SELECT NULLIF(attributes,'')::jsonb AS a, latency_ms, model
-				FROM llm_gateway_usage
-				WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
-				  AND attributes LIKE '%tool_names%'
-			) s
-			WHERE a #> '{actual,tool_names}' IS NOT NULL
-		) t
-		GROUP BY tool
-		ORDER BY requests DESC`
+		WITH base AS (
+			SELECT NULLIF(attributes,'')::jsonb AS a, latency_ms, model
+			FROM llm_gateway_usage
+			WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
+			  AND attributes LIKE '%tool%'
+		),
+		offered AS (
+			SELECT tool, count(*) AS requests, COALESCE(sum(latency_ms),0) AS latency_ms_sum,
+			       COALESCE(string_agg(DISTINCT NULLIF(model,''), ',' ORDER BY NULLIF(model,'')),'') AS models
+			FROM (SELECT jsonb_array_elements_text(a #> '{actual,tool_names}') AS tool, latency_ms, model
+			      FROM base WHERE a #> '{actual,tool_names}' IS NOT NULL) o
+			GROUP BY tool
+		),
+		called AS (
+			SELECT tool, count(*) AS calls
+			FROM (SELECT jsonb_array_elements_text(a #> '{actual,called_tools}') AS tool
+			      FROM base WHERE a #> '{actual,called_tools}' IS NOT NULL) c
+			GROUP BY tool
+		),
+		failed AS (
+			SELECT tool, count(*) AS failures
+			FROM (SELECT jsonb_array_elements_text(a #> '{actual,failed_tools}') AS tool
+			      FROM base WHERE a #> '{actual,failed_tools}' IS NOT NULL) f
+			GROUP BY tool
+		)
+		SELECT o.tool, o.requests, o.latency_ms_sum, o.models,
+		       COALESCE(c.calls,0) AS calls, COALESCE(f.failures,0) AS failures
+		FROM offered o
+		LEFT JOIN called c ON c.tool = o.tool
+		LEFT JOIN failed f ON f.tool = o.tool
+		ORDER BY o.requests DESC`
 	var rows []toolScan
 	if err := db.QueryAndScan(&rows, q, req.TenantID, req.StartDate, req.EndDate); err != nil {
 		return nil, fmt.Errorf("usage: by-tool aggregation: %w", err)
@@ -402,7 +425,10 @@ func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
 		if r.Models != "" {
 			models = strings.Split(r.Models, ",")
 		}
-		out = append(out, ToolRow{Tool: r.Tool, Requests: r.Requests, AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests), Models: models})
+		out = append(out, ToolRow{
+			Tool: r.Tool, Requests: r.Requests, Calls: r.Calls, Failures: r.Failures,
+			AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests), Models: models,
+		})
 	}
 	return out, nil
 }

@@ -551,6 +551,114 @@ func TestValidateRepoSelection(t *testing.T) {
 	}
 }
 
+// qwenChainOfThoughtRepoReply is the verbatim reply that caused #35703. The model was
+// asked to return a repository URL or an empty string; it reasoned correctly and
+// concluded "Empty string", but wrapped that conclusion in numbered prose. The old
+// parser prefixed the whole blob with "https://github.com/" and it reached `git push`.
+const qwenChainOfThoughtRepoReply = `1. Analyze the input text: "Tune NBLLMEgressFilterFlagging alert in deploy/kubernetes/victoria/values-gke.yaml: change expr threshold from > 0 to > 50, and change for duration from 5m to 15m"
+2. Look for GitHub/GitLab URLs: None found.
+3. Look for "owner/repo" or "group/project" patterns:
+    - "deploy/kubernetes/victoria/values-gke.yaml" is a file path, not a repository identifier.
+    - There are no strings in the format "owner/repo" that represent a repository.
+4. Evaluate if a repository can be confidently identified: No. The text mentions a file path within a repository, but not the repository itself.
+5. Conclusion: No repository URL or identifier is present.
+6. Final output: Empty string.`
+
+// TestNormalizeExtractedRepo covers the LLM repo-extraction reply parser. The cases
+// that matter are the ones where the model does NOT reply with a bare URL.
+func TestNormalizeExtractedRepo(t *testing.T) {
+	tests := []struct {
+		name         string
+		response     string
+		wantRepo     string
+		wantProvider string
+	}{
+		// The regression this exists for.
+		{"chain-of-thought concluding empty is not a repo", qwenChainOfThoughtRepoReply, "", ""},
+		{"prose mentioning a file path is not a repo", "The change is in deploy/kubernetes/values.yaml, no repository given.", "", ""},
+		{"multi-line reasoning without any URL", "Step 1: look for a repo.\nStep 2: none found.\nAnswer: none", "", ""},
+
+		// Sentinels the prompt invites.
+		{"empty response", "", "", ""},
+		{"none", "none", "", ""},
+		{"empty word", "Empty", "", ""},
+		{"uncertain", "UNCERTAIN", "", ""},
+
+		// Bare URLs, the happy path.
+		{"github url", "https://github.com/nudgebee/nudgebee", "https://github.com/nudgebee/nudgebee", "github"},
+		{"gitlab url", "https://gitlab.com/mygroup/myproject", "https://gitlab.com/mygroup/myproject", "gitlab"},
+		{"self-hosted gitlab", "https://gitlab.company.com/mygroup/myproject", "https://gitlab.company.com/mygroup/myproject", "gitlab"},
+		{"scp-style github", "git@github.com:nudgebee/nudgebee", "git@github.com:nudgebee/nudgebee", "github"},
+		{"strips quotes", `"https://github.com/nudgebee/nudgebee"`, "https://github.com/nudgebee/nudgebee", "github"},
+		{"strips backticks", "`https://github.com/nudgebee/nudgebee`", "https://github.com/nudgebee/nudgebee", "github"},
+		{"quoted answer keeps its own padding", `" nudgebee/nudgebee "`, "https://github.com/nudgebee/nudgebee", "github"},
+		{"quoted padded answer on the last line", "Reasoning above.\n\" nudgebee/nudgebee \"", "https://github.com/nudgebee/nudgebee", "github"},
+		{"last line is only quotes, falls back to the line above", "nudgebee/nudgebee\n\"\"", "https://github.com/nudgebee/nudgebee", "github"},
+
+		// Prose WITH a real URL: previously discarded by the HasPrefix guard because the
+		// reply did not start with a scheme. Now recovered.
+		{"prose wrapping a real url", "Looking at the query, the repo is https://github.com/nudgebee/nudgebee", "https://github.com/nudgebee/nudgebee", "github"},
+		{"reasoning that ends in the answer", "1. Look for URLs.\n2. Found one.\nFinal output: https://github.com/nudgebee/nudgebee", "https://github.com/nudgebee/nudgebee", "github"},
+
+		// A model that restates the prompt while reasoning must not have the prompt's
+		// own example URLs adopted as the answer.
+		{"prompt examples echoed in reasoning are ignored", "Return ONLY the repository URL in one of these formats:\n- https://github.com/owner/repo\n- https://gitlab.com/group/project\nConclusion: no repository is present.", "", ""},
+		{"placeholder owner/repo rejected", "https://github.com/owner/repo", "", ""},
+		{"placeholder group/project rejected", "https://gitlab.com/group/project", "", ""},
+		{"bare placeholder rejected", "owner/repo", "", ""},
+
+		// Bare owner/repo, only when it is the entire reply.
+		{"bare owner/repo", "nudgebee/nudgebee", "https://github.com/nudgebee/nudgebee", "github"},
+		{"owner/repo inside prose is not accepted", "It might be nudgebee/nudgebee but I am not sure", "", ""},
+
+		// Lookalike host must not pass as GitHub.
+		{"lookalike host rejected", "https://github.com.example.net/evil/repo", "", ""},
+
+		// Host-shape cases the substring match used to cover, kept working.
+		{"www prefix", "https://www.bitbucket.org/owner/thing", "https://www.bitbucket.org/owner/thing", "github"},
+		{"uppercase host", "https://GitHub.COM/nudgebee/nudgebee", "https://GitHub.COM/nudgebee/nudgebee", "github"},
+		{"host with port", "https://github.com:8080/nudgebee/nudgebee", "https://github.com:8080/nudgebee/nudgebee", "github"},
+		{"trailing .git", "https://github.com/nudgebee/nudgebee.git", "https://github.com/nudgebee/nudgebee.git", "github"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, provider := normalizeExtractedRepo(tt.response)
+			assert.Equal(t, tt.wantRepo, repo)
+			assert.Equal(t, tt.wantProvider, provider)
+		})
+	}
+}
+
+// TestIsValidGitURL covers the caller-side guard. It must reject anything that merely
+// starts with a scheme — that was the hole the prepended "https://" walked through.
+func TestIsValidGitURL(t *testing.T) {
+	valid := []string{
+		"https://github.com/nudgebee/nudgebee",
+		"http://github.com/nudgebee/nudgebee",
+		"https://gitlab.company.com/group/project",
+		"git@github.com:nudgebee/nudgebee",
+		"https://github.com/nudgebee/nudgebee.git",
+	}
+	for _, s := range valid {
+		assert.True(t, isValidGitURL(s), "expected valid: %q", s)
+	}
+
+	invalid := []string{
+		"",
+		"nudgebee/nudgebee",           // not a URL
+		"https://github.com",          // no owner/repo
+		"https://github.com/nudgebee", // only one path segment
+		"https://github.com/" + qwenChainOfThoughtRepoReply, // the #35703 payload
+		"https://github.com/owner/repo extra words",         // whitespace
+		"https://github.com/owner/repo\nsecond line",        // control character
+		"git@github.com",              // scp form with no path
+		"ftp://github.com/owner/repo", // unsupported scheme
+	}
+	for _, s := range invalid {
+		assert.False(t, isValidGitURL(s), "expected invalid: %q", s)
+	}
+}
+
 // TestTruncateForPrompt verifies bounded truncation with a marker.
 
 func TestTruncateForPrompt(t *testing.T) {
@@ -664,10 +772,10 @@ func TestRecordCodeAnalysisTokenUsage_NilAndZero(t *testing.T) {
 	query := core.NBAgentRequest{AccountId: "test"}
 
 	// Should not panic on nil
-	recordCodeAnalysisTokenUsage(query, nil, 1.0)
+	recordCodeAnalysisTokenUsage(query, nil, 1.0, nil, nil)
 
 	// Should not panic on zero tokens
-	recordCodeAnalysisTokenUsage(query, &codeAnalysisTokenUsage{}, 1.0)
+	recordCodeAnalysisTokenUsage(query, &codeAnalysisTokenUsage{}, 1.0, nil, nil)
 }
 
 // joinErrors is a test helper that joins error strings.

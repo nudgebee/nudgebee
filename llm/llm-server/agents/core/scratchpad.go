@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 )
@@ -122,22 +123,37 @@ func compressObservation(obs string) string {
 	return result
 }
 
+// fileRecallHandle returns a short pointer telling the planner that a compressed
+// observation's full output is still available as a workspace file it can grep,
+// or "" when the step saved no such file. It reads the Type:"file" reference the
+// fetch tools (logs/metrics/traces) already attach to their step, so a
+// compressed-away observation becomes recoverable instead of a dead-end. Gated
+// by LlmServerFsEvidenceRecallEnabled at the call site; render-only (the stored
+// observation is never modified). See WORKSPACE_FS_EVIDENCE_RECALL_SPEC.md.
+func fileRecallHandle(step *NBAgentPlannerToolActionStep) string {
+	for _, ref := range step.References {
+		if ref.Type == "file" && ref.Url != "" {
+			return fmt.Sprintf("\n[full output saved to workspace file %q — use shell_execute (grep/head) to read specific lines instead of re-running this tool]", ref.Url)
+		}
+	}
+	return ""
+}
+
 // TruncateHead truncates s to at most maxBytes from the start, ensuring the cut
 // does not split a multi-byte UTF-8 character.
 func TruncateHead(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	// Walk back from maxBytes to find a valid rune boundary
-	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
-		maxBytes--
-	}
-	return s[:maxBytes]
+	return common.TruncateHead(s, maxBytes)
 }
 
 // TruncateMiddle truncates s by keeping headBytes from the start and tailBytes
 // from the end, injecting a truncation marker in between.
 func TruncateMiddle(s string, headBytes, tailBytes int) string {
+	if headBytes < 0 {
+		headBytes = 0
+	}
+	if tailBytes < 0 {
+		tailBytes = 0
+	}
 	if len(s) <= headBytes+tailBytes {
 		return s
 	}
@@ -151,6 +167,9 @@ func TruncateMiddle(s string, headBytes, tailBytes int) string {
 // truncateTail returns the last maxBytes of s, ensuring the cut does not split
 // a multi-byte UTF-8 character.
 func truncateTail(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
 	if len(s) <= maxBytes {
 		return s
 	}
@@ -261,6 +280,20 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 		if obs == "" {
 			obs = "No data found. The tool returned an empty response."
 		}
+		// A repeated (turn-cached) call: prefix a render-only notice so the planner
+		// sees it already ran this and stops re-deciding. Kept out of plan.Observation
+		// so it never leaks to the terminal response, the UI, or the summarizer.
+		if plan.IsDuplicateCacheHit {
+			obs = duplicateCallNotice + obs
+		} else if plan.NoProgressRepeatCount > 0 {
+			// Generic no-progress loop: same tool has returned error / empty /
+			// byte-identical outcomes consecutively enough times this turn to
+			// trip noProgressLoopThreshold. Replaces three prior per-class
+			// notices (byte-identical / trivial-result / access-denied) with
+			// ONE that covers 403 / 503 / 429 / empty / typo / anything new
+			// by construction — see isNoProgressStep in executor_planner.go.
+			obs = noProgressNotice(plan.Action.Tool, plan.NoProgressRepeatCount) + obs
+		}
 
 		// PRUNING: Minimize fixed failures
 		if plan.Status == ToolStatusFailure {
@@ -356,6 +389,13 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 				components[i].Observation = SummarizeObservation(scratchpadCtx.Ctx, &intermediateSteps[si], scratchpadCtx.Request, obs)
 			} else {
 				components[i].Observation = compressObservation(obs)
+			}
+			// FS evidence recall (flag-gated): if this compressed observation has
+			// a workspace file the tool already saved, append a live handle so the
+			// planner greps the full output back instead of re-running. Appending
+			// "" is a no-op when the step saved no file.
+			if config.Config.LlmServerFsEvidenceRecallEnabled {
+				components[i].Observation += fileRecallHandle(&intermediateSteps[si])
 			}
 			components[i].IsCompressed = true
 			// Mark the original step so compression visibility can detect it.

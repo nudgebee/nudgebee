@@ -409,6 +409,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
               providerOverride={selectedProvider}
               operatorDescriptors={selectedOption?.operatorDescriptors}
               params={{ startTime: dateRange.startTime, endTime: dateRange.endTime }}
+              limit={logLimit}
               queryItems={saasQueryItems}
               setQueryItems={setSaasQueryItems}
               onQueryChange={(e: any) => {

@@ -25,16 +25,18 @@ func TestOrchestrators_IncludeSearchSkillsTool(t *testing.T) {
 		getTools func() []toolcore.NBTool
 	}{
 		{"k8s_orchestrator", func() []toolcore.NBTool {
-			return getSupportedTools(sc, testAccountId, "k8s_debug", KubectlAgentName)
+			// Lean-only k8s orchestrator: search_skills is preloaded via the reduced k8s core.
+			return getTrimmedK8sSupportedTools(sc, testAccountId, AgentK8sOrchestratorName)
 		}},
 		{"gcp_orchestrator", func() []toolcore.NBTool {
-			return getGcpPlannerSupportedTools(sc, testAccountId)
+			// Lean-only cloud orchestrator: search_skills is preloaded via the reduced cloud core.
+			return getCloudLeanSupportedTools(sc, testAccountId, AgentGcpOrchestratorName, tools.ToolExecuteGcpCliCommand)
 		}},
 		{"azure_orchestrator", func() []toolcore.NBTool {
-			return getAzurePlannerSupportedTools(sc, testAccountId)
+			return getCloudLeanSupportedTools(sc, testAccountId, AgentAzureOrchestratorName, tools.ToolExecuteAzureCliCommand)
 		}},
 		{"aws_orchestrator", func() []toolcore.NBTool {
-			return getAwsPlannerSupportedTools(sc, testAccountId, "aws_orchestrator", false)
+			return getCloudLeanSupportedTools(sc, testAccountId, AgentAwsOrchestratorName, tools.ToolExecuteAwsCliCommand)
 		}},
 		{"datadog_orchestrator", func() []toolcore.NBTool {
 			return getDatadogPlannerSupportedTools(sc, testAccountId)

@@ -111,7 +111,8 @@ func kbCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -160,7 +161,8 @@ func kbGet(c *gin.Context, context *security.RequestContext, payload map[string]
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -209,7 +211,8 @@ func kbList(c *gin.Context, context *security.RequestContext, payload map[string
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -250,7 +253,8 @@ func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -299,7 +303,8 @@ func kbDelete(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -340,7 +345,8 @@ func kbListAgentKBs(c *gin.Context, context *security.RequestContext, payload ma
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiAgents, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -386,7 +392,8 @@ func kbMapToAgent(c *gin.Context, context *security.RequestContext, payload map[
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -432,7 +439,8 @@ func kbUnmapFromAgent(c *gin.Context, context *security.RequestContext, payload 
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -468,7 +476,8 @@ func kbListAgentsWithCounts(c *gin.Context, context *security.RequestContext, pa
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiAgents, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -504,7 +513,8 @@ func kbListMappings(c *gin.Context, context *security.RequestContext, payload ma
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -545,7 +555,8 @@ func kbListKBAgents(c *gin.Context, context *security.RequestContext, payload ma
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -575,7 +586,8 @@ func kbGetLoadHistory(c *gin.Context, context *security.RequestContext, payload 
 		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
 		return
 	}
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
@@ -597,7 +609,8 @@ func kbRetrigger(c *gin.Context, context *security.RequestContext, payload map[s
 		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
 		return
 	}
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedRun(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}

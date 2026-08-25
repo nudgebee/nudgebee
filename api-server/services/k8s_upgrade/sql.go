@@ -81,8 +81,11 @@ func StoreUpgradePlan(ctx *security.RequestContext, tenantID string, template Up
 
 	for _, step := range template.Steps {
 		stepId := uuid.New().String()
-		_, err := tx.Exec(`
-			INSERT INTO upgrade_plan_steps 
+		// NOTE: `=`, not `:=` — a loop-scoped err would shadow the function-level
+		// err the deferred rollback above guards on, leaking the transaction
+		// (connection stuck `idle in transaction`) when an insert fails.
+		_, err = tx.Exec(`
+			INSERT INTO upgrade_plan_steps
 				(id, tenant_id, account_id, plan_id, title, sequence, description, status)
 			VALUES 
 				($1, $2, $3, $4, $5, $6, $7, $8)
@@ -94,7 +97,8 @@ func StoreUpgradePlan(ctx *security.RequestContext, tenantID string, template Up
 		for _, task := range step.Tasks {
 			action := sql.NullString{String: task.Action, Valid: task.Action != ""}
 			resourceType := sql.NullString{String: task.ResourceType, Valid: task.ResourceType != ""}
-			_, err := tx.Exec(`
+			// `=`, not `:=` — same rollback-guard reason as the step insert above.
+			_, err = tx.Exec(`
 				INSERT INTO upgrade_plan_tasks
 					(step_id, sequence, title, description, action, status, is_required, resource_type)
 				VALUES
@@ -348,13 +352,12 @@ func DeleteUpgradePlan(ctx *security.RequestContext, tenantID, accountID, planID
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer func() {
-		if err != nil {
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				ctx.GetLogger().Error("Failed to rollback transaction", "error", rollbackErr)
-			}
-		}
-	}()
+	// Unconditional: the "plan not found" return below leaves the local `err` nil
+	// (the return is unnamed), so an `if err != nil` guard would skip the rollback
+	// and strand the connection idle-in-transaction holding the DELETE locks.
+	// Rollback after a successful Commit returns sql.ErrTxDone, which LogRollback
+	// treats as benign.
+	defer database.LogRollback(tx, ctx.GetLogger())
 
 	// Delete tasks belonging to steps of this plan
 	_, err = tx.Exec(`
@@ -451,7 +454,11 @@ func UpsertTask(ctx *security.RequestContext, tenantID string, request TaskUpser
 			WHERE id = $1
 		`, strings.Join(setClauses, ", "))
 
-		result, err := tx.Exec(updateQuery, args...)
+		// `=`, not `:=` — a block-scoped err would shadow the function-level
+		// err the deferred rollback above guards on, leaking the transaction
+		// (connection stuck `idle in transaction`) when the update fails.
+		var result sql.Result
+		result, err = tx.Exec(updateQuery, args...)
 		if err != nil {
 			return fmt.Errorf("failed to update task: %w", err)
 		}

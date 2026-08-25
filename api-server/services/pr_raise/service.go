@@ -44,6 +44,11 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 	if err != nil {
 		return []models.EventResolution{}, err
 	}
+	defer func() {
+		if err := r.Close(); err != nil {
+			context.GetLogger().Error("error closing rows", "error", err)
+		}
+	}()
 
 	resolutions := []models.EventResolution{}
 	for r.Next() {

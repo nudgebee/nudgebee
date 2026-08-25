@@ -46,6 +46,9 @@ const CATEGORY_MAPPERS: Record<string, (rule: string) => CategoryMapping> = {
 };
 
 function mapCategoryAndSubCategory(apiCategory: string, ruleName: string): CategoryMapping {
+  // pod_right_sizing keeps its sizing presentation under either API category
+  // (requests-unset rows live under Configuration)
+  if (ruleName === 'pod_right_sizing') return mapRightSizing(ruleName);
   const mapper = CATEGORY_MAPPERS[apiCategory];
   return mapper ? mapper(ruleName || '') : { category: 'security_config', subCategory: 'critical_config' };
 }
@@ -166,7 +169,7 @@ const getAgenticDescription = (apiRec: any): string => {
   if (rule === 'image_scan') return describeImageScan(recData);
 
   const cat = mapCategoryForFallback(apiRec.category);
-  const brief = getRecommendationBrief(apiRec) || formatRuleName(rule);
+  const brief = getRecommendationBrief(apiRec) || formatRuleName(rule, apiRec.category);
   const fallback = CATEGORY_FALLBACK_SUFFIX[cat];
   if (fallback?.[0]) return withSavings(brief + '.', fallback[0], savingsStr);
   if (fallback) return brief + fallback[1];
@@ -257,7 +260,7 @@ export function transformApiToInsight(
   // action line) are the canonical card/list text; `summary` is the full prose, kept
   // for the hover tooltip and ticket subject. Consolidating these is tracked separately.
   const ruleName = apiRec.rule_name || '';
-  const title = catalogTitle(apiRec.category || '', ruleName) || formatRuleName(ruleName);
+  const title = catalogTitle(apiRec.category || '', ruleName) || formatRuleName(ruleName, apiRec.category);
   const brief = getRecommendationBrief(apiRec);
 
   return {

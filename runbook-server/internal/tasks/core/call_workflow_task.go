@@ -322,6 +322,17 @@ func (t *CallWorkflowTask) OutputSchema() *types.Schema {
 
 // GetChildWorkflowDefinition fetches the definition of the referenced workflow and prepares it for execution.
 func (t *CallWorkflowTask) GetChildWorkflowDefinition(taskCtx types.TaskContext, params map[string]any) (*model.WorkflowDefinition, error) {
+	resolved, err := t.ResolveChildWorkflow(taskCtx, params)
+	if err != nil {
+		return nil, err
+	}
+	return resolved.Definition, nil
+}
+
+// ResolveChildWorkflow fetches the definition of the referenced workflow, prepares
+// it for execution, and reports which stored workflow and version it came from so
+// the executor can tag the child run as a run OF THE CALLEE.
+func (t *CallWorkflowTask) ResolveChildWorkflow(taskCtx types.TaskContext, params map[string]any) (*types.ResolvedChildWorkflow, error) {
 	workflowName, ok := params["workflow_name"].(string)
 	if !ok || workflowName == "" {
 		return nil, fmt.Errorf("missing or invalid 'workflow_name' parameter for core.call-workflow task")
@@ -378,7 +389,12 @@ func (t *CallWorkflowTask) GetChildWorkflowDefinition(taskCtx types.TaskContext,
 		Timeout:          liveDef.Timeout,
 	}
 
-	return childWfDef, nil
+	return &types.ResolvedChildWorkflow{
+		Definition:   childWfDef,
+		WorkflowID:   wf.ID,
+		WorkflowName: workflowName,
+		Version:      targetVersion,
+	}, nil
 }
 
 // ShouldExecuteAsChildWorkflow indicates that this task should be executed as a proper Child Workflow.

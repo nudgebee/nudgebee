@@ -4,6 +4,37 @@ import { getAccountByTenant } from '@lib/UserService';
  * Used by both SAML authentication and NextAuth adapters
  */
 
+/**
+ * Is this role row granted inside the tenant the session opens in?
+ *
+ * Role rows are global to the user — `user_roles` holds every grant across every
+ * tenant the user belongs to — so each row must be matched against the selected
+ * tenant before it lands in the session. `tenant` rows carry the tenant in
+ * `entity_id`; every other row carries it in `tenant_id` (populated by every
+ * insert path in api-server since V325). `group_roles` rows carry neither — the
+ * owning group's tenant is checked by the caller instead.
+ *
+ * A row with no tenant information is KEPT: this session scope is advisory (the
+ * backend re-authorizes every request), so a missing field must not lock a user
+ * out of access the backend still grants.
+ */
+export function roleBelongsToTenant(r: any, tenantId?: string) {
+  if (!tenantId) return true;
+  if (r.entity_type === 'tenant') return r.entity_id === tenantId;
+  return !r.tenant_id || r.tenant_id === tenantId;
+}
+
+/**
+ * Group membership is global; a group's roles only count inside the tenant that
+ * owns the group. Older api-server builds do not return the group's tenant — fall
+ * back to keeping the group for the same fail-open reason as above.
+ */
+export function groupBelongsToTenant(group: any, tenantId?: string) {
+  const groupTenant = group?.user_group?.tenant;
+  if (!tenantId || !groupTenant) return true;
+  return groupTenant === tenantId;
+}
+
 export function adapterUserUpdateDataOnUserRoles(
   user_roles: any[],
   roles: string[],
@@ -11,9 +42,13 @@ export function adapterUserUpdateDataOnUserRoles(
   readonlyAccountIds: string[],
   namespacedAccountIds: string[],
   namespacedReadOnlyAccountIds: string[],
-  k8sNamespaces: any
+  k8sNamespaces: any,
+  tenantId?: string
 ) {
   user_roles?.forEach((r: any) => {
+    if (!roleBelongsToTenant(r, tenantId)) {
+      return;
+    }
     if (r.entity_type && r.entity_type == 'tenant') {
       roles.push(r.role);
     } else if (r.entity_type && r.entity_type == 'account' && r.role == 'account_admin_readonly') {
@@ -73,11 +108,15 @@ export async function extractUserPermissions(user: any) {
     readonlyAccountIds,
     namespacedAccountIds,
     namespacedReadOnlyAccountIds,
-    k8sNamespaces
+    k8sNamespaces,
+    tenant.id
   );
 
   const groups = user.groups ?? [];
   for (const group of groups) {
+    if (!groupBelongsToTenant(group, tenant.id)) {
+      continue;
+    }
     const groupRoles = group.user_group.group_roles ?? [];
     adapterUserUpdateDataOnUserRoles(
       groupRoles,
@@ -86,7 +125,8 @@ export async function extractUserPermissions(user: any) {
       readonlyAccountIds,
       namespacedAccountIds,
       namespacedReadOnlyAccountIds,
-      k8sNamespaces
+      k8sNamespaces,
+      tenant.id
     );
   }
 
@@ -96,7 +136,7 @@ export async function extractUserPermissions(user: any) {
   namespacedAccountIds = [...new Set(namespacedAccountIds)];
   namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
 
-  if (accountIds.length > 0 || readonlyAccountIds.length > 0) {
+  if (accountIds.length > 0 || readonlyAccountIds.length > 0 || namespacedAccountIds.length > 0 || namespacedReadOnlyAccountIds.length > 0) {
     // Narrow role-granted account ids to those that belong to the selected tenant.
     const resp = await getAccountByTenant(tenant.id);
     const tenantAccounts: string[] = resp.data?.cloud_accounts?.map((a: any) => a.id) ?? [];
@@ -105,6 +145,13 @@ export async function extractUserPermissions(user: any) {
       readonlyAccountIds = readonlyAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedAccountIds = namespacedAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedReadOnlyAccountIds = namespacedReadOnlyAccountIds.filter((a) => tenantAccounts.includes(a));
+      // k8sNamespaces is keyed by account id — prune it alongside the id lists, or a
+      // namespace grant on another tenant's account stays visible in the session.
+      for (const accountId of Object.keys(k8sNamespaces)) {
+        if (!tenantAccounts.includes(accountId)) {
+          delete k8sNamespaces[accountId];
+        }
+      }
     } else {
       // No tenant accounts resolved. This session scope is ADVISORY — the backend
       // re-authorizes every request — so we deliberately keep the user's explicit role

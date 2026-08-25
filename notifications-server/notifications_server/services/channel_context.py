@@ -42,6 +42,10 @@ PLATFORM_SLACK = "slack"
 # magnitude to keep the block from crowding out the rest of the prompt.
 _CHARS_PER_TOKEN = 4
 
+# Citation previews are snapshots that can outlive the retention sweep, so they
+# stay short: enough to recognise the message, not enough to preserve it.
+_PREVIEW_CHARS = 120
+
 
 class ChannelContextService:
     def __init__(self, engine, common_service=None):
@@ -87,15 +91,80 @@ class ChannelContextService:
         cache.cache_user_name(team_id, author_id, author_id, ttl_seconds=3600)
         return author_id
 
+    def _team_domain(self, team_id):
+        """Cached workspace-domain lookup for permalinks. A cached empty string
+        is a known miss, so an unresolvable workspace costs one API call per
+        cache window rather than one per mention."""
+        cached = cache.get_cached_team_domain(team_id)
+        if cached is not None:
+            return cached or None
+        domain = None
+        if self.common_service:
+            try:
+                domain = self.common_service.get_slack_team_domain(team_id)
+            except Exception:
+                LOG.debug("Could not resolve team domain for %s", team_id, exc_info=True)
+        cache.cache_team_domain(team_id, domain or "")
+        return domain
+
+    @staticmethod
+    def _permalink(domain, channel_id, message_id, thread_id):
+        if not (domain and message_id):
+            return None
+        link = f"https://{domain}.slack.com/archives/{channel_id}/p{message_id.replace('.', '')}"
+        if thread_id and thread_id != message_id:
+            link = f"{link}?thread_ts={thread_id}&cid={channel_id}"
+        return link
+
+    def _refs_payload(self, entries, tenant_id, team_id, channel_id):
+        """Citation provenance for the block: which channel and which retained
+        messages it was assembled from. Previews are short snapshots so the
+        citation can outlive the retention sweep without carrying whole
+        messages past it."""
+        domain = self._team_domain(team_id)
+        resolver = self._mention_resolver(team_id)
+        messages = []
+        for entry in entries:
+            message_id = entry.get("provider_message_id")
+            if not message_id:
+                continue
+            posted = entry.get("posted_at")
+            preview = channel_analysis.replace_user_mentions(entry.get("message") or "", resolver)
+            messages.append(
+                {
+                    "id": message_id,
+                    "author": entry.get("author_name") or self._display_name(team_id, entry.get("author_id")),
+                    "posted_at": posted.strftime("%Y-%m-%dT%H:%M:%SZ") if posted else None,
+                    "preview": preview[:_PREVIEW_CHARS],
+                    "permalink": self._permalink(domain, channel_id, message_id, entry.get("thread_id")),
+                }
+            )
+        if not messages:
+            return None
+        return {
+            "platform": PLATFORM_SLACK,
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "channel_name": channel_watch_repository.get_channel_name(
+                self.session, tenant_id=tenant_id, platform=PLATFORM_SLACK, team_id=team_id, channel_id=channel_id
+            ),
+            "messages": messages,
+        }
+
+    def _mention_resolver(self, team_id):
+        return lambda uid: self._display_name(team_id, uid)
+
     def _format(self, entries, team_id):
         """Pair each message with its rendered line, so the budget can drop
         messages and report exactly which ones survived."""
+        resolver = self._mention_resolver(team_id)
         rendered = []
         for entry in entries:
             posted = entry.get("posted_at")
             stamp = posted.strftime("%b %d %H:%M") if posted else "unknown time"
             author = entry.get("author_name") or self._display_name(team_id, entry.get("author_id"))
-            rendered.append((entry, f"[{stamp}] {author}: {entry.get('message', '')}"))
+            text = channel_analysis.replace_user_mentions(entry.get("message") or "", resolver)
+            rendered.append((entry, f"[{stamp}] {author}: {text}"))
         return rendered
 
     @staticmethod
@@ -177,17 +246,19 @@ class ChannelContextService:
         carry_message_ids=None,
         referenced_user_ids=None,
     ):
-        """Returns ``(block, message_ids)`` for a watched channel.
+        """Returns ``(block, message_ids, refs)`` for a watched channel.
 
         ``block`` is the transcript to hand to the agent, or None when nothing
         should be read. ``message_ids`` is what was actually read; the caller
         keeps it with the conversation so a follow-up in the same thread can
-        rest on the same evidence.
+        rest on the same evidence. ``refs`` is the same read as citation
+        provenance — channel plus per-message author/preview/permalink — for
+        the UI to show what the answer drew on.
         """
         if not settings.notifications.channel_awareness_enabled:
-            return None, []
+            return None, [], None
         if not (tenant_id and team_id and channel_id):
-            return None, []
+            return None, [], None
 
         config = self._config(tenant_id, team_id, channel_id)
         scope = dict(tenant_id=tenant_id, platform=PLATFORM_SLACK, team_id=team_id, channel_id=channel_id)
@@ -195,11 +266,11 @@ class ChannelContextService:
 
         # "Forget that" means exactly that: answer from the question alone.
         if overrides["forget"]:
-            return None, []
+            return None, [], None
         # "Only this thread" pins scope; with no thread to pin to, nothing.
         thread_only = overrides["thread_only"]
         if thread_only and not thread_id:
-            return None, []
+            return None, [], None
 
         if thread_id:
             # "Only this thread" and "ignore your last answer" both mean the
@@ -210,6 +281,14 @@ class ChannelContextService:
         else:
             primary = self._rank(scope, self._channel_scope(scope, config, exclude_thread_id), config)
             supporting = []
+
+        # Drop greetings/pleasantries before anything else reads the candidates:
+        # they dilute the transcript the model reads, clutter the citation, and
+        # can make a question look "surrounded" by conversation it has nothing to
+        # do with. Retention keeps the raw rows; only assembled context omits
+        # them. Filtering primary here also feeds the self-contained gate below a
+        # substantive comparison set rather than "hello, how are you".
+        primary = channel_analysis.drop_low_signal(primary)
 
         # A question that stands on its own gets no history: injecting unrelated
         # chatter is pure cost and pure noise. Compared against the surrounding
@@ -225,16 +304,19 @@ class ChannelContextService:
         if not thread_id and channel_analysis.is_self_contained(
             query_text, [entry.get("message") for entry in primary]
         ):
-            return None, []
+            return None, [], None
 
         earlier = (
             [] if thread_only else self._earlier(scope, config, query_text, referenced_user_ids, exclude_thread_id)
         )
-        earlier = self._dedupe(supporting + earlier, primary)
+        earlier = channel_analysis.drop_low_signal(self._dedupe(supporting + earlier, primary))
 
         if not primary and not earlier:
-            return None, []
-        return self._render(primary, earlier, team_id, config)
+            return None, [], None
+        block, used, kept = self._render(primary, earlier, team_id, config)
+        if not block:
+            return None, [], None
+        return block, used, self._refs_payload(kept, tenant_id, team_id, channel_id)
 
     def _earlier(self, scope, config, question, referenced_user_ids, exclude_thread_id):
         """Material from outside the current scope that the question points at:
@@ -303,12 +385,9 @@ class ChannelContextService:
 
         block = "\n".join(sections).strip() or None
         if not block:
-            return None, []
+            return None, [], None
         # Only what survived the budget counts as read, so a follow-up reusing
         # this set gets what Nubi saw rather than what it asked the database for.
-        used = [
-            entry.get("provider_message_id")
-            for entry, _ in earlier_kept + primary_kept
-            if entry.get("provider_message_id")
-        ]
-        return block, used
+        kept = [entry for entry, _ in earlier_kept + primary_kept]
+        used = [entry.get("provider_message_id") for entry in kept if entry.get("provider_message_id")]
+        return block, used, kept

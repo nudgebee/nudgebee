@@ -218,6 +218,16 @@ type elasticsearchConfig struct {
 	Username string
 	Password string
 	AuthType string
+	ApiKey   string
+	// KibanaUrl is the Kibana endpoint (:5601 by convention), which is a
+	// different host and port from Url (:9200). Optional: only rule listing
+	// needs it, and it cannot be derived from the Elasticsearch URL.
+	KibanaUrl string
+	// TlsSkipVerify mirrors the integration's es_tls_skip_verify. Self-hosted
+	// Elastic commonly serves a self-signed certificate — it is the ECK default
+	// — so without honouring this, rule listing fails at the TLS handshake for
+	// exactly the deployments most likely to need it.
+	TlsSkipVerify bool
 }
 
 // getElasticsearchConfigs returns Elasticsearch configs (user-sourced integrations only).
@@ -233,22 +243,38 @@ func getElasticsearchConfigs(sc *security.RequestContext, accountId string) (*el
 		if err != nil {
 			return nil, fmt.Errorf("failed to decrypt elasticsearch config %s: %w", c.Name, err)
 		}
+		// The `elasticsearch_*` spellings never matched anything: the ES
+		// integration stores its values as `url` / `username` / `password` /
+		// `auth_type` (see integrations/elasticsearch.go ConfigSchema), so this
+		// function previously always failed with "missing required
+		// elasticsearch configuration values" and the Watcher-based
+		// create/update/delete path could never have run. Both spellings are
+		// accepted so any row written under the old names still resolves.
 		switch c.Name {
-		case "elasticsearch_url":
+		case "url", "elasticsearch_url":
 			cfg.Url = value
-		case "elasticsearch_username":
+		case "username", "elasticsearch_username":
 			cfg.Username = value
-		case "elasticsearch_password":
+		case "password", "elasticsearch_password":
 			cfg.Password = value
-		case "elasticsearch_auth_type":
+		case "auth_type", "elasticsearch_auth_type":
 			cfg.AuthType = value
+		case "api_key":
+			cfg.ApiKey = value
+		case "kibana_url":
+			cfg.KibanaUrl = value
+		case "es_tls_skip_verify":
+			cfg.TlsSkipVerify = strings.EqualFold(strings.TrimSpace(value), "true")
 		}
 	}
 
-	if cfg.Url == "" || cfg.Username == "" || cfg.Password == "" {
+	// An API key is a complete credential on its own, so username/password are
+	// only required when they are the auth method.
+	if cfg.Url == "" || (cfg.ApiKey == "" && (cfg.Username == "" || cfg.Password == "")) {
 		return nil, fmt.Errorf("missing required elasticsearch configuration values")
 	}
 	cfg.Url = strings.TrimRight(cfg.Url, "/")
+	cfg.KibanaUrl = strings.TrimRight(cfg.KibanaUrl, "/")
 
 	if cfg.AuthType == "" {
 		cfg.AuthType = "basic"

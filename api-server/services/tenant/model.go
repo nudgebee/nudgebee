@@ -200,8 +200,13 @@ type FeatureFlagUpsertResponse struct {
 	Message string `json:"message" mapstructure:"message"`
 }
 
+// Name excludes ':' — it becomes the Name segment of the group's KG unique key
+// (colon-joined with 5 other segments; see ownership_enricher.go buildGroupNodes),
+// so a colon would corrupt that key's parse. The UI already blocks it via its
+// alphaNumWithSpace charset regex; this is the server-side backstop for direct
+// API callers.
 type UserGroupCreateRequest struct {
-	Name        string `json:"name" mapstructure:"name" validate:"required"`
+	Name        string `json:"name" mapstructure:"name" validate:"required,excludesall=:"`
 	Description string `json:"description" mapstructure:"description"`
 }
 
@@ -211,7 +216,7 @@ type UserGroupCreateResponse struct {
 
 type UserGroupUpdateRequest struct {
 	Id          string  `json:"id" mapstructure:"id" validate:"required"`
-	Name        string  `json:"name" mapstructure:"name"`
+	Name        string  `json:"name" mapstructure:"name" validate:"excludesall=:"`
 	Description string  `json:"description" mapstructure:"description"`
 	Role        *string `json:"role" mapstructure:"role"`
 }

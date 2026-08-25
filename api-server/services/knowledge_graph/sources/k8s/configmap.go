@@ -165,7 +165,7 @@ func (s *K8sSource) createK8sConfigMapNode(cm *K8sConfigMapFromRelay, clusterNam
 // convertK8sConfigMapsToGraph emits ConfigMap nodes and BELONGS_TO edges to
 // their owning namespace. Returns a lookup map keyed by "namespace/name"
 // for the Workload → USES_CONFIG → ConfigMap wiring downstream.
-func (s *K8sSource) convertK8sConfigMapsToGraph(cms []K8sConfigMapFromRelay, workloads []K8sWorkloadRow, namespaceNodes map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode) {
+func (s *K8sSource) convertK8sConfigMapsToGraph(cms []K8sConfigMapFromRelay, workloads []K8sWorkloadRow, clusterNodes, namespaceNodes map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode) {
 	nodes := make([]*core.DbNode, 0, len(cms))
 	edges := make([]*core.DbEdge, 0)
 	byKey := make(map[string]*core.DbNode, len(cms))
@@ -182,15 +182,15 @@ func (s *K8sSource) convertK8sConfigMapsToGraph(cms []K8sConfigMapFromRelay, wor
 		nodes = append(nodes, node)
 		byKey[fmt.Sprintf("%s/%s", cm.Metadata.Namespace, cm.Metadata.Name)] = node
 
-		namespaceKey := fmt.Sprintf("%s/%s", clusterName, cm.Metadata.Namespace)
-		if nsNode, ok := namespaceNodes[namespaceKey]; ok {
-			edges = append(edges, core.NewEdge(
-				node.ID, nsNode.ID,
-				core.RelationshipBelongsTo,
-				map[string]interface{}{"connection_type": "namespace_membership"},
-				req.TenantID, req.CloudAccountID, "k8s",
-			))
-		}
+		nsNode, nsNodes, nsEdges := s.ensureNamespaceNode(cm.Metadata.Namespace, clusterName, namespaceNodes, clusterNodes, req)
+		nodes = append(nodes, nsNodes...)
+		edges = append(edges, nsEdges...)
+		edges = append(edges, core.NewEdge(
+			node.ID, nsNode.ID,
+			core.RelationshipBelongsTo,
+			map[string]interface{}{"connection_type": "namespace_membership"},
+			req.TenantID, req.CloudAccountID, "k8s",
+		))
 	}
 
 	return nodes, edges, byKey

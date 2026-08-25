@@ -149,7 +149,8 @@ func functionCreateFunction(c *gin.Context, agentContext *security.RequestContex
 	}
 
 	// Check if user has access to account
-	if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedWrite(agentContext.GetSecurityContext(), request.AccountId, moduleAiFunctions) {
 		failureResponse := FunctionCreateResponse{
 			Success: false,
 			Message: "Access denied: " + errorUserAccessMessage,
@@ -264,7 +265,8 @@ func functionDeleteLlmFunction(c *gin.Context, agentContext *security.RequestCon
 	}
 
 	// Check if user has access to account
-	if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+	if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
+		!grantedWrite(agentContext.GetSecurityContext(), request.AccountId, moduleAiFunctions) {
 		failureResponse := FunctionDeleteResponse{
 			Success: false,
 			Message: "Access denied: " + errorUserAccessMessage,
@@ -363,7 +365,8 @@ func functionUpdateLlmFunction(c *gin.Context, agentContext *security.RequestCon
 	}
 
 	// Check if user has access to account
-	if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedWrite(agentContext.GetSecurityContext(), request.AccountId, moduleAiFunctions) {
 		failureResponse := FunctionUpdateResponse{
 			Success: false,
 			Message: "Access denied: " + errorUserAccessMessage,

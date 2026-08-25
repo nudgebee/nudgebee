@@ -90,7 +90,6 @@ var eventAnalysisSources = map[string]bool{
 	"splunk_webhook":                  true,
 	"elasticsearch_webhook":           true,
 	"prometheus_alertmanager_webhook": true,
-	"openobserve_webhook":             true,
 	"workflow_webhook":                true,
 }
 
@@ -733,9 +732,9 @@ func convertWebhookEventToEvent(e EventIncomingWebhook, tenantId, accountId, sou
 		status = eventtypes.EventStatusFiring
 	}
 
-	priortiy := e.Investigation.Severity
-	if priortiy == "" {
-		priortiy = eventtypes.EventPriorityLow
+	priority := e.Investigation.Severity
+	if priority == "" {
+		priority = eventtypes.EventPriorityLow
 	}
 
 	return eventtypes.Event{
@@ -749,7 +748,7 @@ func convertWebhookEventToEvent(e EventIncomingWebhook, tenantId, accountId, sou
 		Failure:          "",
 		FindingType:      "issue",
 		Category:         "issue",
-		Priority:         priortiy,
+		Priority:         priority,
 		SubjectType:      e.EventSubjectKind,
 		SubjectName:      e.EventSubjectName,
 		SubjectNamespace: e.EventSubjectNamespace,
@@ -809,12 +808,35 @@ func resolveEvent(sc *security.RequestContext, tenantId, accountId string, sourc
 	if source == "datadog_webhook" || source == "gcp_monitoring_webhook" {
 		fingerPrint = event.Investigation.Fingerprint
 	}
-	// Prod's resolveEvent does not publish resolved notifications (that machinery
-	// arrived in a later commit not on this branch), so only the lookup changes
-	// here: resolveEventQuery matches finding_id as well as fingerprint, which is
-	// what makes a PagerDuty resolve close its event at all.
-	_, err = dbms.Exec(resolveEventQuery, tenantId, accountId, fingerPrint, "CLOSED")
-	return err
+	// The status guard in resolveEventQuery makes repeated resolve webhooks no-ops,
+	// so only a genuine open→closed transition publishes the resolved notification.
+	rows, err := dbms.Query(resolveEventQuery, tenantId, accountId, fingerPrint, "CLOSED")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	var resolvedIds []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		resolvedIds = append(resolvedIds, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range resolvedIds {
+		_ = common.MqPublish(
+			config.Config.RabbitMqEventPostProcessExchange,
+			config.Config.RabbitMqEventPostProcessQueue,
+			map[string]any{"event_id": id, "notify_resolved": true},
+			common.MqPublishWithExpiration(1*time.Hour),
+			common.MqPublishWithBackgroundRetry(),
+			common.MqPublishWithContext(sc.GetContext()),
+		)
+	}
+	return nil
 }
 
 func investigateWebhookEvent(sc *security.RequestContext, tenantId, accountId string, source string, event EventIncomingWebhook) error {

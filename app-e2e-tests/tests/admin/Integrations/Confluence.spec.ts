@@ -8,6 +8,7 @@ import {
   deleteIntegration,
   disableIntegration,
   enableIntegration,
+  selectAccountFromDropdown,
 } from "./util";
 
 const requiredEnv = [
@@ -66,9 +67,7 @@ test.describe.serial("Confluence Account Integration", () => {
     await locators.confluenceBtn.click();
     await locators.addConfluenceAccountBtn.click();
 
-    await locators.confluenceAccountIdDropdown.click();
-    await locators.confluenceAccountIdOption(process.env.CLUSTER!).first().click();
-    await page.keyboard.press("Escape");
+    await selectAccountFromDropdown(page, locators.confluenceAccountIdDropdown, process.env.CLUSTER!);
     await locators.confluenceHostInput.fill(process.env.CONFLUENCE_TEST_HOST!);
     await locators.confluenceConfigNameInput.fill(configName);
     await locators.confluenceNamespaceInput.fill(process.env.CONFLUENCE_NAMESPACE!);

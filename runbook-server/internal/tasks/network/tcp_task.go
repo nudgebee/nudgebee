@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"time"
 )
@@ -56,8 +57,8 @@ func (t *TcpTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 
 	address := net.JoinHostPort(host, port)
 
-	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(taskCtx.GetContext(), "tcp", address)
+	dialContext := safehttp.NewSafeDialContext(timeout)
+	conn, err := dialContext(taskCtx.GetContext(), "tcp", address)
 
 	reachable := false
 	var errMsg string

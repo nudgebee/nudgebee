@@ -83,8 +83,17 @@ type FetchLogLabelRequest struct {
 }
 
 type OutputLogLabel struct {
-	Label      string         `json:"label"`
+	Label string `json:"label"`
+	// Attributes is the provider's raw label metadata, passed through verbatim.
+	// Consumers still read provider-specific keys from it (e.g. the UI forwards
+	// attributes.dataType to Signoz when fetching that label's values).
 	Attributes map[string]any `json:"attributes"`
+	// DataType is Attributes normalized onto a provider-independent vocabulary
+	// (query.LabelType*): "string" | "number" | "bool" | "timestamp" | "unknown".
+	// Populated centrally in FetchLogLabels, so every provider gets it without
+	// implementing anything. Clients use it to offer only the operators the label's
+	// type supports; "unknown" is permissive and narrows nothing.
+	DataType string `json:"data_type"`
 }
 
 type FieldsResponse struct {

@@ -10,7 +10,6 @@ import type { ICustomTableRow } from './types';
 import { CustomText } from '@components/cloudaccount/common';
 import Text from '@shared/format/Text';
 import Chart from '@ui/Chart';
-import { formatMetricName } from '@utils/common';
 import { getLast7Days } from '@lib/datetime';
 import TotalCostChart from '@components/cloudaccount/CostChart';
 import { ListingLayout } from '@ui/ListingLayout';
@@ -21,6 +20,9 @@ import Chip from '@ui/Chip';
 import { ds, resolveColors } from '@utils/colors';
 import { CloudCostSummary } from '@components/cloudaccount/CloudCostSummary';
 import { CloudRecentEvents } from '@components/cloudaccount/CloudRecentEvents';
+import { useLiveResourceMetrics } from '@components/cloudaccount/cloud-metrics/useLiveResourceMetrics';
+import { useServiceResources } from '@components/cloudaccount/cloud-metrics/useServiceResources';
+import { LiveMetricCharts } from '@components/cloudaccount/cloud-metrics/LiveMetricCharts';
 
 const _INSTANCE_TABLE_ID = 'INSTANCE_TABLE_ID';
 
@@ -121,6 +123,33 @@ const StateLabel = ({ color, label, value, onClick }: { color: string; label: st
   </Box>
 );
 
+const getInstanceType = (resource: any) => {
+  if (resource.meta?.InstanceType) return resource.meta.InstanceType;
+  const gcpMachineType = resource.meta?.machine_type || resource.meta?.machineType;
+  if (gcpMachineType) return gcpMachineType.includes('/') ? gcpMachineType.split('/').pop() : gcpMachineType;
+  if (resource.machineType || resource.machine_type) {
+    const machineType = resource.machineType || resource.machine_type;
+    return machineType.includes('/') ? machineType.split('/').pop() : machineType;
+  }
+  if (resource.meta?.hardwareProfile?.vmSize) return resource.meta.hardwareProfile.vmSize;
+  return resource.resourceType || resource.service_name || resource.serviceName || 'N/A';
+};
+
+const isSpotInstance = (resource: any) =>
+  resource.meta?.InstanceLifecycle === 'spot' || resource.meta?.scheduling?.preemptible === true || resource.meta?.priority === 'Spot';
+
+const getInstanceState = (resource: any) => {
+  if (resource.meta?.State?.Name) return resource.meta.State.Name;
+  if (resource.meta?.powerState) return resource.meta.powerState;
+  const instanceViewStatuses = resource.meta?.properties?.instanceView?.statuses || resource.meta?.instanceView?.statuses;
+  if (instanceViewStatuses) {
+    const powerState = instanceViewStatuses.find((s: any) => s.code?.startsWith('PowerState/'));
+    if (powerState?.displayStatus) return powerState.displayStatus.toLowerCase();
+  }
+  if (resource.status) return resource.status.toLowerCase();
+  return '';
+};
+
 const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) => {
   const labels = getCloudLabels(serviceName);
   const router = useRouter();
@@ -134,54 +163,69 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
     []
   );
 
-  // Multi-cloud helper: get instance type from different meta structures
-  const getInstanceType = (resource: any) => {
-    if (resource.meta?.InstanceType) return resource.meta.InstanceType;
-    const gcpMachineType = resource.meta?.machine_type || resource.meta?.machineType;
-    if (gcpMachineType) return gcpMachineType.includes('/') ? gcpMachineType.split('/').pop() : gcpMachineType;
-    if (resource.machineType || resource.machine_type) {
-      const machineType = resource.machineType || resource.machine_type;
-      return machineType.includes('/') ? machineType.split('/').pop() : machineType;
+  // Single-pass derivation over cloud_resourses: instance types, spot count, and
+  // per-state counts. Replaces 8 separate .filter()/.map() full-array scans that
+  // each invoked getInstanceState() (O(8n) → O(n) per render).
+  const {
+    uniqueInstanceTypes,
+    spotInstances,
+    runningInstanceCount,
+    stoppedInstanceCount,
+    pendingInstanceCount,
+    stoppingInstanceCount,
+    shuttingdownInstanceCount,
+    terminatedInstanceCount,
+  } = useMemo(() => {
+    const resources: any[] | undefined = ec2Summary?.cloud_resourses;
+    if (!resources || resources.length === 0) {
+      return {
+        uniqueInstanceTypes: new Set<string>(),
+        spotInstances: 0,
+        runningInstanceCount: 0,
+        stoppedInstanceCount: 0,
+        pendingInstanceCount: 0,
+        stoppingInstanceCount: 0,
+        shuttingdownInstanceCount: 0,
+        terminatedInstanceCount: 0,
+      };
     }
-    if (resource.meta?.hardwareProfile?.vmSize) return resource.meta.hardwareProfile.vmSize;
-    return resource.resourceType || resource.service_name || resource.serviceName || 'N/A';
-  };
-
-  const isSpotInstance = (resource: any) =>
-    resource.meta?.InstanceLifecycle === 'spot' || resource.meta?.scheduling?.preemptible === true || resource.meta?.priority === 'Spot';
-
-  const getInstanceState = (resource: any) => {
-    if (resource.meta?.State?.Name) return resource.meta.State.Name;
-    if (resource.meta?.powerState) return resource.meta.powerState;
-    const instanceViewStatuses = resource.meta?.properties?.instanceView?.statuses || resource.meta?.instanceView?.statuses;
-    if (instanceViewStatuses) {
-      const powerState = instanceViewStatuses.find((s: any) => s.code?.startsWith('PowerState/'));
-      if (powerState?.displayStatus) return powerState.displayStatus.toLowerCase();
+    const uniqueTypes = new Set<string>();
+    let spot = 0,
+      running = 0,
+      stopped = 0,
+      pending = 0,
+      stopping = 0,
+      shuttingdown = 0,
+      terminated = 0;
+    for (const resource of resources) {
+      const type = getInstanceType(resource);
+      if (type !== 'N/A' && type !== 'Unknown' && type !== 'Compute Engine') uniqueTypes.add(type);
+      if (isSpotInstance(resource)) spot++;
+      const state = getInstanceState(resource);
+      if (state === 'running' || state === 'active') running++;
+      else if (state === 'stopped' || state === 'deallocated' || state === 'inactive') stopped++;
+      else if (state === 'pending' || state === 'provisioning' || state === 'staging') pending++;
+      else if (state === 'stopping' || state === 'suspending') stopping++;
+      else if (state === 'shutting-down' || state === 'deleting') shuttingdown++;
+      else if (state === 'terminated' || state === 'deleted') terminated++;
     }
-    if (resource.status) return resource.status.toLowerCase();
-    return '';
-  };
-
-  const instanceTypes = ec2Summary?.cloud_resourses?.map((resource: any) => getInstanceType(resource)) || [];
-  const uniqueInstanceTypes = new Set(instanceTypes.filter((t: string) => t !== 'N/A' && t !== 'Unknown' && t !== 'Compute Engine'));
+    return {
+      uniqueInstanceTypes: uniqueTypes,
+      spotInstances: spot,
+      runningInstanceCount: running,
+      stoppedInstanceCount: stopped,
+      pendingInstanceCount: pending,
+      stoppingInstanceCount: stopping,
+      shuttingdownInstanceCount: shuttingdown,
+      terminatedInstanceCount: terminated,
+    };
+  }, [ec2Summary?.cloud_resourses]);
   const ebsVolumeCount = ec2Summary?.ebs_count?.aggregate?.count || 0;
   const nicsCount = ec2Summary?.nics_count?.aggregate?.count || ec2Summary?.cluster_data?.daemonSet || 0;
   const instancesCount = ec2Summary?.cloud_resourses_count || ec2Summary?.cloud_resourses?.length || 0;
   const [loading, _setLoading] = useState(false);
   const [instanceData, setInstanceData] = useState([]);
-  const spotInstances = ec2Summary?.cloud_resourses?.filter((b: any) => isSpotInstance(b))?.length || 0;
   const reservedInstances = instancesCount - spotInstances;
-  const runningInstanceCount = ec2Summary?.cloud_resourses?.filter((b: any) => ['running', 'active'].includes(getInstanceState(b)))?.length || 0;
-  const stoppedInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['stopped', 'deallocated', 'inactive'].includes(getInstanceState(b)))?.length || 0;
-  const pendingInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['pending', 'provisioning', 'staging'].includes(getInstanceState(b)))?.length || 0;
-  const stoppingInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['stopping', 'suspending'].includes(getInstanceState(b)))?.length || 0;
-  const shuttingdownInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['shutting-down', 'deleting'].includes(getInstanceState(b)))?.length || 0;
-  const terminatedInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['terminated', 'deleted'].includes(getInstanceState(b)))?.length || 0;
 
   // "View all instances" deeplink — subtab=2 + `#…/instances` hash convention
   // shared across cloud-account Summary tabs. Populated post-mount via useEffect
@@ -453,10 +497,16 @@ const EC2UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }
   );
 };
 
-export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId = '', showSummary = false }) => {
-  const [loadingTrend, setLoadingTrend] = useState(false);
+export const OptimizeSummary = ({
+  accountId = '',
+  serviceName = '',
+  resourceId = '',
+  region = '',
+  resourceType = '',
+  resourceName = '',
+  showSummary = false,
+}) => {
   const [loadingSummary, setLoadingSummary] = useState(false);
-  const [renderMetricsData, setRenderMetricsData] = useState<any>({});
   const [summary, setSummary] = useState<any>({});
   const currencySymbol = useCurrencySymbol(accountId);
   const [selectedDateRange, setSelectedDateRange] = useState({
@@ -464,38 +514,21 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
     endDate: new Date().getTime(),
   });
 
-  useEffect(() => {
-    if (!accountId) return;
-    const fetchMetrics = async () => {
-      setLoadingTrend(true);
-      try {
-        const res = await apiCloudAccount.getCloudResourceMetricsDirect({
-          account_id: accountId,
-          serviceName: serviceName || undefined,
-          resourceId: resourceId || undefined,
-          startDate: new Date(selectedDateRange.startDate),
-          endDate: new Date(selectedDateRange.endDate),
-        });
-        const metricsData = res?.data?.data?.cloud_metric_groupings_v2?.rows || [];
-        if (metricsData.length > 0) {
-          const groupedByMetrics = metricsData.reduce((acc: any, curr: any) => {
-            if (!acc[curr.metric]) acc[curr.metric] = [];
-            acc[curr.metric].push(curr);
-            return acc;
-          }, {});
-          setRenderMetricsData(groupedByMetrics);
-        }
-      } catch (error) {
-        console.error(error);
-      } finally {
-        setLoadingTrend(false);
-      }
-    };
-    fetchMetrics();
-  }, [accountId, selectedDateRange, serviceName, resourceId]);
+  // Both the drilldown (single resource) and the account summary (all Active
+  // resources of the service) read metrics live from the provider — fresh for the
+  // exact selected range, so no collector lag / stale window.
+  const { resources: summaryResources, loading: resourcesLoading } = useServiceResources(accountId, resourceId ? '' : serviceName);
+  const resources = resourceId ? [{ resourse_id: resourceId, region, type: resourceType, name: resourceName }] : summaryResources;
+  const { dataByMetric: liveMetrics, loading: liveLoading } = useLiveResourceMetrics({
+    accountId,
+    serviceName,
+    resources,
+    startDate: selectedDateRange.startDate,
+    endDate: selectedDateRange.endDate,
+  });
 
   useEffect(() => {
-    if (!accountId) return;
+    if (!accountId || !showSummary) return; // summary cards only render in showSummary mode
     setLoadingSummary(true);
     apiCloudAccount
       .cloudAccountEC2Summary(accountId, { serviceName })
@@ -507,7 +540,7 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
         console.error(error);
         setLoadingSummary(false);
       });
-  }, [accountId, serviceName]);
+  }, [accountId, serviceName, showSummary]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
     setSelectedDateRange({
@@ -516,47 +549,7 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
     });
   };
 
-  const buildMetricChartData = (metricName: string, metricRows: any[]) => {
-    const isCpu = metricName.replace(/[_\s]/g, '').toLowerCase() === 'cpuutilization';
-    const byResource: Record<string, any[]> = {};
-    metricRows.forEach((row: any) => {
-      const resourceKey = row.resource_name || row.resource_id || 'Unknown';
-      if (!byResource[resourceKey]) byResource[resourceKey] = [];
-      byResource[resourceKey].push(row);
-    });
-    const resourceKeys = Object.keys(byResource);
-    const allTimestamps = new Set<string>();
-    metricRows.forEach((row: any) => allTimestamps.add(row.timestamp));
-    const sortedTimestamps = Array.from(allTimestamps).sort((a, b) => a.localeCompare(b));
-    const labels = sortedTimestamps.map((ts: string) => new Date(ts).toLocaleString());
-    const datasets = resourceKeys.map((resourceKey) => {
-      const tsMap: Record<string, number> = {};
-      byResource[resourceKey].forEach((row: any) => {
-        tsMap[row.timestamp] = row.avg_value;
-      });
-      const data = sortedTimestamps.map((ts) => {
-        const val = tsMap[ts];
-        if (val === undefined) return null;
-        return isCpu ? val : formatMemory(val, 'bytes', 'gb', false);
-      });
-      return { label: resourceKeys.length === 1 ? 'Utilization' : resourceKey, data };
-    });
-    return { labels, datasets };
-  };
-
-  const renderMetricsSummary = () => {
-    if (renderMetricsData && Object.keys(renderMetricsData).length > 0) {
-      return Object.keys(renderMetricsData).map((g: string) => {
-        const { labels, datasets } = buildMetricChartData(g, renderMetricsData[g]);
-        return (
-          <DSCard size='md' elevation='flat' key={g} sx={{ mb: ds.space[4], padding: ds.space[5] }}>
-            <Chart.Line chartTitle={formatMetricName(g)} dataset={datasets} labels={labels} data={[]} loading={loadingTrend} />
-          </DSCard>
-        );
-      });
-    }
-    return <Chart.Line dataset={[]} labels={[]} data={[]} loading={loadingTrend} />;
-  };
+  const renderMetricsSummary = () => <LiveMetricCharts dataByMetric={liveMetrics} loading={liveLoading || resourcesLoading} />;
 
   return (
     <>

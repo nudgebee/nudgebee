@@ -325,11 +325,11 @@ const api = {
     );
     return response;
   },
-  async askAiGenerateLokiQuery(data: GenerateQueryRequest) {
+  async askAiGenerateLogQuery(data: GenerateQueryRequest) {
     if (data.account_id === 'demo') return null;
-    const ASK_AI_GENERATE_LOKI_QUERY = `
-        mutation AskAiGenerateLokiQuery {
-          ai_generate_loki_query(request: __REQUEST__) {
+    const ASK_AI_GENERATE_LOG_QUERY = `
+        mutation AskAiGenerateLogQuery {
+          ai_generate_log_query(request: __REQUEST__) {
             data {
               agent_step_response
               response
@@ -345,7 +345,10 @@ const api = {
     query.account_id = data.account_id;
     query.query = data.query;
     query.async = true;
-    const response = await queryGraphQL(ASK_AI_GENERATE_LOKI_QUERY.replace('__REQUEST__', gqlStringify(query)), 'AskAiGenerateLokiQuery', {});
+    if (data.log_provider) {
+      query.log_provider = data.log_provider;
+    }
+    const response = await queryGraphQL(ASK_AI_GENERATE_LOG_QUERY.replace('__REQUEST__', gqlStringify(query)), 'AskAiGenerateLogQuery', {});
     return response;
   },
   async createAiFeedback(data: AiFeedbackCreateRequest) {
@@ -711,34 +714,19 @@ const api = {
 
     return response;
   },
-  async askNudgebeeAiGenerateESDsl(data: GenerateQueryRequest) {
-    if (data.account_id === 'demo') return null;
-    const ASK_AI_GENERATE_ES_DSL = `
-        mutation AskNudgebeeAiGenerateESDsl {
-          ai_generate_es_dsl_query(request: __REQUEST__) {
-            data {
-              agent_step_response
-              response
-              query
-              chain_name
-              conversation_id
-              session_id
-            }
-          }
-        }
-        `;
-    const query: any = {};
-    query.account_id = data.account_id;
-    query.query = data.query;
-    query.async = true;
-    const response = await queryGraphQL(ASK_AI_GENERATE_ES_DSL.replace('__REQUEST__', gqlStringify(query)), 'AskNudgebeeAiGenerateESDsl', {});
-    return response;
-  },
   async getFeedbackForSessionId(data: FeedbackForSessionRequest) {
     if (data.account_id === 'demo') return null;
+    // `session_id` throughout this call (and the ai_list_conversation_feedback.session_id
+    // column it filters on) is actually a per-message id, not a conversation/session id —
+    // single callers pass a message id (e.g. KubernetesLLMRequestResponseV2's toolCall.id),
+    // and the batched caller (useMessageAdditionalData) passes an array of message ids.
+    // No `limit` here — a batched call (session_id as an array) needs one row per message, and
+    // a limit applies to the whole result set rather than per session_id. Rows come back
+    // ordered by updated_at desc, so we keep only the first (latest) row per session_id below
+    // to preserve the "one row per message" contract single callers rely on.
     const GET_FEEBACK_FOR_SESSION_ID = `
         query LLMFeedback {
-          ai_list_conversation_feedback(where: __WHERE__, order_by: {column: "updated_at", order: desc}, limit: 1) {
+          ai_list_conversation_feedback(where: __WHERE__, order_by: {column: "updated_at", order: desc}) {
             rows {
               useful
               updated_at
@@ -757,6 +745,15 @@ const api = {
       query.session_id = { _eq: data.session_id };
     }
     const response = await queryGraphQL(GET_FEEBACK_FOR_SESSION_ID.replace('__WHERE__', gqlStringify(query)), 'LLMFeedback', {});
+    const feedbackResult = response?.data?.data?.ai_list_conversation_feedback;
+    if (feedbackResult && Array.isArray(feedbackResult.rows)) {
+      const seenSessionIds = new Set();
+      feedbackResult.rows = feedbackResult.rows.filter((row: any) => {
+        if (seenSessionIds.has(row.session_id)) return false;
+        seenSessionIds.add(row.session_id);
+        return true;
+      });
+    }
     return response;
   },
   async saveConversation(data: SaveConversationRequest) {
@@ -1525,7 +1522,7 @@ const api = {
       throw err;
     }
   },
-  async listMemory(accountId: string, conversationId?: string, messageId?: string, memoryType?: string, query?: string) {
+  async listMemory(accountId: string, conversationId?: string, messageId?: string, memoryType?: string, query?: string, messageIds?: string[]) {
     if (accountId === 'demo') return null;
     const LIST_MEMORY = `
     query ListMemory($request: ListAIMemoryRequest!) {
@@ -1555,7 +1552,9 @@ const api = {
       if (conversationId) {
         request.conversation_id = conversationId;
       }
-      if (messageId) {
+      if (messageIds?.length) {
+        request.message_ids = messageIds;
+      } else if (messageId) {
         request.message_id = messageId;
       }
       if (memoryType) {
@@ -1576,7 +1575,17 @@ const api = {
       return { data: [], errors: [error] };
     }
   },
-  async listReferences({ accountId, messageId, conversationId }: { accountId: string; messageId?: string; conversationId?: string }) {
+  async listReferences({
+    accountId,
+    messageId,
+    messageIds,
+    conversationId,
+  }: {
+    accountId: string;
+    messageId?: string;
+    messageIds?: string[];
+    conversationId?: string;
+  }) {
     if (accountId === 'demo') return null;
     const LIST_REFERENCES = `
     query AiListReferences($request: ListAIReferencesRequest!) {
@@ -1605,11 +1614,15 @@ const api = {
     try {
       const request: any = {
         account_id: accountId,
+        limit: 100,
+        offset: 0,
       };
       if (conversationId) {
         request.conversation_id = conversationId;
       }
-      if (messageId) {
+      if (messageIds?.length) {
+        request.message_ids = messageIds;
+      } else if (messageId) {
         request.message_id = messageId;
       }
       const response = await queryGraphQL(LIST_REFERENCES, 'AiListReferences', {
@@ -1718,6 +1731,78 @@ const api = {
       };
     } catch (error) {
       console.error('failed to list models-', error);
+      return { data: {}, errors: [error] };
+    }
+  },
+  // Model pricing. Rows come back as built-in (shipped defaults, shared by
+  // every tenant) plus this tenant's own overrides, distinguished by
+  // is_built_in — the tenant is resolved server-side from the session, never
+  // sent from here.
+  async listModelPricing() {
+    const LIST_MODEL_PRICING = `
+    query ListModelPricing($request: AIListModelPricingRequest!) {
+      ai_list_model_pricing(request: $request) {
+        data
+        errors
+      }
+    }
+    `;
+    try {
+      // No account: prices are tenant-scoped and the tenant comes from the
+      // session server-side.
+      const response = await queryGraphQL(LIST_MODEL_PRICING, 'ListModelPricing', { request: {} });
+      return {
+        data: response.data?.data?.ai_list_model_pricing?.data || {},
+        errors: response.data?.data?.ai_list_model_pricing?.errors || response.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to list model pricing-', error);
+      return { data: {}, errors: [error] };
+    }
+  },
+  // Writes this tenant's own rates. Restricted to tenant admins server-side;
+  // the UI hides the controls for everyone else but does not rely on that.
+  async upsertModelPricing(prices: Record<string, unknown>[]) {
+    const UPSERT_MODEL_PRICING = `
+    mutation UpsertModelPricing($request: AIUpsertModelPricingRequest!) {
+      ai_upsert_model_pricing(request: $request) {
+        data
+        errors
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(UPSERT_MODEL_PRICING, 'UpsertModelPricing', { request: { prices } });
+      return {
+        data: response.data?.data?.ai_upsert_model_pricing?.data || {},
+        errors: response.data?.data?.ai_upsert_model_pricing?.errors || response.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to save model pricing-', error);
+      return { data: {}, errors: [error] };
+    }
+  },
+  // Drops this tenant's override so the model bills at the built-in rate again.
+  // The tenant is taken from the session server-side, never from these args.
+  async deleteModelPricing(providerName: string, modelName: string) {
+    const DELETE_MODEL_PRICING = `
+    mutation DeleteModelPricing($request: AIDeleteModelPricingRequest!) {
+      ai_delete_model_pricing(request: $request) {
+        data
+        errors
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(DELETE_MODEL_PRICING, 'DeleteModelPricing', {
+        request: { provider_name: providerName, model_name: modelName },
+      });
+      return {
+        data: response.data?.data?.ai_delete_model_pricing?.data || {},
+        errors: response.data?.data?.ai_delete_model_pricing?.errors || response.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to delete model pricing-', error);
       return { data: {}, errors: [error] };
     }
   },

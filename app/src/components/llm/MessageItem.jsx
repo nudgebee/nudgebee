@@ -14,6 +14,8 @@ import { Button } from '@ui/Button';
 import ReferencesPopover from './common/ReferencesModal';
 import ResponseMetaRail from './common/ResponseMetaRail';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { useTenantBranding, getNubiIconUrl } from '@hooks/useTenantBranding';
 import { Modal } from '@ui/Modal';
 
@@ -133,10 +135,19 @@ const MessageItem = ({
   onNavigateToTask,
   groupIndex,
   responseMeta,
+  // Batched feedback for this response, pre-fetched once for the whole conversation by
+  // MessageStream's useMessageAdditionalData, plus the flag saying so — forwarded as-is
+  // to KubernetesLLMRequestResponseV2, which skips its own getFeedbackForSessionId call
+  // per card when set.
+  feedback,
+  feedbackManagedExternally,
   // Tasks-timeline nesting: >0 shifts the row right and deepens the dot shade so
   // child/sub-agent tasks read as nested. Default 0 keeps the main message stream
   // (which doesn't pass it) rendered flat, unchanged.
   indentDepth = 0,
+  hideTimeline = false,
+  stepCount,
+  collapsed,
 }) => {
   const [referencesAnchorEl, setReferencesAnchorEl] = React.useState(null);
   const [previewedAttachment, setPreviewedAttachment] = React.useState(null);
@@ -214,10 +225,12 @@ const MessageItem = ({
         taskCount={responseMeta.taskCount}
         contextCount={responseMeta.contextCount}
         memoryCount={responseMeta.memoryCount}
+        channelCount={responseMeta.channelCount}
         watchCount={responseMeta.watchCount}
         onOpenTasks={responseMeta.onOpenTasks}
         onOpenContexts={responseMeta.onOpenContexts}
         onOpenMemories={responseMeta.onOpenMemories}
+        onOpenChannels={responseMeta.onOpenChannels}
         onOpenWatches={responseMeta.onOpenWatches}
         messageTokenData={responseMeta.messageTokenData}
         onTokenUsageHover={responseMeta.onTokenUsageHover}
@@ -237,7 +250,7 @@ const MessageItem = ({
             onOpenToolDetails(message);
           }}
         >
-          Tool Details
+          Details
         </Button>
       </Box>
     );
@@ -317,16 +330,19 @@ const MessageItem = ({
           gap: ds.space[3],
           // Left-indent nested tasks (12px/level) so sub-agents sit visually under their
           // parent. Clamp at 4 levels so deep chains don't crowd the narrow Tasks drawer.
-          ml: indentDepth > 0 ? ds.space.mul(3, Math.min(indentDepth, 4)) : 0,
+          // When the drawer draws its own rail (hideTimeline), it owns the indent instead.
+          ml: !hideTimeline && indentDepth > 0 ? ds.space.mul(3, Math.min(indentDepth, 4)) : 0,
           mb: isQuestion && ds.space.mul(1, 5),
           mt: isQuestion && ds.space.mul(1, 15),
           pb: isLastTaskOfLastGroup ? ds.space[4] : 0,
         }}
       >
-        {/* Timeline Column */}
-        <Box sx={{ width: ds.space.mul(1, 7), display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, mt: ds.space[1] }}>
-          {timelineIcon}
-        </Box>
+        {/* Timeline Column — suppressed when the drawer supplies its own threaded rail. */}
+        {!hideTimeline && (
+          <Box sx={{ width: ds.space.mul(1, 7), display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, mt: ds.space[1] }}>
+            {timelineIcon}
+          </Box>
+        )}
 
         {/* Card Content Column */}
         <Box
@@ -362,10 +378,11 @@ const MessageItem = ({
                   }
                   placement='top'
                 >
-                  <Box sx={{ width: '100%' }}>
+                  <Box sx={{ width: '100%', ...(stepCount ? { display: 'flex', alignItems: 'baseline', gap: ds.space[1], flexWrap: 'wrap' } : {}) }}>
                     <Box
                       sx={{
-                        width: '100%',
+                        width: stepCount ? 'auto' : '100%',
+                        minWidth: 0,
                         // Clip the question to ~6 lines worth of height when collapsed.
                         // max-height (rather than -webkit-line-clamp) is used because the
                         // question renders as markdown, which produces block-level elements
@@ -408,6 +425,29 @@ const MessageItem = ({
                         showAutoEllipsis={!isQuestion}
                       />
                     </Box>
+                    {stepCount ? (
+                      <Box
+                        component='span'
+                        sx={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: ds.space[0],
+                          fontSize: 'var(--ds-text-caption)',
+                          color: 'var(--ds-gray-500)',
+                          fontFamily: ds.font.sans,
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0,
+                        }}
+                      >
+                        · {stepCount} {stepCount === 1 ? 'step' : 'steps'}
+                        {collapsed !== undefined &&
+                          (collapsed ? (
+                            <ChevronRightRoundedIcon sx={{ fontSize: 16, color: 'var(--ds-gray-500)' }} />
+                          ) : (
+                            <ExpandMoreRoundedIcon sx={{ fontSize: 16, color: 'var(--ds-gray-500)' }} />
+                          ))}
+                      </Box>
+                    ) : null}
                   </Box>
                 </Tooltip>
                 {isQuestion && Array.isArray(message.attachments) && message.attachments.length > 0 && (
@@ -462,7 +502,9 @@ const MessageItem = ({
                     })}
                   </Box>
                 )}
-                {!['question', 'response', 'followup-question', 'acknowledgment'].includes(messageType) && (
+                {/* Container-header rows (stepCount set) stay minimal — icon + name + "· N steps" only,
+                    like the acknowledgment row — so the status/sources sub-line is suppressed for them. */}
+                {!['question', 'response', 'followup-question', 'acknowledgment'].includes(messageType) && !stepCount && (
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>
                     <Tooltip title={statusIcon.label} placement='top'>
                       <Box component='span' sx={{ display: 'inline-flex', lineHeight: 0 }}>
@@ -496,8 +538,7 @@ const MessageItem = ({
                           padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,
                           borderRadius: ds.radius.sm,
                           fontSize: 'var(--ds-text-caption)',
-                          fontWeight: 'var(--ds-font-weight-medium)',
-                          color: 'var(--ds-blue-600)',
+                          color: 'var(--ds-gray-600)',
                           transition: 'all 0.15s ease',
                           whiteSpace: 'nowrap',
                           '&:hover': {
@@ -518,7 +559,7 @@ const MessageItem = ({
                         </svg>
                         {`${getUniqueReferencesCount(parsedReferences)} source${getUniqueReferencesCount(parsedReferences) !== 1 ? 's' : ''}`}
                         {parsedReferences.some((r) => r.type === 'file') && (
-                          <FileDownloadIcon sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-blue-600)' }} />
+                          <FileDownloadIcon sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-blue-500)' }} />
                         )}
                       </Box>
                     )}
@@ -563,6 +604,8 @@ const MessageItem = ({
                   onOpenToolDetails={onOpenToolDetails}
                   onNavigateToTask={onNavigateToTask}
                   groupIndex={groupIndex}
+                  feedback={feedback}
+                  feedbackManagedExternally={feedbackManagedExternally}
                 />
               ) : null
             }
@@ -646,6 +689,9 @@ MessageItem.propTypes = {
   onNavigateToTask: PropTypes.func,
   groupIndex: PropTypes.number,
   indentDepth: PropTypes.number,
+  hideTimeline: PropTypes.bool,
+  stepCount: PropTypes.number,
+  collapsed: PropTypes.bool,
   responseMeta: PropTypes.shape({
     taskCount: PropTypes.number,
     contextCount: PropTypes.number,
@@ -659,6 +705,12 @@ MessageItem.propTypes = {
     onTokenUsageHover: PropTypes.func,
     isFetchingTokenData: PropTypes.bool,
   }),
+  feedback: PropTypes.shape({
+    submitted: PropTypes.bool,
+    isPositive: PropTypes.bool,
+    message: PropTypes.string,
+  }),
+  feedbackManagedExternally: PropTypes.bool,
 };
 
 export default MessageItem;

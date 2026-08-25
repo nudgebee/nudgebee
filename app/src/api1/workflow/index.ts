@@ -19,6 +19,7 @@ query GetWorkflowById($accountId:String!, $workflowId:String!) {
       output
       timeout
       version
+      llm_description
       inputs {
         default
         description
@@ -124,16 +125,19 @@ query GetWorkflowById($accountId:String!, $workflowId:String!) {
     updated_at
     updated_by
     created_from_session_id
+    ai_invocable
+    description
   }
 }
 `;
 
 export const LIST_WORKFLOWS = `
-query ListWorkflows($accountId:String!, $status:String, $last_execution_status:String, $type:String, $limit:Int, $next_page_token:String, $name:String, $tags:String, $created_by:String) {
-  workflow_list(request: {account_id: $accountId, status: $status, last_execution_status: $last_execution_status, type: $type, limit: $limit, next_page_token: $next_page_token, name: $name, tags: $tags, created_by: $created_by}) {
+query ListWorkflows($accountIds:[String!], $status:String, $last_execution_status:String, $type:String, $limit:Int, $next_page_token:String, $name:String, $tags:String, $created_by:String) {
+  workflow_list(request: {account_ids: $accountIds, status: $status, last_execution_status: $last_execution_status, type: $type, limit: $limit, next_page_token: $next_page_token, name: $name, tags: $tags, created_by: $created_by}) {
     next_page_token
     total_count
     workflows {
+      account_id
       created_at
       created_by_user {
         display_name
@@ -628,6 +632,7 @@ query ListAccountExecutions($request: AccountExecutionListRequest!) {
     total_is_approximate
     executions {
       id
+      account_id
       workflow_id
       workflow_name
       status
@@ -651,6 +656,7 @@ query AggregateExecutions($request: ExecutionAggregateRequest!) {
     succeeded
     failed
     running
+    timed_out
     counts_are_approximate
     top_failed_is_approximate
     retention_days
@@ -763,8 +769,13 @@ const apiWorkflow = {
       return error;
     }
   },
+  /**
+   * Lists automations across `accountIds`. The Automations page is tenant-level
+   * with an account filter, so an empty/omitted `accountIds` means "every
+   * account the caller can read" rather than "none".
+   */
   async listWorkflows(
-    accountId: string,
+    accountIds?: string[],
     status?: string,
     lastExecutionStatus?: string,
     type?: string,
@@ -774,10 +785,16 @@ const apiWorkflow = {
     tags?: string,
     createdBy?: string
   ) {
-    if (accountId === 'demo') return { data: null, errors: null };
+    if (accountIds?.length === 1 && accountIds[0] === 'demo') return { data: null, errors: null };
     try {
       const query = LIST_WORKFLOWS;
-      const variables: any = { accountId, status, last_execution_status: lastExecutionStatus, type };
+      const variables: any = { status, last_execution_status: lastExecutionStatus, type };
+
+      // Omit the filter entirely when nothing is selected — sending an empty
+      // array would read as "no accounts" rather than "no filter".
+      if (accountIds?.length) {
+        variables.accountIds = accountIds;
+      }
 
       // Only add limit if provided
       if (limit) {
@@ -1301,11 +1318,15 @@ const apiWorkflow = {
       return { data: null, errors: [error] };
     }
   },
-  async listAccountExecutions(accountId: string, request: AccountExecutionListRequest) {
+  /**
+   * Lists executions across `accountIds`. Empty/omitted means every account the
+   * caller can read — the Executions tab is tenant-level.
+   */
+  async listAccountExecutions(accountIds: string[] | undefined, request: AccountExecutionListRequest) {
     try {
-      if (accountId === 'demo') return { data: null, errors: null };
+      if (accountIds?.length === 1 && accountIds[0] === 'demo') return { data: null, errors: null };
       const response = await queryGraphQL(LIST_ACCOUNT_EXECUTIONS, 'ListAccountExecutions', {
-        request: { ...request, account_id: accountId },
+        request: { ...request, ...(accountIds?.length ? { account_ids: accountIds } : {}) },
       });
       return {
         data: response?.data?.data,
@@ -1316,11 +1337,11 @@ const apiWorkflow = {
       return { data: null, errors: [error] };
     }
   },
-  async aggregateExecutions(accountId: string, request: ExecutionAggregateRequest) {
+  async aggregateExecutions(accountIds: string[] | undefined, request: ExecutionAggregateRequest) {
     try {
-      if (accountId === 'demo') return { data: null, errors: null };
+      if (accountIds?.length === 1 && accountIds[0] === 'demo') return { data: null, errors: null };
       const response = await queryGraphQL(AGGREGATE_EXECUTIONS, 'AggregateExecutions', {
-        request: { ...request, account_id: accountId },
+        request: { ...request, ...(accountIds?.length ? { account_ids: accountIds } : {}) },
       });
       return {
         data: response?.data?.data,

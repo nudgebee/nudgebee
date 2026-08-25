@@ -20,6 +20,7 @@ import {
   TicketBlueIcon,
   LokiIcon,
   GithubIcon,
+  GitLabIcon,
   AutopilotIconBlue,
   ClickhouseIcon,
   ServiceMapIcon,
@@ -116,6 +117,8 @@ export const getIcon = (toolName: string) => {
     return DocumentationIcon;
   } else if (toolName.includes('github')) {
     return GithubIcon;
+  } else if (toolName.includes('gitlab')) {
+    return GitLabIcon;
   } else if (toolName.includes('ticket')) {
     return TicketBlueIcon;
   } else if (toolName.includes('runbook')) {

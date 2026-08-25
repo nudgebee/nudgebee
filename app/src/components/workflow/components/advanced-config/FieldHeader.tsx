@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Typography, Tooltip, Chip } from '@mui/material';
+import { Box, Typography, Chip } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import { Code, ViewModule, ContentCopy, Check } from '@mui/icons-material';
 import { Button } from '@ui/Button';
 import type { Preset } from './advancedConfigPresets';

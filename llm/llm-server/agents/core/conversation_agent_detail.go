@@ -253,7 +253,7 @@ func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, ag
 			created_at, updated_at,
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_tool_calls
-		WHERE %s
+		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL
 		ORDER BY created_at`, agentScopeWhere)
 	if err := chat.dbManager.Db.Select(&toolScans, toolQuery, args...); err != nil {
 		slog.Error("GetConversationAgentDetail: tool_calls query failed", "error", err)
@@ -331,7 +331,7 @@ func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, ag
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail model_calls: %w", err)
 	}
 
-	pricing, err := chat.GetConversationCosts(nil)
+	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
 	if err != nil {
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail pricing: %w", err)
 	}
@@ -442,7 +442,7 @@ func HandleConversationAgentDetailApi(ctx *security.RequestContext, request Conv
 	if request.ConversationId == "" || request.AccountId == "" || request.AgentId == "" {
 		return AgentDetail{}, fmt.Errorf("HandleConversationAgentDetailApi: conversation_id, account_id and agent_id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_agents") {
 		return AgentDetail{}, fmt.Errorf("HandleConversationAgentDetailApi: forbidden account_id")
 	}
 	return GetConversationDao().GetConversationAgentDetail(request.ConversationId, request.AccountId, request.AgentId, request.ModelCallId)

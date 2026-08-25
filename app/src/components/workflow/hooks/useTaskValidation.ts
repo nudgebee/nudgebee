@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { isCronValid } from 'src/utils/common';
+import { isCronExpressionValid, validateCron } from 'src/utils/cron';
 import { validateDateTemplate } from 'src/utils/templateValidation';
 import { SUBTASK_BLOCKED_TYPES } from '../constants/subtaskConstants';
 
@@ -64,13 +64,17 @@ export const validateTriggerData = (triggerType: string, params: any): { errors:
   let isValid = true;
 
   switch (triggerType) {
-    case 'schedule':
-      // Cron expression is required for schedule triggers
-      if (!params?.cron?.trim()) {
-        errors.cron = 'Cron expression is required';
+    case 'schedule': {
+      // Cron expression is required for schedule triggers, and must parse —
+      // the API registers the Temporal schedule after the workflow row is
+      // written, so an unparseable expression used to save a broken workflow.
+      const cronCheck = validateCron(params?.cron ?? '');
+      if (!cronCheck.valid) {
+        errors.cron = cronCheck.error || 'Invalid cron expression';
         isValid = false;
       }
       break;
+    }
 
     case 'webhook':
       // Integration name is required for webhook triggers
@@ -265,7 +269,7 @@ export const validateTaskData = (actionType: string, data: any, validationRules:
 
     // Special validation for cron expressions
     if (fieldName.toLowerCase().includes('cron') || fieldName.toLowerCase().includes('schedule')) {
-      if (typeof value === 'string' && value.trim() && !isCronValid(value)) {
+      if (typeof value === 'string' && value.trim() && !isCronExpressionValid(value)) {
         errors[fieldName] = `${fieldName
           .replace(/_/g, ' ')
           .replace(/([A-Z])/g, ' $1')

@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -123,87 +122,46 @@ func (m ClickhouseExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		}, err
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
+	wm := workspace.NewWorkspaceManager()
 
-		// In workspace mode the command is intercepted by the clickhouse-client
-		// shim at /usr/local/bin/clickhouse-client, which calls back to
-		// /api/v1/workspace/execute on the LLM server. ExecuteContainerJob
-		// (raw=true) then injects the connection flags from the tool config and
-		// routes the job to the k8s agent with credentials from the k8s secret.
-		//
-		// Do NOT pre-inject flags here: the env vars ($CLICKHOUSE_HOST etc.)
-		// are not set in the workspace pod's shell env, so they would expand to
-		// empty strings before the shim sees them, producing an unusable command.
-		q := strings.TrimSpace(query)
-		q = strings.TrimSuffix(q, ";")
-		dbFlag := ""
-		if database != "" {
-			dbFlag = " --database " + common.ShellEscape(database)
-		}
-		command := fmt.Sprintf("clickhouse-client%s --query %s --format CSVWithNames --send_logs_level=none --progress=0",
-			dbFlag, sshShellQuote(q))
-
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("clickhouse: unable to execute shell script", "error", err.Error(), "command", query)
-			if response == "" {
-				response = err.Error()
-			}
-			// ClickHouse errors are SQL parser errors, not CLI-flag errors.
-			// clickhouse-client has --help but it doesn't cover query syntax;
-			// point the model at the ClickHouse SQL reference instead.
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "clickhouse", "clickhouse-client --help (or check the ClickHouse SQL reference for query syntax)"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
+	// In workspace mode the command is intercepted by the clickhouse-client
+	// shim at /usr/local/bin/clickhouse-client, which calls back to
+	// /api/v1/workspace/execute on the LLM server. ExecuteContainerJob
+	// (raw=true) then injects the connection flags from the tool config and
+	// routes the job to the k8s agent with credentials from the k8s secret.
+	//
+	// Do NOT pre-inject flags here: the env vars ($CLICKHOUSE_HOST etc.)
+	// are not set in the workspace pod's shell env, so they would expand to
+	// empty strings before the shim sees them, producing an unusable command.
+	q := strings.TrimSpace(query)
+	q = strings.TrimSuffix(q, ";")
+	dbFlag := ""
+	if database != "" {
+		dbFlag = " --database " + common.ShellEscape(database)
 	}
+	command := fmt.Sprintf("clickhouse-client%s --query %s --format CSVWithNames --send_logs_level=none --progress=0",
+		dbFlag, sshShellQuote(q))
 
-	// apiModuleClickhouse will be added in a later step to tools/common.go
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobClickhouse, query, nbRequestContext.AccountId, map[string]any{
-		"database": database,
-	}, false)
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("clickhouse: unable to execute clickhouse query", "error", err.Error())
-		responseData := ""
-		if response != nil {
-			if responseDataStr, ok := response.(string); ok {
-				responseData = responseDataStr
-			}
+		nbRequestContext.Ctx.GetLogger().Error("clickhouse: unable to execute shell script", "error", err.Error(), "command", query)
+		if response == "" {
+			response = err.Error()
 		}
-		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
-		// non-string response, so the LLM always sees the failure reason
-		// rather than an empty envelope.
-		if responseData == "" {
-			responseData = err.Error()
-		}
+		// ClickHouse errors are SQL parser errors, not CLI-flag errors.
+		// clickhouse-client has --help but it doesn't cover query syntax;
+		// point the model at the ClickHouse SQL reference instead.
 		return core.NBToolResponse{
-			Data:   cliRecoveryEnvelope(responseData, "", "clickhouse", ""),
+			Data:   cliRecoveryEnvelope(response, "", "clickhouse", "clickhouse-client --help (or check the ClickHouse SQL reference for query syntax)"),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	data, ok := response.(string)
-	if !ok {
-		nbRequestContext.Ctx.GetLogger().Error("clickhouse: unexpected response type from ExecuteApiCall", "response", response)
-		return core.NBToolResponse{
-			Data:   "Error: Unexpected response format from query execution.",
-			Status: core.NBToolResponseStatusError,
-		}, fmt.Errorf("unexpected response type from ExecuteApiCall: %T", response)
-	}
-
 	return core.NBToolResponse{
-		Data:   data,
-		Type:   core.NBToolResponseTypeTable,
+		Data:   response,
+		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
 }

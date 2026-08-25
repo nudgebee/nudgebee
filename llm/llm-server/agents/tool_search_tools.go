@@ -23,6 +23,22 @@ const SearchToolsToolName = "search_tools"
 // observation stays small — discovery should narrow, not dump the catalog.
 const searchToolsMaxResults = 15
 
+const (
+	// Field weights. A name/alias hit outranks a description hit because a name is
+	// what a capability is, whereas a description merely mentions things.
+	searchToolsWeightName        = 3
+	searchToolsWeightDescription = 1
+
+	// searchToolsExactMatchFactor is what a substring hit earns over a prefix hit.
+	// Both weights are scaled by it, so the relative ordering of name-vs-description
+	// is unchanged and only the prefix tier is new.
+	searchToolsExactMatchFactor = 2
+
+	// searchToolsMinPrefixMatch is how many characters two tokens must share before
+	// a prefix hit counts, so "aws" cannot drag in "awesome".
+	searchToolsMinPrefixMatch = 4
+)
+
 func init() {
 	// search_tools is always registered. It is a read-only discovery tool with no
 	// execution authority, and only agents that list it in their supported set (the
@@ -46,8 +62,11 @@ func (t *searchToolsTool) Name() string { return SearchToolsToolName }
 func (t *searchToolsTool) GetType() toolcore.NBToolType { return toolcore.NBToolTypeTool }
 
 func (t *searchToolsTool) Description() string {
-	return `Discover specialist capabilities (agents and tools) that are NOT already in your tool list, by natural-language query. Returns each match's name, what it does, and how to call it.
-Use when a task needs a domain you don't hold a tool for (e.g. "query the postgres database", "inspect a helm release", "search github", "scan an image") — search for it, then invoke the returned capability by name via ` + "`delegate_agent`" + ` (pass its name in "tools").
+	return `Discover capabilities (agents and tools) that are NOT already in your tool list, by natural-language query. Returns each match's name, what it does, and how to call it.
+Search in two cases:
+1. A task needs a domain you hold no tool for — "query the postgres database", "inspect a helm release", "search github", "scan an image".
+2. You are about to CHANGE something — restart, scale, roll back, drain, rotate, clear — even when you already hold a tool that could do it. This account's team may have approved an automation for exactly that action, and running theirs is preferred over doing the same thing by hand, because it carries the checks, approvals and rollback they chose. Search first, act yourself only if nothing matches.
+Then invoke the returned capability by name via ` + "`delegate_agent`" + ` (pass its name in "tools").
 Input: {"query": <what you need to do>}. Returns at most a handful of ranked matches; refine the query if nothing fits.`
 }
 
@@ -81,7 +100,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 	// source) has no such guard — so enforce it here before enumerating either.
 	if !ctx.Ctx.GetSecurityContext().HasAccountAccess(t.accountId, security.SecurityAccessTypeRead) {
 		ctx.Ctx.GetLogger().Warn("tool: search_tools unauthorized — no account read access", "account_id", t.accountId)
-		common.MetricsToolOperationsTotal(t.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "error", ctx.AccountId)
 		return toolcore.NBToolResponse{
 			Status: toolcore.NBToolResponseStatusError,
 			Data:   "not authorized to search capabilities for this account",
@@ -90,7 +109,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 
 	query := parseSearchToolsQuery(input)
 	if query == "" {
-		common.MetricsToolOperationsTotal(t.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "error", ctx.AccountId)
 		return toolcore.NBToolResponse{
 			Status: toolcore.NBToolResponseStatusError,
 			Data:   "query is required",
@@ -103,7 +122,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 	matched := scoreAndRankSearchTools(query, candidates, searchToolsMaxResults)
 
 	if len(matched) == 0 {
-		common.MetricsToolOperationsTotal(t.Name(), "not_found", ctx.AccountId)
+		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "not_found", ctx.AccountId)
 		return toolcore.NBToolResponse{
 			Status: toolcore.NBToolResponseStatusSuccess,
 			Data:   "No matching capabilities found. Try a broader query, or use the tools already in your list.",
@@ -121,7 +140,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 	core.RecordDiscoveredTools(ctx.ConversationId, discovered)
 
 	ctx.Ctx.GetLogger().Info("tool: search_tools success", "query", query, "match_count", len(matched))
-	common.MetricsToolOperationsTotal(t.Name(), "success", ctx.AccountId)
+	common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "success", ctx.AccountId)
 	return toolcore.NBToolResponse{
 		Status: toolcore.NBToolResponseStatusSuccess,
 		Data:   renderSearchToolsOutput(matched),
@@ -199,6 +218,16 @@ func parseSearchToolsQuery(input toolcore.NBToolCallRequest) string {
 // description hits so "postgres" surfaces the postgres capability before a tool
 // that merely mentions postgres in prose. Ordering is deterministic (score
 // desc, then name asc) so repeated calls are stable.
+//
+// Related word forms match too, at reduced weight. Plain substring matching
+// cannot bridge a plural query and a singular name, and that gap was
+// load-bearing: a model asking for "automations" got back only the generic
+// workflow tools, whose descriptions happen to say "automations", while every
+// per-account automation tool — whose name and description say "automation" —
+// scored zero and did not appear at all. So searching by category sent the model
+// back down the path the per-automation tools exist to replace. This is the same
+// exact-match weakness fixed in workflow_search's own ranking, one layer up, and
+// it takes the same fix.
 func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, limit int) []searchToolCandidate {
 	tokens := toolcore.TokenizeForSkillSelection(query)
 	if len(tokens) == 0 {
@@ -213,14 +242,12 @@ func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, lim
 	for _, c := range candidates {
 		nameHay := strings.ToLower(c.name + " " + strings.Join(c.aliases, " "))
 		descHay := strings.ToLower(c.description)
+		nameTokens := toolcore.TokenizeForSkillSelection(nameHay)
+		descTokens := toolcore.TokenizeForSkillSelection(descHay)
 		score := 0
 		for _, tok := range tokens {
-			if strings.Contains(nameHay, tok) {
-				score += 3
-			}
-			if strings.Contains(descHay, tok) {
-				score++
-			}
+			score += searchToolsFieldScore(nameHay, nameTokens, tok, searchToolsWeightName)
+			score += searchToolsFieldScore(descHay, descTokens, tok, searchToolsWeightDescription)
 		}
 		if score > 0 {
 			hits = append(hits, scored{cand: c, score: score})
@@ -242,6 +269,47 @@ func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, lim
 		out = append(out, h.cand)
 	}
 	return out
+}
+
+// searchToolsFieldScore is what one query token earns against one field: the full
+// weight for a substring hit anywhere in the field, a reduced one for a prefix
+// match against one of the field's tokens.
+//
+// The substring pass is kept exactly as it was and checked first, so this is
+// purely additive — no query that matched before can score lower now. The prefix
+// pass only runs when the substring pass found nothing, and is scored below it
+// because it is a weaker signal: a prefix hit can lift a capability into the
+// results but never above one that genuinely matched.
+func searchToolsFieldScore(haystack string, haystackTokens []string, token string, weight int) int {
+	if strings.Contains(haystack, token) {
+		return weight * searchToolsExactMatchFactor
+	}
+	for _, candidate := range haystackTokens {
+		if searchToolsSharesPrefix(token, candidate) {
+			return weight
+		}
+	}
+	return 0
+}
+
+// searchToolsSharesPrefix reports whether the shorter of two tokens is a prefix
+// of the longer, once it is long enough to be worth something. Deliberately
+// bidirectional: a query token can be the longer side ("automations" against the
+// name token "automation") as easily as the shorter one.
+//
+// The floor counts bytes, so a short non-ASCII token clears it on fewer
+// characters than an ASCII one would. That only ever makes the weaker tier
+// slightly easier to reach; it cannot produce an invalid string, since
+// HasPrefix either matches every byte of a whole token or none.
+func searchToolsSharesPrefix(a, b string) bool {
+	shorter, longer := a, b
+	if len(longer) < len(shorter) {
+		shorter, longer = longer, shorter
+	}
+	if len(shorter) < searchToolsMinPrefixMatch || shorter == longer {
+		return false
+	}
+	return strings.HasPrefix(longer, shorter)
 }
 
 // renderSearchToolsOutput formats matches into a compact, injection-safe block.

@@ -101,7 +101,7 @@ def _parse_conversation(common_service: CommonService, conversation_id: str, pay
 
 def _handle_event_conversation(common_service: CommonService, conversation_id: str, payload: LLMResponse):
     channel_id, thread_ts, team_id, account_id = common_service.get_channel_and_ts_from_sent_notifications(
-        conversation_id
+        conversation_id, tenant_id=payload.tenant_id
     )
 
     if payload.tenant_id:
@@ -172,6 +172,13 @@ async def handle_llm_response(request: Request, background_tasks: BackgroundTask
                 common_service, payload
             )
             platform = cached_entry.get("platform", "slack")
+            # This request is an llm-server webhook, not a Slack event, so there's
+            # no api_app_id to read directly. Restore the one captured when the
+            # conversation started so get_slack_installation resolves the same
+            # bot that owns this thread, instead of falling back to priority
+            # order and possibly picking a different Slack app that shares the
+            # same team_id (e.g. two dev bots installed in one workspace).
+            common_service.app_id = cached_entry.get("app_id")
 
             LOG.debug(
                 "Routing LLM response: conversation_id=%s, type=%s, platform=%s, channel_id=%s",

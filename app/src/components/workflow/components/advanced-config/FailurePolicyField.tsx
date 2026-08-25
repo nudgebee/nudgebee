@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Typography, FormControl, InputLabel, Select, MenuItem, Chip, Switch, FormControlLabel } from '@mui/material';
+import { Box, Typography, Chip, Switch, FormControlLabel } from '@mui/material';
 import { Button } from '@ui/Button';
 import { Add, Close } from '@mui/icons-material';
 import { Input } from '@ui/Input';
+import { Select } from '@ui/Select';
 import { FAILURE_POLICY_PRESETS, FIELD_HELPER_TEXT } from './advancedConfigPresets';
 import { useJsonViewMode } from '@components/workflow/hooks/useJsonViewMode';
 import FieldHeader from './FieldHeader';
@@ -125,13 +126,18 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
       {viewMode === 'structured' ? (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {/* Action */}
-          <FormControl fullWidth size='small' disabled={disabled}>
-            <InputLabel>Action on Failure</InputLabel>
-            <Select value={action} label='Action on Failure' onChange={(e) => handleActionChange(e.target.value as 'continue' | 'fail')}>
-              <MenuItem value='fail'>Fail automation</MenuItem>
-              <MenuItem value='continue'>Continue automation</MenuItem>
-            </Select>
-          </FormControl>
+          <Select
+            label='Action on Failure'
+            size='sm'
+            clearable={false}
+            disabled={disabled}
+            value={action}
+            options={[
+              { value: 'fail', label: 'Fail automation' },
+              { value: 'continue', label: 'Continue automation' },
+            ]}
+            onChange={(next) => handleActionChange(next as 'continue' | 'fail')}
+          />
 
           {/* Enable Retry Toggle */}
           <FormControlLabel

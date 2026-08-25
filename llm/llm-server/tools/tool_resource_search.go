@@ -9,8 +9,10 @@ import (
 	"nudgebee/llm/tools/core"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/lithammer/fuzzysearch/fuzzy"
 )
 
@@ -49,7 +51,19 @@ type K8sResourceInfo struct {
 	Ready          string `json:"ready,omitempty"`
 	Age            string `json:"age,omitempty"`
 	OwnerReference string `json:"owner_reference,omitempty"`
+	// Source is where this record came from: "inventory" (the cloud_resourses
+	// table the collector maintains) or "cluster" (a live kubectl command). The
+	// two differ in freshness and in cost to obtain, and the merged result set
+	// mixes them freely — without this the caller cannot tell which is which, and
+	// neither can anyone debugging a wrong answer.
+	Source string `json:"source,omitempty"`
 }
+
+// Resource provenance values for K8sResourceInfo.Source.
+const (
+	resourceSourceInventory = "inventory"
+	resourceSourceCluster   = "cluster"
+)
 
 type K8sResourceSearchStrategy struct {
 	Strategy     string `json:"strategy"`
@@ -229,18 +243,27 @@ func (r K8sResourceSearchTool) InputSchema() core.ToolSchema {
 func (r K8sResourceSearchTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext.Ctx.GetLogger().Info("resource-search: executing tool call", "command", input.Command)
 
+	// Attach the accumulator before any downstream work. NbToolContext is copied
+	// by value into every helper and fan-out goroutine, but they all carry this
+	// same pointer — so the DB/relay split covers the whole call tree. Without it
+	// a 16s lookup is indistinguishable from a 0.1s one in the persisted row.
+	stats := &core.ToolCallStats{}
+	nbRequestContext.Stats = stats
+
 	result, err := r.processSearchRequest(input.Command, nbRequestContext)
 	if err != nil {
 		return core.NBToolResponse{
-			Data:   err.Error(),
-			Status: core.NBToolResponseStatusError,
+			Data:     err.Error(),
+			Status:   core.NBToolResponseStatusError,
+			Metadata: stats.ApplyTo(nil),
 		}, err
 	}
 
 	return core.NBToolResponse{
-		Data:   result,
-		Type:   core.NBToolResponseTypeJson,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:     result,
+		Type:     core.NBToolResponseTypeJson,
+		Status:   core.NBToolResponseStatusSuccess,
+		Metadata: stats.ApplyTo(nil),
 	}, nil
 }
 
@@ -429,33 +452,59 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 		variations = append(variations, strings.Join(searchTerms, ""))
 	}
 
+	// One query for every variation (ILIKE ANY) rather than one round-trip each:
+	// the variations are alternative spellings of the SAME name, so a match on
+	// any of them is the answer. Sequentially probing them multiplied the scan
+	// cost by up to 4x for the common miss.
+	patterns := make([]string, 0, len(variations))
 	for _, v := range variations {
-		found, err := r.queryK8sResourcesByName(accountId, "%"+v+"%")
-		if err != nil {
-			// Soft failure — fall through to the next variation and ultimately
-			// the live-kubectl fallback, but surface the error so DB issues
-			// aren't invisible. Queryx never returns sql.ErrNoRows, so any error
-			// here is unexpected.
-			nbRequestContext.Ctx.GetLogger().Warn("resource_search: cloud_resourses lookup failed", "term", v, "account", accountId, "error", err)
-			continue
-		}
-		nbRequestContext.Ctx.GetLogger().Info("resource_search: cloud_resourses lookup", "term", v, "account", accountId, "count", len(found))
-		if len(found) > 0 {
-			return found
-		}
+		patterns = append(patterns, "%"+v+"%")
 	}
 
-	return nil
+	dbStart := time.Now()
+	found, err := r.queryK8sResourcesByName(accountId, patterns)
+	// Render the statement the way a human would re-run it: the SQL text is a
+	// constant, so the patterns are the only informative part.
+	// Record the rows themselves, not a count: the whole point of the step list is
+	// seeing what each operation returned without going to a SQL client. This is
+	// the inventory's answer *before* owner enrichment, so comparing it against
+	// the tool's final response shows exactly what the cluster calls added.
+	dbOutput := fmt.Sprintf("%d row(s)", len(found))
+	if rowsJSON, marshalErr := common.MarshalJson(found); marshalErr == nil {
+		dbOutput = fmt.Sprintf("%d row(s)\n%s", len(found), string(rowsJSON))
+	}
+	nbRequestContext.Stats.RecordDB(
+		fmt.Sprintf("SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v) ORDER BY name LIMIT 20", accountId, patterns, patterns),
+		dbOutput, err, time.Since(dbStart))
+	if err != nil {
+		// Soft failure — fall through to the live-kubectl fallback, but surface
+		// the error so DB issues aren't invisible. Queryx never returns
+		// sql.ErrNoRows, so any error here is unexpected.
+		nbRequestContext.Ctx.GetLogger().Warn("resource_search: cloud_resourses lookup failed", "terms", variations, "account", accountId, "error", err)
+		return nil
+	}
+	nbRequestContext.Ctx.GetLogger().Info("resource_search: cloud_resourses lookup", "terms", variations, "account", accountId, "count", len(found))
+	return found
 }
 
-// queryK8sResourcesByName runs the scoped cloud_resourses lookup for a single
-// name pattern. Split from searchDbForResources so the *sqlx.Rows is closed via
-// defer (one query per call, not accumulated across the variations loop).
+// queryK8sResourcesByName runs the scoped cloud_resourses lookup for every name
+// pattern in one statement. Split from searchDbForResources so the *sqlx.Rows is
+// closed via defer.
 //
-// account = the cluster; leading with the indexed account column narrows the
-// scan to this cluster's active rows before the name ILIKE, so it never
-// seq-scans the full inventory.
-func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, pattern string) ([]K8sResourceInfo, error) {
+// `is_active = true` must stay written exactly this way: it is the predicate of
+// the partial trigram indexes (migration V868), and Postgres only uses a partial
+// index when the query's predicate matches. Writing it any other way — including
+// the equivalent `is_active IS NOT FALSE` — stops the indexes applying and plans
+// a parallel seq scan of the whole table, measured at 2876ms against a 1.6M-row
+// account versus 3.6ms with the indexes.
+//
+// Both ILIKE branches must stay indexed: Postgres can only use indexes for an OR
+// when every branch has one, and an unindexed branch forces the full scan
+// regardless of the other index.
+func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId string, patterns []string) ([]K8sResourceInfo, error) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		return nil, err
@@ -470,11 +519,11 @@ func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, pattern string
 		WHERE account = $1
 		  AND cloud_provider = 'K8s'
 		  AND is_active = true
-		  AND (name ILIKE $2 OR resourse_id ILIKE $2)
+		  AND (name ILIKE ANY($2) OR resourse_id ILIKE ANY($2))
 		ORDER BY name
 		LIMIT 20`
 
-	rows, err := dbms.Db.Queryx(query, accountId, pattern)
+	rows, err := dbms.Db.Queryx(query, accountId, pq.Array(patterns))
 	if err != nil {
 		return nil, err
 	}
@@ -486,6 +535,7 @@ func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, pattern string
 		if scanErr := rows.Scan(&res.Type, &res.Name, &res.Namespace, &res.Status); scanErr != nil {
 			return nil, scanErr
 		}
+		res.Source = resourceSourceInventory
 		out = append(out, res)
 	}
 	return out, rows.Err()
@@ -562,6 +612,21 @@ func normalizeK8sType(t string) string {
 }
 
 // handleResourceSuggestions finds actual resources using kubectl and returns resource data
+// resourceSearchResultMessage picks the K8s search result message. The no-cluster
+// branch is the observability-only / cloud-only path: with no connected cluster the
+// live fallback is skipped, so an inventory miss is terminal — point the model at the
+// cloud resolver rather than implying more k8s search is possible.
+func resourceSearchResultMessage(count int, clusterConnected bool) string {
+	switch {
+	case count > 0:
+		return fmt.Sprintf("Found %d resources matching your request.", count)
+	case !clusterConnected:
+		return "No resources found in inventory, and no connected Kubernetes cluster to search live. For a cloud/observability-only account, resolve cloud resources via cloud_resource_search_execute."
+	default:
+		return "No resources found matching your request."
+	}
+}
+
 func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSearchRequest, nbRequestContext core.NbToolContext) (string, error) {
 	namespace := request.Namespace
 	if namespace == "" || namespace == "all" || namespace == "all-namespaces" {
@@ -580,7 +645,20 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 		resources = r.filterResourcesByType(resources, request.ResourceType)
 	}
 
+	// The live-cluster fallback below only makes sense when an in-cluster agent is
+	// actually connected — without one, every kubectl strategy just times out (the
+	// ~60s straggler), which is pure waste on cloud-only / observability-only accounts.
+	// cloud_resourses is authoritative for synced resources, so on a DB miss with no
+	// connected cluster we skip the live fan and report the inventory miss fast.
+	// hasConnectedK8sAgent fails closed (a transient DB error reads as "connected"),
+	// so we never wrongly skip when a cluster might be present.
+	// Computed only on a miss — its only consumers are the fallback gate below and the
+	// no-result message — so a DB hit skips this connectivity DB call entirely.
+	clusterConnected := true
 	if len(resources) == 0 {
+		clusterConnected = hasConnectedK8sAgent(nbRequestContext.AccountId)
+	}
+	if len(resources) == 0 && clusterConnected {
 		// 2. Fallback: find actual resources via live kubectl strategies.
 		k8sResources := r.findActualResources(searchName, namespace, request.ResourceType, nbRequestContext)
 		// Filter out any resources whose names don't contain a meaningful term from the query.
@@ -618,10 +696,8 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 	var message string
 	if len(resources) > 0 {
 		resources = r.removeDuplicateResources(resources)
-		message = fmt.Sprintf("Found %d resources matching your request.", len(resources))
-	} else {
-		message = "No resources found matching your request."
 	}
+	message = resourceSearchResultMessage(len(resources), clusterConnected)
 
 	// Enrich resources with owner references (mostly for Pods)
 	resources = r.enrichWithOwners(resources, nbRequestContext)
@@ -662,28 +738,69 @@ func (r K8sResourceSearchTool) enrichWithOwners(resources []K8sResourceInfo, nbR
 		}
 	}
 
+	// One kubectl per namespace, run concurrently. kubectl is namespace-scoped, so
+	// N matched namespaces means N round-trips; sequentially that was the dominant
+	// cost of the whole tool (5 namespaces ≈ 3.1s of a 3.7s call) purely to attach
+	// one field to pods the inventory had already returned. A cluster-wide
+	// `get pods -A` would collapse it to one call but returns every pod in the
+	// cluster, trading a bounded 5× round-trip for an unbounded payload — worse on
+	// exactly the large clusters where the speedup matters most.
+	//
+	// Concurrency is capped so a many-namespace match can't burst the relay: the
+	// caller already bails above 20 resources, so this is at most a handful of
+	// calls in flight.
+	const maxParallelOwnerLookups = 5
+	type ownerLookup struct {
+		indices  []int
+		ownerMap map[string]string
+	}
+	lookups := make(chan ownerLookup, len(resourcesByNs))
+	sem := make(chan struct{}, maxParallelOwnerLookups)
+	var wg sync.WaitGroup
+	ctx := nbRequestContext.GoContext()
+
 	for ns, indices := range resourcesByNs {
-		names := []string{}
-		for _, idx := range indices {
-			names = append(names, resources[idx].Name)
-		}
+		wg.Add(1)
+		go func(ns string, indices []int) {
+			defer wg.Done()
+			// Queued goroutines must abandon on cancellation rather than wait for
+			// a slot: with the cap at 5 the rest sit here, and an unconditional
+			// send would wake them after the investigation is already gone and
+			// fire their relay commands into the cluster anyway.
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			// select picks uniformly among ready cases, so a slot being free can
+			// win over an already-cancelled context. Re-check after acquiring to
+			// make the abandon deterministic rather than a coin flip.
+			if ctx.Err() != nil {
+				return
+			}
 
-		// Use jsonpath to get owner info efficiently
-		// We use jsonpath with [*] to avoid errors if ownerReferences is empty (index out of bounds)
-		// jsonpath="{range .items[*]}{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{'\n'}{end}"
-		// But for individual items, the root is Pod not List, so we handle both cases.
-		var cmd string
-		if len(names) == 1 {
-			cmd = fmt.Sprintf("kubectl get pods %s -n %s -o=jsonpath='{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{\"\\n\"}'", names[0], ns)
-		} else {
-			cmd = fmt.Sprintf("kubectl get pods %s -n %s -o=jsonpath='{range .items[*]}{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{\"\\n\"}{end}'", strings.Join(names, " "), ns)
-		}
+			names := make([]string, len(indices))
+			for i, idx := range indices {
+				names[i] = resources[idx].Name
+			}
 
-		output := r.executeKubectlCommand(cmd, nbRequestContext)
-		if output != "" {
-			lines := strings.Split(output, "\n")
+			// Use jsonpath to get owner info efficiently
+			// We use jsonpath with [*] to avoid errors if ownerReferences is empty (index out of bounds)
+			// But for individual items, the root is Pod not List, so we handle both cases.
+			var cmd string
+			if len(names) == 1 {
+				cmd = fmt.Sprintf("kubectl get pods %s -n %s -o=jsonpath='{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{\"\\n\"}'", names[0], ns)
+			} else {
+				cmd = fmt.Sprintf("kubectl get pods %s -n %s -o=jsonpath='{range .items[*]}{.metadata.name},{.metadata.ownerReferences[*].kind}/{.metadata.ownerReferences[*].name}{\"\\n\"}{end}'", strings.Join(names, " "), ns)
+			}
+
+			output := r.executeKubectlCommand(cmd, nbRequestContext)
+			if output == "" {
+				return
+			}
 			ownerMap := make(map[string]string)
-			for _, line := range lines {
+			for _, line := range strings.Split(output, "\n") {
 				parts := strings.Split(line, ",")
 				if len(parts) >= 2 {
 					podName := parts[0]
@@ -694,12 +811,19 @@ func (r K8sResourceSearchTool) enrichWithOwners(resources []K8sResourceInfo, nbR
 					}
 				}
 			}
+			lookups <- ownerLookup{indices: indices, ownerMap: ownerMap}
+		}(ns, indices)
+	}
 
-			// Update resources
-			for _, idx := range indices {
-				if owner, ok := ownerMap[resources[idx].Name]; ok {
-					resources[idx].OwnerReference = owner
-				}
+	wg.Wait()
+	close(lookups)
+
+	// Apply after the fan-in: each namespace owns a disjoint set of indices, but
+	// collecting first keeps the mutation single-threaded and obviously safe.
+	for l := range lookups {
+		for _, idx := range l.indices {
+			if owner, ok := l.ownerMap[resources[idx].Name]; ok {
+				resources[idx].OwnerReference = owner
 			}
 		}
 	}
@@ -1304,8 +1428,9 @@ func (r K8sResourceSearchTool) parseGenericResourceLine(line, resourceType, name
 
 	var fieldOffset = 0
 	resource := &K8sResourceInfo{
-		Name: fields[0],
-		Type: resourceType,
+		Source: resourceSourceCluster,
+		Name:   fields[0],
+		Type:   resourceType,
 	}
 
 	// Handle --all-namespaces output format: NAMESPACE NAME READY STATUS ...
@@ -1343,7 +1468,9 @@ func (r K8sResourceSearchTool) executeKubectlCommand(command string, nbRequestCo
 		command = "kubectl " + command
 	}
 
+	relayStart := time.Now()
 	response, err := ExecuteContainerJob(nbRequestContext, RelayJobKubectl, command, nbRequestContext.AccountId, map[string]any{}, false)
+	nbRequestContext.Stats.RecordRelay(command, fmt.Sprintf("%v", response), err, time.Since(relayStart))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("resource-search: kubectl command failed", "error", err.Error(), "command", command)
 		return ""
@@ -1420,6 +1547,7 @@ func (r K8sResourceSearchTool) parsePodLine(line, namespace string, isAllNamespa
 	}
 
 	return &K8sResourceInfo{
+		Source:    resourceSourceCluster,
 		Name:      fields[fieldOffset],
 		Namespace: actualNamespace,
 		Type:      "pod",
@@ -1452,6 +1580,7 @@ func (r K8sResourceSearchTool) parseDeploymentLine(line, namespace string, isAll
 	}
 
 	return &K8sResourceInfo{
+		Source:    resourceSourceCluster,
 		Name:      fields[fieldOffset],
 		Namespace: actualNamespace,
 		Type:      "deployment",
@@ -1496,6 +1625,7 @@ func (r K8sResourceSearchTool) parseAllResourceLine(line, namespace string, isAl
 	resName := parts[1]
 
 	info := &K8sResourceInfo{
+		Source:    resourceSourceCluster,
 		Name:      resName,
 		Namespace: actualNamespace,
 		Type:      resType,
@@ -1532,6 +1662,26 @@ func (r K8sResourceSearchTool) filterResourcesByRelevance(resources []K8sResourc
 	var terms []string
 	add := func(t string) {
 		t = strings.ToLower(strings.TrimSpace(t))
+		// A term containing whitespace can never match anything: K8s names and
+		// namespaces are DNS-1123 labels, which cannot contain spaces. Worse, adding
+		// the raw multi-word query makes `terms` non-empty and so bypasses the
+		// len(terms) == 0 escape hatch below — so a query whose every word is a
+		// type/scope stopword ("deployments namespace") keeps one unmatchable term
+		// and prunes every result to a false empty, which is the exact failure this
+		// filter's stopword list exists to prevent.
+		// A term can only be useful if it could appear in a resource name or namespace.
+		// Those are DNS-1123 (lowercase alphanumeric, '-', and '.' for subdomains), so a
+		// term carrying anything else can never match — but it still counts toward
+		// `terms`, which bypasses the len(terms)==0 escape hatch below and prunes every
+		// result to a false empty.
+		//
+		// Stated as "what can match" rather than a list of separators on purpose: the
+		// separator list was extended three times (space, then '/', then '_') and still
+		// missed ':' and ','. sanitizeInput strips most punctuation today, but it does
+		// permit '_' and '/', and this guard should not depend on that staying true.
+		if !isDNS1123Term(t) {
+			return
+		}
 		// Skip type/scope words ("deployments", "namespace", "nodes", …) — they
 		// describe kind/scope, not a resource identity, so matching resource
 		// names against them over-prunes valid results to a false empty.
@@ -1543,11 +1693,29 @@ func (r K8sResourceSearchTool) filterResourcesByRelevance(resources []K8sResourc
 
 	queryLower := strings.ToLower(query)
 	add(queryLower)
-	// Split on spaces too, not just -/_/. — a multi-word query like "llm server"
+	// Split on whitespace too, not just -/_/. — a multi-word query like "llm server"
 	// must yield the "llm" term (which matches "llm-server-abc"); otherwise the
 	// whole "llm server" string is the only term and matches no hyphenated name.
+	//
+	// unicode.IsSpace rather than a literal ' ': an LLM-authored resource_name can
+	// carry a newline or tab, and splitting on spaces alone would leave "llm\nserver"
+	// as one unmatchable component. The guard above then rejects it for containing
+	// whitespace, so the query would fall back to no filtering at all — correct, but
+	// weaker than simply splitting it into terms that do match.
+	// Split on anything that is not alphanumeric. This is the mirror of the guard above:
+	// if a character cannot appear in a DNS-1123 name, it can only be a separator, so
+	// splitting on it is what turns an otherwise-unusable query into usable terms.
+	// "pods/llm-server", "llm_server", "llm,server" and "llm\nserver" all yield "llm".
+	//
+	// Enumerating separators here was wrong the same way the guard was: the list grew
+	// space -> '/' -> '_' and still missed ':' and ','. Without this, such a query is
+	// merely safe (every term rejected, escape hatch returns everything unfiltered)
+	// rather than useful.
+	//
+	// '-' and '.' are valid name characters AND separators: the unsplit query is added
+	// above, so "llm-server" keeps its exact form while also yielding "llm".
 	for _, part := range strings.FieldsFunc(queryLower, func(c rune) bool {
-		return c == '-' || c == '_' || c == '.' || c == ' '
+		return !isASCIIAlphanumeric(c)
 	}) {
 		add(part)
 	}
@@ -1942,4 +2110,24 @@ func GetCurrentGcpAccountState(accountId string) map[string][]string {
 		slog.Error("tools: error iterating rows", "error", err)
 	}
 	return response
+}
+
+// isDNS1123Term reports whether every character in t could appear in a Kubernetes
+// resource name or namespace. Empty is not a usable term.
+func isDNS1123Term(t string) bool {
+	if t == "" {
+		return false
+	}
+	for _, c := range t {
+		if !isASCIIAlphanumeric(c) && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// isASCIIAlphanumeric is the shared primitive behind both the guard and the splitter,
+// so the two cannot drift: anything that is not a name character is a separator.
+func isASCIIAlphanumeric(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }

@@ -13,7 +13,18 @@ import React from 'react';
  * tenants. Callers should gate on branding config the way Loader.tsx does.
  */
 
-export type NubiAnimationState = 'thinking' | 'working' | 'searching' | 'loading' | 'flying' | 'excited' | 'waving' | 'alert' | 'sad' | 'sleeping';
+export type NubiAnimationState =
+  | 'thinking'
+  | 'working'
+  | 'searching'
+  | 'loading'
+  | 'flying'
+  | 'excited'
+  | 'waving'
+  | 'alert'
+  | 'sad'
+  | 'sleeping'
+  | 'watching';
 
 interface NubiAnimationProps {
   state?: NubiAnimationState;

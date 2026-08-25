@@ -46,6 +46,29 @@ AUTOMATION SCHEMA REFERENCE:
   "hooks": {...}                      // *Hooks (optional)
 }
 
+## TRIGGER STRUCTURE:
+{
+  "type": "string (required)",        // one of: manual, schedule, webhook, event, optimization
+  "params": {},                       // map[string]any — EVERY trigger setting lives in here
+  "layout": {"x": 0, "y": 0}          // optional canvas position
+}
+"type" and "params" are the ONLY keys you may write on a trigger. A trigger setting placed
+at the top level instead of inside "params" is DISCARDED when the definition is decoded,
+which produces a trigger that can never fire. The "Requires params:" lists below name the
+keys that go INSIDE "params" — they are never trigger-level keys.
+
+  WRONG: {"type": "webhook", "integration_name": "my-hook", "filter": "..."}
+  RIGHT: {"type": "webhook", "params": {"integration_name": "my-hook", "filter": "..."}}
+
+  WRONG: {"type": "schedule", "cron": "0 9 * * *"}
+  RIGHT: {"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}
+
+  WRONG: {"type": "event", "event_type": "alert"}
+  RIGHT: {"type": "event", "params": {"event_type": "alert"}}
+
+"manual" is the ONLY type that takes no params — {"type": "manual"} is complete as written.
+Do not generalise from it to the other four types.
+
 ## TRIGGER TYPES:
 - "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
 - "schedule" - Requires params: {"cron": "0 * * * *" (5-field UTC), "overlap_policy": "Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther" (optional, default "Skip"), "catchup_window": Go time.ParseDuration string using units ns|us|ms|s|m|h ONLY — day/week units ("7d", "1w") are NOT supported; use hours instead ("168h" = 7 days). Compound durations are allowed ("1h30m", "90m15s"). Examples: "60s", "10m", "1h", "1h30m", "168h"; default "60s"}. Auto-injected: {{ Inputs.workflow_scheduled_time }}, {{ Inputs.workflow_execution_time }}.
@@ -163,4 +186,6 @@ core.foreach — ITEM VARIABLE:
 - The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly. Variable names are CASE-SENSITIVE: if item="issue", use {{ issue.title }}, NOT {{ Issue.title }}.
 
 CLOUD ACCOUNT IDs (account_id parameter):
-- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: params.account_id MUST be a UUID. If you see a non-UUID value (e.g. a display name), replace it with the matching UUID from the account environment. The runbook server rejects non-UUID account_id values.
+- MANY task types take an optional params.account_id, not just the CLI tasks: tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever it appears.
+- Wherever params.account_id is set, it MUST be a literal UUID. If you see a non-UUID value (a display name, or a "{{ Configs.* }}" reference), replace it with the matching UUID from the account environment, or delete the parameter if the task should run against the automation's own account.
+- account_id is optional and defaults to the automation's own account, so REMOVING it is a legitimate fix when that is the intended target. It is not a way to silence an error about a DIFFERENT account you were asked to target.

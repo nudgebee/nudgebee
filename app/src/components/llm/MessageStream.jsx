@@ -6,6 +6,7 @@ import CustomDrawer, { SecondaryDrawer } from '@shared/CustomDrawer';
 import TasksDrawerContent from './common/TasksDrawerContent';
 import MemoriesDrawerContent from './common/MemoriesDrawerContent';
 import ReferencesDrawerContent from './common/ReferencesDrawerContent';
+import ChannelContextDrawerContent from './common/ChannelContextDrawerContent';
 import ToolDetails from './common/ToolDetails';
 import useMessageAdditionalData from '@hooks/useMessageAdditionalData';
 import WatchesTab from './WatchesTab';
@@ -197,6 +198,16 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
     [setCollapsedObj]
   );
 
+  // Per-question "Show more / Show less" toggle, keyed by message index so each question
+  // bubble owns its own expand state. Previously a single shared boolean toggled every
+  // question in the conversation at once (issue #35751).
+  const handleShowFullText = useCallback(
+    (index) => {
+      setShowFullText((prev) => ({ ...prev, [index]: !prev[index] }));
+    },
+    [setShowFullText]
+  );
+
   // Per-task "Tool Details" drawer — used by inline task rows during active runs (no Tasks
   // drawer is open in that case, so we open the primary drawer with the ToolDetails view).
   const handleOpenToolDetails = useCallback(
@@ -238,6 +249,11 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
 
   const openMemoriesDrawer = useCallback((memories) => {
     setDrawer({ open: true, kind: 'memories', title: `New Memories · ${memories.length}`, data: { memories } });
+    setSecondary({ open: false, task: null });
+  }, []);
+
+  const openChannelsDrawer = useCallback((references) => {
+    setDrawer({ open: true, kind: 'channels', title: 'Channel Conversation', data: { references } });
     setSecondary({ open: false, task: null });
   }, []);
 
@@ -335,10 +351,13 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
         return;
       }
 
-      // Completed group — open the drawer.
+      // Completed group — open the drawer with the full per-call tree (all agents + tool calls),
+      // falling back to the curated tasks if the response predates drawerTasks.
+      const response = group.children.find((c) => (c.tool ?? c.type) === 'response');
+      const drawerTasks = response?.drawerTasks ?? tasks;
       const target = tasks.find((t) => t.originalIndex === taskOriginalIndex);
       const expandedTaskKey = target?.id || target?.tool_id;
-      openTasksDrawer({ tasks, expandedTaskKey });
+      openTasksDrawer({ tasks: drawerTasks, expandedTaskKey });
     },
     [groupedMessages, openTasksDrawer, setCollapsedObj]
   );
@@ -348,8 +367,15 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
       {groupedMessages.map((group, groupIndex) => {
         const response = group.children.find((c) => (c.tool ?? c.type) === 'response');
         const tasks = group.children.filter((c) => (c.tool ?? c.type) !== 'question' && (c.tool ?? c.type) !== 'response');
+        // The drawer shows the full per-call tree (every agent + tool call); the inline stream and
+        // its curated `tasks` are unchanged. Fall back to `tasks` for responses predating drawerTasks.
+        const drawerTasks = response?.drawerTasks ?? tasks;
         const extra = response ? additionalData[response.id] : null;
-        const references = extra?.references || [];
+        const allReferences = extra?.references || [];
+        // Channel-context provenance gets its own chip + drawer; everything
+        // else stays in the Additional Contexts panel as before.
+        const references = allReferences.filter((r) => r?.type !== 'channel_context');
+        const channelRefs = allReferences.filter((r) => r?.type === 'channel_context');
         const memories = extra?.memories || [];
 
         const responseTokenData = response ? itemProps.messageTokenData?.[response.id] || itemProps.messageTokenData?.[response.messageId] : null;
@@ -363,13 +389,15 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
 
         const responseMeta = response
           ? {
-              taskCount: tasks.length,
+              taskCount: drawerTasks.length,
               contextCount: references.length,
               memoryCount: memories.length,
+              channelCount: channelRefs.length,
               watchCount: watchesForThisGroup,
-              onOpenTasks: tasks.length > 0 ? () => openTasksDrawer({ tasks }) : undefined,
+              onOpenTasks: drawerTasks.length > 0 ? () => openTasksDrawer({ tasks: drawerTasks }) : undefined,
               onOpenContexts: references.length > 0 ? () => openContextsDrawer(references) : undefined,
               onOpenMemories: memories.length > 0 ? () => openMemoriesDrawer(memories) : undefined,
+              onOpenChannels: channelRefs.length > 0 ? () => openChannelsDrawer(channelRefs) : undefined,
               onOpenWatches: watchesForThisGroup > 0 ? openWatchesDrawer : undefined,
               messageTokenData: responseTokenData,
               onTokenUsageHover: itemProps.handleTokenUsageHover,
@@ -389,8 +417,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
               isCollapsed={false}
               collapsedObj={collapsedObj}
               onToggle={() => {}}
-              showFullText={showFullText}
-              onShowFullText={() => setShowFullText(!showFullText)}
+              showFullText={!!showFullText[group.question.originalIndex]}
+              onShowFullText={() => handleShowFullText(group.question.originalIndex)}
               {...itemProps}
             />
             {showInlineTasks &&
@@ -406,8 +434,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
                     isCollapsed={!!collapsedObj[task.originalIndex]}
                     collapsedObj={collapsedObj}
                     onToggle={() => handleCardClick(task.originalIndex)}
-                    showFullText={showFullText}
-                    onShowFullText={() => setShowFullText(!showFullText)}
+                    showFullText={!!showFullText[task.originalIndex]}
+                    onShowFullText={() => handleShowFullText(task.originalIndex)}
                     isLoadingInvestigation={isProcessing}
                     {...itemProps}
                     generateQuestionText={group?.question?.text || itemProps?.generateQuestionText}
@@ -430,8 +458,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
                 isCollapsed={!!collapsedObj[response.originalIndex]}
                 collapsedObj={collapsedObj}
                 onToggle={() => handleCardClick(response.originalIndex)}
-                showFullText={showFullText}
-                onShowFullText={() => setShowFullText(!showFullText)}
+                showFullText={!!showFullText[response.originalIndex]}
+                onShowFullText={() => handleShowFullText(response.originalIndex)}
                 isLoadingInvestigation={isProcessing}
                 {...itemProps}
                 generateQuestionText={group?.question?.text || itemProps?.generateQuestionText}
@@ -441,6 +469,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
                 onNavigateToTask={handleNavigateToTask}
                 groupIndex={groupIndex}
                 responseMeta={responseMeta}
+                feedback={additionalData[response.id]?.feedback}
+                feedbackManagedExternally
               />
             )}
           </React.Fragment>
@@ -521,6 +551,8 @@ const renderDrawerContent = ({ drawer, secondary, itemProps, onOpenToolDetails }
       // lives in ReferencesDrawerContent so the same UX renders on both
       // this drawer and the LLMConversationWithTabs Additional Contexts tab.
       return <ReferencesDrawerContent references={drawer.data.references} />;
+    case 'channels':
+      return <ChannelContextDrawerContent references={drawer.data.references} />;
     case 'memories':
       return <MemoriesDrawerContent memories={drawer.data.memories} />;
     case 'tool-details':
@@ -542,7 +574,7 @@ MessageStream.propTypes = {
   isProcessing: PropTypes.bool,
   collapsedObj: PropTypes.object,
   setCollapsedObj: PropTypes.func.isRequired,
-  showFullText: PropTypes.bool,
+  showFullText: PropTypes.object,
   setShowFullText: PropTypes.func.isRequired,
   itemProps: PropTypes.object.isRequired,
 };

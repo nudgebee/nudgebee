@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import apiUserManagement from '@api1/user';
 import CustomTable from '@shared/tables/CustomTable2';
 import { Box, Typography, List, ListItem, ListItemText } from '@mui/material';
 import { writeIcon } from '@assets';
 import GroupModal from './modal/GroupModal';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage, canReadCustomRoles } from '@lib/auth';
+import { listCustomRoles } from '@api1/roles';
 import UserGroupUsers from './UserGroupUsers';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
@@ -29,6 +30,11 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
   const [perPage, setPerPage] = useState(apiUserManagement.getUserPreferencesTablePageSize());
   const [accounts, setAccounts] = useState({});
   const [groupFdqn, setGroupFdqn] = useState([]);
+  // Dynamic-RBAC custom roles held by each group. These live in
+  // custom_role_assignments, NOT in the group_roles blob usergroups_list
+  // returns — so a group whose only role is a custom one rendered an empty
+  // Roles cell until this was joined in client-side.
+  const [customRoles, setCustomRoles] = useState([]);
 
   const handleEditGroupModal = (event, groupData) => {
     event.stopPropagation();
@@ -46,6 +52,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
     setActiveGroupData(null);
     if (shouldUpdate) {
       fetchUserGroups();
+      fetchCustomRoles();
     }
   };
 
@@ -65,6 +72,28 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
       }
     });
   }, []);
+
+  // Gated on canReadCustomRoles: customroles_list 403s for a plain
+  // usergroups:Read holder and 400s tenant-wide when CUSTOM_ROLES is off, and
+  // this column is an enrichment — it must not turn either into an error for a
+  // page that otherwise works. Failure leaves the built-in roles rendering.
+  // Re-run after any group write, not just on mount: the custom-role column is
+  // derived from each role's `group_ids`, which the group modal changes via the
+  // role-side replace-all assignment API. See the same fix in AllUsers.
+  const fetchCustomRoles = useCallback(() => {
+    if (!canReadCustomRoles()) {
+      return;
+    }
+    listCustomRoles()
+      .then((roles) => setCustomRoles(roles ?? []))
+      .catch((err) => {
+        console.error('Failed to load custom roles for the groups list:', err);
+      });
+  }, []);
+
+  useEffect(() => {
+    fetchCustomRoles();
+  }, [fetchCustomRoles]);
 
   useEffect(() => {
     fetchUserGroups();
@@ -117,7 +146,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
             {
               component: (
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                  {hasWriteAccess() ? (
+                  {canManage('usergroups', 'Write') ? (
                     <DsButton
                       tone='ghost'
                       composition='icon-only'
@@ -153,8 +182,34 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
       m: '0',
     },
   };
+
+  // group id → the custom roles bound to it. A role reaches a group either
+  // tenant-globally (`group_ids`) or bound to specific accounts
+  // (`group_account_assignments`); both are shown, the latter named with its
+  // account so the two aren't confused.
+  const customRolesByGroup = useMemo(() => {
+    const map = new Map();
+    const add = (groupId, entry) => {
+      if (!groupId) return;
+      if (!map.has(groupId)) map.set(groupId, []);
+      map.get(groupId).push(entry);
+    };
+    for (const role of customRoles) {
+      for (const groupId of role.group_ids ?? []) {
+        add(groupId, { roleId: role.id, name: role.name, accountId: null });
+      }
+      for (const binding of role.group_account_assignments ?? []) {
+        add(binding.principal_id, { roleId: role.id, name: role.name, accountId: binding.entity_id });
+      }
+    }
+    return map;
+  }, [customRoles]);
+
   useEffect(() => {
-    if (!Object.keys(accounts).length || !groupFdqn.length) {
+    // Only the group rows are required. `accounts` is a name lookup with an id
+    // fallback below, so waiting on it would hide every role from a tenant with
+    // no cloud account — including the custom ones, which need no account.
+    if (!groupFdqn.length) {
       return;
     }
     const updatedUserGroupList = userGroupList.map((ug) => {
@@ -169,7 +224,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
         const [id, value] = item.entity_id.split(':');
         return {
           ...item,
-          entity_name: accounts[id] || null,
+          entity_name: accounts[id] || id,
           entity_namespace: value,
         };
       });
@@ -210,7 +265,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
             sx={{ ...userGroupStyle.listItemText, width: '100%' }}
             primary={
               <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>
-                Account: {accounts[h.entity_id]}
+                Account: {accounts[h.entity_id] || h.entity_id}
               </Typography>
             }
             secondary={<Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[600] }}>Role: {snakeToTitleCase(h?.role)} </Typography>}
@@ -225,12 +280,28 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
           />
         </ListItem>
       ));
+      const customList = renderPermissionList(customRolesByGroup.get(ug[0].drilldownQuery.group_id) ?? [], 'Custom Roles', (h) => (
+        <ListItem key={`${h.roleId}:${h.accountId ?? 'tenant'}`} sx={userGroupStyle.listItem}>
+          <ListItemText
+            sx={userGroupStyle.listItemText}
+            primary={
+              h.accountId ? (
+                <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>
+                  Account: {accounts[h.accountId] || h.accountId}
+                </Typography>
+              ) : null
+            }
+            secondary={<Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[600] }}>Role: {h.name}</Typography>}
+          />
+        </ListItem>
+      ));
       ug[4] = {
         component: (
           <>
             {namespaceList}
             {accountList}
             {tenantList}
+            {customList}
           </>
         ),
       };
@@ -238,7 +309,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
     });
 
     setUserGroupList(updatedUserGroupList);
-  }, [accounts, groupFdqn]);
+  }, [accounts, groupFdqn, customRolesByGroup]);
 
   const userGroupTableHeaders = [
     { name: 'Group Name', width: '15%' },
@@ -269,7 +340,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
         {!isDrilldown && (
           <ListingLayout.Toolbar
             actions={
-              hasWriteAccess() ? (
+              canManage('usergroups', 'Write') ? (
                 <DsButton id='new-user-group' tone='primary' size='md' onClick={handleAddGroupModal}>
                   Add User Group
                 </DsButton>

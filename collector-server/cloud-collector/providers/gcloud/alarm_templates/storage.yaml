@@ -1,0 +1,31 @@
+# GCP Cloud Storage Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for bucket monitoring.
+# api/request_count lives on the gcs_bucket monitored resource, keyed by
+# bucket_name. Its response_code label carries string codes ("OK" for
+# success, error codes like "NOT_FOUND"/"PERMISSION_DENIED" otherwise) —
+# the error-rate template pins response_code != "OK" via the "!" negation
+# convention in metric_label_filters.
+
+service_name: "Cloud Storage"
+
+templates:
+  - name: "gcp_storage_request_errors_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Failing bucket requests mean applications cannot read or write the objects they depend on — permission problems, missing objects, or service errors all surface here. Alert when non-OK responses keep occurring on a bucket."
+    configuration:
+      namespace: "storage.googleapis.com"
+      metric_name: "RequestErrors"
+      metric_type_filter: "storage.googleapis.com/api/request_count"
+      resource_type: "gcs_bucket"
+      metric_label_filters:
+        response_code: "!OK" # every non-success code — errors of all kinds
+      statistic: "ALIGN_SUM"
+      period: 300 # 5 minutes
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_SUM"
+    threshold_rules:
+      default: 5.0 # failed requests per 5-minute window — starting point

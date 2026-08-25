@@ -211,6 +211,10 @@ class AskAiCard {
       const [waitingFollowUpItems, setWaitingFollowUpItems] = useState([]);
       const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
       const [followUpInputs, setFollowUpInputs] = useState({});
+      // Which of the Root Cause / Investigation / Log Analysis sections is
+      // currently shown. Chip click sets this; falls back to first available
+      // section (see effectiveActiveSectionId below).
+      const [activeSectionId, setActiveSectionId] = useState(null);
       const lastFetchedConvIdRef = useRef(null);
       const isMountedRef = useRef(true);
       // One fetcher for the follow-up poll loop. Holds cursor + merged Maps,
@@ -588,7 +592,7 @@ class AskAiCard {
             : fallbackStatus(task_statuses.detailed_response || task_statuses.summary, summaryContent);
           sections.push({
             id: 'summary',
-            label: 'Summary',
+            label: 'Root Cause',
             status: summaryStatus,
             content: summaryContent,
           });
@@ -613,7 +617,7 @@ class AskAiCard {
         if (summaryContent || !isTerminal) {
           sections.push({
             id: 'summary',
-            label: 'Summary',
+            label: 'Root Cause',
             status: summaryContent ? 'COMPLETED' : isTerminal ? 'FAILED' : 'IN_PROGRESS',
             content: summaryContent,
           });
@@ -855,98 +859,95 @@ class AskAiCard {
             </Box>
           )}
 
-          {sections.length > 0 && (
-            <Box
-              sx={{
-                display: 'flex',
-                gap: 'var(--ds-space-2)',
-                padding: 'var(--ds-space-2) 0',
-                marginBottom: 'var(--ds-space-4)',
-                borderBottom: '1px solid var(--ds-gray-300)',
-                flexWrap: 'wrap',
-              }}
-            >
-              {sections.map((sec) => {
-                const isCompleted = sec.status === 'COMPLETED';
-                const isInProgress = sec.status === 'IN_PROGRESS' || sec.status === 'PENDING';
-                return (
-                  <Chip
-                    key={sec.id}
-                    size='sm'
-                    tone={isCompleted ? 'info' : 'neutral'}
-                    icon={isInProgress ? <CircularProgress size={12} /> : undefined}
-                    onClick={() => {
-                      document.getElementById(`section-${sec.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }}
-                  >
-                    {sec.label}
-                  </Chip>
-                );
-              })}
-            </Box>
-          )}
-
-          {event.id !== localAiData?.related_event_id && localAiData?.related_event_id && (
-            <Box sx={{ mt: 'var(--ds-space-4)', mb: 'var(--ds-space-2)', display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
-              <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}>
-                Related Event:
-              </Typography>
-              <Link
-                target='_blank'
-                href={`/investigate?id=${encodeURIComponent(localAiData.related_event_id)}&accountId=${event?.cloud_account_id}`}
-                style={{
-                  fontSize: 'var(--ds-text-body-lg)',
-                  color: 'var(--ds-blue-500)',
-                  textDecoration: 'underline',
-                  fontWeight: 'var(--ds-font-weight-medium)',
-                }}
-              >
-                {localAiData.related_event_id.replace(/[^a-zA-Z0-9-]/g, '')}
-              </Link>
-            </Box>
-          )}
-
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-6)', marginTop: 'var(--ds-space-4)' }}>
-            {sections.map((sec) => (
-              <Box key={sec.id} id={`section-${sec.id}`}>
-                <Typography
-                  sx={{
-                    fontSize: 'var(--ds-text-title)',
-                    fontWeight: 'var(--ds-font-weight-semibold)',
-                    color: ds.blue[500],
-                    mb: 'var(--ds-space-4)',
-                    pb: 'var(--ds-space-2)',
-                    borderBottom: `2px solid ${ds.gray[300]}`,
-                  }}
-                >
-                  {sec.label}
-                </Typography>
-
-                {sec.status === 'IN_PROGRESS' || sec.status === 'PENDING' ? (
-                  <ConversationLoader />
-                ) : sec.content && sec.content.trim() !== '' ? (
-                  <MarkDowns
-                    data={cleanContent(sec.content)}
-                    sx={{ width: '100%', padding: noPadding ? '0px' : undefined, maxHeight: 'none', overflowY: 'visible' }}
-                  />
-                ) : (
+          {(() => {
+            // Derive the active section id inline: honor the user's click if
+            // that section still exists (e.g. Log Analysis stays selected once
+            // it finishes streaming), otherwise fall back to the first one.
+            const effectiveActiveSectionId = activeSectionId && sections.some((s) => s.id === activeSectionId) ? activeSectionId : sections[0]?.id;
+            return (
+              <>
+                {sections.length > 0 && (
                   <Box
                     sx={{
-                      padding: 'var(--ds-space-4)',
-                      backgroundColor: 'var(--ds-background-200)',
-                      border: '1px dashed var(--ds-brand-200)',
-                      borderRadius: 'var(--ds-radius-lg)',
-                      textAlign: 'center',
+                      display: 'flex',
+                      gap: 'var(--ds-space-2)',
+                      padding: 'var(--ds-space-2) 0',
+                      marginBottom: 'var(--ds-space-4)',
+                      borderBottom: '1px solid var(--ds-gray-300)',
+                      flexWrap: 'wrap',
                     }}
                   >
-                    <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-body-lg)', fontStyle: 'italic' }}>
-                      No {sec.label.toLowerCase()} content found.
-                    </Typography>
+                    {sections.map((sec) => {
+                      const isInProgress = sec.status === 'IN_PROGRESS' || sec.status === 'PENDING';
+                      return (
+                        <Chip
+                          key={sec.id}
+                          size='sm'
+                          variant='filter'
+                          selected={sec.id === effectiveActiveSectionId}
+                          loading={isInProgress}
+                          onClick={() => setActiveSectionId(sec.id)}
+                        >
+                          {sec.label}
+                        </Chip>
+                      );
+                    })}
                   </Box>
                 )}
-              </Box>
-            ))}
-          </Box>
+
+                {event.id !== localAiData?.related_event_id && localAiData?.related_event_id && (
+                  <Box sx={{ mt: 'var(--ds-space-4)', mb: 'var(--ds-space-2)', display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                    <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}>
+                      Related Event:
+                    </Typography>
+                    <Link
+                      target='_blank'
+                      href={`/investigate?id=${encodeURIComponent(localAiData.related_event_id)}&accountId=${event?.cloud_account_id}`}
+                      style={{
+                        fontSize: 'var(--ds-text-body-lg)',
+                        color: 'var(--ds-blue-500)',
+                        textDecoration: 'underline',
+                        fontWeight: 'var(--ds-font-weight-medium)',
+                      }}
+                    >
+                      {localAiData.related_event_id.replace(/[^a-zA-Z0-9-]/g, '')}
+                    </Link>
+                  </Box>
+                )}
+
+                {(() => {
+                  const activeSection = sections.find((sec) => sec.id === effectiveActiveSectionId);
+                  if (!activeSection) return null;
+                  return (
+                    <Box sx={{ marginTop: 'var(--ds-space-4)' }}>
+                      {activeSection.status === 'IN_PROGRESS' || activeSection.status === 'PENDING' ? (
+                        <ConversationLoader />
+                      ) : activeSection.content && activeSection.content.trim() !== '' ? (
+                        <MarkDowns
+                          data={cleanContent(activeSection.content)}
+                          sx={{ width: '100%', padding: noPadding ? '0px' : undefined, maxHeight: 'none', overflowY: 'visible' }}
+                        />
+                      ) : (
+                        <Box
+                          sx={{
+                            padding: 'var(--ds-space-4)',
+                            backgroundColor: 'var(--ds-background-200)',
+                            border: '1px dashed var(--ds-brand-200)',
+                            borderRadius: 'var(--ds-radius-lg)',
+                            textAlign: 'center',
+                          }}
+                        >
+                          <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-body-lg)', fontStyle: 'italic' }}>
+                            No {activeSection.label.toLowerCase()} content found.
+                          </Typography>
+                        </Box>
+                      )}
+                    </Box>
+                  );
+                })()}
+              </>
+            );
+          })()}
 
           {!isRegenerating && renderExtras()}
 
@@ -1044,7 +1045,7 @@ class AskAiCard {
       container = '';
 
     if (this.event.subject_type === 'pod') {
-      let serviceKeys = this.event.service_key?.split('/');
+      let serviceKeys = this.event.service_key?.split('/') || [];
       workload = serviceKeys[2];
       workloadType = serviceKeys[1];
     }
@@ -1063,7 +1064,7 @@ class AskAiCard {
           if (jsonData?.name === 'noisy_neighbours') {
             for (let n of jsonData.data.neighbours) {
               if (n.pod_name === this.event.subject_name && n.namespace === this.event.subject_namespace) {
-                let kind = n.kind[0];
+                let kind = n.kind?.[0];
                 if (kind) {
                   workload = kind.name;
                   workloadType = kind.kind;

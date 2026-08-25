@@ -66,6 +66,17 @@ jest.mock('@lib/auth', () => ({
   },
   isTenantAdmin: jest.fn(() => false),
   hasReadAccess: jest.fn(() => false),
+  hasAdminSurfaceAccess: jest.fn(() => false),
+  // Optimize's two flag-gated flyout rows (LLM Analyser / AI Gateway) are off by
+  // default so the baseline flyout only carries the always-registered sections.
+  isUiFeatureEnabled: jest.fn(() => false),
+  // Nav gating: default to "not a grants-only user" so no product icon is
+  // disabled, preserving the all-icons-enabled baseline (which is also what a
+  // deployment with the CUSTOM_ROLES feature off always sees). Tests exercising
+  // the disabled state override this and hasPermission.
+  isGrantsOnlyUser: jest.fn(() => false),
+  hasPermission: jest.fn(() => false),
+  missingPermissionMessage: jest.fn((p) => `You need the "${p}" permission. Ask an admin to grant it.`),
 }));
 
 const mockGetUserSession = require('@lib/auth').getUserSession;
@@ -95,15 +106,50 @@ jest.mock(
     troubleshootIcon1: '/troubleshoot-icon.png',
     AdminIcon: '/admin-icon.png',
     ProfileOutlineIcon: '/profile-icon.png',
-    CloudAccountIcon: '/cloud-icon.png',
     WhiteOptimizeIcon: '/optimize-icon.png',
     WorkflowIconWhite: '/workflow-icon.png',
     SwitchTenentIconDark: '/switch-icon.png',
     LogoutIconDark: '/logout-icon.png',
     SettingsIcon: '/settings-icon.png',
     ApiIcon: '/api-icon.png',
+    // Section icons rendered on the flyout rows.
+    AllEventsIcon: '/all-events-icon.png',
+    SearchBlueIcon: '/search-icon.png',
+    ServiceMapsIcon: '/service-maps-icon.png',
+    AutomateBlue: '/automate-icon.png',
+    dashboardIcon1: '/dashboard-icon.png',
+    PlayCircleIcon: '/play-circle-icon.png',
+    OptimizeSummaryIcon: '/optimize-summary-icon.png',
+    RecommendationIcon: '/recommendation-icon.png',
+    RecommendationResolutionIcon: '/recommendation-resolution-icon.png',
+    LLMConsumptionIcon: '/llm-consumption-icon.png',
+    IntegrationsIcon: '/integrations-icon.png',
+    CloudAccountIcon: '/cloud-account-icon.png',
+    TicketBlueIcon: '/ticket-icon.png',
+    UserIconOutline: '/user-outline-icon.png',
+    User1: '/user-icon.png',
+    UserGroupIcon: '/user-group-icon.png',
+    AuditIcon: '/audit-icon.png',
+    NotificationIcon1: '/notification-icon.png',
   }),
   { virtual: true }
+);
+
+// The two tour launchers render nothing but call useTour, which throws outside a
+// <TourProvider>. They're not what this suite is about, so stub them out.
+jest.mock(
+  '@components/onboarding/FirstLoginTour',
+  () =>
+    function MockFirstLoginTour() {
+      return null;
+    }
+);
+jest.mock(
+  '@components/onboarding/SectionFirstVisitTour',
+  () =>
+    function MockSectionFirstVisitTour() {
+      return null;
+    }
 );
 
 // Mock SafeIcon
@@ -238,9 +284,14 @@ jest.mock('src/utils/common', () => ({
   snakeToTitleCase: jest.fn((s) => s),
 }));
 
+// Mock DataContext — PageLayout reads selectedCluster (demo-account nav bypass).
+jest.mock('@context/DataContext', () => ({
+  useData: () => ({ selectedCluster: {} }),
+}));
+
 // Mock colors
 const { isRenderedInIframe } = require('src/utils/common');
-const { hasReadAccess, isTenantAdmin } = require('@lib/auth');
+const { hasReadAccess, isTenantAdmin, isUiFeatureEnabled, isGrantsOnlyUser, hasPermission } = require('@lib/auth');
 const { useTenantBranding } = require('@hooks/useTenantBranding');
 const { snackbar: _snackbar } = require('@shared/snackbarService');
 
@@ -731,7 +782,7 @@ describe('getDynamicPath (via SideDrawerButton clicks)', () => {
     expect(mockPush).toHaveBeenCalledWith('/tickets');
   });
 
-  it('navigates /kubernetes as static path', async () => {
+  it('navigates Infra to /kubernetes as static path', async () => {
     mockUseRouter.mockReturnValue({
       push: mockPush,
       pathname: '/home',
@@ -746,8 +797,8 @@ describe('getDynamicPath (via SideDrawerButton clicks)', () => {
         </PageLayoutWrapped>
       );
     });
-    const clustersBtn = document.getElementById('clusters-sidenavbutton');
-    fireEvent.click(clustersBtn);
+    const infraBtn = document.getElementById('infra-sidenavbutton');
+    fireEvent.click(infraBtn);
     expect(mockPush).toHaveBeenCalledWith('/kubernetes');
   });
 
@@ -841,5 +892,117 @@ describe('getDynamicPath (via SideDrawerButton clicks)', () => {
     // isTroubleshootTab2=true → uses window.location.assign (not router.push)
     expect(mockPush).not.toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
+  });
+});
+
+describe('sub-section hover flyout', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    isRenderedInIframe.mockReturnValue(false);
+    hasReadAccess.mockReturnValue(true);
+    isTenantAdmin.mockReturnValue(false);
+    mockGetUserSession.mockReturnValue({
+      user: { name: 'Test User', email: 'test@example.com' },
+      roles: ['tenant_admin'],
+      hasMultipleTenantAccess: false,
+      onPrem: false,
+    });
+    mockUseRouter.mockReturnValue({
+      push: mockPush,
+      pathname: '/home',
+      query: {},
+      asPath: '/home',
+      prefetch: jest.fn().mockResolvedValue(null),
+    });
+    useTenantBranding.mockReturnValue({
+      baseTitle: 'Nudgebee',
+      logoFallbacks: ['/logo.svg'],
+      faviconUrl: '/favicon.ico',
+      partnerKey: null,
+      tenantKey: 'test',
+      isDefaultTenant: true,
+      loading: false,
+    });
+  });
+
+  const renderAndHover = async (buttonId) => {
+    await act(async () => {
+      render(
+        <PageLayoutWrapped>
+          <div>child</div>
+        </PageLayoutWrapped>
+      );
+    });
+    await act(async () => {
+      fireEvent.mouseEnter(document.getElementById(buttonId));
+    });
+  };
+
+  it('lists the hovered item’s sections', async () => {
+    await renderAndHover('troubleshoot-sidenavbutton');
+    expect(document.getElementById('sidenav-troubleshoot-all-events')).toBeInTheDocument();
+    expect(document.getElementById('sidenav-troubleshoot-investigations')).toBeInTheDocument();
+    expect(document.getElementById('sidenav-troubleshoot-kg')).toBeInTheDocument();
+  });
+
+  it('merges Clusters and Cloud into one Infra item with K8s and Cloud sections', async () => {
+    expect(document.getElementById('clusters-sidenavbutton')).not.toBeInTheDocument();
+    await renderAndHover('infra-sidenavbutton');
+    expect(document.getElementById('cloud-sidenavbutton')).not.toBeInTheDocument();
+    expect(document.getElementById('sidenav-infra-k8s')).toBeInTheDocument();
+    expect(document.getElementById('sidenav-infra-cloud')).toBeInTheDocument();
+  });
+
+  it('lists Home and Account Overview as the Home sections', async () => {
+    await renderAndHover('home-sidenavbutton');
+    expect(document.getElementById('sidenav-home-home')).toBeInTheDocument();
+    expect(document.getElementById('sidenav-home-account-overview')).toBeInTheDocument();
+  });
+
+  it('navigates to the Account Overview page from the Home flyout', async () => {
+    await renderAndHover('home-sidenavbutton');
+    fireEvent.click(document.getElementById('sidenav-home-account-overview'));
+    expect(mockPush).toHaveBeenCalledWith('/overview#overview');
+  });
+
+  it('omits the flag-gated Optimize sections when the feature is off', async () => {
+    await renderAndHover('optimize-sidenavbutton');
+    expect(document.getElementById('sidenav-flyout')).toBeInTheDocument();
+    expect(screen.queryByText('LLM Analyser')).not.toBeInTheDocument();
+    expect(screen.queryByText('AI Gateway')).not.toBeInTheDocument();
+  });
+
+  it('includes the flag-gated Optimize sections when the feature is on', async () => {
+    isUiFeatureEnabled.mockReturnValue(true);
+    await renderAndHover('optimize-sidenavbutton');
+    expect(screen.getByText('LLM Analyser')).toBeInTheDocument();
+    expect(screen.getByText('AI Gateway')).toBeInTheDocument();
+  });
+
+  it('navigates to the section a flyout row points at', async () => {
+    await renderAndHover('troubleshoot-sidenavbutton');
+    fireEvent.click(document.getElementById('sidenav-troubleshoot-investigations'));
+    expect(mockPush).toHaveBeenCalledWith('/troubleshoot#investigations');
+  });
+
+  it('resolves a hash-less section path through getDynamicPath', async () => {
+    mockUseRouter.mockReturnValue({
+      push: mockPush,
+      pathname: '/kubernetes/details/abc-456',
+      query: {},
+      asPath: '/kubernetes/details/abc-456',
+      prefetch: jest.fn().mockResolvedValue(null),
+    });
+    await renderAndHover('infra-sidenavbutton');
+    fireEvent.click(document.getElementById('sidenav-infra-cloud'));
+    expect(mockPush).toHaveBeenCalledWith('/cloud-account?accountId=abc-456');
+  });
+
+  it('disables a section the user lacks the module permission for', async () => {
+    isGrantsOnlyUser.mockReturnValue(true);
+    hasPermission.mockImplementation((module) => module === 'k8s');
+    await renderAndHover('infra-sidenavbutton');
+    expect(document.getElementById('sidenav-infra-k8s')).not.toHaveAttribute('aria-disabled', 'true');
+    expect(document.getElementById('sidenav-infra-cloud')).toHaveAttribute('aria-disabled', 'true');
   });
 });

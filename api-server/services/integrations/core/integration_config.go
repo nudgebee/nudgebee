@@ -58,9 +58,15 @@ const (
 	DefaultTraceProvider   = "default_traces_provider"
 	DefaultLogProvider     = "default_log_provider"
 	DefaultMetricsProvider = "default_metrics_provider"
-	AccountId              = "account_id"
-	IntegrationConfigName  = "integration_config_name"
-	AuthType               = "auth_type"
+	// DefaultLLMProvider marks which LLM integration an account resolves to
+	// when several are enabled. Like the other default_* flags it lives on the
+	// integrations_cloud_accounts link row, not in integration_config_values —
+	// llm-server reads that table as the credential itself, so a stray
+	// default_llm_provider row there would be merged into the credential map.
+	DefaultLLMProvider    = "default_llm_provider"
+	AccountId             = "account_id"
+	IntegrationConfigName = "integration_config_name"
+	AuthType              = "auth_type"
 
 	// IntegrationConfigRCAWritebackEnabled is the per-tenant toggle that opts a
 	// ticketing integration (e.g. ZenDuty) into posting NudgeBee RCA analysis
@@ -78,6 +84,20 @@ type IntegrationDto struct {
 	Schema  IntegrationSchema        `json:"schema"`
 	Source  string                   `json:"source"`
 	Type    string                   `json:"type"`
+}
+
+// isTenantScoped reports whether an integration needs NO cloud-account mapping — either
+// its category is tenant-scoped (ticketing/messaging) or it opts into
+// TenantScopedIntegration (e.g. llm_gateway). Integrations that implement neither are
+// account-scoped (the default), so existing types are unaffected.
+func isTenantScoped(integration Integration) bool {
+	if integration.Category().IsTenantScoped() {
+		return true
+	}
+	if ts, ok := integration.(TenantScopedIntegration); ok {
+		return ts.TenantScoped()
+	}
+	return false
 }
 
 func CreateIntegrationConfig(
@@ -106,9 +126,10 @@ func CreateIntegrationConfig(
 
 	isUpdate := integrationId != ""
 
-	// Tenant-scoped categories (ticketing, messaging) bind to a tenant directly
-	// and may be created with no cloud-account mappings.
-	if !integration.Category().IsTenantScoped() && len(accountIds) == 0 {
+	// A cloud-account mapping is required unless the integration is tenant-scoped — either
+	// by category (ticketing, messaging) or by opting into TenantScopedIntegration (e.g.
+	// llm_gateway, which resolves credentials per-tenant and has no account concept).
+	if !isTenantScoped(integration) && len(accountIds) == 0 {
 		return IntegrationDto{}, errors.New("integrations: accountId is required")
 	}
 
@@ -250,12 +271,19 @@ func CreateIntegrationConfig(
 	//     `IdentifyConfig` (llm-server/tools/) and each action injects its
 	//     own `k8s_secret` via `injectK8sSecret` (relay-server/workspace.go),
 	//     so multiple per account work end-to-end.
+	//   - llm: an account may keep several credentials and pick one per
+	//     request; which one serves an unpinned request is decided by the
+	//     `default_llm_provider` flag on the account link row rather than by
+	//     there being only one. llm-server resolves that flag explicitly and
+	//     falls back to ENV when no single config is marked, so more than one
+	//     per account is unambiguous.
 	//
 	// (`isProxy` is kept above because it's still consumed by the proxy-
 	// connectivity test path further down — that path IS config-aware.)
 	if len(accountIds) > 0 &&
 		intgerationType != "vm_agent" &&
 		intgerationType != "workflow_webhook" &&
+		intgerationType != "llm" &&
 		!IsProxyIntegrationType(intgerationType) {
 		// Defense-in-depth: refuse the check (and therefore the save) if the
 		// request has no tenant. The duplicate SELECT below filters by
@@ -447,11 +475,18 @@ func CreateIntegrationConfig(
 
 	// Remove existing account mappings for integrations of the same type
 	// so the new integration can take over those accounts.
-	// Skip for vm_agent, workflow_webhook, mcp, rabbitmq, and proxy integrations — multiple per
+	// Skip for vm_agent, workflow_webhook, mcp, rabbitmq, llm, and proxy integrations — multiple per
 	// account are legitimate (each represents a distinct backend), so existing mappings must not be
 	// detached. rabbitmq is k8s-secret-only (isProxy stays false) yet multiple-per-account like
 	// mcp-direct, so it must be listed explicitly here. Reuses isProxy from above.
-	if len(accountIds) > 0 && intgerationType != "vm_agent" && intgerationType != "workflow_webhook" && intgerationType != "mcp" && intgerationType != "rabbitmq" && !isProxy {
+	//
+	// llm belongs here for the same reason it is skipped by the duplicate checks
+	// on create and enable: an account may hold several credentials and choose
+	// between them per request. This take-over is the second half of the old
+	// one-per-account rule — without it listed, adding a config silently
+	// detaches every sibling config from the account, which is data loss the
+	// operator never asked for and cannot see.
+	if len(accountIds) > 0 && intgerationType != "vm_agent" && intgerationType != "workflow_webhook" && intgerationType != "mcp" && intgerationType != "rabbitmq" && intgerationType != "llm" && !isProxy {
 		effectiveSource := source
 		if effectiveSource == "" {
 			effectiveSource = "user"
@@ -576,7 +611,7 @@ func CreateIntegrationConfig(
 		}
 	}
 
-	parameters := []string{DefaultLogProvider, DefaultMetricsProvider, DefaultTraceProvider}
+	parameters := []string{DefaultLogProvider, DefaultMetricsProvider, DefaultTraceProvider, DefaultLLMProvider}
 	// insert config values
 	for i, v := range integrationConfigValues {
 		value := v.Value
@@ -734,6 +769,8 @@ func CreateIntegrationConfig(
 			column = "default_traces_provider"
 		case DefaultMetricsProvider:
 			column = "default_metrics_provider"
+		case DefaultLLMProvider:
+			column = "default_llm_provider"
 		}
 		if column != "" {
 
@@ -761,10 +798,10 @@ func CreateIntegrationConfig(
 					// upsert true
 					_, err = dbms.Exec(fmt.Sprintf(`
 						INSERT INTO integrations_cloud_accounts (
-							integration_id, cloud_account_id, tenant_id, %s
+							integration_id, cloud_account_id, tenant_id, link_role, %s
 						)
-						VALUES ($1,$2,$3,true)
-						ON CONFLICT (integration_id, cloud_account_id, tenant_id)
+						VALUES ($1,$2,$3,'own',true)
+						ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role)
 						DO UPDATE SET %s=EXCLUDED.%s`,
 						column, column, column),
 						configId,
@@ -809,9 +846,9 @@ func CreateIntegrationConfig(
 		for _, accId := range accountIds {
 			_, err = dbms.Exec(`
 				INSERT INTO integrations_cloud_accounts (
-					integration_id, cloud_account_id, tenant_id
-				) VALUES ($1, $2, $3)
-				ON CONFLICT (integration_id, cloud_account_id, tenant_id) DO NOTHING
+					integration_id, cloud_account_id, tenant_id, link_role
+				) VALUES ($1, $2, $3, 'own')
+				ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role) DO NOTHING
 			`,
 				configId,
 				accId,
@@ -1330,19 +1367,17 @@ func DeleteIntegrationConfig(
 		slog.Error("integrations: failed to begin transaction", "error", err)
 		return err
 	}
+	// The commit is explicit, below, so the audit write and the proxy-config push
+	// do not run while this transaction still holds its delete row locks. This
+	// closure only has to release the transaction on every path that did not
+	// commit. Rollback of an already-committed tx returns sql.ErrTxDone.
+	committed := false
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Rollback()
 			slog.Error("unable to to recover", p)
-		} else if err != nil {
+		} else if !committed {
 			_ = tx.Rollback()
-		} else {
-			if commitErr := tx.Commit(); commitErr != nil {
-				slog.Error("integrations: commit failed", "error", commitErr)
-				err = commitErr
-			} else {
-				InvalidateIntegrationCache()
-			}
 		}
 	}()
 
@@ -1563,6 +1598,20 @@ func DeleteIntegrationConfig(
 		return err
 	}
 
+	// Commit before the audit write and the proxy-config push. Neither uses this
+	// tx: audit.CreateAudit acquires its own manager (ClickHouse Warehouse when
+	// enabled — a remote round-trip — else a second Metastore connection), and
+	// TriggerProxyConfigPush -> queryProxyDatasources takes a SECOND connection
+	// from the same bounded Metastore pool. Running them before the commit held
+	// the delete row locks idle-in-transaction and let concurrent deletes contend
+	// with themselves for pool slots.
+	if err = tx.Commit(); err != nil {
+		slog.Error("integrations: commit failed", "error", err)
+		return err
+	}
+	committed = true
+	InvalidateIntegrationCache()
+
 	// Audit
 	auditEvent := audit.Audit{
 		UserId:        ctx.GetSecurityContext().GetUserId(),
@@ -1611,6 +1660,7 @@ func UpdateIntegrationConfigStatus(
 		slog.Error("integrations: failed to begin transaction", "error", err)
 		return err
 	}
+	committed := false
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Rollback()
@@ -1618,7 +1668,7 @@ func UpdateIntegrationConfigStatus(
 			err = fmt.Errorf("recovered from panic: %v", p)
 		} else if err != nil {
 			_ = tx.Rollback()
-		} else {
+		} else if !committed {
 			if commitErr := tx.Commit(); commitErr != nil {
 				slog.Error("integrations: commit failed", "error", commitErr)
 				err = commitErr
@@ -1670,10 +1720,11 @@ func UpdateIntegrationConfigStatus(
 	// `mcp` is intentionally NOT in the explicit skip list: it's already in
 	// `dualModeProxyMapping`, so `IsProxyIntegrationType("mcp")` returns true
 	// and the trailing predicate skips the check. Keeping the explicit list
-	// to types that aren't proxy-eligible (vm_agent, workflow_webhook).
+	// to types that aren't proxy-eligible (vm_agent, workflow_webhook, llm).
 	if integrationStatus == "enabled" &&
 		integrationType != "vm_agent" &&
 		integrationType != "workflow_webhook" &&
+		integrationType != "llm" &&
 		!IsProxyIntegrationType(integrationType) {
 		// Defense-in-depth: refuse the check (and therefore the enable) if
 		// the request has no tenant. Without a tenant filter the duplicate
@@ -1718,6 +1769,18 @@ func UpdateIntegrationConfigStatus(
 		slog.Error("integrations: failed to update integration status", "error", err)
 		return err
 	}
+
+	// Commit before the audit write. audit.CreateAudit does not take this tx — it
+	// acquires its own manager (ClickHouse Warehouse when enabled, a remote
+	// round-trip; else a second Metastore connection). Leaving the commit to the
+	// deferred closure would hold the integrations row lock idle-in-transaction
+	// across that write on every enable/disable. Same idiom as SaveIntegrationConfig.
+	if err = tx.Commit(); err != nil {
+		slog.Error("integrations: commit failed", "error", err)
+		return err
+	}
+	committed = true
+	InvalidateIntegrationCache()
 
 	// Audit
 	auditEvent := audit.Audit{
@@ -1853,7 +1916,13 @@ func TestIntegrationConnectionByConfig(
 		}
 	}
 
-	if len(accountIds) == 0 {
+	// Tenant-scoped integrations (e.g. llm_gateway) have no account concept, so they don't
+	// require an account_id nor index into one below.
+	accountID := ""
+	if len(accountIds) > 0 {
+		accountID = accountIds[0]
+	}
+	if !isTenantScoped(integration) && accountID == "" {
 		return errors.New("at least one account_id is required for connection test")
 	}
 
@@ -1866,7 +1935,7 @@ func TestIntegrationConnectionByConfig(
 		if buildErr != nil {
 			return fmt.Errorf("failed to build datasource config: %w", buildErr)
 		}
-		if testErr := relay.TestProxyDatasourceConfig(accountIds[0], dsConfig); testErr != nil {
+		if testErr := relay.TestProxyDatasourceConfig(accountID, dsConfig); testErr != nil {
 			return fmt.Errorf("connection test failed: %w", testErr)
 		}
 		return nil
@@ -1879,7 +1948,7 @@ func TestIntegrationConnectionByConfig(
 		slog.Warn("integrations: dual-mode type routed to K8s validation instead of proxy test",
 			"type", integrationType, "source", source)
 	}
-	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, accountIds[0])
+	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, accountID)
 	if len(validationErrors) > 0 {
 		return validationErrors[0]
 	}
@@ -1889,7 +1958,7 @@ func TestIntegrationConnectionByConfig(
 	// Today only LLM uses this — for everything else this is a no-op cast and
 	// we keep the prior "validation == success" behaviour.
 	if testable, ok := integration.(TestableIntegration); ok {
-		if testErr := testable.TestConnection(ctx, configValues, accountIds[0]); testErr != nil {
+		if testErr := testable.TestConnection(ctx, configValues, accountID); testErr != nil {
 			return testErr
 		}
 	}
@@ -2063,7 +2132,7 @@ func GetIntegrationByConfigNameValues(
 
 	var rows *sqlx.Rows
 
-	if configName == DefaultLogProvider || configName == DefaultTraceProvider || configName == DefaultMetricsProvider {
+	if configName == DefaultLogProvider || configName == DefaultTraceProvider || configName == DefaultMetricsProvider || configName == DefaultLLMProvider {
 		column := ""
 		switch configName {
 		case DefaultLogProvider:
@@ -2072,6 +2141,8 @@ func GetIntegrationByConfigNameValues(
 			column = "default_traces_provider"
 		case DefaultMetricsProvider:
 			column = "default_metrics_provider"
+		case DefaultLLMProvider:
+			column = "default_llm_provider"
 		}
 
 		// Use BuildInClause to safely interpolate values into the query string

@@ -9,7 +9,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import Datetime from '@shared/format/Datetime';
 import { ds } from 'src/utils/colors';
 import apiUserManagement from '@api1/user';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import slackLogo from '@assets/slack_icon.icon.svg';
 import githubLogo from '@assets/github-icon.icon.svg';
 import pagerdutyLogo from '@assets/auto-pilot/pager-duty.svg';
@@ -63,7 +63,7 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
   const [expandedId, setExpandedId] = useState(null);
   // readOnly forces display-only regardless of write access; gating every write
   // affordance (and the unmapped fetch) on canEdit keeps the two modes in sync.
-  const canEdit = hasWriteAccess() && !readOnly;
+  const canEdit = canManage('users', 'Write') && !readOnly;
 
   const load = useCallback(async () => {
     if (!userId) return;

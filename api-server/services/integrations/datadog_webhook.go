@@ -1283,7 +1283,6 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		eventURL = p.Event.EventURL
 	}
 	apiKey, appKey, site, err := GetDatadogConfigs(sc, accountId)
-	sc.GetLogger().Info("logging keys", "apiKey", apiKey, "appKey", appKey, "site", site, "ID", p.ID)
 	if err != nil {
 		sc.GetLogger().Error("datadogwebhook: failed to get datadog configs", "error", err)
 	}

@@ -142,55 +142,68 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
   }, [open, rule, isCreate]);
 
   // Fetch preview when applyToExisting is enabled and match criteria change
-  const fetchPreview = useCallback(async () => {
-    const hasMatchCriteria =
-      matchFingerprint || matchAlertname || matchNamespace || matchService || matchSource || matchPriority || matchLabels || matchFindingType;
-    if (!accountId || !applyToExisting || !hasMatchCriteria || !ruleType || !action) {
-      setPreview(null);
-      return;
-    }
+  const fetchPreview = useCallback(
+    async (isCancelled: () => boolean = () => false) => {
+      const hasMatchCriteria =
+        matchFingerprint || matchAlertname || matchNamespace || matchService || matchSource || matchPriority || matchLabels || matchFindingType;
+      if (!accountId || !applyToExisting || !hasMatchCriteria || !ruleType || !action) {
+        setPreview(null);
+        return;
+      }
 
-    setPreviewLoading(true);
-    try {
-      const result = await apiTriage.previewTriageRule({
-        cloud_account_id: accountId,
-        rule_type: ruleType,
-        action,
-        match_fingerprint: matchFingerprint || undefined,
-        match_alertname: matchAlertname || undefined,
-        match_namespace: matchNamespace || undefined,
-        match_service: matchService || undefined,
-        match_source: matchSource || undefined,
-        match_priority: matchPriority || undefined,
-        match_labels: labelsToJson(matchLabels) || undefined,
-        match_finding_type: matchFindingType || undefined,
-      });
-      setPreview(result);
-    } catch (error) {
-      console.error('Failed to fetch preview:', error);
-      setPreview(null);
-    } finally {
-      setPreviewLoading(false);
-    }
-  }, [
-    accountId,
-    ruleType,
-    action,
-    matchFingerprint,
-    matchAlertname,
-    matchNamespace,
-    matchService,
-    matchSource,
-    matchPriority,
-    matchLabels,
-    matchFindingType,
-    applyToExisting,
-  ]);
+      setPreviewLoading(true);
+      try {
+        const result = await apiTriage.previewTriageRule({
+          cloud_account_id: accountId,
+          rule_type: ruleType,
+          action,
+          match_fingerprint: matchFingerprint || undefined,
+          match_alertname: matchAlertname || undefined,
+          match_namespace: matchNamespace || undefined,
+          match_service: matchService || undefined,
+          match_source: matchSource || undefined,
+          match_priority: matchPriority || undefined,
+          match_labels: labelsToJson(matchLabels) || undefined,
+          match_finding_type: matchFindingType || undefined,
+        });
+        if (!isCancelled()) {
+          setPreview(result);
+        }
+      } catch (error) {
+        console.error('Failed to fetch preview:', error);
+        if (!isCancelled()) {
+          setPreview(null);
+        }
+      } finally {
+        if (!isCancelled()) {
+          setPreviewLoading(false);
+        }
+      }
+    },
+    [
+      accountId,
+      ruleType,
+      action,
+      matchFingerprint,
+      matchAlertname,
+      matchNamespace,
+      matchService,
+      matchSource,
+      matchPriority,
+      matchLabels,
+      matchFindingType,
+      applyToExisting,
+    ]
+  );
 
   useEffect(() => {
     if (open && applyToExisting) {
-      const debounceTimer = setTimeout(fetchPreview, 500);
-      return () => clearTimeout(debounceTimer);
+      let cancelled = false;
+      const debounceTimer = setTimeout(() => fetchPreview(() => cancelled), 500);
+      return () => {
+        cancelled = true;
+        clearTimeout(debounceTimer);
+      };
     }
   }, [open, applyToExisting, fetchPreview]);
 

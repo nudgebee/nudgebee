@@ -491,7 +491,11 @@ def _run_test_core(
         session.tenant_id,
         session.user_id,
         config=llm_config,
-        log_provider_override=config.get("log_provider_override"),
+        k8s_orchestrator_mode=config.get("k8s_orchestrator_mode"),
+        llm_config_source=config.get("llm_config_source"),
+        llm_provider=config.get("llm_provider"),
+        llm_model_name=config.get("llm_model_name"),
+        llm_tier_models=config.get("llm_tier_models"),
         on_submit=_persist_submit_cid,
     )
     elapsed = round(time.time() - llm_start, 2)
@@ -578,7 +582,11 @@ def _run_test_core(
                     session.tenant_id,
                     session.user_id,
                     config=llm_config,
-                    log_provider_override=config.get("log_provider_override"),
+                    k8s_orchestrator_mode=config.get("k8s_orchestrator_mode"),
+                    llm_config_source=config.get("llm_config_source"),
+                    llm_provider=config.get("llm_provider"),
+                    llm_model_name=config.get("llm_model_name"),
+                    llm_tier_models=config.get("llm_tier_models"),
                     on_submit=_persist_submit_cid,
                 )
                 docs = extractor(
@@ -835,7 +843,11 @@ class TestOrchestrator:
         tag_filter: Optional[str] = None,
         skip_indices: Optional[str] = None,
         tool_config: Optional[str] = None,
-        log_provider_override: Optional[str] = None,
+        k8s_orchestrator_mode: Optional[str] = None,
+        llm_config_source: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        llm_model_name: Optional[str] = None,
+        llm_tier_models: Optional[dict] = None,
     ) -> bool:
         """Run a complete benchmark session.
 
@@ -870,7 +882,13 @@ class TestOrchestrator:
             add_error(run_id, f"Config load failed: {e}")
             return False
         # Per-run log-backend pin (e.g. "k8s"), threaded to call_llm per test.
-        config["log_provider_override"] = log_provider_override
+        config["k8s_orchestrator_mode"] = k8s_orchestrator_mode
+        # Per-run LLM pin, threaded the same way so every test in the run
+        # resolves through the same credential and model.
+        config["llm_config_source"] = llm_config_source
+        config["llm_provider"] = llm_provider
+        config["llm_model_name"] = llm_model_name
+        config["llm_tier_models"] = llm_tier_models
 
         # 2. Discover tests
         test_cases_raw = find_test_cases(

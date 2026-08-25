@@ -62,7 +62,34 @@ func TestLintEventTriggers(t *testing.T) {
 	})
 
 	t.Run("empty filter is fine", func(t *testing.T) {
+		// A filter may be empty when event_type carries the match — hence the narrow rule below.
 		assert.Empty(t, lintEventTriggers(eventTriggerWorkflow("")))
+	})
+
+	// An event trigger with no params at all matches nothing. This used to fall through the
+	// empty-filter skip, so the lint stayed silent on precisely the shape it exists to catch
+	// (#35383) — the flat trigger, whose params block never existed.
+	t.Run("flags an event trigger with no params", func(t *testing.T) {
+		wf := map[string]interface{}{"definition": map[string]interface{}{"triggers": []interface{}{
+			map[string]interface{}{"type": "event"},
+		}}}
+		issues := lintEventTriggers(wf)
+		assert.NotEmpty(t, issues, "an event trigger with no params can never fire")
+		assert.Contains(t, strings.Join(issues, "\n"), "no params")
+	})
+
+	t.Run("flags an event trigger with an empty params block", func(t *testing.T) {
+		wf := map[string]interface{}{"definition": map[string]interface{}{"triggers": []interface{}{
+			map[string]interface{}{"type": "event", "params": map[string]interface{}{}},
+		}}}
+		assert.NotEmpty(t, lintEventTriggers(wf))
+	})
+
+	t.Run("event_type without a filter is accepted", func(t *testing.T) {
+		wf := map[string]interface{}{"definition": map[string]interface{}{"triggers": []interface{}{
+			map[string]interface{}{"type": "event", "params": map[string]interface{}{"event_type": "alert"}},
+		}}}
+		assert.Empty(t, lintEventTriggers(wf), "event_type alone is a legitimate match")
 	})
 }
 

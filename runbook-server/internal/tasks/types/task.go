@@ -31,6 +31,27 @@ type TaskInlineWorkflow interface {
 	GetChildWorkflowDefinition(taskCtx TaskContext, params map[string]any) (*model.WorkflowDefinition, error)
 }
 
+// ResolvedChildWorkflow carries the child workflow definition together with the
+// identity of the stored workflow it came from. The executor needs that identity
+// to tag the child run so it shows up under the CALLEE's executions rather than
+// being reachable only by drilling into the caller's run.
+type ResolvedChildWorkflow struct {
+	Definition   *model.WorkflowDefinition
+	WorkflowID   string
+	WorkflowName string
+	// Version is the snapshot the child will run, used to stamp the
+	// execution-to-version Memo (model.WorkflowVersionMemo).
+	Version *model.WorkflowVersion
+}
+
+// TaskChildWorkflowResolver is an optional interface for TaskInlineWorkflow
+// tasks whose child workflow is a stored workflow (core.call-workflow) rather
+// than a definition synthesized on the fly (core.group, core.foreach).
+// Implementers resolve the definition and its identity in a single lookup.
+type TaskChildWorkflowResolver interface {
+	ResolveChildWorkflow(taskCtx TaskContext, params map[string]any) (*ResolvedChildWorkflow, error)
+}
+
 // TaskExecutionStrategy is an optional interface for TaskInlineWorkflow tasks
 // to control their execution model (Inline vs. Child Workflow).
 type TaskExecutionStrategy interface {

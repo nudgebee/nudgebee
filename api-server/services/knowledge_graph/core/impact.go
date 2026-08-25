@@ -76,6 +76,18 @@ type ImpactSummary struct {
 	// grade risk to callers only.
 	DownstreamDependencies []ImpactedService `json:"downstream_dependencies,omitempty"`
 	DownstreamCount        int               `json:"downstream_count,omitempty"`
+	// InfrastructureDependents are traversed dependents that are not
+	// application-level types — the intermediates DependentCount deliberately
+	// omits (a Node, a Namespace, a PV). They are reported because "not a service
+	// that breaks" is a Kubernetes-shaped judgement: on a VM deployment the
+	// ComputeInstance calling a database *is* the application, so a blast radius
+	// that hid it would read as "nothing impacted" when something plainly is.
+	//
+	// Kept out of DependentCount, ProductionDependents and the safety band on
+	// purpose — those grade risk to application callers, and widening them would
+	// change FinOps recommendation scoring for every tenant.
+	InfrastructureDependents []ImpactedService `json:"infrastructure_dependents,omitempty"`
+	InfrastructureCount      int               `json:"infrastructure_count,omitempty"`
 }
 
 // impactRelationshipDefaults maps a resource node type to the relationship types
@@ -98,6 +110,35 @@ var impactRelationshipDefaults = map[NodeType][]RelationshipType{
 	NodeTypeLoadBalancer:    {RelationshipRoutesToBackend, RelationshipRoutesToService},
 	NodeTypeWorkload:        {RelationshipCalls},
 	NodeTypeService:         {RelationshipCalls},
+}
+
+// ImpactSeedNodeTypes returns the node types that have a defined blast-radius
+// traversal, sorted for deterministic iteration.
+//
+// This is the authoritative answer to "what can be a blast-radius seed": a type
+// is listed in impactRelationshipDefaults precisely because traversing from it
+// means something. Plumbing (SecurityGroup, Subnet, VPC) is absent by design —
+// seeding on a security group would report every instance attached to it as
+// impacted. Callers that need to resolve an event onto a seed node should derive
+// their candidate types from here rather than keeping a parallel list, so adding
+// a traversal above is enough to make that type resolvable.
+// The order is computed once: impactRelationshipDefaults is static, and callers
+// sit on the event-resolution path. A copy is returned because the type is
+// exported — a caller that sorted or truncated the shared slice would corrupt
+// every later resolution.
+var impactSeedNodeTypes = func() []NodeType {
+	out := make([]NodeType, 0, len(impactRelationshipDefaults))
+	for nodeType := range impactRelationshipDefaults {
+		out = append(out, nodeType)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}()
+
+func ImpactSeedNodeTypes() []NodeType {
+	out := make([]NodeType, len(impactSeedNodeTypes))
+	copy(out, impactSeedNodeTypes)
+	return out
 }
 
 // fallbackImpactRelationships is used when the seed's node type has no specific
@@ -245,8 +286,11 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		relTypes = defaultImpactRelationshipStrings(seed.NodeType)
 	}
 
-	discoveredIDs, _, nodeMinDepth, err := s.discoverDirectional(
-		[]string{nodeID}, TraverseDirectionUpstream, maxDepth, relTypes, nil, nil)
+	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS([]string{nodeID}, traverseOptions{
+		Direction:         TraverseDirectionUpstream,
+		Levels:            maxDepth,
+		RelationshipTypes: relTypes,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("impact traversal for %s: %w", nodeID, err)
 	}
@@ -413,8 +457,11 @@ func (s *Service) accountHasFlowObservedEdges(tenantID, accountID string) (bool,
 // seed, and a depth-1 list hid exactly those roots from the incident cause
 // lane while the depth-2 dependents walk showed the seed from the root's side.
 func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTypes []string, maxDepth int) ([]ImpactedService, error) {
-	discoveredIDs, _, nodeMinDepth, err := s.discoverDirectional(
-		[]string{nodeID}, TraverseDirectionDownstream, maxDepth, relTypes, nil, nil)
+	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS([]string{nodeID}, traverseOptions{
+		Direction:         TraverseDirectionDownstream,
+		Levels:            maxDepth,
+		RelationshipTypes: relTypes,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("downstream traversal for %s: %w", nodeID, err)
 	}
@@ -452,6 +499,17 @@ func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []
 		}
 		summary.DependentsByType[n.NodeType]++
 		if !appDependentTypes[n.NodeType] {
+			att := attribution[n.ID]
+			summary.InfrastructureDependents = append(summary.InfrastructureDependents, ImpactedService{
+				NodeID:       n.ID,
+				Name:         impactNodeName(n),
+				NodeType:     n.NodeType,
+				Namespace:    impactNodeAttr(n, "namespace"),
+				Environment:  impactNodeAttr(n, "environment"),
+				HopsAway:     nodeMinDepth[n.ID],
+				Relationship: att.relationship,
+				Sources:      att.sources,
+			})
 			continue
 		}
 		env := impactNodeAttr(n, "environment")
@@ -473,6 +531,8 @@ func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []
 	}
 
 	sortImpactedServices(summary.Dependents)
+	sortImpactedServices(summary.InfrastructureDependents)
+	summary.InfrastructureCount = len(summary.InfrastructureDependents)
 	summary.CoverageConfidence = coverageFromEdges(edges)
 	return summary
 }

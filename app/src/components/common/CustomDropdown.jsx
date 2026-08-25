@@ -2,7 +2,7 @@ import * as React from 'react';
 import PropTypes from 'prop-types';
 import { inputSx, inputCustomSx } from '@data/themes/inputField';
 import { Autocomplete, TextField, Paper, InputAdornment, ListItem, Tooltip, CircularProgress } from '@mui/material';
-import ClusterStatusIndicator from './widgets/ClusterStatusIndicator';
+import ClusterStatusIndicator, { checkConnections } from './widgets/ClusterStatusIndicator';
 import Link from 'next/link';
 import { ds } from 'src/utils/colors';
 import { MenuArrowDownIcon } from '@assets';
@@ -10,6 +10,19 @@ import Text from '@shared/format/Text';
 import CloudProviderIcon from './icons/CloudIcon';
 import SafeIcon from './icons/SafeIcon';
 import { toKebabCase } from 'src/utils/common';
+
+// Group headings in the provider-grouped dropdown, where the raw
+// cloud_accounts.cloud_provider value doesn't read as a heading. Keyed by that
+// raw value; anything absent renders as-is (AWS, Azure, GCP…).
+//
+// Declared here, not just above the component: the JSDoc block below is what
+// gives CustomDropdown its prop types, and anything between it and the
+// declaration detaches the two — TS then re-infers `options` from its `= []`
+// default as never[] and every typed caller fails to compile.
+const GROUP_LABEL_OVERRIDES = {
+  K8s: 'K8s clusters',
+  SelfHosted: 'Self-hosted VMs',
+};
 
 /**
  * @param {{
@@ -194,6 +207,12 @@ const CustomDropdown = ({
       if (normalizedProvider === 'cloudfoundry') {
         return 5;
       }
+      // Self-hosted VM fleets are a first-class account type (Infra → VM), not
+      // an "other" — pin them after the clouds instead of letting them fall into
+      // the 999 bucket where ordering is incidental.
+      if (normalizedProvider === 'selfhosted') {
+        return 6;
+      }
       return 999; // Other providers at the end alphabetically
     };
 
@@ -210,56 +229,6 @@ const CustomDropdown = ({
       }
       groups[provider].options.push(option);
     });
-
-    // Helper function to check detailed connection status (from ClusterStatusIndicator logic)
-    const isConnectedUsingDate = (lastConnectedDateStr) => {
-      if (!lastConnectedDateStr) {
-        return false;
-      }
-      // If last connected is more than 2 days ago, mark it as disconnected
-      const lastConnectedDate = new Date(lastConnectedDateStr);
-      return new Date().getTime() - lastConnectedDate.getTime() < 2 * 24 * 3600 * 1000;
-    };
-
-    const checkConnections = (clusterData) => {
-      if (clusterData.cloud_provider?.toLowerCase() != 'k8s') {
-        const connectionStatus = clusterData.agent?.connection_status;
-
-        if (!connectionStatus) {
-          return clusterData.agent?.status === 'CONNECTED';
-        }
-
-        const servicesStatus = {
-          events: isConnectedUsingDate(connectionStatus?.events?.end),
-          resources: isConnectedUsingDate(connectionStatus?.resources?.updated_at),
-          recommendations: isConnectedUsingDate(connectionStatus?.recommendations?.updated_at),
-          spends: isConnectedUsingDate(connectionStatus?.spends?.updated_at),
-        };
-
-        return Object.values(servicesStatus).every((status) => status === true);
-      }
-
-      const connectionStatus = clusterData.agent?.connection_status;
-      if (!connectionStatus) {
-        return false;
-      }
-
-      const requiredProps = ['logsConnection', 'nodeAgentConnection', 'prometheusConnection', 'relayConnection'];
-
-      for (const prop of requiredProps) {
-        if (!connectionStatus[prop]) {
-          return false;
-        }
-      }
-
-      // OpenCost is healthy when cost is collected either in-cluster (legacy opencostConnection)
-      // or server-side (opencostServerSide, stamped by the backend spend sync post-migration).
-      if (!connectionStatus.opencostConnection && !connectionStatus.opencostServerSide) {
-        return false;
-      }
-
-      return true;
-    };
 
     // Sort accounts by connection status (green > yellow > red), then alphabetically within each cloud provider group
     Object.values(groups).forEach((group) => {
@@ -375,7 +344,7 @@ const CustomDropdown = ({
         >
           <CloudProviderIcon cloud_provider={option.label} height={ds.space[4]} width={ds.space[4]} />
           <Text
-            value={option.label === 'K8s' ? 'K8s clusters' : option.label}
+            value={GROUP_LABEL_OVERRIDES[option.label] || option.label}
             showAutoEllipsis
             sx={{
               fontWeight: 'var(--ds-font-weight-semibold)',

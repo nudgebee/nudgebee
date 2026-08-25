@@ -36,6 +36,10 @@ var DirectAPIScanners = map[string]DirectAPIScannerMeta{
 	"certificate_scanner": {RuleName: CertificateExpiryRuleName, CronExpression: "0 12 * * *"},
 	"k8s_version_upgrade": {RuleName: KubeProxyVersionRuleName, CronExpression: "0 0 1 * *"},
 	"unused_pv":           {RuleName: UnusedPVCRuleName, CronExpression: "0 0 * * *"},
+	// No legacy Robusta action_func_name — this scanner has no collector
+	// ancestor, so the key is the rule name. Daily: pod specs change on every
+	// rollout, so a weekly window would show week-old manifests.
+	"secret_env_exposure": {RuleName: SecretEnvExposureRuleName, CronExpression: "0 0 * * *"},
 }
 
 // MaxConcurrentScans bounds how many scanners we run in parallel for one
@@ -114,6 +118,16 @@ func RunAllForAccount(ctx *security.RequestContext, account ScanAccount) {
 		}()
 		if err := RunUnusedPVCScan(ctx, account); err != nil {
 			logger.Error("scan_orchestrator: unused_pvc failed", "error", err)
+		}
+	}()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("scan_orchestrator: secret_env_exposure panicked", "panic", r)
+			}
+		}()
+		if err := RunSecretEnvExposureScan(ctx, account); err != nil {
+			logger.Error("scan_orchestrator: secret_env_exposure failed", "error", err)
 		}
 	}()
 	logger.Info("scan_orchestrator: RunAllForAccount complete")

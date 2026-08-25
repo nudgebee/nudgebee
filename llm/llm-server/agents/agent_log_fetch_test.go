@@ -3,13 +3,16 @@ package agents
 import (
 	"encoding/json"
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -625,45 +628,76 @@ func TestLooksLikeFetchError(t *testing.T) {
 }
 
 // TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent guards the fix that
-// stopped inlining the full logs alongside the file_ref. When logs are saved to
-// a workspace file, only a head preview is inlined (the model greps the file for
-// the rest); when there is no file_ref, the full logs must stay inline.
+// stopped inlining the full logs alongside the file_ref, plus the two follow-ups
+// added after three sessions showed the agent spending a turn on `head -n 20
+// <file_ref>` before it could filter:
+//
+//   - the preview is now of the SAME representation written to the file
+//     (flattenLogsToJSONL), so a filter can be written straight from it;
+//   - `complete` states outright whether file_ref holds anything extra, rather
+//     than leaving the model to infer it from an absent truncation marker.
 func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	bigLogs := strings.Repeat("x", logInlinePreviewBytes*3)
 
-	decode := func(resp core.NBAgentResponse) map[string]string {
+	decode := func(resp core.NBAgentResponse) map[string]any {
 		assert.Len(t, resp.Response, 1)
-		var env map[string]string
+		var env map[string]any
 		assert.NoError(t, json.Unmarshal([]byte(resp.Response[0]), &env))
 		return env
 	}
+	str := func(env map[string]any, k string) string {
+		v, _ := env[k].(string)
+		return v
+	}
 
 	t.Run("file_ref present: logs previewed, not inlined in full", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "logs_loki_1.txt", "", nil))
-		assert.Equal(t, "logs_loki_1.txt", env["file_ref"])
-		assert.Less(t, len(env["logs"]), len(bigLogs),
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, flattenLogsToJSONL(bigLogs), "logs_loki_1.txt", "", nil))
+		assert.Equal(t, "logs_loki_1.txt", str(env, "file_ref"))
+		assert.Less(t, len(str(env, "logs")), len(bigLogs),
 			"full logs must not be inlined when a file_ref exists")
-		assert.Contains(t, env["logs"], "file_ref")
-		assert.Contains(t, env["logs"], "shell_execute")
+		assert.Contains(t, str(env, "logs"), "file_ref")
+		assert.Contains(t, str(env, "logs"), "shell_execute")
+		assert.Equal(t, false, env["logs_complete"],
+			"a truncated payload must report logs_complete=false so the agent knows file_ref has more")
 	})
 
 	t.Run("no file_ref: full logs inlined", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", nil))
-		assert.Equal(t, "", env["file_ref"])
-		assert.Equal(t, bigLogs, env["logs"],
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", "", nil))
+		assert.Equal(t, "", str(env, "file_ref"))
+		assert.Equal(t, bigLogs, str(env, "logs"),
 			"with no file_ref the full logs must remain available inline")
+		assert.Equal(t, true, env["logs_complete"])
 	})
 
-	t.Run("file_ref present but logs already small: inlined unchanged", func(t *testing.T) {
+	t.Run("file_ref present but logs already small: inlined unchanged and complete", func(t *testing.T) {
 		const small = "tiny log line"
-		env := decode(makeFetchResponse("fetch_logs", "q", small, "logs_loki_2.txt", "", nil))
-		assert.Equal(t, small, env["logs"])
+		env := decode(makeFetchResponse("fetch_logs", "q", small, flattenLogsToJSONL(small), "logs_loki_2.txt", "", nil))
+		assert.True(t, strings.HasPrefix(str(env, "logs"), small),
+			"the log content itself must be inlined unchanged")
+		assert.Contains(t, str(env, "logs"), "complete —",
+			"a complete payload is marked in-band, mirroring the truncation marker")
+		assert.Equal(t, true, env["logs_complete"],
+			"everything is inline, so shelling out to read file_ref would be pure cost")
+	})
+
+	t.Run("preview format matches the file format, not the raw backend payload", func(t *testing.T) {
+		// The saved file is flattenLogsToJSONL(logs): "<timestamp>\t<message>"
+		// per entry. Previewing the raw Loki envelope instead made it impossible
+		// to write a working grep from the preview, which is what forced the
+		// extra `head` turn. Both must now be byte-identical for a payload that
+		// fits inline.
+		raw := `{"logs":[{"timestamp":"2026-08-12T10:00:00Z","message":"{\"level\":\"ERROR\",\"msg\":\"boom\"}"}]}`
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToJSONL(raw), "logs_loki_4.txt", "", nil))
+		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToJSONL(raw)),
+			"the inline preview must be the same representation that was written to file_ref")
+		assert.NotContains(t, str(env, "logs"), `{"logs":[`,
+			"the raw backend envelope must not leak into the preview")
 	})
 
 	t.Run("bundle_signal present: threaded through envelope verbatim", func(t *testing.T) {
 		const sig = "=== CRASH BUNDLE ===\n[error] 3 hits\n[oom] 1 hit"
-		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", "logs_loki_3.txt", sig, nil))
-		assert.Equal(t, sig, env["bundle_signal"],
+		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", flattenLogsToJSONL("tiny"), "logs_loki_3.txt", sig, nil))
+		assert.Equal(t, sig, str(env, "bundle_signal"),
 			"bundle_signal must appear verbatim in the envelope so the LLM can read it without a follow-up tool call")
 	})
 }
@@ -818,6 +852,62 @@ func TestBuildLogIntentMessages_AccountPromptPropagation(t *testing.T) {
 	})
 }
 
+func TestBuildLogIntentMessages_DomainKnowledgePropagation(t *testing.T) {
+	const sysPrompt = "Static system prompt. Extract log retrieval parameters."
+	const kbBlock = "<retrieved_knowledge>\nFor service payments, search in index custom-app-logs-* with field k8s_container_name.\n</retrieved_knowledge>"
+	const skillsCtx = "<skill>\n<name>log_custom_conventions</name>\n<content>Use index app-logs-*</content>\n</skill>"
+
+	textOf := func(m llms.MessageContent) string {
+		var b strings.Builder
+		for _, p := range m.Parts {
+			if tp, ok := p.(llms.TextContent); ok {
+				b.WriteString(tp.Text)
+			}
+		}
+		return b.String()
+	}
+
+	t.Run("KBPrestepContent lands in human message and leaves system prompt stable", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for payments", KBPrestepContent: kbBlock})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Equal(t, sysPrompt, sys, "system message must stay cache-stable")
+		assert.Contains(t, human, "Domain Knowledge / Runbooks:")
+		assert.Contains(t, human, kbBlock)
+		assert.Contains(t, human, "Current query: logs for payments")
+	})
+
+	t.Run("SkillsContext fallback lands in human message when KBPrestepContent is empty", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for auth", SkillsContext: skillsCtx})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Equal(t, sysPrompt, sys, "system message must stay cache-stable")
+		assert.Contains(t, human, "Skills Context:")
+		assert.Contains(t, human, skillsCtx)
+	})
+
+	t.Run("both KBPrestepContent and SkillsContext are included when present", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for payments", KBPrestepContent: kbBlock, SkillsContext: skillsCtx})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Equal(t, sysPrompt, sys, "system message must stay cache-stable")
+		assert.Contains(t, human, "Domain Knowledge / Runbooks:")
+		assert.Contains(t, human, kbBlock)
+		assert.Contains(t, human, "Skills Context:")
+		assert.Contains(t, human, skillsCtx)
+		assert.Contains(t, human, "Current query: logs for payments")
+	})
+
+	t.Run("neither present produces clean human query without domain knowledge header", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "show me logs"})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Equal(t, sysPrompt, sys)
+		assert.NotContains(t, human, "Domain Knowledge")
+		assert.Equal(t, "show me logs", human)
+	})
+}
+
 // TestDefaultProviderLogFields pins the fallback field vocabulary advertised
 // to the query-generator when backend label discovery fails: Signoz stores
 // logs under OTel attribute names — the generic `_body`/`namespace`/`pod` set
@@ -830,4 +920,185 @@ func TestDefaultProviderLogFields(t *testing.T) {
 	assert.Equal(t, signozFields, defaultProviderLogFields("SigNoz"), "provider match must be case-insensitive")
 	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields("loki"))
 	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields(""))
+}
+
+func TestIsNotFoundReason(t *testing.T) {
+	cases := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{"kubectl NotFound", `error: error from server (NotFound): pods "llm-server" not found in namespace "nudgebee-agent"`, true},
+		{"lowercase notfound", "resource notfound in cluster", true},
+		{"forbidden must not trigger discovery", `error: error from server (Forbidden): pods "x" is forbidden`, false},
+		{"unauthorized must not trigger discovery", "Unauthorized", false},
+		{"connection refused must not trigger discovery", "dial tcp: connection refused", false},
+		{"empty reason", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isNotFoundReason(tc.reason))
+		})
+	}
+}
+
+func TestExtractKubectlStdout(t *testing.T) {
+	t.Run("unwraps stdout/stderr envelope", func(t *testing.T) {
+		got := extractKubectlStdout(`{"stdout":"nudgebee  pod/relay-server-abc123-xyz\n","stderr":""}`)
+		assert.Equal(t, "nudgebee  pod/relay-server-abc123-xyz", got)
+	})
+
+	t.Run("falls back to raw string for non-JSON input", func(t *testing.T) {
+		got := extractKubectlStdout("nudgebee  pod/relay-server-abc123-xyz")
+		assert.Equal(t, "nudgebee  pod/relay-server-abc123-xyz", got)
+	})
+
+	t.Run("empty stdout field falls back to raw trimmed input", func(t *testing.T) {
+		got := extractKubectlStdout(`{"stdout":"","stderr":"some stderr"}`)
+		assert.Equal(t, `{"stdout":"","stderr":"some stderr"}`, got)
+	})
+}
+
+func TestParseKubectlDiscoveryCandidates(t *testing.T) {
+	t.Run("parses multi-type -A output into namespace/name (kind)", func(t *testing.T) {
+		stdout := "nudgebee   pod/relay-server-68868457d8-62cwv   1/1   Running   0   3d\n" +
+			"nudgebee   deployment.apps/relay-server   1/1   1   1   3d\n"
+		got := parseKubectlDiscoveryCandidates(stdout)
+		assert.Equal(t, []string{
+			"nudgebee/relay-server-68868457d8-62cwv (pod)",
+			"nudgebee/relay-server (deployment.apps)",
+		}, got)
+	})
+
+	t.Run("skips malformed lines without a kind/name split", func(t *testing.T) {
+		stdout := "nudgebee   not-a-kind-slash-name\nnudgebee   pod/ok-pod   1/1   Running   0   1d"
+		got := parseKubectlDiscoveryCandidates(stdout)
+		assert.Equal(t, []string{"nudgebee/ok-pod (pod)"}, got)
+	})
+
+	t.Run("caps at discoveryCandidateCap", func(t *testing.T) {
+		var b strings.Builder
+		for i := 0; i < discoveryCandidateCap+5; i++ {
+			b.WriteString("nudgebee   pod/relay-server-" + string(rune('a'+i)) + "   1/1   Running   0   1d\n")
+		}
+		got := parseKubectlDiscoveryCandidates(b.String())
+		assert.Len(t, got, discoveryCandidateCap)
+	})
+
+	t.Run("empty input yields no candidates", func(t *testing.T) {
+		assert.Nil(t, parseKubectlDiscoveryCandidates(""))
+	})
+}
+
+func TestFormatDiscoveryHint(t *testing.T) {
+	t.Run("no candidates yields empty hint", func(t *testing.T) {
+		assert.Equal(t, "", formatDiscoveryHint(nil))
+	})
+
+	t.Run("renders candidates into a retry-oriented sentence", func(t *testing.T) {
+		hint := formatDiscoveryHint([]string{"nudgebee/relay-server-68868457d8-62cwv (pod)"})
+		assert.Contains(t, hint, "Similar resources found via discovery:")
+		assert.Contains(t, hint, "nudgebee/relay-server-68868457d8-62cwv (pod)")
+		assert.Contains(t, hint, "retry fetch_logs with the corrected namespace/resource name")
+	})
+}
+
+// TestLogLabelsCacheKey pins the scoping of the label-discovery cache. Getting
+// this wrong is silent and expensive: too coarse a key serves one ES index's
+// field list for another index's query (the generator then emits fields that
+// don't exist and the query returns zero rows), while a key that varies on
+// incidental config whitespace/casing never hits and reinstates the
+// per-fetch discovery round-trip the cache exists to remove.
+func TestLogLabelsCacheKey(t *testing.T) {
+	acct := "11111111-2222-3333-4444-555555555555"
+
+	t.Run("provider name is normalised", func(t *testing.T) {
+		assert.Equal(t,
+			logLabelsCacheKey(acct, services_server.ObservabilityProvider{Provider: "loki"}),
+			logLabelsCacheKey(acct, services_server.ObservabilityProvider{Provider: "  Loki "}),
+		)
+	})
+
+	t.Run("default index is part of the key", func(t *testing.T) {
+		a := logLabelsCacheKey(acct, services_server.ObservabilityProvider{Provider: "es", DefaultIndex: "app-logs-*"})
+		b := logLabelsCacheKey(acct, services_server.ObservabilityProvider{Provider: "es", DefaultIndex: "nginx-access-*"})
+		assert.NotEqual(t, a, b, "ES label discovery is index-scoped — entries must not collide")
+	})
+
+	t.Run("accounts never share an entry", func(t *testing.T) {
+		other := "99999999-8888-7777-6666-555555555555"
+		p := services_server.ObservabilityProvider{Provider: "loki"}
+		assert.NotEqual(t, logLabelsCacheKey(acct, p), logLabelsCacheKey(other, p))
+	})
+}
+
+// TestFetchLabelsAndIndices_ServesCachedEntry asserts the cache-hit path
+// short-circuits before QueryLabels — i.e. a warm entry costs no
+// services-server round-trip. The test never provisions a backend, so a cache
+// miss would fall through to discovery and return empty; getting the seeded
+// values back is proof the short-circuit fired.
+func TestFetchLabelsAndIndices_ServesCachedEntry(t *testing.T) {
+	acct := "cache-hit-" + t.Name()
+	provider := services_server.ObservabilityProvider{Provider: "loki"}
+
+	seeded := logLabels{
+		Fields:    []string{"app", "namespace", "_body"},
+		Indices:   map[string]string{"logs": "app-logs-*"},
+		ExpiresAt: time.Now().Add(logLabelsCacheTTL),
+	}
+	data, err := common.MarshalJson(seeded)
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(logLabelsCacheNS, logLabelsCacheKey(acct, provider), data,
+		common.CacheSetWithExpiration(logLabelsCacheTTL),
+		common.CacheSetWithTags(logLabelsAccountTag(acct))))
+
+	fields, indices := fetchLabelsAndIndices(acct, provider)
+	assert.Equal(t, seeded.Fields, fields)
+	assert.Equal(t, seeded.Indices, indices)
+
+	t.Run("account tag evicts every entry for the account", func(t *testing.T) {
+		require.NoError(t, common.CacheDeleteWithTag(logLabelsCacheNS, logLabelsAccountTag(acct)))
+		_, ok := common.CacheGet(logLabelsCacheNS, logLabelsCacheKey(acct, provider))
+		assert.False(t, ok, "integration-change invalidation must drop the cached labels")
+	})
+}
+
+// TestFetchLabelsAndIndices_IgnoresExpiredEntry pins the stamped-expiry check.
+// bigcache (the default in_memory backend) ignores per-entry TTLs, so without
+// the stamp a stale label set would be served well past logLabelsCacheTTL —
+// keeping a newly deployed workload's labels out of the query-generator prompt
+// for as long as the global LifeWindow. An expired entry must read as a miss.
+func TestFetchLabelsAndIndices_IgnoresExpiredEntry(t *testing.T) {
+	acct := "expired-labels-" + t.Name()
+	provider := services_server.ObservabilityProvider{Provider: "loki"}
+
+	data, err := common.MarshalJson(logLabels{
+		Fields:    []string{"stale-label"},
+		ExpiresAt: time.Now().Add(-time.Minute),
+	})
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(logLabelsCacheNS, logLabelsCacheKey(acct, provider), data))
+
+	fields, _ := fetchLabelsAndIndices(acct, provider)
+	assert.NotContains(t, fields, "stale-label", "an expired entry must not be served")
+}
+
+// TestFetchLabelsAndIndices_EmptyAccountBypassesCache pins the empty-accountId
+// guard. Without it the cache key degrades to ":provider:index", which every
+// empty-account caller would share — a key not scoped to a tenant. Discovery
+// for an empty account fails upstream today, so nothing reaches the write path
+// anyway; this asserts the guard holds regardless of that downstream behaviour.
+func TestFetchLabelsAndIndices_EmptyAccountBypassesCache(t *testing.T) {
+	provider := services_server.ObservabilityProvider{Provider: "loki"}
+	sharedKey := logLabelsCacheKey("", provider)
+	// Best-effort clear; CacheDelete errors when the key is absent, which is the
+	// normal state here.
+	_ = common.CacheDelete(logLabelsCacheNS, sharedKey)
+
+	fields, indices := fetchLabelsAndIndices("", provider)
+	assert.Empty(t, fields)
+	assert.Empty(t, indices)
+
+	_, ok := common.CacheGet(logLabelsCacheNS, sharedKey)
+	assert.False(t, ok, "an empty accountId must never write to the tenant-less shared key")
 }

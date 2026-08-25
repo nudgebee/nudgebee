@@ -21,9 +21,12 @@ func TestPromptVariantForRequest(t *testing.T) {
 	origQueryEmpty := NBAgentRequest{AgentId: "a1", Query: "list pods"} // OriginalQuery empty → fall back to Query
 	bothQueriesEmpty := NBAgentRequest{AgentId: "a1"}                   // Both empty → degenerate → full prompt
 
-	// Flag OFF → always full (no-op), even for a top-level plain retrieval.
+	// Flag OFF → a top-level query still gets the lighter promptVariantQuery (its own
+	// cache slot, drops only the RCA answer-format spec); investigations/sub-agents stay "".
 	config.Config.LlmServerReact3QueryLeanPromptEnabled = false
-	assert.Equal(t, "", promptVariantForRequest(topLevelQuery), "flag off must be a no-op")
+	assert.Equal(t, promptVariantQuery, promptVariantForRequest(topLevelQuery), "flag off: top-level query → query variant")
+	assert.Equal(t, "", promptVariantForRequest(topLevelInvestigation), "flag off: investigation → full")
+	assert.Equal(t, "", promptVariantForRequest(subAgent), "flag off: sub-agent → full")
 
 	// Flag ON.
 	config.Config.LlmServerReact3QueryLeanPromptEnabled = true

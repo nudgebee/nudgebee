@@ -905,7 +905,8 @@ class VolumeRightsizingService:
             :recommendation_action, :category, :rule_name, :severity, :estimated_savings, :status, :account_object_id,
             '', '', false) ON CONFLICT (cloud_account_id, rule_name, resource_id, category, account_object_id) DO
             UPDATE SET recommendation = EXCLUDED.recommendation, estimated_savings = EXCLUDED.estimated_savings,
-            status = EXCLUDED.status
+            status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive')
+            THEN recommendation.status ELSE EXCLUDED.status END
         """)
         with self.engine.connect() as conn:
             conn.execute(upsert_query, recommendations)

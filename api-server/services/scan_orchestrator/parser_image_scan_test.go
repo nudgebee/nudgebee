@@ -2,6 +2,7 @@ package scan_orchestrator
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -64,28 +65,13 @@ func TestParseImageScan_ProducesRowPerVulnerability(t *testing.T) {
 	}
 
 	wantByObjectID := map[string]struct {
-		sev  string
-		body map[string]any
+		sev              string
+		fixedVersion     string
+		installedVersion string
 	}{
-		"registry.dev.example.com/foo:v1-openssl@3.1.4-r0-CVE-2024-9999": {
-			sev: "High",
-			body: map[string]any{
-				"VulnerabilityID":  "CVE-2024-9999",
-				"PkgID":            "openssl@3.1.4-r0",
-				"Severity":         "HIGH",
-				"InstalledVersion": "3.1.4-r0",
-				"FixedVersion":     "3.1.4-r1",
-				"image_name":       "registry.dev.example.com/foo:v1",
-			},
-		},
-		"registry.dev.example.com/foo:v1-musl@1.2.4-r2-CVE-2024-7777": {
-			sev:  "Medium",
-			body: map[string]any{"VulnerabilityID": "CVE-2024-7777", "Severity": "MEDIUM"},
-		},
-		"registry.dev.example.com/foo:v1-log4j-core-2.17.0.jar-CVE-2024-0001": {
-			sev:  "Critical",
-			body: map[string]any{"VulnerabilityID": "CVE-2024-0001", "Severity": "CRITICAL"},
-		},
+		"registry.dev.example.com/foo:v1-openssl@3.1.4-r0-CVE-2024-9999":      {sev: "High", fixedVersion: "3.1.4-r1", installedVersion: "3.1.4-r0"},
+		"registry.dev.example.com/foo:v1-musl@1.2.4-r2-CVE-2024-7777":         {sev: "Medium"},
+		"registry.dev.example.com/foo:v1-log4j-core-2.17.0.jar-CVE-2024-0001": {sev: "Critical"},
 	}
 
 	for _, r := range recs {
@@ -103,16 +89,126 @@ func TestParseImageScan_ProducesRowPerVulnerability(t *testing.T) {
 		if r.Severity != want.sev {
 			t.Errorf("[%s] severity = %q; want %q", r.AccountObjectID, r.Severity, want.sev)
 		}
+		// recommendation.recommendation now carries only image_name,
+		// FixedVersion, and InstalledVersion — every other field
+		// (VulnerabilityID, PkgID, Severity, ...) moved to the linked
+		// vulnerabilities row, asserted by
+		// TestParseImageScan_BuildsVulnerabilityRow below.
 		var body map[string]any
 		if err := json.Unmarshal([]byte(r.Recommendation), &body); err != nil {
 			t.Errorf("[%s] body not JSON: %v", r.AccountObjectID, err)
 			continue
 		}
-		for k, v := range want.body {
-			if body[k] != v {
-				t.Errorf("[%s] body[%s] = %v; want %v", r.AccountObjectID, k, body[k], v)
-			}
+		wantBody := map[string]any{
+			"image_name":       "registry.dev.example.com/foo:v1",
+			"FixedVersion":     want.fixedVersion,
+			"InstalledVersion": want.installedVersion,
 		}
+		if !reflect.DeepEqual(wantBody, body) {
+			t.Errorf("[%s] body = %v; want %v", r.AccountObjectID, body, wantBody)
+		}
+	}
+}
+
+// TestParseImageScan_BuildsVulnerabilityRow pins two things: the openssl and
+// musl entries (both have PkgName) get a populated Vulnerability without a
+// PackageVersion field — installed version isn't part of the vulnerabilities
+// row (see buildImageScanVulnerabilityRow), so musl gets one even without an
+// InstalledVersion — while log4j (missing PkgName entirely) gets
+// Vulnerability == nil rather than a row with an empty natural-key column.
+func TestParseImageScan_BuildsVulnerabilityRow(t *testing.T) {
+	account := ScanAccount{AccountID: "acc-1", TenantID: "tenant-1"}
+	recs, err := ParseImageScan(imageScanFixture, account)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byObjectID := make(map[string]Recommendation, len(recs))
+	for _, r := range recs {
+		byObjectID[r.AccountObjectID] = r
+	}
+
+	openssl := byObjectID["registry.dev.example.com/foo:v1-openssl@3.1.4-r0-CVE-2024-9999"]
+	if openssl.Vulnerability == nil {
+		t.Fatal("expected a Vulnerability row for openssl")
+	}
+	v := openssl.Vulnerability
+	if v.Source != "image_scan" {
+		t.Errorf("source = %q; want image_scan", v.Source)
+	}
+	if v.VulnId != "CVE-2024-9999" || v.PackageName != "openssl" {
+		t.Errorf("unexpected identity: %+v", v)
+	}
+	if v.PackageType == nil || *v.PackageType != "alpine" {
+		t.Errorf("package_type = %v; want alpine", v.PackageType)
+	}
+	if v.FixedVersion == nil || *v.FixedVersion != "3.1.4-r1" {
+		t.Errorf("fixed_version = %v; want 3.1.4-r1", v.FixedVersion)
+	}
+	if v.Severity == nil || *v.Severity != "High" {
+		t.Errorf("severity = %v; want High", v.Severity)
+	}
+	if v.Description == nil || *v.Description != "openssl: privilege escalation" {
+		t.Errorf("description = %v; want the Title fallback", v.Description)
+	}
+
+	musl := byObjectID["registry.dev.example.com/foo:v1-musl@1.2.4-r2-CVE-2024-7777"]
+	if musl.Vulnerability == nil {
+		t.Fatal("expected a Vulnerability row for musl even without InstalledVersion")
+	}
+	if musl.Vulnerability.PackageName != "musl" {
+		t.Errorf("musl package_name = %q; want musl", musl.Vulnerability.PackageName)
+	}
+
+	log4j := byObjectID["registry.dev.example.com/foo:v1-log4j-core-2.17.0.jar-CVE-2024-0001"]
+	if log4j.Vulnerability != nil {
+		t.Errorf("expected nil Vulnerability for log4j (no PkgName), got %+v", log4j.Vulnerability)
+	}
+}
+
+// TestImageScanBestCVSS_PrefersNVDThenLexicographicFallback pins the fully
+// general fallback (unlike the migration backfill's 3-tier nvd/redhat/ghsa):
+// "nvd" wins when present, otherwise the lexicographically-first remaining
+// source key — so a source Trivy adds later still gets picked up.
+func TestImageScanBestCVSS_PrefersNVDThenLexicographicFallback(t *testing.T) {
+	v := map[string]any{
+		"CVSS": map[string]any{
+			"redhat": map[string]any{"V3Score": 5.5, "V3Vector": "redhat-vector"},
+			"nvd":    map[string]any{"V3Score": 7.5, "V3Vector": "nvd-vector"},
+		},
+	}
+	score, vector, ok := imageScanBestCVSS(v)
+	if !ok || score != 7.5 || vector != "nvd-vector" {
+		t.Errorf("got (%v, %q, %v); want (7.5, \"nvd-vector\", true)", score, vector, ok)
+	}
+
+	v = map[string]any{
+		"CVSS": map[string]any{
+			"redhat": map[string]any{"V3Score": 5.5, "V3Vector": "redhat-vector"},
+			"ghsa":   map[string]any{"V3Score": 6.5, "V3Vector": "ghsa-vector"},
+		},
+	}
+	score, vector, ok = imageScanBestCVSS(v)
+	if !ok || score != 6.5 || vector != "ghsa-vector" {
+		t.Errorf("got (%v, %q, %v); want (6.5, \"ghsa-vector\", true) — ghsa < redhat lexicographically", score, vector, ok)
+	}
+
+	if _, _, ok := imageScanBestCVSS(map[string]any{}); ok {
+		t.Error("expected ok=false when CVSS is absent")
+	}
+
+	// nvd present but without a V3Score (e.g. only a V2Score) must not short
+	// -circuit the fallback — a source existing isn't the same as it having
+	// what we need.
+	v = map[string]any{
+		"CVSS": map[string]any{
+			"nvd":    map[string]any{"V2Score": 4.0},
+			"redhat": map[string]any{"V3Score": 5.5, "V3Vector": "redhat-vector"},
+		},
+	}
+	score, vector, ok = imageScanBestCVSS(v)
+	if !ok || score != 5.5 || vector != "redhat-vector" {
+		t.Errorf("got (%v, %q, %v); want (5.5, \"redhat-vector\", true) — nvd lacks V3Score, must fall through", score, vector, ok)
 	}
 }
 

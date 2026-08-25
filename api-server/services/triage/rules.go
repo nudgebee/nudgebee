@@ -721,9 +721,7 @@ func runRuleMatchBatcher(ctx context.Context, db *sqlx.DB) {
 		if len(counts) == 0 {
 			return
 		}
-		for id, count := range counts {
-			updateRuleMatchCountBy(ctx, db, id, count)
-		}
+		batchUpdateRuleMatchCounts(ctx, db, counts)
 		counts = make(map[string]int)
 	}
 
@@ -744,19 +742,31 @@ func runRuleMatchBatcher(ctx context.Context, db *sqlx.DB) {
 	}
 }
 
-// updateRuleMatchCountBy increments the match count for a rule by the given amount.
-func updateRuleMatchCountBy(ctx context.Context, db *sqlx.DB, ruleID string, count int) {
+// batchUpdateRuleMatchCounts increments match counts for all accumulated rules in a single query.
+func batchUpdateRuleMatchCounts(ctx context.Context, db *sqlx.DB, counts map[string]int) {
+	ids := make([]string, 0, len(counts))
+	deltas := make([]int64, 0, len(counts))
+	for id, count := range counts {
+		ids = append(ids, id)
+		deltas = append(deltas, int64(count))
+	}
+
 	query := `
-		UPDATE event_triage_rules
-		SET match_count = match_count + $1,
+		UPDATE event_triage_rules AS r
+		SET match_count = r.match_count + v.delta,
 		    last_matched_at = NOW()
-		WHERE id = $2
+		FROM (SELECT unnest($1::text[]) AS id, unnest($2::bigint[]) AS delta) AS v
+		WHERE r.id::text = v.id
 	`
 
-	_, err := db.ExecContext(ctx, query, count, ruleID)
+	_, err := db.ExecContext(ctx, query, pq.Array(ids), pq.Array(deltas))
 	if err != nil {
-		slog.WarnContext(ctx, "Failed to update rule match count", "error", err, "rule_id", ruleID, "count", count)
+		slog.WarnContext(ctx, "Failed to batch update rule match counts", "error", err, "count", len(ids))
 	}
+}
+
+func updateRuleMatchCountBy(ctx context.Context, db *sqlx.DB, ruleID string, count int) {
+	batchUpdateRuleMatchCounts(ctx, db, map[string]int{ruleID: count})
 }
 
 // pendingMatch holds data collected during rule evaluation for batch insertion into event_triage_rule_matches.

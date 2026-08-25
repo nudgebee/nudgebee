@@ -159,7 +159,7 @@ func getEntityTokenUsage(dbManager *common.DatabaseManager, entityType string, e
 			FROM llm_conversation_token_usage t
 			INNER JOIN llm_conversations c ON c.id = t.conversation_id
 			LEFT JOIN llm_model_pricing p
-			    ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider
+			    ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider AND p.tenant_id IS NULL
 			WHERE %s
 			AND c.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
 			AND c.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'
@@ -175,7 +175,7 @@ func getEntityTokenUsage(dbManager *common.DatabaseManager, entityType string, e
 			) AS cost
 			FROM llm_cache_lifecycle cl
 			LEFT JOIN llm_model_pricing p
-			    ON p.model_name = cl.llm_model AND p.provider_name = cl.llm_provider
+			    ON p.model_name = cl.llm_model AND p.provider_name = cl.llm_provider AND p.tenant_id IS NULL
 			WHERE %s
 			AND cl.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
 			AND cl.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'

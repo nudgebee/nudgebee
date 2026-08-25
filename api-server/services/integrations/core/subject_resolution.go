@@ -1,11 +1,14 @@
 package core
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
+	"regexp"
 	"strings"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -399,7 +402,7 @@ func fetchEventRuleExpr(sc *security.RequestContext, accountId, alert string) st
 	}
 	var expr string
 	err = dbms.Db.Get(&expr,
-		`SELECT expr FROM event_rules WHERE alert = $1 AND tenant_id = $2 AND account_id = $3 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1`,
+		`SELECT expr FROM event_rules WHERE alert = $1 AND tenant_id = $2 AND account_id = $3 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1`,
 		alert, sc.GetSecurityContext().GetTenantId(), accountId)
 	if err != nil {
 		return ""
@@ -524,6 +527,118 @@ func ResolveSubjectViaLLM(sc *security.RequestContext, e *EventIncomingWebhook, 
 	MatchWorkloadAndEnrich(sc, e, accountId)
 }
 
+// titleWordSplitter isolates hyphen-containing tokens from free text (a pod
+// name is itself hyphen-separated, so hyphens must survive the split).
+var titleWordSplitter = regexp.MustCompile(`[^a-zA-Z0-9-]+`)
+
+// generatedPodNameReplicaSetRegex: Deployment/DaemonSet (and, incidentally,
+// CronJob) shape <workload>-<hash>-<suffix>. Hash must contain a digit
+// (generatedPodNameHashDigit) so a word like "monitoring-daemonset-xyz12"
+// isn't mistaken for a hash. Mirrors podDeploymentRegex in
+// traces/knowledge_graph_service.go.
+var generatedPodNameReplicaSetRegex = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-([a-z0-9]{5,10})-[a-z0-9]{5}$`)
+
+// generatedPodNameJobRegex: Job shape <workload>-<hash>, one trailing segment.
+var generatedPodNameJobRegex = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-([a-z0-9]{5,10})$`)
+
+var generatedPodNameHashDigit = regexp.MustCompile(`[0-9]`)
+
+// generatedPodNameStatefulSetRegex: StatefulSet shape <workload>-<ordinal>.
+// No leading zero — k8s never zero-pads ordinals — since unlike the
+// hash-bearing shapes, "word-number" alone is common in ordinary text.
+var generatedPodNameStatefulSetRegex = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-(?:0|[1-9][0-9]*)$`)
+
+// looksLikeGeneratedPodName reports whether word has the shape of a
+// Kubernetes pod name. Pod names are DNS-1123 labels (always lowercase).
+func looksLikeGeneratedPodName(word string) bool {
+	if word == "" || word != strings.ToLower(word) {
+		return false
+	}
+	if m := generatedPodNameReplicaSetRegex.FindStringSubmatch(word); m != nil && generatedPodNameHashDigit.MatchString(m[1]) {
+		return true
+	}
+	if m := generatedPodNameJobRegex.FindStringSubmatch(word); m != nil && generatedPodNameHashDigit.MatchString(m[1]) {
+		return true
+	}
+	return generatedPodNameStatefulSetRegex.MatchString(word)
+}
+
+// lookupPodOwnerByName resolves podName to its owning workload via k8s_pods,
+// which the k8s-collector already resolves to the top-level controller.
+// namespace may be empty. A no-rows result isn't logged as an error — a title
+// word that merely looks like a pod name but isn't a real one is expected.
+func lookupPodOwnerByName(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId, accountId, namespace, podName string) (ownerName, ownerKind, ns string, ok bool) {
+	var row struct {
+		WorkloadName string  `db:"workload_name"`
+		WorkloadType *string `db:"workload_type"`
+		Namespace    string  `db:"namespace"`
+	}
+	query := `
+		SELECT workload_name, workload_type, namespace
+		FROM k8s_pods
+		WHERE tenant_id = $1
+		  AND cloud_account_id = $2
+		  AND name = $3
+		  AND workload_name IS NOT NULL AND workload_name <> ''`
+	args := []any{tenantId, accountId, podName}
+	if namespace != "" {
+		query += " AND namespace = $4"
+		args = append(args, namespace)
+	}
+	query += " ORDER BY last_seen DESC NULLS LAST LIMIT 1"
+	if err := dbms.Db.Get(&row, query, args...); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			sc.GetLogger().Error("subject_resolution: title pod-owner lookup failed", "error", err, "pod", podName)
+		}
+		return "", "", "", false
+	}
+	var workloadType string
+	if row.WorkloadType != nil {
+		workloadType = *row.WorkloadType
+	}
+	return row.WorkloadName, strings.ToLower(workloadType), row.Namespace, true
+}
+
+// ResolveSubjectFromTitlePodName scans an alert title for a bare pod name and
+// resolves it via k8s_pods — tried before the LLM extractor since it's a
+// cheap, exact lookup. Covers titles with no "pod=" structure to anchor a
+// regex on (e.g. Alertmanager's default title). Returns true on a match, so
+// callers can skip the LLM fallback; call only when EventSubjectName is empty.
+func ResolveSubjectFromTitlePodName(sc *security.RequestContext, e *EventIncomingWebhook, accountId string) bool {
+	if sc == nil || sc.GetSecurityContext() == nil || e.EventTitle == "" || accountId == "" {
+		return false
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		sc.GetLogger().Error("subject_resolution: failed to get database manager", "error", err)
+		return false
+	}
+	tenantId := sc.GetSecurityContext().GetTenantId()
+
+	for _, word := range titleWordSplitter.Split(e.EventTitle, -1) {
+		if !looksLikeGeneratedPodName(word) {
+			continue
+		}
+		owner, kind, ns, ok := lookupPodOwnerByName(sc, dbms, tenantId, accountId, e.EventSubjectNamespace, word)
+		if !ok {
+			continue
+		}
+		if e.Investigation.Labels == nil {
+			e.Investigation.Labels = map[string]string{}
+		}
+		e.Investigation.Labels["pod"] = word
+		e.Investigation.Labels["nb_subject_resolution"] = "title_pod_name"
+		e.EventSubjectName = owner
+		e.EventSubjectKind = kind
+		if e.EventSubjectNamespace == "" {
+			e.EventSubjectNamespace = ns
+		}
+		MatchWorkloadAndEnrich(sc, e, accountId)
+		return true
+	}
+	return false
+}
+
 // hasWorkloadValidationInput reports whether an event carries anything the
 // k8s_workloads inventory can be asked about: a subject the webhook resolved
 // itself, or candidate names it offered via nb_workload_candidates (e.g. the
@@ -566,6 +681,9 @@ func enrichEventsWithSubjectResolution(sc *security.RequestContext, events []Eve
 		// the extractor agent when it set nb_llm_match. Don't fire a second, redundant
 		// call here — the agent would just reproduce the prior not_found.
 		if _, alreadyTried := events[i].Investigation.Labels["nb_llm_match"]; alreadyTried {
+			continue
+		}
+		if ResolveSubjectFromTitlePodName(sc, &events[i], accountId) {
 			continue
 		}
 		if llmEnabled {

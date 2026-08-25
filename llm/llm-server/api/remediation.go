@@ -12,10 +12,10 @@ import (
 	"time"
 
 	agentcore "nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/audit"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -300,7 +300,8 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 	}
 
 	sc := ctx.GetSecurityContext()
-	if sc == nil || !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 		return
 	}
@@ -311,7 +312,12 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		return
 	}
 
-	systemPrompt := prompts_repo.GetPrompt(prompts_repo.PromptToolRemediationGenerateJson)
+	systemPrompt, promptErr := prompts.GetPromptStrict(c.Request.Context(), prompts.PromptRemediationGenerateJson, request.AccountId)
+	if promptErr != nil {
+		ctx.GetLogger().Error("processRemediationGenerate: loading prompt failed", "error", promptErr)
+		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to load remediation prompt"}}))
+		return
+	}
 	resp, err := agentcore.GenerateAndTrackLLMContent(ctx, sc.GetUserId(), request.AccountId, "", "", "", false, []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: systemPrompt}}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: investigationContext}}},
@@ -369,7 +375,8 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 		return
 	}
 	sc := ctx.GetSecurityContext()
-	if sc == nil || !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(sc, request.AccountId, moduleAiMisc, "Read", "Write")) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 		return
 	}
@@ -387,7 +394,7 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 		c.JSON(200, buildApiResponse(plan, nil))
 		return
 	}
-	saved, err := repo.GetEventAnalysis(ctx, info.Fingerprint, info.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
+	saved, err := repo.GetEventAnalysis(ctx, request.EventId, info.Fingerprint, info.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
 	if err != nil || saved == nil || strings.TrimSpace(saved.Analysis) == "" {
 		c.JSON(200, buildApiResponse(plan, nil))
 		return
@@ -481,7 +488,8 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	// write (create) access on that account. HasAccountAccess is per-account, so this blocks the
 	// cross-account case where a user holds write on one account but only read on the target.
 	sc := ctx.GetSecurityContext()
-	if sc == nil || !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New("remediation: write access is required to run remediation commands")}))
 		return
 	}

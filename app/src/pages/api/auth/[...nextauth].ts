@@ -24,6 +24,7 @@ import {
   deleteUserAuth,
   updateUserStatus,
   getAccountByTenant,
+  resolveUserCustomPermissions,
   onboardUser,
   updateUserAccountAccessedByUsername,
   updateTenantUser,
@@ -32,6 +33,7 @@ import {
   getUserSuperAdminRole,
   getTenantIdByName,
 } from '@lib/UserService';
+import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/userPermissionMapper';
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
@@ -51,6 +53,8 @@ export interface NudgebeeUser extends AdapterUser {
   namespacedReadOnlyAccountIds?: string[];
   k8sNamespaces?: any;
   hasMultipleTenantAccess?: boolean;
+  // Dynamic-RBAC custom-role grants ("<module>:<class>"). Additive to roles.
+  permissions?: string[];
 }
 
 export interface NudgebeeSession extends Session {
@@ -66,6 +70,12 @@ export interface NudgebeeSession extends Session {
   hasMultipleTenantAccess?: boolean;
   isSuperAdmin?: boolean;
   isSuperAdminReadonly?: boolean;
+  // Dynamic-RBAC custom-role grants ("<module>:<class>"). Read by hasPermission().
+  permissions?: string[];
+  // Whether the tenant has the CUSTOM_ROLES feature enabled. False means the
+  // whole dynamic-RBAC layer is off and every UI gate must behave exactly as it
+  // did before the feature existed. Read by isCustomRolesEnabled().
+  customRolesEnabled?: boolean;
   // License tier from services-server. Used by EE-bundle components to
   // self-gate at render time — needed when the EE bundle is present in
   // the monorepo build but the deployment is configured as a non-saas tier.
@@ -102,49 +112,6 @@ function cleanupUserAccessCache() {
   }
 }
 
-function adapterUserUpdateDataOnUserRoles(
-  user_roles: any[],
-  roles: string[],
-  accountIds: string[],
-  readonlyAccountIds: string[],
-  namespacedAccountIds: string[],
-  namespacedReadOnlyAccountIds: string[],
-  k8sNamespaces: any,
-  tenantId?: string
-) {
-  user_roles?.forEach((r: any) => {
-    if (r.entity_type && r.entity_type == 'tenant') {
-      if (!tenantId || r.entity_id === tenantId) {
-        roles.push(r.role);
-      }
-    } else if (r.entity_type && r.entity_type == 'account' && r.role == 'account_admin_readonly') {
-      roles.push(r.role);
-      readonlyAccountIds.push(r.entity_id);
-    } else if (r.entity_type && r.entity_type == 'account' && r.role == 'account_admin') {
-      roles.push(r.role);
-      accountIds.push(r.entity_id);
-    } else if (r.entity_type && r.entity_type == 'k8s_namespace' && r.role == 'k8s_namespace_admin') {
-      roles.push(r.role);
-      const entity = r.entity_id?.split(':');
-      if (!k8sNamespaces[entity[0]]) {
-        k8sNamespaces[entity[0]] = [entity[1]];
-      } else {
-        k8sNamespaces[entity[0]].push(entity[1]);
-      }
-      namespacedAccountIds.push(entity[0]);
-    } else if (r.entity_type && r.entity_type == 'k8s_namespace' && r.role == 'k8s_namespace_admin_readonly') {
-      roles.push(r.role);
-      const entity = r.entity_id?.split(':');
-      if (!k8sNamespaces[entity[0]]) {
-        k8sNamespaces[entity[0]] = [entity[1]];
-      } else {
-        k8sNamespaces[entity[0]].push(entity[1]);
-      }
-      namespacedReadOnlyAccountIds.push(entity[0]);
-    }
-  });
-}
-
 export async function adapterUser(user: any): Promise<NudgebeeUser> {
   let tenant: any = {};
   let roles: string[] = [];
@@ -176,6 +143,9 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
 
   const groups = user.groups ?? [];
   for (const group of groups) {
+    if (!groupBelongsToTenant(group, tenant.id)) {
+      continue;
+    }
     const groupRoles = group.user_group.group_roles ?? [];
     adapterUserUpdateDataOnUserRoles(
       groupRoles,
@@ -195,7 +165,7 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
   namespacedAccountIds = [...new Set(namespacedAccountIds)];
   namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
 
-  if (accountIds.length > 0 || readonlyAccountIds.length > 0) {
+  if (accountIds.length > 0 || readonlyAccountIds.length > 0 || namespacedAccountIds.length > 0 || namespacedReadOnlyAccountIds.length > 0) {
     // Narrow role-granted account ids to those that belong to the selected tenant.
     const resp = await getAccountByTenant(tenant.id);
     const tenantAccounts: string[] = resp.data?.cloud_accounts?.map((a: any) => a.id) ?? [];
@@ -204,6 +174,13 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
       readonlyAccountIds = readonlyAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedAccountIds = namespacedAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedReadOnlyAccountIds = namespacedReadOnlyAccountIds.filter((a) => tenantAccounts.includes(a));
+      // k8sNamespaces is keyed by account id — prune it alongside the id lists, or a
+      // namespace grant on another tenant's account stays visible in the session.
+      for (const accountId of Object.keys(k8sNamespaces)) {
+        if (!tenantAccounts.includes(accountId)) {
+          delete k8sNamespaces[accountId];
+        }
+      }
     } else {
       // No tenant accounts resolved. This session scope is ADVISORY — the backend
       // re-authorizes every request — so we deliberately keep the user's explicit role
@@ -1181,9 +1158,20 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
       'jwtUpdateTokenOnUpdateTrigger: tenant comparison:',
       JSON.stringify({ newTenantId: tenantId, currentTenantId, newTenantName: tenantName, rolesCount: response?.data?.length })
     );
+    if (response.errored) {
+      // Empty roles from a *failed* lookup are indistinguishable from "holds no
+      // roles"; switching on them would move the default tenant in the database
+      // while leaving the token on the old one.
+      console.warn('jwtUpdateTokenOnUpdateTrigger: tenant-roles lookup failed, aborting switch');
+      return;
+    }
 
     if (tenantId && tenantId !== currentTenantId) {
-      await updateTenantUser(tenantId, session.user.email);
+      // `updated` counts the tenant_users rows flipped to is_default; the upstream
+      // handler refuses (0 rows / error) for a user who is not a member of the
+      // tenant, so this doubles as the membership check for the fallback below.
+      const update = await updateTenantUser(tenantId, session.user.email);
+      const isTenantMember = (update?.data?.data?.users_update_default_tenant?.updated ?? 0) > 0;
       if (response?.data?.length > 0) {
         token.tenant = { id: tenantId, name: tenantName };
         const roles = [];
@@ -1236,6 +1224,20 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
         token.namespacedAccountIds = [];
         token.namespacedReadOnlyAccountIds = [];
         token.k8sNamespaces = {};
+      } else if (isTenantMember) {
+        // Member of the tenant holding no built-in role rows — the normal shape
+        // for dynamic-RBAC access, whose grants live in custom_role_assignments
+        // and are invisible to users_list_tenant_roles. Without this the switch
+        // silently no-ops: the default tenant moves in the database while the
+        // token stays on the old one. Grants for the new tenant are resolved by
+        // the custom-permission pass that runs right after this function.
+        token.tenant = { id: tenantId, name: tenantName };
+        token.roles = [];
+        token.accountIds = [];
+        token.readOnlyAccountIds = [];
+        token.namespacedAccountIds = [];
+        token.namespacedReadOnlyAccountIds = [];
+        token.k8sNamespaces = {};
       }
     }
   }
@@ -1278,6 +1280,14 @@ function getSessionUpdateSeconds() {
   }
   return expiration;
 }
+
+// How stale a session's baked-in dynamic-RBAC grant set may get before the jwt
+// callback re-resolves it from the database. Bounds two things: how long a
+// revoked grant (or a CUSTOM_ROLES switch flipped off) keeps being honored by the
+// gateway, and how long a newly granted permission takes to appear without a
+// re-login. Small enough to be operationally sane, large enough that the
+// /api/auth/session poll doesn't turn into a per-minute RPC per tab.
+const PERMISSIONS_REFRESH_MS = 5 * 60 * 1000;
 
 export const authOptions: NextAuthOptions = {
   adapter: GQLAdapter(),
@@ -1328,8 +1338,41 @@ export const authOptions: NextAuthOptions = {
           // registerTokenEnricher; default is a no-op).
           const userId = (user?.id || token?.id || token?.sub) as string;
           await enrichAuthToken(token as Record<string, unknown>, userId);
+
+          // Dynamic-RBAC: resolve the user's custom-role grants for the active
+          // tenant and bake them into the token so the gateway gate can check
+          // them without a per-request DB hit. token.tenant is set by the
+          // jwtUpdateTokenFor* helpers above. `customRolesEnabled` carries the
+          // tenant's CUSTOM_ROLES feature state so the UI can tell "feature off"
+          // (keep the built-in-role behavior untouched) from "no grants held".
+          const resolved = await resolveUserCustomPermissions(userId, (token.tenant as any)?.id);
+          token.permissions = resolved.permissions;
+          token.customRolesEnabled = resolved.enabled;
+          token.permissionsResolvedAt = Date.now();
         }
         await jwtUpdateTokenOnUpdateTrigger(token, session, trigger);
+        // Tenant switch changes the effective grant set — re-resolve.
+        if (trigger === 'update' && token.id && (token.tenant as any)?.id) {
+          const reresolved = await resolveUserCustomPermissions(token.id as string, (token.tenant as any).id);
+          token.permissions = reresolved.permissions;
+          token.customRolesEnabled = reresolved.enabled;
+          token.permissionsResolvedAt = Date.now();
+        } else if (!user && token.id && (token.tenant as any)?.id) {
+          // Bounded refresh on an existing session. Grants and the CUSTOM_ROLES
+          // switch itself live in the database, but the gateway reads them off the
+          // JWT — without this they would be frozen at login, so a revoked grant
+          // (or the whole feature being turned off) would keep working for as long
+          // as the user stayed signed in, and a newly granted one would need a
+          // re-login. Rate-limited to PERMISSIONS_REFRESH_MS because this callback
+          // also runs on every /api/auth/session poll.
+          const resolvedAt = typeof token.permissionsResolvedAt === 'number' ? token.permissionsResolvedAt : 0;
+          if (Date.now() - resolvedAt > PERMISSIONS_REFRESH_MS) {
+            const refreshed = await resolveUserCustomPermissions(token.id as string, (token.tenant as any).id);
+            token.permissions = refreshed.permissions;
+            token.customRolesEnabled = refreshed.enabled;
+            token.permissionsResolvedAt = Date.now();
+          }
+        }
         return token;
       } catch (error) {
         console.log('jwt, unable to handle jwt token ', error);
@@ -1364,6 +1407,8 @@ export const authOptions: NextAuthOptions = {
             nudgeBeeSession.k8sNamespaces = token.k8sNamespaces;
           }
           nudgeBeeSession.hasMultipleTenantAccess = !!token.hasMultipleTenantAccess;
+          nudgeBeeSession.permissions = (token.permissions as string[]) ?? [];
+          nudgeBeeSession.customRolesEnabled = !!token.customRolesEnabled;
         }
         const licenseDetails = await getLicenseDetails();
         nudgeBeeSession.tier = licenseDetails.tier;
