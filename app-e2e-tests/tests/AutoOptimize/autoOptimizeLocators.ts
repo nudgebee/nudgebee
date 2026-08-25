@@ -139,7 +139,7 @@ export class AutoOptimizeLocators extends OptimizeLocators {
   // Both rungs are scoped to the tab's own listing. `.or()` resolves in document order,
   // so a page-wide id fallback could return the other sub-tab's identically labelled
   // Account filter and drive the wrong control.
-  private filterTrigger(id: string, label: string, scope: Locator): Locator {
+  protected filterTrigger(id: string, label: string, scope: Locator): Locator {
     return scope
       .getByRole("button", { name: new RegExp(`^${label}`) })
       .or(scope.locator(`#auto-complete-${id}`))
