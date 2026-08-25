@@ -16,10 +16,6 @@ const (
 	// kbPrestepTopK is how many documents the pre-step's account-wide search
 	// retrieves before the relevance cutoff is applied.
 	kbPrestepTopK = 8
-	// kbPrestepScoreRatio is the relative relevance cutoff: a document is kept
-	// only when it scores within this fraction of the strongest hit. References
-	// are then attributed only from the kept documents.
-	kbPrestepScoreRatio = 0.7
 	// kbPrestepDefaultTimeoutSeconds is the fallback for
 	// LlmServerKBPrestepTimeoutSeconds. Sized for the RERANKED search: the
 	// server-side LLM rerank adds an LLM call (~1-3s) on top of embed+query,
@@ -256,29 +252,14 @@ func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kb
 		return "", nil
 	}
 
-	// Relative relevance cutoff: keep only documents scoring within
-	// kbPrestepScoreRatio of the strongest hit. The top document always
-	// survives, so kept is never empty.
-	topScore := docs[0].SimilarityScore
-	for _, d := range docs {
-		if d.SimilarityScore > topScore {
-			topScore = d.SimilarityScore
-		}
-	}
-	var kept toolcore.RAGSearchResults
-	if topScore <= 0 {
-		// A relative ratio is meaningless once the strongest score is not
-		// positive (cosine similarity can be negative): topScore*ratio would
-		// exceed topScore and drop every hit. Keep them all instead.
-		kept = docs
-	} else {
-		cutoff := topScore * kbPrestepScoreRatio
-		for _, d := range docs {
-			if d.SimilarityScore >= cutoff {
-				kept = append(kept, d)
-			}
-		}
-	}
+	// Relevance is decided by rag-server's cross-encoder, which returns only
+	// documents clearing its threshold — an empty result means nothing was
+	// relevant, not that retrieval failed.
+	//
+	// The relative cutoff that used to live here could never drop anything:
+	// cosine scores cluster in a narrow high band (measured 0.839-0.852), so
+	// topScore*0.7 landed at ~0.60, below every candidate.
+	kept := docs
 
 	// Collapse duplicate copies of the same page BEFORE the prompt budget is
 	// split: orphaned/sibling collections routinely return the same document

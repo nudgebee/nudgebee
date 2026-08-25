@@ -65,6 +65,41 @@ class Config:
     )  # thread pool size for parallel collection search
     reranking_enabled = os.environ.get("RAG_RERANKING_ENABLED", "false").lower() == "true"  # LLM reranking default
 
+    # Cross-encoder reranker. Runs in-process, so it needs no per-account LLM
+    # credential — the LLM reranker it replaces failed 100% of calls on a stale
+    # key and silently returned documents unranked.
+    #
+    # Benchmarked on 39 real queries taken from conversation history (29 needing
+    # live data, 10 answerable from the KB). v2-m3 was the only model that
+    # separated them cleanly — irrelevant results topped out at 0.775 while every
+    # relevant one scored 0.900+, so a threshold anywhere in that gap is exact.
+    # ms-marco-MiniLM is 16x cheaper but overlaps, and bge-reranker-base sits
+    # between the two; both drop a genuine documentation answer at any threshold
+    # that keeps junk out.
+    #
+    #   model                  errors/39   model cost   latency (8 docs, 2 threads)
+    #   bge-reranker-v2-m3     0           490MB        1480ms  @ max_length 256
+    #   bge-reranker-base      1           502MB         362ms
+    #   ms-marco-MiniLM-L-6    1            30MB         309ms
+    #
+    # NOTE: 490MB does not fit the 851Mi limit against ~556Mi already in use.
+    # rag-server needs ~1.5Gi before this default is deployable; set
+    # RAG_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2 with
+    # RAG_RERANKER_THRESHOLD=0.99 to run inside the current limit at the cost of
+    # missing roughly one documentation question in ten.
+    reranker_model = os.environ.get("RAG_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+    # Minimum 0-1 relevance for a document to survive. 0.80 and 0.85 both scored
+    # zero errors; 0.85 sits mid-gap rather than on its edge. Retune when the
+    # model changes — this number is a property of the model, not of the corpus.
+    reranker_threshold = float(os.environ.get("RAG_RERANKER_THRESHOLD", 0.85))
+    # 256 tokens costs nothing in accuracy and cuts latency 3529ms -> 1480ms.
+    # 192 is where separation collapses, so this is close to the floor.
+    reranker_max_length = int(os.environ.get("RAG_RERANKER_MAX_LENGTH", 256))  # tokens per (query, doc) pair
+    reranker_max_doc_chars = int(os.environ.get("RAG_RERANKER_MAX_DOC_CHARS", 1000))  # doc chars scored
+    # int8 quantization: measured slower and larger on ARM (qnnpack), so it is
+    # off until measured to help on the target platform (x86/fbgemm).
+    reranker_quantize = os.environ.get("RAG_RERANKER_QUANTIZE", "false").lower() == "true"
+
     # Nudgebee Docs
     nudgebee_docs_url = os.environ.get("NUDGEBEE_DOCS_URL", "https://docs.nudgebee.com")
     nudgebee_docs_fetch_batch_size = int(os.environ.get("NUDGEBEE_DOCS_FETCH_BATCH_SIZE", 10))

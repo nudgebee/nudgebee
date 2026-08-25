@@ -83,12 +83,16 @@ resources:
   # choice for the user. This also increases chances charts run on environments with little
   # resources, such as Minikube. If you do want to specify resources, uncomment the following
   # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # rag-server loads a cross-encoder reranker in-process (~490MB resident) on top
+  # of ~556Mi baseline, so steady state is ~1Gi. The request is deliberately above
+  # that at 1.5Gi so the scheduler reserves headroom rather than the bare figure;
+  # the 4Gi limit absorbs retrieval bursts. Do not lower the request to 1Gi.
   limits:
     cpu: 2000m
     memory: 4Gi
   requests:
     cpu: 500m
-    memory: 1Gi
+    memory: 1536Mi
 
 livenessProbe:
   httpGet:
