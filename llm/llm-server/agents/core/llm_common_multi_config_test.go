@@ -59,12 +59,28 @@ func TestFetchLLMIntegrationConfigByAccount_PrefersFlaggedDefault(t *testing.T) 
 	require.NotContains(t, cfg, "llm_model_name", "keys from the non-default config must not appear")
 }
 
-// The pre-multi-config shape — one integration, nothing flagged. This is every
-// account before the default_llm_provider backfill, so it must keep resolving.
-func TestFetchLLMIntegrationConfigByAccount_SingleUnflaggedConfigStillResolves(t *testing.T) {
+// A single UNFLAGGED integration must NOT act as the account default: a config
+// saved without marking default cannot silently capture the account's LLM
+// traffic. Pre-V840 accounts carry the flag via that migration's backfill;
+// anything unflagged resolves ENV until its operator marks it default.
+func TestFetchLLMIntegrationConfigByAccount_SingleUnflaggedConfigFallsThrough(t *testing.T) {
 	dbManager, mock := mockLLMConfigDB(t)
 
 	expectSelect(mock, [2]any{"int-a", false})
+	// No config-value query may run — the resolver falls through to ENV.
+
+	cfg, err := fetchLLMIntegrationConfigByAccount(nil, dbManager, "acct-single")
+
+	require.NoError(t, err)
+	require.Nil(t, cfg, "an unflagged config must never resolve as the account default")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The flagged single config keeps resolving exactly as before.
+func TestFetchLLMIntegrationConfigByAccount_SingleFlaggedConfigResolves(t *testing.T) {
+	dbManager, mock := mockLLMConfigDB(t)
+
+	expectSelect(mock, [2]any{"int-a", true})
 	expectConfig(mock, "int-a",
 		[2]string{"llm_provider", "googleai"},
 		[2]string{"llm_model_name", "gemini-3-flash-preview"},
