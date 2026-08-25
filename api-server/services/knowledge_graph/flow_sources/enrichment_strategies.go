@@ -651,7 +651,7 @@ func (s *Route53ResolutionStrategy) Match(name string, ctx *MatchingContext) Enr
 			continue
 		}
 
-		endpoint, err := ResolveRoute53DNSWithCache(ctx.ReqCtx, name, awsAccountID, zones, ctx.RecordCache)
+		endpoint, err := ResolveRoute53DNSWithCache(ctx.ReqCtx, name, awsAccountID, zones, ctx.RecordCache, ctx.Topology)
 		if err != nil || endpoint == "" {
 			continue
 		}

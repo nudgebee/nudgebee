@@ -87,6 +87,15 @@ func (s *cloudLoadBalancingService) GetResources(ctx providers.CloudProviderCont
 		} else {
 			resources = append(resources, globalHTTPSProxies...)
 		}
+
+		// NEGs are listed once here via AggregatedList — the response spans every
+		// zone and region, so this must not be repeated in the regional branch.
+		negs, err := s.listNetworkEndpointGroups(ctx, session)
+		if err != nil {
+			logLBError("network endpoint groups", err)
+		} else {
+			resources = append(resources, negs...)
+		}
 	}
 
 	// Regional resources (when region is specified).
@@ -881,6 +890,157 @@ func (s *cloudLoadBalancingService) targetHttpsProxyToResource(projectID, region
 		Meta:        meta,
 		CreatedAt:   parseCreationTimestamp(proxy.GetCreationTimestamp()),
 	}
+}
+
+// Network Endpoint Groups
+//
+// NEGs are the join between a load balancer's backend service and what actually
+// serves the traffic — a Cloud Run or App Engine service (serverless NEGs), GKE
+// pods (zonal GCE_VM_IP_PORT NEGs), or an external host (internet NEGs). Without
+// them the graph ends at the backend service and cannot reach the workload.
+//
+// They are listed via AggregatedList rather than per-scope calls: NEGs are zonal,
+// regional AND global, and the zonal ones cannot be reached from this service's
+// region-based iteration (a region is "us-central1", a NEG lives in
+// "us-central1-a"). One aggregated call covers every scope, so this runs in the
+// global branch of GetResources and is not repeated per region.
+func (s *cloudLoadBalancingService) listNetworkEndpointGroups(ctx providers.CloudProviderContext, session gcloudAuthSession) ([]providers.Resource, error) {
+	client, err := compute.NewNetworkEndpointGroupsRESTClient(ctx.GetContext(), session.Opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create network endpoint groups client: %w", err)
+	}
+	defer func() {
+		if cerr := client.Close(); cerr != nil {
+			ctx.GetLogger().Error("failed to close network endpoint groups client", "error", cerr)
+		}
+	}()
+
+	resources := []providers.Resource{}
+	req := &computepb.AggregatedListNetworkEndpointGroupsRequest{
+		Project: session.ProjectId,
+	}
+
+	it := client.AggregatedList(ctx.GetContext(), req)
+	for {
+		resp, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return resources, fmt.Errorf("failed to list network endpoint groups: %w", err)
+		}
+		if resp.Value == nil {
+			continue
+		}
+		for _, neg := range resp.Value.NetworkEndpointGroups {
+			resources = append(resources, s.networkEndpointGroupToResource(session.ProjectId, neg))
+		}
+	}
+
+	return resources, nil
+}
+
+// networkEndpointGroupToResource projects a NEG onto the stored resource shape.
+//
+// scope is derived from the NEG itself rather than passed in, because one
+// aggregated response mixes zonal, regional and global entries. Zonal NEGs keep
+// their zone in Region: it is the most specific location we have, and dropping it
+// would collapse the four per-zone NEGs GKE creates for one service into a single
+// row.
+func (s *cloudLoadBalancingService) networkEndpointGroupToResource(projectID string, neg *computepb.NetworkEndpointGroup) providers.Resource {
+	meta := map[string]any{}
+
+	if neg.GetDescription() != "" {
+		meta["description"] = neg.GetDescription()
+	}
+	if neg.GetNetworkEndpointType() != "" {
+		meta["network_endpoint_type"] = neg.GetNetworkEndpointType()
+	}
+	if neg.GetSize() != 0 {
+		meta["size"] = neg.GetSize()
+	}
+	if neg.GetNetwork() != "" {
+		meta["network"] = neg.GetNetwork()
+	}
+	if neg.GetSubnetwork() != "" {
+		meta["subnetwork"] = neg.GetSubnetwork()
+	}
+	if neg.GetDefaultPort() != 0 {
+		meta["default_port"] = neg.GetDefaultPort()
+	}
+
+	// The serverless backing service — this is what lets the graph connect a load
+	// balancer to the Cloud Run / App Engine service behind it.
+	if cr := neg.GetCloudRun(); cr != nil {
+		cloudRun := map[string]any{}
+		if cr.GetService() != "" {
+			cloudRun["service"] = cr.GetService()
+		}
+		if cr.GetTag() != "" {
+			cloudRun["tag"] = cr.GetTag()
+		}
+		if cr.GetUrlMask() != "" {
+			cloudRun["url_mask"] = cr.GetUrlMask()
+		}
+		if len(cloudRun) > 0 {
+			meta["cloud_run"] = cloudRun
+		}
+	}
+	if ae := neg.GetAppEngine(); ae != nil {
+		appEngine := map[string]any{}
+		if ae.GetService() != "" {
+			appEngine["service"] = ae.GetService()
+		}
+		if ae.GetVersion() != "" {
+			appEngine["version"] = ae.GetVersion()
+		}
+		if ae.GetUrlMask() != "" {
+			appEngine["url_mask"] = ae.GetUrlMask()
+		}
+		if len(appEngine) > 0 {
+			meta["app_engine"] = appEngine
+		}
+	}
+	if pscTarget := neg.GetPscTargetService(); pscTarget != "" {
+		meta["psc_target_service"] = pscTarget
+	}
+
+	location, scope := negLocationAndScope(neg)
+
+	return providers.Resource{
+		Id:          fmt.Sprintf("%s/%s/networkEndpointGroups/%s", projectID, scope, neg.GetName()),
+		Name:        neg.GetName(),
+		Type:        "network-endpoint-group",
+		Arn:         neg.GetSelfLink(),
+		Region:      location,
+		ServiceName: ServiceNameCloudLoadBalancing,
+		Status:      providers.ResourceStatusActive,
+		Tags:        map[string][]string{},
+		Meta:        meta,
+		CreatedAt:   parseCreationTimestamp(neg.GetCreationTimestamp()),
+	}
+}
+
+// negLocationAndScope returns the NEG's location (zone name, region name, or
+// "global") and the id path segment for it. Zone and Region arrive as full URLs.
+func negLocationAndScope(neg *computepb.NetworkEndpointGroup) (location, scope string) {
+	if zone := neg.GetZone(); zone != "" {
+		z := lastPathSegment(zone)
+		return z, fmt.Sprintf("zones/%s", z)
+	}
+	if region := neg.GetRegion(); region != "" {
+		r := lastPathSegment(region)
+		return r, fmt.Sprintf("regions/%s", r)
+	}
+	return "global", "global"
+}
+
+// lastPathSegment returns the final segment of a GCP resource URL.
+func lastPathSegment(url string) string {
+	if idx := strings.LastIndex(url, "/"); idx >= 0 {
+		return url[idx+1:]
+	}
+	return url
 }
 
 // Target Pools (Legacy Network Load Balancers)

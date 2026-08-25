@@ -66,6 +66,10 @@ type CloudResolver struct {
 	tenantID       string
 	dbManager      *database.DatabaseManager
 	dnsBuilder     *traces.TraceServiceMapBuilder
+	// topology serves ENI and Route 53 lookups from cloud_resourses. Built once
+	// here because resolution fans out over every hostname and account; nil when
+	// the feature is off, which restores CLI-only behaviour.
+	topology *CloudTopologyStore
 }
 
 // NewCloudResolver creates a new cloud resolver instance
@@ -75,11 +79,21 @@ func NewCloudResolver(requestContext *security.RequestContext, tenantID string) 
 		return nil, fmt.Errorf("failed to get database manager: %w", err)
 	}
 
+	topology, err := NewCloudTopologyStore(tenantID, slog.Default())
+	if err != nil {
+		// A store we cannot build is not a reason to fail resolution — every
+		// lookup falls back to the CLI, which is what we did before it existed.
+		slog.Warn("failed to build cloud topology store, falling back to cloud CLI",
+			"tenant_id", tenantID, "error", err)
+		topology = nil
+	}
+
 	return &CloudResolver{
 		requestContext: requestContext,
 		tenantID:       tenantID,
 		dbManager:      dbManager,
 		dnsBuilder:     traces.NewTraceServiceMapBuilder(),
+		topology:       topology,
 	}, nil
 }
 
@@ -299,7 +313,7 @@ func (r *CloudResolver) resolveViaRoute53(ctx context.Context, hostname string, 
 
 	// Try each AWS account until we find a match
 	for _, accountID := range awsAccountIDs {
-		endpoint, err := ResolveRoute53DNS(r.requestContext, hostname, accountID)
+		endpoint, err := ResolveRoute53DNS(r.requestContext, hostname, accountID, r.topology)
 		if err != nil {
 			slog.Debug("Route 53 resolution failed for account",
 				"hostname", hostname,
@@ -355,7 +369,7 @@ func (r *CloudResolver) resolveIPAddressDirectly(ctx context.Context, ipAddress 
 	// Strategy 2: ENI-based resolution (most comprehensive for IPs)
 	if len(awsAccountIDs) > 0 {
 		for _, accountID := range awsAccountIDs {
-			eniResolver := NewENIResolver(r.requestContext, accountID)
+			eniResolver := NewENIResolverWithTopology(r.requestContext, accountID, r.topology)
 			eniMappings, err := eniResolver.ResolveIPToResource(ctx, ipAddress)
 			if err != nil {
 				slog.Debug("ENI resolution failed",
@@ -493,7 +507,7 @@ func (r *CloudResolver) resolveByIPAddressViaENI(ctx context.Context, hostname s
 	// Try ENI resolution for each IP with each AWS account
 	for _, ip := range ips {
 		for _, accountID := range awsAccountIDs {
-			eniResolver := NewENIResolver(r.requestContext, accountID)
+			eniResolver := NewENIResolverWithTopology(r.requestContext, accountID, r.topology)
 
 			eniMappings, err := eniResolver.ResolveIPToResource(ctx, ip)
 			if err != nil {

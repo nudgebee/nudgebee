@@ -50,6 +50,9 @@ type CloudResourceRow struct {
 type CloudEnricher struct {
 	logger      *slog.Logger
 	nodeMatcher *NodeMatcher
+	// topology serves Route 53 and load-balancer lookups from cloud_resourses.
+	// Per-run state like nodeMatcher above; nil means CLI-only.
+	topology *CloudTopologyStore
 }
 
 // NewCloudEnricher creates a new cloud enricher
@@ -156,9 +159,19 @@ func (e *CloudEnricher) EnrichExternalServices(
 		zoneCache := NewRoute53ZoneCache()
 		// Cache for record sets per zone (optimization: avoids repeated API calls for same zone)
 		recordCache := NewRoute53RecordCache()
+		// Serve zones and records from cloud_resourses where discovery has them;
+		// a nil store (build failed, or feature off) falls back to the CLI.
+		topology, topoErr := NewCloudTopologyStore(tenantID, e.logger)
+		if topoErr != nil {
+			e.logger.Warn("failed to build cloud topology store, falling back to cloud CLI",
+				"tenant_id", tenantID, "error", topoErr)
+			topology = nil
+		}
+		e.topology = topology
+		defer topology.LogStats("cloud_enrichment")
 
 		for _, awsAccountID := range awsAccountIDs {
-			zones, err := FetchHostedZones(reqCtx, awsAccountID)
+			zones, err := FetchHostedZones(reqCtx, awsAccountID, topology)
 			if err != nil {
 				e.logger.Warn("Failed to fetch hosted zones for account",
 					"aws_account", awsAccountID,
@@ -187,7 +200,7 @@ func (e *CloudEnricher) EnrichExternalServices(
 					continue // Skip accounts where we couldn't fetch zones or have no hosted zones
 				}
 
-				endpoint, err := ResolveRoute53DNSWithCache(reqCtx, hostname, awsAccountID, zones, recordCache)
+				endpoint, err := ResolveRoute53DNSWithCache(reqCtx, hostname, awsAccountID, zones, recordCache, topology)
 				if err != nil {
 					e.logger.Info("Route 53 resolution failed",
 						"hostname", hostname,
@@ -544,6 +557,18 @@ func (e *CloudEnricher) EnrichLoadBalancers(
 	awsAccountID, k8sAccountID, tenantID string,
 ) ([]*core.DbNode, []*core.DbEdge, error) {
 
+	// EnrichExternalServices normally builds this; build it here for callers that
+	// enter through this method directly.
+	if e.topology == nil {
+		topology, err := NewCloudTopologyStore(tenantID, e.logger)
+		if err != nil {
+			e.logger.Warn("failed to build cloud topology store, falling back to cloud CLI",
+				"tenant_id", tenantID, "error", err)
+		} else {
+			e.topology = topology
+		}
+	}
+
 	allPodNodes := make([]*core.DbNode, 0)
 	allEdges := make([]*core.DbEdge, 0)
 
@@ -608,34 +633,13 @@ func (e *CloudEnricher) enrichLoadBalancerWithTargets(
 		return podNodes, edges, nil
 	}
 
-	// Step 1: Query AWS for target groups
-	tgCommand := fmt.Sprintf(
-		"aws elbv2 describe-target-groups --region %s --load-balancer-arn %s --output json",
-		region, arn,
-	)
-
-	tgResp, err := cloud.ExecuteCli(reqCtx, cloud.CloudExecuteCliCommandRequest{
-		AccountID: awsAccountID,
-		Command:   tgCommand,
-	})
+	// Step 1: Get the load balancer's target groups
+	targetGroups, err := FetchLoadBalancerTargetGroups(reqCtx, awsAccountID, region, arn, e.topology)
 	if err != nil {
 		e.logger.Warn("Failed to query LoadBalancer target groups",
 			"lb_name", lbNode.Properties["name"],
 			"error", err)
 		return podNodes, edges, nil
-	}
-
-	// Parse target groups
-	var targetGroups []map[string]interface{}
-	if data, ok := tgResp["data"].(string); ok {
-		var tgData struct {
-			TargetGroups []map[string]interface{} `json:"TargetGroups"`
-		}
-		if err := json.Unmarshal([]byte(data), &tgData); err != nil {
-			e.logger.Warn("Failed to parse target groups", "error", err)
-			return podNodes, edges, nil
-		}
-		targetGroups = tgData.TargetGroups
 	}
 
 	if len(targetGroups) == 0 {
@@ -644,44 +648,19 @@ func (e *CloudEnricher) enrichLoadBalancerWithTargets(
 		return podNodes, edges, nil
 	}
 
-	// Step 1.5: Query LoadBalancer tags to check for Kubernetes service mapping
-	tagsCommand := fmt.Sprintf(
-		"aws elbv2 describe-tags --resource-arns %s --output json",
-		arn,
-	)
-
-	tagsResp, err := cloud.ExecuteCli(reqCtx, cloud.CloudExecuteCliCommandRequest{
-		AccountID: awsAccountID,
-		Command:   tagsCommand,
-	})
-
+	// Step 1.5: Read LoadBalancer tags to check for Kubernetes service mapping
 	var k8sServiceName, k8sNamespace string
-	if err == nil && tagsResp != nil {
-		if data, ok := tagsResp["data"].(string); ok {
-			var tagsData struct {
-				TagDescriptions []struct {
-					Tags []struct {
-						Key   string `json:"Key"`
-						Value string `json:"Value"`
-					} `json:"Tags"`
-				} `json:"TagDescriptions"`
-			}
-			if json.Unmarshal([]byte(data), &tagsData) == nil && len(tagsData.TagDescriptions) > 0 {
-				for _, tag := range tagsData.TagDescriptions[0].Tags {
-					if tag.Key == "kubernetes.io/service-name" {
-						parts := strings.Split(tag.Value, "/")
-						if len(parts) == 2 {
-							k8sNamespace = parts[0]
-							k8sServiceName = parts[1]
-							e.logger.Info("Found Kubernetes service for LoadBalancer",
-								"lb_name", lbNode.Properties["name"],
-								"k8s_service", tag.Value)
-						}
-						break
-					}
-				}
-			}
-		}
+	tags, tagsErr := FetchLoadBalancerTags(reqCtx, awsAccountID, arn, e.topology)
+	if tagsErr != nil {
+		e.logger.Debug("Failed to query LoadBalancer tags",
+			"lb_name", lbNode.Properties["name"],
+			"error", tagsErr)
+	} else if ns, name := K8sServiceFromLBTags(tags); ns != "" && name != "" {
+		k8sNamespace = ns
+		k8sServiceName = name
+		e.logger.Info("Found Kubernetes service for LoadBalancer",
+			"lb_name", lbNode.Properties["name"],
+			"k8s_service", tags["kubernetes.io/service-name"])
 	}
 
 	// If this LB is for an ingress controller, create ingress node and skip pod mapping

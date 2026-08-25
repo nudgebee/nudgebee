@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
+	"time"
 )
 
 func ExecuteCliCommand(ctx *security.RequestContext, accountId string, command string) (string, error) {
@@ -16,7 +17,25 @@ func ExecuteCliCommand(ctx *security.RequestContext, accountId string, command s
 	if !ok {
 		return "", fmt.Errorf("provider not found")
 	}
-	response, err := cloudProvider.ExecuteCliCommand(ctx, account, command)
-	return response, err
 
+	// Every CLI execution is a fresh interpreter process (plus a re-auth on GCP
+	// and Azure), so this route dominates cloud-collector CPU. Log the verb — not
+	// the command, which carries ARNs and secrets — so the per-command split is
+	// measurable. Both /execute_cli and /execute_cli_batch land here; only the
+	// batch path writes an audit record, so this is the sole record of the
+	// single-command traffic.
+	start := time.Now()
+	response, err := cloudProvider.ExecuteCliCommand(ctx, account, command)
+	status := "ok"
+	if err != nil {
+		status = "error"
+	}
+	ctx.GetLogger().Info("execute_cli command completed",
+		"verb", CommandVerb(command),
+		"provider", provider,
+		"accountId", accountId,
+		"status", status,
+		"duration_ms", time.Since(start).Milliseconds())
+
+	return response, err
 }

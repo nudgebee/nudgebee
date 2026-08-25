@@ -95,13 +95,25 @@ type RDSEndpointInfo struct {
 type ENIResolver struct {
 	requestContext *security.RequestContext
 	awsAccountID   string
+	// topology answers IP lookups from cloud_resourses. Nil is valid and means
+	// every lookup misses, i.e. the original CLI-only behaviour.
+	topology *CloudTopologyStore
 }
 
-// NewENIResolver creates a new ENI resolver
+// NewENIResolver creates a new ENI resolver that resolves entirely via the cloud CLI.
 func NewENIResolver(requestContext *security.RequestContext, awsAccountID string) *ENIResolver {
+	return NewENIResolverWithTopology(requestContext, awsAccountID, nil)
+}
+
+// NewENIResolverWithTopology creates an ENI resolver that answers IP lookups from
+// the shared topology store first. Callers that resolve many IPs must build the
+// store once and pass it here — a resolver is constructed per IP per account, so
+// a store built inside the constructor would be a query per lookup.
+func NewENIResolverWithTopology(requestContext *security.RequestContext, awsAccountID string, topology *CloudTopologyStore) *ENIResolver {
 	return &ENIResolver{
 		requestContext: requestContext,
 		awsAccountID:   awsAccountID,
+		topology:       topology,
 	}
 }
 
@@ -173,72 +185,14 @@ func (r *ENIResolver) findENIByIP(ctx context.Context, ipAddress string) ([]*ENI
 		}
 	}
 
-	slog.Debug("ENI lookup cache miss, querying AWS",
-		"ip", ipAddress,
-		"account", r.awsAccountID)
-
-	// Build AWS CLI command to describe network interfaces
-	cmd := fmt.Sprintf(
-		`aws ec2 describe-network-interfaces --filters "Name=addresses.private-ip-address,Values=%s" --output json`,
-		ipAddress,
-	)
-
-	resp, err := cloud.ExecuteCli(r.requestContext, cloud.CloudExecuteCliCommandRequest{
-		AccountID: r.awsAccountID,
-		Command:   cmd,
-	})
+	interfaces, err := r.fetchNetworkInterfacesByIP(ipAddress)
 	if err != nil {
-		return nil, fmt.Errorf("AWS CLI command failed: %w", err)
-	}
-
-	// Parse response
-	var result struct {
-		NetworkInterfaces []struct {
-			NetworkInterfaceId string `json:"NetworkInterfaceId"`
-			SubnetId           string `json:"SubnetId"`
-			VpcId              string `json:"VpcId"`
-			AvailabilityZone   string `json:"AvailabilityZone"`
-			Description        string `json:"Description"`
-			InterfaceType      string `json:"InterfaceType"`
-			PrivateIpAddress   string `json:"PrivateIpAddress"`
-			PrivateIpAddresses []struct {
-				Primary          bool   `json:"Primary"`
-				PrivateIpAddress string `json:"PrivateIpAddress"`
-			} `json:"PrivateIpAddresses"`
-			Association *struct {
-				PublicIp string `json:"PublicIp"`
-			} `json:"Association"`
-			Groups []struct {
-				GroupId   string `json:"GroupId"`
-				GroupName string `json:"GroupName"`
-			} `json:"Groups"`
-			Attachment *struct {
-				AttachmentId string `json:"AttachmentId"`
-				InstanceId   string `json:"InstanceId"`
-				DeviceIndex  int    `json:"DeviceIndex"`
-				Status       string `json:"Status"`
-			} `json:"Attachment"`
-			RequesterId      string `json:"RequesterId"`
-			RequesterManaged bool   `json:"RequesterManaged"`
-			Status           string `json:"Status"`
-			TagSet           []struct {
-				Key   string `json:"Key"`
-				Value string `json:"Value"`
-			} `json:"TagSet"`
-		} `json:"NetworkInterfaces"`
-	}
-
-	if data, ok := resp["data"].(string); ok {
-		if err := json.Unmarshal([]byte(data), &result); err != nil {
-			return nil, fmt.Errorf("failed to parse response: %w", err)
-		}
-	} else {
-		return nil, fmt.Errorf("invalid response format")
+		return nil, err
 	}
 
 	// Convert to ENIInfo
-	enis := make([]*ENIInfo, 0, len(result.NetworkInterfaces))
-	for _, ni := range result.NetworkInterfaces {
+	enis := make([]*ENIInfo, 0, len(interfaces))
+	for _, ni := range interfaces {
 		eni := &ENIInfo{
 			ENIId:            ni.NetworkInterfaceId,
 			SubnetID:         ni.SubnetId,
@@ -305,6 +259,102 @@ func (r *ENIResolver) findENIByIP(ctx context.Context, ipAddress string) ([]*ENI
 	}
 
 	return enis, nil
+}
+
+// awsNetworkInterface is one element of `aws ec2 describe-network-interfaces`'s
+// NetworkInterfaces array. The cloud collector stores that element verbatim as
+// `cloud_resourses.meta` for type `network-interface`, so the same type decodes
+// both the live CLI response and the stored row.
+type awsNetworkInterface struct {
+	NetworkInterfaceId string `json:"NetworkInterfaceId"`
+	SubnetId           string `json:"SubnetId"`
+	VpcId              string `json:"VpcId"`
+	AvailabilityZone   string `json:"AvailabilityZone"`
+	Description        string `json:"Description"`
+	InterfaceType      string `json:"InterfaceType"`
+	PrivateIpAddress   string `json:"PrivateIpAddress"`
+	PrivateIpAddresses []struct {
+		Primary          bool   `json:"Primary"`
+		PrivateIpAddress string `json:"PrivateIpAddress"`
+	} `json:"PrivateIpAddresses"`
+	Association *struct {
+		PublicIp string `json:"PublicIp"`
+	} `json:"Association"`
+	Groups []struct {
+		GroupId   string `json:"GroupId"`
+		GroupName string `json:"GroupName"`
+	} `json:"Groups"`
+	Attachment *struct {
+		AttachmentId string `json:"AttachmentId"`
+		InstanceId   string `json:"InstanceId"`
+		DeviceIndex  int    `json:"DeviceIndex"`
+		Status       string `json:"Status"`
+	} `json:"Attachment"`
+	RequesterId      string `json:"RequesterId"`
+	RequesterManaged bool   `json:"RequesterManaged"`
+	Status           string `json:"Status"`
+	TagSet           []struct {
+		Key   string `json:"Key"`
+		Value string `json:"Value"`
+	} `json:"TagSet"`
+}
+
+// fetchNetworkInterfacesByIP returns the interfaces carrying a private IP, from
+// the topology store when it can answer and from the cloud CLI otherwise.
+//
+// This is the hottest CLI path in the graph build: callers loop every discovered
+// IP against every AWS account, so one describe-network-interfaces process was
+// started per (IP, account) pair. The store answers the same question from rows
+// discovery already collected.
+func (r *ENIResolver) fetchNetworkInterfacesByIP(ipAddress string) ([]awsNetworkInterface, error) {
+	if metas, hit := r.topology.ENIMetaByPrivateIP(ipAddress); hit {
+		interfaces := make([]awsNetworkInterface, 0, len(metas))
+		for _, meta := range metas {
+			var ni awsNetworkInterface
+			if err := json.Unmarshal(meta, &ni); err != nil {
+				continue
+			}
+			interfaces = append(interfaces, ni)
+		}
+		if len(interfaces) > 0 {
+			slog.Debug("ENI lookup served from cloud_resourses",
+				"ip", ipAddress,
+				"account", r.awsAccountID,
+				"eni_count", len(interfaces))
+			return interfaces, nil
+		}
+	}
+
+	slog.Debug("ENI lookup falling back to AWS CLI",
+		"ip", ipAddress,
+		"account", r.awsAccountID)
+
+	cmd := fmt.Sprintf(
+		`aws ec2 describe-network-interfaces --filters "Name=addresses.private-ip-address,Values=%s" --output json`,
+		ipAddress,
+	)
+
+	resp, err := cloud.ExecuteCli(r.requestContext, cloud.CloudExecuteCliCommandRequest{
+		AccountID: r.awsAccountID,
+		Command:   cmd,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("AWS CLI command failed: %w", err)
+	}
+
+	var result struct {
+		NetworkInterfaces []awsNetworkInterface `json:"NetworkInterfaces"`
+	}
+
+	data, ok := resp["data"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid response format")
+	}
+	if err := json.Unmarshal([]byte(data), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return result.NetworkInterfaces, nil
 }
 
 // mapENIToResources maps an ENI to AWS resources using multiple strategies
