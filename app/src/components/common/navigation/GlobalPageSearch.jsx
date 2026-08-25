@@ -23,7 +23,9 @@ import Box from '@mui/material/Box';
 import { Typography, Popover, InputBase, Fade, IconButton } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { ds } from '@utils/colors';
+import { getCloudProviderLabel } from '@utils/common';
 import Chip from '@ui/Chip';
 import Divider from '@ui/Divider';
 import CustomTooltip from '@ui/Tooltip';
@@ -38,17 +40,19 @@ import { useTenantBranding } from '@hooks/useTenantBranding';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiDashboards from '@api1/dashboards';
+import apiWorkflow from '@api1/workflow';
 import homeApi from '@api1/home';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
 import AdminIconBlue from '@assets/header/AdminIconBlue.icon.svg';
 import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
 import TicketIconBlue from '@assets/header/TicketIconBlue.icon.svg';
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
-import { AutomateBlue, AgentIconBlue, dashboardIcon1 } from '@assets';
+import { AutomateBlue, AgentIconBlue, dashboardIcon1, KubernetesClusterIcon, VmIcon } from '@assets';
 import {
   navSearchPages,
   accountScopedSearchFragments,
   automationSearchFragments,
+  integrationProviders,
   k8sDetailsSearchFragments,
   awsDetailsSearchFragments,
   azureDetailsSearchFragments,
@@ -68,17 +72,14 @@ const VIRTUALIZATION_THRESHOLD = 200;
 const MAX_LIST_HEIGHT = 380;
 const POPOVER_WIDTH = ds.space.mul(0, 340);
 
-// The sidebar's dashboard icon, recoloured for this panel. dashboard.icon.svg
-// is drawn for the dark sidebar — its shapes are filled white, so dropped
-// straight onto this light surface it renders invisible. A CSS `fill` beats the
-// svg's own presentation attribute, so painting the paths with a --ds-* token
-// both makes it visible here and keeps it visible in dark mode (a filter-based
-// recolour, which the sidebar flyout uses in the other direction, wouldn't).
-//
-// An element rather than the raw import because OptionItem hands `icon` to
-// SafeIcon, which renders a valid element as-is — that's the only seam to wrap
-// the svg in, and it's the same one the "@account" picker's rows already use.
-const DashboardRowIcon = (
+// Rows shown per category before its chevron is needed to reveal the rest.
+const MAX_SECTION_ROWS = 5;
+
+// Some sidebar icons are drawn white-on-dark (fills or strokes) and render
+// invisible on this light popover — repaint with a --ds-* token. Scoped to
+// `[fill]`/`[stroke]` attribute selectors, not every shape tag, so a
+// fill-only icon doesn't get an unwanted stroke painted on and vice versa.
+const recoloredSidebarIcon = (src) => (
   <Box
     component='span'
     sx={{
@@ -87,12 +88,14 @@ const DashboardRowIcon = (
       width: 16,
       height: 16,
       '& svg': { width: 16, height: 16 },
-      '& svg path': { fill: 'var(--ds-gray-600)' },
+      '& svg [fill]': { fill: 'var(--ds-gray-600)' },
+      '& svg [stroke]': { stroke: 'var(--ds-gray-600)' },
     }}
   >
-    <SafeIcon src={dashboardIcon1} alt='' width={16} height={16} />
+    <SafeIcon src={src} alt='' width={16} height={16} />
   </Box>
 );
+const DashboardRowIcon = recoloredSidebarIcon(dashboardIcon1);
 
 // Icon shown per header-search row: the parent page's icon (same icons the
 // main nav uses for these sections), not a distinct icon per tab.
@@ -104,6 +107,8 @@ const NAV_SEARCH_GROUP_ICON = {
   Optimize: OptimiseIconBlue,
   Tickets: TicketIconBlue,
   Admin: AdminIconBlue,
+  Overview: recoloredSidebarIcon(KubernetesClusterIcon),
+  VM: recoloredSidebarIcon(VmIcon),
 };
 
 // Keyboard-hint bar rendered below the options list — static markup (no
@@ -273,6 +278,52 @@ const navSearchDashboardItems = (dashboards) =>
     };
   });
 
+// Same URL WorkflowListing.jsx's handleEditWorkflow already navigates to.
+const workflowSearchPath = (id, accountId) => `/automation/${id}?accountId=${accountId}`;
+
+// workflow.tags isn't reliably an array at runtime (can be a tag-map object
+// or a string) — normalizes the same shapes WorkflowListing.tsx's TagsDisplay
+// already handles.
+const workflowTagsToWords = (tags) => {
+  if (!tags) {
+    return [];
+  }
+  if (Array.isArray(tags)) {
+    return tags;
+  }
+  if (typeof tags === 'object') {
+    return Object.entries(tags).map(([key, value]) => (value ? `${key}: ${value}` : key));
+  }
+  return [String(tags)];
+};
+
+// Search rows for the tenant's own automations. Unlike a dashboard, an
+// automation belongs to one account — accountName/cloud_provider are resolved
+// eagerly (not deferred to Recents) since names can collide across accounts.
+// Rows whose account doesn't resolve in allCluster are dropped (same rule
+// resolveRecentOption's account-scoped branches use) rather than shown with a
+// blank chip — the fetch itself can return accounts outside allCluster.
+const navSearchWorkflowItems = (workflows, allCluster) =>
+  workflows
+    .map((workflow) => ({ workflow, account: allCluster?.find((c) => c.value === workflow.account_id) }))
+    .filter(({ account }) => account)
+    .map(({ workflow, account }) => {
+      const path = workflowSearchPath(workflow.id, workflow.account_id);
+      return {
+        label: workflow.name,
+        icon: NAV_SEARCH_GROUP_ICON.Automation,
+        type: '/automation',
+        value: path,
+        path,
+        accountId: workflow.account_id,
+        accountName: account.label,
+        cloud_provider: account.cloud_provider,
+        group: 'Automation',
+        sectionLabel: 'Automations',
+        searchText: `Automation ${workflowTagsToWords(workflow.tags).join(' ')} ${account.label || ''}`,
+      };
+    });
+
 // Per-provider fragment list + base path for the "@account" scoped search —
 // keyed by cloud_provider.toUpperCase() since allCluster entries' casing
 // isn't guaranteed to match the mixed-case provider labels used elsewhere.
@@ -321,12 +372,21 @@ const AUTOMATION_SCOPED_SEARCH_PATH_RE = /^\/automation(?:\?(?:accountId|account
 // same as a removed page already does).
 const DASHBOARD_SEARCH_PATH_RE = /^\/dashboards\?dashboard=/;
 
+// Matches a workflow row's value (`/automation/{id}?accountId=...`). Distinct
+// from AUTOMATION_SCOPED_SEARCH_PATH_RE (requires a trailing `#fragment`).
+const WORKFLOW_SEARCH_PATH_RE = /^\/automation\/([^/?]+)\?accountId=([^#&]+)/;
+
 // Rows asked of dashboards_list per open. 500 is that action's own maximum
 // (anything higher silently falls back to its default 200), and asking for the
 // maximum is what lets a short response be read as "this is every dashboard in
 // the tenant" — which is the precondition for pruning a recent pick whose
 // dashboard is missing from it (see the fetch effect below).
 const DASHBOARD_SEARCH_FETCH_LIMIT = 500;
+
+// Rows asked of workflow_list per open. Unlike dashboards, this API returns
+// total_count directly, so completeness (the precondition for pruning a
+// recent pick) is judged against that rather than against this limit.
+const WORKFLOW_SEARCH_FETCH_LIMIT = 500;
 
 // Same provider-order + connection-status + alphabetical sort ClusterDropDown
 // itself uses (CustomDropdown.jsx's groupedOptions, groupByCloudProvider mode)
@@ -420,8 +480,29 @@ const sortAccountsLikeClusterDropdown = (accounts) => {
     .flatMap(([, group]) => group);
 };
 
-// Static (non-account) search rows — same for every render, so built once at
-// module load instead of inside a per-render useMemo.
+// Search rows for individual integration providers (Admin > Integrations
+// tab's cards) — a real deep link past that tab's card grid, but `type` is a
+// synthetic "integrations/{slug}" display path, not the row's real URL.
+const navSearchIntegrationItems = integrationProviders.map((provider) => {
+  const slug = provider.toLowerCase().replace(/_/g, '-');
+  const fragmentPath = `integrations/${slug}`;
+  const accountFormPath = `/accounts/account-form?cloudProvider=${provider}`;
+  return {
+    label: getCloudProviderLabel(provider),
+    icon: <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />,
+    type: `/${fragmentPath}`,
+    value: accountFormPath,
+    path: accountFormPath,
+    acronym: pathAcronym(fragmentPath),
+    searchText: `Admin ${fragmentPath} ${pathAcronym(fragmentPath)}`,
+    group: 'Admin',
+    sectionLabel: 'Integrations',
+  };
+});
+
+// Static (non-account) search rows — built once at module load. Integration
+// rows are kept separate (navSearchIntegrationItems above) since they get
+// their own "Integrations" section rather than Suggested Pages.
 const navSearchStaticItems = navSearchPages.map((page) => {
   const fragmentPath = page.path.replace(/^\//, '').replace('#', '/');
   return {
@@ -561,22 +642,61 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
   );
 });
 
-// Plain, non-interactive caption above a run of options sharing a
-// `sectionLabel` (e.g. "Recents" ahead of the full list) — renders once per
-// contiguous run, whenever an option's sectionLabel differs from the one
-// right before it.
+// Caption above a run of options sharing a `sectionLabel` — renders once per
+// contiguous run, whenever the label changes from the row before it.
 const startsNewSection = (opt, prevOpt) => !!opt?.sectionLabel && opt.sectionLabel !== prevOpt?.sectionLabel;
 
-function SectionCaption({ label }) {
+// Stable identity for a navigableItems entry — used to track the keyboard
+// highlight by *what* is highlighted rather than its raw array position, so
+// it survives navigableItems reshuffling for a reason unrelated to the
+// highlighted entry itself (e.g. a different, earlier section's chevron
+// toggled via mouse click, which shifts every later index without changing
+// what the user was actually looking at). Includes sectionLabel, not just
+// `.value` — a recent pick intentionally duplicates its origin section's row
+// (same value, e.g. a dashboard shown under both "Recents" and "Dashboards"),
+// same reason renderRow's own React `key` prop below already does this.
+const navItemKey = (item) => (item?.__sectionToggle ? `__toggle:${item.sectionLabel}` : `${item?.sectionLabel || ''}-${item?.value}`);
+
+// `collapsible` = the section's true count (from filteredOptions, not the
+// truncated render) exceeds MAX_SECTION_ROWS. Chevron is a plain icon, not
+// its own IconButton, so clicking it doesn't double-fire onToggle via bubbling.
+function SectionCaption({ label, collapsible, expanded, onToggle, highlighted = false, navIndex, navActive = false }) {
   return (
     <Box
-      // Stable per-label id (only ever 'Suggested Pages' / 'Recents') so the
-      // global-search guide tour can spotlight each section without reaching
-      // into row internals.
+      // Stable id so the guide tour can spotlight each section.
       id={`global-search-section-${label.toLowerCase().replace(/\s+/g, '-')}`}
+      data-option-index={navIndex}
+      onClick={collapsible ? onToggle : undefined}
+      onKeyDown={
+        collapsible
+          ? (e) => {
+              // Space has no Popover-level handling, so always act on it. Enter
+              // defers to the bubbled Popover-level handler while Arrow-key nav
+              // is active — same reason OptionItem's own Enter handling does,
+              // since Tab-focus and the arrow-highlighted row can differ.
+              if (e.key === ' ') {
+                e.preventDefault();
+                onToggle();
+              } else if (e.key === 'Enter' && !navActive) {
+                e.preventDefault();
+                onToggle();
+              }
+            }
+          : undefined
+      }
+      role={collapsible ? 'button' : undefined}
+      tabIndex={collapsible ? 0 : undefined}
+      aria-label={collapsible ? (expanded ? `Show fewer ${label}` : `Show all ${label}`) : undefined}
       sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: ds.space[0],
         padding: 'var(--ds-overlay-item-padding-md)',
         margin: '0 var(--ds-overlay-item-margin-x)',
+        cursor: collapsible ? 'pointer' : 'default',
+        borderRadius: 'var(--ds-overlay-item-radius)',
+        boxShadow: highlighted ? 'inset 0 0 0 1.5px var(--ds-blue-400)' : 'none',
+        '&:hover': collapsible ? { backgroundColor: 'var(--ds-overlay-item-hover-bg)' } : undefined,
       }}
     >
       <Typography
@@ -590,6 +710,16 @@ function SectionCaption({ label }) {
       >
         {label}
       </Typography>
+      {collapsible && (
+        <ChevronRightIcon
+          sx={{
+            fontSize: 16,
+            color: 'var(--ds-gray-500)',
+            transform: expanded ? 'rotate(90deg)' : 'none',
+            transition: 'transform var(--ds-motion-micro) var(--ds-motion-ease)',
+          }}
+        />
+      )}
     </Box>
   );
 }
@@ -606,19 +736,27 @@ const scrollboxSx = {
 
 // Flat, virtualized-when-large result list. No "selected" section (this box
 // never has a `value`) and no group headers — see the file-level comment.
-function OptionsList({ filteredOptions, highlightedIndex, onSelect, mentionMode }) {
+// `filteredOptions` here is `navigableItems` — displayedOptions with a
+// `{ __sectionToggle, sectionLabel }` marker spliced in before each
+// collapsible section, so Arrow keys can reach and toggle it.
+// `queryResultsKey` is the parent's un-truncated list, used only to key the
+// scroll-reset effect below (see there for why).
+function OptionsList({ filteredOptions, highlightedIndex, onSelect, mentionMode, expandedSections, onToggleSection, queryResultsKey }) {
   const navActive = highlightedIndex >= 0;
   const scrollRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
 
   const handleScroll = useCallback((e) => setScrollTop(e.currentTarget.scrollTop), []);
 
+  // Keyed off queryResultsKey, not the rendered `filteredOptions` — the
+  // latter also changes identity on a chevron toggle, which shouldn't yank
+  // the list back to the top.
   useEffect(() => {
     setScrollTop(0);
     if (scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
-  }, [filteredOptions]);
+  }, [queryResultsKey]);
 
   const useVirtualization = filteredOptions.length > VIRTUALIZATION_THRESHOLD;
 
@@ -673,15 +811,33 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect, mentionMode 
   }
 
   const renderRow = (opt, idx) => {
+    // A collapsible section's own caption is this marker, not a startsNewSection
+    // hit on the first real row below it — its sectionLabel matches, so that
+    // check naturally stays false for that row.
+    if (opt.__sectionToggle) {
+      return (
+        <React.Fragment key={`toggle-${opt.sectionLabel}`}>
+          {idx !== 0 && <Divider sx={{ marginTop: 0, marginBottom: 0 }} />}
+          <SectionCaption
+            label={opt.sectionLabel}
+            collapsible
+            expanded={expandedSections.has(opt.sectionLabel)}
+            onToggle={() => onToggleSection(opt.sectionLabel)}
+            highlighted={idx === highlightedIndex}
+            navIndex={idx}
+            navActive={navActive}
+          />
+        </React.Fragment>
+      );
+    }
     const isNewSection = startsNewSection(opt, filteredOptions[idx - 1]);
     return (
       <React.Fragment key={(opt.sectionLabel || '') + '-' + opt.value}>
-        {/* idx !== 0 excludes the very first section's own caption (nothing
-            above it to divide from) — the only other section boundary is
-            Recents -> Suggested Pages, so this only ever renders when a
-            Recents run precedes it. */}
+        {/* idx !== 0 excludes the very first section's own caption. Only ever
+            fires here for a non-collapsible section — a collapsible one's
+            caption is the toggle-entry branch above. */}
         {isNewSection && idx !== 0 && <Divider sx={{ marginTop: 0, marginBottom: 0 }} />}
-        {isNewSection && <SectionCaption label={opt.sectionLabel} />}
+        {isNewSection && <SectionCaption label={opt.sectionLabel} collapsible={false} />}
         <OptionItem opt={opt} highlighted={idx === highlightedIndex} navIndex={idx} navActive={navActive} onSelect={onSelect} />
       </React.Fragment>
     );
@@ -726,7 +882,7 @@ const GlobalSearchPopoverTransition = React.forwardRef(function GlobalSearchPopo
   );
 });
 
-export default function GlobalPageSearch({ hasClusterDropdown = true }) {
+function GlobalPageSearch({ hasClusterDropdown = true }) {
   const { data } = useSession();
   const router = useRouter();
   const { selectedCluster, allCluster, setSelectedCluster, setAllCluster } = useData();
@@ -949,6 +1105,52 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
 
   const dashboardSearchItems = useMemo(() => navSearchDashboardItems(dashboards), [dashboards]);
 
+  // The tenant's automations, offered as results alongside dashboards/pages —
+  // same reload-on-every-open reasoning as the dashboards fetch above.
+  const [workflows, setWorkflows] = useState([]);
+  useEffect(() => {
+    if (!searchOpenSeq) {
+      return undefined;
+    }
+    let active = true;
+    apiWorkflow
+      .listWorkflows(undefined, undefined, undefined, undefined, WORKFLOW_SEARCH_FETCH_LIMIT)
+      .then((res) => {
+        if (!active) {
+          return;
+        }
+        if (res?.errors) {
+          console.error('Failed to fetch automations for search:', res.errors);
+          return;
+        }
+        const workflowList = res?.data?.workflow_list;
+        if (!workflowList) {
+          return;
+        }
+        const workflows = workflowList.workflows || [];
+        setWorkflows(workflows);
+        // Unlike dashboards, workflow_list reports total_count directly, so
+        // completeness (needed before pruning a stale recent) is judged
+        // against that instead of a short-response guess.
+        if (workflows.length < (workflowList.total_count ?? 0)) {
+          return;
+        }
+        const live = new Set(workflows.map((workflow) => workflowSearchPath(workflow.id, workflow.account_id)));
+        const stale = apiUser.getRecentPageSearches(data?.tenant?.id).filter((value) => WORKFLOW_SEARCH_PATH_RE.test(value) && !live.has(value));
+        if (stale.length) {
+          setRecentSearchValues(apiUser.removeRecentPageSearches(stale, data?.tenant?.id));
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch automations for search:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, [searchOpenSeq, data?.tenant?.id]);
+
+  const workflowSearchItems = useMemo(() => navSearchWorkflowItems(workflows, allCluster), [workflows, allCluster]);
+
   const k8sNavItems = useMemo(
     () => (hasOpenedSearch ? navSearchProviderItems(k8sDetailsSearchFragments, 'K8s', k8sSearchAccountId, '/kubernetes/details') : []),
     [hasOpenedSearch, k8sSearchAccountId]
@@ -1080,25 +1282,30 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
     [isNavSearchItemVisible, automationNavItems, accountScopedNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
   );
 
-  // Re-resolves one recent value into a full display option. A static page's
-  // value is always in navSearchStaticItems. An Automation/Agent Health or provider-detail
-  // value carries its accountId in the value itself — that account isn't
-  // necessarily the current defaultAccountId/provider's single
-  // resolved account (for providers, the @mention picker also lets you pick
-  // and search within ANY connected account, not just the resolved one), so
-  // navSearchItems alone (built for just the currently-resolved account) can't
-  // be used as the existence check here. Checking against allCluster directly
-  // instead means a recent pick whose account has since been
-  // disconnected/removed is silently dropped, same as a renamed/removed
-  // static page already was.
+  // Kept out of navSearchItems/Suggested Pages so Integrations gets its own
+  // section, same as Dashboards/Automations.
+  const integrationSearchOptions = useMemo(() => navSearchIntegrationItems.filter(isNavSearchItemVisible), [isNavSearchItemVisible]);
+
+  // Re-resolves one recent value into a full display option, checked against
+  // allCluster directly rather than navSearchItems (built for only the
+  // currently-resolved account) — a recent whose account no longer exists
+  // drops silently, same as a renamed/removed static page already does.
   const resolveRecentOption = useCallback(
     (value) => {
-      const staticMatch = navSearchStaticItems.find((opt) => opt.value === value);
+      const staticMatch = navSearchStaticItems.find((opt) => opt.value === value) || navSearchIntegrationItems.find((opt) => opt.value === value);
       if (staticMatch) {
         return isNavSearchItemVisible(staticMatch) ? staticMatch : null;
       }
       if (DASHBOARD_SEARCH_PATH_RE.test(value)) {
         return dashboardSearchItems.find((opt) => opt.value === value) || null;
+      }
+      const workflowMatch = WORKFLOW_SEARCH_PATH_RE.exec(value);
+      if (workflowMatch) {
+        const [, , accountId] = workflowMatch;
+        if (!allCluster?.some((c) => c.value === accountId)) {
+          return null;
+        }
+        return workflowSearchItems.find((opt) => opt.value === value) || null;
       }
       const automationMatch = AUTOMATION_SCOPED_SEARCH_PATH_RE.exec(value);
       if (automationMatch) {
@@ -1135,7 +1342,7 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       }
       return navSearchProviderItems(config.fragments, config.label, accountId, config.basePath).find((opt) => opt.value === value);
     },
-    [allCluster, isNavSearchItemVisible, dashboardSearchItems]
+    [allCluster, isNavSearchItemVisible, dashboardSearchItems, workflowSearchItems]
   );
 
   // Recent picks, captioned "Recents". A recent pick intentionally still
@@ -1162,45 +1369,44 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
 
   const suggestedPageOptions = useMemo(() => navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'Suggested Pages' })), [navSearchItems]);
 
-  // Once an account is picked, results are scoped to just that account's
-  // provider detail pages — reuses the same navSearchProviderItems helper the
-  // unscoped per-provider lists above already use, so accountId/path/icon
-  // wiring stays identical. Automation/Agent Health aren't provider-specific
-  // (any connected account works there), so they're appended after the
-  // provider's own pages rather than gated behind a cloud_provider match,
-  // same filter (Admin/Task Runner/Billing) as the unscoped list.
+  // Once an account is picked, results are scoped to it — provider detail
+  // pages, Automation/Agent Health tabs, and this account's own automations,
+  // split into two sections: "Automations" (real workflows only, matching how
+  // the unscoped list treats the term — the Automations/Task Runner/Executions
+  // TAB rows go under "Suggested Pages" instead, same as they land there
+  // unscoped) then "Suggested Pages". Order matters: each label must stay one
+  // contiguous run or it'll split into two captions.
   const scopedSearchItems = useMemo(() => {
     if (!scopedAccount) {
       return [];
     }
     const config = SCOPED_SEARCH_PROVIDER_CONFIG[scopedAccount.cloud_provider?.toUpperCase()];
-    const providerItems = config ? navSearchProviderItems(config.fragments, config.label, scopedAccount.value, config.basePath) : [];
-    const accountScopedItems = navSearchAccountScopedItems(accountScopedSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
-    const automationItems = navSearchAutomationItems(automationSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
-    return [...providerItems, ...automationItems, ...accountScopedItems];
-  }, [scopedAccount, isNavSearchItemVisible]);
+    const providerItems = (config ? navSearchProviderItems(config.fragments, config.label, scopedAccount.value, config.basePath) : []).map((opt) => ({
+      ...opt,
+      sectionLabel: 'Suggested Pages',
+    }));
+    const accountScopedItems = navSearchAccountScopedItems(accountScopedSearchFragments, scopedAccount.value)
+      .filter(isNavSearchItemVisible)
+      .map((opt) => ({ ...opt, sectionLabel: 'Suggested Pages' }));
+    const automationItems = navSearchAutomationItems(automationSearchFragments, scopedAccount.value)
+      .filter(isNavSearchItemVisible)
+      .map((opt) => ({ ...opt, sectionLabel: 'Suggested Pages' }));
+    // sectionLabel: 'Automations' already set by navSearchWorkflowItems.
+    const scopedWorkflowItems = workflowSearchItems
+      .filter((opt) => opt.accountId === scopedAccount.value)
+      .map((opt) => ({ ...opt, accountName: undefined, cloud_provider: undefined }));
+    return [...scopedWorkflowItems, ...providerItems, ...automationItems, ...accountScopedItems];
+  }, [scopedAccount, isNavSearchItemVisible, workflowSearchItems]);
 
   // The full (unfiltered) option list for whichever mode is active — mirrors
-  // ds/FilterDropdown.jsx's `options` prop.
+  // ds/FilterDropdown.jsx's `options` prop. Five peer sections (opt.sectionLabel):
+  // Recents, Dashboards, Automations, Integrations, Suggested Pages — each
+  // renders only when it has rows. Dashboards/Automations/Integrations sit
+  // above Suggested Pages (~200 rows) so they aren't buried below it.
   //
-  // Three peer sections under one plain caption each (opt.sectionLabel):
-  // "Recents", then the tenant's own "Dashboards", then "Suggested Pages".
-  // Each renders only when it has rows — a tenant with no dashboards (or a
-  // fresh user with no recents) simply never sees that caption, since
-  // SectionCaption fires off a contiguous run of options rather than off a
-  // declared list of sections. Dashboards sit *above* Suggested Pages
-  // deliberately: that list runs to ~200 static rows, so anything after it is
-  // effectively hidden until you scroll. Still one flat array under the hood,
-  // so the ArrowUp/ArrowDown + Enter-to-select keyboard nav below works
-  // identically however many sections are present.
-  //
-  // Dashboards stay out of the "@account" scoped list — a dashboard is
-  // tenant-level (its panels each carry their own account), so there's nothing
-  // there for an account scope to narrow.
-  //
-  // Memoized rather than written inline: filteredOptions is keyed on this
-  // array's identity, and a fresh array on every render would also re-fire
-  // OptionsList's scroll reset on every arrow keypress.
+  // Dashboards and Integrations stay out of the "@account" scoped list —
+  // neither is tied to one connected account. Automations IS, so it's
+  // included there too, under scopedSearchItems' own two-section split.
   const searchBoxOptions = useMemo(() => {
     if (mentionMode) {
       return accountMentionOptions;
@@ -1208,8 +1414,18 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
     if (scopedAccount) {
       return scopedSearchItems;
     }
-    return [...recentSearchOptions, ...dashboardSearchItems, ...suggestedPageOptions];
-  }, [mentionMode, accountMentionOptions, scopedAccount, scopedSearchItems, recentSearchOptions, dashboardSearchItems, suggestedPageOptions]);
+    return [...recentSearchOptions, ...dashboardSearchItems, ...workflowSearchItems, ...integrationSearchOptions, ...suggestedPageOptions];
+  }, [
+    mentionMode,
+    accountMentionOptions,
+    scopedAccount,
+    scopedSearchItems,
+    recentSearchOptions,
+    dashboardSearchItems,
+    workflowSearchItems,
+    integrationSearchOptions,
+    suggestedPageOptions,
+  ]);
 
   // Filters searchBoxOptions by `search`. Supports glob wildcards `*` (any
   // sequence) and `?` (single char) — useful for long index/label lists.
@@ -1327,6 +1543,77 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
     });
   }, [searchBoxOptions, search, mentionMode]);
 
+  // Expanded categories, keyed by sectionLabel (survives refining the search
+  // text while a category stays open). Reset to collapsed on popover close, below.
+  const [expandedSections, setExpandedSections] = useState(() => new Set());
+  const toggleSection = useCallback((label) => {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) {
+        next.delete(label);
+      } else {
+        next.add(label);
+      }
+      return next;
+    });
+  }, []);
+
+  // True per-category counts (from filteredOptions, not the truncated
+  // displayedOptions) — SectionCaption needs the real total to decide
+  // whether a chevron is warranted, independent of collapse state.
+  const sectionCounts = useMemo(() => {
+    const counts = {};
+    filteredOptions.forEach((opt) => {
+      if (!opt?.sectionLabel) {
+        return;
+      }
+      counts[opt.sectionLabel] = (counts[opt.sectionLabel] || 0) + 1;
+    });
+    return counts;
+  }, [filteredOptions]);
+
+  // What's actually rendered/navigated: filteredOptions with each category
+  // capped unless expanded. Assumes each sectionLabel is one contiguous run
+  // (true per the ranking above), so a single left-to-right pass suffices.
+  const displayedOptions = useMemo(() => {
+    const result = [];
+    let i = 0;
+    while (i < filteredOptions.length) {
+      const label = filteredOptions[i]?.sectionLabel;
+      let j = i + 1;
+      while (j < filteredOptions.length && filteredOptions[j]?.sectionLabel === label) {
+        j += 1;
+      }
+      const run = filteredOptions.slice(i, j);
+      const capped = !label || run.length <= MAX_SECTION_ROWS || expandedSections.has(label) ? run : run.slice(0, MAX_SECTION_ROWS);
+      result.push(...capped);
+      i = j;
+    }
+    return result;
+  }, [filteredOptions, expandedSections]);
+
+  // Arrow-key-navigable list: displayedOptions with a synthetic toggle entry
+  // spliced in front of each collapsible section (only those — a section with
+  // 5 or fewer rows has nothing to reveal, so its caption stays un-navigable).
+  // Enter on a toggle entry collapses/expands instead of selecting.
+  const navigableItems = useMemo(() => {
+    const result = [];
+    let i = 0;
+    while (i < displayedOptions.length) {
+      const label = displayedOptions[i]?.sectionLabel;
+      let j = i + 1;
+      while (j < displayedOptions.length && displayedOptions[j]?.sectionLabel === label) {
+        j += 1;
+      }
+      if (label && (sectionCounts[label] ?? 0) > MAX_SECTION_ROWS) {
+        result.push({ __sectionToggle: true, sectionLabel: label });
+      }
+      result.push(...displayedOptions.slice(i, j));
+      i = j;
+    }
+    return result;
+  }, [displayedOptions, sectionCounts]);
+
   const searchPlaceholder = scopedAccount
     ? `Search for ${scopedAccount.label}…`
     : hasMentionAccounts
@@ -1346,7 +1633,15 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
 
   // --- Trigger/popover state (mirrors ds/FilterDropdown.jsx's own) ---
   const [anchorEl, setAnchorEl] = useState(null);
-  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  // Tracked by identity (navItemKey), not a raw index — see navItemKey's own
+  // comment for why. highlightedIndex is derived by re-locating that key in
+  // the current navigableItems on every render; -1 (not found / no key) means
+  // "nothing highlighted", same meaning the old index-based state had.
+  const [highlightedKey, setHighlightedKey] = useState(null);
+  const highlightedIndex = useMemo(
+    () => (highlightedKey === null ? -1 : navigableItems.findIndex((item) => navItemKey(item) === highlightedKey)),
+    [highlightedKey, navigableItems]
+  );
   const [askingAi, setAskingAi] = useState(false);
   const searchRef = useRef(null);
   const triggerRef = useRef(null);
@@ -1492,10 +1787,14 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [anchorEl, openSearch]);
 
-  // Discard the keyboard highlight whenever the option set it indexes into
-  // changes (search text) or the panel closes.
+  // Discard the keyboard highlight on a genuinely new result set (search
+  // text, mode switch) or when the panel closes. Safe to leave alone on a
+  // mere expand/collapse toggle — highlightedIndex re-locates highlightedKey
+  // in the current navigableItems on every render, so it already follows the
+  // same highlighted entry (or clears itself if that entry no longer exists)
+  // regardless of how much everything after it shifted.
   useEffect(() => {
-    setHighlightedIndex(-1);
+    setHighlightedKey(null);
   }, [filteredOptions, open]);
 
   // wasOpenRef (not a dep) tracks the previous `open` value so the
@@ -1510,6 +1809,7 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
         // Drops the account-mention chip once the popover actually closes,
         // so a scoped search doesn't linger into the next unrelated session.
         setScopedAccount(null);
+        setExpandedSections(new Set());
       }
       wasOpenRef.current = false;
       return;
@@ -1530,33 +1830,43 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       // ArrowUp/ArrowDown navigation + Enter-to-select the highlighted row.
       // Gated on `open` so these keys still behave normally (e.g. page
       // scroll) when the trigger button has focus but the panel is closed.
-      const navCount = filteredOptions.length;
+      // Indexes into navigableItems, not filteredOptions — a collapsed
+      // category isn't Arrow-key reachable until expanded (except its own
+      // toggle entry, which is).
+      const navCount = navigableItems.length;
       if (!open || navCount === 0) {
         return;
       }
       switch (e.key) {
         case 'ArrowDown':
           e.preventDefault();
-          setHighlightedIndex((i) => Math.min(navCount - 1, i + 1));
+          setHighlightedKey(navItemKey(navigableItems[Math.min(navCount - 1, highlightedIndex + 1)]));
           break;
         case 'ArrowUp':
           e.preventDefault();
-          setHighlightedIndex((i) => Math.max(0, i - 1));
+          setHighlightedKey(navItemKey(navigableItems[Math.max(0, highlightedIndex - 1)]));
           break;
-        case 'Enter':
+        case 'Enter': {
           if (highlightedIndex < 0) {
             break;
           }
           e.preventDefault();
-          if (filteredOptions[highlightedIndex]) {
-            handleOptionSelect(filteredOptions[highlightedIndex]);
+          const item = navigableItems[highlightedIndex];
+          if (!item) {
+            break;
+          }
+          if (item.__sectionToggle) {
+            toggleSection(item.sectionLabel);
+          } else {
+            handleOptionSelect(item);
           }
           break;
+        }
         default:
           break;
       }
     },
-    [open, filteredOptions, highlightedIndex, handleOptionSelect]
+    [open, navigableItems, highlightedIndex, handleOptionSelect, toggleSection]
   );
 
   return (
@@ -1872,7 +2182,15 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
           </DsButton>
         </Box>
 
-        <OptionsList filteredOptions={filteredOptions} highlightedIndex={highlightedIndex} onSelect={handleOptionSelect} mentionMode={mentionMode} />
+        <OptionsList
+          filteredOptions={navigableItems}
+          highlightedIndex={highlightedIndex}
+          onSelect={handleOptionSelect}
+          mentionMode={mentionMode}
+          expandedSections={expandedSections}
+          onToggleSection={toggleSection}
+          queryResultsKey={filteredOptions}
+        />
 
         <Divider sx={{ marginTop: 0, marginBottom: 0 }} />
         <GlobalSearchFooterHints mentionMode={mentionMode} />
@@ -1880,3 +2198,4 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
     </Box>
   );
 }
+export default React.memo(GlobalPageSearch);
