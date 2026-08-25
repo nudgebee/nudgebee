@@ -253,6 +253,10 @@ def get_google_ai_llm(model_name: str) -> GoogleGenerativeAI:
         model=model_name,
         api_key=SecretStr(Config.eval_llm_provider_api_key),
         temperature=0,
+        # The judge emits a JSON object whose feedback field alone can run to
+        # several hundred tokens; the provider default cap truncated it
+        # mid-string, the parser saw invalid JSON, and the metric scored 0.
+        max_output_tokens=8192,
     )
 
 

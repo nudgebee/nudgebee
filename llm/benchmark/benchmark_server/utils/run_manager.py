@@ -1695,24 +1695,23 @@ def _get_test_summary(run: BenchmarkRun) -> dict:
             r.status == "error" and (r.error_category or "") in INFRA_ERROR_CATEGORIES
         )
     ]
-    avg_similarity = (
-        round(
-            sum(r.answer_similarity or 0 for r in scorable_results)
-            / len(scorable_results),
-            2,
-        )
-        if scorable_results
-        else 0
-    )
-    avg_relevancy = (
-        round(
-            sum(r.answer_relevancy or 0 for r in scorable_results)
-            / len(scorable_results),
-            2,
-        )
-        if scorable_results
-        else 0
-    )
+
+    def _metric_avg(attr: str, failed_marker: str) -> float:
+        # A judge crash records the failure marker in score_reason and a 0
+        # score. That 0 is a scoring artifact, not an assessment — averaging
+        # it in misreports the agent, so those rows are excluded from this
+        # metric's mean (they still count for every other metric).
+        vals = [
+            getattr(r, attr) or 0
+            for r in scorable_results
+            if not (
+                failed_marker in (r.score_reason or "") and not (getattr(r, attr) or 0)
+            )
+        ]
+        return round(sum(vals) / len(vals), 2) if vals else 0
+
+    avg_similarity = _metric_avg("answer_similarity", "[Similarity] [metric_failed]")
+    avg_relevancy = _metric_avg("answer_relevancy", "[Quality] [metric_failed]")
     avg_planner = (
         round(
             sum(r.planner_relevancy or 0 for r in scorable_results)

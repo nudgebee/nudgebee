@@ -157,7 +157,9 @@ def _get_answer_similarity_metric(llm):
             llm=llm,
         )
     except TypeError as e:
-        logger.warning("RubricsScore init failed for similarity: %s, trying simplified", e)
+        logger.warning(
+            "RubricsScore init failed for similarity: %s, trying simplified", e
+        )
         return RubricsScore(llm=llm)
 
 
@@ -213,11 +215,12 @@ class EvalScore:
     the two without changing the float type and breaking every downstream
     `result.similarity / 100.0` call site.
     """
-    similarity: float = 0.0          # 0-100, LLM-based semantic similarity
-    quality: float = 0.0             # 0-100, LLM-based factual correctness
-    reason: str = ""                 # Combined feedback from all metrics
-    similarity_reason: str = ""      # LLM judge feedback for similarity
-    quality_reason: str = ""         # LLM judge feedback for quality
+
+    similarity: float = 0.0  # 0-100, LLM-based semantic similarity
+    quality: float = 0.0  # 0-100, LLM-based factual correctness
+    reason: str = ""  # Combined feedback from all metrics
+    similarity_reason: str = ""  # LLM judge feedback for similarity
+    quality_reason: str = ""  # LLM judge feedback for quality
     # True when the corresponding metric raised. Distinguishes "judge
     # crashed" from "Score 1 → 20%" so dashboards can flag failures
     # rather than report a 0%/0% line that looks like a real failure.
@@ -273,27 +276,37 @@ def _call_rubric_prompt(
         response=answer,
         reference=reference_with_time,
     )
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            output = _shared_executor.submit(
-                asyncio.run,
-                metric.single_turn_scoring_prompt.generate(
-                    data=prompt_input, llm=metric.llm, callbacks=None
-                ),
-            ).result()
-        else:
-            output = loop.run_until_complete(
+
+    def _generate_once():
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                return _shared_executor.submit(
+                    asyncio.run,
+                    metric.single_turn_scoring_prompt.generate(
+                        data=prompt_input, llm=metric.llm, callbacks=None
+                    ),
+                ).result()
+            return loop.run_until_complete(
                 metric.single_turn_scoring_prompt.generate(
                     data=prompt_input, llm=metric.llm, callbacks=None
                 )
             )
-    except RuntimeError:
-        output = asyncio.run(
-            metric.single_turn_scoring_prompt.generate(
-                data=prompt_input, llm=metric.llm, callbacks=None
+        except RuntimeError:
+            return asyncio.run(
+                metric.single_turn_scoring_prompt.generate(
+                    data=prompt_input, llm=metric.llm, callbacks=None
+                )
             )
-        )
+
+    # One retry: a truncated or malformed judge response raises a parser
+    # error, and a fresh sample usually completes — without it the metric
+    # scores 0 and drags the run average down for a scoring artifact.
+    try:
+        output = _generate_once()
+    except Exception as first_err:
+        logger.warning("Rubric prompt failed, retrying once: %s", first_err)
+        output = _generate_once()
 
     raw_score = _safe_float(output.score)
     feedback = getattr(output, "feedback", "") or ""
@@ -418,7 +431,11 @@ def evaluate_batch(
         # LLM-based quality
         try:
             results[i].quality, results[i].quality_reason = _call_rubric_prompt(
-                quality_metric, queries[i], answers[i], references[i], eval_time=_time_at(i)
+                quality_metric,
+                queries[i],
+                answers[i],
+                references[i],
+                eval_time=_time_at(i),
             )
         except Exception as e:
             logger.error("Answer quality failed for item %d: %s", i, e)
