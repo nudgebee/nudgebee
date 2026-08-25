@@ -120,61 +120,6 @@ const searchKeyChipSx = {
   padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,
 };
 
-// Pinned above the results list — deliberately OUTSIDE OptionsList's own
-// scrollbox, so it never scrolls out of view, and shown regardless of result
-// count (including zero results — see pinnedRowVisible below). Contextual
-// copy on the left ("Ask {assistantName} anything", swapping to "...about
-// '{query}'" once something's typed), a solid primary button on the right
-// that's always just the short "Ask {assistantName}" label.
-const AskAiPinnedRow = ({ assistantName, nubiIconUrl, query, onClick, loading, highlighted = false }) => (
-  <Box
-    id='global-search-ask-ai-row'
-    sx={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: 'var(--ds-space-4)',
-      padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 6)}`,
-      margin: `0 ${ds.space.mul(0, 5)} var(--ds-space-2) ${ds.space.mul(0, 5)}`,
-      backgroundColor: 'var(--ds-background-200)',
-      borderRadius: 'var(--ds-overlay-item-radius)',
-      // Same keyboard-nav ring OptionItem rows use, so ArrowUp/ArrowDown
-      // landing here reads identically to landing on a result row.
-      boxShadow: highlighted ? 'inset 0 0 0 1.5px var(--ds-blue-400)' : 'none',
-      transition: 'box-shadow var(--ds-motion-micro) var(--ds-motion-ease)',
-    }}
-  >
-    <Typography
-      sx={{
-        fontSize: 'var(--ds-text-body)',
-        color: 'var(--ds-gray-600)',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {query ? (
-        <>
-          Ask {assistantName} about &ldquo;{query}&rdquo;
-        </>
-      ) : (
-        <>Ask {assistantName} anything</>
-      )}
-    </Typography>
-    <DsButton
-      id='global-search-ask-ai-top'
-      tone='primary'
-      size='sm'
-      icon={<SafeIcon src={nubiIconUrl} alt='' width={14} height={14} />}
-      onClick={onClick}
-      loading={loading}
-      sx={{ flexShrink: 0 }}
-    >
-      Ask {assistantName}
-    </DsButton>
-  </Box>
-);
-
 const GlobalSearchFooterHints = ({ mentionMode = false }) => (
   <Box
     id='global-search-footer-hints'
@@ -705,11 +650,10 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect, mentionMode 
   }, [highlightedIndex]);
 
   if (filteredOptions.length === 0) {
-    // AskAiPinnedRow above already explains "no match, ask nubi about X" for
-    // every non-mention case (it's visible whenever !mentionMode) — showing
-    // this text too there would just repeat it. It's only mentionMode (no
-    // account matches the typed "@partial-name") where the pinned row is
-    // hidden and this text is the sole indicator.
+    // The "Ask {assistantName}" button next to the search input is always
+    // visible, so a non-mention empty state needs no text of its own here.
+    // It's only mentionMode (no account matches the typed "@partial-name")
+    // where that button doesn't apply and this text is the sole indicator.
     return (
       <Box id='global-search-options-list' data-mention-mode={mentionMode ? 'true' : 'false'} sx={scrollboxSx}>
         {mentionMode && (
@@ -1386,22 +1330,13 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   const searchPlaceholder = scopedAccount
     ? `Search for ${scopedAccount.label}…`
     : hasMentionAccounts
-    ? 'Search pages or dashboards… (type @ to scope by account)'
+    ? 'Search pages/dashboard or just ask anything… (type @ for an account)'
     : 'Search pages or dashboards…';
 
   // Only offered once a typed query has actually come up empty, and never in
   // mention mode — picking an account, not asking a question, is that mode's
   // only action (see GlobalSearchFooterHints' own mentionMode guard above).
   const askAiEmptyQuery = !mentionMode && filteredOptions.length === 0 && search.trim() ? search.trim() : null;
-
-  // Whether AskAiPinnedRow is actually on screen — same condition its own
-  // render guard uses below. Visible whenever we're not mid @account-pick,
-  // regardless of result count (the empty state no longer carries its own
-  // CTA, so this is the one place that does). Claims keyboard-nav index 0
-  // ahead of every filteredOptions row, which then shift down by one, so
-  // ArrowUp from the first result lands on it and Enter asks the AI instead
-  // of selecting a page.
-  const pinnedRowVisible = !mentionMode;
 
   const handleBackspaceWhenEmpty = useCallback(() => {
     if (scopedAccount) {
@@ -1595,11 +1530,7 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       // ArrowUp/ArrowDown navigation + Enter-to-select the highlighted row.
       // Gated on `open` so these keys still behave normally (e.g. page
       // scroll) when the trigger button has focus but the panel is closed.
-      // AskAiPinnedRow, when visible, claims index 0 ahead of every result —
-      // filteredOptions rows shift down by one accordingly. It's now visible
-      // even with zero results, so navCount (not filteredOptions.length) is
-      // what decides whether there's anything to navigate at all.
-      const navCount = filteredOptions.length + (pinnedRowVisible ? 1 : 0);
+      const navCount = filteredOptions.length;
       if (!open || navCount === 0) {
         return;
       }
@@ -1617,20 +1548,15 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
             break;
           }
           e.preventDefault();
-          if (pinnedRowVisible && highlightedIndex === 0) {
-            handleAskAi(search);
-          } else {
-            const optIndex = pinnedRowVisible ? highlightedIndex - 1 : highlightedIndex;
-            if (filteredOptions[optIndex]) {
-              handleOptionSelect(filteredOptions[optIndex]);
-            }
+          if (filteredOptions[highlightedIndex]) {
+            handleOptionSelect(filteredOptions[highlightedIndex]);
           }
           break;
         default:
           break;
       }
     },
-    [open, filteredOptions, highlightedIndex, handleOptionSelect, pinnedRowVisible, handleAskAi, search]
+    [open, filteredOptions, highlightedIndex, handleOptionSelect]
   );
 
   return (
@@ -1850,98 +1776,103 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
           </IconButton>
         </CustomTooltip>
 
-        <Box sx={{ margin: `${ds.space.mul(0, 5)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)}`, position: 'relative' }}>
-          <SearchIcon
-            sx={{
-              position: 'absolute',
-              left: ds.space.mul(0, 5),
-              top: '50%',
-              transform: 'translateY(-50%)',
-              fontSize: 12,
-              opacity: 0.35,
-              pointerEvents: 'none',
-              zIndex: 1,
-            }}
-          />
-          <InputBase
-            id='global-search-input'
-            inputRef={searchRef}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            startAdornment={scopedAccount ? <AccountMentionChip account={scopedAccount} /> : undefined}
-            placeholder={searchPlaceholder}
-            onKeyDown={(e) => {
-              if (e.key === 'Backspace' && search === '') {
-                handleBackspaceWhenEmpty();
-              }
-              handleKeyDown(e);
-              // handleKeyDown is also wired to the Popover's own onKeyDown,
-              // which this event would otherwise reach too via bubbling —
-              // stop it for exactly the keys handleKeyDown consumes so
-              // Arrow nav / Enter-select don't double-apply. Everything
-              // else (typing, Ctrl+K, etc.) bubbles normally.
-              if (e.key === 'Escape' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || (e.key === 'Enter' && highlightedIndex >= 0)) {
-                e.stopPropagation();
-              }
-              if (e.key === 'Enter' && highlightedIndex < 0 && filteredOptions.length > 0) {
-                e.preventDefault();
-                // Select exact match first, otherwise select if only one result.
-                const q = search.trim().toLowerCase();
-                const exactMatch = filteredOptions.find((opt) => (opt?.label ?? '').toLowerCase() === q);
-                if (exactMatch) {
-                  handleOptionSelect(exactMatch);
-                } else if (filteredOptions.length === 1) {
-                  handleOptionSelect(filteredOptions[0]);
+        <Box
+          sx={{
+            margin: `${ds.space.mul(0, 5)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)}`,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--ds-space-2)',
+          }}
+        >
+          <Box sx={{ position: 'relative', flex: 1, minWidth: 0 }}>
+            <SearchIcon
+              sx={{
+                position: 'absolute',
+                left: ds.space.mul(0, 5),
+                top: '50%',
+                transform: 'translateY(-50%)',
+                fontSize: 12,
+                opacity: 0.35,
+                pointerEvents: 'none',
+                zIndex: 1,
+              }}
+            />
+            <InputBase
+              id='global-search-input'
+              inputRef={searchRef}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              startAdornment={scopedAccount ? <AccountMentionChip account={scopedAccount} /> : undefined}
+              placeholder={searchPlaceholder}
+              onKeyDown={(e) => {
+                if (e.key === 'Backspace' && search === '') {
+                  handleBackspaceWhenEmpty();
                 }
-              }
-              // A query that matches no page is a dead end otherwise — hand it
-              // straight to the AI assistant, same as clicking AskAiPinnedRow above.
-              // Gated on highlightedIndex < 0 — when the pinned row itself is
-              // arrow-highlighted (index 0), handleKeyDown's own Enter case above
-              // already calls handleAskAi; without this guard both would fire.
-              if (e.key === 'Enter' && highlightedIndex < 0 && askAiEmptyQuery) {
-                e.preventDefault();
-                handleAskAi(askAiEmptyQuery);
-              }
-            }}
-            sx={{
-              width: '100%',
-              fontSize: 'var(--ds-text-body)',
-              color: 'var(--ds-gray-700)',
-              border: '1px solid var(--ds-gray-200)',
-              borderRadius: ds.radius.md,
-              padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 14)}`,
-              transition: 'all 0.15s ease',
-              '&.Mui-focused': {
-                backgroundColor: 'var(--ds-background-100)',
-                borderColor: 'var(--ds-blue-500)',
-                boxShadow: '0 0 0 3px var(--ds-blue-100)',
-              },
-              '& input::placeholder': { color: 'var(--ds-gray-500)', opacity: 1 },
-              '& .MuiInputBase-input': { padding: 0 },
-            }}
-          />
+                handleKeyDown(e);
+                // handleKeyDown is also wired to the Popover's own onKeyDown,
+                // which this event would otherwise reach too via bubbling —
+                // stop it for exactly the keys handleKeyDown consumes so
+                // Arrow nav / Enter-select don't double-apply. Everything
+                // else (typing, Ctrl+K, etc.) bubbles normally.
+                if (e.key === 'Escape' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || (e.key === 'Enter' && highlightedIndex >= 0)) {
+                  e.stopPropagation();
+                }
+                if (e.key === 'Enter' && highlightedIndex < 0 && filteredOptions.length > 0) {
+                  e.preventDefault();
+                  // Select exact match first, otherwise select if only one result.
+                  const q = search.trim().toLowerCase();
+                  const exactMatch = filteredOptions.find((opt) => (opt?.label ?? '').toLowerCase() === q);
+                  if (exactMatch) {
+                    handleOptionSelect(exactMatch);
+                  } else if (filteredOptions.length === 1) {
+                    handleOptionSelect(filteredOptions[0]);
+                  }
+                }
+                // A query that matches no page is a dead end otherwise — hand it
+                // straight to the AI assistant, same as clicking the "Ask
+                // {assistantName}" button beside this input.
+                if (e.key === 'Enter' && askAiEmptyQuery) {
+                  e.preventDefault();
+                  handleAskAi(askAiEmptyQuery);
+                }
+              }}
+              sx={{
+                width: '100%',
+                fontSize: 'var(--ds-text-body)',
+                color: 'var(--ds-gray-700)',
+                border: '1px solid var(--ds-gray-200)',
+                borderRadius: ds.radius.md,
+                padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 14)}`,
+                transition: 'all 0.15s ease',
+                '&.Mui-focused': {
+                  backgroundColor: 'var(--ds-background-100)',
+                  borderColor: 'var(--ds-blue-500)',
+                  boxShadow: '0 0 0 3px var(--ds-blue-100)',
+                },
+                '& input::placeholder': { color: 'var(--ds-gray-500)', opacity: 1 },
+                '& .MuiInputBase-input': { padding: 0 },
+              }}
+            />
+          </Box>
+
+          {/* "Ask {assistantName}" — sits outside the input's own border, to its
+              right, rather than as its own row below (the former AskAiPinnedRow).
+              Stays visible even mid @account-pick — unlike that row, this is a
+              persistent shortcut, not a per-query "no match" hand-off. */}
+          <DsButton
+            id='global-search-ask-ai-top'
+            tone='primary'
+            size='sm'
+            icon={<SafeIcon src={nubiIconUrl} alt='' width={14} height={14} />}
+            onClick={() => handleAskAi(search.trim())}
+            loading={askingAi}
+            sx={{ flexShrink: 0 }}
+          >
+            Ask {assistantName}
+          </DsButton>
         </Box>
 
-        {/* Hidden only while mid @account-pick — otherwise always shown, including
-            with zero results, since the empty state no longer has its own CTA. */}
-        {pinnedRowVisible && (
-          <AskAiPinnedRow
-            assistantName={assistantName}
-            nubiIconUrl={nubiIconUrl}
-            query={search.trim()}
-            onClick={() => handleAskAi(search)}
-            loading={askingAi}
-            highlighted={highlightedIndex === 0}
-          />
-        )}
-
-        <OptionsList
-          filteredOptions={filteredOptions}
-          highlightedIndex={pinnedRowVisible ? highlightedIndex - 1 : highlightedIndex}
-          onSelect={handleOptionSelect}
-          mentionMode={mentionMode}
-        />
+        <OptionsList filteredOptions={filteredOptions} highlightedIndex={highlightedIndex} onSelect={handleOptionSelect} mentionMode={mentionMode} />
 
         <Divider sx={{ marginTop: 0, marginBottom: 0 }} />
         <GlobalSearchFooterHints mentionMode={mentionMode} />

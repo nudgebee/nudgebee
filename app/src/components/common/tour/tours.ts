@@ -2396,8 +2396,8 @@ function typeIntoInput(selector: string, value: string): void {
  * is ungated. Anchors (ids added alongside this guide except the first, which
  * GlobalPageSearch.jsx already emitted):
  *   #auto-complete-global-page-search → the header trigger pill
- *   #global-search-ask-ai-row     → the pinned "Ask {assistant}" row inside the
- *        popover (always visible once it's open, even with zero results)
+ *   #global-search-ask-ai-top     → the "Ask {assistant}" button beside the
+ *        popover's search input (always visible once it's open)
  *   #global-search-section-suggested-pages → "Suggested Pages" caption (always
  *        renders once the box has been opened)
  *   #global-search-section-recents → "Recents" caption — only present once the
@@ -2411,8 +2411,8 @@ function typeIntoInput(selector: string, value: string): void {
  *   #global-search-footer-hints   → the keyboard-hint / search-tip bar
  *   #global-search-trigger-ask-ai → the standalone header avatar button next to
  *        the search pill — a direct /ask-nudgebee shortcut, distinct from the
- *        pinned row above (that one reuses whatever's typed into search).
- *        Deliberately the LAST step, after the popover has closed: it sits
+ *        button beside the input above (that one reuses whatever's typed
+ *        into search). Deliberately the LAST step, after the popover has closed: it sits
  *        right next to the search pill, so spotlighting it while the popover
  *        is still open would fight for attention with the (much bigger)
  *        overlay right beside it.
@@ -2448,7 +2448,7 @@ const globalSearchTour: TourDef = {
       },
     },
     {
-      element: '#global-search-ask-ai-row',
+      element: '#global-search-ask-ai-top',
       get title() {
         return `Or just ask ${getAssistantName()}`;
       },
