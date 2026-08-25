@@ -19,6 +19,7 @@ import gc
 import logging
 import os
 import threading
+import time
 from typing import List, Tuple
 
 from utils.config import Config
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 _model_instance = None
 _model_lock = threading.Lock()
+# Admission control for the forward pass. Sized from config rather than the
+# threadpool because the bound that matters is CPU cores, not request slots.
+_inference_slots = threading.Semaphore(Config.reranker_max_concurrency)
 
 
 def _quantization_engine(machine: str) -> str:
@@ -120,15 +124,31 @@ def rerank(query: str, docs: List, threshold: float | None = None) -> Tuple[List
         return [], True
 
     cutoff = Config.reranker_threshold if threshold is None else threshold
+    queued_at = time.monotonic()
     try:
+        # Loading stays outside the semaphore: the first call spends ~35s pulling
+        # weights, and holding an admission slot for that would stall every other
+        # caller behind a one-off cost. Concurrent loads are already serialised by
+        # ``_model_lock``.
         model = get_reranker()
         # page_content is typed str, but it arrives from a Qdrant payload that can
         # carry an explicit null; without the fallback one malformed document
         # would fail the whole batch closed.
         pairs = [(query, (d[0].page_content or "")[: Config.reranker_max_doc_chars]) for d in docs]
-        scored = _to_unit_scale(model.predict(pairs))
+        # Timed from here, not from entry: the first call after a restart spends
+        # ~35s in get_reranker, and counting that as queue wait would report a
+        # cold start as contention.
+        admitted_at = time.monotonic()
+        with _inference_slots:
+            waited = time.monotonic() - admitted_at
+            # batch_size bounds peak activation memory: without it
+            # sentence-transformers scores every pair in one batch, so the
+            # footprint scaled with whatever retrieval happened to return.
+            scored = _to_unit_scale(model.predict(pairs, batch_size=Config.reranker_batch_size))
     except Exception as e:
-        logger.warning(f"Reranker failed to score documents: {e}")
+        # exc_info: this path discards the whole batch, so the traceback is the
+        # only way to tell a model-load failure from a scoring one.
+        logger.warning(f"Reranker failed to score documents: {e}", exc_info=True)
         return [], False
 
     # zip() would silently truncate to the shorter side, so a short score list
@@ -142,6 +162,7 @@ def rerank(query: str, docs: List, threshold: float | None = None) -> Tuple[List
     kept = [(d[0], s) for d, s in ranked if s >= cutoff]
     logger.info(
         f"Reranked {len(docs)} documents, kept {len(kept)} at threshold {cutoff} "
-        f"(top={ranked[0][1]:.4f}, bottom={ranked[-1][1]:.4f})"
+        f"(top={ranked[0][1]:.4f}, bottom={ranked[-1][1]:.4f}, "
+        f"queued={waited:.2f}s, total={time.monotonic() - queued_at:.2f}s)"
     )
     return kept, True

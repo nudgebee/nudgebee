@@ -77,16 +77,23 @@ class Config:
     # between the two; both drop a genuine documentation answer at any threshold
     # that keeps junk out.
     #
-    #   model                  errors/39   model cost   latency (8 docs, 2 threads)
-    #   bge-reranker-v2-m3     0           490MB        1480ms  @ max_length 256
-    #   bge-reranker-base      1           502MB         362ms
-    #   ms-marco-MiniLM-L-6    1            30MB         309ms
+    #   model                  errors/39   latency (8 docs, 2 threads)
+    #   bge-reranker-v2-m3     0           1480ms  @ max_length 256
+    #   bge-reranker-base      1            362ms
+    #   ms-marco-MiniLM-L-6    1            309ms
     #
-    # NOTE: 490MB does not fit the 851Mi limit against ~556Mi already in use.
-    # rag-server needs ~1.5Gi before this default is deployable; set
+    # The model-cost column that used to sit here was measured the same wrong
+    # way as the note below and has been removed rather than left misleading.
+    #
+    # The model costs ~1.1GB resident, not the 490MB an earlier revision of this
+    # comment claimed: that figure was an RSS delta sampled immediately after
+    # construction, and mmap'd weights fault in lazily, so most of them had not
+    # been touched yet. Measured 1105MB locally and 1098MB in-pod after a full
+    # warm-up pass. Nearly half of it is a 250k-token multilingual vocabulary we
+    # never use on English documentation. To run somewhere smaller, set
     # RAG_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2 with
-    # RAG_RERANKER_THRESHOLD=0.99 to run inside the current limit at the cost of
-    # missing roughly one documentation question in ten.
+    # RAG_RERANKER_THRESHOLD=0.99 at the cost of missing roughly one
+    # documentation question in ten.
     reranker_model = os.environ.get("RAG_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
     # Minimum 0-1 relevance for a document to survive. 0.80 and 0.85 both scored
     # zero errors; 0.85 sits mid-gap rather than on its edge. Retune when the
@@ -99,6 +106,19 @@ class Config:
     # int8 quantization: measured slower and larger on ARM (qnnpack), so it is
     # off until measured to help on the target platform (x86/fbgemm).
     reranker_quantize = os.environ.get("RAG_RERANKER_QUANTIZE", "false").lower() == "true"
+    # Concurrent forward passes. ``get_matching_doc`` is a sync ``def``, so
+    # FastAPI runs it on a 40-worker threadpool sized for I/O-bound work — which
+    # this is not. Forty concurrent passes over a 2-core limit bought no
+    # throughput (the work is CPU-bound) while each held its own activations:
+    # the pod OOMKilled at 4Gi and p50 rerank latency reached 21.7s. Queueing is
+    # cheaper than thrashing, so admit one pass at a time by default.
+    # Clamped: a negative value makes threading.Semaphore raise at import and the
+    # server never starts, and 0 blocks every rerank forever.
+    reranker_max_concurrency = max(1, int(os.environ.get("RAG_RERANKER_MAX_CONCURRENCY", 1)))
+    # Pairs per forward pass. Caps peak activation memory independently of how
+    # many documents retrieval hands over. Clamped for the same reason: 0 raises
+    # inside the batching loop and a negative value scores nothing at all.
+    reranker_batch_size = max(1, int(os.environ.get("RAG_RERANKER_BATCH_SIZE", 4)))
 
     # Nudgebee Docs
     nudgebee_docs_url = os.environ.get("NUDGEBEE_DOCS_URL", "https://docs.nudgebee.com")

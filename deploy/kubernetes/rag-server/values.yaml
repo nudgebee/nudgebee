@@ -131,3 +131,7 @@ secretName: 'nudgebee'
 
 env:
   UVICORN_WORKERS: 1
+  # glibc hands each thread its own arena and returns freed memory to the arena
+  # rather than the OS, so RSS ratcheted to the high-water mark of concurrent
+  # inference: 28 arenas held ~1.8GB of freed activations and the pod OOMKilled.
+  MALLOC_ARENA_MAX: 2
