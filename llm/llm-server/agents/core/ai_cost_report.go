@@ -1,6 +1,7 @@
 package core
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -55,11 +56,21 @@ func HandleAiCostAccountReportApi(ctx *security.RequestContext, request AiCostAc
 	if err != nil {
 		return AiCostAccountReport{}, err
 	}
-	return GetConversationDao().GetAiCostAccountReport(accountIDs, referenceDate)
+	// Must use the tenant's configured send hour, not a hardcoded one, so this
+	// dashboard tab's window boundaries match the Slack digest's.
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return AiCostAccountReport{}, fmt.Errorf("HandleAiCostAccountReportApi: failed to get database manager: %w", err)
+	}
+	sendHourUTC, err := GetAiCostReportSchedule(dbManager, tenantID)
+	if err != nil {
+		return AiCostAccountReport{}, fmt.Errorf("HandleAiCostAccountReportApi: failed to read cost report schedule: %w", err)
+	}
+	return GetConversationDao().GetAiCostAccountReport(accountIDs, referenceDate, sendHourUTC)
 }
 
 // AiCostReportFeatureFlag gates both the daily digest cron (this file — the
-// bulk listAiCostReportEnabledTenantIDs join, not a per-tenant
+// bulk listAiCostReportEnabledTenantSchedules join, not a per-tenant
 // common.IsFeatureEnabled call) and the dashboard's Accounts tab, which is
 // checked twice: the frontend hides the tab (hasFeatureAccess('AI_COST_REPORT'))
 // and HandleAiCostAccountReportApi re-checks it server-side via
@@ -312,29 +323,40 @@ func sumForAccount(rows []accountDimScan, accountID string) float64 {
 }
 
 // GetAiCostAccountReport computes the consolidated per-account report for
-// referenceDate (the day being reported on, UTC). accountIDs scopes which
-// accounts to include — typically every active account in a tenant
-// (security.GetAccountsForTenant). Account names are resolved from
-// cloud_accounts inside the aggregation queries themselves, not passed in.
+// referenceDate (the day being reported on, UTC), with every window boundary
+// anchored to sendHourUTC (0-23, from GetAiCostReportSchedule) instead of
+// midnight — a tenant dispatched at 14:00 UTC sees "daily" as the trailing
+// 24h ending 14:00 UTC today, not an increasingly stale calendar day.
+// accountIDs scopes which accounts to include —
+// typically every active account in a tenant (security.GetAccountsForTenant).
+// Account names are resolved from cloud_accounts inside the aggregation
+// queries themselves, not passed in.
 // Accounts with zero cost across the daily, month-to-date, AND previous-month
 // windows are omitted — a zero-cost row adds no signal to a cost digest. An
 // account with prior-month spend but nothing since IS kept even though daily
 // and MTD are both zero, so a cost drop-to-zero (something got turned off, or
 // billing/ingestion broke) stays visible instead of silently disappearing.
-func (chat *ConversationDao) GetAiCostAccountReport(accountIDs []string, referenceDate time.Time) (AiCostAccountReport, error) {
+func (chat *ConversationDao) GetAiCostAccountReport(accountIDs []string, referenceDate time.Time, sendHourUTC int) (AiCostAccountReport, error) {
 	report := AiCostAccountReport{ReferenceDate: referenceDate.UTC().Format("2006-01-02"), Accounts: []AiCostAccountRow{}}
 	if len(accountIDs) == 0 {
 		return report, nil
 	}
 
 	day := referenceDate.UTC()
-	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
+	dayStart := time.Date(day.Year(), day.Month(), day.Day(), sendHourUTC, 0, 0, 0, time.UTC)
 	dayEnd := dayStart.Add(24*time.Hour - time.Nanosecond)
-	monthStart := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthStart := time.Date(day.Year(), day.Month(), 1, sendHourUTC, 0, 0, 0, time.UTC)
 	prevMonthStart := monthStart.AddDate(0, -1, 0)
 	prevMonthEnd := monthStart.Add(-time.Nanosecond)
 	daysElapsedThisMonth := float64(day.Day())
-	daysInPrevMonth := float64(prevMonthEnd.Day())
+	// monthStart.AddDate(0, 0, -1), not prevMonthEnd.Day(): AddDate does
+	// calendar-day arithmetic, so it correctly lands on the previous month's
+	// last day regardless of sendHourUTC. prevMonthEnd is monthStart minus one
+	// NANOSECOND — with sendHourUTC > 0 that only steps back within the same
+	// calendar day (e.g. 14:00:00.000000000 -> 13:59:59.999999999 on the 1st,
+	// not July 31st), so .Day() on it would silently return the wrong month's
+	// day count.
+	daysInPrevMonth := float64(monthStart.AddDate(0, 0, -1).Day())
 
 	var (
 		dailyByModel, dailyBySource, mtdByModel, mtdBySource []accountDimScan
@@ -506,39 +528,65 @@ func (chat *ConversationDao) GetAiCostAccountReport(accountIDs []string, referen
 
 // --- Tenant-wide orchestration (cron entry point) ---------------------------
 
-// listAiCostReportEnabledTenantIDs returns every tenant that both has at
-// least one active cloud account AND has AiCostReportFeatureFlag enabled —
-// the set the daily digest iterates. Joins the flag check into the same
-// query rather than listing every active tenant and then checking the flag
-// one tenant at a time: with 100+ active tenants and the flag enabled for
+// TenantCostReportSchedule is one tenant's resolved dispatch hour — either
+// their own configuration_store row or defaultAiCostReportSendHourUTC when
+// they've never set one.
+type TenantCostReportSchedule struct {
+	TenantID    string
+	SendHourUTC int
+}
+
+// listAiCostReportEnabledTenantSchedules returns every tenant that both has
+// at least one active cloud account AND has AiCostReportFeatureFlag enabled,
+// together with their configured send hour — the set RunAiCostReportDispatch
+// iterates every cron fire. Joins the flag check and the schedule lookup into
+// the same query rather than listing every active tenant and then checking
+// each one individually: with 100+ active tenants and the flag enabled for
 // only a handful during rollout, a per-tenant round trip was ~100+ sequential
 // queries to find a few matches. One join replaces all of them.
-func listAiCostReportEnabledTenantIDs() ([]string, error) {
+func listAiCostReportEnabledTenantSchedules() ([]TenantCostReportSchedule, error) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return nil, fmt.Errorf("listAiCostReportEnabledTenantIDs: failed to get database manager: %w", err)
+		return nil, fmt.Errorf("listAiCostReportEnabledTenantSchedules: failed to get database manager: %w", err)
 	}
-	var tenantIDs []string
+	type row struct {
+		TenantID    string         `db:"tenant_id"`
+		SendHourUTC sql.NullString `db:"send_hour_utc"`
+	}
+	var rows []row
 	query := `
-		SELECT DISTINCT ca.tenant
+		SELECT DISTINCT ca.tenant AS tenant_id, cs.value AS send_hour_utc
 		FROM cloud_accounts ca
 		JOIN feature_flag ff ON ff.tenant_id = ca.tenant
+		LEFT JOIN configuration_store cs
+		  ON cs.tenant_id = ca.tenant
+		 AND cs.config_type = $2
+		 AND cs.key = $3
+		 AND cs.is_active
+		 AND cs.account_id IS NULL
 		WHERE ca.status = 'active'
 		  AND ff.feature_id = $1
 		  AND ff.status = 'enabled'`
-	if err := dbManager.Db.Select(&tenantIDs, query, AiCostReportFeatureFlag); err != nil {
-		slog.Error("listAiCostReportEnabledTenantIDs: query failed", "error", err)
-		return nil, fmt.Errorf("listAiCostReportEnabledTenantIDs: %w", err)
+	if err := dbManager.Db.Select(&rows, query, AiCostReportFeatureFlag, aiCostReportScheduleConfigType, aiCostReportScheduleKey); err != nil {
+		slog.Error("listAiCostReportEnabledTenantSchedules: query failed", "error", err)
+		return nil, fmt.Errorf("listAiCostReportEnabledTenantSchedules: %w", err)
 	}
-	return tenantIDs, nil
+	schedules := make([]TenantCostReportSchedule, 0, len(rows))
+	for _, r := range rows {
+		schedules = append(schedules, TenantCostReportSchedule{
+			TenantID:    r.TenantID,
+			SendHourUTC: resolveSendHour(r.SendHourUTC),
+		})
+	}
+	return schedules, nil
 }
 
 // GetAiCostAccountReportForTenant resolves a tenant's active accounts and
-// computes its report. Used by the digest cron (RunAiCostDailyDigest) only —
+// computes its report. Used by the digest cron (RunAiCostReportDispatch) only —
 // the dashboard's Accounts tab calls GetConversationDao().GetAiCostAccountReport
 // directly (via HandleAiCostAccountReportApi), scoped to the caller's own
 // accessible accounts rather than every account in the tenant.
-func GetAiCostAccountReportForTenant(tenantID string, referenceDate time.Time) (AiCostAccountReport, error) {
+func GetAiCostAccountReportForTenant(tenantID string, referenceDate time.Time, sendHourUTC int) (AiCostAccountReport, error) {
 	accounts, err := security.GetAccountsForTenant(tenantID)
 	if err != nil {
 		return AiCostAccountReport{}, fmt.Errorf("GetAiCostAccountReportForTenant: %w", err)
@@ -547,7 +595,7 @@ func GetAiCostAccountReportForTenant(tenantID string, referenceDate time.Time) (
 	for _, a := range accounts {
 		accountIDs = append(accountIDs, a.ID)
 	}
-	report, err := GetConversationDao().GetAiCostAccountReport(accountIDs, referenceDate)
+	report, err := GetConversationDao().GetAiCostAccountReport(accountIDs, referenceDate, sendHourUTC)
 	if err != nil {
 		return AiCostAccountReport{}, err
 	}
@@ -555,27 +603,56 @@ func GetAiCostAccountReportForTenant(tenantID string, referenceDate time.Time) (
 	return report, nil
 }
 
-// RunAiCostDailyDigest computes and publishes the daily AI cost digest for
-// every AI_COST_REPORT-enabled tenant, for the given referenceDate (the day
-// being reported on — callers pass "yesterday" so the report covers a full
-// day, not a partial one). Errors for one tenant are logged and skipped so a
-// single bad tenant doesn't block the rest of the digest run.
-func RunAiCostDailyDigest(referenceDate time.Time) error {
-	tenantIDs, err := listAiCostReportEnabledTenantIDs()
+// RunAiCostReportDispatch is the hourly cron entry point: publishes the AI
+// cost digest for every enabled tenant whose configured send hour has
+// arrived (SendHourUTC <= now's hour) and hasn't been claimed for today yet.
+// Using "<=" rather than an exact-hour match makes a missed fire self-heal on
+// the next hourly tick instead of silently skipping that tenant until
+// tomorrow — the dispatch-log claim already guarantees at most one publish
+// per (tenant, report_date), so catching up costs nothing extra. referenceDate
+// is "yesterday" relative to now for every tenant — intentionally not
+// per-tenant date math, since dispatch hour shouldn't change which calendar
+// day gets reported on.
+func RunAiCostReportDispatch(now time.Time) error {
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return fmt.Errorf("RunAiCostReportDispatch: failed to get database manager: %w", err)
+	}
+	schedules, err := listAiCostReportEnabledTenantSchedules()
 	if err != nil {
 		return err
 	}
-	for _, tenantID := range tenantIDs {
-		report, err := GetAiCostAccountReportForTenant(tenantID, referenceDate)
+	referenceDate := now.AddDate(0, 0, -1)
+	nowHour := now.UTC().Hour()
+	for _, schedule := range schedules {
+		if schedule.SendHourUTC > nowHour {
+			continue
+		}
+		claimed, err := tryClaimDispatch(dbManager, schedule.TenantID, referenceDate)
 		if err != nil {
-			slog.Error("RunAiCostDailyDigest: failed to compute report", "tenant_id", tenantID, "error", err)
+			slog.Error("RunAiCostReportDispatch: failed to claim dispatch", "tenant_id", schedule.TenantID, "error", err)
+			continue
+		}
+		if !claimed {
+			continue // already dispatched today — normal on a catch-up/retry fire, not an error.
+		}
+		releaseClaim := func(reason string, causeErr error) {
+			slog.Error("RunAiCostReportDispatch: "+reason, "tenant_id", schedule.TenantID, "error", causeErr)
+			if releaseErr := releaseDispatchClaim(dbManager, schedule.TenantID, referenceDate); releaseErr != nil {
+				slog.Error("RunAiCostReportDispatch: failed to release dispatch claim", "tenant_id", schedule.TenantID, "error", releaseErr)
+			}
+		}
+
+		report, err := GetAiCostAccountReportForTenant(schedule.TenantID, referenceDate, schedule.SendHourUTC)
+		if err != nil {
+			releaseClaim("failed to compute report", err)
 			continue
 		}
 		if len(report.Accounts) == 0 {
-			continue // nothing to report — no AI usage anywhere in the tenant.
+			continue // nothing to report — no AI usage anywhere in the tenant; claim stands, no retry needed.
 		}
 		if err := publishAiCostAccountReport(report); err != nil {
-			slog.Error("RunAiCostDailyDigest: failed to publish report", "tenant_id", tenantID, "error", err)
+			releaseClaim("failed to publish report", err)
 		}
 	}
 	return nil

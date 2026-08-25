@@ -2353,6 +2353,7 @@ func DeleteTenant(ctx *security.RequestContext, request TenantDeleteRequest) (Te
 		{name: "knowledge_graph_node"},
 		{name: "knowledge_graph_tenant_filters"},
 		// llm
+		{name: "ai_cost_report_dispatch_log"},
 		{name: "llm_conversations"},
 		{name: "llm_global_contexts"},
 		{name: "llm_knowledgebases"},

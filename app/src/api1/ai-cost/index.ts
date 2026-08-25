@@ -600,6 +600,31 @@ export async function aggregateAccountCostReport(
   return response?.data?.data?.ai_aggregate_account_cost_report?.data ?? null;
 }
 
+/** This tenant's configured AI Cost Daily Report send hour (0-23, UTC). */
+export interface AiCostReportSchedule {
+  send_hour_utc: number;
+}
+
+export async function getCostReportSchedule(signal?: AbortSignal): Promise<AiCostReportSchedule | null> {
+  const query = `mutation GetCostReportSchedule {
+    ai_get_cost_report_schedule(request: {}) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'GetCostReportSchedule', {}, undefined, signal);
+  return response?.data?.data?.ai_get_cost_report_schedule?.data ?? null;
+}
+
+export async function upsertCostReportSchedule(req: { sendHourUtc: number }, signal?: AbortSignal): Promise<AiCostReportSchedule | null> {
+  const query = `mutation UpsertCostReportSchedule($sendHourUtc: Int!) {
+    ai_upsert_cost_report_schedule(request: { send_hour_utc: $sendHourUtc }) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'UpsertCostReportSchedule', { sendHourUtc: req.sendHourUtc }, undefined, signal);
+  return response?.data?.data?.ai_upsert_cost_report_schedule?.data ?? null;
+}
+
 // ─── ai_list_agent_costs (Agents leaderboard) ──────────────────────────────────
 // Top agent INVOCATIONS across conversations, ranked by cost | latency | errors.
 // One row per invocation (same agent name recurs), each linked to its conversation.

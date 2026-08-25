@@ -159,7 +159,7 @@ func TestGetAiCostAccountReport_ComputesRowsAndOmitsZeroCost(t *testing.T) {
 	// Tenant-wide top-models / top-sources breakdowns — not under test here.
 	expectEmptyTopBreakdowns(mock)
 
-	report, err := dao.GetAiCostAccountReport([]string{"acc-1", "acc-2", "acc-3"}, referenceDate)
+	report, err := dao.GetAiCostAccountReport([]string{"acc-1", "acc-2", "acc-3"}, referenceDate, 0)
 	require.NoError(t, err)
 	require.Len(t, report.Accounts, 2, "acc-3 has zero cost everywhere and must be omitted")
 
@@ -182,6 +182,61 @@ func TestGetAiCostAccountReport_ComputesRowsAndOmitsZeroCost(t *testing.T) {
 	assert.Equal(t, 20.0, acc2.MtdCostUsd)
 	assert.Equal(t, 0.0, acc2.PrevMonthCostUsd, "no prior-month baseline")
 	assert.Equal(t, 0.0, acc2.PctDeltaAvgDaily, "no baseline to compare against")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetAiCostAccountReport_WindowAnchoredToSendHour verifies window
+// boundaries shift with sendHourUTC instead of staying hardcoded to
+// midnight, and that AvgDailyPrevMonth still resolves 310/31 (not 310/1) —
+// the naive `monthStart.Add(-time.Nanosecond).Day()` only rolls back a full
+// calendar day when the hour is exactly 0.
+func TestGetAiCostAccountReport_WindowAnchoredToSendHour(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.MatchExpectationsInOrder(false)
+
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+
+	const sendHourUTC = 14
+	referenceDate := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	dayStart := time.Date(2026, 8, 10, sendHourUTC, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24*time.Hour - time.Nanosecond)
+	monthStart := time.Date(2026, 8, 1, sendHourUTC, 0, 0, 0, time.UTC)
+
+	dimCols := []string{"account_id", "account_name", "dim_key", "cost_usd"}
+	totalCols := []string{"account_id", "account_name", "cost_usd"}
+
+	mock.ExpectQuery("COALESCE\\(t.llm_model::text, 'unknown'\\)").
+		WithArgs(sqlmock.AnyArg(), dayStart, dayEnd).
+		WillReturnRows(sqlmock.NewRows(dimCols).AddRow("acc-1", "Acme", "gpt-4o", 10.0))
+	mock.ExpectQuery("COALESCE\\(c.source::text, 'unknown'\\)").
+		WithArgs(sqlmock.AnyArg(), dayStart, dayEnd).
+		WillReturnRows(sqlmock.NewRows(dimCols).AddRow("acc-1", "Acme", "user_chat", 10.0))
+	mock.ExpectQuery("COALESCE\\(t.llm_model::text, 'unknown'\\)").
+		WithArgs(sqlmock.AnyArg(), monthStart, dayEnd).
+		WillReturnRows(sqlmock.NewRows(dimCols).AddRow("acc-1", "Acme", "gpt-4o", 100.0))
+	mock.ExpectQuery("COALESCE\\(c.source::text, 'unknown'\\)").
+		WithArgs(sqlmock.AnyArg(), monthStart, dayEnd).
+		WillReturnRows(sqlmock.NewRows(dimCols).AddRow("acc-1", "Acme", "user_chat", 100.0))
+
+	// Prev month (July, 31 days): $310 total -> $10/day avg IF daysInPrevMonth
+	// correctly resolves to 31 despite the nonzero sendHourUTC.
+	mock.ExpectQuery("GROUP BY 1, 2$").
+		WillReturnRows(sqlmock.NewRows(totalCols).AddRow("acc-1", "Acme", 310.0))
+
+	expectEmptyTopBreakdowns(mock)
+
+	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate, sendHourUTC)
+	require.NoError(t, err)
+	require.Len(t, report.Accounts, 1)
+
+	acc := report.Accounts[0]
+	assert.Equal(t, 10.0, acc.DailyCostUsd)
+	assert.Equal(t, 100.0, acc.MtdCostUsd)
+	assert.InDelta(t, 10.0, acc.AvgDailyPrevMonth, 0.001, "310 / 31 days in July — wrong if daysInPrevMonth misresolves to 1")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -233,7 +288,7 @@ func TestGetAiCostAccountReport_NegligiblePrevMonthBaselineYieldsZeroDelta(t *te
 	// Tenant-wide top-models / top-sources breakdowns — not under test here.
 	expectEmptyTopBreakdowns(mock)
 
-	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate)
+	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate, 0)
 	require.NoError(t, err)
 	require.Len(t, report.Accounts, 1)
 
@@ -290,7 +345,7 @@ func TestGetAiCostAccountReport_KeepsPrevMonthOnlyDropToZero(t *testing.T) {
 	// Tenant-wide top-models / top-sources breakdowns — not under test here.
 	expectEmptyTopBreakdowns(mock)
 
-	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate)
+	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate, 0)
 	require.NoError(t, err)
 	require.Len(t, report.Accounts, 1, "prev-month-only account must not be omitted")
 
@@ -348,7 +403,7 @@ func TestGetAiCostAccountReport_PopulatesTopModels(t *testing.T) {
 	mock.ExpectQuery("COALESCE\\(c.source, 'unknown'\\)::text").
 		WillReturnRows(sqlmock.NewRows(dimBreakdownCols))
 
-	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate)
+	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate, 0)
 	require.NoError(t, err)
 	require.Len(t, report.TopModels, 2)
 
@@ -406,7 +461,7 @@ func TestGetAiCostAccountReport_PopulatesTopSources(t *testing.T) {
 			AddRow("Investigation", 80.0, 40, 2.5, 6.0).
 			AddRow("Automation", 20.0, 10, 1.0, 1.5))
 
-	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate)
+	report, err := dao.GetAiCostAccountReport([]string{"acc-1"}, referenceDate, 0)
 	require.NoError(t, err)
 	require.Len(t, report.TopSources, 2)
 
@@ -425,7 +480,7 @@ func TestGetAiCostAccountReport_PopulatesTopSources(t *testing.T) {
 // the DB — mirrors GetUsageMetrics' empty-scope guard.
 func TestGetAiCostAccountReport_EmptyAccountIDs(t *testing.T) {
 	dao := &ConversationDao{}
-	report, err := dao.GetAiCostAccountReport(nil, time.Now())
+	report, err := dao.GetAiCostAccountReport(nil, time.Now(), 0)
 	require.NoError(t, err)
 	assert.Empty(t, report.Accounts)
 }

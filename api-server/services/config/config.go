@@ -189,6 +189,8 @@ type appConfig struct {
 
 	NBRetentionDaysRecommendationsArchive int `mapstructure:"nb_retention_days_recommendations_archive"`
 
+	NBRetentionDaysAiCostReportDispatchLog int `mapstructure:"nb_retention_days_ai_cost_report_dispatch_log"`
+
 	// NBRetentionDaysEventAnalysis ages out event_log_analysis by the recency of
 	// the newest run for an event identity, not per row — see the
 	// event_log_analysis cleanup job in services/nb. Defaults to the critical
@@ -452,6 +454,7 @@ func init() {
 	viper.SetDefault("nb_retention_days_cloud_account_usage_report", 90)
 	viper.SetDefault("nb_retention_days_k8s_resources", 30)
 	viper.SetDefault("nb_retention_days_recommendations_archive", 30)
+	viper.SetDefault("nb_retention_days_ai_cost_report_dispatch_log", 7)
 	viper.SetDefault("nb_retention_days_event_analysis", 90)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
 	viper.SetDefault("nb_retention_days_kg_inactive_edges", 14)

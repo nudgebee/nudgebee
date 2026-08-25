@@ -171,7 +171,7 @@ const Notifications = () => {
     const limit = rowsPerPage;
     const offset = rowsPerPage * currentPage;
     setLoading(true);
-    const query: any = {};
+    const query: any = { excludeSource: 'ai_cost' }; // managed from the Cost Report tab's own schedule modal instead
     if (selectedClusterId) {
       query.accountId = selectedClusterId;
     }

@@ -316,6 +316,11 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				) DELETE FROM recommendation WHERE id IN (SELECT id FROM to_del)`,
 					config.Config.NBRetentionDaysRecommendationsArchive, cleanupBatchSize),
 			},
+			{
+				Name:      "ai_cost_report_dispatch_log",
+				Metastore: database.Metastore,
+				Query:     fmt.Sprintf(`DELETE FROM ai_cost_report_dispatch_log WHERE report_date < (now() - interval '%d days')::date`, config.Config.NBRetentionDaysAiCostReportDispatchLog),
+			},
 		}
 
 	jobsToRemove := []dataCleanupJob{}

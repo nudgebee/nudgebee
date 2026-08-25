@@ -367,7 +367,7 @@
   comment: Sync LLM conversation status hourly
 - name: AI Cost Daily Report
   webhook: http://llm-server:8000/v1/cost/ai-cost-daily-report
-  schedule: '0 6 * * *'
+  schedule: '0 * * * *'
   payload: {}
   headers:
     - name: X-ACTION-TOKEN
@@ -376,8 +376,8 @@
     num_retries: 0
     retry_interval_seconds: 10
     timeout_seconds: 300
-    tolerance_seconds: 21600
-  comment: Daily + MTD AI cost digest per account, published to Slack, at 6 AM UTC
+    tolerance_seconds: 3600
+  comment: Daily + MTD AI cost digest per account, published to Slack — fires hourly, llm-server dispatches each tenant at their configured UTC hour (default 6 AM)
 - name: Recommendation Resolution Update
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
   schedule: '*/5 * * * *'
