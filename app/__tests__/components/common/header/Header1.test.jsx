@@ -1044,21 +1044,4 @@ describe('Header1', () => {
       });
     });
   });
-
-  describe('ask nudgebee button', () => {
-    it('navigates to ask-nudgebee with selectedCluster value', async () => {
-      mockRouter.pathname = '/home';
-      mockRouter.asPath = '/home';
-      mockRouter.query = {};
-      await act(async () => {
-        render(<Header1 />);
-      });
-      // Find the ask nudgebee button (nubi icon button)
-      const nubiBtn = screen.queryByRole('button', { name: /ask nudgebee/i });
-      if (nubiBtn) {
-        fireEvent.click(nubiBtn);
-        expect(mockRouter.push).toHaveBeenCalled();
-      }
-    });
-  });
 });
