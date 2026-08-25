@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"nudgebee/services/config"
+	"nudgebee/services/license"
 	"nudgebee/services/user"
 )
 
@@ -20,13 +21,16 @@ func setAdminEmail(t *testing.T, email string) func() {
 	return func() { config.Config.AdminEmail = prev }
 }
 
-func TestAdminEmailPrefersExplicitConfig(t *testing.T) {
+// With no licence address — every Community deployment — admin.email is the
+// only source, and surrounding whitespace must not defeat it.
+func TestAdminEmailUsesConfigWhenTheLicenceCarriesNone(t *testing.T) {
 	restore := setAdminEmail(t, "  configured@example.com  ")
 	defer restore()
 
-	// The licence's address is the fallback, so an explicitly configured one
-	// must win — and surrounding whitespace must not defeat the comparison.
-	if got, want := adminEmail(), "configured@example.com"; got != want {
+	if license.Get().Email() != "" {
+		t.Skip("this environment carries a licence address; the Community path cannot be exercised")
+	}
+	if got, want := adminEmail(discardLogger()), "configured@example.com"; got != want {
 		t.Errorf("adminEmail() = %q, want %q", got, want)
 	}
 }
@@ -39,7 +43,7 @@ func TestProvisionIsInertWithoutAnAdminAddress(t *testing.T) {
 
 	// The default (OSS) licence carries no address either, so this resolves to
 	// "no admin configured" and must return before touching the database.
-	if adminEmail() != "" {
+	if adminEmail(discardLogger()) != "" {
 		t.Skip("a licence address is present in this environment; the inert path cannot be exercised")
 	}
 	if err := Provision(t.Context(), discardLogger()); err != nil {
