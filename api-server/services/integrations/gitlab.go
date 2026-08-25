@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -221,6 +222,9 @@ func listGitlabGroupMembers(ctx context.Context, client *gitlab.Client, groups [
 				ListOptions: gitlab.ListOptions{PerPage: gitlabUserPageSize, Page: int64(page)},
 			}, gitlab.WithContext(ctx))
 			if err != nil {
+				if resp != nil && resp.StatusCode == http.StatusNotFound {
+					break
+				}
 				return nil, fmt.Errorf("gitlab: list group members failed for %q: %w", group, err)
 			}
 			// Map + dedup on this single goroutine (seen/out aren't concurrency-safe);

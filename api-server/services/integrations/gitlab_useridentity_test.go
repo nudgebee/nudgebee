@@ -1,11 +1,15 @@
 package integrations
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"nudgebee/services/integrations/core"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
@@ -91,4 +95,44 @@ func TestGitlabGroupsFromProjects(t *testing.T) {
 	}
 	assert.Nil(t, gitlabGroupsFromProjects("null"))
 	assert.Nil(t, gitlabGroupsFromProjects("not json"))
+}
+
+func TestListGitlabGroupMembers(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/groups/missing-group/members/all", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message": "404 Group Not Found"}`))
+	})
+	mux.HandleFunc("/api/v4/groups/valid-group/members/all", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"id": 101, "username": "alice", "name": "Alice", "email": "alice@example.com"}]`))
+	})
+	mux.HandleFunc("/api/v4/groups/error-group/members/all", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message": "500 Internal Server Error"}`))
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client, err := gitlab.NewClient("test-token", gitlab.WithBaseURL(server.URL+"/api/v4"))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	t.Run("handles 404 gracefully and processes valid groups", func(t *testing.T) {
+		users, err := listGitlabGroupMembers(ctx, client, []string{"missing-group", "valid-group"})
+		require.NoError(t, err)
+		assert.Len(t, users, 1)
+		assert.Equal(t, "101", users[0].ID)
+		assert.Equal(t, "alice", users[0].Username)
+		assert.Equal(t, "alice@example.com", users[0].Email)
+	})
+
+	t.Run("propagates non-404 errors", func(t *testing.T) {
+		_, err := listGitlabGroupMembers(ctx, client, []string{"error-group"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "gitlab: list group members failed for \"error-group\"")
+	})
 }
