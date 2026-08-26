@@ -250,9 +250,9 @@ def _configure_ondisk_storage(client: QdrantClient) -> Dict[str, Any]:
             f"{result['failed']} failed)"
         )
 
-    except Exception as e:
-        logger.error(f"Error configuring on-disk storage: {e}")
-        result["error"] = str(e)
+    except Exception:
+        logger.exception("Error configuring on-disk storage")
+        result["error"] = "Failed to configure on-disk storage"
 
     return result
 

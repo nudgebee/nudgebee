@@ -44,6 +44,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
   // in the path — without this guard, a field schema with path "__proto__.x"
   // would write to Object's prototype, polluting every object in the page.
   const setNestedValue = (obj, path, value) => {
+    if (!obj || typeof obj !== 'object') return;
     const keys = path.split('.');
     if (keys.some((k) => k === '__proto__' || k === 'constructor' || k === 'prototype')) {
       return;
@@ -51,13 +52,17 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
     let current = obj;
 
     for (let i = 0; i < keys.length - 1; i++) {
-      if (!current[keys[i]] || typeof current[keys[i]] !== 'object') {
-        current[keys[i]] = {};
+      const key = keys[i];
+      if (!Object.prototype.hasOwnProperty.call(current, key) || !current[key] || typeof current[key] !== 'object') {
+        current[key] = {};
       }
-      current = current[keys[i]];
+      current = current[key];
     }
 
-    current[keys[keys.length - 1]] = value;
+    const lastKey = keys[keys.length - 1];
+    if (lastKey && lastKey !== '__proto__' && lastKey !== 'constructor' && lastKey !== 'prototype') {
+      current[lastKey] = value;
+    }
   };
 
   // Helper function to get default value based on field type

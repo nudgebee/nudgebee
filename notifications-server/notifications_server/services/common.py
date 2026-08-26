@@ -957,7 +957,7 @@ class CommonService:
                 }
 
             except SlackApiError as e:
-                error_msg = e.response.get("error", str(e))
+                error_msg = e.response.get("error", "slack_api_error") if hasattr(e, "response") and isinstance(e.response, dict) else "slack_api_error"
                 LOG.error(f"Slack API error sending message to channel {channel_id}: {error_msg}")
 
                 return self._check_error_msg(error_msg, "chat:write")
@@ -1028,7 +1028,7 @@ class CommonService:
             }
 
         except SlackApiError as e:
-            error_msg = e.response.get("error", str(e))
+            error_msg = e.response.get("error", "slack_api_error") if hasattr(e, "response") and isinstance(e.response, dict) else "slack_api_error"
             LOG.error(f"Slack API error sending DM to user {user_id}: {error_msg}")
             return self._check_dm_error_msg(error_msg)
 
@@ -1377,7 +1377,7 @@ class CommonService:
                 "reaction": emoji,
             }
         except SlackApiError as e:
-            error_msg = e.response.get("error", str(e))
+            error_msg = e.response.get("error", "slack_api_error") if hasattr(e, "response") and isinstance(e.response, dict) else "slack_api_error"
             LOG.error("Slack API error adding reaction: %s", error_msg)
             return {"success": False, "provider": "slack", "error": error_msg}
 
@@ -2515,9 +2515,9 @@ class CommonService:
                 return {"success": True, "platform": "ms_teams"}
             error_detail = resp.text if resp else "No response"
             return {"success": False, "platform": "ms_teams", "error": error_detail}
-        except Exception as e:
-            LOG.error("MS Teams test notification error: %s", e)
-            return {"success": False, "platform": "ms_teams", "error": str(e)}
+        except Exception:
+            LOG.exception("MS Teams test notification error")
+            return {"success": False, "platform": "ms_teams", "error": "Failed to send MS Teams test notification"}
 
     def _send_test_discord(self, messaging_platform, channel_id, message):
         from notifications_server.clients.discord_client import DiscordClient
@@ -2529,9 +2529,9 @@ class CommonService:
             if not response.get("ok"):
                 return {"success": False, "platform": "discord", "error": response.get("error", "Unknown error")}
             return {"success": True, "platform": "discord"}
-        except Exception as e:
-            LOG.error("Error sending Discord test notification: %s", e)
-            return {"success": False, "platform": "discord", "error": str(e)}
+        except Exception:
+            LOG.exception("Error sending Discord test notification")
+            return {"success": False, "platform": "discord", "error": "Failed to send Discord test notification"}
 
     def _send_test_google_chat(self, messaging_platform, channel_id, message, tenant_id):
         error = self._refresh_google_chat_token(messaging_platform)
@@ -2548,9 +2548,9 @@ class CommonService:
             if result and result.get("success"):
                 return {"success": True, "platform": "google_chat"}
             return {"success": False, "platform": "google_chat", "error": "Failed to post message"}
-        except Exception as e:
-            LOG.error("Google Chat test notification error: %s", e)
-            return {"success": False, "platform": "google_chat", "error": str(e)}
+        except Exception:
+            LOG.exception("Google Chat test notification error")
+            return {"success": False, "platform": "google_chat", "error": "Failed to send Google Chat test notification"}
 
     async def teams_send_welcome_message(self, activity: Activity) -> bool:
         """Send welcome message when bot is added to a Teams conversation."""
