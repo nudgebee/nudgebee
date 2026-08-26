@@ -152,7 +152,7 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Users', path: '/user-management#users' },
   { group: 'Admin', label: 'Groups', path: '/user-management#groups' },
   { group: 'Admin', label: 'Audits', path: '/user-management#audits' },
-  { group: 'Admin', label: 'Notifications', path: '/user-management#notifications' },
+  { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
   { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
   { group: 'Admin', label: 'Ownership', path: '/user-management#ownership' },
   // Registered dynamically via registerUserManagementFilter in

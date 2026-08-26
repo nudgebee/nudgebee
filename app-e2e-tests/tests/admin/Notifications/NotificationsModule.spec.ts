@@ -19,7 +19,7 @@ import {
   configuredClusterName,
 } from "./notificationsModuleConstants";
 
-// Admin > Notifications — the notification-rule listing at /user-management#notifications
+// Admin > Notification Rules — the notification-rule listing at /user-management#notification-rules
 // (app/src/components/notifications/index.tsx).
 //
 // Every rule created here is tenant-wide Daily Recap AND suppressed, so it holds no
@@ -71,7 +71,7 @@ test(
 );
 
 test(
-  "Notifications - open Create Rule, pick Daily Highlight, name the rule, turn delivery off, save, verify the suppressed rule appears in the listing",
+  "Notifications - open Create Rule, pick Daily Email, name the rule, turn delivery off, save, verify the suppressed rule appears in the listing",
   { tag: ["@dev", "@regression", "@crud", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
@@ -84,7 +84,7 @@ test(
       await test.step("The persisted row carries the rule's own source and status", async () => {
         const row = noti.rowByName(ruleName);
         // The listing renders snakeToTitleCase(source), so the saved daily_recap source
-        // reads as "Daily Recap" here even though its form tab is "Daily Highlight".
+        // reads as "Daily Recap" here even though its form tab is "Daily Email".
         await expect(row).toContainText(RULE_SOURCE_LABEL);
         // is_suppressed renders as the 'Suppressed' Label in index.tsx, so this is the
         // saved record's state read back from the server, not the form's state.

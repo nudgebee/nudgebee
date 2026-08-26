@@ -1,9 +1,9 @@
 // Not for OSS
 import { expect, Locator, Page } from "@playwright/test";
 
-// Admin > Notifications is reached by fragment, and /user-management redirects to the
+// Admin > Notification Rules is reached by fragment, and /user-management redirects to the
 // first enabled tab when the fragment is missing — so the fragment is part of the route.
-export const NOTIFICATIONS_PATH = "/user-management#notifications";
+export const NOTIFICATIONS_PATH = "/user-management#notification-rules";
 
 // CustomTable is given id='Notifications' by app/src/components/notifications/index.tsx
 // (the `notificationId` const). It puts that id on the <table>, `${id}-body` on the
@@ -18,7 +18,7 @@ export const RULE_COLUMNS = ["Name", "Source", "Cluster", "Application", "Channe
 // inert: `suppressed` short-circuits the mappings block in NotificationRuleModal's
 // handleSubmit, so the rule carries no channel and can never deliver anything.
 //
-// The form's tab for this source is labelled "Daily Highlight", but the listing renders
+// The form's tab for this source is labelled "Daily Email", but the listing renders
 // snakeToTitleCase('daily_recap') — so the row says "Daily Recap". Both strings are the
 // same source and both are asserted, each where the app actually shows it.
 export const RULE_SOURCE_LABEL = "Daily Recap";

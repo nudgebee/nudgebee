@@ -1223,7 +1223,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           id={'tab-daily-recap'}
         >
           <SafeIcon src={basedOnValue === 'daily_recap' ? EmailIconWhite : EmailIconBlack} alt='' width={20} height={20} />
-          Daily Highlight
+          Daily Email
         </Button>
         <Button
           className={basedOnValue === 'weekly_digest' ? 'active' : undefined}

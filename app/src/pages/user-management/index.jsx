@@ -29,7 +29,16 @@ const baseFilters = [
   // registerUserManagementFilter from app/src/ee (stripped in OSS). It slots in
   // after the base filters. OSS ships without it and uses the built-in roles.
   { name: 'Audits', fragment: 'audits', icon: AuditIcon, Body: AuditsTable, module: 'audits' },
-  { name: 'Notifications', fragment: 'notifications', icon: NotificationIcon1, Body: Notifications, module: 'notifications' },
+  // id is pinned to the old tab name so the DOM id (#anchor-tab-Notifications) that
+  // app-e2e-tests locates the tab by stays stable across the label rename.
+  {
+    name: 'Notification Rules',
+    id: 'Notifications',
+    fragment: 'notification-rules',
+    icon: NotificationIcon1,
+    Body: Notifications,
+    module: 'notifications',
+  },
   { name: 'Integrations', fragment: 'integrations', icon: IntegrationsIcon, Body: Integrations, module: 'integrations' },
   { name: 'Ownership', fragment: 'ownership', icon: UserGroupIcon, Body: OwnershipRules, module: 'ownership' },
 ];

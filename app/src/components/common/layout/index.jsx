@@ -558,8 +558,8 @@ const PageLayout = ({ children }) => {
           { text: 'Groups', path: '/user-management#groups', id: 'sidenav-admin-groups', module: 'usergroups', icon: UserGroupIcon },
           { text: 'Audits', path: '/user-management#audits', id: 'sidenav-admin-audits', module: 'audits', icon: AuditIcon },
           {
-            text: 'Notifications',
-            path: '/user-management#notifications',
+            text: 'Notification Rules',
+            path: '/user-management#notification-rules',
             id: 'sidenav-admin-notifications',
             module: 'notifications',
             icon: NotificationIcon1,
