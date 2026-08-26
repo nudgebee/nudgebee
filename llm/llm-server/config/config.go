@@ -919,6 +919,10 @@ type appConfig struct {
 	// looks up the agent's correct message_id from DB instead of trusting
 	// the request's message_id. Falls back to legacy path when disabled.
 	FollowupResumeV2Enabled bool `mapstructure:"llm_server_followup_resume_v2_enabled"`
+	// LogsV3Enabled redirects "logs" (implicit routing + lean-orchestrator
+	// default) to logs_v3 — same redirect pattern as TicketV2Enabled. See
+	// docs/logs-v3-agent-investigation.md. Default false until validated further.
+	LogsV3Enabled bool `mapstructure:"llm_server_logs_v3_enabled"`
 
 	// AgentIntegrationPrecheckEnabled gates a fail-fast check that runs only
 	// when a user invokes an agent via @<name>. If every tool the agent
@@ -1507,6 +1511,7 @@ func init() {
 
 	viper.SetDefault("llm_server_ticket_v2_enabled", true)
 	viper.SetDefault("llm_server_events_v2_enabled", false)
+	viper.SetDefault("llm_server_logs_v3_enabled", false)
 
 	viper.SetDefault("llm_server_followup_resume_v2_enabled", true)
 

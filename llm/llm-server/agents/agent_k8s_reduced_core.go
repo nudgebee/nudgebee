@@ -26,7 +26,7 @@ import (
 func trimmedK8sCoreToolNames() []string {
 	names := []string{
 		tools.ToolExecuteKubectlCommand,
-		LogsAgentName,
+		getLogsAgentName(),
 		EventsAgentName,
 		MetricsAgentName,
 		TracesAgentName,

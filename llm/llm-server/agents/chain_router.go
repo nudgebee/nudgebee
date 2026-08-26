@@ -287,6 +287,18 @@ func getEventsAgentName() string {
 	return EventsAgentName
 }
 
+// getLogsAgentName returns the appropriate logs agent name based on the
+// LogsV3Enabled feature flag. Used both for the "logs" alias resolution
+// below and as the default delegate target preloaded by the k8s/cloud lean
+// orchestrators (trimmedK8sCoreToolNames, cloudLeanCoreToolNames) — an
+// explicit @logs_v3 mention resolves to logs_v3 regardless of this flag.
+func getLogsAgentName() string {
+	if config.Config.LogsV3Enabled {
+		return LogsAgentV3Name
+	}
+	return LogsAgentName
+}
+
 func getAgent(ctx *security.RequestContext, agent string, accountId string) (core.NBAgent, bool) {
 	var agentName string
 	switch strings.ToLower(agent) {
@@ -303,7 +315,7 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 	case "prometheuschain", "prometheusagent", PrometheusAgentName:
 		agentName = PrometheusAgentName
 	case "logchain", "logsagent", LogsAgentName:
-		agentName = LogsAgentName
+		agentName = getLogsAgentName()
 	case "recommendationschain", "recommendation", "recommendationsagent", RecommendationsAgentName:
 		agentName = RecommendationsAgentName
 	case "eventschain", "event", "eventchain", EventsAgentName:
