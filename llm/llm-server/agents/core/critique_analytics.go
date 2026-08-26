@@ -97,6 +97,7 @@ type CritiqueAgentRow struct {
 	AgentName string  `json:"agent_name"`
 	Judged    int64   `json:"judged"`
 	Refined   int64   `json:"refined"`
+	Accepted  int64   `json:"accepted"`
 	RefinePct float64 `json:"refine_pct"`
 }
 
@@ -133,6 +134,7 @@ type critiqueAgentScan struct {
 	AgentName string `db:"agent_name"`
 	Judged    int64  `db:"judged"`
 	Refined   int64  `db:"refined"`
+	Accepted  int64  `db:"accepted"`
 }
 
 // GetCritiqueSummary computes totals, per-agent refine rate, and themes.
@@ -158,7 +160,8 @@ func (chat *ConversationDao) GetCritiqueSummary(filter CritiqueFilter) (Critique
 		SELECT
 			agent_name,
 			COUNT(*) FILTER (WHERE %s) AS judged,
-			COUNT(*) FILTER (WHERE decision = 'refine') AS refined
+			COUNT(*) FILTER (WHERE decision = 'refine') AS refined,
+			COUNT(*) FILTER (WHERE decision = 'accept') AS accepted
 		FROM llm_conversation_agent_critiques
 		WHERE %s
 		GROUP BY agent_name
@@ -181,6 +184,7 @@ func (chat *ConversationDao) GetCritiqueSummary(filter CritiqueFilter) (Critique
 			AgentName: s.AgentName,
 			Judged:    s.Judged,
 			Refined:   s.Refined,
+			Accepted:  s.Accepted,
 			RefinePct: refinePct(s.Refined, s.Judged),
 		})
 	}

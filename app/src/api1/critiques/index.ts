@@ -13,6 +13,7 @@ export interface CritiqueAgentRow {
   agent_name: string;
   judged: number;
   refined: number;
+  accepted: number;
   refine_pct: number;
 }
 
