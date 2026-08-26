@@ -22,6 +22,7 @@ import Heading from '@components/common/Heading';
 import { Button } from '@ui/Button';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { BetaIcon, ExternalLinkIcon } from '@assets';
+import { detectGitProvider } from './gitProvider';
 
 const betaBadge = <SafeIcon src={BetaIcon} alt='Beta Icon' width={16} height={12} style={{ marginLeft: ds.space[0] }} />;
 const externalLinkBadge = <SafeIcon src={ExternalLinkIcon} alt='Open in new tab' width={12} height={12} />;
@@ -237,15 +238,6 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
       console.error('Error fetching workload annotations:', error);
       setSelectedWorkloadAnnotations({});
     }
-  };
-
-  // Helper to detect git provider
-  const detectGitProvider = (repoUrl: string | undefined) => {
-    if (!repoUrl) return null;
-    const url = repoUrl.toLowerCase();
-    if (/(?:^|[\/@.])github\.com(?:\/|:|$)/.test(url)) return 'github';
-    if (/(?:^|[\/@.-])gitlab(?:-[a-z0-9-]+)*(?:\.[a-z0-9-]+)*(?:\/|:|$)/.test(url)) return 'gitlab';
-    return null;
   };
 
   const filteredGitIntegrations = useMemo(() => {

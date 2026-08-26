@@ -43,10 +43,12 @@ export const isSafeLinkHref = (href: string): boolean => {
   if (typeof href !== 'string' || href.trim() === '') return false;
 
   const trimmed = href.trim();
+  if (trimmed.startsWith('/') || trimmed.startsWith('#') || trimmed.startsWith('?')) return true;
+
   const ampersandIndex = trimmed.indexOf('&');
   if (ampersandIndex !== -1) {
     const firstDelimiter = trimmed.search(/[?:/]/);
-    if (firstDelimiter === -1 || ampersandIndex < firstDelimiter) return false;
+    if ((firstDelimiter === -1 || ampersandIndex < firstDelimiter) && /&[a-zA-Z0-9#]+;/.test(trimmed)) return false;
   }
 
   try {
@@ -76,7 +78,6 @@ export function Link({
     e.stopPropagation();
     if (!hasSafeHref) {
       e.preventDefault();
-      return;
     }
     onClick?.(e);
   };
