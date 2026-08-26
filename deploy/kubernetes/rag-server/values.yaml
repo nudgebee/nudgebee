@@ -135,3 +135,31 @@ env:
   # rather than the OS, so RSS ratcheted to the high-water mark of concurrent
   # inference: 28 arenas held ~1.8GB of freed activations and the pod OOMKilled.
   MALLOC_ARENA_MAX: 2
+
+# ---------------------------------------------------------------------------
+# CPU requirements for the knowledge-base reranker
+#
+# rag-server scores document relevance with a model that runs on the CPU, so the
+# node's instruction set decides how fast it is. Nothing here is required to run
+# -- the service works on any x86-64 or ARM node -- but it decides whether
+# RAG_RERANKER_DTYPE=bfloat16 is worth enabling.
+#
+#   Intel Sapphire Rapids / Emerald Rapids or newer (AMX-BF16), or any CPU with
+#   AVX512-BF16   -> bfloat16 is accelerated in hardware. Halves the memory the
+#                    model needs and should be faster than the float32 default.
+#
+#   Anything older, or ARM   -> bfloat16 is emulated in software. It still halves
+#                    the memory but was measured 6-10x SLOWER than float32.
+#                    Leave RAG_RERANKER_DTYPE unset (float32) on these nodes.
+#
+# You do not need to look any of this up. At startup the service times a small
+# bfloat16 operation against float32 on whatever CPU it landed on and logs the
+# verdict, so check the rag-server log after enabling it:
+#   "Loading reranker at bfloat16, accelerated by this CPU"   -> keep it on
+#   "...this CPU runs bfloat16 slower than float32..."        -> turn it off
+# The check measures the machine rather than reading a chip model, so it is
+# correct on Intel, AMD and ARM alike, and on hardware newer than this comment.
+#
+# Dev runs Intel Xeon Platinum 8581C (Emerald Rapids), which has AMX-BF16.
+# On-prem installs vary, which is why the default stays float32 everywhere.
+# ---------------------------------------------------------------------------

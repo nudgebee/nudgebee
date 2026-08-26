@@ -106,6 +106,12 @@ class Config:
     # int8 quantization: measured slower and larger on ARM (qnnpack), so it is
     # off until measured to help on the target platform (x86/fbgemm).
     reranker_quantize = os.environ.get("RAG_RERANKER_QUANTIZE", "false").lower() == "true"
+    # Weights dtype: float32 or bfloat16. bfloat16 halves resident weights and
+    # engages the AMX-BF16 path on the deployment nodes, which fp32 never
+    # touches. Opt-in until its speed is measured there. float16 is deliberately
+    # not offered: it runs on these nodes, but bf16 is what AMX accelerates and
+    # carries the wider exponent range, so fp16 would add a choice with no use.
+    reranker_dtype = os.environ.get("RAG_RERANKER_DTYPE", "float32").strip().lower()
     # Concurrent forward passes. ``get_matching_doc`` is a sync ``def``, so
     # FastAPI runs it on a 40-worker threadpool sized for I/O-bound work — which
     # this is not. Forty concurrent passes over a 2-core limit bought no

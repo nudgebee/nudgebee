@@ -325,3 +325,120 @@ def test_queue_wait_excludes_model_loading(caplog):
         assert total >= 0.3, f"total={total}s should still cover the load: {line}"
     finally:
         importlib.reload(lr)
+
+
+# ─── weights dtype ──────────────────────────────────────────────────────────
+
+
+def test_dtype_names_map_to_torch_dtypes():
+    torch = pytest.importorskip("torch")
+    assert lr._resolve_dtype("float32", torch) is torch.float32
+    assert lr._resolve_dtype("bfloat16", torch) is torch.bfloat16
+
+
+def test_float16_is_not_an_offered_option():
+    # float16 does run on the deployment CPUs, but bf16 is what the AMX path
+    # accelerates and has the wider exponent range, so offering fp16 would be a
+    # knob with no use behind it.
+    torch = pytest.importorskip("torch")
+    assert lr._resolve_dtype("float16", torch) is torch.float32
+
+
+def test_unknown_dtype_falls_back_to_float32_rather_than_raising():
+    # A typo in a values file must not stop the server from starting, and
+    # getattr(torch, "bfloat_16") would raise at import of the first request.
+    torch = pytest.importorskip("torch")
+    assert lr._resolve_dtype("bfloat_16", torch) is torch.float32
+    assert lr._resolve_dtype("", torch) is torch.float32
+
+
+def test_dtype_never_resolves_to_an_arbitrary_torch_attribute():
+    # Guards the allowlist: without it any torch attribute name would resolve,
+    # so RAG_RERANKER_DTYPE=nn would hand CrossEncoder a module.
+    torch = pytest.importorskip("torch")
+    for hostile in ("nn", "load", "device", "__class__"):
+        assert lr._resolve_dtype(hostile, torch) is torch.float32
+
+
+def test_bf16_acceleration_names_the_path_when_present():
+    class _CPU:
+        _is_amx_tile_supported = staticmethod(lambda: True)
+        _is_avx512_bf16_supported = staticmethod(lambda: True)
+
+    assert lr._bf16_acceleration(type("T", (), {"cpu": _CPU})) == "AMX"
+
+
+def test_bf16_acceleration_is_unconfirmed_on_cpus_without_the_probes():
+    # An ARM host has none of these x86 probes. This is why the flag check only
+    # names the path for the log and never decides whether bf16 is worth using.
+    assert lr._bf16_acceleration(type("T", (), {"cpu": type("C", (), {})})) is None
+
+
+def test_a_raising_flag_probe_does_not_stop_the_model_loading():
+    def _boom():
+        raise RuntimeError("probe gone")
+
+    class _CPU:
+        _is_amx_tile_supported = staticmethod(_boom)
+        _is_avx512_bf16_supported = staticmethod(_boom)
+
+    assert lr._bf16_acceleration(type("T", (), {"cpu": _CPU})) is None
+
+
+# ─── bfloat16 speed probe (architecture-independent) ────────────────────────
+
+
+class _FakeTensor:
+    """Matmul that costs a fixed amount of time, so the probe can be driven."""
+
+    def __init__(self, cost, dtype=None):
+        self.cost, self.dtype = cost, dtype
+
+    def to(self, dtype):
+        return _FakeTensor(dtype.cost, dtype)
+
+    def __matmul__(self, other):
+        time.sleep(self.cost)
+        return self
+
+
+class _FakeDtype:
+    def __init__(self, cost):
+        self.cost = cost
+
+
+class _FakeTorch:
+    """Minimal stand-in: randn gives fp32-cost tensors, .to(bfloat16) rescales."""
+
+    def __init__(self, f32_cost, bf16_cost):
+        self.bfloat16 = _FakeDtype(bf16_cost)
+        self._f32_cost = f32_cost
+
+    def randn(self, *_):
+        return _FakeTensor(self._f32_cost)
+
+    @staticmethod
+    def no_grad():
+        import contextlib
+
+        return contextlib.nullcontext()
+
+
+def test_bf16_speed_probe_accepts_hardware_that_keeps_up():
+    # Measured on the deployment node: bf16 matmul ran at 0.43x the fp32 time.
+    assert lr._bf16_is_fast(_FakeTorch(f32_cost=0.002, bf16_cost=0.001)) is True
+
+
+def test_bf16_speed_probe_rejects_software_emulation():
+    # Measured on Apple Silicon: bf16 was several times slower than fp32.
+    assert lr._bf16_is_fast(_FakeTorch(f32_cost=0.001, bf16_cost=0.006)) is False
+
+
+def test_bf16_speed_probe_reports_unknown_rather_than_raising():
+    # The probe is a diagnostic. If anything about it breaks, loading the model
+    # must still proceed — the caller treats None as "could not confirm".
+    class _Broken:
+        def randn(self, *_):
+            raise RuntimeError("no randn here")
+
+    assert lr._bf16_is_fast(_Broken()) is None
