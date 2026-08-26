@@ -2,6 +2,7 @@ import { Page, Locator } from "@playwright/test";
 import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { AUTH_STATE_DIR, TENANT_FILE_PATH } from "../tests/utils/paths";
 import { doDevLogin } from "./devLogin";
+import { doCredentialsLogin } from "./ossLoginHelper";
 import {
   registerWelcomeTourAutoDismiss,
   registerTourOverlayGuard,
@@ -464,6 +465,25 @@ export class LoginPage {
     // read-back check. Tenant handling on dev is unchanged: no switch happens.
     if (process.env.E2E_ENVIRONMENT === "dev") {
       await doDevLogin(this.page);
+      const selection = { tenant: "", cluster: selectCluster ? await this.selectConfiguredCluster() : "" };
+      establishedLogins.set(this.page, { clusterSelected: selectCluster, selection });
+      return selection;
+    }
+
+    // OSS-ONLY BRANCH — do not drop when syncing this file from EE. OSS has no
+    // LDAP: it signs in through the credentials ("Admin login") form with
+    // E2E_EMAIL/E2E_PASSWORD, which is all the .env.oss secret carries. Without
+    // this branch, oss falls through to the LDAP path below and global-setup
+    // dies on "LDAP_USERNAME or LDAP_PASSWORD missing" before a single test runs.
+    //
+    // Single-tenant, so no switchTenantWithRetry and an empty tenant in the
+    // returned selection — verifySelection() reads that as "not established by
+    // this run" and skips the tenant half of its check. The cluster goes through
+    // the shared selectConfiguredCluster() for the same reason dev does: it gets
+    // the skip-when-already-selected fast path and the read-back check.
+    if (process.env.E2E_ENVIRONMENT === "oss") {
+      await doCredentialsLogin(this.page);
+      await this.waitForLoaderToDisappear();
       const selection = { tenant: "", cluster: selectCluster ? await this.selectConfiguredCluster() : "" };
       establishedLogins.set(this.page, { clusterSelected: selectCluster, selection });
       return selection;
