@@ -67,13 +67,24 @@ const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', 
 
 const H = {
   tool: <HeaderLabel label='Tool' info='The tool name and its type. Aggregated across every conversation in range.' />,
-  calls: <HeaderLabel label='Calls' info='Total invocations of this tool in range.' />,
-  errors: <HeaderLabel label='Errors' secondary='(rate)' info='Settled failures (status fail / error / terminated) and the share of all calls.' />,
-  avgDur: <HeaderLabel label='Avg dur' info='Average wall-clock duration per call (execution_duration_ms, else updated−created).' />,
-  p90Dur: <HeaderLabel label='Duration' secondary='(p90 / max)' info='90th-percentile and slowest single call duration.' />,
-  reach: <HeaderLabel label='Reach' secondary='(agents / convs)' info='Distinct agents and conversations that used this tool.' />,
+  calls: <HeaderLabel label='Calls' info='Total invocations of this tool in range.' alignRight />,
+  errors: (
+    <HeaderLabel
+      label='Errors'
+      secondary='(rate)'
+      info='Settled failures (status fail / error / terminated) and the share of all calls.'
+      alignRight
+    />
+  ),
+  avgDur: <HeaderLabel label='Avg dur' info='Average wall-clock duration per call (execution_duration_ms, else updated−created).' alignRight />,
+  p90Dur: <HeaderLabel label='Duration' secondary='(p90 / max)' info='90th-percentile and slowest single call duration.' alignRight />,
+  reach: <HeaderLabel label='Reach' secondary='(agents / convs)' info='Distinct agents and conversations that used this tool.' alignRight />,
   cost: (
-    <HeaderLabel label='Downstream $' info='LLM cost of sub-agents this tool spawned (child_agent_id). Blank for tools that make no LLM calls.' />
+    <HeaderLabel
+      label='Downstream $'
+      info='LLM cost of sub-agents this tool spawned (child_agent_id). Blank for tools that make no LLM calls.'
+      alignRight
+    />
   ),
 };
 

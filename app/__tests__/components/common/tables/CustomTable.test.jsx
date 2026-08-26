@@ -283,6 +283,26 @@ describe('CustomTable', () => {
       render(<CustomTable headers={headers} tableData={makeRows(1)} />);
       expect(() => fireEvent.click(screen.getByText('Count'))).not.toThrow();
     });
+
+    // #35789: a right-aligned sortable header used to render the sort caret
+    // after the label unconditionally, so the caret's trailing width pushed
+    // the label text left of the column's right edge — while the values
+    // below had no such trailing element, so they lined up flush right.
+    // Reversing the flex order for right-aligned headers keeps the label's
+    // own edge, not the caret's, flush with the values.
+    it('puts the sort caret before the label for a right-aligned sortable header', () => {
+      const headers = [{ name: 'Count', align: 'right', sortEnabled: true }];
+      render(<CustomTable headers={headers} tableData={makeRows(1)} />);
+      const headerButton = screen.getByText('Count').closest('[role="button"]');
+      expect(getComputedStyle(headerButton).flexDirection).toBe('row-reverse');
+    });
+
+    it('keeps the sort caret after the label for a left-aligned sortable header', () => {
+      const headers = [{ name: 'Count', sortEnabled: true }];
+      render(<CustomTable headers={headers} tableData={makeRows(1)} />);
+      const headerButton = screen.getByText('Count').closest('[role="button"]');
+      expect(getComputedStyle(headerButton).flexDirection).toBe('row');
+    });
   });
 
   // ─── row interaction ─────────────────────────────────────────────────────────

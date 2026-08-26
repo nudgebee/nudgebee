@@ -34,11 +34,20 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import Tooltip from '@ui/Tooltip';
 import apiUser from '@api1/user';
 
-const SortIcon = ({ active, direction }) => {
+const SortIcon = ({ active, direction, alignRight }) => {
   const activeColor = ds.gray[700];
   const inactiveColor = ds.gray[300];
   return (
-    <Box component='span' sx={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', ml: 'var(--ds-space-1)', lineHeight: 0 }}>
+    <Box
+      component='span'
+      sx={{
+        display: 'inline-flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        lineHeight: 0,
+        ...(alignRight ? { mr: 'var(--ds-space-1)' } : { ml: 'var(--ds-space-1)' }),
+      }}
+    >
       <svg width='8' height='6' viewBox='0 0 10 6' style={{ marginBottom: 0 }}>
         <path
           d='M1 5L5 1L9 5'
@@ -66,6 +75,7 @@ const SortIcon = ({ active, direction }) => {
 SortIcon.propTypes = {
   active: PropTypes.bool,
   direction: PropTypes.string,
+  alignRight: PropTypes.bool,
 };
 
 const DEFAULT_EXPANDABLE = {};
@@ -1226,14 +1236,28 @@ const CustomTable = ({
                             handleRequestSort(head, idx);
                           }
                         }}
-                        sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
+                        sx={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          // Right-aligned columns: keep the sort caret visually left of the
+                          // label (DOM order unchanged) so the label's own right edge — not
+                          // the caret's — sits flush with the column's right edge, matching
+                          // the values below it (#35789).
+                          flexDirection: alignment === 'right' ? 'row-reverse' : 'row',
+                        }}
                       >
-                        {head.component ? head.component : capitalize(typeof head === 'string' ? head : head.name)}{' '}
-                        <span style={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
-                          {head.secondryText}
-                        </span>
-                        {infoNode}
-                        <SortIcon active={sort?.name === (head?.name || head)} direction={sort?.order} />
+                        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
+                          {head.component ? head.component : capitalize(typeof head === 'string' ? head : head.name)}{' '}
+                          <span
+                            style={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}
+                          >
+                            {head.secondryText}
+                          </span>
+                          {infoNode}
+                        </Box>
+                        <SortIcon active={sort?.name === (head?.name || head)} direction={sort?.order} alignRight={alignment === 'right'} />
                       </Box>
                     ) : (
                       <>
