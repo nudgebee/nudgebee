@@ -478,6 +478,5 @@ cost-server:
   enabled: true
   fullnameOverride: cost-server
 llm-gateway:
-  enabled: true
+  enabled: false
   fullnameOverride: llm-gateway
-
