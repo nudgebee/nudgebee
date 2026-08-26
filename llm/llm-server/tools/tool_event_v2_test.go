@@ -199,3 +199,58 @@ func TestCapInvestigateDataEvidence_AggregateBudgetNeverDropsTracesOrAlertLabels
 	_, alertLabelsStillSlice := heavy.AlertLabels.Data.([]any)
 	assert.True(t, alertLabelsStillSlice, "AlertLabels.Data must never become a plain string")
 }
+
+// Regression: capInsight's generic byte-truncation replaces a map/slice Data
+// with a plain string, which crashes agent_events.go's reduceEventData (it
+// expects Traces.Data to stay map[string]any and AlertLabels.Data to stay
+// []any). capTracesInsight/capAlertLabelsInsight must cap by shrinking the
+// inner array instead, preserving the shape reduceEventData relies on.
+func TestCapTracesInsight_CapsSpanCountWithoutChangingShape(t *testing.T) {
+	spans := make([]any, maxEvidenceInsightEntries+50)
+	for i := range spans {
+		spans[i] = map[string]any{"span_id": i}
+	}
+	insight := events.InvestigateDataInsight{Data: map[string]any{"data": spans}}
+
+	capped := capTracesInsight(insight)
+
+	tracesMap, ok := capped.Data.(map[string]any)
+	assert.True(t, ok, "Traces.Data must stay a map, not collapse to a string")
+	cappedSpans, ok := tracesMap["data"].([]any)
+	assert.True(t, ok)
+	assert.Len(t, cappedSpans, maxEvidenceInsightEntries)
+}
+
+func TestCapTracesInsight_FallsBackToCapInsightForNonMapData(t *testing.T) {
+	insight := events.InvestigateDataInsight{Data: strings.Repeat("x", maxEvidenceInsightDataChars+500)}
+
+	capped := capTracesInsight(insight)
+
+	dataStr, ok := capped.Data.(string)
+	assert.True(t, ok)
+	assert.LessOrEqual(t, len(dataStr), maxEvidenceInsightDataChars+len("\n... (truncated)"))
+}
+
+func TestCapAlertLabelsInsight_CapsLabelCountWithoutChangingShape(t *testing.T) {
+	labels := make([]any, maxEvidenceInsightEntries+50)
+	for i := range labels {
+		labels[i] = map[string]any{"label": "l", "value": i}
+	}
+	insight := events.InvestigateDataInsight{Data: labels}
+
+	capped := capAlertLabelsInsight(insight)
+
+	cappedLabels, ok := capped.Data.([]any)
+	assert.True(t, ok, "AlertLabels.Data must stay a []any, not collapse to a string")
+	assert.Len(t, cappedLabels, maxEvidenceInsightEntries)
+}
+
+func TestCapAlertLabelsInsight_FallsBackToCapInsightForNonSliceData(t *testing.T) {
+	insight := events.InvestigateDataInsight{Data: strings.Repeat("label=value;", 10000)}
+
+	capped := capAlertLabelsInsight(insight)
+
+	dataStr, ok := capped.Data.(string)
+	assert.True(t, ok)
+	assert.LessOrEqual(t, len(dataStr), maxEvidenceInsightDataChars+len("\n... (truncated)"))
+}
