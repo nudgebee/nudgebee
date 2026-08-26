@@ -100,6 +100,8 @@ jobs:
           - { image: app,                     context: app,                                              platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: ticket-server,           context: ticket-server,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: ticket-server,           context: ticket-server,                                    platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: llm-gateway,             context: llm/gateway,                                      platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: llm-gateway,             context: llm/gateway,                                      platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: code-analysis-agent,     context: llm/code-analysis,                                platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: code-analysis-agent,     context: llm/code-analysis,                                platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: notifications,           context: notifications-server,                             platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
@@ -196,6 +198,7 @@ jobs:
           - { image: migrations,              archs: "amd64 arm64" }
           - { image: app,                     archs: "amd64 arm64" }
           - { image: ticket-server,           archs: "amd64 arm64" }
+          - { image: llm-gateway,             archs: "amd64 arm64" }
           - { image: code-analysis-agent,     archs: "amd64 arm64" }
           - { image: notifications,           archs: "amd64 arm64" }
           - { image: k8s-collector,           archs: "amd64 arm64" }
@@ -287,6 +290,7 @@ jobs:
             "migrations:migrations"
             "app:app"
             "ticket-server:ticket-server"
+            "llm-gateway:llm-gateway"
             "llm-server:llm-server"
             "rag-server:rag-server"
             "ml-k8s-server:ml-k8s-server"
@@ -349,7 +353,7 @@ jobs:
 
           first_party=(
             services-server migrations app ticket-server
-            llm-server rag-server ml-k8s-server
+            llm-gateway llm-server rag-server ml-k8s-server
             notifications k8s-collector cloud-collector-server
             cost-server relay-server workflow-server
           )
@@ -440,7 +444,7 @@ jobs:
           mkdir -p dist/subcharts
           subcharts=(
             services-server migrations app ticket-server
-            llm-server rag-server ml-k8s-server
+            llm-gateway llm-server rag-server ml-k8s-server
             notifications k8s-collector cloud-collector-server
             cost-server relay-server workflow-server
           )
