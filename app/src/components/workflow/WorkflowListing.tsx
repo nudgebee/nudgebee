@@ -115,6 +115,19 @@ const readAccountFilterFromQuery = (query: Record<string, any>): string[] => {
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
+// Multi-line tooltip content for the Created/Updated-by byline: name and
+// email, one per line — so two people sharing a display name are still
+// distinguishable on hover.
+const renderUserTooltip = (user?: { display_name?: string; username?: string } | null) => {
+  if (!user?.display_name) return null;
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+      <Text value={user.display_name} sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }} />
+      {!!user.username && <Text value={user.username} sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }} />}
+    </Box>
+  );
+};
+
 // Filters the user picked here, remembered across visits. The sidebar links
 // back to a bare /automation, so without this every return trip resets the
 // view. Same mechanism the troubleshoot Events table uses.
@@ -1414,7 +1427,7 @@ const WorkflowListing: React.FC = () => {
                           sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)' }}
                         />
                         {workflow.created_by_user?.display_name && (
-                          <Tooltip title={workflow.created_by_user.display_name} arrow placement='top'>
+                          <Tooltip title={renderUserTooltip(workflow.created_by_user)} arrow placement='top'>
                             <span>
                               <Text
                                 value={`· ${workflow.created_by_user.display_name.split(' ')[0]}`}
@@ -1434,7 +1447,7 @@ const WorkflowListing: React.FC = () => {
                           sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)' }}
                         />
                         {workflow.updated_by_user?.display_name && (
-                          <Tooltip title={workflow.updated_by_user.display_name} arrow placement='top'>
+                          <Tooltip title={renderUserTooltip(workflow.updated_by_user)} arrow placement='top'>
                             <span>
                               <Text
                                 value={`· ${workflow.updated_by_user.display_name.split(' ')[0]}`}
@@ -1606,10 +1619,10 @@ const WorkflowListing: React.FC = () => {
       try {
         const response = await apiUser.listUsers({ status: 'active' });
         const users = response?.data || [];
-        const userNames = users
-          .map((user: any) => user.display_name)
-          .filter(Boolean)
-          .sort();
+        // Two users can share a display_name — the backend filter already matches
+        // every user with that name, so dedup here rather than listing the same
+        // name twice (which made picking either one highlight both as selected).
+        const userNames = Array.from(new Set<string>(users.map((user: any) => user?.display_name).filter(Boolean))).sort();
         setCreatedByOptions(['All', ...userNames]);
       } catch (error) {
         console.error('Error fetching active users:', error);

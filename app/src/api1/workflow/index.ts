@@ -141,6 +141,7 @@ query ListWorkflows($accountIds:[String!], $status:String, $last_execution_statu
       created_at
       created_by_user {
         display_name
+        username
       }
       id
       created_from_session_id
@@ -154,6 +155,7 @@ query ListWorkflows($accountIds:[String!], $status:String, $last_execution_statu
       updated_at
       updated_by_user {
         display_name
+        username
       }
       last_execution_time
       last_execution_version

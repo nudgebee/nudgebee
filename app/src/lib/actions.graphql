@@ -8507,6 +8507,7 @@ type WorkflowExecutionCountResponse {
 type WorkflowUser {
   id: String
   display_name: String
+  username: String
 }
 
 type Workflow {
