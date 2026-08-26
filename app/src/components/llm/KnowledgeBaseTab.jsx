@@ -27,7 +27,7 @@ import { MemoryTable } from '@components/llm/MemoryTable';
 import ScopeChip from '@components/llm/ScopeChip';
 import { formatTrigger, formatDuration, formatDocuments } from '@components/llm/kbLoadHistoryFormat';
 
-const MAX_CONTENT_LENGTH = 10000;
+const MAX_CONTENT_LENGTH = 5000;
 
 const formatExactDate = (dateString) => {
   if (!dateString) return '-';
@@ -211,15 +211,30 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
     return true;
   };
 
+  const readAndSetFile = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      if (text.trim().length > MAX_CONTENT_LENGTH) {
+        snackbar.error(
+          `File content is ${text
+            .trim()
+            .length.toLocaleString()} characters — over the ${MAX_CONTENT_LENGTH.toLocaleString()}-character limit. Please shorten it.`
+        );
+        setSelectedFile(null);
+        setFileContent('');
+        return;
+      }
+      setSelectedFile(file);
+      setFileContent(text);
+    };
+    reader.readAsText(file);
+  };
+
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
     if (file && validateFile(file)) {
-      setSelectedFile(file);
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setFileContent(e.target.result);
-      };
-      reader.readAsText(file);
+      readAndSetFile(file);
     }
     // Reset file input
     if (fileInputRef.current) {
@@ -253,12 +268,7 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
 
     const file = e.dataTransfer.files[0];
     if (file && validateFile(file)) {
-      setSelectedFile(file);
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        setFileContent(ev.target.result);
-      };
-      reader.readAsText(file);
+      readAndSetFile(file);
     }
   };
 
@@ -301,24 +311,8 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
     });
   };
 
-  let contentCounterColor = 'var(--ds-gray-500)';
-  if (!isEditWithOverflow) {
-    if (content.length >= MAX_CONTENT_LENGTH) contentCounterColor = 'var(--ds-red-600)';
-    else if (content.length >= MAX_CONTENT_LENGTH * 0.9) contentCounterColor = 'var(--ds-amber-500)';
-  }
-
-  let contentWarning = <span />;
-  if (!isEditWithOverflow) {
-    if (content.length >= MAX_CONTENT_LENGTH) {
-      contentWarning = (
-        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-600)' }}>
-          {MAX_CONTENT_LENGTH.toLocaleString()}-character limit reached. For larger content, upload a .txt file instead.
-        </Typography>
-      );
-    } else if (content.length >= MAX_CONTENT_LENGTH * 0.9) {
-      contentWarning = <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-500)' }}>Approaching limit</Typography>;
-    }
-  }
+  const contentOverBy = content.length - MAX_CONTENT_LENGTH;
+  const contentOverLimit = !fileContent && !isEditWithOverflow && contentOverBy > 0;
 
   return (
     <Modal open={open} handleClose={onClose} title={editKnowledgeBase ? 'Edit Knowledge Base' : 'Create Knowledge Base'} width='md'>
@@ -566,7 +560,7 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
               </Typography>
             ) : (
               <Text
-                value='Maximum file size: 5MB'
+                value={`Max ${MAX_CONTENT_LENGTH.toLocaleString()} characters · up to 5MB`}
                 sx={{
                   fontSize: 'var(--ds-text-caption)',
                   color: 'var(--ds-gray-500)',
@@ -612,31 +606,45 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
           >
             Content
           </Typography>
-          <Input
-            type='textarea'
-            minRows={8}
-            maxRows={15}
-            placeholder={
-              fileContent ? 'File content will be used — remove the file to type manually' : 'Paste or type your knowledge base content here...'
-            }
-            value={fileContent ? '' : content}
-            onChange={(next) => !fileContent && setContent(isEditWithOverflow ? next : next.slice(0, MAX_CONTENT_LENGTH))}
-            disabled={!!fileContent}
-          />
-          {!fileContent && (
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: ds.space[1] }}>
-              {contentWarning}
-              <Typography
-                sx={{
-                  fontSize: 'var(--ds-text-caption)',
-                  color: contentCounterColor,
-                  fontWeight: !isEditWithOverflow && content.length >= MAX_CONTENT_LENGTH * 0.9 ? 600 : 400,
-                }}
+          <Box sx={{ position: 'relative' }}>
+            <Input
+              type='textarea'
+              minRows={8}
+              maxRows={15}
+              placeholder={
+                fileContent ? 'File content will be used — remove the file to type manually' : 'Paste or type your knowledge base content here...'
+              }
+              value={fileContent ? '' : content}
+              onChange={(next) => !fileContent && setContent(next)}
+              disabled={!!fileContent}
+            />
+            {contentOverLimit && (
+              <Tooltip
+                title={`Content is ${contentOverBy.toLocaleString()} character(s) over the ${MAX_CONTENT_LENGTH.toLocaleString()} limit`}
+                placement='top'
               >
-                {isEditWithOverflow ? `${content.length} chars` : `${content.length} / ${MAX_CONTENT_LENGTH}`}
-              </Typography>
-            </Box>
-          )}
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    bottom: ds.space[2],
+                    right: ds.space[3],
+                    px: ds.space[2],
+                    py: '2px',
+                    borderRadius: ds.radius.sm,
+                    backgroundColor: 'var(--ds-red-500)',
+                    color: 'var(--ds-background-100)',
+                    fontSize: 'var(--ds-text-caption)',
+                    fontWeight: 'var(--ds-font-weight-semibold)',
+                    lineHeight: 1.4,
+                    cursor: 'default',
+                    userSelect: 'none',
+                  }}
+                >
+                  -{contentOverBy.toLocaleString()}
+                </Box>
+              </Tooltip>
+            )}
+          </Box>
         </Box>
 
         {/* Action Buttons */}
@@ -650,7 +658,7 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
           <Button tone='secondary' size='md' onClick={onClose} disabled={loading}>
             Cancel
           </Button>
-          <Button tone='primary' size='md' onClick={handleSubmit} loading={loading} disabled={loading || !name.trim()}>
+          <Button tone='primary' size='md' onClick={handleSubmit} loading={loading} disabled={loading || !name.trim() || contentOverLimit}>
             {editKnowledgeBase ? 'Update' : 'Create'}
           </Button>
         </Box>
