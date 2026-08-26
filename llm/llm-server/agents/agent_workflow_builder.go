@@ -3642,7 +3642,11 @@ Top-level event.<field> (these are the ONLY top-level fields — do NOT invent o
 - computed_priority     P0|P1|P2|P3 — the REAL triage tier (may be ABSENT for un-scored events)
 - computed_score        integer 0-100 — P0>=80, P1 60-79, P2 40-59, P3<40 (may be ABSENT)
 - subject_type, subject_name, subject_namespace, subject_node, subject_owner, subject_owner_kind, service_key  string
-- cluster               string — a cluster NAME (e.g. "prod-cluster"), NEVER an account/cluster UUID
+  On CLOUD accounts (AWS/GCP/Azure) these columns are overloaded: subject_namespace holds the cloud SERVICE name
+  (AmazonEC2, AWS_RDS) not a k8s namespace, subject_node holds the REGION (us-east-1) not a node, subject_type holds
+  the cloud resource type, and subject_name holds the resource id. Filter accordingly — a k8s-shaped guess never matches.
+- cluster               string — a cluster NAME (e.g. "prod-cluster"), or the cloud ACCOUNT NAME on cloud accounts; NEVER an account/cluster UUID
+- cloud_account_id      string — the account UUID; prefer this over event.cluster when scoping a filter to one account
 - fingerprint, cloud_resource_id, principal, aggregation_key  string
 - labels                map — free-form alert labels; keys are source-specific (see LIVE LABELS below). Reference as event.labels.<key>. Do NOT guess keys.
 

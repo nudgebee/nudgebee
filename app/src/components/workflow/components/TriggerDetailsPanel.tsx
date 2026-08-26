@@ -10,6 +10,8 @@ import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
 import JsonTreeView from '@shared/viewers/JsonTreeView';
 import type { Node } from 'reactflow';
+import { STRUCTURED_FILTER_FIELDS, parseFilterExpression, structuredFieldLabel } from '../utils/eventFilter';
+import { useAccountOptions } from '../hooks/useAccountOptions';
 
 interface TriggerDetailsPanelProps {
   triggerNode: Node;
@@ -37,15 +39,6 @@ const TRIGGER_META: Record<string, { label: string; icon: any; iconIsImage?: boo
   webhook: { label: 'Webhook', icon: workflowWebhookIcon, iconIsImage: true },
   event: { label: 'Event', icon: null },
 };
-
-// Structured event filter fields (matches TriggerConfigSidebar.tsx)
-const EVENT_STRUCTURED_FIELDS = [
-  { key: 'event_type', eventField: 'event_type', label: 'Event Type' },
-  { key: 'cluster', eventField: 'cluster', label: 'Cluster' },
-  { key: 'namespace', eventField: 'subject_namespace', label: 'Namespace' },
-  { key: 'source', eventField: 'source', label: 'Source' },
-  { key: 'priority', eventField: 'priority', label: 'Priority' },
-] as const;
 
 // Legacy params.event_type may be a string or array; collapse to a comma list for display.
 const formatLegacyEventType = (raw: unknown): string => {
@@ -122,14 +115,16 @@ const WebhookConfig = ({ params }: { params: any }) => (
 );
 
 // Event trigger config — parses structured filters from expression
-const EventConfig = ({ params }: { params: any }) => {
+const EventConfig = ({ params, cloudProvider }: { params: any; cloudProvider: string }) => {
   const filterStr = params.filter || '';
-  const parsed: Record<string, string> = {};
-  for (const f of EVENT_STRUCTURED_FIELDS) {
-    const regex = new RegExp(`event\\.${f.eventField}\\s*==\\s*"([^"]*)"`, 'i');
-    const match = regex.exec(filterStr);
-    if (match) {
-      parsed[f.key] = match[1];
+  const parsed = parseFilterExpression(filterStr);
+  // Read-only view, so it can be more lenient than the editor: a name-valued `event.cluster`
+  // is left in advanced mode by the sidebar (rewriting it would break a working filter), but
+  // there is no rewrite risk here, so still surface it as the Cluster chip.
+  if (!parsed.cluster) {
+    const legacyCluster = /event\.cluster\s*==\s*"([^"]*)"/i.exec(filterStr);
+    if (legacyCluster) {
+      parsed.cluster = legacyCluster[1];
     }
   }
   // Legacy: workflows saved before event_type became a structured filter still carry params.event_type.
@@ -146,10 +141,10 @@ const EventConfig = ({ params }: { params: any }) => {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
       {hasStructured ? (
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--ds-space-3)' }}>
-          {EVENT_STRUCTURED_FIELDS.map(
+          {STRUCTURED_FILTER_FIELDS.map(
             (f) =>
-              parsed[f.key] && (
-                <Box key={f.key} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+              parsed[f.filterType] && (
+                <Box key={f.filterType} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
                   <Typography
                     sx={{
                       fontSize: 'var(--ds-text-caption)',
@@ -159,7 +154,7 @@ const EventConfig = ({ params }: { params: any }) => {
                       letterSpacing: '0.04em',
                     }}
                   >
-                    {f.label}
+                    {structuredFieldLabel(f.filterType, cloudProvider)}
                   </Typography>
                   <Box
                     sx={{
@@ -171,7 +166,7 @@ const EventConfig = ({ params }: { params: any }) => {
                       padding: 'var(--ds-space-1) var(--ds-space-2)',
                     }}
                   >
-                    {parsed[f.key]}
+                    {parsed[f.filterType]}
                   </Box>
                 </Box>
               )
@@ -209,6 +204,10 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({
   const triggerData = triggerNode.data;
   const triggerType: string = triggerData?.trigger?.type || triggerData?.triggerType || 'manual';
   const triggerParams = triggerData?.trigger?.params || triggerData?.triggerParams || {};
+  // `cluster` and `subject_namespace` hold a cloud account name and a cloud service name on
+  // non-K8s accounts, so the filter labels follow the account the trigger filters on.
+  const { providerOf } = useAccountOptions(triggerType === 'event');
+  const filterCloudProvider = providerOf(parseFilterExpression(triggerParams.filter || '').cluster || accountId);
   const triggerLabel = triggerData?.label || 'Trigger';
   const executionInputs = executionData?.inputs;
   const triggeredBy = executionData?.triggered_by || selectedExecution?.triggered_by;
@@ -242,7 +241,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({
       case 'webhook':
         return <WebhookConfig params={triggerParams} />;
       case 'event':
-        return <EventConfig params={triggerParams} />;
+        return <EventConfig params={triggerParams} cloudProvider={filterCloudProvider} />;
       default:
         return null;
     }

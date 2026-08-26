@@ -9,12 +9,19 @@ import CloseIcon from '@mui/icons-material/Close';
 import k8sApi from '@api1/kubernetes';
 import apiKubernetes1 from '@api1/kubernetes1';
 import apiIntegrations from '@api1/integrations';
-import homeApi from '@api1/home';
 import recommendationApi from '@api1/recommendation';
 import { formatRuleName } from '@components/optimise-new/utils';
 import { titleCaseForAggregationKey } from 'src/utils/common';
 import CopyButton from '@shared/buttons/CopyButton';
-import { STRUCTURED_FILTER_FIELDS, buildFilterExpression, parseFilterExpression } from '../utils/eventFilter';
+import {
+  STRUCTURED_FILTER_FIELDS,
+  buildFilterExpression,
+  parseFilterExpression,
+  canonicalizeFilterExpression,
+  structuredFieldLabel,
+  structuredFieldDescription,
+} from '../utils/eventFilter';
+import { useAccountOptions } from '../hooks/useAccountOptions';
 import { DOCS_BASE_URL, docsUrl } from '@lib/externalUrls';
 import { validateCron } from '@utils/cron';
 import ScheduleBuilder from './ScheduleBuilder';
@@ -104,6 +111,8 @@ const EVENT_PAYLOAD_SAMPLE = {
   event_type: 'KubePodCrashLooping',
   source: 'k8s-collector',
   cluster: 'prod-us-east-1',
+  cloud_account_id: '4f1c2b7e-8a90-4c31-9f2d-1b6ac5e70d34',
+  // On cloud accounts subject_namespace carries the cloud service name (AmazonEC2, AWS_RDS).
   subject_namespace: 'payments',
   subject_name: 'checkout-api-7d9c',
   priority: 'HIGH',
@@ -249,8 +258,6 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const [optimizationCategories, setOptimizationCategories] = useState<string[]>([]);
   const [optimizationRuleNames, setOptimizationRuleNames] = useState<string[]>([]);
   const [optimizationClusters, setOptimizationClusters] = useState<string[]>([]);
-  const [k8sClusterOptions, setK8sClusterOptions] = useState<{ label: string; value: string }[]>([]);
-  const [isLoadingK8sClusters, setIsLoadingK8sClusters] = useState(false);
   // Distinct (category, rule_name) pairs sourced from the tenant's actual optimization
   // recommendations, so the Rule Name dropdown always matches what Optimize Recommendations shows.
   const [optimizationRulePairs, setOptimizationRulePairs] = useState<{ category: string; rule_name: string }[]>([]);
@@ -269,6 +276,33 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
   const triggerType = selectedNode?.data?.trigger?.type;
   const workflowId = workflowData?.id;
+
+  const {
+    options: accountOptions,
+    isLoading: isLoadingAccounts,
+    providerOf,
+  } = useAccountOptions(open && (triggerType === 'event' || triggerType === 'optimization'));
+
+  // Last-resort account fallback, read after mount rather than during render: the render pass
+  // also runs on the server, where localStorage doesn't exist and a value read on the client
+  // would produce a hydration mismatch. Storage can also throw when the browser blocks it.
+  const [storedAccountId, setStoredAccountId] = useState('');
+  useEffect(() => {
+    try {
+      setStoredAccountId(localStorage.getItem('selectedAccountId') || '');
+    } catch (error) {
+      console.error('Failed to read selectedAccountId from localStorage:', error);
+    }
+  }, []);
+
+  // Use the passed accountId prop first, then fall back to other sources.
+  const workflowAccountId = accountId || selectedNode?.data?.accountId || selectedNode?.data?.account_id || storedAccountId;
+  // `cluster` and `subject_namespace` mean different things per provider, so both the field
+  // labels and the namespace/service option list follow the account actually being filtered
+  // on: the picked cluster when it resolves to a known account, else the workflow's own.
+  // A legacy name-valued cluster filter resolves to nothing, so it falls back to the workflow.
+  const filterAccountId = accountOptions.some((o) => o.value === filterCluster) ? filterCluster : workflowAccountId;
+  const filterAccountProvider = providerOf(filterAccountId);
 
   const filterStateMap: Record<string, { value: string; setter: (v: string) => void }> = {
     event_type: { value: filterEventType, setter: setFilterEventType },
@@ -343,7 +377,9 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     setFilterCluster(parsed.cluster || '');
 
     // If the filter has content that can't be fully represented by structured dropdowns, use advanced mode
-    const existingFilter = mergedFilter.trim();
+    // Compare against the canonical form so a filter saved with the old
+    // `event.cluster == "<uuid>"` shape still opens in the structured UI.
+    const existingFilter = canonicalizeFilterExpression(mergedFilter).trim();
     if (existingFilter) {
       const reconstructed = buildFilterExpression(parsed).trim();
       setIsAdvancedFilter(existingFilter !== reconstructed);
@@ -431,9 +467,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   }, [isDirty, onClose, onRequestCloseWithUnsaved, pendingTriggerConfig]);
 
   const fetchEventFilterOptions = async () => {
-    // Use the passed accountId prop first, then fall back to other sources
-    const currentAccountId =
-      accountId || selectedNode?.data?.accountId || selectedNode?.data?.account_id || localStorage.getItem('selectedAccountId');
+    const currentAccountId = filterAccountId;
 
     if (!currentAccountId || currentAccountId === 'demo') {
       setAggregationKeyOptions([]);
@@ -486,27 +520,6 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
-  const fetchK8sClusterOptions = async () => {
-    setIsLoadingK8sClusters(true);
-    try {
-      const accounts = await homeApi.getCloudAccounts('');
-      const options = (accounts || [])
-        .filter((a: any) => a.id !== 'demo')
-        .map((a: any) => ({
-          label: a.account_name,
-          value: a.id,
-          cloud_provider: a.cloud_provider,
-          group: a.cloud_provider || 'Other',
-        }));
-      setK8sClusterOptions(options);
-    } catch (error) {
-      console.error('Failed to fetch K8s cluster options:', error);
-      setK8sClusterOptions([]);
-    } finally {
-      setIsLoadingK8sClusters(false);
-    }
-  };
-
   const fetchOptimizationRuleOptions = async () => {
     setIsLoadingOptimizationRules(true);
     try {
@@ -524,13 +537,12 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     if (open && triggerType === 'event') {
       fetchEventFilterOptions();
     }
-    if (open && (triggerType === 'event' || triggerType === 'optimization')) {
-      fetchK8sClusterOptions();
-    }
     if (open && triggerType === 'optimization') {
       fetchOptimizationRuleOptions();
     }
-  }, [open, triggerType, accountId]);
+    // filterAccountId is in the deps so switching the Cluster picker re-scopes the
+    // namespace/service and event-type lists to that account.
+  }, [open, triggerType, filterAccountId]);
 
   const fetchWebhookIntegrationInfo = async () => {
     if (!workflowId) {
@@ -888,7 +900,10 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
-  const AT_LEAST_ONE_FILTER_MSG = 'Set at least one filter (event type, cluster, namespace, source, priority, or advanced expression)';
+  const AT_LEAST_ONE_FILTER_MSG = `Set at least one filter (event type, ${structuredFieldLabel(
+    'cluster',
+    filterAccountProvider
+  ).toLowerCase()}, ${structuredFieldLabel('namespace', filterAccountProvider).toLowerCase()}, source, priority, or advanced expression)`;
 
   const saveEventTrigger = (filter: string): boolean => {
     const trimmedFilter = filter?.trim() || '';
@@ -914,7 +929,20 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const handleStructuredFilterChange = (filterType: string, value: string) => {
     filterStateMap[filterType].setter(value);
 
-    const newFilter = buildFilterExpression(getFilterValues(), { [filterType]: value });
+    const overrides: Record<string, string> = { [filterType]: value };
+    // Event type, namespace/service and source are all scoped to the selected account, and
+    // their vocabularies don't overlap across accounts (a k8s namespace is never an AWS
+    // service name). Carrying a selection over to a different account produces a filter that
+    // silently never fires, so drop those selections when the account changes — same reason
+    // the optimization Category field clears its rule names.
+    if (filterType === 'cluster' && value !== filterCluster) {
+      for (const stale of ['event_type', 'namespace', 'source']) {
+        filterStateMap[stale].setter('');
+        overrides[stale] = '';
+      }
+    }
+
+    const newFilter = buildFilterExpression(getFilterValues(), overrides);
     setEventFilter(newFilter);
 
     if (triggerType === 'event') {
@@ -965,7 +993,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     >
       <FormField
         label='Cluster'
-        description='Filter by Kubernetes cluster (optional)'
+        description='Filter by cluster or cloud account (optional)'
         value={optimizationClusters[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -977,7 +1005,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         required={false}
         error=''
         fieldType='select'
-        options={k8sClusterOptions}
+        options={accountOptions}
         grouped
         groupIcon={renderAccountGroupIcon}
         onSelect={() => {}}
@@ -987,7 +1015,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         maxRows={1}
         minRows={1}
         maxLength={200}
-        isOptionsLoading={isLoadingK8sClusters}
+        isOptionsLoading={isLoadingAccounts}
       />
 
       <FormField
@@ -1342,15 +1370,15 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                   />
 
                   <FormField
-                    label='Cluster'
-                    description='Kubernetes cluster'
+                    label={structuredFieldLabel('cluster', filterAccountProvider)}
+                    description={structuredFieldDescription('cluster', filterAccountProvider)}
                     value={filterCluster}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleStructuredFilterChange('cluster', e.target.value || '')}
-                    placeholder='Select cluster'
+                    placeholder={`Select ${structuredFieldLabel('cluster', filterAccountProvider).toLowerCase()}`}
                     required={false}
                     error=''
                     fieldType='select'
-                    options={k8sClusterOptions}
+                    options={accountOptions}
                     grouped
                     groupIcon={renderAccountGroupIcon}
                     onSelect={() => {}}
@@ -1360,15 +1388,15 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                     maxRows={1}
                     minRows={1}
                     maxLength={200}
-                    isOptionsLoading={isLoadingK8sClusters}
+                    isOptionsLoading={isLoadingAccounts}
                   />
 
                   <FormField
-                    label='Namespace'
-                    description='Kubernetes namespace'
+                    label={structuredFieldLabel('namespace', filterAccountProvider)}
+                    description={structuredFieldDescription('namespace', filterAccountProvider)}
                     value={filterNamespace}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleStructuredFilterChange('namespace', e.target.value || '')}
-                    placeholder='Select namespace'
+                    placeholder={`Select ${structuredFieldLabel('namespace', filterAccountProvider).toLowerCase()}`}
                     required={false}
                     error=''
                     fieldType='select'

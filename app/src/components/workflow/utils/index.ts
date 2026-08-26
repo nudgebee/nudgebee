@@ -9,4 +9,12 @@ export {
   buildWorkflowConversationMessages,
 } from './aiWorkflowUtils';
 export type { AIGenerateWorkflowResponse, ParsedAIWorkflow, BuildWorkflowResult, ConversationMessage, WorkflowResponseData } from './aiWorkflowUtils';
-export { STRUCTURED_FILTER_FIELDS, buildFilterExpression, parseFilterExpression } from './eventFilter';
+export {
+  STRUCTURED_FILTER_FIELDS,
+  buildFilterExpression,
+  parseFilterExpression,
+  canonicalizeFilterExpression,
+  isCloudProvider,
+  structuredFieldLabel,
+  structuredFieldDescription,
+} from './eventFilter';
