@@ -239,6 +239,15 @@ type appConfig struct {
 	// never re-minted). Default off — enable per-tenant once a mint budget is in place.
 	FeatureLLMTriageRemintEnabled bool `mapstructure:"feature_llm_triage_remint_enabled"`
 
+	// When true, Elasticsearch metric documents matching no known shape are read by a
+	// generic numeric-leaf walk instead of being dropped. Default off: it changes the
+	// result of every ES metrics query on shapes we do not parse today — indices that
+	// currently return no series would start returning dotted-path ones, which can
+	// flip anything keyed on "no data" (alert rules, empty-state branches). The
+	// dataset-dispatch path (esDatasetParsers) is unflagged; only this fallback is.
+	// Enable per environment after reviewing what the generic-fallback WARN logs name.
+	FeatureESMetricsGenericFallbackEnabled bool `mapstructure:"feature_es_metrics_generic_fallback_enabled"`
+
 	// Webhook execution mode - true for async (default), false for sync (useful for tests)
 	WebhookAsyncExecution bool `mapstructure:"webhook_async_execution"`
 

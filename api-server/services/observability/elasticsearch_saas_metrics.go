@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"nudgebee/services/config"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"sort"
@@ -312,10 +313,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			DocsMatched: &docsMatched,
 		}
 		if len(payload) == 0 && stats.DocsMatched > 0 {
-			qr.Note = "The query matched documents but no metric series could be extracted from them. " +
-				"This is NOT an absence of data. The most common cause is a `_source` projection that keeps only " +
-				"label fields (e.g. `__name__`) and therefore excludes the numeric value paths the series are built " +
-				"from — re-run without `_source`, or include the numeric field paths in it."
+			qr.Note = esNoSeriesNote(stats)
 		}
 		// Flag clauses that name fields the index does not have. Absent fields fail
 		// silently and in opposite directions depending on where they sit: nothing
@@ -695,6 +693,208 @@ func otelMetricLabels(src map[string]any) map[string]string {
 	return labels
 }
 
+// esNoSeriesNote explains an empty payload over a non-empty match in terms of what
+// the extractor actually observed.
+//
+// The text this replaces asserted one cause for every case — a label-only `_source`
+// projection. On the RDS conversation of 2026-08-26 that cause was wrong (the
+// documents were an unsupported shape), and the agent spent 15 minutes and 86 queries
+// re-running the same query with and without `_source` on its advice, then abandoned
+// Elasticsearch for CloudWatch and reported a different AWS account's databases. The
+// drop counters that would have said so were computed and left in the logs.
+func esNoSeriesNote(stats esParseStats) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "The query matched %d document(s) but no metric series could be extracted from them. "+
+		"This is NOT an absence of data.", stats.DocsMatched)
+
+	switch {
+	case stats.DroppedNoValue > 0:
+		fmt.Fprintf(&b, " %d document(s) carried no numeric value at any path the extractor recognises, "+
+			"which means their shape is not supported yet — not that the filter was wrong.", stats.DroppedNoValue)
+	case stats.DroppedNoTimestamp > 0:
+		fmt.Fprintf(&b, " %d document(s) had no parseable timestamp; one must be an RFC3339 string at "+
+			"`time` or `@timestamp`.", stats.DroppedNoTimestamp)
+	}
+	if len(stats.SampleSourceFields) > 0 {
+		fmt.Fprintf(&b, " Top-level fields of the first matched document: %s.",
+			strings.Join(stats.SampleSourceFields, ", "))
+	}
+	b.WriteString(" A `_source` projection that keeps only label fields also produces this — if one is set, " +
+		"re-run without it. If not, do not reformulate the query: the field list above is what needs " +
+		"extractor support, and repeating the search will return zero every time.")
+	return b.String()
+}
+
+// esDataStreamTypes are the data-stream types Elastic writes. Only these names are
+// treated as the "{type}" of a "{type}-{dataset}-{namespace}" index.
+var esDataStreamTypes = map[string]bool{
+	"metrics":    true,
+	"logs":       true,
+	"traces":     true,
+	"synthetics": true,
+	"profiling":  true,
+}
+
+// esIndexDataset extracts the data-stream dataset from a hit's `_index`.
+//
+// Elastic data streams are named "{type}-{dataset}-{namespace}", so the dataset
+// ("aws.cloudwatch_metrics", "kubernetes.state_pod", ...) is a DECLARATION of the
+// document's shape rather than something to infer from its body. It is the right
+// dispatch key for one reason the in-document identity fields cannot match: the
+// `_source` projection that is currently the only way to narrow a query to one
+// metric strips `metricset.name` / `agent.type`, but never touches `_index`.
+//
+// Handles the cross-cluster prefix and the hidden backing-index form:
+//
+//	aircp-es-transport:.ds-metrics-aws.cloudwatch_metrics-gd-ehq-non-prod-2026.08.16-000018
+//	  -> "aws.cloudwatch_metrics"
+//
+// Returns "" for names that are not data-stream shaped (legacy concrete indices), so
+// callers fall through to the body-shape detection below.
+func esIndexDataset(index string) string {
+	// Index names cannot contain ':', so a colon can only be the remote-cluster
+	// prefix of a cross-cluster search result.
+	if i := strings.LastIndex(index, ":"); i >= 0 {
+		index = index[i+1:]
+	}
+	index = strings.TrimPrefix(index, ".ds-")
+	index = backingIndexSuffix.ReplaceAllString(index, "")
+
+	// "{type}-{dataset}-{namespace}": a dataset never contains '-' (it uses '.' and
+	// '_'), while a namespace routinely does, so cut at the first two separators.
+	//
+	// The type must be one Elastic actually uses for data streams. Without that check
+	// any hyphenated legacy index parses as a data stream — "metricbeat-7.17.0-2026.08.16"
+	// yields dataset "7.17.0" — and a name that happened to collide with a registered
+	// dataset would be dispatched to the wrong parser.
+	typeEnd := strings.Index(index, "-")
+	if typeEnd < 0 || !esDataStreamTypes[index[:typeEnd]] {
+		return ""
+	}
+	rest := index[typeEnd+1:]
+	datasetEnd := strings.Index(rest, "-")
+	if datasetEnd <= 0 {
+		return ""
+	}
+	return rest[:datasetEnd]
+}
+
+// esSeriesPoint is one (labels, value) pair extracted from a single document.
+type esSeriesPoint struct {
+	Labels map[string]string
+	Value  float64
+}
+
+// esDatasetParsers maps a data-stream dataset to the extractor for its shape.
+//
+// Adding a source is an entry here plus its parser — not another shape guess
+// appended to the if-chain in parseESMetricsHitsWithStats. A dataset absent from
+// this map falls through to that chain unchanged, so existing callers are
+// unaffected. A parser returns ok=false when the document does not match the
+// shape its dataset implies, which also falls through rather than dropping.
+var esDatasetParsers = map[string]func(src map[string]any) (points []esSeriesPoint, ts int64, ok bool){
+	"aws.cloudwatch_metrics": awsCloudwatchMetricsetSeries,
+}
+
+// awsCloudwatchMetricsetSeries reads the Elastic AWS "cloudwatch_metrics" shape:
+//
+//	metricset: {metric_name, dimensions{...}, unit, timestamp,
+//	            value{count, max, min, sum}}
+//
+// Two details that a scalar-value assumption gets wrong:
+//
+// CloudWatch metric streams deliver a StatisticSet per period, not a single reading,
+// so one document yields three series — avg (sum/count), max and min — separated by a
+// `statistic` label. Collapsing to one loses the peak, which is the number that
+// matters on saturation metrics like CPUUtilization.
+//
+// `metricset.timestamp` is when the metric was observed; `@timestamp` is when it was
+// ingested, ~3 minutes later on sampled documents. Charting on `@timestamp` buckets
+// every metric of one ingest batch onto the same instant.
+//
+// The same metric arrives at several dimension granularities (DBInstanceIdentifier,
+// DBClusterIdentifier+Role, EngineName, DatabaseClass). Each dimension set is its own
+// series; callers must filter by dimension or they will double count.
+func awsCloudwatchMetricsetSeries(src map[string]any) ([]esSeriesPoint, int64, bool) {
+	ms, ok := src["metricset"].(map[string]any)
+	if !ok {
+		return nil, 0, false
+	}
+	name, _ := ms["metric_name"].(string)
+	if name == "" {
+		return nil, 0, false
+	}
+
+	base := map[string]string{"__name__": name}
+	// "None" is CloudWatch's placeholder for dimensionless metrics; carrying it as a
+	// label would just add a constant that distinguishes no two series.
+	if unit, _ := ms["unit"].(string); unit != "" && unit != "None" {
+		base["unit"] = unit
+	}
+	if dims, ok := ms["dimensions"].(map[string]any); ok {
+		for k, v := range dims {
+			base[k] = fmt.Sprintf("%v", v)
+		}
+	}
+
+	var ts int64
+	if tsStr, _ := ms["timestamp"].(string); tsStr != "" {
+		if t, err := time.Parse(time.RFC3339Nano, tsStr); err == nil {
+			ts = t.Unix()
+		}
+	}
+
+	point := func(statistic string, val float64) esSeriesPoint {
+		labels := make(map[string]string, len(base)+1)
+		for k, v := range base {
+			labels[k] = v
+		}
+		if statistic != "" {
+			labels["statistic"] = statistic
+		}
+		return esSeriesPoint{Labels: labels, Value: val}
+	}
+
+	// Scalar form: some streams emit a plain number rather than a StatisticSet.
+	if v, ok := ms["value"].(float64); ok {
+		return []esSeriesPoint{point("", v)}, ts, true
+	}
+
+	stat, ok := ms["value"].(map[string]any)
+	if !ok {
+		return nil, 0, false
+	}
+	sum, hasSum := stat["sum"].(float64)
+	count, hasCount := stat["count"].(float64)
+	maxVal, hasMax := stat["max"].(float64)
+	minVal, hasMin := stat["min"].(float64)
+
+	points := make([]esSeriesPoint, 0, 4)
+	// count is the number of raw samples folded into the period; a zero count is a
+	// period with no observation, not an average of zero.
+	if hasSum && hasCount && count > 0 {
+		points = append(points, point("avg", sum/count))
+	}
+	if hasMax {
+		points = append(points, point("max", maxVal))
+	}
+	if hasMin {
+		points = append(points, point("min", minVal))
+	}
+	// sum is the meaningful statistic for Count-unit metrics — Deadlocks,
+	// Aurora_pq_request_attempted, AuroraNumOomRecoveryTriggered are all in one
+	// customer's live sample. Emitting only avg/max/min made "how many deadlocks in
+	// the last hour" unanswerable, and worse, answerable wrongly: {count:2, sum:5}
+	// renders as avg 2.5, a plausible number that means nothing.
+	if hasSum {
+		points = append(points, point("sum", sum))
+	}
+	if len(points) == 0 {
+		return nil, 0, false
+	}
+	return points, ts, true
+}
+
 // beatsLabelSkip are `kubernetes.*` subtrees that are constant per pod, node or
 // namespace and repeated on every single document. They would bloat every
 // series' label set without distinguishing any two series; the log pipeline
@@ -704,6 +904,92 @@ var beatsLabelSkip = []string{
 	"kubernetes.annotations.",
 	"kubernetes.namespace_labels.",
 	"kubernetes.node.labels.",
+}
+
+// genericMetricSkip are top-level branches that describe a document rather than
+// measure anything. Walking them would emit series for log offsets, event durations
+// and agent metadata alongside the real metrics.
+var genericMetricSkip = map[string]bool{
+	"@timestamp":    true,
+	"@version":      true,
+	"time":          true,
+	"timestamp":     true,
+	"datetime":      true,
+	"tags":          true,
+	"ecs":           true,
+	"agent":         true,
+	"elastic_agent": true,
+	"event":         true,
+	"log":           true,
+	"data_stream":   true,
+	"stream":        true,
+	"input":         true,
+	"error":         true,
+}
+
+// genericLabelSkip are path fragments whose leaves are per-resource constants. They
+// are labels at best and repeated on every document, so they bloat every series'
+// label set without distinguishing any two — the same reason beatsLabelSkip exists.
+var genericLabelSkip = []string{".labels.", ".annotations.", ".namespace_labels."}
+
+// genericNumericLeafSeries is the last resort before a document is dropped: walk the
+// whole `_source` and treat every numeric leaf as a metric keyed by its dotted path,
+// every string leaf as a label.
+//
+// It exists so an unrecognised shape degrades to "here is what we found" instead of
+// "0", which is indistinguishable from an idle database and is what sent one
+// investigation to the wrong AWS account. It is deliberately the LAST branch: a
+// registered dataset parser produces better names, correct statistics and the right
+// timestamp, and this one produces none of that. A non-zero fallback count in the
+// logs is the signal that a shape has earned a real parser.
+func genericNumericLeafSeries(src map[string]any) (labels map[string]string, values map[string]float64) {
+	labels = map[string]string{}
+	values = map[string]float64{}
+
+	var walk func(node map[string]any, path string)
+	walk = func(node map[string]any, path string) {
+		for k, v := range node {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			switch tv := v.(type) {
+			case map[string]any:
+				walk(tv, p)
+			case float64:
+				values[p] = tv
+			case string:
+				if !containsAny(p, genericLabelSkip) {
+					labels[p] = tv
+				}
+			}
+		}
+	}
+
+	for k, v := range src {
+		if genericMetricSkip[k] {
+			continue
+		}
+		switch tv := v.(type) {
+		case map[string]any:
+			walk(tv, k)
+		case float64:
+			values[k] = tv
+		case string:
+			labels[k] = tv
+		}
+	}
+	return labels, values
+}
+
+// containsAny reports whether s contains any of the given fragments.
+func containsAny(s string, fragments []string) bool {
+	for _, f := range fragments {
+		if strings.Contains(s, f) {
+			return true
+		}
+	}
+	return false
 }
 
 // beatsMetricSeries splits a Metricbeat document's `kubernetes` subtree into
@@ -764,6 +1050,12 @@ type esParseStats struct {
 	DocsMatched  int64
 	HitsReturned int
 	SeriesParsed int
+	// Drop counters and the first document's field list. These were already computed
+	// for the log lines below but never returned, so a caller seeing zero series had
+	// to guess why — and the fixed note it got guessed wrong (see esNoSeriesNote).
+	DroppedNoTimestamp int
+	DroppedNoValue     int
+	SampleSourceFields []string
 }
 
 func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
@@ -775,6 +1067,11 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 	var esResp struct {
 		Hits struct {
 			Hits []struct {
+				// Index is the data-stream backing index the hit came from. It is
+				// decoded because the index NAME declares the document's shape
+				// (see esIndexDataset) and, unlike the in-document identity fields,
+				// no `_source` projection can strip it.
+				Index  string         `json:"_index"`
 				Source map[string]any `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
@@ -808,6 +1105,9 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 	// "matched nothing" and "matched but every hit was discarded" are the same
 	// observation. Tracked per reason so the log names which shape assumption failed.
 	var droppedNoTimestamp, droppedNonNumericValue int
+	// fallbackHits counts documents only the generic numeric-leaf walk could read.
+	// A non-zero count names a shape that deserves an esDatasetParsers entry.
+	var fallbackHits int
 	sampleTimestamp := ""
 
 	for _, hit := range esResp.Hits.Hits {
@@ -834,6 +1134,25 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 			continue
 		}
 		ts := t.Unix()
+
+		// Dataset-declared shape first: the index name states what this document is
+		// (see esIndexDataset), so no body sniffing is needed and a `_source`
+		// projection cannot hide it. Datasets with no registered parser — and
+		// documents that do not match the shape their dataset implies — fall through
+		// to the detection chain below unchanged.
+		if parse, known := esDatasetParsers[esIndexDataset(hit.Index)]; known {
+			if points, datasetTs, matched := parse(src); matched {
+				// The shape carries its own observation time; the generic `ts` above
+				// is the ingest time for these documents.
+				if datasetTs > 0 {
+					ts = datasetTs
+				}
+				for _, pt := range points {
+					add(pt.Labels, ts, pt.Value)
+				}
+				continue
+			}
+		}
 
 		// OTel-native mapping (mapping.mode: otel): each doc keys its metrics by
 		// name under "metrics" and carries dimensions under resource.attributes.
@@ -882,14 +1201,33 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 			// would be stolen from the flat branch below.
 			labels, values := beatsMetricSeries(src)
 			if len(values) == 0 {
-				// Nothing recognisable. Falling through would append a datapoint of
-				// 0 — indistinguishable from a real zero reading — so an unknown
-				// shape rendered as a flat zero line with no error anywhere, and
-				// dropped_non_numeric_value stayed 0 while the log said "parsed".
-				// A value key that *is* present and holds 0 keeps haveVal=true and
-				// never reaches here.
-				droppedNonNumericValue++
-				continue
+				// Catch-all: no known shape matched, so walk the document for numeric
+				// leaves rather than dropping it. The logs path has done this since
+				// sourceAsMessage ("render the whole _source ... instead of silently
+				// returning nothing"); metrics did not, and every shape we had not
+				// met returned zero — 84,478 documents discarded in 19 minutes on
+				// 2026-08-26, read by the agent as "this database has no data".
+				//
+				// Generic names ("system.cpu.total.pct") are worse than a purpose-built
+				// parser's, which is why esDatasetParsers is still the first choice.
+				// They are enormously better than nothing: the caller can see what
+				// exists and say so.
+				if !config.Config.FeatureESMetricsGenericFallbackEnabled {
+					droppedNonNumericValue++
+					continue
+				}
+				labels, values = genericNumericLeafSeries(src)
+				if len(values) == 0 {
+					// Genuinely no number anywhere. Falling through would append a
+					// datapoint of 0 — indistinguishable from a real zero reading — so
+					// an unknown shape rendered as a flat zero line with no error
+					// anywhere, and dropped_non_numeric_value stayed 0 while the log
+					// said "parsed". A value key that *is* present and holds 0 keeps
+					// haveVal=true and never reaches here.
+					droppedNonNumericValue++
+					continue
+				}
+				fallbackHits++
 			}
 			// Map iteration order is random; sort so series order is stable.
 			names := make([]string, 0, len(values))
@@ -933,12 +1271,26 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 			"dropped_non_numeric_value", droppedNonNumericValue,
 			"sample_timestamp", sampleTimestamp,
 			"sample_source_fields", esSourceFieldNames(esResp.Hits.Hits[0].Source),
-			"hint", "timestamps must be an RFC3339 string at `time` or `@timestamp`; values at metrics.<name>, name+value|sum|count, or numeric leaves under kubernetes.* (Metricbeat)")
+			"sample_index", esResp.Hits.Hits[0].Index,
+			"sample_dataset", esIndexDataset(esResp.Hits.Hits[0].Index),
+			"hint", "timestamps must be an RFC3339 string at `time` or `@timestamp`; values at metrics.<name>, name+value|sum|count, numeric leaves under kubernetes.* (Metricbeat), or a dataset registered in esDatasetParsers")
 	default:
 		slog.Info("ES metrics query: parsed hits",
 			"matched", esHitsTotal(string(bodyBytes)), "returned", returned, "series", len(groups),
 			"dropped_unparseable_timestamp", droppedNoTimestamp,
-			"dropped_non_numeric_value", droppedNonNumericValue)
+			"dropped_non_numeric_value", droppedNonNumericValue,
+			"generic_fallback_hits", fallbackHits)
+	}
+	// A shape only the generic walk could read is one esDatasetParsers should own:
+	// the caller gets dotted-path names and no statistics until it does. Logged at
+	// WARN with the field list so the shape is identifiable from the log alone.
+	if fallbackHits > 0 && returned > 0 {
+		slog.Warn("ES metrics query: shape read by generic fallback",
+			"hits", fallbackHits, "returned", returned,
+			"sample_index", esResp.Hits.Hits[0].Index,
+			"sample_dataset", esIndexDataset(esResp.Hits.Hits[0].Index),
+			"sample_source_fields", esSourceFieldNames(esResp.Hits.Hits[0].Source),
+			"hint", "add a parser for this dataset to esDatasetParsers for real metric names, statistics and observation timestamps")
 	}
 
 	results := make([]Result, 0, len(groups))
@@ -965,10 +1317,17 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 		})
 	}
 
+	var sampleFields []string
+	if returned > 0 {
+		sampleFields = esSourceFieldNames(esResp.Hits.Hits[0].Source)
+	}
 	return results, esParseStats{
-		DocsMatched:  esHitsTotal(string(bodyBytes)),
-		HitsReturned: returned,
-		SeriesParsed: len(groups),
+		DocsMatched:        esHitsTotal(string(bodyBytes)),
+		HitsReturned:       returned,
+		SeriesParsed:       len(groups),
+		DroppedNoTimestamp: droppedNoTimestamp,
+		DroppedNoValue:     droppedNonNumericValue,
+		SampleSourceFields: sampleFields,
 	}, nil
 }
 
