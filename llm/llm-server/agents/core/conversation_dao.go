@@ -1922,7 +1922,7 @@ func (chat *ConversationDao) TerminateConversation(context *security.RequestCont
 
 	// Update the message status to TERMINATED and capture affected message IDs so
 	// we can invalidate their termination cache entries after commit.
-	messageQuery := `UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $4 WHERE conversation_id = $1 AND account_id = $3 AND status in ('IN_PROGRESS', 'WAITING', 'PENDING') RETURNING id`
+	messageQuery := `UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $4 WHERE conversation_id = $1 AND account_id = $3 AND status in ('IN_PROGRESS', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING') RETURNING id`
 	rows, err := tx.Queryx(messageQuery, conversationId, string(ConversationStatusTerminated), accountId, "Conversation terminated by user")
 	if err != nil {
 		return fmt.Errorf("history: failed to terminate message: %w", err)

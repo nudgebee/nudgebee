@@ -1348,7 +1348,11 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
       return parseExecutionBatchMetadata(headerMetadata);
     }
     const batches = toolCalls.map((t) => parseExecutionBatchMetadata(t.metadata)).filter(Boolean);
-    return batches.length === toolCalls.length && new Set(batches.map((batch) => batch.id)).size === 1 ? batches[0] : null;
+    return batches.length === toolCalls.length &&
+      batches.every((batch) => batch.hasExplicitBatchId) &&
+      new Set(batches.map((batch) => batch.id)).size === 1
+      ? batches[0]
+      : null;
   })();
 
   // Per-tool reasoning lookup: match a tool-call-like object's candidate ids against the

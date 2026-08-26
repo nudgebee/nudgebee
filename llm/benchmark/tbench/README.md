@@ -1,7 +1,7 @@
 # NuBi × terminal-bench
 
 A [terminal-bench](https://www.tbench.ai/) `BaseAgent` adapter that drives
-NuBi (`llm/llm-server`) via the `@tbench` custom agent and the `shell_execute`
+NuBi (`llm/llm-server`) via the `@tbench` custom agent and the `tbench_shell_execute`
 client-tool callback protocol. Lets us measure NuBi's general-agent
 capabilities (planning, recovery, tool use) on a standardized public
 benchmark.
@@ -15,7 +15,7 @@ tb harness → NuBiAgent → POST /v1/completions/chat (@tbench, async)
    loop:
    NuBiAgent → POST /v1/completions/chat_get
              ← {status: WAITING_FOR_CLIENT_TOOL,
-                agent_step_response: [{tool_id, tool_name: shell_execute, tool_input: {command}}]}
+                agent_step_response: [{tool_id, tool_name: tbench_shell_execute, tool_input: {command}}]}
    NuBiAgent → run command in tb's tmux/Docker session, capture pane
    NuBiAgent → POST /v1/completions/client-tool-result
                   {results: [{tool_id, result: <pane>, status: SUCCESS}]}
@@ -41,8 +41,9 @@ that consume the task deadline without producing an artifact.
 ## Prerequisites
 
 1. **NuBi running locally** — `cd llm/llm-server && make run` (default port 8005 or 9999).
-2. **`@tbench` agent installed in NuBi** — created via the NuBi UI as a custom agent
-   under your tenant, with `shell_execute` available as a tool.
+2. **`@tbench` agent installed in NuBi** — import [`tbench-agent.yaml`](tbench-agent.yaml)
+   under your tenant. Its persisted `tools` list is intentionally empty because the
+   adapter publishes `tbench_shell_execute` as a request-scoped client tool.
 3. **Docker daemon reachable** — terminal-bench builds a fresh container per task.
 4. **`ghcr.io` reachable** — task images are pulled from GitHub Container Registry.
    See [Troubleshooting](#troubleshooting) if `docker compose build` times out.

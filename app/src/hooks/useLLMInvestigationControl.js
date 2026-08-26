@@ -1182,11 +1182,15 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
           if (['COMPLETED', 'FAILED', 'KILLED', 'TERMINATED'].includes(response.status)) {
             const msgs = response.llm_conversation_messages || [];
             const hasWaitingMessages = msgs.some((m) => m.message_type !== 'followup' && m.status === 'WAITING');
-            const hasActiveMessages = msgs.some((m) => m.message_type !== 'followup' && ['IN_PROGRESS', 'WAITING'].includes(m.status));
+            const hasActiveMessages = msgs.some(
+              (m) => m.message_type !== 'followup' && ['IN_PROGRESS', 'WAITING', 'WAITING_FOR_CLIENT_TOOL'].includes(m.status)
+            );
             if (hasWaitingMessages) {
               effectiveStatus = 'WAITING';
             } else if (hasActiveMessages) {
-              effectiveStatus = 'IN_PROGRESS';
+              effectiveStatus = msgs.some((m) => m.message_type !== 'followup' && m.status === 'WAITING_FOR_CLIENT_TOOL')
+                ? 'WAITING_FOR_CLIENT_TOOL'
+                : 'IN_PROGRESS';
             }
           }
           if (!isStale()) {
