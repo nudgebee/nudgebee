@@ -1,0 +1,326 @@
+{
+  "app": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 2,
+      "MEDIUM": 7
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 2,
+      "MEDIUM": 7
+    }
+  },
+  "application-profiler-bpf": {
+    "repo": "k8s-agent",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 9,
+      "MEDIUM": 18
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 9,
+      "MEDIUM": 18
+    }
+  },
+  "cloud-collector-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 1
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 1
+    }
+  },
+  "code-analysis-agent": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 1
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 1
+    }
+  },
+  "cost-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    }
+  },
+  "k8s-collector": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    }
+  },
+  "llm-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 3
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 29
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 32
+    }
+  },
+  "migrations": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 3
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 18
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 21
+    }
+  },
+  "ml-k8s-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 1
+    },
+    "unfixable": {
+      "CRITICAL": 2,
+      "HIGH": 37,
+      "MEDIUM": 82
+    },
+    "total": {
+      "CRITICAL": 2,
+      "HIGH": 38,
+      "MEDIUM": 83
+    }
+  },
+  "node-agent": {
+    "repo": "node-agent",
+    "fixable": {
+      "CRITICAL": 1,
+      "HIGH": 29,
+      "MEDIUM": 64
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 16,
+      "MEDIUM": 86
+    },
+    "total": {
+      "CRITICAL": 1,
+      "HIGH": 45,
+      "MEDIUM": 150
+    }
+  },
+  "notifications": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 2,
+      "MEDIUM": 14
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 2,
+      "MEDIUM": 14
+    }
+  },
+  "nudgebee-agent": {
+    "repo": "k8s-agent",
+    "fixable": {
+      "CRITICAL": 1,
+      "HIGH": 20,
+      "MEDIUM": 36
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 1,
+      "HIGH": 20,
+      "MEDIUM": 36
+    }
+  },
+  "rag-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 1,
+      "HIGH": 15,
+      "MEDIUM": 42
+    },
+    "unfixable": {
+      "CRITICAL": 2,
+      "HIGH": 40,
+      "MEDIUM": 83
+    },
+    "total": {
+      "CRITICAL": 3,
+      "HIGH": 55,
+      "MEDIUM": 125
+    }
+  },
+  "relay-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    }
+  },
+  "services-server-sidecar": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    }
+  },
+  "services-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    }
+  },
+  "ticket-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    }
+  },
+  "workflow-server": {
+    "repo": "nudgebee-oss",
+    "fixable": {
+      "CRITICAL": 0,
+      "HIGH": 3,
+      "MEDIUM": 0
+    },
+    "unfixable": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "MEDIUM": 0
+    },
+    "total": {
+      "CRITICAL": 0,
+      "HIGH": 3,
+      "MEDIUM": 0
+    }
+  }
+}
