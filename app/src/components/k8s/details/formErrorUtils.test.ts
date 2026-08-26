@@ -30,5 +30,6 @@ describe('formErrorUtils', () => {
     const errors: FormErrors = { action: { field: 'Required' } };
     expect(removeFormError(errors, '__proto__', 'field')).toBe(errors);
     expect(removeFormError(errors, 'missing', 'field')).toBe(errors);
+    expect(removeFormError(errors, 'action', 'missing')).toBe(errors);
   });
 });

@@ -17,6 +17,9 @@ export const removeFormError = (errors: FormErrors, actionId: unknown, paramName
   if (!isSafeObjectKey(actionId) || !isSafeObjectKey(paramName) || !Object.prototype.hasOwnProperty.call(errors, actionId)) {
     return errors;
   }
+  if (!Object.prototype.hasOwnProperty.call(errors[actionId], paramName)) {
+    return errors;
+  }
 
   const actionErrors = { ...errors[actionId] };
   delete actionErrors[paramName];
