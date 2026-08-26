@@ -2515,9 +2515,9 @@ class CommonService:
                 return {"success": True, "platform": "ms_teams"}
             error_detail = resp.text if resp else "No response"
             return {"success": False, "platform": "ms_teams", "error": error_detail}
-        except Exception:
+        except Exception as e:
             LOG.exception("MS Teams test notification error")
-            return {"success": False, "platform": "ms_teams", "error": "Failed to send MS Teams test notification"}
+            return {"success": False, "platform": "ms_teams", "error": f"Failed to send MS Teams test notification: {e}"}
 
     def _send_test_discord(self, messaging_platform, channel_id, message):
         from notifications_server.clients.discord_client import DiscordClient
@@ -2529,9 +2529,9 @@ class CommonService:
             if not response.get("ok"):
                 return {"success": False, "platform": "discord", "error": response.get("error", "Unknown error")}
             return {"success": True, "platform": "discord"}
-        except Exception:
+        except Exception as e:
             LOG.exception("Error sending Discord test notification")
-            return {"success": False, "platform": "discord", "error": "Failed to send Discord test notification"}
+            return {"success": False, "platform": "discord", "error": f"Failed to send Discord test notification: {e}"}
 
     def _send_test_google_chat(self, messaging_platform, channel_id, message, tenant_id):
         error = self._refresh_google_chat_token(messaging_platform)
@@ -2548,9 +2548,9 @@ class CommonService:
             if result and result.get("success"):
                 return {"success": True, "platform": "google_chat"}
             return {"success": False, "platform": "google_chat", "error": "Failed to post message"}
-        except Exception:
+        except Exception as e:
             LOG.exception("Google Chat test notification error")
-            return {"success": False, "platform": "google_chat", "error": "Failed to send Google Chat test notification"}
+            return {"success": False, "platform": "google_chat", "error": f"Failed to send Google Chat test notification: {e}"}
 
     async def teams_send_welcome_message(self, activity: Activity) -> bool:
         """Send welcome message when bot is added to a Teams conversation."""
