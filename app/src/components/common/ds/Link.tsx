@@ -40,8 +40,17 @@ export interface LinkProps {
 const SAFE_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 
 export const isSafeLinkHref = (href: string): boolean => {
+  if (typeof href !== 'string' || href.trim() === '') return false;
+
+  const trimmed = href.trim();
+  const ampersandIndex = trimmed.indexOf('&');
+  if (ampersandIndex !== -1) {
+    const firstDelimiter = trimmed.search(/[?:/]/);
+    if (firstDelimiter === -1 || ampersandIndex < firstDelimiter) return false;
+  }
+
   try {
-    return SAFE_LINK_PROTOCOLS.has(new URL(href, 'https://nudgebee.invalid').protocol);
+    return SAFE_LINK_PROTOCOLS.has(new URL(trimmed, 'https://nudgebee.invalid').protocol);
   } catch {
     return false;
   }
@@ -59,8 +68,9 @@ export function Link({
   OpenInNewIconSx = {},
   maxWidth,
 }: LinkProps) {
-  const hasSafeHref = isSafeLinkHref(href);
-  const safeHref = hasSafeHref ? href : '#';
+  const normalizedHref = typeof href === 'string' ? href.trim() : '';
+  const hasSafeHref = isSafeLinkHref(normalizedHref);
+  const safeHref = hasSafeHref ? normalizedHref : '#';
 
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.stopPropagation();

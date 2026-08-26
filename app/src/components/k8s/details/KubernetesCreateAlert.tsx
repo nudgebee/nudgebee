@@ -433,6 +433,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     setFormErrors((prevErrors) => {
       const newErrors = Object.assign(Object.create(null), prevErrors);
       if (newErrors[actionId]) {
+        newErrors[actionId] = Object.assign(Object.create(null), newErrors[actionId]);
         delete newErrors[actionId][paramName];
         if (Object.keys(newErrors[actionId]).length === 0) {
           delete newErrors[actionId];
