@@ -43,6 +43,7 @@ export const isSafeLinkHref = (href: string): boolean => {
   if (typeof href !== 'string' || href.trim() === '') return false;
 
   const trimmed = href.trim();
+  if (trimmed.startsWith('//') || trimmed.startsWith('/\\') || trimmed.startsWith('\\')) return false;
   if (trimmed.startsWith('/') || trimmed.startsWith('#') || trimmed.startsWith('?')) return true;
 
   const ampersandIndex = trimmed.indexOf('&');

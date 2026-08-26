@@ -13,8 +13,12 @@ describe('detectGitProvider', () => {
     'https://my-gitlab.company.com/owner/repo',
   ])('detects GitLab URL %s', (url) => expect(detectGitProvider(url)).toBe('gitlab'));
 
-  it.each(['https://attackergitlab.com/owner/repo', 'https://gitlabfake.com/owner/repo', 'not a URL', undefined])(
-    'does not classify spoofed or invalid URL %s',
-    (url) => expect(detectGitProvider(url)).toBeNull()
-  );
+  it.each([
+    'https://attackergitlab.com/owner/repo',
+    'https://gitlabfake.com/owner/repo',
+    'https://gitlab-attacker.com/owner/repo',
+    'https://attacker-gitlab.com/owner/repo',
+    'not a URL',
+    undefined,
+  ])('does not classify spoofed or invalid URL %s', (url) => expect(detectGitProvider(url)).toBeNull());
 });

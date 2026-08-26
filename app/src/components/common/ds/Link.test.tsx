@@ -6,12 +6,19 @@ describe('isSafeLinkHref', () => {
     expect(isSafeLinkHref(href)).toBe(true);
   });
 
-  it.each(['', '   ', 'javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'javascript&colon;alert(1)', 'java&#x73;cript:alert(1)'])(
-    'rejects unsafe or unusable href %s',
-    (href) => {
-      expect(isSafeLinkHref(href)).toBe(false);
-    }
-  );
+  it.each([
+    '',
+    '   ',
+    'javascript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'javascript&colon;alert(1)',
+    'java&#x73;cript:alert(1)',
+    '//example.com',
+    '/\\example.com',
+    '\\example.com',
+  ])('rejects unsafe or unusable href %s', (href) => {
+    expect(isSafeLinkHref(href)).toBe(false);
+  });
 
   it('allows ampersands in a query string', () => {
     expect(isSafeLinkHref('/search?q=one&sort=asc')).toBe(true);
