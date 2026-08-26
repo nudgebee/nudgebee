@@ -411,6 +411,16 @@ type ApplyCommandResponse struct {
 	Message string `json:"message"`
 }
 
+// AsyncInitiatedError is returned by a provider's ApplyRecommendation when the apply
+// successfully KICKED OFF an asynchronous operation that completes in the background
+// (e.g. an AWS EBS ModifyVolume). It is not a failure: the account layer treats it as
+// success and surfaces Message to the user. Using a typed error lets a provider report
+// "initiated, not complete" over the error-only ApplyRecommendation contract without a
+// signature change or the generic dispatch layer knowing any provider-specific rule name.
+type AsyncInitiatedError struct{ Message string }
+
+func (e *AsyncInitiatedError) Error() string { return e.Message }
+
 // QueryLogsRequest defines the input for querying logs.
 type QueryLogsRequest struct {
 	Region        string     `json:"region"`

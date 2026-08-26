@@ -224,8 +224,141 @@ func (a *amazonEc2) ApplyRecommendation(ctx providers.CloudProviderContext, acco
 		return nil
 	}
 
+	// gp2 -> gp3 EBS volume upgrade: kicks off an asynchronous ModifyVolume.
+	if recommendation.RuleName == "aws_ec2_ebs_generation_upgrade" {
+		return a.applyEBSGp3Upgrade(ctx, account, recommendation)
+	}
+
 	// Other recommendations not yet supported
 	return errors.ErrUnsupported
+}
+
+// ebsModifyParams reads the gp3 IOPS/throughput to apply from a recommendation's Data.
+// In production these arrive as float64 (the Data map is JSON round-tripped through the
+// DB), so a plain `.(int)` assertion would silently miss them; positiveInt32 accepts both
+// float64 and int to be robust to either path. Absent/zero values mean "leave gp3 at its
+// defaults" — safe for volumes <=170 GiB, which PR1 intentionally leaves without a matched
+// config because gp3's defaults already exceed their gp2 performance.
+func ebsModifyParams(data map[string]any) (iops, throughput int32) {
+	return positiveInt32(data["recommended_iops"]), positiveInt32(data["recommended_throughput"])
+}
+
+// positiveInt32 returns v as an int32 when it is a positive float64 or int, else 0.
+func positiveInt32(v any) int32 {
+	switch n := v.(type) {
+	case float64:
+		if n > 0 {
+			return int32(n)
+		}
+	case int:
+		if n > 0 {
+			return int32(n)
+		}
+	}
+	return 0
+}
+
+// ebsModificationInProgress reports whether a volume already has an in-flight
+// modification (state modifying or optimizing), in which case a new ModifyVolume must not
+// be attempted. Completed/failed modifications do not block here: AWS enforces its own
+// ~6-hour cooldown and rejects a too-soon retry, and that error is surfaced honestly
+// rather than re-derived from timestamps.
+func ebsModificationInProgress(mods []types.VolumeModification) bool {
+	for _, m := range mods {
+		if m.ModificationState == types.VolumeModificationStateModifying ||
+			m.ModificationState == types.VolumeModificationStateOptimizing {
+			return true
+		}
+	}
+	return false
+}
+
+// applyEBSGp3Upgrade converts a gp2 volume to gp3 via ModifyVolume. It is asynchronous:
+// the volume enters the "modifying" state and completes in the background, so on success
+// it returns a *providers.AsyncInitiatedError (a success signal carrying the user-facing
+// message). For volumes that need it, the gp3 IOPS/throughput matched to the gp2 (from
+// PR1's Data) are passed so the upgrade never becomes a downgrade.
+func (a *amazonEc2) applyEBSGp3Upgrade(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
+	data := recommendation.Data
+	volumeID, _ := data["volume_id"].(string)
+	region, _ := data["volume_region"].(string)
+	if region == "" {
+		region = recommendation.ResourceRegion
+	}
+
+	// Audit every outcome, including the early-return failures below. resultErr stays nil
+	// on the async-success path (which returns a non-nil *AsyncInitiatedError), so that
+	// path is correctly audited as SUCCESS.
+	var resultErr error
+	var resultMsg string
+	cmd := providers.ApplyCommandRequest{
+		ServiceName: recommendation.ResourceServiceName,
+		Region:      region,
+		ResourceId:  volumeID,
+		Command:     "modify_volume",
+		Args:        data,
+	}
+	defer func() {
+		status := "SUCCESS"
+		if resultErr != nil {
+			status = "FAILURE"
+		}
+		if auditErr := logResourceActionAudit(ctx, cmd, account, status, resultMsg); auditErr != nil {
+			ctx.GetLogger().Warn("failed to log audit record", "error", auditErr)
+		}
+	}()
+
+	if volumeID == "" {
+		resultErr = fmt.Errorf("EBS gp3 upgrade: missing volume_id in recommendation data")
+		resultMsg = resultErr.Error()
+		return resultErr
+	}
+
+	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
+	if err != nil {
+		resultErr = fmt.Errorf("failed to create aws config: %w", err)
+		resultMsg = resultErr.Error()
+		return resultErr
+	}
+	cfg.Region = region
+	client := ec2.NewFromConfig(cfg)
+
+	// Guard: don't stack a modification on a volume that is already being modified.
+	// A DescribeVolumesModifications error is non-fatal — proceed and let ModifyVolume
+	// (which enforces the cooldown authoritatively) decide.
+	if modsOut, descErr := client.DescribeVolumesModifications(ctx.GetContext(), &ec2.DescribeVolumesModificationsInput{
+		VolumeIds: []string{volumeID},
+	}); descErr == nil && ebsModificationInProgress(modsOut.VolumesModifications) {
+		resultErr = fmt.Errorf("volume %s already has a modification in progress; try again once it completes", volumeID)
+		resultMsg = resultErr.Error()
+		return resultErr
+	}
+
+	input := &ec2.ModifyVolumeInput{
+		VolumeId:   aws.String(volumeID),
+		VolumeType: types.VolumeTypeGp3,
+	}
+	// Only provision IOPS/throughput that exceed gp3's free baseline (3000 IOPS / 125 MiB/s);
+	// ModifyVolume rejects values below the gp3 minimums. PR1 only emits matched values that
+	// already exceed these, but guarding here keeps apply robust to malformed/future Data.
+	iops, throughput := ebsModifyParams(data)
+	if iops > gp3DefaultIOPS {
+		input.Iops = aws.Int32(iops)
+	}
+	if throughput > gp3DefaultThroughput {
+		input.Throughput = aws.Int32(throughput)
+	}
+
+	if _, err := client.ModifyVolume(ctx.GetContext(), input); err != nil {
+		resultErr = fmt.Errorf("failed to modify volume %s to gp3: %w", volumeID, err)
+		resultMsg = resultErr.Error()
+		return resultErr
+	}
+
+	resultMsg = fmt.Sprintf("Initiated gp3 modification for volume %s", volumeID)
+	return &providers.AsyncInitiatedError{
+		Message: "Volume modification to gp3 has been initiated. It runs in the background and may take a while to complete; the volume cannot be modified again for up to 6 hours.",
+	}
 }
 
 func (a *amazonEc2) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
