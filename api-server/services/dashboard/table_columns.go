@@ -88,7 +88,7 @@ func upgradeColumns(opts TableOptions) []TableColumn {
 	if len(opts.Columns) > 0 {
 		return opts.Columns
 	}
-	var columns []TableColumn
+	columns := make([]TableColumn, 0, len(opts.LegacyHiddenColumns)+len(opts.LegacyLinkColumns))
 	at := map[string]int{}
 	for _, name := range opts.LegacyHiddenColumns {
 		name = strings.TrimSpace(name)

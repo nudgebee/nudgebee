@@ -20,7 +20,7 @@ import (
 // the idiomatic way to reach the API and omits the host entirely.
 var foreignPRLookupPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\brepos/([\w.-]+)/([\w.-]+)/(?:pulls|issues)\b`),
-	regexp.MustCompile(`(?i)(?:^|[\s"'<])https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/\d+`),
+	regexp.MustCompile(`(?i)\bhttps?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/\d+`),
 	// `gh pr view 123 --repo owner/name` / `-R owner/name`. The flag alone is not
 	// enough — `gh repo view --repo o/r` is fine — so require a pr/issue command.
 	regexp.MustCompile(`(?i)\bgh\s+(?:pr|issue)\b[^|;&]*?(?:--repo|-R)[= ]+([\w.-]+)/([\w.-]+)`),

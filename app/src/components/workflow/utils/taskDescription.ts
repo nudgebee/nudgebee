@@ -18,7 +18,10 @@ const enrichTaskDescription = (taskType: string, params: any, baseDescription: s
       return params?.url ? `HTTP: ${params.url}` : null;
     case 'notifications.im':
       if (!params?.provider) return null;
-      return `${providerLabels[params.provider] || params.provider.toUpperCase()} notification`;
+      const label = Object.prototype.hasOwnProperty.call(providerLabels, params.provider)
+        ? providerLabels[params.provider]
+        : String(params.provider).toUpperCase();
+      return `${label} notification`;
     case 'tickets.create':
       return params?.title ? `Ticket: ${truncate(params.title, 30)}` : null;
     case 'llm.summary':

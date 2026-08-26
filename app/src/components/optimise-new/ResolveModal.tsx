@@ -244,7 +244,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
     if (!repoUrl) return null;
     const url = repoUrl.toLowerCase();
     if (/(?:^|[\/@.])github\.com(?:\/|:|$)/.test(url)) return 'github';
-    if (/(?:^|[\/@.])gitlab\.com(?:\/|:|$)/.test(url) || url.includes('gitlab')) return 'gitlab';
+    if (/(?:^|[\/@.])gitlab(?:\.[a-z0-9-]+)*(?:\/|:|$)/.test(url)) return 'gitlab';
     return null;
   };
 
