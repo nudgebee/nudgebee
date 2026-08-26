@@ -1664,6 +1664,12 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	}
 	responseStr := string(jsonResponse)
 	finalResponse := handleAnalysisResult(ctx, query.ConversationId, query.MessageId, responseStr)
+	// Logged synchronously (not inside the goroutine) so it survives even if the
+	// goroutine itself never gets to log anything — e.g. the pod is killed
+	// between this line and trackPRInResolution completing. A "dispatching" line
+	// with no matching "created"/"skipping"/"failed" line for the same
+	// conversation_id is the signature of that failure mode.
+	ctx.GetLogger().Info("code: dispatching PR resolution tracking", "conversation_id", query.ConversationId, "message_id", query.MessageId)
 	go trackPRInResolution(ctx, query, responseStr, codeAgentRequest.GitRepo, provider)
 	return core.NBAgentResponse{
 		Response: []string{finalResponse},
@@ -1785,20 +1791,36 @@ func trackPRInResolution(ctx *security.RequestContext, query core.NBAgentRequest
 
 	var response map[string]any
 	if err := json.Unmarshal([]byte(responseStr), &response); err != nil {
+		ctx.GetLogger().Warn("code: failed to unmarshal code-analysis response, skipping PR resolution tracking",
+			"error", err, "conversation_id", query.ConversationId)
 		return
 	}
 
 	prInfoRaw, ok := response["automated_fix_pr_info"]
 	if !ok || prInfoRaw == nil {
+		// Expected on every explore/propose call (raise_pr=false) and on a
+		// successful no_op (the change was already present, so no PR was
+		// raised) — only warn when a PR was actually requested and due.
+		var req CodeAgent2Request
+		_ = common.UnmarshalJson([]byte(query.Query), &req)
+		execStatus, _ := response["execution_status"].(string)
+		if req.RaisePr && execStatus != codeAnalysisNoOpStatus {
+			ctx.GetLogger().Warn("code: no automated_fix_pr_info in code-analysis response, skipping PR resolution tracking",
+				"conversation_id", query.ConversationId, "execution_status", execStatus)
+		}
 		return
 	}
 	prMap, ok := prInfoRaw.(map[string]any)
 	if !ok {
+		ctx.GetLogger().Warn("code: automated_fix_pr_info is not an object, skipping PR resolution tracking",
+			"conversation_id", query.ConversationId)
 		return
 	}
 
 	prURL, _ := prMap["url"].(string)
 	if prURL == "" {
+		ctx.GetLogger().Warn("code: automated_fix_pr_info missing a url, skipping PR resolution tracking",
+			"conversation_id", query.ConversationId)
 		return
 	}
 
