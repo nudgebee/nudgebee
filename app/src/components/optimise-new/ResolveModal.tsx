@@ -243,8 +243,8 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
   const detectGitProvider = (repoUrl: string | undefined) => {
     if (!repoUrl) return null;
     const url = repoUrl.toLowerCase();
-    if (/(?:^|\.)github\.com(?:\/|:|$)/.test(url)) return 'github';
-    if (/(?:^|\.)gitlab\.com(?:\/|:|$)/.test(url) || url.includes('gitlab')) return 'gitlab';
+    if (/(?:^|[\/@.])github\.com(?:\/|:|$)/.test(url)) return 'github';
+    if (/(?:^|[\/@.])gitlab\.com(?:\/|:|$)/.test(url) || url.includes('gitlab')) return 'gitlab';
     return null;
   };
 
