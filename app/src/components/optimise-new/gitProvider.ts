@@ -22,9 +22,5 @@ export const detectGitProvider = (repoUrl: string | undefined): GitProvider | nu
   if (!hostname) return null;
   if (hostname === 'github.com' || hostname.endsWith('.github.com')) return 'github';
   if (hostname === 'gitlab.com' || hostname.endsWith('.gitlab.com')) return 'gitlab';
-
-  const labels = hostname.split('.');
-  const subdomains = labels.slice(0, -2);
-  if (subdomains.some((label) => label === 'gitlab' || label.startsWith('gitlab-') || label.endsWith('-gitlab'))) return 'gitlab';
   return null;
 };
