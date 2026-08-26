@@ -3,7 +3,7 @@ aeeb38bc0d73c1130308c3a22821e7e74b589846	applied/oss-synced	-	TaskRunner key rem
 685dcbac2a653d372a0e087034382590d7ebda48	applied/oss-synced	-	non-fatal migration behavior is superseded by the Atlas migration job implementation
 f8bf02b8dbeb431ec54032371e1d4827f49be868	oss-skip	-	EE memory rerank/store subsystem is excluded; public glue has no functional OSS store
 86dddd6dda4a01b92c53a7e896dcd806bc4d1934	applied/oss-synced	-	OSS boundary workflow and exclusion list have newer OSS-native equivalents
-3a3a714148aaf9efd96b4849c03c1e9c0d306044	applied/oss-synced	-	Ask Nubi entry-point consolidation is present in the later reconciled navigation
+3a3a714148aaf9efd96b4849c03c1e9c0d306044	oss-deferred	-	verified 2026-08-25: Header1.jsx still carries the pre-consolidation duplicate Ask-Nubi button (showAskNudgebee block); the consolidation was never actually applied to OSS, unlike this row previously claimed. Requires porting GlobalPageSearch.jsx/Header1.jsx/home/index.jsx changes from PR #34719.
 a3a721162e1f046da4761d2cebcebf7555755018	applied/oss-synced	-	thinking-token cap and watchdog behavior are present in the later reconciled LLM implementation
 72793f2c304ae0b311ac04af53e32a19f8b91166	applied/oss-synced	-	automated React pass is superseded by the later cumulative React correctness reconciliation
 f57217cef0cb5ff4160b6ff972585696f9921c74	oss-deferred	-	tour anchors target Global Search elements removed by the later consolidated navigation; requires a separately retargeted tour
