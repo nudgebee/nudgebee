@@ -262,7 +262,7 @@ const TemplateCard = ({ workflow, onUseTemplate, index }: { workflow: any; onUse
           sx={{
             fontSize: 'var(--ds-text-body)',
             fontWeight: 'var(--ds-font-weight-semibold)',
-            fontFamily: 'Poppins',
+            fontFamily: ds.font.display,
             color: ds.gray[700],
             mt: 'var(--ds-space-3)',
             display: '-webkit-box',

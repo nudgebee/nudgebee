@@ -150,7 +150,7 @@ const ForeachIterationChildren: React.FC<ForeachIterationChildrenProps> = ({ ent
             fontSize: 'var(--ds-text-small)',
             fontWeight: 'var(--ds-font-weight-semibold)',
             color: ds.gray[700],
-            fontFamily: 'Poppins, sans-serif',
+            fontFamily: ds.font.display,
           }}
         >
           Iterations ({iterations.length})

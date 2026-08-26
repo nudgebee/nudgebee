@@ -217,7 +217,7 @@ const CallWorkflowChildren: React.FC<CallWorkflowChildrenProps> = ({ tasks, copy
             fontSize: 'var(--ds-text-small)',
             fontWeight: 'var(--ds-font-weight-semibold)',
             color: ds.gray[700],
-            fontFamily: 'Poppins, sans-serif',
+            fontFamily: ds.font.display,
           }}
         >
           Called Workflow Tasks

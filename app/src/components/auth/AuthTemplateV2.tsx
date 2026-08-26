@@ -118,7 +118,7 @@ export const FeatureCarousel: React.FC<FeatureCarouselProps> = ({ slides }) => {
                 color: 'var(--ds-brand-500)',
                 textAlign: 'center',
                 mb: { md: 1.5, lg: 2 },
-                fontFamily: 'Poppins, sans-serif',
+                fontFamily: ds.font.display,
                 letterSpacing: '-1px',
               }}
             >

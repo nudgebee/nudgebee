@@ -2167,7 +2167,7 @@ const ServiceMapContent = () => {
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-caption)',
-                fontFamily: 'Poppins',
+                fontFamily: ds.font.display,
                 color: 'var(--ds-gray-500)',
                 writingMode: 'vertical-rl',
                 transform: 'rotate(180deg)',
@@ -2201,7 +2201,7 @@ const ServiceMapContent = () => {
               }}
             >
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-1)' }}>
-                <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-title)', fontFamily: 'Poppins', color: ds.gray[700] }}>
+                <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-title)', fontFamily: ds.font.display, color: ds.gray[700] }}>
                   Filters
                 </Typography>
                 <Tooltip title='Hide filters'>
@@ -2221,19 +2221,19 @@ const ServiceMapContent = () => {
                 <Datetime
                   value={kgFilterOptions.lastSyncTime}
                   prefix='Last synced: '
-                  sxPrefix={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', fontFamily: 'Poppins', mr: 'var(--ds-space-1)' }}
+                  sxPrefix={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', fontFamily: ds.font.display, mr: 'var(--ds-space-1)' }}
                   sxPrefixSecondary={false}
                   sx={{
                     fontSize: 'var(--ds-text-caption)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
                     color: 'var(--ds-gray-500)',
-                    fontFamily: 'Poppins',
+                    fontFamily: ds.font.display,
                   }}
                   sxSuffix={{
                     fontSize: 'var(--ds-text-caption)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
                     color: 'var(--ds-gray-500)',
-                    fontFamily: 'Poppins',
+                    fontFamily: ds.font.display,
                   }}
                   sxSecondary={false}
                   sxSuffixSecondary={false}
@@ -2597,7 +2597,7 @@ const ServiceMapContent = () => {
                       sx={{
                         fontSize: 'var(--ds-text-heading)',
                         fontWeight: 'var(--ds-font-weight-semibold)',
-                        fontFamily: 'Poppins',
+                        fontFamily: ds.font.display,
                         color: ds.gray[700],
                       }}
                     >
@@ -2681,7 +2681,7 @@ const ServiceMapContent = () => {
                       sx={{
                         fontSize: 'var(--ds-text-heading)',
                         fontWeight: 'var(--ds-font-weight-semibold)',
-                        fontFamily: 'Poppins',
+                        fontFamily: ds.font.display,
                         color: ds.gray[700],
                       }}
                     >
@@ -2752,7 +2752,7 @@ const ServiceMapContent = () => {
                       sx={{
                         fontSize: 'var(--ds-text-heading)',
                         fontWeight: 'var(--ds-font-weight-semibold)',
-                        fontFamily: 'Poppins',
+                        fontFamily: ds.font.display,
                         color: ds.gray[700],
                       }}
                     >

@@ -78,7 +78,7 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
               display: 'flex',
               alignItems: 'center',
               gap: 0.5,
-              fontFamily: 'Poppins, sans-serif',
+              fontFamily: ds.font.display,
               fontWeight: 'var(--ds-font-weight-semibold)',
               color: ds.brand[500],
               fontSize: 'var(--ds-text-caption)',

@@ -80,7 +80,7 @@ const VmEmptyState = ({ onAccountCreated }: { onAccountCreated: () => void }) =>
             fontWeight: 'var(--ds-font-weight-semibold)',
             color: 'var(--ds-foreground)',
             mb: ds.space[2],
-            fontFamily: 'Poppins',
+            fontFamily: ds.font.display,
           }}
         >
           Get started with self-hosted VMs

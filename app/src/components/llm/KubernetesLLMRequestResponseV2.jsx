@@ -1104,7 +1104,7 @@ const KubernetesLLMRequestResponse = (props) => {
           item
           md={12}
           sx={{
-            fontFamily: '"Poppins", sans-serif',
+            fontFamily: ds.font.display,
             fontWeight: 'var(--ds-font-weight-medium)',
             lineHeight: '20px',
             color: 'var(--ds-gray-700)',
@@ -1174,7 +1174,7 @@ const KubernetesLLMRequestResponse = (props) => {
                             fontSize: 'var(--ds-text-body)',
                             fontWeight: 'var(--ds-font-weight-medium)',
                             color: 'var(--ds-blue-500)',
-                            fontFamily: '"Poppins", sans-serif',
+                            fontFamily: ds.font.display,
                           }}
                         >
                           {getUniqueReferencesCount(parsedReferences)} source
@@ -1256,7 +1256,7 @@ const KubernetesLLMRequestResponse = (props) => {
                             fontSize: 'var(--ds-text-body)',
                             fontWeight: 'var(--ds-font-weight-medium)',
                             color: 'var(--ds-blue-500)',
-                            fontFamily: '"Poppins", sans-serif',
+                            fontFamily: ds.font.display,
                           }}
                         >
                           {getUniqueReferencesCount(parsedReferences)} source
@@ -1349,7 +1349,7 @@ const KubernetesLLMRequestResponse = (props) => {
                 fontSize: 'var(--ds-text-small)',
                 lineHeight: '22px',
                 color: 'var(--ds-blue-700)',
-                fontFamily: '"Poppins", sans-serif',
+                fontFamily: ds.font.display,
               },
             }}
           >

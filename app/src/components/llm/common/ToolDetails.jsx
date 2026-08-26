@@ -1423,7 +1423,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
                 color: 'var(--ds-blue-600)',
-                fontFamily: '"Poppins", sans-serif',
+                fontFamily: ds.font.display,
               }}
             >
               {getUniqueReferencesCount(parsedReferences)} source

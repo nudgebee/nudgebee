@@ -276,7 +276,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({
                 fontWeight: 'var(--ds-font-weight-semibold)',
                 fontSize: 'var(--ds-text-body-lg)',
                 color: ds.gray[700],
-                fontFamily: 'Poppins, sans-serif',
+                fontFamily: ds.font.display,
                 letterSpacing: '-0.01em',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -414,7 +414,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({
                   fontSize: 'var(--ds-text-small)',
                   fontWeight: 'var(--ds-font-weight-semibold)',
                   color: ds.gray[700],
-                  fontFamily: 'Poppins, sans-serif',
+                  fontFamily: ds.font.display,
                 }}
               >
                 Configuration
@@ -444,7 +444,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({
                     fontSize: 'var(--ds-text-small)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
                     color: ds.gray[700],
-                    fontFamily: 'Poppins, sans-serif',
+                    fontFamily: ds.font.display,
                   }}
                 >
                   {INPUT_SECTION_LABELS[triggerType] || 'Execution Inputs'}

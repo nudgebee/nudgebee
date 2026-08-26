@@ -4061,7 +4061,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                 color: ds.gray[700],
                                 fontWeight: 'var(--ds-font-weight-semibold)',
                                 fontSize: 'var(--ds-text-heading)',
-                                fontFamily: 'poppins',
+                                fontFamily: ds.font.display,
                                 letterSpacing: '-0.010em',
                               }}
                             >
@@ -4168,7 +4168,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                       fontSize: 'var(--ds-text-body)',
                                       fontWeight: 'var(--ds-font-weight-semibold)',
                                       color: ds.gray[700],
-                                      fontFamily: 'poppins',
+                                      fontFamily: ds.font.display,
                                       lineHeight: 1.3,
                                     }}
                                   >

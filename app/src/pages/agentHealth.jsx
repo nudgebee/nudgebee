@@ -694,7 +694,7 @@ const AgentHealth = () => {
                   fontWeight: 'var(--ds-font-weight-semibold)',
                   color: 'var(--ds-foreground)',
                   mb: 1,
-                  fontFamily: 'Poppins',
+                  fontFamily: ds.font.display,
                 }}
               >
                 Get started with Proxy Agent monitoring

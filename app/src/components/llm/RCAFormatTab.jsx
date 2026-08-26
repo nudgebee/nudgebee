@@ -149,7 +149,7 @@ const RCAFormatTab = ({ accountId }) => {
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-semibold)',
               color: 'var(--ds-gray-700)',
-              fontFamily: 'Poppins',
+              fontFamily: ds.font.display,
             }}
           >
             Root Cause Analysis (RCA) Format

@@ -351,7 +351,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
           fontSize: 'var(--ds-text-heading)',
           fontWeight: 'var(--ds-font-weight-semibold)',
           color: ds.gray[700],
-          fontFamily: 'Poppins, sans-serif',
+          fontFamily: ds.font.display,
           letterSpacing: '-0.6px',
         }}
       >
@@ -439,7 +439,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
           fontSize: 'var(--ds-text-heading)',
           fontWeight: 'var(--ds-font-weight-semibold)',
           color: ds.gray[700],
-          fontFamily: 'Poppins, sans-serif',
+          fontFamily: ds.font.display,
           letterSpacing: '-0.6px',
         }}
       >
@@ -532,7 +532,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
           fontSize: 'var(--ds-text-heading)',
           fontWeight: 'var(--ds-font-weight-semibold)',
           color: ds.gray[700],
-          fontFamily: 'Poppins, sans-serif',
+          fontFamily: ds.font.display,
           letterSpacing: '-0.6px',
         }}
       >
@@ -626,7 +626,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
             fontSize: 'var(--ds-text-display)',
             fontWeight: 'var(--ds-font-weight-semibold)',
             color: ds.gray[700],
-            fontFamily: 'Poppins, sans-serif',
+            fontFamily: ds.font.display,
             letterSpacing: -1,
           }}
         >

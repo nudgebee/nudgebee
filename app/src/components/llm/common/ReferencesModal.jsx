@@ -184,7 +184,7 @@ const ReferencesPopover = ({ anchorEl, open, onClose, references = [], accountId
             fontWeight: 'var(--ds-font-weight-semibold)',
             color: 'var(--ds-blue-500)',
             mb: ds.space[3],
-            fontFamily: '"Poppins", sans-serif',
+            fontFamily: ds.font.display,
             pb: ds.space[2],
             borderBottom: '1px solid var(--ds-gray-200)',
           }}
@@ -219,7 +219,7 @@ const ReferencesPopover = ({ anchorEl, open, onClose, references = [], accountId
                       fontSize: 'var(--ds-text-body)',
                       lineHeight: '1.5',
                       wordBreak: 'break-word',
-                      fontFamily: '"Poppins", sans-serif',
+                      fontFamily: ds.font.display,
                     }}
                   >
                     • {ref.text || ref.url}
@@ -245,7 +245,7 @@ const ReferencesPopover = ({ anchorEl, open, onClose, references = [], accountId
                     lineHeight: '1.5',
                     display: 'block',
                     wordBreak: 'break-word',
-                    fontFamily: '"Poppins", sans-serif',
+                    fontFamily: ds.font.display,
                   }}
                   onMouseOver={(e) => (e.target.style.textDecoration = 'underline')}
                   onMouseOut={(e) => (e.target.style.textDecoration = 'none')}

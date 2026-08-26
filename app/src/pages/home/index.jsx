@@ -543,7 +543,7 @@ const SectionHeader = ({ icon, title, subtitle, tone = 'neutral' }) => {
       <Box sx={{ minWidth: 0 }}>
         <Typography
           sx={{
-            fontFamily: 'Poppins, sans-serif',
+            fontFamily: 'var(--ds-font-display)',
             fontSize: 'var(--ds-text-body-lg)',
             fontWeight: 'var(--ds-font-weight-semibold)',
             color: 'var(--ds-gray-900)',
@@ -555,7 +555,7 @@ const SectionHeader = ({ icon, title, subtitle, tone = 'neutral' }) => {
         </Typography>
         {subtitle && (
           <Typography
-            sx={{ fontFamily: 'Poppins, sans-serif', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: 'var(--ds-space-1)' }}
+            sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: 'var(--ds-space-1)' }}
           >
             {subtitle}
           </Typography>
@@ -606,7 +606,7 @@ const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows })
         </Box>
         <Typography
           sx={{
-            fontFamily: 'Poppins, sans-serif',
+            fontFamily: 'var(--ds-font-display)',
             fontSize: 'var(--ds-text-body)',
             fontWeight: 'var(--ds-font-weight-semibold)',
             color: 'var(--ds-gray-900)',
@@ -1560,7 +1560,7 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
       </Box>
       <Typography
         sx={{
-          fontFamily: 'Poppins, sans-serif',
+          fontFamily: 'var(--ds-font-display)',
           fontSize: 'var(--ds-text-body)',
           fontWeight: 'var(--ds-font-weight-semibold)',
           color: 'var(--ds-gray-900)',

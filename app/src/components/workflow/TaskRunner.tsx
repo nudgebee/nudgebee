@@ -209,7 +209,7 @@ const TaskRunner: React.FC = () => {
                       fontSize: 'var(--ds-text-body)',
                       fontWeight: 'var(--ds-font-weight-semibold)',
                       color: 'var(--ds-brand-500)',
-                      fontFamily: 'poppins',
+                      fontFamily: 'var(--ds-font-display)',
                     }}
                   >
                     {sub.label}

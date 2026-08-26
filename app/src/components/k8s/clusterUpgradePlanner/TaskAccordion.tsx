@@ -396,7 +396,7 @@ const TaskAccordion: React.FC<TaskAccordionProps> = ({
                       fontSize: 'var(--ds-text-small)',
                       fontWeight: 'var(--ds-font-weight-regular)',
                       color: 'var(--ds-gray-500)',
-                      fontFamily: 'poppins',
+                      fontFamily: ds.font.display,
                       letterSpacing: '-0.01em',
                     }}
                   >
@@ -410,7 +410,7 @@ const TaskAccordion: React.FC<TaskAccordionProps> = ({
                     fontSize: 'var(--ds-text-title)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
                     color: 'var(--ds-gray-600)',
-                    fontFamily: 'poppins',
+                    fontFamily: ds.font.display,
                     letterSpacing: '-0.025em',
                   }}
                 >
@@ -621,7 +621,7 @@ const TaskAccordion: React.FC<TaskAccordionProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body-lg)',
                   color: 'var(--ds-gray-600)',
-                  fontFamily: 'poppins',
+                  fontFamily: ds.font.display,
                 }}
               >
                 Executing command...
@@ -637,7 +637,7 @@ const TaskAccordion: React.FC<TaskAccordionProps> = ({
                       fontSize: 'var(--ds-text-title)',
                       fontWeight: 'var(--ds-font-weight-semibold)',
                       color: 'var(--ds-gray-600)',
-                      fontFamily: 'poppins',
+                      fontFamily: ds.font.display,
                       letterSpacing: '-0.025em',
                     }}
                   />
@@ -652,7 +652,7 @@ const TaskAccordion: React.FC<TaskAccordionProps> = ({
                       fontWeight: 'var(--ds-font-weight-medium)',
                       color: 'var(--ds-gray-500)',
                       mb: ds.space[2],
-                      fontFamily: 'poppins',
+                      fontFamily: ds.font.display,
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px',
                     }}
@@ -682,7 +682,7 @@ const TaskAccordion: React.FC<TaskAccordionProps> = ({
                       color: 'var(--ds-red-500)',
                       mt: ds.space[2],
                       fontSize: 'var(--ds-text-body)',
-                      fontFamily: 'poppins',
+                      fontFamily: ds.font.display,
                     }}
                   >
                     <strong>Error:</strong> {commandResults.error}
@@ -699,7 +699,7 @@ const TaskAccordion: React.FC<TaskAccordionProps> = ({
                       fontWeight: 'var(--ds-font-weight-medium)',
                       color: 'var(--ds-gray-600)',
                       mb: ds.space[4],
-                      fontFamily: 'poppins',
+                      fontFamily: ds.font.display,
                     }}
                   >
                     Command Output
@@ -746,7 +746,7 @@ const TaskAccordion: React.FC<TaskAccordionProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body-lg)',
                   color: 'var(--ds-gray-600)',
-                  fontFamily: 'poppins',
+                  fontFamily: ds.font.display,
                 }}
               >
                 No results to display

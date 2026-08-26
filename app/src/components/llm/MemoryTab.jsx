@@ -613,7 +613,7 @@ const MemoryTab = ({ accountId }) => {
               fontSize: 'var(--ds-text-body-lg)',
               color: 'var(--ds-gray-700)',
               fontWeight: 'var(--ds-font-weight-semibold)',
-              fontFamily: 'Poppins',
+              fontFamily: ds.font.display,
             }}
           >
             Memory
