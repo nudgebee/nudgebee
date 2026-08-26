@@ -8,19 +8,28 @@ const providerLabels: Record<string, string> = {
   google_chat: 'Google Chat',
 };
 
-type ParamEnricher = (params: any, baseDescription: string) => string | null;
-
-const paramEnrichers: Record<string, ParamEnricher> = {
-  'data.transform': (params) => (params?.expression ? `Transform: ${truncate(params.expression, 40)}` : null),
-  'scripting.run_script': (params) => (params?.script ? `Script: ${truncate(params.script.split('\n')[0], 30)}` : null),
-  'integrations.http': (params) => (params?.url ? `HTTP: ${params.url}` : null),
-  'notifications.im': (params) => {
-    if (!params?.provider) return null;
-    return `${providerLabels[params.provider] || params.provider.toUpperCase()} notification`;
-  },
-  'tickets.create': (params) => (params?.title ? `Ticket: ${truncate(params.title, 30)}` : null),
-  'llm.summary': (params, base) => (params?.message ? `${base}: ${truncate(params.message, 30)}` : null),
-  'llm.investigate': (params, base) => (params?.message ? `${base}: ${truncate(params.message, 30)}` : null),
+const enrichTaskDescription = (taskType: string, params: any, baseDescription: string): string | null => {
+  switch (taskType) {
+    case 'data.transform':
+      return params?.expression ? `Transform: ${truncate(params.expression, 40)}` : null;
+    case 'scripting.run_script':
+      return params?.script ? `Script: ${truncate(params.script.split('\n')[0], 30)}` : null;
+    case 'integrations.http':
+      return params?.url ? `HTTP: ${params.url}` : null;
+    case 'notifications.im':
+      if (!params?.provider) return null;
+      const label = Object.prototype.hasOwnProperty.call(providerLabels, params.provider)
+        ? providerLabels[params.provider]
+        : String(params.provider).toUpperCase();
+      return `${label} notification`;
+    case 'tickets.create':
+      return params?.title ? `Ticket: ${truncate(params.title, 30)}` : null;
+    case 'llm.summary':
+    case 'llm.investigate':
+      return params?.message ? `${baseDescription}: ${truncate(params.message, 30)}` : null;
+    default:
+      return null;
+  }
 };
 
 const enrichCliDescription = (params: any, baseDescription: string): string | null => {
@@ -40,9 +49,9 @@ export const getTaskDescription = (taskType: string, params?: any, taskDefinitio
   }
 
   // Enrich with params-based context when available
-  if (Object.prototype.hasOwnProperty.call(paramEnrichers, taskType)) {
-    const enricher = paramEnrichers[taskType];
-    return enricher(params, description) || description;
+  const enrichedDescription = enrichTaskDescription(taskType, params, description);
+  if (enrichedDescription) {
+    return enrichedDescription;
   }
 
   // CLI tasks share a common enrichment pattern

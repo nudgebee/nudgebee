@@ -37,6 +37,28 @@ export interface LinkProps {
   maxWidth?: string;
 }
 
+const SAFE_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
+export const isSafeLinkHref = (href: string): boolean => {
+  if (typeof href !== 'string' || href.trim() === '') return false;
+
+  const trimmed = href.trim();
+  if (trimmed.startsWith('//') || trimmed.startsWith('/\\') || trimmed.startsWith('\\')) return false;
+  if (trimmed.startsWith('/') || trimmed.startsWith('#') || trimmed.startsWith('?')) return true;
+
+  const ampersandIndex = trimmed.indexOf('&');
+  if (ampersandIndex !== -1) {
+    const firstDelimiter = trimmed.search(/[?:/]/);
+    if ((firstDelimiter === -1 || ampersandIndex < firstDelimiter) && /&[a-zA-Z0-9#]+;/.test(trimmed)) return false;
+  }
+
+  try {
+    return SAFE_LINK_PROTOCOLS.has(new URL(trimmed, 'https://nudgebee.invalid').protocol);
+  } catch {
+    return false;
+  }
+};
+
 export function Link({
   href,
   children,
@@ -49,19 +71,27 @@ export function Link({
   OpenInNewIconSx = {},
   maxWidth,
 }: LinkProps) {
+  const normalizedHref = typeof href === 'string' ? href.trim() : '';
+  const hasSafeHref = isSafeLinkHref(normalizedHref);
+  const safeHref = hasSafeHref ? normalizedHref : '#';
+
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.stopPropagation();
+    if (!hasSafeHref) {
+      e.preventDefault();
+    }
     onClick?.(e);
   };
 
   const link = (
     <NextLink
       passHref
-      href={href}
+      href={safeHref}
       onClick={handleClick}
       // @ts-expect-error legacy passthrough — preserved for any callers that depended on it
       prop={prop}
       target={openInNew ? '_blank' : target}
+      rel={openInNew || target === '_blank' ? 'noopener noreferrer' : undefined}
       style={{
         display: 'inline-flex',
         alignItems: 'center',

@@ -222,3 +222,20 @@ func TestGuardAllowsPRCreateWithForeignLinkInBody(t *testing.T) {
 		t.Fatal("did not block a foreign PR view")
 	}
 }
+
+func TestGuardBlocksAngleBracketWrappedForeignPRURL(t *testing.T) {
+	dir := newRepoDir(t, "https://github.com/nudgebee/nudgebee-enterprise.git")
+
+	commands := []string{
+		"curl <https://github.com/metabase/metabase/pull/35094>",
+		"curl (https://github.com/metabase/metabase/pull/35094)",
+		"curl [https://github.com/metabase/metabase/pull/35094]",
+		"export URL=https://github.com/metabase/metabase/pull/35094",
+	}
+	for _, command := range commands {
+		var guard repoScopeGuard
+		if blocked, _ := guard.checkCommand(command, dir); !blocked {
+			t.Errorf("did not block command: %s", command)
+		}
+	}
+}

@@ -662,6 +662,11 @@ func (gc *GitClient) ensureRemoteTracking(ctx context.Context, baseDir string, b
 		}
 		seen[branch] = struct{}{}
 
+		if len(branch) > 0 && branch[0] == '-' {
+			gc.logger.Log(common.EventStepFailure, "Invalid branch name starting with dash", map[string]any{"branch": branch})
+			continue
+		}
+
 		addBr := exec.CommandContext(ctx, "git", "-C", baseDir, "remote", "set-branches", "--add", "origin", branch)
 		if out, err := addBr.CombinedOutput(); err != nil {
 			gc.logger.Log(common.EventStepFailure, "Failed to add branch to refspec", map[string]any{
@@ -754,6 +759,10 @@ func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string,
 			gc.logger.Log(common.EventStepFailure, "Failed to update remote URL", map[string]any{"error": err.Error(), "output": string(out)})
 		}
 		if branch != "" {
+			if len(branch) > 0 && branch[0] == '-' {
+				gc.logger.Log(common.EventStepFailure, "Invalid branch name starting with dash", map[string]any{"branch": branch})
+				return nil, fmt.Errorf("invalid branch name: %s", branch)
+			}
 			// Add this branch to the refspec list (no-op if already present)
 			addBr := exec.CommandContext(ctx, "git", "-C", baseDir, "remote", "set-branches", "--add", "origin", branch)
 			if out, err := addBr.CombinedOutput(); err != nil {

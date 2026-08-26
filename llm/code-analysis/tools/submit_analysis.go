@@ -735,7 +735,7 @@ func (t *SubmitAnalysisTool) enhanceWithToolOutputs(input map[string]any, params
 
 	// line_number
 	if params.LineNumber == 0 {
-		if v, ok := input["line_number"].(float64); ok { // JSON numbers are float64
+		if v, ok := input["line_number"].(float64); ok && v > 0 && v <= 10000000 { // JSON numbers are float64
 			params.LineNumber = int(v)
 		}
 	}

@@ -109,15 +109,24 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
     // Only same-origin paths (start with "/", no "//" or "\" scheme tricks) are
     // accepted — anything else falls through to the default to prevent open
     // redirects / javascript: URI execution via decodeURIComponent.
+    const fallbackPath = `/automation?accountId=${accountId}`;
     const { returnUrl } = router.query;
-    const candidate = typeof returnUrl === 'string' ? decodeURIComponent(returnUrl) : '';
-    const isSameOriginPath = candidate.startsWith('/') && !candidate.startsWith('//') && !candidate.startsWith('/\\');
-    if (isSameOriginPath) {
-      router.push(candidate);
-    } else {
-      const backButtonPath = `/automation?accountId=${accountId}`;
-      router.push(backButtonPath);
+
+    if (typeof returnUrl === 'string') {
+      try {
+        const candidate = decodeURIComponent(returnUrl);
+        const parsed = new URL(candidate, window.location.origin);
+        const path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+        if (candidate.startsWith('/') && parsed.origin === window.location.origin && !path.startsWith('//') && !path.startsWith('/\\')) {
+          router.push(path);
+          return;
+        }
+      } catch {
+        // Malformed return URLs use the safe fallback below.
+      }
     }
+
+    router.push(fallbackPath);
   };
 
   return (
