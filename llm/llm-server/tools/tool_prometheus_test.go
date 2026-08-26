@@ -658,3 +658,69 @@ func TestMetricsListTool_DescriptionMatchesAcceptedInput(t *testing.T) {
 	assert.Contains(t, desc, "wildcard", "the index-pattern form must be documented too")
 	assert.Contains(t, desc, "index pattern")
 }
+
+// ---------------------------------------------------------------------------
+// metrics_label_values — Elasticsearch argument contract.
+//
+// Every pre-existing test in this file builds the tool with Provider "prometheus".
+// The ES branch had no coverage at all, which is how `metric_name` came to carry a
+// metric name into the index position and stay there. Reproduced against dev account
+// 25f42d26 on 2026-08-26:
+//
+//	metric_name = "kubernetes.pod.cpu.usage.nanocores" -> 404 no such index [...]
+//	metric_name = "metricbeat-8.19.11"                 -> 200 + pod names
+// ---------------------------------------------------------------------------
+
+func TestSanitizeMetricsArg(t *testing.T) {
+	// The quoted form is what produced `no such index [\"aws.rds.cpu.total.pct\"]`.
+	assert.Equal(t, "aws.rds.cpu.total.pct", sanitizeMetricsArg(`"aws.rds.cpu.total.pct"`))
+	assert.Equal(t, "aws.rds.cpu.total.pct", sanitizeMetricsArg("`aws.rds.cpu.total.pct`"))
+	assert.Equal(t, "instance", sanitizeMetricsArg(`  'instance'  `))
+	assert.Equal(t, "instance", sanitizeMetricsArg(`inst\\ance`))
+	assert.Equal(t, "", sanitizeMetricsArg(`  `))
+}
+
+func TestValidateLabelArg_RejectsQueryStringSyntax(t *testing.T) {
+	// The exact value the planner produced.
+	err := validateLabelArg("kubernetes.pod.name&filter=ehq-api-preprod")
+	require.Error(t, err)
+	// The message must name the argument to use, or the agent reformulates the label
+	// instead of fixing the call — which is the loop this guards against.
+	assert.Contains(t, err.Error(), `"filter"`)
+	assert.Contains(t, err.Error(), `"ehq-api-preprod"`)
+	assert.Contains(t, err.Error(), `"kubernetes.pod.name"`)
+
+	assert.Error(t, validateLabelArg("pod?x=1"))
+	assert.Error(t, validateLabelArg("pod name"))
+
+	// Ordinary field names, including dotted ES paths, must pass untouched.
+	for _, ok := range []string{
+		"instance", "kubernetes.pod.name", "metricset.dimensions.DBInstanceIdentifier",
+	} {
+		assert.NoError(t, validateLabelArg(ok), "label %q must be accepted", ok)
+	}
+}
+
+func TestListMetricsLabelValuesTool_RejectsMangledLabel(t *testing.T) {
+	tool := ListMetricsLabelValuesTool{Provider: "ES", DefaultIndex: "metricbeat-8.19.11"}
+	resp, err := tool.Call(core.NbToolContext{}, core.NBToolCallRequest{
+		Arguments: map[string]any{"label": "kubernetes.pod.name&filter=app-dev"},
+	})
+	require.NoError(t, err)
+	// Must fail BEFORE any network call, and must fail loudly: this previously
+	// reached Elasticsearch, matched no field and returned `200 []`.
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, `"filter"`)
+}
+
+func TestListMetricsLabelValuesTool_DescriptionStatesESIgnoresMetric(t *testing.T) {
+	tool := ListMetricsLabelValuesTool{Provider: "ES"}
+	// The old text said "providers that support it" without naming any, which is why
+	// the planner kept supplying a metric on ES.
+	assert.Contains(t, strings.ToLower(tool.Description()), "ignored on elasticsearch",
+		"the description must say plainly that ES ignores `metric`")
+	assert.Contains(t, strings.ToLower(tool.InputSchema().Properties["metric"].Description),
+		"ignored on elasticsearch")
+	// And it must not describe a JSON tool in function-call syntax.
+	assert.NotContains(t, tool.Description(), `metrics_label_values(label=`)
+}
