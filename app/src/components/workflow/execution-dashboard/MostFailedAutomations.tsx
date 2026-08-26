@@ -7,7 +7,7 @@ import { ProgressBar } from '@ui/ProgressBar';
 import { Skeleton } from '@ui/Skeleton';
 import Tooltip from '@ui/Tooltip';
 import type { FailedAutomationCount } from '@api1/workflow/types';
-import { TOP_FAILED_LIMIT } from './constants';
+import { TOP_FAILED_LIMIT, executionAutomationLabel } from './constants';
 
 interface MostFailedAutomationsProps {
   entries: FailedAutomationCount[];
@@ -117,7 +117,7 @@ const MostFailedAutomations: React.FC<MostFailedAutomationsProps> = ({ entries, 
   const shareBase = totalFailures > 0 ? totalFailures : entries.reduce((sum, entry) => sum + entry.failure_count, 0) || 1;
 
   const renderRow = (entry: FailedAutomationCount) => {
-    const name = entry.workflow_name || entry.workflow_id;
+    const name = executionAutomationLabel(entry.workflow_name, entry.workflow_id);
     const truncated = name.length > NAME_MAX_CHARS;
     const pct = (entry.failure_count / shareBase) * 100;
     const nameNode = (
