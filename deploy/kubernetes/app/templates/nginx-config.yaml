@@ -38,6 +38,42 @@ data:
         add_header Cache-Control "public";
       }
 
+      # Webhook fan-out to sibling services.
+      #
+      # These were explicit backend rules on the app Ingress. They live here so
+      # the routing table sits next to the app that fronts it and a new webhook
+      # needs no Ingress edit — the split list is how /api/webhooks/elasticsearch
+      # ended up served by Next.js as a 404 despite having a Gin route.
+      #
+      # Every path is enumerated rather than matched by a `/api/webhooks/`
+      # prefix: the Next.js app owns /api/webhooks/{slack,msteams,google-chat}/*
+      # and a prefix would swallow them.
+      #
+      # Each block is gated on its Service being installed. nginx resolves
+      # proxy_pass hostnames at startup, so a location aimed at an absent
+      # Service aborts the sidecar and takes the whole app offline.
+{{- if .Values.webhookRouting.notifications }}
+
+      # notifications-server. Exact matches — see the Next.js note above.
+      location = /webhooks/slack/events {
+        include /etc/nginx/conf.d/webhook_proxy_params;
+        proxy_pass http://notifications:8080;
+      }
+
+      location = /webhooks/slack/interactive {
+        include /etc/nginx/conf.d/webhook_proxy_params;
+        proxy_pass http://notifications:8080;
+      }
+{{- end }}
+{{- if .Values.webhookRouting.servicesServer }}
+
+      # services-server. Mirrors the group in api/public_webhooks.go.
+      location ~ ^/api/webhooks/(pagerduty|newrelic|zenduty|prometheus-alertmanager|datadog|azure-monitor|servicenow|grafana|splunk|gcp-monitoring|dynatrace|solarwinds|elasticsearch|openobserve|workflow|azure-eventgrid|github)/?$ {
+        include /etc/nginx/conf.d/webhook_proxy_params;
+        proxy_pass http://services-server:8000;
+      }
+{{- end }}
+
       location / {
         proxy_pass http://127.0.0.1:3000; # Proxy to Next.js
         proxy_set_header X-Forwarded-Host $host;
@@ -49,3 +85,20 @@ data:
         proxy_busy_buffers_size 32k;
       }
     }
+  # Shared proxy settings for the webhook locations above. Deliberately a
+  # separate key so the timeout and body limits cannot drift between routes.
+  # The filename has no .conf suffix, so nginx's `include conf.d/*.conf` skips
+  # it and it is pulled in only by the explicit include in each location.
+  webhook_proxy_params: |
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    # Matches the Ingress proxy-read-timeout annotation these routes used to sit
+    # behind. genericWebhookHandler falls back to synchronous processing when
+    # RabbitMQ is down, which can run well past nginx's 60s default.
+    proxy_read_timeout 660s;
+    proxy_send_timeout 660s;
+    # Matches defaultWebhookMaxBodyBytes (5 MiB) in api/public_webhooks.go, so
+    # the sidecar is never the tighter of the two limits.
+    client_max_body_size 5m;
