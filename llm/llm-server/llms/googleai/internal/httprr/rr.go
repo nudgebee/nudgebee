@@ -16,7 +16,6 @@ package httprr
 import (
 	"bufio"
 	"bytes"
-	"cmp"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -644,11 +643,23 @@ func (rr *RecordReplay) writeLog(reqWire, respWire string) error {
 	_, err1 := fmt.Fprintf(rr.record, "%d %d\n", len(reqWire), len(respWire))
 	_, err2 := rr.record.WriteString(reqWire)
 	_, err3 := rr.record.WriteString(respWire)
-	if err := cmp.Or(err1, err2, err3); err != nil {
-		rr.writeErr = err
+	if err1 != nil {
+		rr.writeErr = err1
 		_ = rr.record.Close()
 		_ = os.Remove(rr.file)
-		return err
+		return err1
+	}
+	if err2 != nil {
+		rr.writeErr = err2
+		_ = rr.record.Close()
+		_ = os.Remove(rr.file)
+		return err2
+	}
+	if err3 != nil {
+		rr.writeErr = err3
+		_ = rr.record.Close()
+		_ = os.Remove(rr.file)
+		return err3
 	}
 
 	return nil

@@ -2506,19 +2506,21 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		// check if it's a client tool and return specific waiting status
 		if _, isClientTool := tool.(*toolcore.ClientToolWrapper); isClientTool || observation.Status == toolcore.NBToolResponseStatusWaitingForClient {
 			e.ctx.GetLogger().Info("plannerexecutor: client tool call recorded, waiting for client execution", "tool", action.Tool)
-			return NBAgentPlannerToolActionStep{
-					Action:      action,
-					Observation: "Waiting for client execution",
-					Status:      ToolStatusWaitingForClient,
-				}, &NBAgentPlannerFinishAction{
-					Status: ConversationStatusWaitingForClientTool,
-					Data:   fmt.Sprintf("Waiting for client to execute tool: %s", action.Tool),
-					AdditionalDetails: map[string]any{
-						"tool_name":  action.Tool,
-						"tool_input": action.ToolInput,
-						"tool_id":    action.ToolID,
-					},
-				}, nil
+			step := NBAgentPlannerToolActionStep{
+				Action:      action,
+				Observation: "Waiting for client execution",
+				Status:      ToolStatusWaitingForClient,
+			}
+			finish := &NBAgentPlannerFinishAction{
+				Status: ConversationStatusWaitingForClientTool,
+				Data:   fmt.Sprintf("Waiting for client to execute tool: %s", action.Tool),
+				AdditionalDetails: map[string]any{
+					"tool_name":  action.Tool,
+					"tool_input": action.ToolInput,
+					"tool_id":    action.ToolID,
+				},
+			}
+			return step, finish, nil
 		}
 
 		followUpRequest := observation.AdditionalDetails[nbToolCallAdditionalDatailsFollowupRequest].(FollowupRequest)
@@ -2537,18 +2539,20 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		// responds, the result is saved under the ID the planner is actually waiting for.
 		followUpRequest.ToolId = action.ToolID
 
-		return NBAgentPlannerToolActionStep{
-				Action:           action,
-				Observation:      observation.Data,
-				Status:           ToolStatusWaiting,
-				Followup:         &followUpRequest,
-				SubAgentEvidence: observation.SubAgentEvidence,
-			}, &NBAgentPlannerFinishAction{
-				Data:              observation.Data,
-				Status:            ConversationStatusWaiting,
-				Followup:          followUpRequest,
-				AdditionalDetails: observation.AdditionalDetails,
-			}, nil
+		step := NBAgentPlannerToolActionStep{
+			Action:           action,
+			Observation:      observation.Data,
+			Status:           ToolStatusWaiting,
+			Followup:         &followUpRequest,
+			SubAgentEvidence: observation.SubAgentEvidence,
+		}
+		finish := &NBAgentPlannerFinishAction{
+			Data:              observation.Data,
+			Status:            ConversationStatusWaiting,
+			Followup:          followUpRequest,
+			AdditionalDetails: observation.AdditionalDetails,
+		}
+		return step, finish, nil
 	}
 
 	// Metrics: record outcome. Tools that report failure via
@@ -2734,21 +2738,23 @@ func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPla
 		e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
 		return nil, nil, err
 	}
-	return []NBAgentPlannerToolActionStep{
-			{
-				Action:      action,
-				Observation: followupRequest.Question,
-				Status:      ToolStatusWaiting,
-				Followup:    &followupRequest,
-			},
-		}, &NBAgentPlannerFinishAction{
-			Data:     followupRequest.Question,
-			Status:   ConversationStatusWaiting,
-			Followup: followupRequest,
-			AdditionalDetails: map[string]any{
-				"followupId": followupId,
-			},
-		}, nil
+	steps := []NBAgentPlannerToolActionStep{
+		{
+			Action:      action,
+			Observation: followupRequest.Question,
+			Status:      ToolStatusWaiting,
+			Followup:    &followupRequest,
+		},
+	}
+	finish := &NBAgentPlannerFinishAction{
+		Data:     followupRequest.Question,
+		Status:   ConversationStatusWaiting,
+		Followup: followupRequest,
+		AdditionalDetails: map[string]any{
+			"followupId": followupId,
+		},
+	}
+	return steps, finish, nil
 }
 
 // selectConfigUsingLLM uses LLM to intelligently select the most appropriate config
@@ -3159,21 +3165,23 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 			e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
 			return nil, nil, err
 		}
-		return []NBAgentPlannerToolActionStep{
-				{
-					Action:      action,
-					Observation: followupRequest.Question,
-					Status:      ToolStatusWaiting,
-					Followup:    &followupRequest,
-				},
-			}, &NBAgentPlannerFinishAction{
-				Data:     followupRequest.Question,
-				Status:   ConversationStatusWaiting,
-				Followup: followupRequest,
-				AdditionalDetails: map[string]any{
-					"followupId": followupId,
-				},
-			}, nil
+		steps := []NBAgentPlannerToolActionStep{
+			{
+				Action:      action,
+				Observation: followupRequest.Question,
+				Status:      ToolStatusWaiting,
+				Followup:    &followupRequest,
+			},
+		}
+		finish := &NBAgentPlannerFinishAction{
+			Data:     followupRequest.Question,
+			Status:   ConversationStatusWaiting,
+			Followup: followupRequest,
+			AdditionalDetails: map[string]any{
+				"followupId": followupId,
+			},
+		}
+		return steps, finish, nil
 	}
 	return nil, nil, nil
 }

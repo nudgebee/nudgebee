@@ -215,6 +215,7 @@ type appConfig struct {
 	// as more predictable, and it measurably moves thinking (791 -> 505 at "low";
 	// minimal -> 0 on flash-lite). Flip to false to restore the legacy budget.
 	LlmThinkingLevelNativeEnabled bool `mapstructure:"llm_thinking_level_native_enabled"`
+	LlmAnthropicThinkingEnabled   bool `mapstructure:"llm_anthropic_thinking_enabled"`
 	LlmProviderThinkingBudget     int  `mapstructure:"llm_provider_thinking_budget"` // -1 (default): use per-model default; 0: disable thinking; >0: explicit token budget — global override, wins over the per-tier budgets below
 	// Per-tier thinking-token ceilings (ModelTier), applied when LlmProviderThinkingBudget is unset (-1). 0 leaves a tier uncapped.
 	LlmThinkingBudgetReasoning int `mapstructure:"llm_thinking_budget_reasoning"`
@@ -1267,6 +1268,8 @@ func init() {
 	viper.SetDefault("llm_provider_session_token", "")
 	viper.SetDefault("llm_provider_embedding_model", "text-embedding-ada-002")
 	viper.SetDefault("llm_provider_max_retries", 5)
+	viper.SetDefault("llm_thinking_level_native_enabled", true)
+	viper.SetDefault("llm_anthropic_thinking_enabled", false)
 	viper.SetDefault("llm_provider_thinking_level", "")  // empty = not configured (use per-model default); "minimal"/"low"/"medium"/"high" = explicit level
 	viper.SetDefault("llm_provider_thinking_budget", -1) // -1: model default, 0: disable, >0: token budget (global override, wins over the per-tier budgets below)
 	viper.SetDefault("llm_thinking_budget_reasoning", 16000)
