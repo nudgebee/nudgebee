@@ -96,6 +96,13 @@ var splunkEnterpriseDisallowedCommands = map[string]bool{
 	"savedsearch":   true,
 	"map":           true,
 	"loadjob":       true,
+	// Read counterparts of outputlookup/outputcsv. A LEADING `| inputlookup` is already
+	// refused by the generating-command guard, but a subsearch is not:
+	// `search index="otel_logs" [ | inputcsv secrets.csv ]` passed before this entry.
+	// Both pull data from lookup tables and CSVs on the search head, outside the
+	// configured index scope entirely.
+	"inputlookup": true,
+	"inputcsv":    true,
 }
 
 func (s *SplunkEnterpriseLogSource) GetSupportedOperators() []string {

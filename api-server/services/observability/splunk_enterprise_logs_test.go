@@ -598,3 +598,21 @@ func TestSplunkEnterpriseBuildSPLAlwaysProjectsFields(t *testing.T) {
 		})
 	}
 }
+
+// inputlookup / inputcsv read lookup tables and CSVs from the search head, outside the
+// configured index scope. A LEADING `| inputlookup` was already refused by the
+// generating-command guard, but a SUBSEARCH was not — this pins that hole shut.
+func TestSplunkEnterpriseRejectsLookupReadsInSubsearch(t *testing.T) {
+	blocked := []string{
+		`search index="otel_logs" [ | inputcsv secrets.csv ]`,
+		`search index="otel_logs" [ | inputlookup credentials ]`,
+		`search index="otel_logs" | append [ | inputlookup users ]`,
+		`| inputlookup geo_attr_countries`,
+	}
+	for _, spl := range blocked {
+		assert.Error(t, validateSplunkEnterpriseQuery(spl), "must be rejected: %s", spl)
+	}
+
+	// The ordinary generated shape must keep working.
+	assert.NoError(t, validateSplunkEnterpriseQuery(`search index="otel_logs" | head 100 | fields *`))
+}
