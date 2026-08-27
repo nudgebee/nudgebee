@@ -285,7 +285,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			continue
 		}
 
-		payload, stats, err := parseESMetricsHitsWithStats(bodyBytes)
+		payload, stats, err := parseESMetricsHitsWithStats(bodyBytes, req.EndTime)
 		if err != nil {
 			errStr := fmt.Sprintf("failed to parse ES metrics response: %v", err)
 			results = append(results, QueryResult{
@@ -760,7 +760,10 @@ func esIndexDataset(index string) string {
 	if i := strings.LastIndex(index, ":"); i >= 0 {
 		index = index[i+1:]
 	}
-	index = strings.TrimPrefix(index, ".ds-")
+	// A snapshot-restored backing index carries a restore prefix before ".ds-".
+	if i := strings.Index(index, ".ds-"); i >= 0 {
+		index = index[i+len(".ds-"):]
+	}
 	index = backingIndexSuffix.ReplaceAllString(index, "")
 
 	// "{type}-{dataset}-{namespace}": a dataset never contains '-' (it uses '.' and
@@ -780,6 +783,202 @@ func esIndexDataset(index string) string {
 		return ""
 	}
 	return rest[:datasetEnd]
+}
+
+// esUnsupportedAggError names aggregation responses the walker does not understand.
+// It is an error rather than an empty result on purpose: an aggregation Elasticsearch
+// executed and we could not read is a defect on our side, and reporting it as "no
+// data" is what sent one investigation through 86 queries against data that was there.
+type esUnsupportedAggError struct{ names []string }
+
+func (e *esUnsupportedAggError) Error() string {
+	return fmt.Sprintf("unsupported aggregation response shape for %s — "+
+		"supported: terms, date_histogram, histogram, range, filters (bucketing) and "+
+		"avg, max, min, sum, value_count, cardinality, stats (values). "+
+		"Rewrite the aggregation using those, or query raw documents instead",
+		strings.Join(e.names, ", "))
+}
+
+// esAggTimeBucketMinMs is the epoch-millis floor above which a numeric bucket key
+// accompanied by key_as_string is read as a date_histogram bucket rather than a terms
+// bucket over a numeric field. 1e12 ms is 2001; no plausible terms key is that large
+// while also carrying a parseable date string.
+const esAggTimeBucketMinMs = 1_000_000_000_000
+
+// parseESAggregations walks an Elasticsearch aggregation response into series.
+//
+// Bucket aggregations contribute labels (the agg name is the label key, the bucket key
+// its value); metric aggregations contribute values, named by the agg name. A
+// date_histogram contributes timestamps instead of a label, so one nested agg becomes
+// a proper time series.
+//
+//	"inst": {"buckets": [{"key": "db-1", "m": {"buckets": [
+//	    {"key": "CPUUtilization", "avg_v": {"value": 53.5}}]}}]}
+//	  -> {__name__: "avg_v", inst: "db-1", m: "CPUUtilization"} = 53.5
+//
+// Shapes it does not recognise produce an error naming them, never an empty result.
+func parseESAggregations(aggs map[string]any, fallbackTs int64) ([]Result, error) {
+	var out []Result
+	var unsupported []string
+
+	var walk func(node map[string]any, labels map[string]string, ts int64)
+	walk = func(node map[string]any, labels map[string]string, ts int64) {
+		for name, raw := range node {
+			// doc_count / key / key_as_string are bucket metadata, not sub-aggregations.
+			if name == "doc_count" || name == "key" || name == "key_as_string" ||
+				name == "doc_count_error_upper_bound" || name == "sum_other_doc_count" {
+				continue
+			}
+			agg, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			// Bucket aggregation: recurse, extending the label set (or the timestamp).
+			if buckets, isBucket := esAggBuckets(agg); isBucket {
+				for _, b := range buckets {
+					childLabels := make(map[string]string, len(labels)+1)
+					for k, v := range labels {
+						childLabels[k] = v
+					}
+					childTs := ts
+					if bts, isTime := esAggBucketTime(b); isTime {
+						// date_histogram: the bucket IS the timestamp, not a label.
+						childTs = bts
+					} else {
+						childLabels[name] = fmt.Sprintf("%v", b["key"])
+					}
+					walk(b, childLabels, childTs)
+				}
+				continue
+			}
+
+			// Metric aggregation: emit one series per value it carries.
+			values, isMetric := esAggValues(agg)
+			if !isMetric {
+				unsupported = append(unsupported, name)
+				continue
+			}
+			for statistic, v := range values {
+				m := make(map[string]string, len(labels)+2)
+				for k, val := range labels {
+					m[k] = val
+				}
+				m["__name__"] = name
+				if statistic != "" {
+					// Same `statistic` label the CloudWatch parser uses, so a stats
+					// aggregation and a raw-document read describe series alike.
+					m["statistic"] = statistic
+				}
+				out = append(out, Result{Metric: m, Timestamps: []int64{ts}, Values: []float64{v}})
+			}
+		}
+	}
+
+	if fallbackTs <= 0 {
+		fallbackTs = time.Now().UnixMilli()
+	}
+	walk(aggs, map[string]string{}, fallbackTs/1000)
+
+	if len(unsupported) > 0 {
+		sort.Strings(unsupported)
+		return out, &esUnsupportedAggError{names: unsupported}
+	}
+	// Map iteration is random; sort so series order is stable across calls. Keys are
+	// built once rather than inside the comparator, which would format every label
+	// map on each of the O(n log n) comparisons.
+	keys := make([]string, len(out))
+	order := make([]int, len(out))
+	for i, r := range out {
+		keys[i] = fmt.Sprint(r.Metric)
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool { return keys[order[i]] < keys[order[j]] })
+	sorted := make([]Result, len(out))
+	for i, idx := range order {
+		sorted[i] = out[idx]
+	}
+	return sorted, nil
+}
+
+// esAggBuckets returns the buckets of a bucket aggregation. Elasticsearch renders them
+// as an array (terms, date_histogram, histogram, range) or as a keyed object (filters,
+// keyed ranges); both are accepted.
+func esAggBuckets(agg map[string]any) ([]map[string]any, bool) {
+	raw, ok := agg["buckets"]
+	if !ok {
+		return nil, false
+	}
+	switch b := raw.(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(b))
+		for _, item := range b {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out, true
+	case map[string]any:
+		out := make([]map[string]any, 0, len(b))
+		for key, item := range b {
+			if m, ok := item.(map[string]any); ok {
+				// Keyed buckets carry their name as the map key, not a "key" field.
+				if _, has := m["key"]; !has {
+					m["key"] = key
+				}
+				out = append(out, m)
+			}
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// esAggBucketTime reports whether a bucket is a date_histogram bucket, and its epoch
+// seconds. A numeric key large enough to be epoch millis AND carrying key_as_string is
+// a time bucket; a terms aggregation over a numeric field has no key_as_string.
+func esAggBucketTime(b map[string]any) (int64, bool) {
+	if _, hasStr := b["key_as_string"].(string); !hasStr {
+		return 0, false
+	}
+	k, ok := b["key"].(float64)
+	if !ok || k < esAggTimeBucketMinMs {
+		return 0, false
+	}
+	return int64(k) / 1000, true
+}
+
+// esAggValues extracts the numeric results of a metric aggregation, keyed by statistic
+// name ("" for single-value aggregations like avg/max/sum/value_count/cardinality).
+// Returns false for anything else, so the caller can report it rather than guess.
+func esAggValues(agg map[string]any) (map[string]float64, bool) {
+	if v, ok := agg["value"]; ok {
+		if v == nil {
+			// A null value is a real answer: the aggregation matched no documents.
+			// nil rather than an empty map — this is the common path on a filter that
+			// excludes everything, and it allocates nothing.
+			return nil, true
+		}
+		f, isNum := v.(float64)
+		if !isNum {
+			// Present, non-null and not a number: a shape we do not understand.
+			// Reporting it as "no documents" would be this change's own defect,
+			// one level up.
+			return nil, false
+		}
+		return map[string]float64{"": f}, true
+	}
+	// stats / extended_stats: several numbers under one name.
+	out := map[string]float64{}
+	for _, k := range []string{"count", "min", "max", "avg", "sum"} {
+		if f, ok := agg[k].(float64); ok {
+			out[k] = f
+		}
+	}
+	if len(out) > 0 {
+		return out, true
+	}
+	return nil, false
 }
 
 // esSeriesPoint is one (labels, value) pair extracted from a single document.
@@ -1095,11 +1294,16 @@ type esParseStats struct {
 }
 
 func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
-	res, _, err := parseESMetricsHitsWithStats(bodyBytes)
+	res, _, err := parseESMetricsHitsWithStats(bodyBytes, 0)
 	return res, err
 }
 
-func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, error) {
+// parseESMetricsHitsWithStats decodes an ES _search response into series.
+//
+// queryEndMs stamps aggregation results that carry no time bucket of their own
+// (a bare `terms` agg is a single reading over the query window). Pass 0 when
+// there is no window; the current time is used.
+func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, esParseStats, error) {
 	var esResp struct {
 		Hits struct {
 			Hits []struct {
@@ -1111,6 +1315,12 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 				Source map[string]any `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
+		// Aggregations was absent from this struct, so encoding/json dropped it as an
+		// unknown key: Elasticsearch computed the aggregation, returned it, and the
+		// caller was told `total_series: 0`. An agent that reached for the only
+		// strategy that scales — one terms aggregation instead of 10k raw documents —
+		// got nothing back and fell into fetch-and-truncate.
+		Aggregations map[string]any `json:"aggregations"`
 	}
 	if err := json.Unmarshal(bodyBytes, &esResp); err != nil {
 		return nil, esParseStats{}, err
@@ -1353,6 +1563,23 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 		})
 	}
 
+	// Aggregations, if any. A size:0 aggregation query has no hits by design, so
+	// without this the response looks identical to "matched nothing".
+	if len(esResp.Aggregations) > 0 {
+		aggResults, aggErr := parseESAggregations(esResp.Aggregations, queryEndMs)
+		results = append(aggResults, results...)
+		if aggErr != nil {
+			// Surface it: an aggregation we executed and could not read is our defect,
+			// and returning an empty result instead would repeat the failure this
+			// whole path exists to end. Any series we DID read are still returned.
+			return results, esParseStats{
+				DocsMatched:  esHitsTotal(string(bodyBytes)),
+				HitsReturned: returned,
+				SeriesParsed: len(results),
+			}, aggErr
+		}
+	}
+
 	var sampleFields []string
 	if returned > 0 {
 		sampleFields = esSourceFieldNames(esResp.Hits.Hits[0].Source)
@@ -1360,7 +1587,7 @@ func parseESMetricsHitsWithStats(bodyBytes []byte) ([]Result, esParseStats, erro
 	return results, esParseStats{
 		DocsMatched:        esHitsTotal(string(bodyBytes)),
 		HitsReturned:       returned,
-		SeriesParsed:       len(groups),
+		SeriesParsed:       len(results),
 		DroppedNoTimestamp: droppedNoTimestamp,
 		DroppedNoValue:     droppedNonNumericValue,
 		SampleSourceFields: sampleFields,

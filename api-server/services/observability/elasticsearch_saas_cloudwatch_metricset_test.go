@@ -54,7 +54,7 @@ func TestESIndexDataset(t *testing.T) {
 }
 
 func TestParseESMetricsHits_AWSCloudwatchMetricset(t *testing.T) {
-	results, stats, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody))
+	results, stats, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody), 0)
 	require.NoError(t, err)
 
 	// The regression this guards: three documents in, zero series out.
@@ -100,7 +100,7 @@ func TestParseESMetricsHits_DatasetFallsThroughOnShapeMismatch(t *testing.T) {
 	body := `{"hits":{"total":{"value":1},"hits":[
 	 {"_index":"remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018",
 	  "_source":{"@timestamp":"2026-08-26T13:38:00.000Z","name":"CPUUtilization","value":42.5}}]}}`
-	results, stats, err := parseESMetricsHitsWithStats([]byte(body))
+	results, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "CPUUtilization", results[0].Metric["__name__"])
@@ -134,7 +134,7 @@ func TestParseESMetricsHits_AWSCloudwatchPartialSourceProjection(t *testing.T) {
 	    "metric_name":"CPUUtilization",
 	    "dimensions":{"DBInstanceIdentifier":"db-cluster-1-writer"},
 	    "value":{"sum":109.0,"max":103.0}}}}]}}`
-	results, stats, err := parseESMetricsHitsWithStats([]byte(body))
+	results, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 	require.NoError(t, err)
 	// max and sum are both projected in; avg is not computable without count and must
 	// simply be absent rather than guessed.
@@ -178,7 +178,7 @@ func TestParseESMetricsHits_GenericFallbackReadsSystemMetricset(t *testing.T) {
 	   "system":{"cpu":{"total":{"pct":0.42},"cores":8}},
 	   "process":{"memory":{"rss":{"bytes":2048}}},
 	   "tags":["preprod"]}}]}}`
-	results, stats, err := parseESMetricsHitsWithStats([]byte(body))
+	results, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 	require.NoError(t, err)
 	require.NotEmpty(t, results, "an unknown shape must degrade to visible series, not zero")
 	assert.Zero(t, stats.DroppedNoValue)
@@ -203,7 +203,7 @@ func TestParseESMetricsHits_GenericFallbackReadsSystemMetricset(t *testing.T) {
 // documents would come back as "metricset.value.sum" with no statistics and the
 // ingest timestamp.
 func TestParseESMetricsHits_DatasetParserBeatsGenericFallback(t *testing.T) {
-	results, _, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody))
+	results, _, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody), 0)
 	require.NoError(t, err)
 	for _, r := range results {
 		assert.NotContains(t, r.Metric["__name__"], "metricset.value",
@@ -217,7 +217,7 @@ func TestParseESMetricsHits_NoNumbersStillDropped(t *testing.T) {
 	body := `{"hits":{"total":{"value":1},"hits":[
 	 {"_index":".ds-logs-generic.otel-default-2026.08.16-000001",
 	  "_source":{"@timestamp":"2026-08-26T13:38:00.000Z","host":{"name":"n1"},"tags":["x"]}}]}}`
-	results, stats, err := parseESMetricsHitsWithStats([]byte(body))
+	results, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 	require.NoError(t, err)
 	assert.Empty(t, results)
 	assert.Equal(t, 1, stats.DroppedNoValue)
@@ -235,14 +235,14 @@ func TestParseESMetricsHits_GenericFallbackIsOffByDefault(t *testing.T) {
 	 {"_index":".ds-metrics-system.process-prod-2026.08.16-000003",
 	  "_source":{"@timestamp":"2026-08-26T13:38:00.000Z",
 	   "system":{"cpu":{"total":{"pct":0.42}}}}}]}}`
-	results, stats, err := parseESMetricsHitsWithStats([]byte(body))
+	results, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 	require.NoError(t, err)
 	assert.Empty(t, results)
 	assert.Equal(t, 1, stats.DroppedNoValue)
 
 	// And the registry path must NOT be gated by the same flag: an AWS document still
 	// parses with the fallback disabled.
-	awsResults, _, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody))
+	awsResults, _, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody), 0)
 	require.NoError(t, err)
 	assert.NotEmpty(t, awsResults, "dataset dispatch is unflagged and must still work")
 }
@@ -291,7 +291,7 @@ func TestGenericFallback_SkipsTopLevelLabelsAndAnnotations(t *testing.T) {
 	   "annotations":{"checksum":"9f2c"},
 	   "host":{"name":"node-1"},
 	   "system":{"cpu":{"total":{"pct":0.42}}}}}]}}`
-	results, _, err := parseESMetricsHitsWithStats([]byte(body))
+	results, _, err := parseESMetricsHitsWithStats([]byte(body), 0)
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 
@@ -312,7 +312,7 @@ func TestAWSCloudwatchMetricset_DimensionValueHandling(t *testing.T) {
 	    "metric_name":"CPUUtilization",
 	    "dimensions":{"DBInstanceIdentifier":"db-instance-1","Shard":7,"Absent":null},
 	    "value":{"count":1.0,"max":10.0,"min":10.0,"sum":10.0}}}}]}}`
-	results, _, err := parseESMetricsHitsWithStats([]byte(body))
+	results, _, err := parseESMetricsHitsWithStats([]byte(body), 0)
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 
