@@ -1184,41 +1184,130 @@ var genericLabelSkip = []string{"labels", "annotations", "namespace_labels"}
 func genericNumericLeafSeries(src map[string]any) (labels map[string]string, values map[string]float64) {
 	labels = map[string]string{}
 	values = map[string]float64{}
+	walkGenericLeaves(src, "", labels, values)
+	return labels, values
+}
 
-	var walk func(node map[string]any, path string)
-	walk = func(node map[string]any, path string) {
-		for k, v := range node {
-			p := k
-			if path != "" {
-				p = path + "." + k
-			}
-			switch tv := v.(type) {
-			case map[string]any:
-				walk(tv, p)
-			case float64:
-				values[p] = tv
-			case string:
-				if !containsLabelSkip(p, genericLabelSkip) {
-					labels[p] = tv
-				}
-			}
-		}
-	}
-
-	for k, v := range src {
-		if genericMetricSkip[k] {
+// walkGenericLeaves is the recursive half of genericNumericLeafSeries, at package
+// level rather than a closure inside it: a self-referencing closure cannot be stack
+// allocated, and this runs once per document — 10,000 allocations on a full response
+// for a context that never varies.
+//
+// An empty path marks the document root, where the branches that describe the document
+// rather than measure anything are dropped.
+func walkGenericLeaves(node map[string]any, path string, labels map[string]string, values map[string]float64) {
+	atRoot := path == ""
+	for k, v := range node {
+		if atRoot && genericMetricSkip[k] {
 			continue
+		}
+		p := k
+		if !atRoot {
+			p = path + "." + k
 		}
 		switch tv := v.(type) {
 		case map[string]any:
-			walk(tv, k)
+			// An Elasticsearch histogram is an object, not a leaf: {values, counts}.
+			// Recognising it here rather than recursing keeps the paired arrays
+			// together, which is the only way the numbers mean anything.
+			if hist, ok := esHistogramValues(tv); ok {
+				for stat, n := range hist {
+					values[p+"."+stat] = n
+				}
+				continue
+			}
+			walkGenericLeaves(tv, p, labels, values)
 		case float64:
-			values[k] = tv
+			values[p] = tv
+		case []any:
+			for stat, n := range esNumericArrayStats(tv) {
+				values[p+"."+stat] = n
+			}
 		case string:
-			labels[k] = tv
+			if !containsLabelSkip(p, genericLabelSkip) {
+				labels[p] = tv
+			}
 		}
 	}
-	return labels, values
+}
+
+// esHistogramValues reduces an Elasticsearch `histogram` field to scalars.
+//
+// The type is {"values": [...bucket centres...], "counts": [...frequencies...]} — two
+// parallel arrays that only mean something together. It is a datatype, not a vendor
+// schema: APM stores transaction latency this way, and so does anything else using a
+// histogram field. Skipping it, as the walk did, silently discarded the single most
+// useful metric an APM deployment produces.
+//
+// Reduced to a count, a sum and a weighted average rather than expanded per bucket:
+// a bucket-per-series would multiply cardinality by the bucket count for a shape we
+// have no name for, and an average is what a caller asking "how slow is it" wants.
+// Returns false for anything that is not the paired-array form.
+func esHistogramValues(node map[string]any) (map[string]float64, bool) {
+	rawValues, hasValues := node["values"].([]any)
+	rawCounts, hasCounts := node["counts"].([]any)
+	if !hasValues || !hasCounts || len(rawValues) != len(rawCounts) || len(rawValues) == 0 {
+		return nil, false
+	}
+
+	var totalCount, weighted float64
+	for i := range rawValues {
+		centre, okV := rawValues[i].(float64)
+		count, okC := rawCounts[i].(float64)
+		if !okV || !okC {
+			return nil, false
+		}
+		totalCount += count
+		weighted += centre * count
+	}
+	if totalCount == 0 {
+		// A histogram with no observations. Real, and not an average of zero.
+		return map[string]float64{"count": 0}, true
+	}
+	return map[string]float64{
+		"count": totalCount,
+		"sum":   weighted,
+		"avg":   weighted / totalCount,
+	}, true
+}
+
+// esNumericArrayStats reduces an array of numbers to scalars.
+//
+// Arrays were skipped entirely, so any metric stored as a list produced nothing at
+// all. One series per element is not an option — the index carries no meaning and the
+// element count varies per document — so the array is summarised. Non-numeric arrays
+// (tags, ip addresses) yield nothing, which is correct: they are not measurements.
+func esNumericArrayStats(arr []any) map[string]float64 {
+	var sum, minV, maxV float64
+	var count int
+	for _, item := range arr {
+		f, ok := item.(float64)
+		if !ok {
+			continue
+		}
+		if count == 0 {
+			minV, maxV = f, f
+		} else if f < minV {
+			minV = f
+		} else if f > maxV {
+			maxV = f
+		}
+		sum += f
+		count++
+	}
+	if count == 0 {
+		// Not a numeric array — tags, ip addresses. nil rather than an empty map:
+		// this is the common case on a document full of string arrays, and it
+		// should cost nothing.
+		return nil
+	}
+	return map[string]float64{
+		"count": float64(count),
+		"sum":   sum,
+		"min":   minV,
+		"max":   maxV,
+		"avg":   sum / float64(count),
+	}
 }
 
 // containsLabelSkip reports whether any skip name appears in p as a whole path
