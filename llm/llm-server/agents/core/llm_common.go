@@ -1238,15 +1238,14 @@ const SentinelOmitTemperature = -1.0
 
 // withoutTemperature returns a CallOption that clears Temperature from CallOptions
 // by setting it to SentinelOmitTemperature (-1.0).
+// The sentinel is the whole signal. Do NOT also record this in
+// CallOptions.Metadata: the OpenAI-compatible client forwards that map verbatim
+// as the request's `metadata` field, which only accepts string values, so a
+// boolean there fails every call with
+// "Invalid type for 'metadata.without_temperature': expected a string".
 func withoutTemperature() llms.CallOption {
 	return func(o *llms.CallOptions) {
 		o.Temperature = SentinelOmitTemperature
-		metadata := make(map[string]any, len(o.Metadata)+1)
-		for key, value := range o.Metadata {
-			metadata[key] = value
-		}
-		metadata["without_temperature"] = true
-		o.Metadata = metadata
 	}
 }
 
