@@ -5,6 +5,7 @@ import (
 	"nudgebee/services/account"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
+	"nudgebee/services/observability"
 	"nudgebee/services/tenant"
 	"strings"
 	"time"
@@ -403,6 +404,15 @@ func handleTenantAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 		}
 
 		c.JSON(200, resp)
+		// Drop the cached tenant-level log label mapping so an edit applies on the
+		// next query rather than after the 10 min TTL. Scoped to the attribute that
+		// feeds that cache — this handler writes many unrelated tenant attrs.
+		for _, attr := range request.Object {
+			if attr.Name == "log_labels" {
+				observability.InvalidateLogLabelsCacheForTenant(ctx.GetSecurityContext().GetTenantId())
+				break
+			}
+		}
 		return
 	case "delete_feature":
 		var request tenant.DeleteFeatureRequest

@@ -54,6 +54,27 @@ query FetchLogLabels {
 }
 `;
 
+const GET_LABEL_MAPPING = `
+query GetLabelMapping {
+  observability_get_label_mapping(request: __WHERE__) {
+    account_id
+    provider
+    provider_source
+    provider_type
+    integration_saved
+    draft_applied
+    tier_order
+    fields {
+      canonical
+      effective
+      winning_tier
+      contributions
+    }
+    effective
+  }
+}
+`;
+
 const FETCH_LOG_LABEL_VALUES = `
 query FetchLogLabelValues {
   logs_list_label_values(request: __WHERE__) {
@@ -103,6 +124,11 @@ const observability = {
     }
   },
 
+  // `data.integration_config_values` is optional and PRIVILEGED: supplying it lists the
+  // fields of the configuration described in the request rather than the one saved for
+  // the account, so the integration form can offer real field names before the
+  // integration exists. The backend accepts it from tenant admins only. Omit it and this
+  // behaves exactly as it always has.
   async fetchLogLabels(data: any) {
     if (data?.account_id === 'demo') {
       const mockData: any = await getMockData('k8s-log-labels');
@@ -115,6 +141,23 @@ const observability = {
       console.log('failed to fetch log labels-', error);
       throw error;
     }
+  },
+
+  // Resolves which provider field each canonical log field maps to for one account,
+  // and which layer decided it (integration > provider config > account > tenant >
+  // provider default). Drafts are sent to the server rather than merged here on
+  // purpose: a second copy of the precedence rule in the browser would drift from the
+  // one queries actually run through.
+  async getLabelMapping(data: {
+    account_id: string;
+    provider?: string;
+    provider_source?: string;
+    provider_type?: string;
+    draft_mappings?: Record<string, string>;
+    draft_set?: boolean;
+  }) {
+    const response = await queryGraphQL(GET_LABEL_MAPPING.replaceAll('__WHERE__', gqlStringify(data)), 'GetLabelMapping');
+    return response?.data?.data?.observability_get_label_mapping ?? null;
   },
 
   async fetchLogLabelValues(data: any) {

@@ -31,6 +31,16 @@ type LogSource interface {
 	GetQuery(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (string, error)
 	GetLabelMapping() map[string]string
 	GetSupportedOperators() []string
+	// ProviderRef names the integration this source reads from - the same
+	// (provider, source) pair getLogSource dispatches on.
+	//
+	// Needed because the label mapping is no longer derivable from the type alone: the
+	// integration-level tier lives on a specific integrations row, and one account can
+	// carry several log integrations at once. Every source is a stateless empty struct,
+	// so the pair is a constant per type; the dispatch is 1:1, which
+	// TestProviderRef_MatchesGetLogSource pins so these constants cannot drift from the
+	// switch that produces them.
+	ProviderRef() providerRef
 }
 
 type LogGroupSource interface {
@@ -1738,9 +1748,10 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			resolvedSource = source
 			caps.SupportedOperators = source.GetSupportedOperators()
 			_, caps.SupportsAutoQuery = source.(PlaybookQueryGenerator)
-			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
-			// Skip the merge when accountId is empty: with no account the lookup
-			// can only return the static defaults, so there's nothing to merge.
+			// Full canonical to provider merge: provider default, then tenant, account,
+			// provider config and finally the integration's own mapping. Skip the merge
+			// when accountId is empty: with no account the lookup can only return the
+			// provider defaults, so there's nothing to merge.
 			if accountId != "" {
 				caps.LabelMappings = getMergedLabelMapping(ctx, accountId, source)
 			}

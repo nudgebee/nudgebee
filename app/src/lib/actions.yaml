@@ -4274,6 +4274,20 @@ actions:
       - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_usage
+  - name: observability_get_label_mapping
+    comment: Resolve the effective canonical to provider log field mapping, with the tier each value came from
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/provider'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
   - name: recommendation_export
     comment: Export recommendations to a downloadable file
     definition:

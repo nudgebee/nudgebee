@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/account"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
+	"nudgebee/services/observability"
 	"strings"
 	"time"
 
@@ -613,6 +614,14 @@ func handleAccountAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 		c.JSON(200, resp)
+		// Drop the cached account-level log label mapping so an edit applies on the
+		// next query instead of after the 10 min TTL. Scoped to the attribute that
+		// actually feeds that cache — this handler also writes unrelated attrs.
+		for _, attr := range request.Objects {
+			if attr.Name == "log_labels" {
+				observability.InvalidateLogLabelsCacheForAccount(attr.CloudAccountId)
+			}
+		}
 		if err := audit.PublishAuditEvent(ctx, audit.Audit{
 			TenantId:      ctx.GetSecurityContext().GetTenantId(),
 			UserId:        ctx.GetSecurityContext().GetUserId(),

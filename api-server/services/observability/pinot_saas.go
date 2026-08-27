@@ -256,10 +256,15 @@ func (p *PinotSaasSource) GetDynamicLabelMapping(ctx *security.RequestContext, a
 	return m
 }
 
-// applyMergedLabelOverrides layers the merged mapping (tenant/account/dynamic)
-// on top of cfg's column fields. With dynamic-on-top precedence this is a no-op
-// for keys the integration form sets, but it lets tenant/account fill in keys
-// the form left empty (notably cfg.SeverityCol).
+// applyMergedLabelOverrides layers the merged mapping on top of cfg's column
+// fields, so a mapping set anywhere in the stack reaches the query builder.
+//
+// It lets tenant/account fill in keys the form left empty (notably cfg.SeverityCol),
+// and — since the generic per-account log_label_mappings tier now outranks the
+// column fields — genuinely overwrites a column an operator has remapped there.
+// That is the point: GetPinotConfig/GetHiveConfig seed defaults for most of these
+// columns, so GetDynamicLabelMapping is never empty for them and an explicit
+// mapping would otherwise be swallowed by a default nobody typed.
 func (p *PinotSaasSource) applyMergedLabelOverrides(ctx *security.RequestContext, accountId string, cfg *PinotConfig) {
 	merged := getMergedLabelMapping(ctx, accountId, p)
 	if len(merged) == 0 {

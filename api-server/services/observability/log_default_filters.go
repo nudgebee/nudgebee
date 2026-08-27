@@ -151,48 +151,85 @@ func andWhereClause(existing, defaults query.QueryWhereClause) query.QueryWhereC
 	return query.QueryWhereClause{And: []query.QueryWhereClause{existing, defaults}}
 }
 
-// loadDefaultLogFilters resolves the account's log integration for this
-// logProvider/logProviderSource, reads its `default_filters` config, and builds
-// the clause for this account.
-func loadDefaultLogFilters(ctx *security.RequestContext, accountId, logProvider, logProviderSource string) query.QueryWhereClause {
-	provider, _, dto, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, logProvider, "logs", logProviderSource)
+// readLogIntegrationConfigValue returns one named config value from the log
+// integration that actually serves this (account, provider, source) triple.
+//
+// Resolving the integration — rather than taking the account's default — is what
+// keeps a per-integration setting attached to the integration the query will really
+// run against: an account can carry two log integrations, and the logs tab can pin
+// the non-default one. Empty logProvider/logProviderSource still mean "the default",
+// which is what the callers with no override in hand pass.
+//
+// Returns "" for every failure (no integration, no config row, lookup error). Both
+// callers treat an absent value as "nothing configured", so failing open here keeps
+// a misconfigured integration from breaking log queries outright.
+func readLogIntegrationConfigValue(ctx *security.RequestContext, accountId, logProvider, logProviderSource, name string) string {
+	configs, _ := lookupLogIntegrationConfigs(ctx, accountId, logProvider, logProviderSource)
+	for _, c := range configs {
+		if c.Name == name {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+// lookupLogIntegrationConfigs returns the config values of the log integration serving
+// this (account, provider, source) triple, and whether such an integration exists.
+//
+// The `found` flag is separate from `len(configs) > 0` because a saved integration can
+// legitimately hold no config values yet, and callers need to tell "no integration" from
+// "an integration with nothing set" — the Advanced Settings panel labels its answer
+// differently in each case.
+//
+// Note it does NOT rely on the resolver's DTO to decide `found`: when the caller pins
+// both provider and source (as the integration form does), the resolver short-circuits
+// and returns a nil DTO even though the integration exists. The listing below is the
+// authority.
+func lookupLogIntegrationConfigs(ctx *security.RequestContext, accountId, logProvider, logProviderSource string) ([]core.IntegrationConfigValue, bool) {
+	provider, source, dto, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, logProvider, "logs", logProviderSource)
 	if err != nil || provider == "" {
-		return query.QueryWhereClause{}
+		return nil, false
 	}
 
 	// The resolver DTO carries no Configs; re-list to get the populated config
 	// values (same path GetPinotConfig uses).
 	dtos, err := core.ListIntegrationConfigs(ctx, accountId, provider)
 	if err != nil || len(dtos) == 0 {
-		return query.QueryWhereClause{}
+		return nil, false
 	}
 
-	// Prefer the exact integration the resolver picked; else the first user-source one.
-	var configs []core.IntegrationConfigValue
+	// Prefer the exact integration the resolver picked.
 	if dto != nil {
 		for _, d := range dtos {
 			if d.Id == dto.Id {
-				configs = d.Configs
-				break
+				return d.Configs, true
 			}
 		}
 	}
-	if configs == nil {
+	// Then one matching the RESOLVED source. Matching only "user" (as this did before
+	// it was generalised) silently skipped every agent-source provider — loki, ES-agent,
+	// pinot-agent — so a per-account setting saved on one of those was stored and never
+	// read back.
+	if source != "" {
 		for _, d := range dtos {
-			if d.Source == "user" {
-				configs = d.Configs
-				break
+			if d.Source == source {
+				return d.Configs, true
 			}
 		}
 	}
-
-	var raw string
-	for _, c := range configs {
-		if c.Name == defaultFiltersConfigName {
-			raw = c.Value
-			break
+	for _, d := range dtos {
+		if d.Source == "user" {
+			return d.Configs, true
 		}
 	}
+	return nil, false
+}
+
+// loadDefaultLogFilters resolves the account's log integration for this
+// logProvider/logProviderSource, reads its `default_filters` config, and builds
+// the clause for this account.
+func loadDefaultLogFilters(ctx *security.RequestContext, accountId, logProvider, logProviderSource string) query.QueryWhereClause {
+	raw := readLogIntegrationConfigValue(ctx, accountId, logProvider, logProviderSource, defaultFiltersConfigName)
 	if raw == "" {
 		return query.QueryWhereClause{}
 	}

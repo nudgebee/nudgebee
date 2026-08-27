@@ -1,9 +1,12 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"nudgebee/services/common"
+	"nudgebee/services/integrations/core"
 	"nudgebee/services/observability"
+	"nudgebee/services/security"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -130,10 +133,31 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
+		// Optional, privileged: list the fields of the configuration described in the
+		// request rather than the one saved for this account, so the integration form can
+		// offer real field names before the integration exists.
+		//
+		// Gated on tenant admin because honouring it makes the SERVER fetch from an
+		// endpoint the caller names — read-only for the caller, an outbound request from
+		// inside the cluster in effect. Tenant admin is the tier that may create an
+		// integration and run Test Connection, i.e. the tier already trusted to hand the
+		// server an endpoint and credentials; this grants nothing beyond that. Every other
+		// role keeps the saved-integration behaviour, and says so rather than silently
+		// ignoring the field.
+		labelCtx, status, authErr := logLabelProbeContext(ctx, &request)
+		if authErr != nil {
+			if status == 403 {
+				c.JSON(403, common.ErrorActionForbidden(authErr.Error()))
+			} else {
+				c.JSON(status, common.ErrorActionBadRequest(authErr.Error()))
+			}
+			return
+		}
+
 		// FetchLogLabelsOrIndexFields owns the fetch_index fork, so the mode is
 		// decided in one testable place rather than split across the handler.
 		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputLogLabel, error) {
-			return observability.FetchLogLabelsOrIndexFields(ctx, request)
+			return observability.FetchLogLabelsOrIndexFields(labelCtx, request)
 		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -201,4 +225,57 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 		return
 	}
+}
+
+// logLabelProbeContext honours the optional, privileged `integration_config_values` on a
+// log-label request: with it, the fields returned describe the configuration IN THE
+// REQUEST rather than the one saved for the account, which is what lets the integration
+// form list a backend's fields before the integration exists.
+//
+// Returns the context the lookup should run under, plus the HTTP status to answer with
+// when it refuses. Absent values are the overwhelmingly common case and return the
+// caller's own context untouched — every in-process caller and every pre-existing client
+// takes that path, so behaviour there is unchanged.
+//
+// The tenant-admin gate is the point of the function. Honouring the field makes the
+// SERVER fetch from an endpoint the caller names — read-only for the caller, an outbound
+// request from inside the cluster in effect. Tenant admin is the tier that may already
+// create an integration and run Test Connection, i.e. the tier trusted to hand the server
+// an endpoint and credentials, so this grants nothing beyond what it already has. Lower
+// tiers are refused rather than silently downgraded to the saved config: a field list
+// that quietly described a different backend than the one asked about would be worse than
+// an error.
+//
+// Extracted from the handler so the rule is unit-testable without the gin stack.
+func logLabelProbeContext(ctx *security.RequestContext, request *observability.FetchLogLabelRequest) (*security.RequestContext, int, error) {
+	if request == nil || len(request.IntegrationConfigValues) == 0 {
+		return ctx, 200, nil
+	}
+
+	sc := ctx.GetSecurityContext()
+	if sc == nil || (!sc.IsTenantAdmin() && !sc.IsSuperAdmin()) {
+		return nil, 403, errors.New("integration_config_values requires tenant admin")
+	}
+	if request.LogProvider == "" {
+		return nil, 400, errors.New("log_provider is required with integration_config_values")
+	}
+
+	decrypted, err := core.DecryptConfigValues(request.IntegrationConfigValues)
+	if err != nil {
+		return nil, 400, err
+	}
+	source := request.LogProviderSource
+	if source == "" {
+		source = "user"
+	}
+
+	probeCtx := core.WithConfigOverride(ctx, core.ConfigOverride{
+		AccountId:       request.AccountId,
+		IntegrationName: request.LogProvider,
+		Source:          source,
+		Values:          decrypted,
+	})
+	// Transport only — the values never travel further than this handler.
+	request.IntegrationConfigValues = nil
+	return probeCtx, 200, nil
 }
