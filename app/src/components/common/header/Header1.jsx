@@ -44,6 +44,7 @@ import { useRouter } from 'next/router';
 import { useData } from '@context/DataContext';
 import { hasWriteAccess } from '@lib/auth';
 import apiKubernetes from '@api1/kubernetes';
+import apiUser from '@api1/user';
 import ClusterDropdown from '@shared/navigation/ClusterDropDown';
 import GlobalPageSearch from '@shared/navigation/GlobalPageSearch';
 import { useSession } from 'next-auth/react';
@@ -73,8 +74,6 @@ import CampaignOutlinedIcon from '@mui/icons-material/CampaignOutlined';
 import CustomDrawer from '@shared/CustomDrawer';
 import ProductUpdatesDrawerContent from '@shared/widgets/ProductUpdatesDrawerContent';
 import { useProductUpdates } from '@hooks/useProductUpdates';
-
-const AGENT_UPGRADE_DOCS_URL = docsUrl('/docs/installation/agent/installation/upgrade/');
 
 const Header1 = ({ showBorder = false }) => {
   const { data } = useSession({ required: true });
@@ -114,6 +113,9 @@ const Header1 = ({ showBorder = false }) => {
   const [anchorActiveTab, setAnchorActiveTab] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState('');
+  // A disconnected agent makes the whole page stale, so its banner is rendered
+  // critical (red) and non-dismissible. The version-update banner stays warning.
+  const [snackbarCritical, setSnackbarCritical] = useState(false);
   const [showReloadNotification, setShowReloadNotification] = useState(false);
   const [reloadMsg, setReloadMsg] = useState('');
   const [showK8sAccountModal, setShowK8sAccountModal] = useState(false);
@@ -476,16 +478,32 @@ const Header1 = ({ showBorder = false }) => {
     return baseOptions;
   }, [selectedCluster]);
 
+  // Fold any legacy per-cluster K8s-agent banner keys into the consolidated
+  // user-preferences object once per mount.
+  useEffect(() => {
+    apiUser.migrateLegacyK8sAgentSnackbarPrefs();
+  }, []);
+
   useEffect(() => {
     setSnackbarOpen(false);
     setSnackbarMsg('');
+    setSnackbarCritical(false);
 
     if (!selectedCluster || Object.keys(selectedCluster).length === 0 || selectedCluster.cloud_provider !== 'K8s') {
       return;
     }
 
-    const hasClosed = localStorage.getItem(`latest-${selectedCluster.value}-K8sAgentSnackbar`);
-    if (hasClosed && hasClosed == 'false') {
+    // A disconnected agent means every value on the page is stale. Surface it up front
+    // as a critical, non-dismissible banner — always shown, never gated by the
+    // per-cluster dismiss flag (that only silences the informational version banner).
+    if (selectedCluster?.agent?.status === 'NOT_CONNECTED') {
+      setSnackbarCritical(true);
+      setSnackbarOpen(true);
+      setSnackbarMsg(`The ${baseTitle} Agent is disconnected. The data shown may be stale — do not rely on it until the agent reconnects.`);
+      return;
+    }
+
+    if (apiUser.isK8sAgentSnackbarDismissed(selectedCluster.value)) {
       return;
     }
 
@@ -493,16 +511,16 @@ const Header1 = ({ showBorder = false }) => {
       // Use ref to read the latest selectedCluster, not the stale closure value
       const cluster = selectedClusterRef.current;
       if (!cluster || cluster.cloud_provider !== 'K8s') return;
+      // A late response must not repaint over the critical disconnected banner (or a
+      // dismissed one): if the cluster went disconnected/dismissed while this call was
+      // in flight, bail rather than overwrite the message under a stale snackbarCritical.
+      if (cluster?.agent?.status === 'NOT_CONNECTED' || apiUser.isK8sAgentSnackbarDismissed(cluster.value)) return;
 
-      if (cluster?.agent?.status === 'NOT_CONNECTED') {
-        setSnackbarOpen(true);
-        setSnackbarMsg(`The ${baseTitle} Agent is not connected.`);
-        localStorage.setItem(`latest-${cluster.value}-K8sAgentSnackbar`, 'true');
-      } else if (res.data?.nudgebee_list_versions && res.data?.nudgebee_list_versions?.agent_version_latest != cluster.agent?.version) {
+      if (res.data?.nudgebee_list_versions && res.data?.nudgebee_list_versions?.agent_version_latest != cluster.agent?.version) {
         let snackMessage = '';
         let disconnectedService = [];
         setSnackbarOpen(true);
-        snackMessage = `<span>Update the ${baseTitle} Agent Version to ${res.data?.nudgebee_list_versions.agent_version_latest}. Refer to <a href="${AGENT_UPGRADE_DOCS_URL}" target="_blank" rel="noopener noreferrer">this document</a> for instructions on how to update the agent.</span>`;
+        snackMessage = `<span>Update the ${baseTitle} Agent Version to ${res.data?.nudgebee_list_versions.agent_version_latest}. Refer to <a href="/help/docs/installation/agent/installation/" target="_blank" rel="noopener noreferrer">this document</a> for instructions on how to update the agent.</span>`;
         if (cluster.agent?.connection_status) {
           const connectionStatus = cluster.agent?.connection_status;
           if (!connectionStatus.relayConnection) {
@@ -519,7 +537,6 @@ const Header1 = ({ showBorder = false }) => {
           snackMessage = snackMessage + ` The ${disconnectedService.join(', ')} services are disconnected.`;
         }
         setSnackbarMsg(snackMessage);
-        localStorage.setItem(`latest-${cluster.value}-K8sAgentSnackbar`, 'true');
       }
     });
   }, [selectedCluster]);
@@ -659,11 +676,12 @@ const Header1 = ({ showBorder = false }) => {
   const updateClusterState = (_e) => {
     setSnackbarOpen(false);
     setSnackbarMsg('');
+    setSnackbarCritical(false);
   };
 
   const handleCloseSnackbar = () => {
     setSnackbarOpen(false);
-    localStorage.setItem(`latest-${selectedCluster.value}-K8sAgentSnackbar`, 'false');
+    apiUser.setK8sAgentSnackbarDismissed(selectedCluster?.value, true);
   };
 
   const handleClusterData = (clusterOption) => {
@@ -684,8 +702,8 @@ const Header1 = ({ showBorder = false }) => {
       )}
       {snackbarOpen && (
         <Banner
-          tone='warning'
-          dismissible
+          tone={snackbarCritical ? 'critical' : 'warning'}
+          dismissible={!snackbarCritical}
           onDismiss={handleCloseSnackbar}
           message={
             <span
@@ -819,7 +837,7 @@ const Header1 = ({ showBorder = false }) => {
                   </Box>
                 )}
                 <Typography
-                  sx={{ fontFamily: 'Poppins, sans-serif', fontSize: 'var(--ds-text-heading)', fontWeight: ds.weight.semibold, color: ds.gray[700] }}
+                  sx={{ fontFamily: ds.font.display, fontSize: 'var(--ds-text-heading)', fontWeight: ds.weight.semibold, color: ds.gray[700] }}
                 >
                   {anchorActiveTab.name}
                 </Typography>
