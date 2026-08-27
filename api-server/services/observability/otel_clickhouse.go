@@ -78,8 +78,26 @@ var ClickhouseTraceTableDefinition = map[string]query.ColumnDefinition{
 			return "base64Decode(headers)", request, nil
 		},
 	},
+	// Stored as text, but it holds an HTTP status. NumericCompareDef lets ordered
+	// comparisons ("5xx and above") work without changing the column's type, so _eq,
+	// _like, traces_label_values and every UI filter keep comparing strings.
 	"http_status_code": {
+		Type:              query.ColumnDefinitionTypeString,
+		NumericCompareDef: "toInt32OrZero(http_status_code)",
+	},
+	// The API route / DB statement / RPC method a span represents. llm-server's traces_view
+	// defines this and the trace agent's prompt documents it as the column to use when the
+	// user asks which endpoint is involved -- but it was missing here, so a canonical
+	// `endpoint` filter failed with "Unknown expression or function identifier `endpoint`".
+	// Mirrors that view's projection, ending on span_name exactly as it does.
+	"endpoint": {
 		Type: query.ColumnDefinitionTypeString,
+		Def: "multiIf(spanattributes['http.route'] != '', spanattributes['http.route'], " +
+			"spanattributes['http.target'] != '', spanattributes['http.target'], " +
+			"spanattributes['http.path'] != '', spanattributes['http.path'], " +
+			"spanattributes['url.path'] != '', spanattributes['url.path'], " +
+			"spanattributes['db.statement'] != '', spanattributes['db.statement'], " +
+			"spanattributes['rpc.method'] != '', spanattributes['rpc.method'], span_name)",
 	},
 	"http_method": {
 		Type: query.ColumnDefinitionTypeString,
@@ -210,8 +228,23 @@ var ClickhouseTraceGroupingTableDefinition = map[string]query.ColumnDefinition{
 
 type OtelClickhouseTraceSource struct{}
 
+// GetLabelMapping maps canonical trace field names onto this source's real columns.
+// It is consumed twice: to advertise label_mappings in the provider capabilities, and to
+// rewrite incoming where clauses (convertWhereClauseWithMApping). An empty map meant a
+// canonical name reached ClickHouse verbatim -- `namespace` matched nothing and returned
+// zero rows with no error.
+//
+// Keys must be names that are NOT real columns in ClickhouseTraceTableDefinition; a key that shadows a real column
+// would silently rewrite queries the UI already sends. TestOtelClickhouseTraceLabelMapping
+// pins that invariant.
 func (s *OtelClickhouseTraceSource) GetLabelMapping() map[string]string {
-	return map[string]string{}
+	// No "service" alias: the trace column set already defines a real `service` column, and aliasing it
+	// would rewrite queries that work today. TestOtelClickhouseTraceLabelMapping enforces this.
+	return map[string]string{
+		"namespace":   "workload_namespace",
+		"workload":    "workload_name",
+		"destination": "destination_workload_name",
+	}
 }
 
 func (s *OtelClickhouseTraceSource) GetSupportedOperators() []string {

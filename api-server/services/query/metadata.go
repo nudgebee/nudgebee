@@ -68,6 +68,15 @@ type ColumnDefinition struct {
 	IsAggregated bool
 	DefGenerator func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error)
 	WhereDef     string
+	// NumericCompareDef opts a string-typed column into ordered comparison (< <= > >=)
+	// by supplying an explicit numeric projection of itself, e.g.
+	// "toInt32OrZero(http_status_code)". Ordered operators on a string column are
+	// otherwise rejected on purpose: comparing lexicographically against a value the
+	// caller means numerically returns plausible wrong rows instead of an error. Set
+	// this only where the column genuinely holds a number stored as text, and only the
+	// ordered operators use it -- _eq/_like/label-values keep the string Def, so the
+	// column's existing behaviour (and the UI built on it) is unchanged.
+	NumericCompareDef string
 }
 
 type TableDefinition struct {

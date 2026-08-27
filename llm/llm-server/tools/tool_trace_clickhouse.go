@@ -168,7 +168,11 @@ func (m TracesExecuteClickhouseTool) Call(nbRequestContext core.NbToolContext, i
 	queryResponse, err := executeFetchTrace(nbRequestContext, "otel_clickhouse", "agent", finalQuery, core.TraceQueryBuilder{}, map[string]any{})
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("traces: unable to get traces", "error", err.Error())
-		responseData := "Trace data is unavailable for this request."
+		// Carry the provider's error into the response, as the jaeger/chronosphere/default
+		// trace tools already do. Dropping it left the persisted tool call saying only
+		// "Trace data is unavailable", so the agent could not tell a ClickHouse auth failure
+		// from an empty window and re-issued near-identical queries until it gave up.
+		responseData := "Trace data is unavailable for this request. " + err.Error()
 		return core.NBToolResponse{
 			Data:   responseData,
 			Status: core.NBToolResponseStatusError,
