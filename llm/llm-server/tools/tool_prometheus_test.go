@@ -724,3 +724,37 @@ func TestListMetricsLabelValuesTool_DescriptionStatesESIgnoresMetric(t *testing.
 	// And it must not describe a JSON tool in function-call syntax.
 	assert.NotContains(t, tool.Description(), `metrics_label_values(label=`)
 }
+
+// ---------------------------------------------------------------------------
+// ES metric-name discovery.
+//
+// Reproduced on dev 2026-08-27, account 25f42d26, index pattern `metric*`:
+//
+//	metrics_list "metric*"  -> container.cpu.usage, container.memory.working_set
+//	agent: "no RDS metrics found", zero queries issued
+//
+// Eight CloudWatch metrics were in that pattern and had been read successfully
+// through the same account minutes earlier. Discovery returned on the first
+// non-empty source, so whichever shape carried a `name` field hid the rest.
+// ---------------------------------------------------------------------------
+
+func TestESDiscoveryProvenance_SeparatesDataFromSchema(t *testing.T) {
+	// Both sources contributed: the caller must be able to tell them apart, because
+	// on dev the mapping supplies 4306 names of which 79 have ever held a value.
+	both := esDiscoveryProvenance(2, 4306)
+	assert.Contains(t, both, "2 read from documents")
+	assert.Contains(t, both, "4306 declared in the index mapping")
+	assert.Contains(t, both, "may have no data")
+
+	// Mapping only: the warning has to be unmissable, since every name may be empty.
+	mappingOnly := esDiscoveryProvenance(0, 4306)
+	assert.Contains(t, mappingOnly, "may have no data")
+	assert.Contains(t, mappingOnly, "confirm a metric exists before concluding")
+
+	// Documents only: every name is a fact, so no caveat belongs on it.
+	docsOnly := esDiscoveryProvenance(8, 0)
+	assert.Contains(t, docsOnly, "8 read from documents")
+	assert.NotContains(t, docsOnly, "may have no data")
+
+	assert.Equal(t, "none found", esDiscoveryProvenance(0, 0))
+}

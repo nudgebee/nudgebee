@@ -713,39 +713,107 @@ var esNumericFieldTypes = map[string]bool{
 // Querying only `name` — as this did — returned an empty list on every Beats index while
 // the data sat there in plain sight.
 func esDiscoverMetricNames(nbRequestContext core.NbToolContext, provider, indexPattern string) ([]core.ObservabilityMetricsSeries, string, error) {
-	labelValuesResp, err := services_server.ListMetricsSeriesLabelValues(
+	// Both sources are consulted and merged. Returning on the first non-empty answer
+	// is what produced the 2026-08-27 dev failure: under a pattern spanning five
+	// document shapes, one OTel-shaped index had two distinct `name` values in the
+	// lookup window, that counted as success, and eight CloudWatch metrics sitting in
+	// the same pattern were never looked for. The agent was told the environment had
+	// two metrics and reported "no RDS metrics found" without issuing a single query.
+	//
+	// Whichever shape happens to carry a `name` field must not hide the others.
+	seen := make(map[string]bool)
+	series := make([]core.ObservabilityMetricsSeries, 0)
+	// add reports whether the name was accepted, so a caller can count exactly what
+	// the list contains. Counting separately let a name that add() rejected — an
+	// empty or whitespace-only value — still increment a total, and those totals are
+	// the whole point of this change.
+	add := func(name string) bool {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return false
+		}
+		seen[name] = true
+		series = append(series, core.ObservabilityMetricsSeries{Metric: name})
+		return true
+	}
+
+	// Source 1: distinct values of the metric-name field. These are read from
+	// documents, so every name is one that actually exists.
+	var fromDocuments int
+	labelValuesResp, nameErr := services_server.ListMetricsSeriesLabelValues(
 		*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, esMetricNameField,
 		map[string]any{"request": map[string]any{"metric_name": indexPattern}},
 	)
-	if err == nil && len(labelValuesResp.Values) > 0 {
-		series := make([]core.ObservabilityMetricsSeries, 0, len(labelValuesResp.Values))
+	if nameErr == nil {
 		for _, v := range labelValuesResp.Values {
-			series = append(series, core.ObservabilityMetricsSeries{Metric: v.Value})
+			if add(v.Value) {
+				fromDocuments++
+			}
 		}
-		return series, "name", nil
-	}
-	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Info("metrics: ES name-field lookup failed, falling back to mapping field paths",
-			"index", indexPattern, "error", err.Error())
+	} else {
+		nbRequestContext.Ctx.GetLogger().Info("metrics: ES name-field lookup failed, continuing with mapping field paths",
+			"index", indexPattern, "error", nameErr.Error())
 	}
 
-	// Beats-family: the numeric field paths are the metric names.
-	fieldsResp, ferr := services_server.ListMetricsSeriesLabels(
+	// Source 2: numeric field paths from the index MAPPING. For Beats-family
+	// documents the metric's identity IS its field path, so these are real metric
+	// names — but a mapping declares what an index may hold, not what it does.
+	// Measured on dev: metricbeat-8.19.11 declares 4306 numeric fields and 79 have
+	// ever held a value, so 98% of this source is names for data that does not
+	// exist. That is where `activemq.broker.connections.count` came from on a
+	// cluster running no ActiveMQ, and an agent chased it because we listed it.
+	var fromMapping int
+	fieldsResp, fieldsErr := services_server.ListMetricsSeriesLabels(
 		*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, indexPattern)
-	if ferr != nil {
-		if err != nil {
-			return nil, "", err
+	if fieldsErr == nil {
+		for _, l := range fieldsResp.Labels {
+			t, _ := l.Attributes["type"].(string)
+			if !esNumericFieldTypes[t] {
+				continue
+			}
+			if add(l.Label) {
+				fromMapping++
+			}
 		}
-		return nil, "", ferr
+	} else {
+		// Logged even when the name lookup succeeded: the result is then a partial
+		// answer, and silence about the half that failed is how a partial answer gets
+		// read as a complete one.
+		nbRequestContext.Ctx.GetLogger().Info("metrics: ES mapping-field lookup failed, continuing with name-field results",
+			"index", indexPattern, "error", fieldsErr.Error())
 	}
-	series := make([]core.ObservabilityMetricsSeries, 0, len(fieldsResp.Labels))
-	for _, l := range fieldsResp.Labels {
-		t, _ := l.Attributes["type"].(string)
-		if esNumericFieldTypes[t] {
-			series = append(series, core.ObservabilityMetricsSeries{Metric: l.Label})
+
+	if len(series) == 0 {
+		// Both sources empty. Surface whichever error explains it rather than an
+		// empty list, which reads as "this environment has no metrics".
+		if nameErr != nil {
+			return nil, "", nameErr
+		}
+		if fieldsErr != nil {
+			return nil, "", fieldsErr
 		}
 	}
-	return series, "numeric field paths", nil
+
+	return series, esDiscoveryProvenance(fromDocuments, fromMapping), nil
+}
+
+// esDiscoveryProvenance describes where a metric-name list came from, so the caller
+// can weigh it. Names read from documents are facts; names read from the index mapping
+// are possibilities, and presenting the two as one list is what lets an agent spend an
+// investigation on metrics that have never been collected.
+func esDiscoveryProvenance(fromDocuments, fromMapping int) string {
+	switch {
+	case fromDocuments > 0 && fromMapping > 0:
+		return fmt.Sprintf("%d read from documents, %d declared in the index mapping (those may have no data)",
+			fromDocuments, fromMapping)
+	case fromDocuments > 0:
+		return fmt.Sprintf("%d read from documents", fromDocuments)
+	case fromMapping > 0:
+		return fmt.Sprintf("%d declared in the index mapping — these may have no data; "+
+			"confirm a metric exists before concluding anything from its absence", fromMapping)
+	default:
+		return "none found"
+	}
 }
 
 func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -777,6 +845,9 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 	}
 
 	var metricsResponse core.ObservabilityMetricsSeriesResponse
+	// esProvenance records whether the metric names below were read from documents or
+	// from the index mapping. Empty for non-ES providers.
+	var esProvenance string
 
 	// esQueryIsIndexPattern records whether the caller's input was consumed as an index
 	// pattern rather than as a search keyword, so the keyword filter below knows whether
@@ -820,8 +891,9 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 				Status: core.NBToolResponseStatusError,
 			}, nil
 		}
-		nbRequestContext.Ctx.GetLogger().Info("metrics: resolved ES metric identity field",
-			"index", indexPattern, "identity_field", identityField, "num_metrics", len(series))
+		nbRequestContext.Ctx.GetLogger().Info("metrics: resolved ES metric names",
+			"index", indexPattern, "provenance", identityField, "num_metrics", len(series))
+		esProvenance = identityField
 		metricsResponse = core.ObservabilityMetricsSeriesResponse{Series: series}
 	} else {
 		var err error
@@ -894,6 +966,13 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 	}
 
 	responseData := string(dataResponse)
+	// State where these names came from. A list mixing names read from documents with
+	// names read from an index mapping looks like one set of facts; on dev that
+	// mapping contributes 98% names for data that has never been collected, and an
+	// agent cannot tell which is which unless we say so.
+	if esProvenance != "" {
+		responseData = fmt.Sprintf("Metric names: %s.\n\n%s", esProvenance, responseData)
+	}
 	// Distinguish "nothing matched your keyword" from "we could not read this index".
 	// The latter is handled above as an error; saying so here keeps the caller from
 	// reading a legitimately-empty filter result as an absence of metrics.
