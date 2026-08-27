@@ -2318,7 +2318,10 @@ async def _run_followup_task(  # noqa: C901
                 "answer_relevancy": rel_score,
                 "planner_relevancy": planner_score,
                 "score_reason": score_reason.strip(),
-                "duration_seconds": 0.0,
+                # No duration here: store_test_result derives it from the
+                # conversation. This path used to write a literal 0.0, which is
+                # how every followup-completed test landed in the report with no
+                # duration at all.
                 "cost": token_metrics.get("cost", 0.0),
                 "total_tokens": token_metrics.get("total_tokens", 0),
                 "input_tokens": token_metrics.get("input_tokens", 0),

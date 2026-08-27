@@ -205,6 +205,12 @@ def test_ask_nubi(
         ground_truths_list = [ground_truths_list]
     ground_truth_str = "\n".join(ground_truths_list)
 
+    # Stop the clock before scoring: RAGAS similarity/relevancy/planner
+    # evaluation is judge cost, not the model under test. (The stored
+    # duration comes from the conversation via store_test_result anyway;
+    # this keeps the in-memory number and the log line honest too.)
+    duration = time.time() - start_time
+
     answer_similarity_score = 0.0
     answer_relevancy_score = 0.0
     planner_relevancy_score = 0.0
@@ -252,8 +258,6 @@ def test_ask_nubi(
     except Exception as e:
         logger.error("Ragas evaluation failed for '%s': %s", test_case_name, e)
         test_failed = True
-
-    duration = time.time() - start_time
 
     # Get tool names using shared module
     tool_names_data = get_tool_names(convo_id=convo_id)

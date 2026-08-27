@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from benchmark_server.models.benchmark_run import BenchmarkRun, BenchmarkTestResult
 from benchmark_server.utils.db_utils import get_db
@@ -292,6 +292,117 @@ def _test_status_from_conversation(conv_status: str):
     return "running"  # PENDING, IN_PROGRESS, unknown → still in flight
 
 
+# --- Duration ---------------------------------------------------------------
+# A test's ``duration_seconds`` is ALWAYS the llm-server's own span for the
+# turn, read back from ``llm_conversation_messages``: MIN(created_at) →
+# MAX(responded_at) over the conversation's ``generation`` rows, minus any
+# stretch the agent spent parked on a followup waiting for a human answer.
+#
+# Wall-clocking the benchmark process instead charged the model under test for
+# fixture setup, poll lag, RAGAS judging and write-approval waits — one 33s
+# test measured 597s because a human took nine minutes to click "yes".
+#
+# ``llm_conversations.updated_at`` is NOT usable here: post-answer bookkeeping
+# agents (session_extractor, context_memories_extractions) bump it seconds
+# after the answer was handed to the caller. And ``latency_seconds`` on
+# llm_conversation_token_usage must never be summed — agents run concurrently,
+# so the calls overlap and the sum exceeds the elapsed time.
+_ANSWER_DURATION_SQL = text("""
+    WITH gen AS (
+        SELECT MIN(created_at) AS started,
+               MAX(COALESCE(responded_at, updated_at)) AS answered
+        FROM llm_conversation_messages
+        WHERE conversation_id = :cid AND message_type = 'generation'
+    ),
+    -- Union of followup waits, not their sum: parallel agents can post
+    -- confirmation panels whose waits overlap, and summing double-subtracts.
+    -- Same gaps-and-islands merge llm-server uses for tool time.
+    spans AS (
+        SELECT created_at, responded_at,
+            CASE WHEN created_at > MAX(responded_at) OVER (
+                    ORDER BY created_at, responded_at
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+                THEN 1 ELSE 0 END AS is_new_span
+        FROM llm_conversation_messages
+        WHERE conversation_id = :cid AND message_type = 'followup'
+          AND responded_at IS NOT NULL
+    ),
+    islands AS (
+        SELECT created_at, responded_at,
+               SUM(is_new_span) OVER (ORDER BY created_at, responded_at) AS island
+        FROM spans
+    ),
+    waited AS (
+        SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (span_end - span_start))), 0) AS seconds
+        FROM (
+            SELECT MIN(created_at) AS span_start, MAX(responded_at) AS span_end
+            FROM islands GROUP BY island
+        ) merged
+    )
+    SELECT GREATEST(
+        EXTRACT(EPOCH FROM (gen.answered - gen.started)) - waited.seconds, 0
+    ) AS seconds
+    FROM gen, waited
+    WHERE gen.started IS NOT NULL AND gen.answered IS NOT NULL
+""")
+
+# Statuses a test never leaves. A row in one of these must carry a real
+# duration, whichever path finished it (orchestrator, followup handler or
+# reconciler) — a hardcoded 0 used to be possible on the followup path.
+_TERMINAL_STATUSES = ("pass", "fail", "error", "timeout")
+
+
+def answer_duration_seconds(conversation_id) -> Optional[float]:
+    """The agent's answer time for a conversation, or None if not derivable.
+
+    ``conversation_id`` is ``llm_conversations.id`` (a test row's
+    ``conversation_id`` column) — NOT ``polling_conversation_id``, which holds
+    the session_id.
+
+    Runs on its own short-lived session so a query failure can never poison a
+    caller's open transaction.
+
+    Total by construction: every caller invokes this from inside its own
+    try/except, where an escaping exception costs a stored result row (or, in
+    the reconciler, aborts the whole sweep). Session acquisition is inside the
+    guard too — ``get_db`` cannot raise today, but it lives in another module
+    and only has to start connecting eagerly once for this to silently drop
+    durations.
+    """
+    if not conversation_id:
+        return None
+    try:
+        cid = str(uuid.UUID(str(conversation_id)))
+    except (ValueError, AttributeError, TypeError):
+        # Not a conversation UUID (blank, or a session_id passed by mistake).
+        return None
+    db = None
+    try:
+        db = get_db()
+        if not db:
+            return None
+        row = db.execute(_ANSWER_DURATION_SQL, {"cid": cid}).fetchone()
+        if not row or row[0] is None:
+            return None
+        return round(float(row[0]), 2)
+    except Exception:
+        logger.exception("duration: query failed for conversation %s", conversation_id)
+        return None
+    finally:
+        if db:
+            try:
+                db.close()
+            except Exception:
+                logger.exception("duration: session close failed")
+
+
+def _stamp_answer_duration(tr, conversation_id) -> None:
+    """Set a terminal row's duration from its conversation, when derivable."""
+    measured = answer_duration_seconds(conversation_id)
+    if measured is not None:
+        tr.duration_seconds = measured
+
+
 def _hard_timeout_sec() -> int:
     """Optional hard ceiling (seconds) on how long a test may stay non-terminal
     before the reconciler gives up and marks it ``timeout``. Default 0 = OFF, so
@@ -504,6 +615,7 @@ def reconcile_waiting_tests(  # noqa: C901
                 tr.status = "pass" if answer else "fail"
                 tr.actual_answer = answer or tr.actual_answer or ""
                 tr.followup_request = None
+                _stamp_answer_duration(tr, convo_id)
                 if not answer:
                     tr.error_message = (
                         tr.error_message or "Empty response after reconciliation"
@@ -527,6 +639,7 @@ def reconcile_waiting_tests(  # noqa: C901
                 # FAILED / KILLED / TERMINATED.
                 tr.status = "fail"
                 tr.followup_request = None
+                _stamp_answer_duration(tr, convo_id)
                 tr.error_message = result.error_message or (
                     f"conversation {(result.status or '').upper()}"
                 )
@@ -572,6 +685,7 @@ def reconcile_waiting_tests(  # noqa: C901
             if hard_timeout_sec > 0 and _waiting_age_sec(tr) > hard_timeout_sec:
                 tr.status = "timeout"
                 tr.followup_request = None
+                _stamp_answer_duration(tr, convo_id)
                 tr.error_message = tr.error_message or (
                     f"Non-terminal for >{int(hard_timeout_sec)}s "
                     f"(conversation {(result.status or '').upper()})"
@@ -1822,6 +1936,19 @@ def store_test_result(run_id: str, result: dict):
             )
             .first()
         )
+
+        # Duration is read back from the conversation, never wall-clocked by the
+        # caller (see _ANSWER_DURATION_SQL). Doing it here covers every terminal
+        # path — orchestrator, followup handler, pytest runners — so a stored
+        # duration always means the same thing and can never be a stopwatch
+        # number or a hardcoded 0.
+        status = result.get("status") or (tr.status if tr else "")
+        if status in _TERMINAL_STATUSES:
+            measured = answer_duration_seconds(
+                result.get("conversation_id") or (tr.conversation_id if tr else "")
+            )
+            if measured is not None:
+                result = {**result, "duration_seconds": measured}
 
         if tr:
             # Update existing row
