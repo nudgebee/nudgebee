@@ -183,3 +183,56 @@ func TestESIndexDataset_RestoredBackingIndex(t *testing.T) {
 	assert.Equal(t, "aws.cloudwatch_metrics", esIndexDataset(
 		"restored-.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018"))
 }
+
+// A bare terms aggregation has no metric sub-aggregation: its value IS doc_count.
+// This is the most common aggregation there is — "which datasets exist", "which
+// instances exist" — and skipping doc_count as bucket metadata made every one of
+// them return nothing. Found by running the dataset-discovery query the
+// es_metrics_discovery skill tells agents to use: 6 buckets from Elasticsearch,
+// 0 series from us.
+func TestParseESAggregations_BareTermsUsesDocCount(t *testing.T) {
+	body := `{"hits":{"total":{"value":721},"hits":[]},"aggregations":{
+	 "ds":{"doc_count_error_upper_bound":0,"sum_other_doc_count":0,"buckets":[
+	   {"key":"system.socket_summary","doc_count":121},
+	   {"key":"kubernetes.pod","doc_count":120}]}}}`
+	res, stats, err := parseESMetricsHitsWithStats([]byte(body), 1787800000000)
+	require.NoError(t, err)
+	require.Len(t, res, 2)
+	assert.Equal(t, 2, stats.SeriesParsed)
+
+	by := map[string]float64{}
+	for _, r := range res {
+		assert.Equal(t, "doc_count", r.Metric["__name__"])
+		by[r.Metric["ds"]] = r.Values[0]
+	}
+	assert.InDelta(t, 121, by["system.socket_summary"], 1e-9)
+	assert.InDelta(t, 120, by["kubernetes.pod"], 1e-9)
+}
+
+// A bucket whose sub-aggregation DID produce a value must not also emit doc_count —
+// that would double every series and put a count alongside the measurement.
+func TestParseESAggregations_DocCountNotEmittedWhenSubAggProduced(t *testing.T) {
+	body := `{"hits":{"total":{"value":8},"hits":[]},"aggregations":{
+	 "inst":{"buckets":[{"key":"db-1","doc_count":4,"peak":{"value":92.9}}]}}}`
+	res, _, err := parseESMetricsHitsWithStats([]byte(body), 1787800000000)
+	require.NoError(t, err)
+	require.Len(t, res, 1, "only the sub-aggregation's value, not the bucket count")
+	assert.Equal(t, "peak", res[0].Metric["__name__"])
+	assert.InDelta(t, 92.9, res[0].Values[0], 1e-9)
+}
+
+// Nested bare terms: only the innermost bucket contributes a count, and both bucket
+// keys survive as labels.
+func TestParseESAggregations_NestedBareTerms(t *testing.T) {
+	body := `{"hits":{"total":{"value":9},"hits":[]},"aggregations":{
+	 "inst":{"buckets":[{"key":"db-1","doc_count":9,"m":{"buckets":[
+	   {"key":"CPUUtilization","doc_count":5},
+	   {"key":"ReadIOPS","doc_count":4}]}}]}}}`
+	res, _, err := parseESMetricsHitsWithStats([]byte(body), 1787800000000)
+	require.NoError(t, err)
+	require.Len(t, res, 2, "the outer bucket must not add a third series")
+	for _, r := range res {
+		assert.Equal(t, "db-1", r.Metric["inst"])
+		assert.Equal(t, "doc_count", r.Metric["__name__"])
+	}
+}

@@ -821,8 +821,12 @@ func parseESAggregations(aggs map[string]any, fallbackTs int64) ([]Result, error
 	var out []Result
 	var unsupported []string
 
-	var walk func(node map[string]any, labels map[string]string, ts int64)
-	walk = func(node map[string]any, labels map[string]string, ts int64) {
+	// walk reports whether it emitted anything beneath this node. A bucket that
+	// produced no value from a sub-aggregation is a leaf, and its value is its
+	// doc_count — see the fallback below.
+	var walk func(node map[string]any, labels map[string]string, ts int64) bool
+	walk = func(node map[string]any, labels map[string]string, ts int64) bool {
+		emitted := false
 		for name, raw := range node {
 			// doc_count / key / key_as_string are bucket metadata, not sub-aggregations.
 			if name == "doc_count" || name == "key" || name == "key_as_string" ||
@@ -848,7 +852,27 @@ func parseESAggregations(aggs map[string]any, fallbackTs int64) ([]Result, error
 					} else {
 						childLabels[name] = fmt.Sprintf("%v", b["key"])
 					}
-					walk(b, childLabels, childTs)
+					if walk(b, childLabels, childTs) {
+						emitted = true
+						continue
+					}
+					// Leaf bucket: no sub-aggregation produced a value, so the
+					// bucket's own doc_count is what it measures. A bare
+					// `terms` aggregation — "which datasets exist", "which
+					// instances exist" — is exactly this shape, and it is the
+					// most common aggregation there is. Skipping doc_count as
+					// bucket metadata made every one of them return nothing.
+					count, ok := b["doc_count"].(float64)
+					if !ok {
+						continue
+					}
+					m := make(map[string]string, len(childLabels)+1)
+					for k, v := range childLabels {
+						m[k] = v
+					}
+					m["__name__"] = "doc_count"
+					out = append(out, Result{Metric: m, Timestamps: []int64{childTs}, Values: []float64{count}})
+					emitted = true
 				}
 				continue
 			}
@@ -871,14 +895,16 @@ func parseESAggregations(aggs map[string]any, fallbackTs int64) ([]Result, error
 					m["statistic"] = statistic
 				}
 				out = append(out, Result{Metric: m, Timestamps: []int64{ts}, Values: []float64{v}})
+				emitted = true
 			}
 		}
+		return emitted
 	}
 
 	if fallbackTs <= 0 {
 		fallbackTs = time.Now().UnixMilli()
 	}
-	walk(aggs, map[string]string{}, fallbackTs/1000)
+	_ = walk(aggs, map[string]string{}, fallbackTs/1000)
 
 	if len(unsupported) > 0 {
 		sort.Strings(unsupported)
