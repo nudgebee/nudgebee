@@ -1,4 +1,5 @@
-import { Box, Typography, Divider } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Divider } from '@ui/Divider';
 import { ds } from 'src/utils/colors';
 import Currency from '@shared/format/Currency';
 
