@@ -417,7 +417,21 @@ func runSplunkEnterpriseSearch(
 	if err := validateSplunkEnterpriseQuery(spl); err != nil {
 		return nil, err
 	}
+	return execSplunkEnterpriseSearch(cfg, spl, startTime, endTime, count, timeout)
+}
 
+// execSplunkEnterpriseSearch is the transport half of runSplunkEnterpriseSearch, with no
+// validation of its own. Split out because metric queries are legitimately generating
+// commands (`| mstats`, `| mcatalog`) that validateSplunkEnterpriseQuery must keep
+// rejecting for log queries; they carry their own validator instead. Every caller is
+// therefore responsible for validating BEFORE calling this.
+func execSplunkEnterpriseSearch(
+	cfg integrations.SplunkEnterpriseConfig,
+	spl string,
+	startTime, endTime string,
+	count int,
+	timeout time.Duration,
+) ([]map[string]any, error) {
 	form := map[string]string{
 		"search":        spl,
 		"exec_mode":     "oneshot",

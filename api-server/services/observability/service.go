@@ -439,6 +439,8 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &NewRelicMetricSource{}, nil
 	case provider == "splunk_observability_platform" && integrationSource == "user":
 		return &SplunkMetricSource{}, nil
+	case provider == "splunk_enterprise" && integrationSource == "user":
+		return &SplunkEnterpriseMetricSource{}, nil
 	case provider == "ES" && integrationSource == "user":
 		return &ElasticSaasMetricSource{}, nil
 	case provider == "dynatrace" && integrationSource == "user":
@@ -1451,11 +1453,13 @@ var allProviderCaps = map[string]providerStaticCaps{
 		SupportsServiceMap: true,
 		SupportsRawQuery:   true,
 	},
-	// Phase 1 of the Splunk Enterprise integration ships logs only — there is no
-	// SplunkEnterpriseTraceSource or MetricSource yet, so every trace-shaped capability
-	// stays false rather than advertising a view that would error on open.
-	// SupportsRawQuery is true because SplunkEnterpriseLogSource.QueryLogs honours
-	// FetchLogRequest.Query when the caller supplies SPL directly.
+	// Logs and metrics are implemented; traces are not. There is no
+	// SplunkEnterpriseTraceSource, so every trace-shaped capability stays false rather
+	// than advertising a view that would error on open — Splunk Enterprise has no native
+	// trace store, and spans only exist there if the OTel collector was pointed at a
+	// traces index.
+	// SupportsRawQuery is true because both QueryLogs and FetchMetricsQuery honour a
+	// caller-supplied query directly.
 	"splunk_enterprise": {
 		SupportsServiceMap:    false,
 		SupportsRawQuery:      true,

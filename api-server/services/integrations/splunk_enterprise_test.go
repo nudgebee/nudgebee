@@ -73,12 +73,35 @@ func TestSplunkEnterprise_ConfigSchema_PropertiesExist(t *testing.T) {
 
 // Phase 1 ships logs only. Advertising a default trace or metrics provider toggle would
 // let a user route those signals at a source that does not exist.
-func TestSplunkEnterprise_ConfigSchema_OnlyLogProviderToggle(t *testing.T) {
+// The provider toggles must track what is actually implemented. Offering a toggle with
+// no source behind it produces a view that errors on open, which reads to the user as a
+// broken integration rather than an unsupported one.
+func TestSplunkEnterprise_ConfigSchema_ProviderTogglesMatchImplementedSources(t *testing.T) {
 	schema := SplunkEnterprise{}.ConfigSchema()
-	_, hasTrace := schema.Properties[core.DefaultTraceProvider]
+
+	_, hasLogs := schema.Properties[core.DefaultLogProvider]
+	assert.True(t, hasLogs, "SplunkEnterpriseLogSource exists")
+
 	_, hasMetrics := schema.Properties[core.DefaultMetricsProvider]
+	assert.True(t, hasMetrics, "SplunkEnterpriseMetricSource exists")
+
+	// Splunk Enterprise has no native trace store — spans only exist there if the OTel
+	// collector was pointed at a traces index — and no SplunkEnterpriseTraceSource is
+	// implemented. Flip this when one is.
+	_, hasTrace := schema.Properties[core.DefaultTraceProvider]
 	assert.False(t, hasTrace, "no trace source exists yet")
-	assert.False(t, hasMetrics, "no metric source exists yet")
+}
+
+// Metrics are opt-in per install: a metrics index must be created explicitly with
+// datatype=metric, so there is no safe default to guess. An empty value must therefore
+// remain valid rather than being coerced to a name that does not exist.
+func TestSplunkEnterprise_MetricIndexDefaultsToEmpty(t *testing.T) {
+	schema := SplunkEnterprise{}.ConfigSchema()
+	prop, ok := schema.Properties[SplunkEnterpriseConfigMetricIndex]
+	assert.True(t, ok, "metric index must be configurable")
+	assert.Equal(t, SplunkEnterpriseDefaultMetricIndex, prop.Default)
+	assert.NotContains(t, schema.Required, SplunkEnterpriseConfigMetricIndex,
+		"a logs-only Splunk must still be configurable")
 }
 
 func TestSplunkEnterprise_ConfigSchema_SecretsAreEncrypted(t *testing.T) {

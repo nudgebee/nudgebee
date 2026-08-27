@@ -31,14 +31,15 @@ const IntegrationSplunkEnterprise = "splunk_enterprise"
 
 // Config key names stored in the database.
 const (
-	SplunkEnterpriseConfigURL      = "splunk_url"
-	SplunkEnterpriseConfigAuthType = "splunk_auth_type"
-	SplunkEnterpriseConfigToken    = "splunk_token"
-	SplunkEnterpriseConfigUsername = "splunk_username"
-	SplunkEnterpriseConfigPassword = "splunk_password"
-	SplunkEnterpriseConfigLogIndex = "splunk_log_index"
-	SplunkEnterpriseConfigApp      = "splunk_app"
-	SplunkEnterpriseConfigInsecure = "splunk_insecure_skip_verify"
+	SplunkEnterpriseConfigURL         = "splunk_url"
+	SplunkEnterpriseConfigAuthType    = "splunk_auth_type"
+	SplunkEnterpriseConfigToken       = "splunk_token"
+	SplunkEnterpriseConfigUsername    = "splunk_username"
+	SplunkEnterpriseConfigPassword    = "splunk_password"
+	SplunkEnterpriseConfigLogIndex    = "splunk_log_index"
+	SplunkEnterpriseConfigMetricIndex = "splunk_metric_index"
+	SplunkEnterpriseConfigApp         = "splunk_app"
+	SplunkEnterpriseConfigInsecure    = "splunk_insecure_skip_verify"
 )
 
 // Auth type values for SplunkEnterpriseConfigAuthType.
@@ -51,6 +52,12 @@ const (
 // otherwise. "main" is Splunk's out-of-the-box catch-all; a cluster fed by the Splunk
 // OTel collector chart normally writes somewhere explicit instead.
 const SplunkEnterpriseDefaultLogIndex = "main"
+
+// SplunkEnterpriseDefaultMetricIndex is empty on purpose: unlike logs, there is no
+// stock metrics index in Splunk. A metrics index has to be created explicitly with
+// datatype=metric, so guessing a name would produce searches against an index that
+// does not exist. Empty means "metrics not configured" and the metric source stays off.
+const SplunkEnterpriseDefaultMetricIndex = ""
 
 // SplunkEnterpriseDefaultApp is the app namespace searches run in. Every stock install
 // has "search"; the namespace only affects which knowledge objects (field extractions,
@@ -142,6 +149,14 @@ func (m SplunkEnterprise) ConfigSchema() core.IntegrationSchema {
 				Default:  SplunkEnterpriseDefaultLogIndex,
 				Priority: 78,
 			},
+			SplunkEnterpriseConfigMetricIndex: {
+				Type: core.ToolSchemaTypeString,
+				Description: "Metrics index holding Kubernetes metrics (e.g. otel_metrics). Must be an " +
+					"index created with datatype=metric. Leave empty if this Splunk holds no metrics — " +
+					"metric queries stay disabled rather than searching an index that does not exist.",
+				Default:  SplunkEnterpriseDefaultMetricIndex,
+				Priority: 77,
+			},
 			SplunkEnterpriseConfigApp: {
 				Type: core.ToolSchemaTypeString,
 				Description: "App namespace searches run in. Controls which field extractions and macros " +
@@ -161,6 +176,13 @@ func (m SplunkEnterprise) ConfigSchema() core.IntegrationSchema {
 				Description: "Make Splunk Enterprise the default Log Provider",
 				Default:     false,
 				Priority:    15,
+			},
+			core.DefaultMetricsProvider: {
+				Type: core.ToolSchemaTypeBoolean,
+				Description: "Make Splunk Enterprise the default Metrics Provider. Requires " +
+					"a metrics index above — without one there are no metrics to query.",
+				Default:  false,
+				Priority: 14,
 			},
 		},
 	}
@@ -333,6 +355,10 @@ type SplunkEnterpriseConfig struct {
 	// LogIndex is the index logs are read from. Always populated - it falls back to
 	// SplunkEnterpriseDefaultLogIndex when unconfigured.
 	LogIndex string
+	// MetricIndex is the metrics index. Empty means metrics are not configured for this
+	// Splunk, which is the normal case: a metrics index must be created explicitly with
+	// datatype=metric, so there is no safe default to fall back to.
+	MetricIndex string
 	// App is the search app namespace. Always populated, defaulting to
 	// SplunkEnterpriseDefaultApp.
 	App                string
@@ -374,6 +400,7 @@ func splunkEnterpriseConfigFromValues(config []core.IntegrationConfigValue) (Spl
 	if index := strings.TrimSpace(values[SplunkEnterpriseConfigLogIndex].Value); index != "" {
 		cfg.LogIndex = index
 	}
+	cfg.MetricIndex = strings.TrimSpace(values[SplunkEnterpriseConfigMetricIndex].Value)
 	if app := strings.TrimSpace(values[SplunkEnterpriseConfigApp].Value); app != "" {
 		cfg.App = app
 	}
@@ -394,6 +421,10 @@ func splunkEnterpriseConfigFromValues(config []core.IntegrationConfigValue) (Spl
 	if !IsSafeSplunkIndexName(cfg.LogIndex) {
 		return cfg, fmt.Errorf("invalid %s %q: index names may only contain letters, digits, underscores and hyphens",
 			SplunkEnterpriseConfigLogIndex, cfg.LogIndex)
+	}
+	if cfg.MetricIndex != "" && !IsSafeSplunkIndexName(cfg.MetricIndex) {
+		return cfg, fmt.Errorf("invalid %s %q: index names may only contain letters, digits, underscores and hyphens",
+			SplunkEnterpriseConfigMetricIndex, cfg.MetricIndex)
 	}
 	if !IsSafeSplunkIndexName(cfg.App) {
 		return cfg, fmt.Errorf("invalid %s %q: app names may only contain letters, digits, underscores and hyphens",
