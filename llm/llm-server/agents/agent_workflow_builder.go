@@ -2663,7 +2663,7 @@ CI/CD (REQUIRES: matching CI/CD integration configured):
 DATA PROCESSING:
 - data.transform → expression (JSONata or JS string), input (template string), inputType ("json"|"yaml"), Optional: outputType, scriptType ("jsonata"|"javascript"). Output: { data }
   WARNING: Only use for trivial single-field extraction (e.g., expression: "fieldName"). For ANY non-trivial transformation, use scripting.run_script with Python instead. JSONata has many syntax limitations that cause runtime failures.
-- data.filter → data (any), expression (string). Output: { filtered_data }
+- data.filter → list (any: JSON array or template ref), condition (string: JSONata predicate, spliced into $[...] — write only the inside, e.g. status = "active"). Output: { result }
 
 SCRIPTING (last resort — NOT for log/metric queries or operations that have dedicated task types):
 - scripting.run_script → Run custom scripts in a container. Use ONLY when no dedicated task type exists.

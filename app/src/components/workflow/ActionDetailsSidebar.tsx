@@ -26,11 +26,12 @@ import FilterDropdown from '@ui/FilterDropdown';
 import { getPreviousTasksForNode, getSwitchChildNodeIds, getSwitchDryRunEligibility } from './utils/templateUtils';
 import {
   DBMS_OPTIONS,
-  FIELD_PLACEHOLDERS,
   formatFieldLabel,
   getCodeLanguage,
   getDropdownOptionsForField,
+  getExamplePlaceholder,
   isTemplateString,
+  parseJsonExample,
   resolveFieldType,
   type SchemaProperty,
 } from './utils/fieldTypeUtils';
@@ -54,6 +55,7 @@ import {
   NestedSchemaEditor,
 } from './components/WorkflowFieldComponents';
 import { StableTextField, StableTextarea, StableNumberField } from './components/StableFormFields';
+import FieldGuidance from './components/FieldGuidance';
 
 // Built-in dynamic variables exposed to subject/body of the workflow email action.
 // Mirrors the keys added to the Gonja context in runbook-server templating.go so the
@@ -3582,7 +3584,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             label={fieldSchema.title || formatFieldLabel(fieldName)}
             isRequired={isRequired}
             description={fieldSchema.description || ''}
-            placeholder={FIELD_PLACEHOLDERS[fieldName] || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`}
+            placeholder={getExamplePlaceholder(fieldName, fieldSchema) || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`}
             disabled={isReadOnly || viewOnlyMode}
             error={validationErrors[fieldName] || ''}
             rows={8}
@@ -3718,7 +3720,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   {fieldSchema.description}
                 </Typography>
               )}
-              <JsonEditor value={fieldValue || {}} onChange={(value) => handleDataChange(fieldName, value)} error={validationErrors[fieldName]} />
+              <JsonEditor
+                value={fieldValue}
+                onChange={(value) => handleDataChange(fieldName, value)}
+                error={validationErrors[fieldName]}
+                placeholder={getExamplePlaceholder(fieldName, fieldSchema)}
+              />
+              <FieldGuidance
+                fieldName={fieldName}
+                help={fieldSchema.help}
+                examples={fieldSchema.examples}
+                disabled={isReadOnly || viewOnlyMode}
+                onApply={(value) => handleDataChange(fieldName, parseJsonExample(value))}
+              />
             </Box>
           </Box>
         );
@@ -3726,7 +3740,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
       if (fieldType === 'script') {
         const getScriptPlaceholder = () => {
-          return FIELD_PLACEHOLDERS[fieldName] || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`;
+          return getExamplePlaceholder(fieldName, fieldSchema) || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`;
         };
 
         const isScriptField = fieldName === 'script';
@@ -3762,6 +3776,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 disabled={isReadOnly || viewOnlyMode}
                 placeholder={getScriptPlaceholder()}
                 height={scriptHeight}
+              />
+              <FieldGuidance
+                fieldName={fieldName}
+                help={fieldSchema.help}
+                examples={fieldSchema.examples}
+                disabled={isReadOnly || viewOnlyMode}
+                onApply={(value) => handleDataChange(fieldName, value)}
               />
             </Box>
           </Box>
@@ -3879,6 +3900,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   validationStatus={isUrlFieldName(fieldName) ? urlFieldStatus(fieldValue) : undefined}
                   fullWidth={true}
                 />
+                <FieldGuidance
+                  fieldName={fieldName}
+                  help={fieldSchema.help}
+                  examples={fieldSchema.examples}
+                  disabled={isReadOnly || viewOnlyMode}
+                  onApply={(value) => handleDataChange(fieldName, value)}
+                />
               </Box>
             </Box>
           </Box>
@@ -3902,6 +3930,15 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           onDrop={viewOnlyMode ? undefined : (e) => handleDrop(e, fieldName, fieldValue)}
           onDragOver={viewOnlyMode ? undefined : (e) => handleDragOver(e, fieldName)}
           onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
+          guidance={
+            <FieldGuidance
+              fieldName={fieldName}
+              help={fieldSchema.help}
+              examples={fieldSchema.examples}
+              disabled={isReadOnly || viewOnlyMode}
+              onApply={(value) => handleDataChange(fieldName, value)}
+            />
+          }
         />
       );
     };

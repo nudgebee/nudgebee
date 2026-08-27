@@ -3540,6 +3540,9 @@ func convertSchemaPropertiesToMapAny(properties map[string]types.Property) map[s
 		if v.Help != "" {
 			propMap["help"] = v.Help
 		}
+		if len(v.Examples) > 0 {
+			propMap["examples"] = v.Examples
+		}
 		if v.Hidden {
 			propMap["hidden"] = true
 		}

@@ -62,20 +62,38 @@ type RequiredWhen struct {
 	Value []string `json:"value"`
 }
 
+// PropertyExample is a ready-to-use sample value for a field. The frontend
+// renders one click-to-fill chip per example directly below the field's input,
+// so Label must stay short enough to read as a chip and Value must be valid on
+// its own — clicking a chip replaces whatever the field currently holds.
+type PropertyExample struct {
+	// Label is the chip text. Keep it to the sample itself where that reads
+	// well (`status = "active"`), or a short phrase where it does not.
+	Label string `json:"label"`
+	// Value is inserted into the field verbatim.
+	Value any `json:"value"`
+	// Note is the chip's tooltip — why this example exists / what it teaches.
+	Note string `json:"note,omitempty"`
+}
+
 // Property defines a single field within a schema.
 type Property struct {
 	Type        PropertyType `json:"type"`
 	Description string       `json:"description"`
 	// Help is long-form reference content for the field, rendered by the
-	// frontend as markdown inside an info-icon tooltip next to the field
-	// label. Use this for column lists, operator cheatsheets, or other
-	// reference material that would clutter Description.
-	Help        string   `json:"help,omitempty"`
-	Required    bool     `json:"required"`
-	Default     any      `json:"default,omitempty"`
-	IsEncrypted bool     `json:"is_encrypted,omitempty"`
-	Options     []string `json:"options,omitempty"`
-	SubType     string   `json:"sub_type,omitempty"`
+	// frontend as markdown inside an info-icon tooltip in the guidance row
+	// below the field's input. Use this for column lists, operator
+	// cheatsheets, or other reference material that would clutter Description.
+	Help string `json:"help,omitempty"`
+	// Examples are ready-to-use sample values rendered as click-to-fill chips
+	// in the same guidance row. Use them for fields whose accepted syntax is
+	// not guessable from Description alone (expressions, JSON payloads).
+	Examples    []PropertyExample `json:"examples,omitempty"`
+	Required    bool              `json:"required"`
+	Default     any               `json:"default,omitempty"`
+	IsEncrypted bool              `json:"is_encrypted,omitempty"`
+	Options     []string          `json:"options,omitempty"`
+	SubType     string            `json:"sub_type,omitempty"`
 	// SubTypes narrows an integration-backed dropdown (PropertyTypeTicket) to a
 	// set of integration types, for fields that accept more than one but not
 	// all of them — e.g. the incident-only tasks accept pagerduty/zenduty. The

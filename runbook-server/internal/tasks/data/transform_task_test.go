@@ -3,6 +3,7 @@ package data
 import (
 	"encoding/json"
 	"nudgebee/runbook/internal/tasks/types" // Import needed for types.TaskContext
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -208,5 +209,55 @@ func TestTransformTask_Execute(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Same contract as TestFilterTask_SchemaExamplesAreRunnable: a click-to-fill
+// example that errors is worse than no example. Each expression example names
+// its engine in the first word of its Note ("JSONata — …" / "JavaScript — …"),
+// which is what decides the scriptType it is executed under here.
+func TestTransformTask_SchemaExamplesAreRunnable(t *testing.T) {
+	ctx := GetTestTaskContext()
+	task := &TransformTask{}
+	props := task.InputSchema().Properties
+
+	inputExamples := props["input"].Examples
+	expressionExamples := props["expression"].Examples
+	assert.NotEmpty(t, inputExamples, "input must offer examples")
+	assert.NotEmpty(t, expressionExamples, "expression must offer examples")
+	assert.NotEmpty(t, props["input"].Help, "input must offer help")
+	assert.NotEmpty(t, props["expression"].Help, "expression must offer help")
+
+	literalInputs := make([]string, 0, len(inputExamples))
+	for _, example := range inputExamples {
+		value, ok := example.Value.(string)
+		assert.True(t, ok, "input example %q must be a string", example.Label)
+		if strings.Contains(value, "{{") {
+			continue
+		}
+		var parsed any
+		assert.NoError(t, json.Unmarshal([]byte(value), &parsed), "input example %q must parse as JSON", example.Label)
+		literalInputs = append(literalInputs, value)
+	}
+	assert.NotEmpty(t, literalInputs, "at least one input example must be a literal document")
+
+	for _, expression := range expressionExamples {
+		value, ok := expression.Value.(string)
+		assert.True(t, ok, "expression example %q must be a string", expression.Label)
+
+		scriptType := "jsonata"
+		if strings.HasPrefix(expression.Note, "JavaScript") {
+			scriptType = "javascript"
+		}
+
+		for _, input := range literalInputs {
+			_, err := task.Execute(ctx, map[string]any{
+				"input":      input,
+				"inputType":  "json",
+				"scriptType": scriptType,
+				"expression": value,
+			})
+			assert.NoErrorf(t, err, "expression example %q (%s) failed against input %s", expression.Label, scriptType, input)
+		}
 	}
 }

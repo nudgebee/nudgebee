@@ -108,25 +108,51 @@ interface JsonEditorProps {
   value: any;
   onChange: (value: any) => void;
   error?: string;
+  placeholder?: string;
 }
 
-export const JsonEditor: React.FC<JsonEditorProps> = ({ value, onChange, error }) => {
-  const [jsonString, setJsonString] = useState(() => {
-    try {
-      return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-    } catch {
-      return '';
-    }
-  });
+// Render `value` as the text the editor should show. Strings pass through
+// untouched so a half-typed document (or a `{{ ... }}` template) is not
+// mangled into a quoted JSON string.
+const toEditorText = (value: any): string => {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return '';
+  }
+};
+
+export const JsonEditor: React.FC<JsonEditorProps> = ({ value, onChange, error, placeholder }) => {
+  const [jsonString, setJsonString] = useState(() => toEditorText(value));
+  // What we last handed to the parent. An incoming `value` that differs from it
+  // came from somewhere else — a click-to-fill example chip, a schema default, a
+  // task switch — and must be adopted. Without this the editor seeds once and
+  // then ignores its own prop, so filling the field programmatically changes
+  // nothing on screen.
+  const lastEmittedRef = useRef<any>(value);
+
+  useEffect(() => {
+    // Compare the rendered text, not the reference: a parent re-render can hand
+    // back a new-but-equal array/object, and reseeding on that would reformat
+    // (and move the cursor in) whatever the user is mid-way through typing.
+    const nextText = toEditorText(value);
+    if (nextText === toEditorText(lastEmittedRef.current)) return;
+    lastEmittedRef.current = value;
+    setJsonString(nextText);
+  }, [value]);
 
   const handleChange = (val: string) => {
     setJsonString(val);
+    let next: any;
     try {
-      const parsed = JSON.parse(val);
-      onChange(parsed);
+      next = JSON.parse(val);
     } catch {
-      onChange(val); // Keep as string if invalid JSON for validation to catch
+      next = val; // Keep as string if invalid JSON for validation to catch
     }
+    lastEmittedRef.current = next;
+    onChange(next);
   };
 
   return (
@@ -138,6 +164,7 @@ export const JsonEditor: React.FC<JsonEditorProps> = ({ value, onChange, error }
         height='120px'
         foldGutter={false}
         showLanguageLabel={false}
+        placeholder={placeholder}
         error={error}
       />
     </Box>
