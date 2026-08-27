@@ -10,17 +10,19 @@ export class NubiLocators {
   readonly customAgentTab: Locator;
   readonly searchAgentInput: Locator;
   readonly createCustomAgentBtn: Locator;
-  readonly ageentIdentityButton: Locator;  //1
+  // The agent form is one scrolling page of always-expanded FormCards
+  // (llm/CreateAgentNew.jsx). The "Agent Identity" / "Behavior & Guidelines" /
+  // "Tool/Agent Selection" / "Knowledge & Examples" controls in the left rail are
+  // VerticalStepNavigation buttons whose only job is scrollIntoView — nothing is
+  // gated behind them, so this suite reaches the fields directly and lets
+  // Playwright scroll them into view.
   readonly agentNameInput: Locator;
   readonly agentDescriptionInput: Locator;
-  readonly agentSetAgentBehaviorAndGuidelines: Locator;   //2
   readonly agenRole: Locator;
   readonly agentInstructionsInput: Locator;
-  readonly ageentToolsOrAgentselectionButton: Locator;   //3
   readonly selectAgentOrTool: Locator;
   readonly listOfAgentsOrTools: Locator;
   readonly agentToolUsage: Locator;
-  readonly agentKnoowledgeAndExample: Locator;         //4
   readonly submitCreateAgentBtn: Locator;
   // create custom tool locators
   readonly ToolButton: Locator;
@@ -112,16 +114,12 @@ export class NubiLocators {
     this.searchAgentInput = page.getByPlaceholder('Search Agent')
     this.agentNameInput = page.getByRole("textbox", { name: "Agent Name" });
     this.agentDescriptionInput = page.getByRole("textbox", { name: 'Describe what this agent does' });
-    this.ageentIdentityButton = page.getByRole("button", { name: 'Agent Identity' });            //1
-    this.agentSetAgentBehaviorAndGuidelines = page.getByRole('button', { name: 'Behavior & Guidelines' })   //2
     this.agenRole = page.getByRole('textbox', { name: 'You are a [role], responsible' })
     this.agentInstructionsInput = page.getByRole('textbox', { name: 'Key responsibilities: 1. [' })
-    this.ageentToolsOrAgentselectionButton = page.getByText('Tool/Agent Selection').first()   //3
     this.selectAgentOrTool = page.getByRole("button", { name: "Select Tool/Agent" });
     this.listOfAgentsOrTools = page.getByText('anomaly_execute - system')
     
     this.agentToolUsage = page.getByRole('textbox', { name: 'Tool: [Tool Name] Purpose: [' })
-    this.agentKnoowledgeAndExample = page.getByRole('button', { name: 'Knowledge & Examples' })      //4
     this.submitCreateAgentBtn = page.getByRole("button", { name: "Create Agent" });
 
     // create custom tool locators
@@ -202,6 +200,40 @@ export class NubiLocators {
     this.failureMessage = page.getByText('Please fill the following fields: - Agent name already exists');
     this.toolCreatedMessage = page.getByText('Tool created successfully');
     this.toolCreationFailureMessage = page.getByText('Failed to create tool');
+  }
+
+  /**
+   * Closes an open ds/Select popover and waits until it is gone.
+   *
+   * A multiple Select stays open after a pick, and while it is up its invisible
+   * MUI backdrop covers the page and MUI marks everything behind it aria-hidden —
+   * so the next click lands on the backdrop and role-based lookups find nothing.
+   */
+  async closeSelectPopover(timeout = 5000): Promise<void> {
+    const popover = this.page.locator(".MuiPopover-root").last();
+    if (!(await popover.isVisible().catch(() => false))) return;
+
+    // Escape pressed on the picker's OWN search input - never page-level. MUI closes the
+    // topmost modal only, and while the popover is up that is the popover, so the dialog
+    // underneath is untouched. A page-level Escape is the opposite: once the popover has
+    // gone it reaches that dialog and dismisses the form being filled in.
+    const search = popover.locator("input").first();
+    if (await search.isVisible().catch(() => false)) {
+      await search.press("Escape").catch(() => {});
+    }
+
+    if (await popover.isVisible().catch(() => false)) {
+      // The invisible backdrop spans the viewport, but its CENTRE sits behind the options
+      // panel, so Playwright's default centre-point click is intercepted and times out.
+      // A corner lands on backdrop that nothing covers.
+      await popover
+        .locator(".MuiBackdrop-root")
+        .first()
+        .click({ position: { x: 5, y: 5 }, timeout })
+        .catch(() => {});
+    }
+
+    await popover.waitFor({ state: "detached", timeout }).catch(() => {});
   }
 
   // Clicks the Nubi icon and retries up to 3 times if the panel does not open.

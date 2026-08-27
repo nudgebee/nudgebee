@@ -87,10 +87,15 @@ export class VmLocators extends CommonLocators {
     this.scanAccountSubmitBtn = page.locator("#vm-scan-account-submit");
 
     this.vulnerabilitiesRoot = page.locator("#vm-vulnerabilities");
-    this.vulnGroupTabAll = page.locator("#vm-vulnerability-tab-all");
-    this.vulnGroupTabVulnerability = page.locator("#vm-vulnerability-tab-vulnerability");
-    this.vulnGroupTabPackage = page.locator("#vm-vulnerability-tab-package");
-    this.vulnGroupTabVm = page.locator("#vm-vulnerability-tab-vm");
+    // The grouping tabs are a ds/ToggleGroup, which renders each option as
+    // <button role="radio"> carrying its label. GROUP_TABS in VmVulnerabilities.tsx still
+    // declares a per-tab id, but the render maps only {value, label} - so those ids reach
+    // no DOM node and the old "#vm-vulnerability-tab-*" locators match nothing.
+    const vulnGrouping = page.locator("#vm-vulnerability-grouping");
+    this.vulnGroupTabAll = vulnGrouping.getByRole("radio", { name: "All", exact: true });
+    this.vulnGroupTabVulnerability = vulnGrouping.getByRole("radio", { name: "Vulnerability", exact: true });
+    this.vulnGroupTabPackage = vulnGrouping.getByRole("radio", { name: "Package", exact: true });
+    this.vulnGroupTabVm = vulnGrouping.getByRole("radio", { name: "VM", exact: true });
 
     this.packagesRoot = page.locator("#vm-packages");
     this.packagesSearch = page.locator("#vm-packages-search");

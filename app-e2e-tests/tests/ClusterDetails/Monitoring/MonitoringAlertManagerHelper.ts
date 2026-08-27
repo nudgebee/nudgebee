@@ -83,7 +83,11 @@ export async function applyFilterAndSearch(
   await waitForGraphQLAndValidate(
     page,
     async () => { await searchAlert(page, alertName); },
-    { testName: testInfo.title, operationNames: [] }
+    // Named, not auto-capture. Auto mode only ever waits 10s regardless of the timeout
+    // asked for, so on a slow runner the refetch lands after the window closes and the
+    // watcher reports "No operations captured" for a search that did fire. GetEventRules
+    // is the query the listing re-issues on search.
+    { testName: testInfo.title, operationNames: ["GetEventRules"] }
   );
 }
 
