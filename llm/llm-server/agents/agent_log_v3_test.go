@@ -82,6 +82,13 @@ func TestLogAgentV3_Registered(t *testing.T) {
 	assert.Equal(t, LogsAgentV3Name, agent.GetName())
 }
 
+func TestLogAgentV3_RegisteredAsTool(t *testing.T) {
+	tool, ok := toolcore.GetNBTool("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", LogsAgentV3Name)
+	require.True(t, ok, "logs_v3 must be registered as a system tool so other agents can delegate to it")
+	require.NotNil(t, tool)
+	assert.Equal(t, LogsAgentV3Name, tool.Name())
+}
+
 func TestGetLogAgentV3(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	agent, err := getLogAgentV3(sc, os.Getenv("TEST_ACCOUNT"))

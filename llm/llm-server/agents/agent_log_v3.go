@@ -43,9 +43,14 @@ const LogsAgentV3Name = "logs_v3"
 const FetchLogsV3ToolName = "fetch_logs_v3"
 
 func init() {
-	core.RegisterNBAgentFactory(LogsAgentV3Name, func(accountId string) (core.NBAgent, error) {
+	// Register as a tool too (not just an agent) so other agents can delegate to it by name.
+	toolDescription := `Retrieves and analyzes logs from various sources (Kubernetes, Loki, Elasticsearch, Datadog, Signoz) by translating natural language questions into log queries. Handles its own resource discovery (e.g., finding the correct pod name or namespace) and runs investigation loops over saved log files when the user is asking about root causes.`
+	toolInput := "Provide a log question in natural language, preserving the user's wording verbatim: investigation wording (why/root cause/diagnose/troubleshoot), enumeration wording (list/summarize errors), or routine wording (recent/tail logs) — the agent's mode classifier routes off this wording."
+	toolOutput := "Markdown answer with cited log evidence (timestamps, error signatures). Investigations include a 5-Why causality chain and a time-window callout when errors cluster."
+
+	core.RegisterNBAgentFactoryAndTool(LogsAgentV3Name, func(accountId string) (core.NBAgent, error) {
 		return getLogAgentV3(security.NewRequestContextForSuperAdmin(), accountId)
-	})
+	}, toolDescription, toolInput, toolOutput)
 	toolcore.RegisterNBToolFactory(FetchLogsV3ToolName, func(accountId string) (toolcore.NBTool, error) {
 		return &fetchLogsV3Tool{accountId: accountId}, nil
 	})
