@@ -72,6 +72,7 @@ const integrationConnectionKey = {
   datadog: 'site',
   newrelic: 'region',
   splunk_observability_platform: 'realm',
+  splunk_enterprise: 'splunk_url',
   chronosphere: 'chronosphere_url',
   signoz: 'signoz_url',
   openobserve: 'openobserve_url',
@@ -798,6 +799,84 @@ const ListIntegrations = ({ integrationName }) => {
           </Stack>
         </Modal>
       )}
+      {integrationName === 'splunk_enterprise' && (
+        <Modal
+          handleClose={() => setOpenSetupGuide(false)}
+          title={
+            <Typography component='h2' variant='h6' fontWeight={600}>
+              Splunk Enterprise Setup Guide
+            </Typography>
+          }
+          open={openSetupGuide}
+          width='md'
+          confirmText='Close'
+          onConfirm={() => setOpenSetupGuide(false)}
+          isCancelRequired={false}
+        >
+          <Stack spacing={ds.space[4]} sx={{ fontSize: ds.text.bodyLg }}>
+            <Typography variant='body2' sx={{ color: 'text.secondary' }}>
+              This is for Splunk Enterprise and Splunk Cloud Platform, which are queried with SPL. For Splunk Observability Cloud (SignalFx), use the
+              separate <strong>Splunk Observability Cloud</strong> integration instead.
+            </Typography>
+            <Typography variant='subtitle2' fontWeight={600}>
+              Step 1: Find your management endpoint
+            </Typography>
+            <Typography variant='body2' component='div'>
+              Nudgebee talks to the management port, not the web UI.
+              <ul style={{ paddingLeft: ds.space[4], marginTop: ds.space[1] }}>
+                <li>
+                  Use <code>https://&lt;host&gt;:8089</code> — port <code>8089</code>, not <code>8000</code>
+                </li>
+                <li>
+                  On Kubernetes this is the <code>splunk-&lt;name&gt;-standalone-service</code> service in your Splunk namespace
+                </li>
+              </ul>
+            </Typography>
+            <Typography variant='subtitle2' fontWeight={600}>
+              Step 2: Create a least-privilege role and user
+            </Typography>
+            <Typography variant='body2' component='div'>
+              Nudgebee only ever reads, so give it a role that can only read.
+              <ol style={{ paddingLeft: ds.space[4], marginTop: ds.space[1] }}>
+                <li>
+                  Go to <strong>Settings → Roles</strong> and create a role with the <code>search</code> capability only
+                </li>
+                <li>
+                  Set <strong>Indexes searched by default</strong> to empty and restrict <strong>Indexes</strong> to the indexes below
+                </li>
+                <li>
+                  Create a user in that role under <strong>Settings → Users</strong>
+                </li>
+              </ol>
+            </Typography>
+            <Typography variant='subtitle2' fontWeight={600}>
+              Step 3: Create an authentication token
+            </Typography>
+            <Typography variant='body2' component='div'>
+              <ol style={{ paddingLeft: ds.space[4], marginTop: ds.space[1] }}>
+                <li>
+                  Go to <strong>Settings → Tokens</strong> and enable token authentication if it is off
+                </li>
+                <li>
+                  Click <strong>New Token</strong>, select the user from Step 2, and copy the token value
+                </li>
+                <li>Basic auth with a username and password also works if token auth is unavailable</li>
+              </ol>
+            </Typography>
+            <Typography variant='subtitle2' fontWeight={600}>
+              Step 4: Name the log index
+            </Typography>
+            <Typography variant='body2' component='div'>
+              Every search Nudgebee runs is pinned to this index. If you ingest Kubernetes logs with the Splunk Distribution of the OpenTelemetry
+              Collector, this is the index set as <code>splunkPlatform.index</code> in that chart (commonly <code>otel_logs</code>).
+            </Typography>
+            <Typography variant='body2' sx={{ color: 'text.secondary' }}>
+              The Splunk Operator for Kubernetes issues a self-signed certificate by default. If Nudgebee cannot verify it, enable{' '}
+              <strong>Skip TLS certificate verification</strong> in the form above.
+            </Typography>
+          </Stack>
+        </Modal>
+      )}
       <Modal
         handleClose={isActionLoading ? () => {} : handleConfirmationClose}
         title={
@@ -911,6 +990,20 @@ const ListIntegrations = ({ integrationName }) => {
                       size='xs'
                       icon={<InfoOutlinedIcon sx={{ fontSize: ds.text.title }} />}
                       aria-label='View Splunk Observability Cloud setup guide'
+                      onClick={() => setOpenSetupGuide(true)}
+                    />
+                  </span>
+                </Tooltip>
+              )}
+              {integrationName === 'splunk_enterprise' && (
+                <Tooltip title='View Splunk Enterprise setup guide'>
+                  <span>
+                    <DsButton
+                      tone='ghost'
+                      composition='icon-only'
+                      size='xs'
+                      icon={<InfoOutlinedIcon sx={{ fontSize: ds.text.title }} />}
+                      aria-label='View Splunk Enterprise setup guide'
                       onClick={() => setOpenSetupGuide(true)}
                     />
                   </span>

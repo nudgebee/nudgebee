@@ -1,9 +1,12 @@
 package integrations
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"nudgebee/services/common"
 	"nudgebee/services/event"
+	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
 	"strconv"
@@ -265,6 +268,16 @@ func (m SplunkWebhook) ProcessEventWebook(sc *security.RequestContext, settings 
 		EventSubjectOwnerKind: "host",
 	}
 
+	// Upsert an event rule so the alert appears in rule management, mirroring the
+	// other webhook integrations. No resolved-status guard here (unlike
+	// openobserve_webhook): Splunk's webhook alert action has no resolve callback
+	// at all, so Status above is unconditionally Firing and a guard would be dead
+	// code.
+	createSplunkEventRule(sc, accountId, payload.SearchName,
+		webhookEvent.EventTitle, webhookEvent.EventDescription,
+		eventRuleSeverity(priority),
+		splunkEventRuleAlertType(webhookPayloadString))
+
 	return []core.EventIncomingWebhook{webhookEvent}, nil
 }
 
@@ -315,4 +328,112 @@ func mapSplunkSeverity(severity, urgency, priority string) event.EventPriority {
 	default:
 		return event.EventPriorityLow
 	}
+}
+
+// splunkWebhookMetricResultFields are the fields a Splunk metrics search (`| mstats`)
+// puts on a result row. Their presence is the only signal of metric-ness available
+// here: Splunk's webhook body carries the saved search's NAME, its SID and its first
+// result row, but never the SPL itself — so the `mstats` that would identify a metric
+// search is invisible to this handler.
+var splunkWebhookMetricResultFields = []string{"metric_name", "_value"}
+
+// splunkEventRuleAlertType decides what goes in event_rules.alert_type, which is
+// FK-constrained to event_rule_alert_type ('metric' or 'log').
+//
+// It defaults to "log", and that direction is deliberate rather than arbitrary.
+// CreateEventRule treats an empty AlertType as 'metric', and a log alert mislabelled
+// 'metric' is exactly the bug that made every OpenObserve investigation fail: the
+// metric evidence path fed the rule's expression to a PromQL parser and threw a stack
+// trace on each run. The reverse mistake degrades quietly — a metric alert labelled
+// 'log' runs a log query that returns nothing — so when the payload is ambiguous, and
+// for Splunk saved searches it usually is, "log" is the direction that fails softly.
+// Splunk Enterprise saved-search alerts are overwhelmingly event searches in any case.
+func splunkEventRuleAlertType(payloadString string) string {
+	var probe struct {
+		Result  map[string]any   `json:"result"`
+		Results []map[string]any `json:"results"`
+	}
+	// A payload that no longer parses cannot be classified; the caller already
+	// decoded it once, so this only fails on a shape change, and "log" remains the
+	// safe answer.
+	if err := json.Unmarshal([]byte(payloadString), &probe); err != nil {
+		return "log"
+	}
+
+	rows := probe.Results
+	if probe.Result != nil {
+		rows = append(rows, probe.Result)
+	}
+	for _, row := range rows {
+		for _, field := range splunkWebhookMetricResultFields {
+			if _, ok := row[field]; ok {
+				return "metric"
+			}
+		}
+	}
+	return "log"
+}
+
+// createSplunkEventRule fire-and-forgets the event-rule upsert on a detached context.
+// The inbound request context is cancelled as soon as the webhook handler responds, so
+// reusing it would abort the insert mid-flight.
+//
+// Expr is left empty: unlike OpenObserve, whose payload carries alert_operator and
+// alert_threshold, Splunk sends no machine-readable trigger condition — only the
+// saved-search name and its first result row. Inventing an expression from the result
+// would put a condition in rule management that the alert does not actually use.
+func createSplunkEventRule(sc *security.RequestContext, accountId, alertName, title, description, severityLabel, alertType string) {
+	// A rule needs a stable name to upsert against; without the saved-search name
+	// the only identifier left is the per-firing SID, which would create a new rule
+	// on every run.
+	if alertName == "" {
+		return
+	}
+
+	// Read everything off the request context up front: the handler has already
+	// responded by the time this goroutine runs, so nothing derived from sc should be
+	// resolved inside it. Registering recover() first also means a panic anywhere in
+	// the body — including context setup — is logged rather than taking the process down.
+	secCtx := sc.GetSecurityContext()
+	logger := sc.GetLogger()
+	tracer := sc.GetTracer()
+	meter := sc.GetMeter()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("splunk_webhook: panic in CreateEventRule goroutine", "panic", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		detachedSc := security.NewRequestContext(ctx, secCtx, logger, tracer, meter)
+		eventReq := eventrule.EventConfig{
+			Annotations: struct {
+				Description string `json:"description"`
+				Summary     string `json:"summary"`
+				Runbook     string `json:"runbook"`
+			}{
+				Description: description,
+				Summary:     title,
+				Runbook:     "",
+			},
+			Expr: "",
+			Labels: struct {
+				Severity string `json:"severity"`
+			}{Severity: severityLabel},
+			Alert:         alertName,
+			Duration:      "0",
+			AccountID:     accountId,
+			Source:        IntegrationSplunkWebhook,
+			Category:      "alert",
+			Severity:      severityLabel,
+			AlertType:     alertType,
+			Enabled:       true,
+			TriggerParams: []map[string]any{},
+			ActionParams:  []map[string]any{},
+		}
+		if _, err := eventrule.CreateEventRule(detachedSc, eventReq); err != nil {
+			detachedSc.GetLogger().Error("splunk_webhook: CreateEventRule failed", "error", err, "alert", alertName)
+		}
+	}()
 }

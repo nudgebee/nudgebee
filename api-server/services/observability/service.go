@@ -253,6 +253,8 @@ func getLogSource(provider, integrationSource string) (LogSource, error) {
 		return &HiveSaasSource{}, nil
 	case provider == "openobserve" && integrationSource == "user":
 		return &OpenObserveLogSource{}, nil
+	case provider == "splunk_enterprise" && integrationSource == "user":
+		return &SplunkEnterpriseLogSource{}, nil
 		// hive:agent is intentionally NOT wired here yet — the relay-mode
 		// `HiveSource` is implemented but the matching `hive_query` /
 		// `hive_schema` actions don't exist in nudgebee-agent yet. Returning
@@ -1448,6 +1450,17 @@ var allProviderCaps = map[string]providerStaticCaps{
 	"prometheus": {
 		SupportsServiceMap: true,
 		SupportsRawQuery:   true,
+	},
+	// Phase 1 of the Splunk Enterprise integration ships logs only — there is no
+	// SplunkEnterpriseTraceSource or MetricSource yet, so every trace-shaped capability
+	// stays false rather than advertising a view that would error on open.
+	// SupportsRawQuery is true because SplunkEnterpriseLogSource.QueryLogs honours
+	// FetchLogRequest.Query when the caller supplies SPL directly.
+	"splunk_enterprise": {
+		SupportsServiceMap:    false,
+		SupportsRawQuery:      true,
+		SupportsHeatmap:       false,
+		SupportsTraceGrouping: false,
 	},
 }
 

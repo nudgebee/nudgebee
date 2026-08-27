@@ -288,6 +288,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'JAEGER':
       label = 'Jaeger';
       break;
+    case 'SPLUNK_ENTERPRISE':
+      label = 'Splunk Enterprise';
+      break;
     case 'SPLUNK_OBSERVABILITY_PLATFORM':
       label = 'Splunk Observability Cloud';
       break;
