@@ -1303,7 +1303,7 @@ func sanitizeMetricsArg(v string) string {
 // validateLabelArg rejects a `label` that is not a single field name.
 //
 // Observed 2026-08-26: the planner passed
-// {"label":"kubernetes.pod.name&filter=ehq-api-preprod"} — query-string syntax packed
+// {"label":"kubernetes.pod.name&filter=api-preprod"} — query-string syntax packed
 // into a JSON value, because `filter` is a separate argument it did not reach for.
 // The mangled name matched no field, which used to return an empty success, so the
 // agent concluded the label did not exist and looked for a different one instead of

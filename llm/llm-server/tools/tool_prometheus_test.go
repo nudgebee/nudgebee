@@ -682,12 +682,12 @@ func TestSanitizeMetricsArg(t *testing.T) {
 
 func TestValidateLabelArg_RejectsQueryStringSyntax(t *testing.T) {
 	// The exact value the planner produced.
-	err := validateLabelArg("kubernetes.pod.name&filter=ehq-api-preprod")
+	err := validateLabelArg("kubernetes.pod.name&filter=api-preprod")
 	require.Error(t, err)
 	// The message must name the argument to use, or the agent reformulates the label
 	// instead of fixing the call — which is the loop this guards against.
 	assert.Contains(t, err.Error(), `"filter"`)
-	assert.Contains(t, err.Error(), `"ehq-api-preprod"`)
+	assert.Contains(t, err.Error(), `"api-preprod"`)
 	assert.Contains(t, err.Error(), `"kubernetes.pod.name"`)
 
 	assert.Error(t, validateLabelArg("pod?x=1"))

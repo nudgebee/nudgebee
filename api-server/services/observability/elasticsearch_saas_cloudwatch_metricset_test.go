@@ -17,19 +17,19 @@ const awsCloudwatchSampleBody = `{
  "hits": {
   "total": {"value": 3257, "relation": "eq"},
   "hits": [
-   {"_index": "aircp-es-transport:.ds-metrics-aws.cloudwatch_metrics-gd-ehq-non-prod-2026.08.16-000018",
+   {"_index": "remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018",
     "_source": {"@timestamp": "2026-08-26T13:41:25.762Z",
-     "metricset": {"dimensions": {"DBClusterIdentifier": "asydd-auroradb"},
+     "metricset": {"dimensions": {"DBClusterIdentifier": "db-cluster-1"},
       "metric_name": "DatabaseConnections", "timestamp": "2026-08-26T13:38:00.000Z",
       "unit": "Count", "value": {"count": 2.0, "max": 103.0, "min": 6.0, "sum": 109.0}}}},
-   {"_index": "aircp-es-transport:.ds-metrics-aws.cloudwatch_metrics-gd-ehq-non-prod-2026.08.16-000018",
+   {"_index": "remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018",
     "_source": {"@timestamp": "2026-08-26T13:41:25.753Z",
-     "metricset": {"dimensions": {"DBClusterIdentifier": "asydd-auroradb", "Role": "READER"},
+     "metricset": {"dimensions": {"DBClusterIdentifier": "db-cluster-1", "Role": "READER"},
       "metric_name": "ActiveTransactions", "timestamp": "2026-08-26T13:38:00.000Z",
       "unit": "Count/Second", "value": {"count": 1.0, "max": 1.53341, "min": 1.53341, "sum": 1.53341}}}},
-   {"_index": "aircp-es-transport:.ds-metrics-aws.cloudwatch_metrics-gd-ehq-non-prod-2026.08.16-000018",
+   {"_index": "remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018",
     "_source": {"@timestamp": "2026-08-26T13:41:25.757Z",
-     "metricset": {"dimensions": {"DBInstanceIdentifier": "asydd-engagementcloud-pg1"},
+     "metricset": {"dimensions": {"DBInstanceIdentifier": "db-instance-1"},
       "metric_name": "DBLoadNonCPU", "timestamp": "2026-08-26T13:38:00.000Z",
       "unit": "None", "value": {"count": 60.0, "max": 0.0, "min": 0.0, "sum": 0.0}}}}
   ]
@@ -39,9 +39,9 @@ const awsCloudwatchSampleBody = `{
 func TestESIndexDataset(t *testing.T) {
 	cases := map[string]string{
 		// Cross-cluster prefix + hidden backing index + date/generation suffix.
-		"aircp-es-transport:.ds-metrics-aws.cloudwatch_metrics-gd-ehq-non-prod-2026.08.16-000018": "aws.cloudwatch_metrics",
-		".ds-metrics-kubernetes.state_pod-gd-ehq-non-prod-2026.08.16-000004":                      "kubernetes.state_pod",
-		"metrics-aws.cloudwatch_metrics-gd-ehq-non-prod":                                          "aws.cloudwatch_metrics",
+		"remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018": "aws.cloudwatch_metrics",
+		".ds-metrics-kubernetes.state_pod-prod-2026.08.16-000004":                  "kubernetes.state_pod",
+		"metrics-aws.cloudwatch_metrics-prod":                                      "aws.cloudwatch_metrics",
 		// Namespaces contain '-' and must not be mistaken for the dataset.
 		"metrics-aws.rds-a-b-c-d": "aws.rds",
 		// Legacy concrete indices declare nothing; callers fall back to shape detection.
@@ -71,7 +71,7 @@ func TestParseESMetricsHits_AWSCloudwatchMetricset(t *testing.T) {
 	require.True(t, ok, "got series: %v", byKey)
 	// sum/count, not sum: 109/2. Charting sum would report 109 connections.
 	assert.InDelta(t, 54.5, avg.Values[0], 1e-9)
-	assert.Equal(t, "asydd-auroradb", avg.Metric["DBClusterIdentifier"])
+	assert.Equal(t, "db-cluster-1", avg.Metric["DBClusterIdentifier"])
 	assert.Equal(t, "Count", avg.Metric["unit"])
 
 	// metricset.timestamp (13:38:00), NOT @timestamp (13:41:25). Using the ingest
@@ -87,7 +87,7 @@ func TestParseESMetricsHits_AWSCloudwatchMetricset(t *testing.T) {
 	// Multi-dimension keys all become labels, so cluster+role is its own series.
 	role := byKey["ActiveTransactions/max"]
 	assert.Equal(t, "READER", role.Metric["Role"])
-	assert.Equal(t, "asydd-auroradb", role.Metric["DBClusterIdentifier"])
+	assert.Equal(t, "db-cluster-1", role.Metric["DBClusterIdentifier"])
 
 	// unit "None" is CloudWatch's placeholder and is not carried as a label.
 	_, hasUnit := byKey["DBLoadNonCPU/avg"].Metric["unit"]
@@ -98,7 +98,7 @@ func TestParseESMetricsHits_AWSCloudwatchMetricset(t *testing.T) {
 // through to the existing detection chain, not be dropped.
 func TestParseESMetricsHits_DatasetFallsThroughOnShapeMismatch(t *testing.T) {
 	body := `{"hits":{"total":{"value":1},"hits":[
-	 {"_index":"aircp-es-transport:.ds-metrics-aws.cloudwatch_metrics-gd-ehq-non-prod-2026.08.16-000018",
+	 {"_index":"remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018",
 	  "_source":{"@timestamp":"2026-08-26T13:38:00.000Z","name":"CPUUtilization","value":42.5}}]}}`
 	results, stats, err := parseESMetricsHitsWithStats([]byte(body))
 	require.NoError(t, err)
@@ -129,10 +129,10 @@ func TestESNoSeriesNote_NamesTheObservedCause(t *testing.T) {
 // dispatch must still work because it keys on `_index`, which `_source` cannot touch.
 func TestParseESMetricsHits_AWSCloudwatchPartialSourceProjection(t *testing.T) {
 	body := `{"hits":{"total":{"value":61},"hits":[
-	 {"_index":"aircp-es-transport:.ds-metrics-aws.cloudwatch_metrics-gd-ehq-non-prod-2026.08.16-000018",
+	 {"_index":"remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018",
 	  "_source":{"@timestamp":"2026-08-26T13:41:25.762Z","metricset":{
 	    "metric_name":"CPUUtilization",
-	    "dimensions":{"DBInstanceIdentifier":"asydd-auroradb-writer"},
+	    "dimensions":{"DBInstanceIdentifier":"db-cluster-1-writer"},
 	    "value":{"sum":109.0,"max":103.0}}}}]}}`
 	results, stats, err := parseESMetricsHitsWithStats([]byte(body))
 	require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestParseESMetricsHits_AWSCloudwatchPartialSourceProjection(t *testing.T) {
 	assert.InDelta(t, 109.0, byStat["sum"].Values[0], 1e-9)
 	_, hasAvg := byStat["avg"]
 	assert.False(t, hasAvg, "avg needs count; it must be omitted, not invented")
-	assert.Equal(t, "asydd-auroradb-writer", byStat["max"].Metric["DBInstanceIdentifier"])
+	assert.Equal(t, "db-cluster-1-writer", byStat["max"].Metric["DBInstanceIdentifier"])
 	// No metricset.timestamp in the projection: fall back to the document timestamp
 	// rather than dropping the hit.
 	assert.Equal(t, int64(1787751685), byStat["max"].Timestamps[0])
@@ -165,7 +165,7 @@ func TestParseESMetricsHits_GenericFallbackReadsSystemMetricset(t *testing.T) {
 	t.Cleanup(func() { config.Config.FeatureESMetricsGenericFallbackEnabled = prev })
 
 	body := `{"hits":{"total":{"value":5},"hits":[
-	 {"_index":".ds-metrics-system.process-gd-ehq-non-prod-2026.08.16-000003",
+	 {"_index":".ds-metrics-system.process-prod-2026.08.16-000003",
 	  "_source":{
 	   "@timestamp":"2026-08-26T13:38:00.000Z",
 	   "@version":"1",
@@ -173,7 +173,7 @@ func TestParseESMetricsHits_GenericFallbackReadsSystemMetricset(t *testing.T) {
 	   "ecs":{"version":"8.0.0"},
 	   "event":{"duration":123456},
 	   "data_stream":{"dataset":"system.process"},
-	   "host":{"name":"asydd-node-1"},
+	   "host":{"name":"node-1"},
 	   "service":{"name":"postgres"},
 	   "system":{"cpu":{"total":{"pct":0.42},"cores":8}},
 	   "process":{"memory":{"rss":{"bytes":2048}}},
@@ -196,7 +196,7 @@ func TestParseESMetricsHits_GenericFallbackReadsSystemMetricset(t *testing.T) {
 	assert.False(t, hasEventDuration, "metadata branches must be skipped, got: %v", got)
 
 	// String leaves outside the skip list become labels.
-	assert.Equal(t, "asydd-node-1", results[0].Metric["host.name"])
+	assert.Equal(t, "node-1", results[0].Metric["host.name"])
 }
 
 // A registered dataset parser must win over the generic fallback — otherwise AWS
@@ -232,7 +232,7 @@ func TestParseESMetricsHits_GenericFallbackIsOffByDefault(t *testing.T) {
 	t.Cleanup(func() { config.Config.FeatureESMetricsGenericFallbackEnabled = prev })
 
 	body := `{"hits":{"total":{"value":1},"hits":[
-	 {"_index":".ds-metrics-system.process-gd-ehq-non-prod-2026.08.16-000003",
+	 {"_index":".ds-metrics-system.process-prod-2026.08.16-000003",
 	  "_source":{"@timestamp":"2026-08-26T13:38:00.000Z",
 	   "system":{"cpu":{"total":{"pct":0.42}}}}}]}}`
 	results, stats, err := parseESMetricsHitsWithStats([]byte(body))
@@ -245,4 +245,103 @@ func TestParseESMetricsHits_GenericFallbackIsOffByDefault(t *testing.T) {
 	awsResults, _, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody))
 	require.NoError(t, err)
 	assert.NotEmpty(t, awsResults, "dataset dispatch is unflagged and must still work")
+}
+
+// containsLabelSkip must match whole path segments. The fragment form it replaces
+// (".labels.") missed the top-level case: a document with a root `labels` map yields
+// "labels.app", with no leading dot, so every top-level label and annotation was kept
+// as a series label — the per-resource constant bloat the skip list exists to remove.
+func TestContainsLabelSkip_MatchesWholeSegments(t *testing.T) {
+	skips := []string{"labels", "annotations", "namespace_labels"}
+
+	for _, p := range []string{
+		"labels",                        // exact
+		"labels.app",                    // root map — the case the fragment form missed
+		"annotations.checksum",          // root map
+		"kubernetes.labels.app",         // nested
+		"kubernetes.namespace_labels.x", // nested
+		"foo.labels",                    // trailing leaf
+	} {
+		assert.True(t, containsLabelSkip(p, skips), "%q must be skipped", p)
+	}
+
+	for _, p := range []string{
+		"kubernetes.pod.name",
+		"system.cpu.total.pct",
+		"labelsummary.count", // shares a prefix but is a different segment
+		"my_labels.value",    // ends with the word but is a different segment
+		// Regression guard: a Contains-based implementation over "labels."
+		// matches inside "my_labels." and drops a real label as a constant.
+		"team_annotations.owner",
+	} {
+		assert.False(t, containsLabelSkip(p, skips), "%q must NOT be skipped", p)
+	}
+}
+
+func TestGenericFallback_SkipsTopLevelLabelsAndAnnotations(t *testing.T) {
+	prev := config.Config.FeatureESMetricsGenericFallbackEnabled
+	config.Config.FeatureESMetricsGenericFallbackEnabled = true
+	t.Cleanup(func() { config.Config.FeatureESMetricsGenericFallbackEnabled = prev })
+
+	body := `{"hits":{"total":{"value":1},"hits":[
+	 {"_index":".ds-metrics-system.process-prod-2026.08.16-000003",
+	  "_source":{
+	   "@timestamp":"2026-08-26T13:38:00.000Z",
+	   "labels":{"app":"checkout","team":"payments"},
+	   "annotations":{"checksum":"9f2c"},
+	   "host":{"name":"node-1"},
+	   "system":{"cpu":{"total":{"pct":0.42}}}}}]}}`
+	results, _, err := parseESMetricsHitsWithStats([]byte(body))
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+
+	m := results[0].Metric
+	for _, k := range []string{"labels.app", "labels.team", "annotations.checksum"} {
+		_, present := m[k]
+		assert.False(t, present, "%q is a per-resource constant and must not become a label; got %v", k, m)
+	}
+	assert.Equal(t, "node-1", m["host.name"], "real identifying labels are still kept")
+}
+
+// A null dimension must be absent, not the literal string "<nil>"; a non-string one
+// must still be rendered, because dropping a dimension merges two distinct series.
+func TestAWSCloudwatchMetricset_DimensionValueHandling(t *testing.T) {
+	body := `{"hits":{"total":{"value":1},"hits":[
+	 {"_index":"remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018",
+	  "_source":{"@timestamp":"2026-08-26T13:41:25.762Z","metricset":{
+	    "metric_name":"CPUUtilization",
+	    "dimensions":{"DBInstanceIdentifier":"db-instance-1","Shard":7,"Absent":null},
+	    "value":{"count":1.0,"max":10.0,"min":10.0,"sum":10.0}}}}]}}`
+	results, _, err := parseESMetricsHitsWithStats([]byte(body))
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+
+	m := results[0].Metric
+	assert.Equal(t, "db-instance-1", m["DBInstanceIdentifier"])
+	assert.Equal(t, "7", m["Shard"], "a numeric dimension must be kept, not dropped")
+	_, present := m["Absent"]
+	assert.False(t, present, `a null dimension must be absent, not the string "<nil>"`)
+}
+
+// Both drop reasons must be reported; the switch this replaced showed only the first.
+func TestESNoSeriesNote_ReportsBothDropReasons(t *testing.T) {
+	note := esNoSeriesNote(esParseStats{
+		DocsMatched:        61,
+		DroppedNoValue:     10,
+		DroppedNoTimestamp: 3,
+		SampleSourceFields: []string{"@timestamp", "metricset"},
+	})
+	assert.Contains(t, note, "10 document(s) carried no numeric value")
+	assert.Contains(t, note, "3 document(s) had no parseable timestamp")
+}
+
+// containsLabelSkip runs once per string leaf per document — millions of calls on a
+// 10k-hit response — so it must not allocate.
+func BenchmarkContainsLabelSkip(b *testing.B) {
+	skips := []string{"labels", "annotations", "namespace_labels"}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		containsLabelSkip("kubernetes.pod.container.cpu.usage.nanocores", skips)
+		containsLabelSkip("kubernetes.labels.app", skips)
+	}
 }

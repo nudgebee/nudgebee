@@ -707,11 +707,14 @@ func esNoSeriesNote(stats esParseStats) string {
 	fmt.Fprintf(&b, "The query matched %d document(s) but no metric series could be extracted from them. "+
 		"This is NOT an absence of data.", stats.DocsMatched)
 
-	switch {
-	case stats.DroppedNoValue > 0:
+	// Independent, not a switch: one response can drop documents for both reasons, and
+	// a note whose whole purpose is explaining an empty result must not report one and
+	// hide the other.
+	if stats.DroppedNoValue > 0 {
 		fmt.Fprintf(&b, " %d document(s) carried no numeric value at any path the extractor recognises, "+
 			"which means their shape is not supported yet — not that the filter was wrong.", stats.DroppedNoValue)
-	case stats.DroppedNoTimestamp > 0:
+	}
+	if stats.DroppedNoTimestamp > 0 {
 		fmt.Fprintf(&b, " %d document(s) had no parseable timestamp; one must be an RFC3339 string at "+
 			"`time` or `@timestamp`.", stats.DroppedNoTimestamp)
 	}
@@ -746,7 +749,7 @@ var esDataStreamTypes = map[string]bool{
 //
 // Handles the cross-cluster prefix and the hidden backing-index form:
 //
-//	aircp-es-transport:.ds-metrics-aws.cloudwatch_metrics-gd-ehq-non-prod-2026.08.16-000018
+//	remote-cluster:.ds-metrics-aws.cloudwatch_metrics-prod-2026.08.16-000018
 //	  -> "aws.cloudwatch_metrics"
 //
 // Returns "" for names that are not data-stream shaped (legacy concrete indices), so
@@ -833,7 +836,17 @@ func awsCloudwatchMetricsetSeries(src map[string]any) ([]esSeriesPoint, int64, b
 	}
 	if dims, ok := ms["dimensions"].(map[string]any); ok {
 		for k, v := range dims {
-			base[k] = fmt.Sprintf("%v", v)
+			// Dimensions are part of a series' identity, so a non-string value is
+			// still rendered rather than dropped — dropping one would merge two
+			// distinct series and misreport both. A null dimension is absent,
+			// though, and must not become the literal string "<nil>".
+			switch dv := v.(type) {
+			case string:
+				base[k] = dv
+			case nil:
+			default:
+				base[k] = fmt.Sprintf("%v", dv)
+			}
 		}
 	}
 
@@ -930,7 +943,7 @@ var genericMetricSkip = map[string]bool{
 // genericLabelSkip are path fragments whose leaves are per-resource constants. They
 // are labels at best and repeated on every document, so they bloat every series'
 // label set without distinguishing any two — the same reason beatsLabelSkip exists.
-var genericLabelSkip = []string{".labels.", ".annotations.", ".namespace_labels."}
+var genericLabelSkip = []string{"labels", "annotations", "namespace_labels"}
 
 // genericNumericLeafSeries is the last resort before a document is dropped: walk the
 // whole `_source` and treat every numeric leaf as a metric keyed by its dotted path,
@@ -959,7 +972,7 @@ func genericNumericLeafSeries(src map[string]any) (labels map[string]string, val
 			case float64:
 				values[p] = tv
 			case string:
-				if !containsAny(p, genericLabelSkip) {
+				if !containsLabelSkip(p, genericLabelSkip) {
 					labels[p] = tv
 				}
 			}
@@ -982,11 +995,34 @@ func genericNumericLeafSeries(src map[string]any) (labels map[string]string, val
 	return labels, values
 }
 
-// containsAny reports whether s contains any of the given fragments.
-func containsAny(s string, fragments []string) bool {
-	for _, f := range fragments {
-		if strings.Contains(s, f) {
-			return true
+// containsLabelSkip reports whether any skip name appears in p as a whole path
+// segment.
+//
+// It walks p segment by segment rather than testing decorated substrings. Two
+// reasons, in order:
+//
+// Correctness. Substring tests over "."+skip / skip+"." misfire on names that
+// merely contain a skip word — `strings.Contains("my_labels.value", "labels.")`
+// is true, so that path would be dropped as a constant when it is a real label.
+// The form this replaced had the mirror-image bug: it matched only ".labels.",
+// so a root `labels` map ("labels.app", no leading dot) was never skipped and
+// every top-level label became a series label.
+//
+// Allocation. Comparing segments needs no concatenation, so this allocates
+// nothing per call — it runs once per string leaf per document, and a 10k-hit
+// response is millions of calls.
+func containsLabelSkip(p string, skips []string) bool {
+	for len(p) > 0 {
+		segment := p
+		if i := strings.IndexByte(p, '.'); i >= 0 {
+			segment, p = p[:i], p[i+1:]
+		} else {
+			p = ""
+		}
+		for _, skip := range skips {
+			if segment == skip {
+				return true
+			}
 		}
 	}
 	return false
