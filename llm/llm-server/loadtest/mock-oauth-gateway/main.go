@@ -240,13 +240,44 @@ func main() {
 	// Custom-provider shape: base URL <gateway>/v1.
 	mux.HandleFunc("/v1/chat/completions", completions)
 	// Azure shape: <gateway>/openai/deployments/{deployment}/chat/completions.
-	// The deployment segment is accepted and ignored — the body's model field
-	// drives the upstream, mirroring gateways that route on deployment name.
+	// Strict like real corporate gateways (the UHG sample contract):
+	//   - api-version query parameter is MANDATORY
+	//   - MOCK_GW_EXPECT_DEPLOYMENT (optional) pins the URL's deployment segment
+	//   - MOCK_GW_EXPECT_BODY_MODEL (optional) pins the body's model field,
+	//     which on these gateways DIFFERS from the deployment name
+	expectDeployment := os.Getenv("MOCK_GW_EXPECT_DEPLOYMENT")
+	expectBodyModel := os.Getenv("MOCK_GW_EXPECT_BODY_MODEL")
 	mux.HandleFunc("/openai/deployments/", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
 			gwError(w, http.StatusNotFound, "only chat/completions is implemented")
 			return
 		}
+		if r.URL.Query().Get("api-version") == "" {
+			gwError(w, http.StatusBadRequest, "api-version query parameter is required")
+			return
+		}
+		deployment := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/openai/deployments/"), "/chat/completions")
+		if expectDeployment != "" && deployment != expectDeployment {
+			gwError(w, http.StatusNotFound, fmt.Sprintf("unknown deployment %q (expected %q)", deployment, expectDeployment))
+			return
+		}
+		if expectBodyModel != "" {
+			body, err := io.ReadAll(r.Body)
+			_ = r.Body.Close()
+			if err != nil {
+				gwError(w, http.StatusBadRequest, "unable to read body")
+				return
+			}
+			var payload struct {
+				Model string `json:"model"`
+			}
+			if json.Unmarshal(body, &payload) != nil || payload.Model != expectBodyModel {
+				gwError(w, http.StatusBadRequest, fmt.Sprintf("body model %q does not match expected %q", payload.Model, expectBodyModel))
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		log.Printf("azure-shape accepted: deployment=%q api-version=%q", deployment, r.URL.Query().Get("api-version"))
 		completions(w, r)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
