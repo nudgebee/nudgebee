@@ -73,6 +73,8 @@ import CustomDrawer from '@shared/CustomDrawer';
 import ProductUpdatesDrawerContent from '@shared/widgets/ProductUpdatesDrawerContent';
 import { useProductUpdates } from '@hooks/useProductUpdates';
 
+const AGENT_UPGRADE_DOCS_URL = docsUrl('/docs/installation/agent/installation/upgrade/');
+
 const Header1 = ({ showBorder = false }) => {
   const { data } = useSession({ required: true });
   const router = useRouter();
@@ -505,7 +507,7 @@ const Header1 = ({ showBorder = false }) => {
         let snackMessage = '';
         let disconnectedService = [];
         setSnackbarOpen(true);
-        snackMessage = `<span>Update the ${baseTitle} Agent Version to ${res.data?.nudgebee_list_versions.agent_version_latest}. Refer to <a href="/help/docs/installation/agent/installation/" target="_blank" rel="noopener noreferrer">this document</a> for instructions on how to update the agent.</span>`;
+        snackMessage = `<span>Update the ${baseTitle} Agent Version to ${res.data?.nudgebee_list_versions.agent_version_latest}. Refer to <a href="${AGENT_UPGRADE_DOCS_URL}" target="_blank" rel="noopener noreferrer">this document</a> for instructions on how to update the agent.</span>`;
         if (cluster.agent?.connection_status) {
           const connectionStatus = cluster.agent?.connection_status;
           if (!connectionStatus.relayConnection) {
