@@ -106,7 +106,7 @@ const VmAgentCredentialsDialog = ({ open, onClose, accessKey, accessSecret }) =>
               sx={{
                 color: 'var(--ds-brand-200)',
                 fontSize: 'var(--ds-text-small)',
-                fontFamily: '"Roboto Mono", monospace',
+                fontFamily: ds.font.mono,
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-all',
                 m: 0,

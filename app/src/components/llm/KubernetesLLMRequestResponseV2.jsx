@@ -839,7 +839,7 @@ const KubernetesLLMRequestResponse = (props) => {
                 mb: ds.space.mul(0, 3),
                 '& p': { margin: 0 },
                 '& code': {
-                  fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+                  fontFamily: ds.font.mono,
                   fontSize: 'var(--ds-text-small)',
                   background: 'var(--ds-background-200)',
                   padding: `${ds.space[0]} ${ds.space[1]}`,
@@ -878,7 +878,7 @@ const KubernetesLLMRequestResponse = (props) => {
                 title={
                   <Box
                     sx={{
-                      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+                      fontFamily: ds.font.mono,
                       fontSize: 'var(--ds-text-caption)',
                       whiteSpace: 'pre-wrap',
                       wordBreak: 'break-word',

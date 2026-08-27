@@ -65,7 +65,7 @@ const Kbd = ({ children, sx }) => (
   <Box
     component='kbd'
     sx={{
-      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+      fontFamily: ds.font.mono,
       fontWeight: 'var(--ds-font-weight-semibold)',
       fontSize: 'var(--ds-text-caption)',
       lineHeight: 1,
@@ -469,7 +469,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
               padding: 0,
             },
             '& code': {
-              fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+              fontFamily: ds.font.mono,
               fontSize: 'var(--ds-text-body)',
               background: 'var(--ds-background-100)',
               padding: `${ds.space[0]} ${ds.space.mul(0, 3)} !important`,
@@ -774,7 +774,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
                 border: `1px solid ${isPending || isFocused ? 'var(--ds-blue-600)' : 'var(--ds-gray-200)'}`,
                 display: 'grid',
                 placeItems: 'center',
-                fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+                fontFamily: ds.font.mono,
                 fontWeight: 'var(--ds-font-weight-semibold)',
                 fontSize: 'var(--ds-text-caption)',
                 lineHeight: 1,
@@ -1267,7 +1267,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
                   '& p': { margin: `0 0 ${ds.space[2]}` },
                   '& p:last-child': { margin: 0 },
                   '& code': {
-                    fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+                    fontFamily: ds.font.mono,
                     fontSize: 'var(--ds-text-body)',
                     background: 'var(--ds-background-200)',
                     padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,

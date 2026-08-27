@@ -120,7 +120,7 @@ const preStyle = {
   margin: 0,
   color: 'var(--ds-brand-150)',
   fontSize: 'var(--ds-text-small)',
-  fontFamily: '"Roboto Mono", monospace',
+  fontFamily: ds.font.mono,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
   lineHeight: 1.6,
@@ -1056,7 +1056,7 @@ const ParametersBox = ({ parameters }) => {
   return (
     <Box sx={{ mb: ds.space[2] }}>
       <Typography sx={sectionLabelSx}>Query</Typography>
-      <Box sx={{ ...contentBoxSx, fontFamily: '"Roboto Mono", monospace', fontSize: 'var(--ds-text-small)' }}>
+      <Box sx={{ ...contentBoxSx, fontFamily: ds.font.mono, fontSize: 'var(--ds-text-small)' }}>
         {(() => {
           try {
             let parsed = null;
@@ -1468,7 +1468,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
             {editedFiles.map((f) => (
               <Typography
                 key={f}
-                sx={{ fontSize: 'var(--ds-text-small)', fontFamily: '"Roboto Mono", monospace', color: 'var(--ds-gray-700)', wordBreak: 'break-all' }}
+                sx={{ fontSize: 'var(--ds-text-small)', fontFamily: ds.font.mono, color: 'var(--ds-gray-700)', wordBreak: 'break-all' }}
               >
                 {f}
               </Typography>

@@ -102,7 +102,7 @@ const AggChip = ({ label }) => (
   <Box
     component='span'
     sx={{
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontFamily: 'var(--ds-font-mono)',
       fontSize: 10.5,
       color: 'var(--ds-gray-600)',
       bgcolor: 'var(--ds-background-100)',
