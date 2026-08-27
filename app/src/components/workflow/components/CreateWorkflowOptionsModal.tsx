@@ -20,8 +20,6 @@ interface CreateWorkflowOptionsModalProps {
   onUseTemplate: () => void;
   onAskAI: () => void;
   onCreateFromCode: () => void;
-  aiFeatureEnabled: boolean;
-  templateFeatureEnabled: boolean;
   /** Accounts the user can create automations in (write access only). */
   accountOptions: SelectOption[];
   selectedAccountId: string;
@@ -35,8 +33,6 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
   onUseTemplate,
   onAskAI,
   onCreateFromCode,
-  aiFeatureEnabled,
-  templateFeatureEnabled,
   accountOptions,
   selectedAccountId,
   onAccountChange,
@@ -147,19 +143,19 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
           </Box>
         </WidgetCard>
 
-        <Tooltip title={!templateFeatureEnabled ? 'Coming Soon' : !accountChosen ? 'Select an account first' : ''} arrow placement='top'>
+        <Tooltip title={!accountChosen ? 'Select an account first' : ''} arrow placement='top'>
           <Box>
             <WidgetCard
               sx={{
                 mt: 0,
-                cursor: templateFeatureEnabled && accountChosen ? 'pointer' : 'default',
+                cursor: accountChosen ? 'pointer' : 'default',
                 padding: 'var(--ds-space-4)',
                 height: '240px',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 'var(--ds-space-4)',
-                opacity: templateFeatureEnabled && accountChosen ? 1 : 0.5,
-                ...(templateFeatureEnabled && accountChosen
+                opacity: accountChosen ? 1 : 0.5,
+                ...(accountChosen
                   ? {
                       '&:hover': {
                         transform: 'translateY(-2px)',
@@ -171,7 +167,7 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
                   : {}),
                 transition: 'all 0.2s ease',
               }}
-              onClick={templateFeatureEnabled && accountChosen ? onUseTemplate : undefined}
+              onClick={accountChosen ? onUseTemplate : undefined}
               id='wf-create-from-template-card'
             >
               <Box
@@ -206,7 +202,7 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
                   }}
                 />
                 <Text
-                  value={templateFeatureEnabled ? 'Pre-built automations for common infra tasks' : 'Coming Soon'}
+                  value='Pre-built automations for common infra tasks'
                   sx={{
                     fontSize: 'var(--ds-text-body)',
                     fontWeight: 'var(--ds-font-weight-regular)',
@@ -219,19 +215,19 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
           </Box>
         </Tooltip>
 
-        <Tooltip title={!aiFeatureEnabled ? 'Coming Soon' : !accountChosen ? 'Select an account first' : ''} arrow placement='top'>
+        <Tooltip title={!accountChosen ? 'Select an account first' : ''} arrow placement='top'>
           <Box>
             <WidgetCard
               sx={{
                 mt: 0,
-                cursor: aiFeatureEnabled && accountChosen ? 'pointer' : 'default',
+                cursor: accountChosen ? 'pointer' : 'default',
                 padding: 'var(--ds-space-4)',
                 height: '240px',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 'var(--ds-space-4)',
-                opacity: aiFeatureEnabled && accountChosen ? 1 : 0.5,
-                ...(aiFeatureEnabled && accountChosen
+                opacity: accountChosen ? 1 : 0.5,
+                ...(accountChosen
                   ? {
                       '&:hover': {
                         transform: 'translateY(-2px)',
@@ -243,7 +239,7 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
                   : {}),
                 transition: 'all 0.2s ease',
               }}
-              onClick={aiFeatureEnabled && accountChosen ? onAskAI : undefined}
+              onClick={accountChosen ? onAskAI : undefined}
               id='wf-create-from-ai-card'
             >
               <Box
@@ -278,25 +274,23 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
                       fontWeight: 'var(--ds-font-weight-semibold)',
                     }}
                   />
-                  {aiFeatureEnabled && (
-                    <Box
-                      sx={{
-                        backgroundColor: 'var(--ds-purple-100)',
-                        color: 'var(--ds-purple-400)',
-                        fontSize: 'var(--ds-text-caption)',
-                        fontWeight: 'var(--ds-font-weight-semibold)',
-                        letterSpacing: '0.5px',
-                        padding: 'var(--ds-space-1) var(--ds-space-2)',
-                        borderRadius: 'var(--ds-radius-sm)',
-                        lineHeight: 'var(--ds-text-body-lh)',
-                      }}
-                    >
-                      BETA
-                    </Box>
-                  )}
+                  <Box
+                    sx={{
+                      backgroundColor: 'var(--ds-purple-100)',
+                      color: 'var(--ds-purple-400)',
+                      fontSize: 'var(--ds-text-caption)',
+                      fontWeight: 'var(--ds-font-weight-semibold)',
+                      letterSpacing: '0.5px',
+                      padding: 'var(--ds-space-1) var(--ds-space-2)',
+                      borderRadius: 'var(--ds-radius-sm)',
+                      lineHeight: 'var(--ds-text-body-lh)',
+                    }}
+                  >
+                    BETA
+                  </Box>
                 </Box>
                 <Text
-                  value={aiFeatureEnabled ? 'Describe what you need in plain English' : 'Coming Soon'}
+                  value='Describe what you need in plain English'
                   sx={{
                     fontSize: 'var(--ds-text-body)',
                     fontWeight: 'var(--ds-font-weight-regular)',

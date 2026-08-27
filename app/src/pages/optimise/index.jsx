@@ -52,7 +52,7 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
   const [isMounted, setIsMounted] = useState(false);
   // LLM_ANALYSER is a per-tenant feature flag (not a deployment env var), so it
   // can only be resolved client-side via hasFeatureAccess — same pattern as
-  // WORKFLOWS/UPGRADE_PLANNER.
+  // UPGRADE_PLANNER.
   const [llmAnalyserEnabled, setLlmAnalyserEnabled] = useState(false);
 
   useEffect(() => {

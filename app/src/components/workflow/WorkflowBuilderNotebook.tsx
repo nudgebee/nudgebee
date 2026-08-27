@@ -107,7 +107,7 @@ import { useWorkflowHistory } from './hooks/useWorkflowHistory';
 import { useWorkflowClipboard } from './hooks/useWorkflowClipboard';
 import { useWorkflowShortcuts } from './hooks/useWorkflowShortcuts';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { hasFeatureAccess, hasPermission, hasWriteAccess } from '@lib/auth';
+import { hasPermission, hasWriteAccess } from '@lib/auth';
 import { Modal } from '@ui/Modal';
 import Text from '@shared/format/Text';
 
@@ -521,7 +521,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       nubiChatEverOpenedRef.current = true;
     }
   }, [showNubiChat]);
-  const [nubiChatFeatureEnabled, setNubiChatFeatureEnabled] = useState(false); // Feature flag for NubiChat
   const [nubiChatContext, setNubiChatContext] = useState<{
     type: 'workflow' | 'workflowbuilder';
     data?: any;
@@ -605,21 +604,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     return Array.from(placeholders);
   }, [workflowData?.definition?.tasks, aiSessionId]);
 
-  // Check NubiChat feature flag on mount
-  useEffect(() => {
-    const checkNubiChatFeatureAccess = async () => {
-      try {
-        const hasAccess = await hasFeatureAccess('WORKFLOWS');
-        setNubiChatFeatureEnabled(hasAccess);
-      } catch (error) {
-        console.error('Error checking NubiChat feature access:', error);
-        setNubiChatFeatureEnabled(false);
-      }
-    };
-
-    checkNubiChatFeatureAccess();
-  }, []);
-
   // Auto-open the NuBi sidebar when the route carries a conversation_id (or
   // session_id) query param so the linked conversation is rendered without a
   // manual toggle. The actual fetch is owned by KubernetesLLMResponseGenerator
@@ -629,13 +613,13 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   useEffect(() => {
     // Don't auto-open for read-only users: the panel is gated on canEdit, so
     // flipping the flag would only push the layout aside for a hidden sidebar.
-    if (!nubiChatFeatureEnabled || !canEdit) return;
+    if (!canEdit) return;
     const urlId = urlConversationId || urlSessionId || workflowSessionId;
     if (!urlId) return;
     if (autoOpenedNubiUrlRef.current === urlId) return;
     autoOpenedNubiUrlRef.current = urlId;
     setShowNubiChat(true);
-  }, [urlConversationId, urlSessionId, workflowSessionId, nubiChatFeatureEnabled, canEdit]);
+  }, [urlConversationId, urlSessionId, workflowSessionId, canEdit]);
 
   // Adjust viewport when JSON panel or NubiChat visibility changes
   useEffect(() => {
@@ -3607,7 +3591,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               Gated by canEdit: read-only users (who are forced into the
               Executions tab) have no workflow-authoring access, so the Nubi
               assistant must not be offered to them. */}
-          {nubiChatFeatureEnabled && canEdit && (
+          {canEdit && (
             <Box
               sx={{
                 position: 'absolute',
@@ -3684,8 +3668,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               </Suspense>
             </Box>
           )}
-          {/* NubiChat Toggle Button (Feature Flag Controlled, write-access only) */}
-          {nubiChatFeatureEnabled && canEdit && (
+          {/* NubiChat Toggle Button (write-access only) */}
+          {canEdit && (
             <Box
               id='workflow-nubi-chat-toggle'
               onClick={() => setShowNubiChat(!showNubiChat)}
@@ -3738,7 +3722,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             <Box
               sx={{
                 height: '100%',
-                marginLeft: nubiChatFeatureEnabled && canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
+                marginLeft: canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
                 transition: isResizingRef.current ? 'none' : 'margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
               }}
             >
@@ -3883,7 +3867,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                   sx={{
                     height: '100%',
                     flex: 1,
-                    marginLeft: nubiChatFeatureEnabled && canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
+                    marginLeft: canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
                     marginRight: jsonPanelVisible ? `${jsonWindowWidth}px` : '0',
                     position: 'relative',
                     transition: isResizingRef.current
@@ -4408,8 +4392,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                           {/* Divider */}
                           <Box sx={{ width: '1px', height: '28px', backgroundColor: ds.brand[200] }} />
 
-                          {/* NuBi AI Chat Button */}
-                          {nubiChatFeatureEnabled && (
+                          {/* NuBi AI Chat Button (write-access only, matching the sidebar it toggles) */}
+                          {canEdit && (
                             <Button
                               id='workflow-nubi-chat-btn'
                               composition='icon-only'
