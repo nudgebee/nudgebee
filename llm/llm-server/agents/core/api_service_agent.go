@@ -949,17 +949,18 @@ func ListCustomAgentsForTenant(context *security.RequestContext, allowOnlyEnable
 	// Joins cloud_accounts so we can both filter by tenant and surface the
 	// account name. The tenant filter on cloud_accounts.tenant closes the
 	// cross-tenant query path even when the caller's account list is large.
-	// JOIN on the UUID columns directly so PG can use the agent-id / account-id
-	// indexes — casting both sides to text forces a hash join across the
-	// entire installation table. The ::text cast survives in the SELECT
-	// list because AgentDto.AccountId scans into a string.
+	// llm_agents.id is uuid but llm_agents_installation.agent_id is text (and
+	// holds non-uuid values like "redis" for built-ins), so the join has to
+	// compare as text — uuid = text has no operator and the whole query errors.
+	// The tenant parameter arrives as a Go string, so it needs the ::uuid cast
+	// for the same reason, in the other direction.
 	baseSelect := `SELECT lg.*, lgi.account_id::text AS account_id,
 	                      COALESCE(ca.account_name, '') AS account_name
 	                 FROM llm_agents lg
-	                 JOIN llm_agents_installation lgi ON lg.id = lgi.agent_id
+	                 JOIN llm_agents_installation lgi ON lg.id::text = lgi.agent_id
 	            LEFT JOIN cloud_accounts ca           ON lgi.account_id = ca.id
 	                WHERE lg.type = $1
-	                  AND ca.tenant = $2`
+	                  AND ca.tenant = $2::uuid`
 
 	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
 		secCtx.IsSuperAdminReadonly() ||
