@@ -4127,6 +4127,8 @@ input AIFollowupRequest {
   agent_id: String!
   async: Boolean!
   config: AIConfigInput
+  resolution: String
+  reason: String
 }
 
 input AIConfigInput {

@@ -114,6 +114,16 @@ func HandleFollowupAndResumeV2(ctx *security.RequestContext, req NBAgentRequest)
 	lock := acquireConversationLock(req.ConversationId)
 	defer releaseConversationLock(req.ConversationId, lock)
 
+	return resumeFollowupLocked(ctx, req)
+}
+
+// resumeFollowupLocked is the body of HandleFollowupAndResumeV2, minus lock
+// acquisition — callers must already hold acquireConversationLock(req.ConversationId).
+// Extracted so TrySkipAndContinueFollowup (followup_skip_continue.go) can run
+// its own sibling check and this same resume logic under a single lock
+// acquisition, instead of two separate lock windows that would either race
+// or (if naively re-locked) deadlock against sync.Mutex's non-reentrancy.
+func resumeFollowupLocked(ctx *security.RequestContext, req NBAgentRequest) (NBAgentResponse, error) {
 	logger := ctx.GetLogger()
 	logger.Info("resume_v2: handling followup",
 		"conversation_id", req.ConversationId,
@@ -131,6 +141,13 @@ func HandleFollowupAndResumeV2(ctx *security.RequestContext, req NBAgentRequest)
 		return NBAgentResponse{}, fmt.Errorf("resume_v2: agent %s not found", req.AgentId)
 	}
 	agent := agents[0]
+	// Cross-account guard — see agentBelongsToAccount's doc comment
+	// (followup.go). Same "not found" error as the zero-results case above,
+	// deliberately, and checked before the ancestor-walk below so a
+	// cross-account agentId can't even reach that logic.
+	if !agentBelongsToAccount(agent, req.AccountId) {
+		return NBAgentResponse{}, fmt.Errorf("resume_v2: agent %s not found", req.AgentId)
+	}
 
 	// If the loaded agent's implementation isn't registered — the case for
 	// sub-agents constructed on-the-fly by tool wrappers (delegate_agent's

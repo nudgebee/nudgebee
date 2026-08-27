@@ -924,6 +924,13 @@ type appConfig struct {
 	// docs/logs-v3-agent-investigation.md. Default false until validated further.
 	LogsV3Enabled bool `mapstructure:"llm_server_logs_v3_enabled"`
 
+	// FollowupCancelEnabled gates the "dismiss" resolution on a pending AI
+	// follow-up (#27582) — lets a user skip a WAITING conversation instead
+	// of being forced to answer or abandon it. A hard terminate already
+	// exists separately as ai_cancel_investigation. Default off for
+	// incremental rollout.
+	FollowupCancelEnabled bool `mapstructure:"llm_server_followup_cancel_enabled"`
+
 	// AgentIntegrationPrecheckEnabled gates a fail-fast check that runs only
 	// when a user invokes an agent via @<name>. If every tool the agent
 	// declares requires an integration config and zero configs exist for the
@@ -1514,6 +1521,7 @@ func init() {
 	viper.SetDefault("llm_server_logs_v3_enabled", false)
 
 	viper.SetDefault("llm_server_followup_resume_v2_enabled", true)
+	viper.SetDefault("llm_server_followup_cancel_enabled", false)
 
 	viper.SetDefault("llm_server_agent_integration_precheck_enabled", true)
 

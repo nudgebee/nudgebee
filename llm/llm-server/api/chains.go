@@ -82,6 +82,15 @@ type ConversationApiRequest struct {
 	// index the generated query is resolved against. Ignored for backends with
 	// no index concept (Loki, …) and by every other handler.
 	Index string `json:"index,omitempty"`
+	// Resolution optionally resolves a pending follow-up without answering
+	// it. Only "dismiss" is supported (soft-skip the question, then end the
+	// conversation with a structured marker — see handleFollowupCancel for
+	// why a hard terminate isn't duplicated here). Empty means answer
+	// normally. Gated by FollowupCancelEnabled.
+	Resolution string `json:"resolution,omitempty"`
+	// Reason is an optional user-supplied note recorded with a "dismiss"
+	// Resolution. Ignored otherwise.
+	Reason string `json:"reason,omitempty"`
 }
 
 type ConversationTerminateApiRequest struct {
@@ -235,7 +244,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		if request.Query == "" {
+		if request.Query == "" && request.Resolution == "" {
 			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: query is required",
@@ -422,6 +431,18 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiMisc, "Read", "Write", "Execute") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			return
+		}
+
+		// Resolve a pending follow-up without answering it (dismiss/terminate).
+		// Handled before budget checks — cancelling doesn't consume LLM budget.
+		if request.Resolution != "" {
+			body, status, err := handleFollowupCancel(agentContext, request)
+			if err != nil {
+				c.JSON(status, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				return
+			}
+			c.JSON(status, buildApiResponse(body, nil))
 			return
 		}
 

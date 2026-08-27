@@ -118,3 +118,64 @@ func TestIsFeatureEnabledByDefaultForAccount_EmptyAccountSkipsAccountQuery(t *te
 	assert.True(t, enabled)
 	assert.NoError(t, pkgMockDB.ExpectationsWereMet())
 }
+
+// IsFeatureEnabledForAccount (used by llm-server/api's handleFollowupCancel
+// for LLM_FOLLOWUP_NEW_ENABLED) is the opt-in, default-DISABLED sibling of
+// IsFeatureEnabledByDefaultForAccount above — no row anywhere means false,
+// not true — and it queries via Queryx/rows.Next() rather than Get(), so a
+// "not found" case is zero rows, not a driver error. These four tests were
+// previously uncovered.
+const (
+	isEnabledAccountQuery = "SELECT account_id FROM feature_flag WHERE feature_id = $1 AND status = 'enabled' AND account_id = $2"
+	isEnabledTenantQuery  = "SELECT tenant_id FROM feature_flag WHERE feature_id = $1 and status = 'enabled' and tenant_id = $2"
+)
+
+func TestIsFeatureEnabledForAccount_AccountLevelRowWins(t *testing.T) {
+	pkgMockDB.ExpectQuery(isEnabledAccountQuery).
+		WithArgs(testFeature, testAccount).
+		WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow(testAccount))
+
+	enabled, err := IsFeatureEnabledForAccount(testFeature, testTenant, testAccount)
+	require.NoError(t, err)
+	assert.True(t, enabled, "an enabled account-level row must short-circuit true without reaching the tenant fallback")
+	assert.NoError(t, pkgMockDB.ExpectationsWereMet())
+}
+
+func TestIsFeatureEnabledForAccount_FallsBackToTenantWhenNoAccountRow(t *testing.T) {
+	pkgMockDB.ExpectQuery(isEnabledAccountQuery).
+		WithArgs(testFeature, testAccount).
+		WillReturnRows(sqlmock.NewRows([]string{"account_id"})) // zero rows, not an error — Queryx, not Get
+	pkgMockDB.ExpectQuery(isEnabledTenantQuery).
+		WithArgs(testFeature, testTenant).
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}).AddRow(testTenant))
+
+	enabled, err := IsFeatureEnabledForAccount(testFeature, testTenant, testAccount)
+	require.NoError(t, err)
+	assert.True(t, enabled, "an enabled tenant-level row must be honored when no account row exists")
+	assert.NoError(t, pkgMockDB.ExpectationsWereMet())
+}
+
+func TestIsFeatureEnabledForAccount_NoRowsAnywhereDefaultsDisabled(t *testing.T) {
+	pkgMockDB.ExpectQuery(isEnabledAccountQuery).
+		WithArgs(testFeature, testAccount).
+		WillReturnRows(sqlmock.NewRows([]string{"account_id"}))
+	pkgMockDB.ExpectQuery(isEnabledTenantQuery).
+		WithArgs(testFeature, testTenant).
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}))
+
+	enabled, err := IsFeatureEnabledForAccount(testFeature, testTenant, testAccount)
+	require.NoError(t, err)
+	assert.False(t, enabled, "opt-in: no row anywhere must default to disabled, unlike the ByDefault variant")
+	assert.NoError(t, pkgMockDB.ExpectationsWereMet())
+}
+
+func TestIsFeatureEnabledForAccount_DBErrorFailsClosed(t *testing.T) {
+	pkgMockDB.ExpectQuery(isEnabledAccountQuery).
+		WithArgs(testFeature, testAccount).
+		WillReturnError(errors.New("connection reset by peer"))
+
+	enabled, err := IsFeatureEnabledForAccount(testFeature, testTenant, testAccount)
+	assert.False(t, enabled, "a real DB error must fail closed (false), not silently default to enabled")
+	assert.Error(t, err, "the error must propagate so the caller can distinguish a DB failure from a genuine not-enabled")
+	assert.NoError(t, pkgMockDB.ExpectationsWereMet())
+}

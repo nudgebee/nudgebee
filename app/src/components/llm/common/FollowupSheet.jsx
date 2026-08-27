@@ -9,6 +9,8 @@ import SearchIcon from '@mui/icons-material/Search';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import Tooltip from '@ui/Tooltip';
+import { DropdownMenu } from '@ui/DropdownMenu';
+import { toast } from '@ui/Toast';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { getNubiIconUrl } from '@hooks/useTenantBranding';
@@ -163,6 +165,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
   const [freeText, setFreeText] = useState('');
   const [textareaValue, setTextareaValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   // Captures what the user just submitted so the sheet can paint instant feedback (option
   // highlight / textarea lock) without waiting for the backend round-trip and poll cycle.
   const [pendingAnswer, setPendingAnswer] = useState(null);
@@ -285,6 +288,32 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
     },
     [accountId, conversationId, followup, isSubmitting, onSubmitted, selectedModel]
   );
+
+  // Soft-skips the current question without answering it: writes a dismissal marker
+  // and ends the conversation (same terminal outcome as onStop, distinguished only by
+  // that marker). Gated server-side behind FollowupCancelEnabled — a disabled backend
+  // fails the request rather than the UI, so surface that as a toast instead of a crash.
+  const cancelDismiss = useCallback(async () => {
+    if (isSubmitting || isCancelling) {
+      return;
+    }
+    setIsCancelling(true);
+    try {
+      await apiAskNudgebee.aiFollowupResponse({
+        account_id: accountId || followup?.response?.account_id,
+        conversation_id: conversationId,
+        message_id: followup?.response?.message_id,
+        agent_id: followup?.response?.agent_id,
+        resolution: 'dismiss',
+      });
+      // No local success state to paint — the conversation is terminating, and the
+      // parent unmounts this sheet once that lands via the polling cycle (same
+      // "let the poll be the done signal" pattern submit() uses).
+    } catch {
+      setIsCancelling(false);
+      toast.error('Unable to skip this question. Please try again.');
+    }
+  }, [accountId, conversationId, followup, isCancelling, isSubmitting]);
 
   const submitSingle = useCallback(
     (option) => {
@@ -532,13 +561,41 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
           )}
         </Box>
       </Tooltip>
-      {onStop && (
-        <Tooltip title='Stop conversation' placement='top'>
+      <Box
+        component='button'
+        type='button'
+        onClick={cancelDismiss}
+        disabled={isSubmitting || isCancelling || !followup?.response?.agent_id || !followup?.response?.message_id || !conversationId}
+        aria-label='Skip this question'
+        data-testid='followup-skip-button'
+        sx={{
+          flexShrink: 0,
+          height: ds.space.mul(0, 11),
+          padding: `0 ${ds.space[2]}`,
+          borderRadius: ds.radius.sm,
+          border: 'none',
+          background: 'transparent',
+          color: 'var(--ds-gray-500)',
+          fontSize: 'var(--ds-text-small)',
+          fontWeight: 'var(--ds-font-weight-medium)',
+          cursor: 'pointer',
+          display: 'grid',
+          placeItems: 'center',
+          transition: 'all 0.12s',
+          '&:hover:not(:disabled)': { color: 'var(--ds-red-600)', background: 'color-mix(in srgb, var(--ds-red-600) 8%, transparent)' },
+          '&:disabled': { opacity: 0.5, cursor: 'not-allowed' },
+        }}
+      >
+        Skip
+      </Box>
+      <DropdownMenu
+        align='end'
+        trigger={
           <Box
             component='button'
             type='button'
-            onClick={onStop}
-            aria-label='Stop conversation'
+            aria-label='Cancel this follow-up'
+            data-testid='followup-cancel-menu-trigger'
             sx={{
               flexShrink: 0,
               width: ds.space.mul(0, 11),
@@ -557,8 +614,19 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
           >
             <CloseIcon sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
           </Box>
-        </Tooltip>
-      )}
+        }
+        items={
+          onStop
+            ? [
+                {
+                  label: 'End conversation',
+                  tone: 'danger',
+                  onSelect: onStop,
+                },
+              ]
+            : []
+        }
+      />
     </Box>
   );
 

@@ -288,3 +288,36 @@ func TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits(t *testing.T) {
 		assert.Empty(t, fake.persistedMsgID, "no final message persisted while a sibling is still waiting")
 	})
 }
+
+// TestResumeFollowupLocked_CrossAccountAgentRejected is a security
+// regression test for the V2 resume path — the same class of guard proven
+// for HandleFollowupDismiss/HandleFollowupResponse in
+// followup_cancel_test.go. Checked before the unregistered-agent-impl
+// ancestor walk, so a cross-account agentId can't reach that logic (which
+// would panic on this fake's embedded nil DAO if it were reached).
+func TestResumeFollowupLocked_CrossAccountAgentRejected(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+
+	agentAccountID := uuid.New()
+	SetConversationDao(&crossAccountFakeDao{
+		agent: ConversationAgent{
+			ID:        uuid.New(),
+			AccountID: agentAccountID,
+			Status:    AgentExecutionStatusWaiting,
+		},
+	})
+
+	ctx := security.NewRequestContextForSuperAdmin()
+	agentID := uuid.New().String()
+	resp, err := resumeFollowupLocked(ctx, NBAgentRequest{
+		AgentId:        agentID,
+		AccountId:      uuid.New().String(), // deliberately different from agentAccountID
+		Query:          "some answer",
+		ConversationId: uuid.New().String(),
+	})
+	assert.Equal(t, NBAgentResponse{}, resp)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "not found")
+	}
+}
