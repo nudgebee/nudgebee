@@ -120,6 +120,17 @@ jobs:
           context: ${{ matrix.context }}
           push: true
           platforms: ${{ matrix.platform }}
+          # Stamp the build identity into the app image. app/Dockerfile turns
+          # NEXT_PUBLIC_APP_VERSION_ARG into NEXT_PUBLIC_APP_VERSION, which the
+          # NextAuth session callback returns to the browser; the header nudges
+          # a reload when a tab's booted version no longer matches what the
+          # server reports. Without it every build reports the Dockerfile
+          # default (0.0.0) and the nudge never fires. Only `app` declares the
+          # ARG, so the expression yields an empty (ignored) value elsewhere —
+          # passing an unused build-arg to the other Dockerfiles just warns.
+          # The ARG sits in the final runner stage, so a changing value
+          # invalidates only the last two trivial layers, not the npm build.
+          build-args: ${{ matrix.image == 'app' && format('NEXT_PUBLIC_APP_VERSION_ARG=edge-{0}-{1}', needs.prepare.outputs.build_date, needs.prepare.outputs.sha_short) || '' }}
           # Two tags per arch:
           #   :edge-<arch>                          — rolling, overwritten each push
           #   :edge-<date>-<sha7>-<arch>            — immutable per-commit snapshot
