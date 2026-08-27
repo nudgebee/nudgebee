@@ -18,7 +18,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from sqlalchemy import func, text
 
@@ -341,10 +341,25 @@ _ANSWER_DURATION_SQL = text("""
     )
     SELECT GREATEST(
         EXTRACT(EPOCH FROM (gen.answered - gen.started)) - waited.seconds, 0
-    ) AS seconds
+    ) AS seconds,
+    waited.seconds AS followup_wait_seconds
     FROM gen, waited
     WHERE gen.started IS NOT NULL AND gen.answered IS NOT NULL
 """)
+
+
+class AnswerTiming(NamedTuple):
+    """Both halves of a turn, from one pass over the message rows.
+
+    ``duration_seconds`` is the agent's own answer time; ``followup_wait_seconds``
+    is how long it sat parked on followups waiting for a human. They are reported
+    separately rather than as one number because a slow model and a slow reviewer
+    are different problems.
+    """
+
+    duration_seconds: float
+    followup_wait_seconds: float
+
 
 # Statuses a test never leaves. A row in one of these must carry a real
 # duration, whichever path finished it (orchestrator, followup handler or
@@ -352,8 +367,8 @@ _ANSWER_DURATION_SQL = text("""
 _TERMINAL_STATUSES = ("pass", "fail", "error", "timeout")
 
 
-def answer_duration_seconds(conversation_id) -> Optional[float]:
-    """The agent's answer time for a conversation, or None if not derivable.
+def answer_timing(conversation_id) -> Optional[AnswerTiming]:
+    """The agent's answer time and followup wait, or None if not derivable.
 
     ``conversation_id`` is ``llm_conversations.id`` (a test row's
     ``conversation_id`` column) — NOT ``polling_conversation_id``, which holds
@@ -384,7 +399,7 @@ def answer_duration_seconds(conversation_id) -> Optional[float]:
         row = db.execute(_ANSWER_DURATION_SQL, {"cid": cid}).fetchone()
         if not row or row[0] is None:
             return None
-        return round(float(row[0]), 2)
+        return AnswerTiming(round(float(row[0]), 2), round(float(row[1] or 0.0), 2))
     except Exception:
         logger.exception("duration: query failed for conversation %s", conversation_id)
         return None
@@ -397,10 +412,11 @@ def answer_duration_seconds(conversation_id) -> Optional[float]:
 
 
 def _stamp_answer_duration(tr, conversation_id) -> None:
-    """Set a terminal row's duration from its conversation, when derivable."""
-    measured = answer_duration_seconds(conversation_id)
-    if measured is not None:
-        tr.duration_seconds = measured
+    """Set a terminal row's timings from its conversation, when derivable."""
+    timing = answer_timing(conversation_id)
+    if timing is not None:
+        tr.duration_seconds = timing.duration_seconds
+        tr.followup_wait_seconds = timing.followup_wait_seconds
 
 
 def _hard_timeout_sec() -> int:
@@ -1886,6 +1902,7 @@ def _get_test_results_list(run: BenchmarkRun) -> list:
                 "planner_relevancy": r.planner_relevancy or 0.0,
                 "score_reason": r.score_reason or "",
                 "duration_seconds": r.duration_seconds or 0.0,
+                "followup_wait_seconds": r.followup_wait_seconds,
                 "cost": r.cost or 0.0,
                 "total_tokens": r.total_tokens or 0,
                 "tool_calls_total": r.tool_calls_total or 0,
@@ -1944,11 +1961,15 @@ def store_test_result(run_id: str, result: dict):
         # number or a hardcoded 0.
         status = result.get("status") or (tr.status if tr else "")
         if status in _TERMINAL_STATUSES:
-            measured = answer_duration_seconds(
+            timing = answer_timing(
                 result.get("conversation_id") or (tr.conversation_id if tr else "")
             )
-            if measured is not None:
-                result = {**result, "duration_seconds": measured}
+            if timing is not None:
+                result = {
+                    **result,
+                    "duration_seconds": timing.duration_seconds,
+                    "followup_wait_seconds": timing.followup_wait_seconds,
+                }
 
         if tr:
             # Update existing row
@@ -1968,6 +1989,9 @@ def store_test_result(run_id: str, result: dict):
             tr.score_reason = result.get("score_reason", tr.score_reason)
             tr.execution_trace = result.get("execution_trace", tr.execution_trace)
             tr.duration_seconds = result.get("duration_seconds", tr.duration_seconds)
+            tr.followup_wait_seconds = result.get(
+                "followup_wait_seconds", tr.followup_wait_seconds
+            )
             tr.setup_duration = result.get("setup_duration", tr.setup_duration)
             tr.llm_duration = result.get("llm_duration", tr.llm_duration)
             tr.teardown_duration = result.get("teardown_duration", tr.teardown_duration)
@@ -2008,6 +2032,7 @@ def store_test_result(run_id: str, result: dict):
                 tr.answer_relevancy = 0.0
                 tr.planner_relevancy = 0.0
                 tr.duration_seconds = 0.0
+                tr.followup_wait_seconds = None
                 tr.setup_duration = 0.0
                 tr.llm_duration = 0.0
                 tr.teardown_duration = 0.0
@@ -2042,6 +2067,7 @@ def store_test_result(run_id: str, result: dict):
                 score_reason=result.get("score_reason", ""),
                 execution_trace=result.get("execution_trace", ""),
                 duration_seconds=result.get("duration_seconds", 0.0),
+                followup_wait_seconds=result.get("followup_wait_seconds"),
                 setup_duration=result.get("setup_duration", 0.0),
                 llm_duration=result.get("llm_duration", 0.0),
                 teardown_duration=result.get("teardown_duration", 0.0),
@@ -2223,6 +2249,9 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
             "score_reason": r.score_reason or "",
             "execution_trace": r.execution_trace or "",
             "duration_seconds": r.duration_seconds or 0.0,
+            # None (not 0) for rows recorded before this was tracked, so a
+            # reader can tell "waited on nobody" from "we don't know".
+            "followup_wait_seconds": r.followup_wait_seconds,
             "cost": r.cost or 0.0,
             "total_tokens": r.total_tokens or 0,
             "input_tokens": r.input_tokens or 0,
