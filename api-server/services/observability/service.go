@@ -2020,17 +2020,35 @@ var canonicalTraceFields = []canonicalTraceField{
 	{"destination_workload_namespace", "string"},
 }
 
-// providerDeclaresTraceFields reports whether the source publishes a static label
-// mapping. An empty mapping means the provider has declared nothing about which
-// canonical fields it resolves, so the full canonical set stays advertised for it —
-// passthrough backends (ClickHouse, Jaeger, Application Insights) consume the canonical
-// names unchanged and have nothing to rename.
+// TracePassthroughTraceSource is implemented by a source that consumes the canonical
+// trace field names unchanged, so its GetLabelMapping carries convenience aliases only
+// and says nothing about which canonical fields the backend resolves.
+//
+// The marker exists because "publishes a mapping" and "declares its resolvable field
+// set" are different claims that happened to coincide until they did not: ClickHouse
+// gained an alias mapping (`namespace` -> `workload_namespace`) to make those filters
+// rewrite correctly, which silently collapsed its advertised vocabulary from the ten
+// canonical fields to those three alias keys. A source that renames a few names must be
+// able to say so without also claiming it can resolve nothing else.
+type TracePassthroughTraceSource interface {
+	// TraceFieldsArePassthrough reports that the backend accepts the canonical field
+	// names directly, whatever aliases GetLabelMapping additionally defines.
+	TraceFieldsArePassthrough() bool
+}
+
+// providerDeclaresTraceFields reports whether the source declares which canonical fields
+// it resolves. A source that publishes no static mapping has declared nothing, so the
+// full canonical set stays advertised for it; so has one that marks itself passthrough,
+// whose mapping renames names rather than restricting them.
 //
 // Deliberately reads the STATIC mapping, never the merged one. getMergedTraceLabelMapping
 // folds in tenant/account trace_labels overrides, which are additive everywhere else;
 // testing the merged map would let a single override flip a passthrough provider into
 // "declared" mode and collapse its advertised list to that one key.
 func providerDeclaresTraceFields(source TraceSource) bool {
+	if p, ok := source.(TracePassthroughTraceSource); ok && p.TraceFieldsArePassthrough() {
+		return false
+	}
 	return len(source.GetLabelMapping()) > 0
 }
 

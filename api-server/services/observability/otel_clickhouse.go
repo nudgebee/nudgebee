@@ -247,6 +247,14 @@ func (s *OtelClickhouseTraceSource) GetLabelMapping() map[string]string {
 	}
 }
 
+// TraceFieldsArePassthrough marks ClickHouse as consuming the canonical trace field
+// names directly — every one is a real column of ClickhouseTraceTableDefinition. The
+// mapping above renames three convenience aliases onto columns; it is not a statement
+// that those three are all this backend can filter on. Without this, advertising
+// collapses to the alias keys and the trace agent loses duration_ns, trace_id and the
+// rest. TestOtelClickhouse_CanonicalFieldsKeepTheirTypes pins the result.
+func (s *OtelClickhouseTraceSource) TraceFieldsArePassthrough() bool { return true }
+
 func (s *OtelClickhouseTraceSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_like", "_ilike", "_nlike", "_gt", "_lt", "_gte", "_lte", "_is_null"}
 }

@@ -231,13 +231,43 @@ func TestKnownUnderAdvertisedFields(t *testing.T) {
 	}
 }
 
+// aliasOnlyTraceSource is a passthrough source that also renames a name — the exact
+// shape that regressed: ClickHouse was passthrough, gained one alias, and silently
+// stopped advertising everything else.
+type aliasOnlyTraceSource struct{ OtelClickhouseTraceSource }
+
+func (s *aliasOnlyTraceSource) GetLabelMapping() map[string]string {
+	return map[string]string{"namespace": "workload_namespace"}
+}
+
+// TestPassthroughSourceKeepsCanonicalFieldsDespiteAliases is the invariant that was
+// missing when #36940 (advertise only what the mapping resolves) and #36866 (give
+// ClickHouse an alias mapping) landed two days apart: each was correct alone, and
+// together they collapsed ClickHouse's advertised vocabulary from ten canonical fields
+// to three alias keys. providerDeclaresTraceFields inferred "declares its resolvable
+// set" from "publishes a mapping"; a passthrough source that renames a name makes those
+// two different claims.
+func TestPassthroughSourceKeepsCanonicalFieldsDespiteAliases(t *testing.T) {
+	src := &aliasOnlyTraceSource{}
+	require.False(t, providerDeclaresTraceFields(src),
+		"an alias mapping on a passthrough source must not count as declaring its field set")
+
+	advertised := canonicalTraceFieldNames(buildTraceLabels(src.GetLabelMapping(), providerDeclaresTraceFields(src), nil))
+	assert.Equal(t, allCanonicalTraceFieldNames(), advertised,
+		"renaming one field must not withdraw the other nine")
+}
+
 // TestOtelClickhouse_CanonicalFieldsKeepTheirTypes guards the one place a value type is
 // attached to a trace label: a passthrough provider must still get typed canonical
 // fields, since the trace agent uses the type to build comparisons (duration_ns > N).
 func TestOtelClickhouse_CanonicalFieldsKeepTheirTypes(t *testing.T) {
 	src := &OtelClickhouseTraceSource{}
-	labels := buildTraceLabels(src.GetLabelMapping(), providerDeclaresTraceFields(src), nil)
-	require.Len(t, labels, len(canonicalTraceFields), "ClickHouse declares no mapping, so it keeps every canonical field")
+	mapping := src.GetLabelMapping()
+	labels := buildTraceLabels(mapping, providerDeclaresTraceFields(src), nil)
+	// ClickHouse publishes alias entries but marks itself passthrough, so it keeps every
+	// canonical field AND advertises the aliases — never the aliases alone.
+	require.Len(t, labels, len(canonicalTraceFields)+len(mapping),
+		"passthrough aliases must extend the canonical vocabulary, not replace it")
 
 	for i, f := range canonicalTraceFields {
 		assert.Equal(t, f.name, labels[i].Label, "canonical fields lead, in declared order")
