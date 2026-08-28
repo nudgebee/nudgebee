@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Tuple
 
 from ragas.metrics import RubricsScore
 
+from .eval_markers import METRIC_FAILED, QUALITY_LABEL, SIMILARITY_LABEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -351,7 +353,7 @@ def evaluate_single(
     except Exception as e:
         logger.error("Similarity evaluation failed: %s", e)
         result.similarity_failed = True
-        result.similarity_reason = f"[metric_failed] {e}"
+        result.similarity_reason = f"{METRIC_FAILED} {e}"
 
     # LLM-based answer quality
     try:
@@ -362,14 +364,14 @@ def evaluate_single(
     except Exception as e:
         logger.error("Answer quality evaluation failed: %s", e)
         result.quality_failed = True
-        result.quality_reason = f"[metric_failed] {e}"
+        result.quality_reason = f"{METRIC_FAILED} {e}"
 
     # Combined reason
     parts = []
     if result.similarity_reason:
-        parts.append(f"[Similarity] {result.similarity_reason}")
+        parts.append(f"{SIMILARITY_LABEL} {result.similarity_reason}")
     if result.quality_reason:
-        parts.append(f"[Quality] {result.quality_reason}")
+        parts.append(f"{QUALITY_LABEL} {result.quality_reason}")
     result.reason = "\n".join(parts)
 
     return result
@@ -426,7 +428,7 @@ def evaluate_batch(
         except Exception as e:
             logger.error("Similarity failed for item %d: %s", i, e)
             results[i].similarity_failed = True
-            results[i].similarity_reason = f"[metric_failed] {e}"
+            results[i].similarity_reason = f"{METRIC_FAILED} {e}"
 
         # LLM-based quality
         try:
@@ -440,14 +442,14 @@ def evaluate_batch(
         except Exception as e:
             logger.error("Answer quality failed for item %d: %s", i, e)
             results[i].quality_failed = True
-            results[i].quality_reason = f"[metric_failed] {e}"
+            results[i].quality_reason = f"{METRIC_FAILED} {e}"
 
         # Combined reason
         parts = []
         if results[i].similarity_reason:
-            parts.append(f"[Similarity] {results[i].similarity_reason}")
+            parts.append(f"{SIMILARITY_LABEL} {results[i].similarity_reason}")
         if results[i].quality_reason:
-            parts.append(f"[Quality] {results[i].quality_reason}")
+            parts.append(f"{QUALITY_LABEL} {results[i].quality_reason}")
         results[i].reason = "\n".join(parts)
 
     return results

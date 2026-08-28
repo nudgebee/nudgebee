@@ -710,12 +710,13 @@ def _run_test_core(
                 trace = get_planner_response(convo_id, session.account_id) or ""
             if trace:
                 from llm.agents.common.benchmark import _evaluate_planner
+                from llm.agents.common.eval_markers import PLANNER_LABEL
 
                 planner_score, planner_reason = _evaluate_planner(
                     trace, user_prompt, session.llm
                 )
                 if planner_reason:
-                    score_reason += f"\n[Planner] {planner_reason}"
+                    score_reason += f"\n{PLANNER_LABEL} {planner_reason}"
                     score_reason = score_reason.strip()
         except Exception as e:
             logger.error("[%s] RAGAS evaluation failed: %s", test_id, e)

@@ -23,6 +23,12 @@ from typing import NamedTuple, Optional
 from sqlalchemy import func, text
 
 from benchmark_server.models.benchmark_run import BenchmarkRun, BenchmarkTestResult
+from llm.agents.common.eval_markers import (
+    METRIC_FAILED,
+    PLANNER_METRIC_FAILED,
+    QUALITY_METRIC_FAILED,
+    SIMILARITY_METRIC_FAILED,
+)
 from benchmark_server.utils.db_utils import get_db
 
 logger = logging.getLogger(__name__)
@@ -1791,6 +1797,27 @@ def _get_model_info(run: BenchmarkRun, field: str) -> list:
     return sorted(values)
 
 
+def _metric_avg(
+    scorable_results: list[BenchmarkTestResult], attr: str, failed_marker: str
+) -> float:
+    # A judge crash records the failure marker in score_reason and a 0 score.
+    # That 0 is a scoring artifact, not an assessment — averaging it in
+    # misreports the agent, so those rows are excluded from this metric's mean
+    # (they still count for every other metric). Shared by the dashboard
+    # summary and the report assembly so the two cannot disagree.
+    vals = []
+    for r in scorable_results:
+        score = getattr(r, attr) or 0.0
+        if not score and failed_marker in (r.score_reason or ""):
+            continue
+        vals.append(score)
+    return round(sum(vals) / len(vals), 2) if vals else 0.0
+
+
+def _judge_failures(scorable_results: list[BenchmarkTestResult]) -> int:
+    return sum(1 for r in scorable_results if METRIC_FAILED in (r.score_reason or ""))
+
+
 def _get_test_summary(run: BenchmarkRun) -> dict:
     """Compute test result counts from the relationship."""
     results = run.test_results or []
@@ -1826,30 +1853,15 @@ def _get_test_summary(run: BenchmarkRun) -> dict:
         )
     ]
 
-    def _metric_avg(attr: str, failed_marker: str) -> float:
-        # A judge crash records the failure marker in score_reason and a 0
-        # score. That 0 is a scoring artifact, not an assessment — averaging
-        # it in misreports the agent, so those rows are excluded from this
-        # metric's mean (they still count for every other metric).
-        vals = [
-            getattr(r, attr) or 0
-            for r in scorable_results
-            if not (
-                failed_marker in (r.score_reason or "") and not (getattr(r, attr) or 0)
-            )
-        ]
-        return round(sum(vals) / len(vals), 2) if vals else 0
-
-    avg_similarity = _metric_avg("answer_similarity", "[Similarity] [metric_failed]")
-    avg_relevancy = _metric_avg("answer_relevancy", "[Quality] [metric_failed]")
-    avg_planner = (
-        round(
-            sum(r.planner_relevancy or 0 for r in scorable_results)
-            / len(scorable_results),
-            2,
-        )
-        if scorable_results
-        else 0
+    avg_similarity = _metric_avg(
+        scorable_results, "answer_similarity", SIMILARITY_METRIC_FAILED
+    )
+    avg_relevancy = _metric_avg(
+        scorable_results, "answer_relevancy", QUALITY_METRIC_FAILED
+    )
+    judge_failures = _judge_failures(scorable_results)
+    avg_planner = _metric_avg(
+        scorable_results, "planner_relevancy", PLANNER_METRIC_FAILED
     )
     overall_accuracy = (
         round((avg_similarity + avg_relevancy) / 2, 2) if scorable_results else 0
@@ -1865,6 +1877,9 @@ def _get_test_summary(run: BenchmarkRun) -> dict:
         "avg_similarity": avg_similarity,
         "avg_relevancy": avg_relevancy,
         "avg_planner": avg_planner,
+        # Non-zero means some scores are missing, not that the agent scored
+        # low — a judge-config failure can silently lose a whole run this way.
+        "judge_failures": judge_failures,
     }
 
 
@@ -2325,9 +2340,13 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
             return data[-1]
         return data[f] + (k - f) * (data[c] - data[f])
 
-    avg_sim = round(sum(r.answer_similarity or 0 for r in scorable_results) / n, 2)
-    avg_rel = round(sum(r.answer_relevancy or 0 for r in scorable_results) / n, 2)
-    avg_planner = round(sum(r.planner_relevancy or 0 for r in scorable_results) / n, 2)
+    avg_sim = _metric_avg(
+        scorable_results, "answer_similarity", SIMILARITY_METRIC_FAILED
+    )
+    avg_rel = _metric_avg(scorable_results, "answer_relevancy", QUALITY_METRIC_FAILED)
+    avg_planner = _metric_avg(
+        scorable_results, "planner_relevancy", PLANNER_METRIC_FAILED
+    )
     overall_acc = round((avg_sim + avg_rel) / 2, 2)
 
     avg_cache = 0.0
@@ -2342,6 +2361,7 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
         "overall_accuracy": overall_acc,
         "answer_similarity": avg_sim,
         "answer_relevancy": avg_rel,
+        "judge_failures": _judge_failures(scorable_results),
         "planner_relevancy": avg_planner,
         "latency": {
             "total_seconds": round(
