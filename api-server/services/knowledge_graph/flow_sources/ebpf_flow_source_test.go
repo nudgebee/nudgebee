@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
+	"strings"
 	"testing"
 )
 
@@ -369,5 +370,85 @@ func TestEbpfFlowSource_ResolvesBarePodNameViaSourceNamespace(t *testing.T) {
 	other := makeWorkloadNode("Deployment", "web", "payments", "k8s-dev")
 	if _, ok := resolver.ResolvePodName(stringProp(other, "namespace"), "redis-master-0"); ok {
 		t.Errorf("eBPF resolution must refuse when the caller namespace has no such pod")
+	}
+}
+
+func TestEbpfFlowSource_ParseServiceMapFromRelay_Errors(t *testing.T) {
+	source := NewEbpfFlowSource(slog.Default())
+
+	tests := []struct {
+		name          string
+		relayResponse map[string]any
+		wantContains  []string
+	}{
+		{
+			// The Go k8s-agent replies with this shape whenever the action is
+			// not registered (PROMETHEUS_URL unset), the handler fails, the task
+			// times out, or auth is rejected.
+			name: "agent error envelope is surfaced",
+			relayResponse: map[string]any{
+				"status_code": float64(404),
+				"data":        map[string]any{"error": "action not registered: service_map"},
+			},
+			wantContains: []string{"404", "action not registered: service_map"},
+		},
+		{
+			name: "unknown shape reports status code and keys",
+			relayResponse: map[string]any{
+				"status_code": float64(200),
+				"data":        map[string]any{"request_id": "abc"},
+			},
+			wantContains: []string{"missing 'data.data'", "200", "request_id"},
+		},
+		{
+			name: "absent status code reads as unknown",
+			relayResponse: map[string]any{
+				"data": map[string]any{"request_id": "abc"},
+			},
+			wantContains: []string{"missing 'data.data'", "status_code unknown"},
+		},
+		{
+			name: "explicit failure from the python agent",
+			relayResponse: map[string]any{
+				"data": map[string]any{"success": false, "data": nil},
+			},
+			wantContains: []string{"not successful"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := source.parseServiceMapFromRelay(tt.relayResponse)
+			if err == nil {
+				t.Fatal("parseServiceMapFromRelay() returned no error")
+			}
+			for _, want := range tt.wantContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestEbpfFlowSource_ParseServiceMapFromRelay_Success(t *testing.T) {
+	source := NewEbpfFlowSource(slog.Default())
+
+	serviceMap, err := source.parseServiceMapFromRelay(map[string]any{
+		"status_code": float64(200),
+		"data": map[string]any{
+			"data": []any{
+				map[string]any{"id": map[string]any{"name": "web", "namespace": "default", "kind": "Deployment"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("parseServiceMapFromRelay() returned error: %v", err)
+	}
+	if len(serviceMap.Applications) != 1 {
+		t.Fatalf("expected 1 application, got %d", len(serviceMap.Applications))
+	}
+	if serviceMap.Applications[0].Id.Name != "web" {
+		t.Errorf("expected application name 'web', got %q", serviceMap.Applications[0].Id.Name)
 	}
 }
