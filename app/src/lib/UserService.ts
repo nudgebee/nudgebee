@@ -963,6 +963,12 @@ export async function getFeatures() {
       rows {
         value
         description
+        display_name
+        category
+        category_label
+        category_sort_order
+        polarity
+        stored_value_inverted
       }
     }
   }

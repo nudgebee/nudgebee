@@ -786,14 +786,6 @@ func triggerVerticalRightsizing(ctx *security.RequestContext, accountIds []strin
 			ctx.GetMeter(),
 		)
 
-		// Account row wins over the tenant row, so a single account can be
-		// opted out without disabling rightsizing for the whole tenant.
-		if !tenant.IsFeatureEnabledByDefaultForAccount(tenantCtx, acc.TenantId, acc.AccountId, tenant.FEATURE_VERTICAL_RIGHTSIZING) {
-			tenantCtx.GetLogger().Debug("vertical rightsizing: disabled for this scope, skipping",
-				"tenant_id", acc.TenantId, "account_id", acc.AccountId)
-			continue
-		}
-
 		tenantCtx.GetLogger().Info("vertical rightsizing: triggering for account",
 			"account_id", acc.AccountId,
 			"tenant_id", acc.TenantId,

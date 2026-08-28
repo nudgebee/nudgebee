@@ -88,7 +88,10 @@ ML path is async. Message `AnomalyProcessingMessage` (`service.go`) published wi
 ## Feature flags
 
 - `FEATURE_ANOMALY_DETECTION` — tenant gate; processing is skipped if off.
-- `FEATURE_ANOMALY_DETECTION_ERROR_RATE` — separate gate for error-rate anomalies.
+- `FEATURE_ANOMALY_DETECTION_ERROR_RATE` — **retired.** The catalog row was deleted in V900, so
+  no tenant can set it and `IsFeatureEnabledByDefault` returns true for the missing row: error-rate
+  anomalies now always run. `service.go` still reads the flag; that dead branch is queued for
+  removal (see `llm/llm-server/docs/flag-cleanup-programme.md`).
 
 ## Gotchas
 

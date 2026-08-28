@@ -10127,14 +10127,36 @@ var table_metadata = map[string]TableDefinition{
 			"updated_at": {Type: ColumnDefinitionTypeDatetime, Def: "updated_at"},
 		},
 	},
+	// Joined to feature_category so the settings screen gets a readable group
+	// label and a stable order without hard-coding either in the frontend.
+	// feature.category is NOT NULL with an FK to feature_category, so the inner
+	// join cannot drop a row.
 	"feature_v2": {
-		Type:   Normal,
+		Type:   Derived,
 		Source: database.Metastore,
 		Name:   "feature_v2",
-		Def:    "feature",
+		Def: `(
+			SELECT
+				f.value as value,
+				f.description as description,
+				f.display_name as display_name,
+				f.category as category,
+				c.label as category_label,
+				c.sort_order as category_sort_order,
+				f.polarity as polarity,
+				f.stored_value_inverted as stored_value_inverted
+			FROM feature f
+			INNER JOIN feature_category c ON c.id = f.category
+		) as feature_v2`,
 		Columns: map[string]ColumnDefinition{
-			"value":       {Type: ColumnDefinitionTypeString, Def: "value"},
-			"description": {Type: ColumnDefinitionTypeString, Def: "description"},
+			"value":                 {Type: ColumnDefinitionTypeString, Def: "value"},
+			"description":           {Type: ColumnDefinitionTypeString, Def: "description"},
+			"display_name":          {Type: ColumnDefinitionTypeString, Def: "display_name"},
+			"category":              {Type: ColumnDefinitionTypeString, Def: "category"},
+			"category_label":        {Type: ColumnDefinitionTypeString, Def: "category_label"},
+			"category_sort_order":   {Type: ColumnDefinitionTypeInt, Def: "category_sort_order"},
+			"polarity":              {Type: ColumnDefinitionTypeString, Def: "polarity"},
+			"stored_value_inverted": {Type: ColumnDefinitionTypeBoolean, Def: "stored_value_inverted"},
 		},
 	},
 	"tenant_by_user_v2": {
