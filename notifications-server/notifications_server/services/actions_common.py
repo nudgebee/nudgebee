@@ -48,6 +48,8 @@ SUPPRESS_NOT_ALLOWED_MESSAGE = (
 # the internal X-ACTION-TOKEN path bypasses the gateway, so the role gate lives here.
 SUPPRESS_ALLOWED_ROLES = {"tenant_admin", "account_admin"}
 SUPPRESS_DURATION_LABELS = {1: "1h", 4: "4h", 24: "24h", 168: "7d"}
+# Edits/deletes and our own replies must never be treated as a new DM question.
+_DM_IGNORED_SUBTYPES = {"message_changed", "message_deleted", "message_replied"}
 LOG = logging.getLogger(__name__)
 
 
@@ -1138,7 +1140,10 @@ class SlackEventsService(SlackActionsBaseService):
             self._handle_member_joined_channel(event, team_id, channel_id)
 
         elif event_type == "message":
-            self._handle_channel_message(event, team_id, event_id)
+            if event.get("channel_type") == "im":
+                self._handle_direct_message(event, team_id, event_id, event_context, channel_id)
+            else:
+                self._handle_channel_message(event, team_id, event_id)
 
         else:
             LOG.warning(f"[SlackEventsService] Unsupported event type: {event_type}")
@@ -1152,6 +1157,48 @@ class SlackEventsService(SlackActionsBaseService):
         """
         with ChannelIngestService(engine=self.engine) as ingest:
             ingest.handle_message_event(event, team_id, event_id)
+
+    def _handle_direct_message(self, event, team_id, event_id, event_context, channel_id):
+        """DMs need no @mention to trigger Nubi — every plain message is a question.
+        Unlike _handle_channel_message, Slack delivers the bot's own posts here too
+        (there's no "watched channel" gate to filter them out), so bot echoes and
+        edit/delete subtypes must be dropped explicitly to avoid a reply loop.
+        """
+        if event.get("bot_id") or event.get("subtype") in _DM_IGNORED_SUBTYPES:
+            return
+
+        slack_user_id = event.get("user")
+        if not slack_user_id:
+            return
+
+        thread_ts = event.get("thread_ts", event.get("ts"))
+        # Plain `message` events (unlike app_mention) carry no `event_ts` field —
+        # fall back to `ts`, same as thread_ts above, so a brand-new DM correctly
+        # evaluates as not-yet-threaded (thread_ts == event_ts) instead of always
+        # being misread as a reply within an existing thread.
+        event_ts = event.get("event_ts", event.get("ts"))
+
+        LOG.debug(f"DM received from user={slack_user_id}, thread={thread_ts}")
+
+        error_message, user_email = self.get_user_email(slack_user_id, team_id)
+        if error_message or not user_email:
+            message = error_message or "Unable to get user info"
+            self.common_service.post_slack_ephemeral_response(channel_id, team_id, slack_user_id, message)
+            LOG.warning(f"Failed to resolve user email for user={slack_user_id}: {message}")
+            return
+
+        LOG.debug(f"Starting new conversation for user={slack_user_id}, thread={thread_ts}")
+        self.event_service.execute_event(
+            team_id=team_id,
+            event_id=event_id,
+            event_context=event_context,
+            user_email=user_email,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            event_ts=event_ts,
+            event=event,
+            slack_user_id=slack_user_id,
+        )
 
     def _handle_app_mention(self, event, team_id, event_id, event_context, channel_id):
         slack_user_id = event.get("user")

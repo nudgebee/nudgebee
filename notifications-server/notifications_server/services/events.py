@@ -216,7 +216,7 @@ class Events:
     def _slack_bot_token(self, team_id):
         try:
             with Session(self.session.get_bind()) as session:
-                installation = load_installation_by_team(session, team_id, "slack")
+                installation = load_installation_by_team(session, team_id, "slack", app_id=self.common_service.app_id)
             return installation.token if installation else None
         except Exception as e:
             LOG.warning("Failed to resolve Slack bot token for team %s: %s", team_id, e)
