@@ -1,4 +1,4 @@
-import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Link, Box, Collapse, IconButton } from '@mui/material';
+import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Box, Collapse, IconButton } from '@mui/material';
 import { HelpOutline, ExpandMore, ExpandLess, InfoOutlined } from '@mui/icons-material';
 import Tooltip from '@ui/Tooltip';
 import Tabs from '@shared/navigation/Tabs';
@@ -373,9 +373,9 @@ const AddAwsAccountModal = ({ open, onClose }) => {
 
           {!showManualInput && isPolling && (
             <Grid item sx={{ mt: 1 }}>
-              <Link component='button' variant='body2' onClick={() => setShowManualInput(true)} sx={{ textDecoration: 'none' }}>
+              <Button tone='link' size='sm' onClick={() => setShowManualInput(true)}>
                 Having trouble? Connect manually using Role ARN
-              </Link>
+              </Button>
             </Grid>
           )}
 
