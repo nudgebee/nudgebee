@@ -381,6 +381,24 @@ func TestResolveLLMConfig_DBGlobalLayer(t *testing.T) {
 	assert.Equal(t, "claude-db-global", res.Model)
 }
 
+// LLM_CONFIG_IGNORE_DB drops the DB layers so ENV wins. Same setup as
+// TestResolveLLMConfig_DBGlobalLayer, which asserts the opposite without the flag.
+func TestResolveLLMConfig_IgnoreDBFlagLetsEnvWin(t *testing.T) {
+	setEnvKey(t, "LLM_CONFIG_IGNORE_DB", "true")
+	pinGlobalModel(t, "openai", "gpt-env-global")
+	seedDBConfig(t, "acct-ignoredb", map[string]string{
+		"llm_provider":   "anthropic",
+		"llm_model_name": "claude-db-global",
+	})
+
+	ctx := newCtxWithKVs(ContextKeyModelTier, ModelTier(""))
+	res, err := ResolveLLMConfig(ctx, "acct-ignoredb", "", "")
+	assert.NoError(t, err)
+	assert.Equal(t, "env-global", res.Source, "flag drops the DB layers, so env-global is active")
+	assert.Equal(t, "gpt-env-global", res.Model)
+	assert.Equal(t, "openai", res.Provider)
+}
+
 // env-tier beats env-global within the ENV block, for each tier category. DB
 // is intentionally NOT seeded here — see TestResolveLLMConfig_DBGlobalBeatsEnvTier
 // for the cross-source precedence (DB always beats ENV).

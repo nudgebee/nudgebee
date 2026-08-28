@@ -3731,6 +3731,18 @@ func cleanupMarkdownInResponse(completion *llms.ContentResponse) {
 }
 
 func getLLMIntegrationConfig(ctx *security.RequestContext, accountId string, overrides ...map[string]string) (map[string]string, error) {
+	// Opt-in escape hatch: when LLM_CONFIG_IGNORE_DB is set, drop the DB-global,
+	// DB-tier and DB-agent layers so the ENV layers decide provider/model.
+	// Intended for local runs against a DB whose tenant config points at models
+	// the operator cannot use. Placed before the overrides check on purpose: a
+	// caller-supplied dbConfig is DB-sourced too. Layers are named rather than
+	// numbered here because this file's inline comments count up (L4-L6) while
+	// the llm_config.go docstring counts down (2-4) for the same three layers.
+	// This does not cover the two DB reads that bypass this function --
+	// GetConversationOverride and integrationConfigForPin; see that docstring.
+	if config.Config.GetBool("LLM_CONFIG_IGNORE_DB", false) {
+		return nil, nil
+	}
 	if len(overrides) > 0 && overrides[0] != nil {
 		return overrides[0], nil
 	}

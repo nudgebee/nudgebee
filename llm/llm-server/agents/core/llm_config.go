@@ -11,6 +11,16 @@ package core
 // 6. ENV tier-specific (e.g., LLM_TIER_PROVIDER_REASONING).
 // 7. ENV Global (e.g., LLM_PROVIDER).
 //
+// Escape hatch: setting LLM_CONFIG_IGNORE_DB=true drops layers 2-4 entirely, so
+// the ENV layers decide. Off by default; intended for local runs against a DB
+// whose tenant config points at models the operator has no credentials for.
+// It covers layers 2-4 only, by short-circuiting getLLMIntegrationConfig. Layer
+// 1 still reads the DB through two paths that fetch independently of it:
+// GetConversationOverride (reads llm_conversations) and integrationConfigForPin
+// (a pinned llm_config_source=db:<uuid>, via getLLMIntegrationsForAccount). So
+// resuming a stored conversation still resolves that conversation's model even
+// with the flag set.
+//
 // **DB always beats ENV at any specificity.** Rationale: multi-tenant clients
 // onboard via UI, which writes to integration_config_values. ENV is the
 // operator process-level default. When DB has a value it is the tenant's
