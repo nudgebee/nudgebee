@@ -50,6 +50,7 @@ class Insight(BaseModel):
     type: str
     unique_id: str
     applications: Optional[List[Dict[str, str]]] = None
+    redirect_url: Optional[str] = None
 
 
 class HighlightData(BaseModel):

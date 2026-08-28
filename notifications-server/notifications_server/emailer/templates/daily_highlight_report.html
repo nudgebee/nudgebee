@@ -124,12 +124,25 @@
       INSIGHTS
     </div>
     {% for insight in insights_list %}
+    {% set apps_count = insight.applications | default([], true) | length %}
+    {% set insight_text = (insight.title ~ ' detected for (' ~ apps_count ~ ') workloads') if (insight.type == 'Troubleshooting' and apps_count > 0) else insight.title %}
+    {% if insight.type in ('Troubleshooting', 'Performance') %}{% set insight_cta = 'Investigate' %}
+    {% elif insight.type == 'Security' %}{% set insight_cta = 'Secure now' %}
+    {% elif insight.type == 'Configuration' %}{% set insight_cta = 'Configure' %}
+    {% elif insight.type in ('Optimization', 'Cost') %}{% set insight_cta = 'Optimize' %}
+    {% elif insight.type == 'InfraUpgrade' %}{% set insight_cta = 'Upgrade' %}
+    {% else %}{% set insight_cta = 'View details' %}{% endif %}
     <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; line-height:1.6; margin:0 0 4px; padding-left:16px;">
       <span style="color:#F59E0B; margin-right:6px;">&#8226;</span>
-      {% if insight.type == 'Troubleshooting' %}
-        {{ insight.title }} detected for ({{ insight.applications | length }}) workloads
-      {% else %}
-        {{ insight.title }}
+      {{ insight_text }}
+      {% if insight.redirect_url %}
+      &nbsp;
+      {#- redirect_url is a relative path from computeRedirectURL today; the absolute-URL branch guards a future change to that contract -#}
+      {% set insight_href = insight.redirect_url if insight.redirect_url.startswith(('http://', 'https://')) else base_url ~ ('' if insight.redirect_url.startswith('/') else '/') ~ insight.redirect_url %}
+      <a href="{{ insight_href }}"
+        style="display:inline-block; background-color:#DBEAFE; color:#3B82F6; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
+        {{ insight_cta }} &rarr;
+      </a>
       {% endif %}
     </p>
     {% endfor %}
