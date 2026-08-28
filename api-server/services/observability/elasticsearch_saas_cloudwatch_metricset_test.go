@@ -3,8 +3,6 @@ package observability
 import (
 	"testing"
 
-	"nudgebee/services/config"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -160,10 +158,6 @@ func TestParseESMetricsHits_AWSCloudwatchPartialSourceProjection(t *testing.T) {
 // only walks `kubernetes`, so nothing recognised it. The generic fallback must read it
 // rather than drop it, even though no dataset parser exists for it.
 func TestParseESMetricsHits_GenericFallbackReadsSystemMetricset(t *testing.T) {
-	prev := config.Config.FeatureESMetricsGenericFallbackEnabled
-	config.Config.FeatureESMetricsGenericFallbackEnabled = true
-	t.Cleanup(func() { config.Config.FeatureESMetricsGenericFallbackEnabled = prev })
-
 	body := `{"hits":{"total":{"value":5},"hits":[
 	 {"_index":".ds-metrics-system.process-prod-2026.08.16-000003",
 	  "_source":{
@@ -223,28 +217,29 @@ func TestParseESMetricsHits_NoNumbersStillDropped(t *testing.T) {
 	assert.Equal(t, 1, stats.DroppedNoValue)
 }
 
-// The fallback is a behaviour change for every existing ES tenant — indices that
-// return nothing today would start returning dotted-path series — so it must stay off
-// until an environment opts in. The dataset-dispatch path is deliberately unflagged.
-func TestParseESMetricsHits_GenericFallbackIsOffByDefault(t *testing.T) {
-	prev := config.Config.FeatureESMetricsGenericFallbackEnabled
-	config.Config.FeatureESMetricsGenericFallbackEnabled = false
-	t.Cleanup(func() { config.Config.FeatureESMetricsGenericFallbackEnabled = prev })
-
+// The generic reader is the default: a shape no registered parser and no known branch
+// matches must still produce metrics. It was behind a flag that was never enabled
+// anywhere, which meant shipping "a shape we have not met means you have no data".
+func TestParseESMetricsHits_GenericReaderIsTheDefault(t *testing.T) {
 	body := `{"hits":{"total":{"value":1},"hits":[
 	 {"_index":".ds-metrics-system.process-prod-2026.08.16-000003",
 	  "_source":{"@timestamp":"2026-08-26T13:38:00.000Z",
 	   "system":{"cpu":{"total":{"pct":0.42}}}}}]}}`
 	results, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 	require.NoError(t, err)
-	assert.Empty(t, results)
-	assert.Equal(t, 1, stats.DroppedNoValue)
+	require.Len(t, results, 1, "no flag to set: an unknown shape must read by default")
+	assert.Equal(t, "system.cpu.total.pct", results[0].Metric["__name__"])
+	assert.Zero(t, stats.DroppedNoValue)
 
-	// And the registry path must NOT be gated by the same flag: an AWS document still
-	// parses with the fallback disabled.
+	// The registry still takes precedence, so a known shape keeps its real metric
+	// names, statistics and observation timestamp rather than dotted field paths.
 	awsResults, _, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody), 0)
 	require.NoError(t, err)
-	assert.NotEmpty(t, awsResults, "dataset dispatch is unflagged and must still work")
+	require.NotEmpty(t, awsResults)
+	for _, r := range awsResults {
+		assert.NotContains(t, r.Metric["__name__"], "metricset.value",
+			"a registered dataset must not fall through to the generic reader")
+	}
 }
 
 // containsLabelSkip must match whole path segments. The fragment form it replaces
@@ -279,10 +274,6 @@ func TestContainsLabelSkip_MatchesWholeSegments(t *testing.T) {
 }
 
 func TestGenericFallback_SkipsTopLevelLabelsAndAnnotations(t *testing.T) {
-	prev := config.Config.FeatureESMetricsGenericFallbackEnabled
-	config.Config.FeatureESMetricsGenericFallbackEnabled = true
-	t.Cleanup(func() { config.Config.FeatureESMetricsGenericFallbackEnabled = prev })
-
 	body := `{"hits":{"total":{"value":1},"hits":[
 	 {"_index":".ds-metrics-system.process-prod-2026.08.16-000003",
 	  "_source":{

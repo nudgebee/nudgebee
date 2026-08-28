@@ -1,20 +1,13 @@
 package observability
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"nudgebee/services/config"
 )
-
-func withGenericFallback(t *testing.T) {
-	t.Helper()
-	prev := config.Config.FeatureESMetricsGenericFallbackEnabled
-	config.Config.FeatureESMetricsGenericFallbackEnabled = true
-	t.Cleanup(func() { config.Config.FeatureESMetricsGenericFallbackEnabled = prev })
-}
 
 // An Elasticsearch `histogram` field is two parallel arrays that only mean anything
 // together. The walk skipped arrays entirely, so a deployment storing latency this way
@@ -66,8 +59,6 @@ func TestESNumericArrayStats(t *testing.T) {
 // and identity fields. Nothing about this shape is registered anywhere, so it is
 // exactly the "format we have not met" case.
 func TestParseESMetricsHits_APMTransactionShape(t *testing.T) {
-	withGenericFallback(t)
-
 	body := `{"hits":{"total":{"value":5280},"hits":[
 	 {"_index":".ds-metrics-apm.transaction.1m-prod-2026.08.20-000004",
 	  "_source":{
@@ -103,8 +94,6 @@ func TestParseESMetricsHits_APMTransactionShape(t *testing.T) {
 // Regression: an ordinary nested object that happens to sit next to arrays elsewhere
 // must still be walked normally rather than mistaken for a histogram.
 func TestParseESMetricsHits_ArraysDoNotDisturbNormalNesting(t *testing.T) {
-	withGenericFallback(t)
-
 	body := `{"hits":{"total":{"value":1},"hits":[
 	 {"_index":".ds-metrics-system.memory-prod-2026.08.20-000001",
 	  "_source":{"@timestamp":"2026-08-27T12:00:00.000Z",
@@ -191,4 +180,67 @@ func BenchmarkESNumericArrayStats(b *testing.B) {
 			esNumericArrayStats(strings)
 		}
 	})
+}
+
+// The generic reader emits one series per numeric leaf for every document in a
+// response, and `size` defaults to 10,000. Unbounded, a shape carrying many numeric
+// fields is unbounded work — the protection the flag was standing in for.
+func TestGenericNumericLeafSeries_LeafCapIsReportedNotSilent(t *testing.T) {
+	src := map[string]any{"m": map[string]any{}}
+	inner := src["m"].(map[string]any)
+	for i := 0; i < esGenericMaxLeavesPerDoc+50; i++ {
+		inner[fmt.Sprintf("f%03d", i)] = float64(i)
+	}
+
+	_, values, truncated := genericNumericLeafSeries(src)
+	assert.True(t, truncated, "hitting the cap must be reported, not silent")
+	assert.Len(t, values, esGenericMaxLeavesPerDoc)
+
+	// Deterministic subset: the same document must always yield the same metrics, or
+	// a caller diffing two responses sees churn that isn't real.
+	_, again, _ := genericNumericLeafSeries(src)
+	assert.Equal(t, values, again)
+
+	// Under the cap, nothing is trimmed and nothing is claimed.
+	small := map[string]any{"a": 1.0, "b": 2.0}
+	_, v2, trunc2 := genericNumericLeafSeries(small)
+	assert.False(t, trunc2)
+	assert.Len(t, v2, 2)
+}
+
+// A capped result that does not say it is capped reads as the complete answer, which
+// is the defect this whole path exists to remove.
+func TestESGenericTruncationNote(t *testing.T) {
+	assert.Empty(t, esGenericTruncationNote(0, false), "no truncation, nothing to say")
+
+	leaves := esGenericTruncationNote(3, false)
+	assert.Contains(t, leaves, "3 document(s)")
+	assert.Contains(t, leaves, "Name the fields you need")
+
+	series := esGenericTruncationNote(0, true)
+	assert.Contains(t, series, "Truncated to")
+	assert.Contains(t, series, "Narrow the query")
+
+	both := esGenericTruncationNote(2, true)
+	assert.Contains(t, both, "2 document(s)")
+	assert.Contains(t, both, "series")
+}
+
+// A document whose numeric fields exceed the cap must still yield metrics, and the
+// response must carry the truncation note alongside them.
+func TestParseESMetricsHits_LeafCapSurfacesInTheNote(t *testing.T) {
+	fields := make([]string, 0, esGenericMaxLeavesPerDoc+20)
+	for i := 0; i < esGenericMaxLeavesPerDoc+20; i++ {
+		fields = append(fields, fmt.Sprintf("\"f%03d\":%d.0", i, i))
+	}
+	body := fmt.Sprintf(`{"hits":{"total":{"value":1},"hits":[
+	 {"_index":".ds-metrics-unknown.shape-prod-2026.08.16-000001",
+	  "_source":{"@timestamp":"2026-08-26T13:38:00.000Z","wide":{%s}}}]}}`,
+		strings.Join(fields, ","))
+
+	results, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
+	require.NoError(t, err)
+	assert.Len(t, results, esGenericMaxLeavesPerDoc, "capped, not dropped")
+	assert.NotEmpty(t, stats.GenericTruncation, "the cap must be stated")
+	assert.Contains(t, stats.GenericTruncation, "numeric fields")
 }

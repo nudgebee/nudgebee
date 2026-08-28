@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"nudgebee/services/config"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"sort"
@@ -315,6 +314,15 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		}
 		if len(payload) == 0 && stats.DocsMatched > 0 {
 			qr.Note = esNoSeriesNote(stats)
+		}
+		// A capped result must say it is capped. Reported alongside a non-empty
+		// payload, unlike the note above: the caller is holding real series and has
+		// no other way to know they are a subset.
+		if stats.GenericTruncation != "" {
+			if qr.Note != "" {
+				qr.Note += " "
+			}
+			qr.Note += stats.GenericTruncation
 		}
 		// Flag clauses that name fields the index does not have. Absent fields fail
 		// silently and in opposite directions depending on where they sit: nothing
@@ -1145,6 +1153,40 @@ var beatsLabelSkip = []string{
 	"kubernetes.node.labels.",
 }
 
+// esGenericTruncationNote describes which bound bit, for the caller to pass on.
+func esGenericTruncationNote(leafDocs int, seriesCapped bool) string {
+	switch {
+	case leafDocs > 0 && seriesCapped:
+		return fmt.Sprintf("Truncated: %d series (cap %d), and %d document(s) had more than %d numeric fields. "+
+			"Narrow the query or name the fields you need.",
+			esGenericMaxSeries, esGenericMaxSeries, leafDocs, esGenericMaxLeavesPerDoc)
+	case seriesCapped:
+		return fmt.Sprintf("Truncated to %d series. Narrow the query to see the rest.", esGenericMaxSeries)
+	case leafDocs > 0:
+		return fmt.Sprintf("%d document(s) carried more than %d numeric fields; only the first %d by name were read. "+
+			"Name the fields you need to see the others.",
+			leafDocs, esGenericMaxLeavesPerDoc, esGenericMaxLeavesPerDoc)
+	}
+	return ""
+}
+
+// esGenericMaxLeavesPerDoc and esGenericMaxSeries bound the generic reader.
+//
+// It emits one series per numeric leaf, labelled from every string leaf, for every
+// document in a response — and `size` defaults to 10,000. On a shape carrying a
+// per-document string (a request id, a trace id) that is one series per document with
+// a large label map, which is the same unbounded-work failure as the label-values
+// blow-up. The dataset-registry and Beats paths are not capped: their shapes are known
+// and their leaf counts are not open-ended.
+//
+// Truncation is always reported. Silently returning a subset would recreate, one level
+// up, the "you were given less than exists and not told" defect this path exists to
+// remove.
+const (
+	esGenericMaxLeavesPerDoc = 250
+	esGenericMaxSeries       = 5000
+)
+
 // genericMetricSkip are top-level branches that describe a document rather than
 // measure anything. Walking them would emit series for log offsets, event durations
 // and agent metadata alongside the real metrics.
@@ -1181,11 +1223,28 @@ var genericLabelSkip = []string{"labels", "annotations", "namespace_labels"}
 // registered dataset parser produces better names, correct statistics and the right
 // timestamp, and this one produces none of that. A non-zero fallback count in the
 // logs is the signal that a shape has earned a real parser.
-func genericNumericLeafSeries(src map[string]any) (labels map[string]string, values map[string]float64) {
+// genericNumericLeafSeries extracts every numeric leaf of a document as a metric and
+// every string leaf as a label. Truncated reports whether the per-document leaf cap
+// was reached, so the caller can say so rather than quietly return a subset.
+func genericNumericLeafSeries(src map[string]any) (labels map[string]string, values map[string]float64, truncated bool) {
 	labels = map[string]string{}
 	values = map[string]float64{}
 	walkGenericLeaves(src, "", labels, values)
-	return labels, values
+	if len(values) > esGenericMaxLeavesPerDoc {
+		// Deterministic subset: sorted by path, so the same document always yields
+		// the same metrics and a caller diffing two responses sees real change.
+		names := make([]string, 0, len(values))
+		for n := range values {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		capped := make(map[string]float64, esGenericMaxLeavesPerDoc)
+		for _, n := range names[:esGenericMaxLeavesPerDoc] {
+			capped[n] = values[n]
+		}
+		return labels, capped, true
+	}
+	return labels, values, false
 }
 
 // walkGenericLeaves is the recursive half of genericNumericLeafSeries, at package
@@ -1407,6 +1466,10 @@ type esParseStats struct {
 	DroppedNoTimestamp int
 	DroppedNoValue     int
 	SampleSourceFields []string
+	// GenericTruncation is non-empty when a bound on the generic reader bit. The
+	// caller states it: a capped result that does not say it is capped reads as the
+	// complete answer, which is the defect this whole path exists to remove.
+	GenericTruncation string
 }
 
 func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
@@ -1470,6 +1533,10 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 	// fallbackHits counts documents only the generic numeric-leaf walk could read.
 	// A non-zero count names a shape that deserves an esDatasetParsers entry.
 	var fallbackHits int
+	// genericLeavesTruncated and genericSeriesTruncated record where a bound bit, so
+	// a capped result can say so instead of looking like the whole answer.
+	var genericLeavesTruncated int
+	var genericSeriesTruncated bool
 	sampleTimestamp := ""
 
 	for _, hit := range esResp.Hits.Hits {
@@ -1574,11 +1641,22 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 				// parser's, which is why esDatasetParsers is still the first choice.
 				// They are enormously better than nothing: the caller can see what
 				// exists and say so.
-				if !config.Config.FeatureESMetricsGenericFallbackEnabled {
-					droppedNonNumericValue++
-					continue
+				//
+				// On by default, and previously behind a flag that was never enabled
+				// anywhere. The flag protected nothing: this branch is reached only
+				// after the dataset registry, the OTel branch, the flat name/value
+				// branch and the Beats branch have all produced nothing for THIS
+				// document, so it can only add series where we currently return zero
+				// — it cannot alter one we already produce. Off, it meant shipping
+				// "a shape we have not met means you have no data" as the default,
+				// which is the defect this whole path exists to remove. Growth is
+				// bounded by esGenericMaxLeavesPerDoc / esGenericMaxSeries instead,
+				// which is the protection that was actually needed.
+				var leafTruncated bool
+				labels, values, leafTruncated = genericNumericLeafSeries(src)
+				if leafTruncated {
+					genericLeavesTruncated++
 				}
-				labels, values = genericNumericLeafSeries(src)
 				if len(values) == 0 {
 					// Genuinely no number anywhere. Falling through would append a
 					// datapoint of 0 — indistinguishable from a real zero reading — so
@@ -1696,6 +1774,13 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 		}
 	}
 
+	// Total-series bound. The per-document cap limits one document; a response of
+	// 10,000 documents each contributing distinct label sets is the other half.
+	if len(results) > esGenericMaxSeries && fallbackHits > 0 {
+		results = results[:esGenericMaxSeries]
+		genericSeriesTruncated = true
+	}
+
 	var sampleFields []string
 	if returned > 0 {
 		sampleFields = esSourceFieldNames(esResp.Hits.Hits[0].Source)
@@ -1707,6 +1792,7 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 		DroppedNoTimestamp: droppedNoTimestamp,
 		DroppedNoValue:     droppedNonNumericValue,
 		SampleSourceFields: sampleFields,
+		GenericTruncation:  esGenericTruncationNote(genericLeavesTruncated, genericSeriesTruncated),
 	}, nil
 }
 
