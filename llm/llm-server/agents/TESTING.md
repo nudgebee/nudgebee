@@ -156,6 +156,56 @@ Implications:
 
 ## Common questions
 
+### Cheap first-turn parallelism probe
+
+Before running a full fixture investigation to evaluate planner parallelism, run
+the opt-in first-turn probe. It makes one real planner call, parses the resulting
+actions, and stops before any Kubernetes tool executes:
+
+```bash
+RUN_LIVE_PLANNER_PROBES=1 \
+TEST_ACCOUNT=<id> TEST_USER=<id> TEST_TENANT=<id> \
+TEST_K8S_NAMESPACE=nudgebee \
+go test -tags=e2e -run TestK8sPlanner_FirstTurnParallelProbe -v ./agents
+```
+
+The prompt supplies one namespace and four independent read-only questions. The
+probe expects a bounded multi-action first turn. If it returns one action, the
+serialization occurred during model generation. If this passes but a full run is
+sequential, inspect executor classification and persisted execution-batch metadata
+instead of changing the planner prompt.
+
+To measure natural behavior immediately after scope discovery, run the companion
+characterization probe:
+
+```bash
+RUN_LIVE_PLANNER_PROBES=1 \
+TEST_ACCOUNT=<id> TEST_USER=<id> TEST_TENANT=<id> \
+go test -tags=e2e -run TestK8sPlanner_PostDiscoveryNaturalProbe -v ./agents
+```
+
+It supplies raw kubectl-style discovery output containing the workload, pod,
+service, namespace, and symptom, then makes one real planner call. It does not
+name the missing evidence branches or instruct the planner to work independently.
+No planned tool executes. The probe records rather than enforces the outcome: one
+action is a sequential baseline, while multiple actions are a fan-out candidate.
+Run it repeatedly when comparing prompt versions because a single stochastic
+generation is not a regression result. The test logs prompt setup, planner setup,
+generation, total latency, action dependencies, and the observed action shape.
+
+To inspect whether fan-out persists after the first evidence wave, run:
+
+```bash
+RUN_LIVE_PLANNER_PROBES=1 \
+TEST_ACCOUNT=<id> TEST_USER=<id> TEST_TENANT=<id> \
+go test -tags=e2e -run TestK8sPlanner_PostEvidenceWaveNaturalProbe -v ./agents
+```
+
+This supplies completed discovery, pod-description, logs, events, and resource
+observations with two unresolved leads. It makes one planner call and records the
+next action shape without executing tools. A focused single confirmation can be
+valid here, so this is a characterization probe rather than a parallelism gate.
+
 **Q: My PR's test passes. Does that mean the agent is correct?**
 A: Only that it produced *some* response. Look for explicit assertions on tool calls, response keywords, or the `WantAnyToolMatching` / `WantContainsAny` framework in `agent_k8s_debug_2_test.go` for stronger checks.
 
