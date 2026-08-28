@@ -38,7 +38,7 @@
     "@uiw/react-codemirror": "^4.25.9",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^6.0.0",
-    "aws-sdk": "^2.1691.0",
+    "@aws-sdk/client-marketplace-metering": "^3.1120.0",
     "axios": "1.18.1",
     "bcrypt": "^6.0.0",
     "chart.js": "^4.3.0",
@@ -56,7 +56,7 @@
     "graphql": "^16.14.0",
     "identity-obj-proxy": "^3.0.0",
     "jose": "^4.15.5",
-    "js-yaml": "^5.3.0",
+    "js-yaml": "^5.4.1",
     "jsonrepair": "^3.5.1",
     "ldapts": "^8.1.7",
     "marked": "^14.1.4",
@@ -151,14 +151,16 @@
     "@swc/helpers": "^0.5.21",
     "follow-redirects": "^1.16.0",
     "protobufjs": "^7.6.5",
-    "aws-sdk": {
-      "uuid": "^11.1.1"
-    },
     "next-auth": {
       "uuid": "^11.1.1"
     },
     "ws": "^8.20.1",
-    "brace-expansion": "^5.0.6",
+    "brace-expansion": "^5.0.9",
+    "cookie": "^0.7.2",
+    "nanoid": "^3.3.18",
+    "@istanbuljs/load-nyc-config": {
+      "js-yaml": "^3.15.2"
+    },
     "form-data": "^4.0.6",
     "@opentelemetry/core": "^2.8.0",
     "@opentelemetry/propagator-jaeger": "2.9.0",
