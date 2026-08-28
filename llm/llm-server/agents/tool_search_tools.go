@@ -153,15 +153,43 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 // aliases); leaf tools not already covered by an agent of the same name are
 // appended with a compact input-schema summary.
 func (t *searchToolsTool) collectCandidates(ctx toolcore.NbToolContext) []searchToolCandidate {
+	return collectSearchToolCandidates(
+		core.ListAgents(ctx.Ctx, t.accountId, true),
+		toolcore.GetEnabledNBTools(ctx.Ctx, t.accountId),
+	)
+}
+
+// collectSearchToolCandidates joins the agent catalog to the account-filtered
+// tool catalog. A system agent's "enabled" status only means its factory could
+// construct an implementation; it does not mean the account has the integration
+// its leaf tools require. Requiring the same-name wrapper to survive
+// GetEnabledNBTools keeps unconfigured specialists out of discovery.
+//
+// Orchestrators are entry points, not delegatable specialist capabilities. Some
+// also register tool wrappers, so exclude them from both halves of the join.
+func collectSearchToolCandidates(agentDtos []core.AgentDto, enabledTools []toolcore.NBTool) []searchToolCandidate {
 	seen := make(map[string]bool)
+	enabledNames := make(map[string]bool, len(enabledTools))
+	orchestratorNames := make(map[string]bool)
 	var candidates []searchToolCandidate
 
-	for _, a := range core.ListAgents(ctx.Ctx, t.accountId, true) {
+	for _, tool := range enabledTools {
+		if tool != nil && tool.Name() != "" {
+			enabledNames[strings.ToLower(tool.Name())] = true
+		}
+	}
+	for _, a := range agentDtos {
+		if a.Name != "" && a.ExecutorType == core.AgentPlannerTypeOrchestrating {
+			orchestratorNames[strings.ToLower(a.Name)] = true
+		}
+	}
+
+	for _, a := range agentDtos {
 		if a.Name == "" || a.Status != core.AgentStatusEnabled {
 			continue
 		}
 		lower := strings.ToLower(a.Name)
-		if seen[lower] {
+		if a.ExecutorType == core.AgentPlannerTypeOrchestrating || !enabledNames[lower] || seen[lower] {
 			continue
 		}
 		seen[lower] = true
@@ -177,12 +205,12 @@ func (t *searchToolsTool) collectCandidates(ctx toolcore.NbToolContext) []search
 		})
 	}
 
-	for _, tool := range toolcore.GetEnabledNBTools(ctx.Ctx, t.accountId) {
+	for _, tool := range enabledTools {
 		if tool == nil || tool.Name() == "" {
 			continue
 		}
 		lower := strings.ToLower(tool.Name())
-		if seen[lower] {
+		if seen[lower] || orchestratorNames[lower] {
 			continue
 		}
 		// Don't advertise discovery of the discovery tool itself.
