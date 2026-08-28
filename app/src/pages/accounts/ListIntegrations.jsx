@@ -864,11 +864,27 @@ const ListIntegrations = ({ integrationName }) => {
               </ol>
             </Typography>
             <Typography variant='subtitle2' fontWeight={600}>
-              Step 4: Name the log index
+              Step 4: Name the indexes
             </Typography>
             <Typography variant='body2' component='div'>
-              Every search Nudgebee runs is pinned to this index. If you ingest Kubernetes logs with the Splunk Distribution of the OpenTelemetry
-              Collector, this is the index set as <code>splunkPlatform.index</code> in that chart (commonly <code>otel_logs</code>).
+              Every search Nudgebee runs is pinned to one of these indexes. If you ingest with the Splunk Distribution of the OpenTelemetry Collector,
+              they are the indexes set as <code>splunkPlatform.index</code>, <code>splunkPlatform.metricsIndex</code> and{' '}
+              <code>splunkPlatform.tracesIndex</code> in that chart.
+              <ul style={{ paddingLeft: ds.space[4], marginTop: ds.space[1] }}>
+                <li>
+                  <strong>Log index</strong> (commonly <code>otel_logs</code>) — required. Backs Query Log and Log Groups.
+                </li>
+                <li>
+                  <strong>Metric index</strong> (commonly <code>otel_metrics</code>) — must be created with <code>datatype=metric</code>, which is not
+                  the default. Backs Query Metrics.
+                </li>
+                <li>
+                  <strong>Trace index</strong> (commonly <code>otel_traces</code>) — an ordinary event index holding spans. Backs Traces and Trace
+                  Group.
+                </li>
+              </ul>
+              Leave the metric or trace index empty if this Splunk holds no metrics or spans: those tabs then stay disabled rather than searching an
+              index with nothing in it. Whichever indexes you name must also be in the role&apos;s allowed list from Step 2.
             </Typography>
             <Typography variant='body2' sx={{ color: 'text.secondary' }}>
               The Splunk Operator for Kubernetes issues a self-signed certificate by default. If Nudgebee cannot verify it, enable{' '}

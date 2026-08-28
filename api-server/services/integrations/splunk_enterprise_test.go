@@ -62,7 +62,8 @@ func TestSplunkEnterprise_ConfigSchema_PropertiesExist(t *testing.T) {
 	wantKeys := []string{
 		SplunkEnterpriseConfigURL, SplunkEnterpriseConfigAuthType,
 		SplunkEnterpriseConfigToken, SplunkEnterpriseConfigUsername, SplunkEnterpriseConfigPassword,
-		SplunkEnterpriseConfigLogIndex, SplunkEnterpriseConfigApp, SplunkEnterpriseConfigInsecure,
+		SplunkEnterpriseConfigLogIndex, SplunkEnterpriseConfigMetricIndex, SplunkEnterpriseConfigTraceIndex,
+		SplunkEnterpriseConfigApp, SplunkEnterpriseConfigInsecure,
 		core.IntegrationConfigName, core.AccountId, core.DefaultLogProvider,
 	}
 	for _, key := range wantKeys {
@@ -71,11 +72,10 @@ func TestSplunkEnterprise_ConfigSchema_PropertiesExist(t *testing.T) {
 	}
 }
 
-// Phase 1 ships logs only. Advertising a default trace or metrics provider toggle would
-// let a user route those signals at a source that does not exist.
 // The provider toggles must track what is actually implemented. Offering a toggle with
 // no source behind it produces a view that errors on open, which reads to the user as a
-// broken integration rather than an unsupported one.
+// broken integration rather than an unsupported one — and the reverse (a source with no
+// toggle) leaves the signal unreachable no matter how it is configured.
 func TestSplunkEnterprise_ConfigSchema_ProviderTogglesMatchImplementedSources(t *testing.T) {
 	schema := SplunkEnterprise{}.ConfigSchema()
 
@@ -85,11 +85,41 @@ func TestSplunkEnterprise_ConfigSchema_ProviderTogglesMatchImplementedSources(t 
 	_, hasMetrics := schema.Properties[core.DefaultMetricsProvider]
 	assert.True(t, hasMetrics, "SplunkEnterpriseMetricSource exists")
 
-	// Splunk Enterprise has no native trace store — spans only exist there if the OTel
-	// collector was pointed at a traces index — and no SplunkEnterpriseTraceSource is
-	// implemented. Flip this when one is.
 	_, hasTrace := schema.Properties[core.DefaultTraceProvider]
-	assert.False(t, hasTrace, "no trace source exists yet")
+	assert.True(t, hasTrace, "SplunkEnterpriseTraceSource exists")
+}
+
+// Traces are opt-in per install for a stronger reason than metrics: Splunk Enterprise has
+// no trace store at all, so spans exist only where an OTel Collector was explicitly
+// pointed at an index. An empty value must stay valid, or a logs-only Splunk stops being
+// configurable.
+func TestSplunkEnterprise_TraceIndexDefaultsToEmpty(t *testing.T) {
+	schema := SplunkEnterprise{}.ConfigSchema()
+	prop, ok := schema.Properties[SplunkEnterpriseConfigTraceIndex]
+	assert.True(t, ok, "trace index must be configurable")
+	assert.Equal(t, SplunkEnterpriseDefaultTraceIndex, prop.Default)
+	assert.NotContains(t, schema.Required, SplunkEnterpriseConfigTraceIndex,
+		"a logs-only Splunk must still be configurable")
+}
+
+// Every index field is interpolated into SPL as a bare token, so a bad name has to be
+// rejected next to the field that caused it rather than surfacing later as an opaque
+// failure on whichever tab happens to use that signal.
+func TestSplunkEnterprise_ValidateConfig_RejectsUnsafeIndexNames(t *testing.T) {
+	for _, key := range []string{
+		SplunkEnterpriseConfigLogIndex,
+		SplunkEnterpriseConfigMetricIndex,
+		SplunkEnterpriseConfigTraceIndex,
+	} {
+		config := []core.IntegrationConfigValue{
+			{Name: SplunkEnterpriseConfigURL, Value: "https://splunk.example.com:8089"},
+			{Name: SplunkEnterpriseConfigAuthType, Value: SplunkEnterpriseAuthToken},
+			{Name: SplunkEnterpriseConfigToken, Value: "t"},
+			{Name: key, Value: `evil" | delete`},
+		}
+		errs := SplunkEnterprise{}.ValidateConfig(nil, config, "acct")
+		assert.NotEmpty(t, errs, "%s must be validated at the form boundary", key)
+	}
 }
 
 // Metrics are opt-in per install: a metrics index must be created explicitly with

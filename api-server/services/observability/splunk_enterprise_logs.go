@@ -53,6 +53,21 @@ var splunkEnterpriseLogLabelMapping = map[string]string{
 // others.
 var splunkEnterpriseSeverityFields = []string{"severity_text", "severity", "level", "log_level"}
 
+// splunkEnterpriseMessageFields are the field names checked, in order, for the
+// human-readable log line.
+//
+// _raw is the LAST resort, not the first. For structured HEC data — which is what the
+// OpenTelemetry Collector writes, and the dominant ingestion path here — _raw is the
+// entire event JSON, so using it directly renders every row in the Message column as
+// `{"body": "...", "severity_text": "ERROR", "k8s.namespace.name": ...}` rather than the
+// log line. That is unreadable in the table, and it also poisons anything downstream that
+// treats Message as prose: the pattern hash behind log grouping would fold each event's
+// k8s metadata into the pattern and split one recurring error into one group per pod.
+// Only a genuinely unstructured sourcetype, where none of the named fields exist, falls
+// through to _raw — and there _raw IS the log line. Same precedence the Log Groups
+// aggregation resolves with coalesce().
+var splunkEnterpriseMessageFields = []string{"body", "message", "log", "_raw"}
+
 // splunkEnterpriseDefaultLimit matches the other log sources' default page size.
 const splunkEnterpriseDefaultLimit = 100
 
@@ -271,15 +286,23 @@ func buildSplunkEnterpriseBinaryClause(binary query.BinaryWhereClause, mapping m
 	return strings.Join(parts, " AND "), nil
 }
 
+// buildSplunkEnterpriseWhereClause renders a log filter, using the log label mapping.
 func buildSplunkEnterpriseWhereClause(where query.QueryWhereClause) (string, error) {
+	return buildSplunkEnterpriseWhereClauseWithMapping(where, splunkEnterpriseLogLabelMapping)
+}
+
+// buildSplunkEnterpriseWhereClauseWithMapping is the mapping-agnostic core. Logs and
+// traces share the clause structure but map canonical field names onto different Splunk
+// fields, so the mapping is a parameter rather than a package-level constant.
+func buildSplunkEnterpriseWhereClauseWithMapping(where query.QueryWhereClause, mapping map[string]string) (string, error) {
 	if len(where.Binary) > 0 {
-		return buildSplunkEnterpriseBinaryClause(where.Binary, splunkEnterpriseLogLabelMapping)
+		return buildSplunkEnterpriseBinaryClause(where.Binary, mapping)
 	}
 
 	if len(where.And) > 0 {
 		var parts []string
 		for _, c := range where.And {
-			part, err := buildSplunkEnterpriseWhereClause(c)
+			part, err := buildSplunkEnterpriseWhereClauseWithMapping(c, mapping)
 			if err != nil {
 				return "", err
 			}
@@ -299,7 +322,7 @@ func buildSplunkEnterpriseWhereClause(where query.QueryWhereClause) (string, err
 	if len(where.Or) > 0 {
 		var parts []string
 		for _, c := range where.Or {
-			part, err := buildSplunkEnterpriseWhereClause(c)
+			part, err := buildSplunkEnterpriseWhereClauseWithMapping(c, mapping)
 			if err != nil {
 				return "", err
 			}
@@ -317,7 +340,7 @@ func buildSplunkEnterpriseWhereClause(where query.QueryWhereClause) (string, err
 	}
 
 	if where.Not != nil {
-		notPart, err := buildSplunkEnterpriseWhereClause(*where.Not)
+		notPart, err := buildSplunkEnterpriseWhereClauseWithMapping(*where.Not, mapping)
 		if err != nil {
 			return "", err
 		}
@@ -568,7 +591,7 @@ func (s *SplunkEnterpriseLogSource) QueryLogs(ctx *security.RequestContext, req 
 		}
 
 		out.Timestamp = splunkEnterpriseTimestamp(formatSplunkValue(result["_time"]))
-		out.Message = formatSplunkValue(result["_raw"])
+		out.Message = firstSplunkValue(result, splunkEnterpriseMessageFields)
 
 		for _, field := range splunkEnterpriseSeverityFields {
 			if severity := formatSplunkValue(result[field]); severity != "" {

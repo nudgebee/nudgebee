@@ -616,3 +616,72 @@ func TestSplunkEnterpriseRejectsLookupReadsInSubsearch(t *testing.T) {
 	// The ordinary generated shape must keep working.
 	assert.NoError(t, validateSplunkEnterpriseQuery(`search index="otel_logs" | head 100 | fields *`))
 }
+
+// The Message column must carry the log LINE, not the whole event. For structured HEC
+// data _raw is the entire JSON document, so reading Message from it renders every row as
+// a JSON blob and folds the k8s metadata into the log-grouping pattern hash. Reverting
+// firstSplunkValue(result, splunkEnterpriseMessageFields) back to result["_raw"] fails
+// the first subtest.
+func TestSplunkEnterpriseLogSource_QueryLogs_MessagePrefersBodyOverRaw(t *testing.T) {
+	tests := []struct {
+		name string
+		row  string
+		want string
+	}{
+		{
+			name: "structured event uses body, not the raw JSON envelope",
+			row: `{
+				"_time": "2026-08-26T10:11:12.000+00:00",
+				"_raw": "{\"body\": \"disk full\", \"severity_text\": \"ERROR\", \"k8s.pod.name\": \"api-0\"}",
+				"body": "disk full",
+				"severity_text": "ERROR"
+			}`,
+			want: "disk full",
+		},
+		{
+			name: "message is accepted when the shipper spells it that way",
+			row:  `{"_time": "2026-08-26T10:11:12.000+00:00", "_raw": "envelope", "message": "timeout"}`,
+			want: "timeout",
+		},
+		{
+			name: "log is accepted as the third spelling",
+			row:  `{"_time": "2026-08-26T10:11:12.000+00:00", "_raw": "envelope", "log": "restarting"}`,
+			want: "restarting",
+		},
+		{
+			// An unstructured sourcetype has none of the named fields, and there _raw
+			// genuinely IS the log line — the fallback must still work.
+			name: "unstructured event falls back to _raw",
+			row:  `{"_time": "2026-08-26T10:11:12.000+00:00", "_raw": "plain syslog line"}`,
+			want: "plain syslog line",
+		},
+		{
+			// An empty body must not win over a populated _raw, or the row renders blank.
+			name: "empty body is skipped rather than winning",
+			row:  `{"_time": "2026-08-26T10:11:12.000+00:00", "body": "", "_raw": "fallback line"}`,
+			want: "fallback line",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"messages": [], "results": [` + tt.row + `]}`))
+			}))
+			defer server.Close()
+
+			patches := patchSplunkEnterpriseConfig(t, server.URL)
+			defer patches.Reset()
+
+			s := &SplunkEnterpriseLogSource{}
+			logs, err := s.QueryLogs(&security.RequestContext{}, FetchLogRequest{
+				AccountId: "acct",
+				Limit:     10,
+			})
+			require.NoError(t, err)
+			require.Len(t, logs, 1)
+			assert.Equal(t, tt.want, logs[0].Message)
+		})
+	}
+}

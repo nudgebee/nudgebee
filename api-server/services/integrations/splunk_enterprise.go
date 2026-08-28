@@ -38,6 +38,7 @@ const (
 	SplunkEnterpriseConfigPassword    = "splunk_password"
 	SplunkEnterpriseConfigLogIndex    = "splunk_log_index"
 	SplunkEnterpriseConfigMetricIndex = "splunk_metric_index"
+	SplunkEnterpriseConfigTraceIndex  = "splunk_trace_index"
 	SplunkEnterpriseConfigApp         = "splunk_app"
 	SplunkEnterpriseConfigInsecure    = "splunk_insecure_skip_verify"
 )
@@ -58,6 +59,13 @@ const SplunkEnterpriseDefaultLogIndex = "main"
 // datatype=metric, so guessing a name would produce searches against an index that
 // does not exist. Empty means "metrics not configured" and the metric source stays off.
 const SplunkEnterpriseDefaultMetricIndex = ""
+
+// SplunkEnterpriseDefaultTraceIndex is empty for the same reason as the metric index,
+// and one more: Splunk Enterprise has no trace store at all. Spans only exist in an
+// index if an OpenTelemetry Collector was pointed at it with the splunk_hec exporter,
+// which is an explicit deployment choice. Empty means "traces not configured", and the
+// trace source stays off rather than searching an index that holds no spans.
+const SplunkEnterpriseDefaultTraceIndex = ""
 
 // SplunkEnterpriseDefaultApp is the app namespace searches run in. Every stock install
 // has "search"; the namespace only affects which knowledge objects (field extractions,
@@ -157,6 +165,14 @@ func (m SplunkEnterprise) ConfigSchema() core.IntegrationSchema {
 				Default:  SplunkEnterpriseDefaultMetricIndex,
 				Priority: 77,
 			},
+			SplunkEnterpriseConfigTraceIndex: {
+				Type: core.ToolSchemaTypeString,
+				Description: "Index holding OpenTelemetry spans (e.g. otel_traces), as written by the " +
+					"OpenTelemetry Collector's splunk_hec exporter. Leave empty if this Splunk holds no " +
+					"traces — trace queries stay disabled rather than searching an index with no spans.",
+				Default:  SplunkEnterpriseDefaultTraceIndex,
+				Priority: 76,
+			},
 			SplunkEnterpriseConfigApp: {
 				Type: core.ToolSchemaTypeString,
 				Description: "App namespace searches run in. Controls which field extractions and macros " +
@@ -183,6 +199,13 @@ func (m SplunkEnterprise) ConfigSchema() core.IntegrationSchema {
 					"a metrics index above — without one there are no metrics to query.",
 				Default:  false,
 				Priority: 14,
+			},
+			core.DefaultTraceProvider: {
+				Type: core.ToolSchemaTypeBoolean,
+				Description: "Make Splunk Enterprise the default Trace Provider. Requires " +
+					"a trace index above — without one there are no spans to query.",
+				Default:  false,
+				Priority: 13,
 			},
 		},
 	}
@@ -240,9 +263,20 @@ func (m SplunkEnterprise) ValidateConfig(sc *security.SecurityContext, config []
 	// parameterized, so they are validated at the boundary rather than at each query
 	// site - the same reasoning as GetOpenObserveConfigs, and more load-bearing here
 	// because the SPL pipeline reaches commands like `delete` and `outputlookup`.
-	if index := strings.TrimSpace(values[SplunkEnterpriseConfigLogIndex].Value); index != "" && !IsSafeSplunkIndexName(index) {
-		errs = append(errs, fmt.Errorf("invalid %s %q: index names may only contain letters, digits, underscores and hyphens",
-			SplunkEnterpriseConfigLogIndex, index))
+	//
+	// All three index fields are checked, not just the log one: each is interpolated into
+	// SPL the same way, and rejecting a bad name only at query time turns a typo in the
+	// form into an opaque failure on the Logs/Metrics/Traces tab instead of an error next
+	// to the field that caused it.
+	for _, key := range []string{
+		SplunkEnterpriseConfigLogIndex,
+		SplunkEnterpriseConfigMetricIndex,
+		SplunkEnterpriseConfigTraceIndex,
+	} {
+		if index := strings.TrimSpace(values[key].Value); index != "" && !IsSafeSplunkIndexName(index) {
+			errs = append(errs, fmt.Errorf("invalid %s %q: index names may only contain letters, digits, underscores and hyphens",
+				key, index))
+		}
 	}
 	if app := strings.TrimSpace(values[SplunkEnterpriseConfigApp].Value); app != "" && !IsSafeSplunkIndexName(app) {
 		errs = append(errs, fmt.Errorf("invalid %s %q: app names may only contain letters, digits, underscores and hyphens",
@@ -359,6 +393,9 @@ type SplunkEnterpriseConfig struct {
 	// Splunk, which is the normal case: a metrics index must be created explicitly with
 	// datatype=metric, so there is no safe default to fall back to.
 	MetricIndex string
+	// TraceIndex is the span index. Empty means traces are not configured for this
+	// account; see SplunkEnterpriseDefaultTraceIndex.
+	TraceIndex string
 	// App is the search app namespace. Always populated, defaulting to
 	// SplunkEnterpriseDefaultApp.
 	App                string
@@ -401,6 +438,7 @@ func splunkEnterpriseConfigFromValues(config []core.IntegrationConfigValue) (Spl
 		cfg.LogIndex = index
 	}
 	cfg.MetricIndex = strings.TrimSpace(values[SplunkEnterpriseConfigMetricIndex].Value)
+	cfg.TraceIndex = strings.TrimSpace(values[SplunkEnterpriseConfigTraceIndex].Value)
 	if app := strings.TrimSpace(values[SplunkEnterpriseConfigApp].Value); app != "" {
 		cfg.App = app
 	}
@@ -421,6 +459,10 @@ func splunkEnterpriseConfigFromValues(config []core.IntegrationConfigValue) (Spl
 	if !IsSafeSplunkIndexName(cfg.LogIndex) {
 		return cfg, fmt.Errorf("invalid %s %q: index names may only contain letters, digits, underscores and hyphens",
 			SplunkEnterpriseConfigLogIndex, cfg.LogIndex)
+	}
+	if cfg.TraceIndex != "" && !IsSafeSplunkIndexName(cfg.TraceIndex) {
+		return cfg, fmt.Errorf("invalid %s %q: index names may only contain letters, digits, underscores and hyphens",
+			SplunkEnterpriseConfigTraceIndex, cfg.TraceIndex)
 	}
 	if cfg.MetricIndex != "" && !IsSafeSplunkIndexName(cfg.MetricIndex) {
 		return cfg, fmt.Errorf("invalid %s %q: index names may only contain letters, digits, underscores and hyphens",
