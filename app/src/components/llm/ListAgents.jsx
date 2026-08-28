@@ -20,11 +20,84 @@ import { hasWriteAccess } from '@lib/auth';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { Avatar, Box, Typography } from '@mui/material';
 import { Checkbox } from '@ui/Checkbox';
-import { PlusIcon, EditIcon, DeleteIconRed as deleteIcon, DataBaseDark, PlusIconSecondary } from '@assets';
+import { PlusIcon, EditIcon, DeleteIconRed as deleteIcon, DataBaseDark, PlusIconSecondary, infoIcon } from '@assets';
 import { getIcon } from '@components/llm/common/AgentIcon';
 import Loader from '@shared/Loader';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { HybridScopeChips } from '@components/llm/ScopeChip';
+import Tooltip from '@ui/Tooltip';
+import { getAgentUsageGuidance } from '@components/llm/common/agentUsageGuidance';
+
+// "Usage" column cell — hover surface for the static when-to-use guidance in
+// agentUsageGuidance.ts. Agents with no catalog entry (and every user-created
+// agent) render an em dash instead of the icon, so the column never claims
+// guidance it does not have.
+const USAGE_COLUMN_INFO = 'Hover the info icon on a row to see when to use that agent, an example question, why it helps, and its advantages';
+
+const AgentUsageCell = ({ agentName }) => {
+  const guidance = getAgentUsageGuidance(agentName);
+
+  if (!guidance) {
+    return <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>—</Typography>;
+  }
+
+  const section = (heading, body) => (
+    <Box sx={{ mb: ds.space[2] }}>
+      <Typography
+        sx={{
+          fontSize: ds.text.caption,
+          fontWeight: ds.weight.semibold,
+          color: ds.gray[500],
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px',
+        }}
+      >
+        {heading}
+      </Typography>
+      <Box sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.5 }}>{body}</Box>
+    </Box>
+  );
+
+  return (
+    <Tooltip
+      placement='left'
+      tooltipStyle={{ maxWidth: '420px' }}
+      title={
+        <Box sx={{ textAlign: 'left' }}>
+          {section('When to use', guidance.whenToUse)}
+          {section('Example', <Box sx={{ fontStyle: 'italic' }}>{guidance.example}</Box>)}
+          {section('Why', guidance.why)}
+          <Box>
+            <Typography
+              sx={{
+                fontSize: ds.text.caption,
+                fontWeight: ds.weight.semibold,
+                color: ds.gray[500],
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+              }}
+            >
+              Advantages
+            </Typography>
+            <Box component='ul' sx={{ m: 0, pl: ds.space[4], fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.5 }}>
+              {guidance.advantages.map((advantage) => (
+                <li key={advantage}>{advantage}</li>
+              ))}
+            </Box>
+          </Box>
+        </Box>
+      }
+    >
+      <Box component='span' sx={{ display: 'inline-flex', opacity: '60%' }}>
+        <SafeIcon src={infoIcon} alt={`When to use ${agentName}`} width={14} height={16} />
+      </Box>
+    </Tooltip>
+  );
+};
+
+AgentUsageCell.propTypes = {
+  agentName: PropTypes.string,
+};
 
 const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, stickyTable = false }) => {
   const { baseTitle } = useTenantBranding();
@@ -534,6 +607,9 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
           {
             component: <Text value={agent.tools?.join(', ') || '-'} showAutoEllipsis requiredToolTip lineClamp={2} />,
           },
+          {
+            component: <AgentUsageCell agentName={agent.name} />,
+          },
           // Tools column is already present above; in tenant-wide mode we
           // skip the KB-count and Actions columns and replace them with an
           // Account column so the user can tell custom rows apart.
@@ -959,16 +1035,18 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
               isTenantWide
                 ? [
                     { name: 'Name', width: '20%' },
-                    { name: 'Description', width: '40%' },
+                    { name: 'Description', width: '35%' },
                     { name: 'Status', width: '10%' },
                     { name: 'Tools', width: '15%' },
+                    { name: 'Usage', width: '5%', info: USAGE_COLUMN_INFO },
                     { name: 'Account', width: '15%' },
                   ]
                 : [
                     { name: 'Name', width: '15%' },
-                    { name: 'Description', width: '35%' },
+                    { name: 'Description', width: '30%' },
                     { name: 'Status', width: '10%' },
                     { name: 'Tools', width: '10%' },
+                    { name: 'Usage', width: '5%', info: USAGE_COLUMN_INFO },
                     { name: 'KB', width: '5%', info: 'Knowledge Base count - Click to view or manage knowledge bases mapped to this agent' },
                     { name: 'Action', width: '5%' },
                   ]
