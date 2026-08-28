@@ -1125,6 +1125,11 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
       open={open}
       handleClose={() => clearAllAndClose()}
       title={`${notificationRuleObject && Object.keys(notificationRuleObject).length > 0 ? 'Update' : 'Create'} Notification Rule`}
+      subtitle={
+        notificationRuleObject && Object.keys(notificationRuleObject).length > 0
+          ? 'Tuning out the noise? Change what this rule matches and where its notifications land.'
+          : 'Never miss what matters. Pick what to notify on, scope it to the clusters and applications you care about, and choose where it lands.'
+      }
       contentStyles={{ padding: 'var(--ds-space-1)' }}
       rightComponentOnTitle={undefined}
       loader={isSubmitting}

@@ -925,6 +925,11 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
         open={open}
         handleClose={requestClose}
         title={isEdit ? 'Edit Group' : 'Add Group'}
+        subtitle={
+          isEdit
+            ? "Teams change — update this group's details, the roles it grants, and who belongs to it."
+            : 'Great teams work better together. Name the group, choose the roles it grants, and add the people who inherit them.'
+        }
         width={isEdit ? 'md' : 'sm'}
         loader={isSubmitting}
         sx={{
