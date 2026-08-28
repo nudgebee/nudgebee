@@ -1819,20 +1819,19 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			core.TruncateHead(evidenceContext, maxInvestigationEvidenceBytes)
 	}
 
-	// Point the investigation at the deterministic incident assembly (#34659):
-	// the same four-tier grouping the incident panel computes. Instruction only,
-	// with the concrete event id inline — the agent fetches the data itself via
-	// the get_incident_assembly tool, so the prompt stays small and the assembly
-	// is current at run time rather than frozen at prompt-build time.
+	// Explain how to interpret related-alert candidates. The preliminary summary
+	// and collected evidence may already contain the assembly, so fetching it
+	// again is a gap-filling fallback rather than mandatory first-turn work.
 	eventAnalsysisPrompt = eventAnalsysisPrompt +
-		"\n\n## Related-Alert Candidates\nCall get_incident_assembly with event_id=" + request.EventId +
-		" EARLY in your investigation. It returns the alerts around this event grouped by timing and topology: " +
+		"\n\n## Related-Alert Candidates\nReuse related-alert candidates already present in the preliminary summary or collected evidence. " +
+		"Only when that information is absent or incomplete, call get_incident_assembly with event_id=" + request.EventId +
+		". It returns the alerts around this event grouped by timing and topology: " +
 		"same_incident (this alert's other firings and cross-source copies), cause (config changes and " +
 		"upstream-dependency alerts shortly before it), impact (dependent services alerting after it) and " +
 		"chronic (background noise for that subject). These are candidates only — they may or may not be " +
 		"related. Verify each against evidence before using it in your root-cause reasoning, and distinguish " +
 		"active causes from chronic background noise.\n" +
-		"REQUIRED: end your analysis with a '### Related Alerts Check' section — one line per cause/impact " +
+		"Do not reacquire event details or triage explanation while filling this gap. REQUIRED: end your analysis with a '### Related Alerts Check' section — one line per cause/impact " +
 		"candidate the tool returned, each marked confirmed (with the evidence), ruled out (with the reason), " +
 		"or not assessed. Render each candidate's alert name as a markdown link to its event page using that " +
 		"candidate's event_id from the tool output: [<alert title>](/investigate?id=<event_id>&accountId=" +
