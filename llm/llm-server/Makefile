@@ -38,6 +38,7 @@ benchmark:
 	go test -bench=. -count=5 -benchmem -run=^$  ./... | tee testresults/testperf.txt
 
 lint:
+	go mod download
 	golangci-lint run $(LINT_TAG_FLAG)
 
 # Regenerate OpenAPI spec + docs.go from godoc-style annotations on handlers.
