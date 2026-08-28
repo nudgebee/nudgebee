@@ -92,7 +92,7 @@ func (m TracesExecuteChronosphereTool) Call(nbRequestContext core.NbToolContext,
 		queryResponse.Traces = queryResponse.Traces[:100]
 	}
 
-	response, err := common.MarshalJson(queryResponse.Traces)
+	response, err := common.MarshalJson(tracePayloadForResponse(queryResponse))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("traces: unable to serialize on json", "error", err.Error())
 		return core.NBToolResponse{}, err

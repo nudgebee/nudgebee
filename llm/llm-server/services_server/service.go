@@ -573,7 +573,7 @@ func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3
 		return observabilityResp, fmt.Errorf("services: traces query failed (status %d): %s", resp.StatusCode, string(jsonBody))
 	}
 
-	if err := decodeTraceQueryBody(jsonBody, request.IncludeRawResult, &observabilityResp); err != nil {
+	if err := decodeTraceQueryBody(jsonBody, &observabilityResp); err != nil {
 		return observabilityResp, err
 	}
 
@@ -581,20 +581,30 @@ func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3
 }
 
 // decodeTraceQueryBody fills the trace response from the services-server body, tolerating rollout
-// version skew in both directions. On the free-form ClickHouse path (includeRaw) the upgraded
-// services-server returns the object shape {result:{columns,...}}; an older services-server (or a
-// non-clickhouse provider that fell through) returns the bare []ObservabilityTrace array. The body
-// shape is decided by peeking the first non-whitespace byte ('{' → object, else array) so a large
-// payload is unmarshaled exactly once.
-func decodeTraceQueryBody(jsonBody []byte, includeRaw bool, observabilityResp *core.ObservabilityTraceResponse) error {
-	if includeRaw && firstNonSpaceByte(jsonBody) == '{' {
+// version skew in both directions: an older services-server returns the bare []ObservabilityTrace
+// array, a newer one may return either object shape. The body shape is decided by peeking the
+// first non-whitespace byte ('{' → object, else array) so a large payload is unmarshaled once.
+func decodeTraceQueryBody(jsonBody []byte, observabilityResp *core.ObservabilityTraceResponse) error {
+	// Three body shapes reach here, distinguished by the first non-space byte:
+	//   {"result":{columns,…}}          the free-form ClickHouse path (IncludeRawResult)
+	//   {"traces":[…],"suggestion":"…"} the validated path (ValidateRequest), where an empty
+	//                                   result carries the diagnosis of why it is empty
+	//   [ … ]                           the plain typed span array every other caller gets
+	// The two object shapes are decoded together rather than branched on includeRaw: a raw
+	// request whose provider returned no raw table falls through server-side to the typed path,
+	// so it can legitimately come back as the envelope.
+	if firstNonSpaceByte(jsonBody) == '{' {
 		var objResp struct {
-			Result *core.ObservabilityTraceRawTable `json:"result"`
+			Result     *core.ObservabilityTraceRawTable `json:"result"`
+			Traces     []core.ObservabilityTrace        `json:"traces"`
+			Suggestion string                           `json:"suggestion"`
 		}
 		if err := common.UnmarshalJson(jsonBody, &objResp); err != nil {
 			return err
 		}
 		observabilityResp.Result = objResp.Result
+		observabilityResp.Traces = objResp.Traces
+		observabilityResp.Suggestion = objResp.Suggestion
 		return nil
 	}
 

@@ -240,6 +240,12 @@ type appConfig struct {
 	// true; false restores the plain behavior.
 	LlmServerLogValidateRequestEnabled bool `mapstructure:"llm_server_log_validate_request_enabled"`
 
+	// LlmServerTraceValidateRequestEnabled opts the canonical (where-clause) trace fetch into
+	// services-server's field/value validation: an empty or failed query returns a message naming
+	// the mistyped field or value instead of a silent empty result. Default true; false restores
+	// the plain behavior. Mirrors LlmServerLogValidateRequestEnabled.
+	LlmServerTraceValidateRequestEnabled bool `mapstructure:"llm_server_trace_validate_request_enabled"`
+
 	// Outbound egressfilter master switch. When false, the LLM factory does NOT
 	// install the egressfilter decorator at all — GetLLMModel returns the raw
 	// provider unchanged, no payload serialization, no metric emission. Per-
@@ -1410,6 +1416,7 @@ func init() {
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_logs_v3_canonical_fast_path_enabled", true)
 	viper.SetDefault("llm_server_log_validate_request_enabled", true)
+	viper.SetDefault("llm_server_trace_validate_request_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: lean (default) | native. Cloud orchestrators are

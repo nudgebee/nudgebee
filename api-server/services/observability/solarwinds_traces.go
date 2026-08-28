@@ -116,6 +116,10 @@ func (s *SolarWindsTraceSource) CountTraces(ctx *security.RequestContext, req Tr
 
 // GetLabelValues returns distinct values for a trace label by querying the SolarWinds
 // metric attribute values API for trace.service.traced_response_time.
+// TraceLabelValuesAreComplete marks this source as safe for trace value validation.
+// The attribute-values API enumerates the metric's values without a page cap.
+func (s *SolarWindsTraceSource) TraceLabelValuesAreComplete() {}
+
 func (s *SolarWindsTraceSource) GetLabelValues(ctx *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	apiToken, dataCenter, err := integrations.GetSolarWindsConfigs(ctx, req.AccountId)
 	if err != nil {

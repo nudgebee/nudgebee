@@ -177,7 +177,17 @@ type fakeTraceSource struct {
 	// declared nothing about which canonical fields it resolves, so the full canonical
 	// set stays valid for it (see providerDeclaresTraceFields).
 	mapping map[string]string
+	// values / valuesErr drive GetLabelValues for the value-validation tests.
+	values        map[string][]string
+	valuesErr     error
+	lastValuesReq TracesV3LabelValuesRequest
 }
+
+// completeFakeTraceSource is a fakeTraceSource that declares its value enumeration complete, so
+// validateReferencedTraceLabelValues will actually run against it.
+type completeFakeTraceSource struct{ fakeTraceSource }
+
+func (f *completeFakeTraceSource) TraceLabelValuesAreComplete() {}
 
 func (f *fakeTraceSource) QueryTraces(*security.RequestContext, TracesV3Request) ([]common.OpenTelemetryTrace, error) {
 	return nil, nil
@@ -188,8 +198,9 @@ func (f *fakeTraceSource) GetQuery(*security.RequestContext, TracesV3Request) (s
 func (f *fakeTraceSource) CountTraces(*security.RequestContext, TracesV3Request) (common.OpenTelemetryTraceCount, error) {
 	return common.OpenTelemetryTraceCount{}, nil
 }
-func (f *fakeTraceSource) GetLabelValues(*security.RequestContext, TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
-	return common.OpenTelemetryTraceLabelValues{}, nil
+func (f *fakeTraceSource) GetLabelValues(_ *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
+	f.lastValuesReq = req
+	return common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: f.values[req.Label]}, f.valuesErr
 }
 func (f *fakeTraceSource) QueryLabels(*security.RequestContext, FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
 	return f.labels, f.err

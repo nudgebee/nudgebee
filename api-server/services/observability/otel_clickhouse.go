@@ -433,6 +433,13 @@ func (s *OtelClickhouseTraceSource) QueryLabels(ctx *security.RequestContext, re
 	return labels, nil
 }
 
+// TraceLabelValuesAreComplete marks this source as safe for trace value validation.
+// ClickHouse GROUP BYs the field over the requested window, so the value set is complete for any
+// field whose cardinality fits the query limit. A genuinely high-cardinality field (pod names, CI
+// runners) comes back at the limit and the shared >= maxLabelValuesToScan check fails open, which
+// is the intended behaviour — a truncated page cannot prove a value absent.
+func (s *OtelClickhouseTraceSource) TraceLabelValuesAreComplete() {}
+
 func (s *OtelClickhouseTraceSource) GetLabelValues(ctx *security.RequestContext, fetchTraceRequest TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	hasAccess := s.CheckAccess(ctx, fetchTraceRequest.AccountId)
 	if !hasAccess {

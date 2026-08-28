@@ -40,6 +40,10 @@ type ObservabilityTraceResponse struct {
 	// custom-projection queries render their real values instead of zeroed span structs. Nil means
 	// the services-server returned the legacy typed array (Traces).
 	Result *ObservabilityTraceRawTable `json:"result,omitempty"`
+	// Suggestion carries services-server's ValidateRequest empty-result diagnosis (unknown field
+	// name / unknown field value) when it fires. It arrives with an EMPTY Traces and a 200, so an
+	// empty trace result can say WHY it is empty instead of leaving the agent to guess and retry.
+	Suggestion string `json:"suggestion,omitempty"`
 }
 
 // ObservabilityTraceRawTable mirrors observability.RawTraceResult: an arbitrary ClickHouse result
@@ -207,6 +211,11 @@ type ObservabilityTracesV3Request struct {
 	// array. Set only by the free-form ClickHouse agent tool so aggregation / custom-projection
 	// queries keep their real values. Mirrors observability.TracesV3Request.IncludeRawResult.
 	IncludeRawResult bool `json:"include_raw_result" mapstructure:"include_raw_result"`
+	// ValidateRequest opts the query into services-server's empty-result diagnosis: a query that
+	// matches nothing comes back naming the mistyped field or value instead of a silent empty
+	// list. Mirrors observability.TracesV3Request.ValidateRequest and the log path's
+	// LogQueryRequest.ValidateRequest.
+	ValidateRequest bool `json:"validate_request,omitempty" mapstructure:"validate_request"`
 }
 
 type SortField struct {

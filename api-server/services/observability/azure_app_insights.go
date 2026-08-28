@@ -196,6 +196,10 @@ func (s *AzureAppInsightsTraceSource) QueryTracesHeatmap(ctx *security.RequestCo
 	return nil, fmt.Errorf("not implemented")
 }
 
+// TraceLabelValuesAreComplete marks this source as safe for trace value validation.
+// KQL `| distinct <field>` returns every distinct value for the window.
+func (s *AzureAppInsightsTraceSource) TraceLabelValuesAreComplete() {}
+
 func (s *AzureAppInsightsTraceSource) GetLabelValues(sc *security.RequestContext, tracesRequest TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	azureInsightsObj := integrations.AzureAppInsights{}
 	azureConf, err := integrations.GetAzureAppInsightConfigs(sc, tracesRequest.AccountId)

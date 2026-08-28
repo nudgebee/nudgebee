@@ -1501,7 +1501,7 @@ func (a *observabilityTracesAction) queryErrorSpansForWorkload(ctx *security.Req
 		},
 	}
 
-	return GetTraces(ctx, TracesV3Request{
+	res, err := GetTraces(ctx, TracesV3Request{
 		AccountId: accountId,
 		StartTime: startMs,
 		EndTime:   endMs,
@@ -1513,6 +1513,7 @@ func (a *observabilityTracesAction) queryErrorSpansForWorkload(ctx *security.Req
 			OrderBy: []query.QueryOrderBy{{Column: "timestamp", Order: query.Desc}},
 		},
 	})
+	return res.Traces, err
 }
 
 // queryTraceTrees returns all spans for the given trace_ids within the time
@@ -1527,7 +1528,7 @@ func (a *observabilityTracesAction) queryTraceTrees(ctx *security.RequestContext
 	for _, id := range traceIDs {
 		ids = append(ids, id)
 	}
-	return GetTraces(ctx, TracesV3Request{
+	res, err := GetTraces(ctx, TracesV3Request{
 		AccountId: accountId,
 		StartTime: startMs,
 		EndTime:   endMs,
@@ -1544,12 +1545,13 @@ func (a *observabilityTracesAction) queryTraceTrees(ctx *security.RequestContext
 			},
 		},
 	})
+	return res.Traces, err
 }
 
 // queryRecentSpansForWorkload is the no-errors fallback: small recent sample,
 // mirrors the pre-Fix-4 behaviour but with a smaller limit.
 func (a *observabilityTracesAction) queryRecentSpansForWorkload(ctx *security.RequestContext, accountId, workload, namespace string, startMs, endMs int64, limit int) ([]common.OpenTelemetryTrace, error) {
-	return GetTraces(ctx, TracesV3Request{
+	res, err := GetTraces(ctx, TracesV3Request{
 		AccountId: accountId,
 		StartTime: startMs,
 		EndTime:   endMs,
@@ -1570,6 +1572,7 @@ func (a *observabilityTracesAction) queryRecentSpansForWorkload(ctx *security.Re
 			OrderBy: []query.QueryOrderBy{{Column: "timestamp", Order: query.Desc}},
 		},
 	})
+	return res.Traces, err
 }
 
 // filterErrorSpans returns the subset of spans that traceHasError flags as
@@ -1727,7 +1730,7 @@ func (a *observabilityTracesAction) Execute(ctx playbooks.PlaybookActionContext,
 		startTime = endTime - int64(params.Duration*60*1000)
 	}
 
-	traceoutput, err := GetTraces(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), TracesV3Request{
+	traceResult, err := GetTraces(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), TracesV3Request{
 		AccountId: params.AccountId,
 		Query:     params.Query,
 		StartTime: startTime,
@@ -1738,6 +1741,7 @@ func (a *observabilityTracesAction) Execute(ctx playbooks.PlaybookActionContext,
 	if err != nil {
 		return nil, err
 	}
+	traceoutput := traceResult.Traces
 
 	if len(traceoutput) == 0 {
 		return nil, nil

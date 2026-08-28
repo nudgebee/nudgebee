@@ -403,6 +403,10 @@ func (e *ElasticOtelTraceSource) CountTraces(ctx *security.RequestContext, req T
 	return common.OpenTelemetryTraceCount{Count: searchResp.Hits.Total.Value}, nil
 }
 
+// TraceLabelValuesAreComplete marks this source as safe for trace value validation.
+// A terms aggregation with size 1000 — at or above that the validator already fails open.
+func (e *ElasticOtelTraceSource) TraceLabelValuesAreComplete() {}
+
 func (e *ElasticOtelTraceSource) GetLabelValues(ctx *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	cfg, err := GetElasticsearchConfig(ctx, req.AccountId)
 	if err != nil {

@@ -67,9 +67,10 @@ var traceSourceCanonicalCases = []struct {
 	expected []string
 }{
 	{
-		// Passthrough: consumes canonical names unchanged, publishes no mapping, so it
-		// has declared nothing and keeps the full vocabulary. Each name really is a
-		// column of ClickhouseTraceTableDefinition.
+		// Passthrough: consumes canonical names unchanged. Each name really is a column of
+		// ClickhouseTraceTableDefinition, so the aliases it publishes (namespace, workload,
+		// destination) are an alias layer and it marks itself TracePassthroughTraceSource —
+		// it has declared nothing about the canonical set and keeps the full vocabulary.
 		name: "otel_clickhouse keeps the full vocabulary", provider: "otel_clickhouse", source: "agent",
 		declared: false, expected: allCanonicalTraceFieldNames(),
 	},
@@ -115,7 +116,8 @@ var traceSourceCanonicalCases = []struct {
 		name: "dynatrace withholds service_name", provider: "dynatrace", source: "user",
 		declared: true,
 		expected: []string{"destination_workload_name", "destination_workload_namespace", "duration_ns",
-			"http_status_code", "resource", "span_name", "status_code", "trace_id", "workload_name"},
+			"http_status_code", "resource", "span_name", "status_code", "trace_id", "workload_name",
+			"workload_namespace"},
 	},
 	{
 		// swFilterPart builds filter syntax for these three grouping attributes only.
@@ -127,20 +129,21 @@ var traceSourceCanonicalCases = []struct {
 		// service tag is `service` (reached via workload_name). trace_id is also absent
 		// from the mapping — see the accepted-cost note in TestKnownUnderAdvertisedFields.
 		name: "datadog advertises what its mapping declares", provider: "datadog", source: "user",
-		expected: []string{"duration_ns", "http_status_code", "resource", "span_name", "status_code", "workload_name"},
+		expected: []string{"duration_ns", "http_status_code", "resource", "span_name", "status_code",
+			"workload_name", "workload_namespace"},
 		declared: true,
 	},
 	{
 		name: "newrelic advertises what its mapping declares", provider: "newrelic", source: "user",
 		declared: true,
 		expected: []string{"destination_workload_name", "http_status_code", "resource",
-			"span_name", "status_code", "trace_id", "workload_name"},
+			"span_name", "status_code", "trace_id", "workload_name", "workload_namespace"},
 	},
 	{
 		name: "openobserve advertises what its mapping declares", provider: "openobserve", source: "user",
 		declared: true,
 		expected: []string{"destination_workload_name", "http_status_code", "resource",
-			"span_name", "status_code", "trace_id", "workload_name"},
+			"span_name", "status_code", "trace_id", "workload_name", "workload_namespace"},
 	},
 	{
 		name: "splunk advertises what its mapping declares", provider: "splunk_observability_platform", source: "user",
@@ -260,6 +263,7 @@ func TestPassthroughSourceKeepsCanonicalFieldsDespiteAliases(t *testing.T) {
 // TestOtelClickhouse_CanonicalFieldsKeepTheirTypes guards the one place a value type is
 // attached to a trace label: a passthrough provider must still get typed canonical
 // fields, since the trace agent uses the type to build comparisons (duration_ns > N).
+// Its alias keys ride along untyped after them.
 func TestOtelClickhouse_CanonicalFieldsKeepTheirTypes(t *testing.T) {
 	src := &OtelClickhouseTraceSource{}
 	mapping := src.GetLabelMapping()
@@ -283,4 +287,19 @@ func TestElasticOtelTraceSource_AdvertisesFullCanonicalSet(t *testing.T) {
 	advertised := canonicalTraceFieldNames(buildTraceLabels(src.GetLabelMapping(), providerDeclaresTraceFields(src), nil))
 	assert.Equal(t, allCanonicalTraceFieldNames(), advertised,
 		"elastic OTel maps every canonical field, so all of them stay advertised")
+}
+
+// workload_namespace was absent from canonicalTraceFields while its destination-side twin
+// destination_workload_namespace was present, so no provider advertised it: the canonical path
+// could not filter by the namespace a span came FROM, and with validation on, a query using it was
+// told the field does not exist. Both halves of the pair must stay listed.
+func TestCanonicalTraceFields_IncludeBothNamespaceSides(t *testing.T) {
+	names := map[string]struct{}{}
+	for _, f := range canonicalTraceFields {
+		names[f.name] = struct{}{}
+	}
+	for _, want := range []string{"workload_namespace", "destination_workload_namespace"} {
+		_, ok := names[want]
+		assert.Truef(t, ok, "%q must be a canonical trace field", want)
+	}
 }

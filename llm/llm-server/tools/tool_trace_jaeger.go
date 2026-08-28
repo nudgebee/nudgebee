@@ -109,7 +109,7 @@ func (m TracesExecuteJaegerTool) Call(nbRequestContext core.NbToolContext, input
 		queryResponse.Traces = queryResponse.Traces[:100]
 	}
 
-	response, err := common.MarshalJson(queryResponse.Traces)
+	response, err := common.MarshalJson(tracePayloadForResponse(queryResponse))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("traces: unable to serialize jaeger traces to json", "error", err.Error())
 		return core.NBToolResponse{}, err
