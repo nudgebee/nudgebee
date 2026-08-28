@@ -11,6 +11,7 @@ import asyncio
 from datetime import timedelta
 
 import pytest
+from unittest.mock import patch
 
 from server.recommendation.vertical_rightsizing.models.allocations import (
     ResourceAllocations,
@@ -253,19 +254,39 @@ def test_cognito_is_refused_explicitly():
 
 
 def test_api_key_and_bearer_auth_set_headers_instead_of_basic_auth():
+    # Auth now lives on the shared transport, which volume rightsizing uses too, so the
+    # assertions follow it there rather than duplicating the logic per service.
     api_key_service = _service(auth_type="api_key", api_key="abc123")
-    assert api_key_service._headers["Authorization"] == "ApiKey abc123"
-    assert api_key_service._auth is None
+    assert api_key_service._transport._headers["Authorization"] == "ApiKey abc123"
+    assert api_key_service._transport._auth is None
 
     bearer_service = _service(auth_type="bearer_token", bearer_token="tok")
-    assert bearer_service._headers["Authorization"] == "Bearer tok"
-    assert bearer_service._auth is None
+    assert bearer_service._transport._headers["Authorization"] == "Bearer tok"
+    assert bearer_service._transport._auth is None
 
     basic_service = _service()
-    assert basic_service._auth == ("elastic", "secret")
-    assert "Authorization" not in basic_service._headers
+    assert basic_service._transport._auth == ("elastic", "secret")
+    assert "Authorization" not in basic_service._transport._headers
 
 
 def test_missing_url_is_rejected():
     with pytest.raises(ValueError, match="url"):
         _service(url="")
+
+
+def test_check_connection_reaches_the_cluster_through_the_transport():
+    """check_connection read self._url/_headers/_auth/_verify directly. When auth moved
+    to the shared transport those attributes went with it, and nothing called this in a
+    test — so it raised AttributeError on every real rightsizing run while the suite
+    stayed green. It delegates now, and this asserts the call actually goes out."""
+    service = _service()
+    with patch.object(service._transport, "check_connection") as delegated:
+        service.check_connection()
+    delegated.assert_called_once()
+
+
+def test_check_connection_raises_connection_error_when_the_cluster_refuses():
+    service = _service()
+    with patch("server.recommendation.elasticsearch_client.requests.get", side_effect=OSError("refused")):
+        with pytest.raises(ConnectionError, match="Elasticsearch connection failed"):
+            service.check_connection()

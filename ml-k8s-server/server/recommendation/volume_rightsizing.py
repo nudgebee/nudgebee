@@ -14,17 +14,33 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 import requests
 from server.utils.utils import DatabaseEngine, get_trace
 from server.utils.utils import MetricsServerConfigs
 from server.metrics.prometheus_metrics import prometheus_range_query
+from server.recommendation.elasticsearch_client import ElasticsearchTransport
 from server.recommendation.storage_pricing import FALLBACK_STORAGE_RATE_PER_GB_MONTH, resolve_storage_pricing
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 tracer = get_trace(__name__)
+
+# Elastic Agent `volume` metricset. Only PVC-backed volumes carry the claim name, so
+# ES_PVC_FIELD doubles as the selector that excludes configMap/projected/emptyDir
+# mounts — those report the NODE's filesystem size and would dwarf a real claim.
+ES_PVC_FIELD = "kubernetes.persistentvolumeclaim.name"
+ES_NAMESPACE_FIELD = "kubernetes.namespace"
+ES_VOLUME_USED_FIELD = "kubernetes.volume.fs.used.bytes"
+ES_VOLUME_CAPACITY_FIELD = "kubernetes.volume.fs.capacity.bytes"
+
+# Mirrors the Prometheus pair: a recent window for "current", 7 days for the peak.
+ES_CURRENT_WINDOW_MINUTES = 10
+ES_PEAK_WINDOW_MINUTES = 7 * 24 * 60
+
+ES_MAX_NAMESPACES = 1000
+ES_MAX_PVCS = 1000
 
 
 @dataclass
@@ -177,19 +193,7 @@ class VolumeRightsizingService:
                     return await self._get_volume_usage_data_datadog(namespace_filter, ctx_logger, span)
 
                 if self.metrics_provider == "ES":
-                    # Volume rightsizing needs per-PVC used/capacity bytes. The Elastic
-                    # Agent ships those only from the `volume` metricset, and keys them
-                    # by the pod's volume NAME rather than the PVC, so they cannot be
-                    # matched to a PVC without joining the pod spec. Until that join
-                    # exists, say so: the alternative is the Prometheus path below
-                    # querying a Prometheus an ES-only cluster does not have, which
-                    # returned nothing and reported it as "no oversized volumes".
-                    ctx_logger.warning(
-                        "Volume rightsizing is not supported for Elasticsearch metrics; skipping. "
-                        "Pod/vertical rightsizing is unaffected."
-                    )
-                    span.set_attribute("pvc.skipped_reason", "elasticsearch_unsupported")
-                    return []
+                    return await self._get_volume_usage_data_elasticsearch(namespace_filter, ctx_logger, span)
 
                 # Prometheus path (default)
                 current_usage_query = (
@@ -251,6 +255,130 @@ class VolumeRightsizingService:
                 span.set_attribute("pvc.error", str(e))
                 ctx_logger.error(f"Failed to get volume usage data: {e}")
                 raise
+
+    async def _get_volume_usage_data_elasticsearch(self, namespace_filter, ctx_logger, span) -> List[VolumeUsageData]:
+        """Per-PVC usage and capacity from the Elastic Agent `volume` metricset.
+
+        The metricset emits one document per mounted volume and sets
+        `kubernetes.persistentvolumeclaim.name` only on PVC-backed volumes, so an
+        `exists` on that field both identifies the claim and excludes the rest. That
+        exclusion is required, not tidy: configMap/projected/emptyDir mounts report the
+        NODE's filesystem size, so including them makes a small claim look enormous.
+
+        Two searches mirror the Prometheus pair — a recent window for "current" and a
+        7-day window for the peak — and capacity is read from the recent one.
+        """
+        transport = ElasticsearchTransport.from_config(self.elasticsearch)
+
+        async def usage_maps(minutes: int) -> Tuple[Dict[str, float], Dict[str, float]]:
+            body = self._es_volume_body(minutes, namespace_filter)
+            data = await transport.async_search(body, self._executor)
+            return self._build_es_usage_maps(data)
+
+        # The two windows are independent searches, so they go out together. Two is also
+        # the whole fan-out — the executor backing them is already capped at 4 workers —
+        # so no extra semaphore is needed to keep this off a customer's cluster.
+        (current_used, capacity), (peak_used, _) = await asyncio.gather(
+            usage_maps(ES_CURRENT_WINDOW_MINUTES),
+            usage_maps(ES_PEAK_WINDOW_MINUTES),
+        )
+
+        pvc_metadata = await self._get_pvc_metadata(namespace_filter)
+
+        volume_data: List[VolumeUsageData] = []
+        for pvc_key, metadata in pvc_metadata.items():
+            try:
+                pvc_name = metadata["name"]
+                namespace = metadata["namespace"]
+                if namespace_filter and namespace != namespace_filter:
+                    continue
+
+                usage_key = f"{pvc_name}_{namespace}"
+                capacity_gb = capacity.get(usage_key, 0.0) / (1024**3)
+                if capacity_gb <= 0:
+                    # No volume document for this claim — it may be unmounted, or the
+                    # agent may not run on its node. Recommending against a capacity of
+                    # zero would propose shrinking every such claim to nothing.
+                    continue
+
+                volume_data.append(
+                    VolumeUsageData(
+                        pvc_name=pvc_name,
+                        namespace=namespace,
+                        capacity_gb=capacity_gb,
+                        current_usage_gb=current_used.get(usage_key, 0.0) / (1024**3),
+                        usage_7_days_gb=((val / (1024**3)) if (val := peak_used.get(usage_key)) is not None else None),
+                        pv_name=metadata.get("pv_name", ""),
+                        storage_class=metadata.get("storage_class", ""),
+                        metadata=metadata,
+                    )
+                )
+            except Exception as e:
+                ctx_logger.warning(f"Failed to process PVC {pvc_key}: {e}")
+                continue
+
+        span.set_attribute("pvc.volume_data_count", len(volume_data))
+        ctx_logger.info(f"Retrieved usage data for {len(volume_data)} volumes from Elasticsearch")
+        return volume_data
+
+    def _es_volume_body(self, minutes: int, namespace_filter: Optional[str]) -> Dict[str, Any]:
+        """One search: namespace -> claim -> max(used), max(capacity) over the window."""
+        filters: List[Dict[str, Any]] = [
+            {"exists": {"field": ES_PVC_FIELD}},
+            {"range": {"@timestamp": {"gte": f"now-{minutes}m", "lte": "now"}}},
+        ]
+        if namespace_filter:
+            filters.append({"term": {ES_NAMESPACE_FIELD: namespace_filter}})
+        return {
+            "size": 0,
+            "query": {"bool": {"filter": filters}},
+            "aggs": {
+                "ns": {
+                    "terms": {"field": ES_NAMESPACE_FIELD, "size": ES_MAX_NAMESPACES},
+                    "aggs": {
+                        "pvc": {
+                            "terms": {"field": ES_PVC_FIELD, "size": ES_MAX_PVCS},
+                            "aggs": {
+                                "used": {"max": {"field": ES_VOLUME_USED_FIELD}},
+                                "capacity": {"max": {"field": ES_VOLUME_CAPACITY_FIELD}},
+                            },
+                        }
+                    },
+                }
+            },
+        }
+
+    def _build_es_usage_maps(self, data: Dict[str, Any]) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Flatten the nested aggregation into the {pvc}_{namespace} maps used above."""
+        used_map: Dict[str, float] = {}
+        capacity_map: Dict[str, float] = {}
+        ns_buckets = ((data or {}).get("aggregations") or {}).get("ns") or {}
+        if ns_buckets.get("sum_other_doc_count"):
+            # A capped terms aggregation drops whole namespaces, which would read as
+            # "those claims have no usage" rather than as missing data.
+            logger.warning(
+                f"Elasticsearch volume aggregation truncated at {ES_MAX_NAMESPACES} namespaces; "
+                f"{ns_buckets['sum_other_doc_count']} documents excluded"
+            )
+        # Skip, do not abort: one malformed bucket must not cost every other claim its
+        # recommendation. A claim that is skipped simply has no entry, which the caller
+        # already treats as "no data for this claim" rather than as a zero.
+        for ns in ns_buckets.get("buckets", []) or []:
+            if not isinstance(ns, dict) or not (namespace := ns.get("key")):
+                continue
+            for pvc in (ns.get("pvc") or {}).get("buckets") or []:
+                if not isinstance(pvc, dict) or not (pvc_name := pvc.get("key")):
+                    continue
+                key = f"{pvc_name}_{namespace}"
+                try:
+                    if (used := (pvc.get("used") or {}).get("value")) is not None:
+                        used_map[key] = float(used)
+                    if (cap := (pvc.get("capacity") or {}).get("value")) is not None:
+                        capacity_map[key] = float(cap)
+                except (TypeError, ValueError):
+                    logger.warning(f"Elasticsearch volume aggregation: unreadable values for {key}; skipping")
+                    continue
+        return used_map, capacity_map
 
     async def _query_prometheus_range(self, query: str, duration: timedelta) -> List[Dict]:
         """Execute Prometheus range query."""
