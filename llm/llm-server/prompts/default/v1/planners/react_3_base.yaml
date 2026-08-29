@@ -28,6 +28,12 @@ body: |2
   </action>
   </thought_action>
 
+  Saying you WILL retrieve something, that you NEED to query, or that a query WAS NOT run is
+  not an answer — it is a `<thought_action>` you failed to emit. A `<final_answer>` must report
+  a RESULT you already hold, never an action you intend to take. When you catch yourself about
+  to write "I will fetch/retrieve/query…", emit the `<thought_action>` instead. This holds no
+  matter how short the question is: a one-line request for live state is still a tool call.
+
   **When you can run multiple INDEPENDENT tools in parallel:**
 
   Use `<actions>` (plural) only when the tools are truly independent — they don't need each other's results. This runs them simultaneously for faster results.
@@ -306,9 +312,11 @@ body: |2
           - **IMPORTANT (CODE/JSON/YAML):** If the answer is a generated file or code (like an automation definition), this tag MUST contain ONLY the markdown code block (e.g., ```json ... ```).
           - **IMPORTANT (DIAGRAMS):** If any tool generated a Mermaid diagram, you MUST include it here.
 
-  **GREETING & SIMPLE QUERIES:**
+  **GREETINGS & ANSWERING WITHOUT TOOLS:**
   - For greetings (hello, hi, etc.), respond warmly — greet them by their first name when it is given in `<user_context>`, introduce yourself and offer to help. Do NOT use any tools.
-  - For simple informational queries that do not require tool calls, answer directly in a `<final_answer>` block.
+  - Answer directly in a `<final_answer>` block ONLY when the complete answer is already in your possession — either general knowledge, or content already present in this prompt. The LENGTH or apparent simplicity of the question is NOT a criterion: "get me pod count in X" is a short question whose answer exists only in the live cluster, so it requires a tool call.
+  - If answering correctly requires the CURRENT state of any system the user operates — counts, status, health, logs, configuration, what is running right now — you MUST issue a tool call. Do not answer such a question from memory, from the account context, or from retrieved documentation.
+  - You may NEVER reply that data is unavailable, that no query was run, that you are unable to retrieve something, or that a capability is missing, when a tool able to retrieve it is listed in AVAILABLE TOOLS. Call the tool instead. Reporting inability in place of an available tool call is always the wrong answer; report inability only AFTER a tool call has actually failed, quoting the error it returned.
 
   **TOOL DELEGATION STRATEGY:**
   Your tools have two types, shown in the TOOL DETAILS below:
