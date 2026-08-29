@@ -4,6 +4,7 @@ import apiDashboards, { isCommandDatasource, type AccountOption, type Panel, typ
 import { draftFromQuery, findTable, type EntityColumnFormat, type EntityQueryDraft } from './entityQuery';
 import { runTracePanel } from './traceQuery';
 import { panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
+import { AWS_METRICS_PROVIDER, ES_PROVIDER, isAwsAccount } from './panelProviders';
 import { alignSeries, toRawSeries, type RawSeries } from './panelSeries';
 import { acquirePanelSlot } from './panelQueue';
 import { convertNumberToTimestamp } from 'src/utils/common';
@@ -13,11 +14,6 @@ export interface PanelSeries {
   label: string;
   /** `null` where the series reported nothing — a gap, not a zero. */
   values: (number | null)[];
-}
-
-/** Whether an account's metrics come from CloudWatch. */
-function isAwsAccount(account: AccountOption): boolean {
-  return (account.cloud_provider || '').toLowerCase() === 'aws';
 }
 
 /**
@@ -301,6 +297,17 @@ export function usePanelData({
             end_time: endTime,
             limit: LOG_LINE_LIMIT,
             offset: 0,
+            // A panel that names its provider queries THAT provider on every
+            // account, rather than each account's own default — the expression is
+            // written in one query language and only that provider can read it.
+            // The source is left for the server to resolve per account, since the
+            // same provider can be a user integration on one and agent-detected on
+            // another.
+            ...(panel.provider ? { log_provider: panel.provider } : {}),
+            // An ES query names no index, so the index is sent beside it. Omitted
+            // when the panel pins none, which leaves the backend on each account's
+            // own configured default — the pre-existing behaviour.
+            ...(panel.provider === ES_PROVIDER && panel.provider_index ? { request: { index: panel.provider_index } } : {}),
           })
         )
       )
@@ -415,7 +422,12 @@ export function usePanelData({
 
     Promise.allSettled(
       resolved.map((account) => {
-        const cloudwatch = isAwsAccount(account);
+        // A panel that names its provider queries THAT provider on every account.
+        // It supersedes the AWS default: an author who picked Prometheus for a
+        // panel meant it, and silently redirecting one account to CloudWatch would
+        // run PromQL against a backend that cannot read it.
+        const provider = panel.provider || (isAwsAccount(account) ? AWS_METRICS_PROVIDER : '');
+        const cloudwatch = provider === AWS_METRICS_PROVIDER;
         return observability.metricsQuery({
           account_id: account.value,
           queries,
@@ -423,10 +435,14 @@ export function usePanelData({
           end_time: endTime,
           // CloudWatch has no instant form — it always answers with a range.
           instant: cloudwatch ? false : panel.type === 'stat' || panel.type === 'gauge',
-          // Named explicitly for AWS, because CloudWatch is never an account's DEFAULT metrics provider: it
-          // is not an integration that can carry that flag, so without this the query goes to whatever the
-          // account does default to (Datadog, typically) and comes back unparseable.
-          ...(cloudwatch ? { metric_provider: 'aws_cloudwatch', metric_provider_source: 'user' } : {}),
+          // CloudWatch is never an account's DEFAULT metrics provider: it is not an integration that can
+          // carry that flag, so it must be named — and named with its source, since it resolves only as
+          // `user` and the server would otherwise fall back to `agent` and reject the pair. Every other
+          // provider leaves the source for the server to resolve per account.
+          ...(provider ? { metric_provider: provider, ...(cloudwatch ? { metric_provider_source: 'user' } : {}) } : {}),
+          // The ES metrics path reads its index out of `metric_name` — the slot the
+          // request contract gives it, per resolveESMetricsIndex. Not a mistake here.
+          ...(provider === ES_PROVIDER && panel.provider_index ? { request: { metric_name: panel.provider_index } } : {}),
         });
       })
     )
@@ -475,6 +491,11 @@ export function usePanelData({
     panel.account_type,
     panel.type,
     panel.datasource,
+    // The provider is sent on the request, so changing it in the editor has to
+    // refetch — without this the preview would keep showing the previous
+    // provider's answer under the new provider's name.
+    panel.provider,
+    panel.provider_index,
     targetsKey,
     startTime,
     endTime,

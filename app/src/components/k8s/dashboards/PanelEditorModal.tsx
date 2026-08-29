@@ -17,7 +17,10 @@ import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPrevie
 import { buildEntityQuery, defaultDraft, draftFromQuery, findTable, tablesFor, type EntityQueryDraft } from './entityQuery';
 import { grantTooltip, missingDatasourceGrant, queryableTables } from './panelAccess';
 import { isCompleteColumn, panelColumnsOf, referencedColumns, setHiddenColumns } from './panelColumns';
-import { accountsOfTypes, coversAllOfTypes, deriveAccountTypes, panelScopeFromTypes } from './panelAccounts';
+import { accountsOfTypes, coversAllOfTypes, deriveAccountTypes, panelScopeFromTypes, resolvePanelAccounts } from './panelAccounts';
+import { ES_PROVIDER, isDisabledAccount, providerChoices, providerLabel, providerTypeOf, useEsIndexes, usePanelProviders } from './panelProviders';
+import FilterDropdown from '@ui/FilterDropdown';
+import PanelProviderRow from './PanelProviderRow';
 import { referencedVariables, type VariableValues } from './templating';
 
 interface Props {
@@ -177,11 +180,45 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   // cloud accounts and is unreadable past a handful.
   const accountsForTypes = useMemo(
     () =>
-      accountsOfTypes(accountTypes, accountOptions).map((o) => ({
-        label: accountTypes.length > 1 && o.cloud_provider ? `${o.label} (${o.cloud_provider})` : o.label,
-        value: o.value,
-      })),
+      accountsOfTypes(accountTypes, accountOptions).map((o) => {
+        const base = accountTypes.length > 1 && o.cloud_provider ? `${o.label} (${o.cloud_provider})` : o.label;
+        // Named, not hidden or disabled: a disabled account is still a legitimate
+        // thing to leave on a saved panel while it is temporarily off, and a
+        // disabled option in a multi-select cannot be deselected once chosen.
+        return { label: isDisabledAccount(o) ? `${base} — disabled` : base, value: o.value };
+      }),
     [accountOptions, accountTypes]
+  );
+
+  // The accounts this panel will actually query, resolved exactly as the panel
+  // itself resolves them at render — the provider row must not be able to
+  // disagree with the requests usePanelData goes on to make.
+  const providerAccounts = useMemo(
+    () => resolvePanelAccounts(panelScopeFromTypes(accountTypes, accountIds, accountOptions), accountOptions),
+    [accountTypes, accountIds, accountOptions]
+  );
+  // A text panel queries nothing, and the Source card it would sit in is hidden.
+  const providerType = draft && draft.type !== 'text' ? providerTypeOf(draft.datasource) : undefined;
+  const { loading: providersLoading, entries: providerEntries, total: providerTotal } = usePanelProviders(providerAccounts, providerType);
+  /**
+   * Every provider the panel could be written for.
+   *
+   * Naming none is a real state, not an unmade choice — it is how every panel
+   * written before this control behaves, and it stays correct for the common
+   * single-provider tenant. So it lives in the placeholder and the clear button,
+   * exactly as the Accounts field already spells "all accounts of this type".
+   */
+  // Only ES needs an index named beside the query; every other provider carries
+  // it in the expression or does not have the concept.
+  const needsIndex = draft?.provider === ES_PROVIDER;
+  // Listed from the panel's first account. The picker is free-solo, so an author
+  // whose accounts hold different index sets can still type the pattern they want
+  // — which is also the answer for a wildcard spanning several.
+  const { loading: indexesLoading, indexes } = useEsIndexes(providerAccounts[0]?.value || '', needsIndex);
+
+  const providerOptions = useMemo(
+    () => providerChoices(providerEntries, draft?.provider || '').map((p) => ({ label: providerLabel(p), value: p })),
+    [providerEntries, draft?.provider]
   );
 
   const expr = draft?.targets?.[0]?.expr || '';
@@ -226,7 +263,25 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     // the filtered list yet still scope the panel, so drop them.
     const kept = new Set(accountsOfTypes(next, accountOptions).map((o) => o.value));
     setAccountIds((prev) => prev.filter((id) => kept.has(id)));
+    // The provider was chosen from what the OLD accounts had configured, and a
+    // different account type resolves an entirely different set — an AWS panel
+    // holding a Kubernetes cluster's `prometheus` would name a provider none of
+    // its accounts can serve. Back to the account default, which is always valid.
+    patch({ provider: undefined, provider_index: undefined });
   };
+
+  /**
+   * Naming a provider does not touch the query: an author switching from
+   * "Account default" to the provider those accounts already resolve to is
+   * pinning what they had, not starting over. The row below names any account the
+   * choice leaves behind.
+   */
+  const changeProvider = (next: string) =>
+    // The index belongs to the provider that was named. Carrying it onto another
+    // one would pin a Prometheus panel to an Elasticsearch index, which the
+    // backend has nowhere to put — and ValidateDefinition rejects an index with
+    // no provider at all.
+    patch({ provider: next || undefined, provider_index: next === ES_PROVIDER ? draft?.provider_index : undefined });
 
   /** Changing the data source clears the query. */
   const changeDatasource = (next: string) => {
@@ -254,6 +309,13 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
             // Link and hidden columns name the previous table's columns, and the
             // query they came from has just been thrown away with them.
             options: undefined,
+            // The provider named the query language of the expression that has
+            // just been cleared, and the new datasource resolves a different set
+            // of providers entirely. Keeping it would pin the panel to a provider
+            // that cannot serve it — which ValidateDefinition rejects outright on
+            // the entity and command datasources.
+            provider: undefined,
+            provider_index: undefined,
             // A nudgebee panel is authored as a structured query, so it starts
             // from a working default rather than an empty one.
             targets: entity
@@ -460,6 +522,60 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                         />
                       </Form.Field>
                     </Form.Row>
+                    {providerType && (
+                      <Form.Field
+                        label={
+                          <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                            Provider
+                            <Tooltip title='The backend this panel’s query is written for. One panel speaks one query language — for a second provider, add a second panel.'>
+                              <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}>
+                                <InfoOutlinedIcon sx={{ fontSize: 13 }} />
+                              </Box>
+                            </Tooltip>
+                          </Box>
+                        }
+                      >
+                        <Stack gap={1}>
+                          <Select
+                            value={draft.provider || ''}
+                            options={providerOptions}
+                            onChange={changeProvider}
+                            // Nothing to choose from until the panel has accounts: the options ARE
+                            // what those accounts have configured. Disabled rather than hidden so
+                            // the field keeps its place and the form does not jump as it fills in.
+                            disabled={providerAccounts.length === 0}
+                            placeholder={providerAccounts.length > 0 ? 'Account default' : 'Select accounts first'}
+                            id='panel-provider-select'
+                          />
+                          <PanelProviderRow
+                            providerType={providerType}
+                            loading={providersLoading}
+                            entries={providerEntries}
+                            total={providerTotal}
+                            declared={draft.provider || ''}
+                          />
+                        </Stack>
+                      </Form.Field>
+                    )}
+                    {providerType && needsIndex && (
+                      <Form.Field
+                        label='Index'
+                        helperText='Leave empty to use each account’s configured index. Wildcards are accepted — type a pattern if it is not listed.'
+                      >
+                        <FilterDropdown
+                          id='panel-es-index-select'
+                          label='Select an Index'
+                          value={draft.provider_index || null}
+                          options={indexes}
+                          freeSolo
+                          // Same affordance as the log query builder's picker: free-solo alone is
+                          // invisible, so the hint is what tells the author a pattern is accepted.
+                          searchPlaceholder='Search or type pattern (use * for wildcard)...'
+                          isOptionsLoading={indexesLoading}
+                          onSelect={(_event: any, value: any) => patch({ provider_index: value || undefined })}
+                        />
+                      </Form.Field>
+                    )}
                   </Form.Section>
                 </Card>
               )}

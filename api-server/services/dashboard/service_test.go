@@ -69,6 +69,68 @@ func TestValidateDefinition_AcceptsMultiAccountAndTypePanels(t *testing.T) {
 }
 
 // A panel must have ONE unambiguous answer to "which accounts is this?".
+// A provider names the query language a panel's expression is written in, which
+// only means something where a provider is resolved per account.
+func TestValidateDefinition_ProviderOnlyOnProviderDatasources(t *testing.T) {
+	for _, datasource := range []string{DatasourceMetrics, DatasourceLogs, DatasourceTraces} {
+		p := timeseriesPanel()
+		p.Datasource = datasource
+		p.Provider = "prometheus"
+		// logs and traces render as tables; traces also reads the query engine, so
+		// it takes a structured query rather than an expression.
+		if datasource != DatasourceMetrics {
+			p.Type = VizTable
+		}
+		if IsEntityDatasource(datasource) {
+			p.Targets = []PanelTarget{{RefId: "A", Query: map[string]any{
+				"table":   "traces_v2",
+				"columns": []any{map[string]any{"name": "trace_id"}},
+			}}}
+		}
+		require.NoError(t, ValidateDefinition(Definition{Panels: []Panel{p}}), datasource)
+	}
+
+	for _, datasource := range []string{DatasourceNudgebee, DatasourceRedis, DatasourceRabbitMQ, DatasourcePostgres} {
+		p := timeseriesPanel()
+		p.Datasource = datasource
+		p.Type = VizTable
+		p.Provider = "prometheus"
+		p.Targets = []PanelTarget{{RefId: "A", Expr: "PING"}}
+		if IsEntityDatasource(datasource) {
+			p.Targets = []PanelTarget{{RefId: "A", Query: map[string]any{
+				"table":   "event_groupings_v2",
+				"columns": []any{map[string]any{"name": "event_count"}},
+			}}}
+		}
+		err := ValidateDefinition(Definition{Panels: []Panel{p}})
+		require.Error(t, err, datasource)
+		assert.Contains(t, err.Error(), "no provider to pin", datasource)
+	}
+}
+
+// An index only means something alongside the provider it belongs to.
+func TestValidateDefinition_ProviderIndexNeedsAProvider(t *testing.T) {
+	p := timeseriesPanel()
+	p.Datasource = DatasourceMetrics
+	p.ProviderIndex = "metricbeat-*"
+
+	err := ValidateDefinition(Definition{Panels: []Panel{p}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs a provider to belong to")
+
+	p.Provider = "ES"
+	require.NoError(t, ValidateDefinition(Definition{Panels: []Panel{p}}))
+}
+
+// Every panel written before Provider existed carries none, and must keep
+// validating unchanged — the field needs no migration precisely because empty
+// already means "each account's own default".
+func TestValidateDefinition_AcceptsPanelsWithoutAProvider(t *testing.T) {
+	p := timeseriesPanel()
+	assert.Empty(t, p.Provider)
+	require.NoError(t, ValidateDefinition(Definition{Panels: []Panel{p}}))
+}
+
 func TestValidateDefinition_RejectsBothOrNeitherAccountSelection(t *testing.T) {
 	both := timeseriesPanel()
 	both.AccountType = "K8S"

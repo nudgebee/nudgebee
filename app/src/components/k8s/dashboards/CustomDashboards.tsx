@@ -71,7 +71,16 @@ const CustomDashboards: React.FC = () => {
         .filter((c: any) => !c.account_type || QUERYABLE_ACCOUNT_TYPES.has(c.account_type))
         // `kind` is what lets the template gallery pre-select a scope per panel: a PromQL widget needs a
         // kubernetes account, and only this field says which of the connected accounts is one.
-        .map((c: any) => ({ label: c.label || c.value, value: c.value, cloud_provider: c.cloud_provider || '', kind: c.account_type || '' })),
+        // `status` rides along so the panel editor can say a saved account has
+        // been disabled — nothing downstream filters on it, so without this a
+        // disabled account is indistinguishable from a live one.
+        .map((c: any) => ({
+          label: c.label || c.value,
+          value: c.value,
+          cloud_provider: c.cloud_provider || '',
+          kind: c.account_type || '',
+          status: c.status || '',
+        })),
     [allCluster]
   );
 
