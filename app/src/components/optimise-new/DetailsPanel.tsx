@@ -1,5 +1,4 @@
-import { Box, Typography, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
-import { Divider } from '@ui/Divider';
+import { Box, Typography, Divider, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
 import { useState, useEffect, type ReactNode } from 'react';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import { Select as DsSelect } from '@ui/Select';
@@ -568,6 +567,12 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           drawer swaps to a different recommendation (it isn't remounted). */}
       <BlastRadiusSection key={rec?.id} rec={rec} />
 
+      {/* What applying does — surfaced prominently so the impact is clear before the
+          user clicks Apply (e.g. the async, non-disruptive EBS gp2→gp3 modification). */}
+      {recData?.apply_impact && (
+        <Banner surface='section' tone='info' title='What applying does' message={String(recData.apply_impact)} id='recommendation-apply-impact' />
+      )}
+
       {/* Recommendation Summary — key "what changes" data from JSONB */}
       <RecommendationSummary recData={recData} category={category} ruleName={ruleName} />
 
@@ -575,7 +580,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           interpretation "why", so only render the remainder here (if any). */}
       {details?.recommendations?.length > 1 && (
         <>
-          <Divider sx={{ my: 0 }} />
+          <Divider />
           <Box>
             <SectionHeading>Recommendations</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
@@ -675,7 +680,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* Compliance */}
       {details?.compliances?.length > 0 && (
         <>
-          <Divider sx={{ my: 0 }} />
+          <Divider />
           <Box>
             <SectionHeading>Compliance</SectionHeading>
             <Box sx={{ display: 'flex', gap: ds.space[2], flexWrap: 'wrap' }}>
@@ -692,7 +697,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* References */}
       {details?.references?.length > 0 && (
         <>
-          <Divider sx={{ my: 0 }} />
+          <Divider />
           <Box>
             <SectionHeading>References</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
@@ -722,7 +727,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* Linked Items */}
       {(rec.ticket || hasRenderablePRState(rec.resolution)) && (
         <>
-          <Divider sx={{ my: 0 }} />
+          <Divider />
           <Box>
             <SectionHeading>Linked Items</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
@@ -1111,6 +1116,7 @@ const ConfigurationSummary = ({ recData }: { recData: any }) => {
 // interpretation, plus internal routing identifiers (raw UUIDs) that are noise.
 const SUMMARY_HIDDEN_FIELDS = new Set([
   'reason',
+  'apply_impact', // shown prominently in its own Banner, not as a generic summary row
   'message',
   'description',
   'Description',
