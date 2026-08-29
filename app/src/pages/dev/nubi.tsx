@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Button, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Button } from '@ui/Button';
 import Loader from '@shared/Loader';
 import NubiAnimation, { type NubiAnimationState } from '@shared/NubiAnimation';
 
@@ -53,13 +54,13 @@ export default function NubiAnimationPreviewPage() {
       </Typography>
 
       <Box sx={{ display: 'flex', gap: 1, mb: 4, flexWrap: 'wrap' }}>
-        <Button variant='contained' data-testid='simulate-loader-5s-btn' onClick={() => setLoaderMs(5000)}>
+        <Button tone='primary' data-testid='simulate-loader-5s-btn' onClick={() => setLoaderMs(5000)}>
           Show loader 5s
         </Button>
-        <Button variant='contained' data-testid='simulate-loader-15s-btn' onClick={() => setLoaderMs(15000)}>
+        <Button tone='primary' data-testid='simulate-loader-15s-btn' onClick={() => setLoaderMs(15000)}>
           Show loader 15s
         </Button>
-        <Button variant='outlined' data-testid='simulate-loader-hold-btn' onClick={() => setLoaderMs(Infinity)}>
+        <Button tone='secondary' data-testid='simulate-loader-hold-btn' onClick={() => setLoaderMs(Infinity)}>
           Hold loader (click to dismiss)
         </Button>
       </Box>

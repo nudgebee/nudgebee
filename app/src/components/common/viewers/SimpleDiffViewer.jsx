@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
-import { Box, Button, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Button } from '@ui/Button';
 import { ChevronRight, ExpandMore, Code } from '@mui/icons-material';
 
 /**
@@ -207,20 +208,17 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
           onClick={() => setExpanded(!expanded)}
         >
           <Button
-            variant='ghost'
-            size='small'
-            sx={{
-              minWidth: 'auto',
-              padding: 'var(--ds-space-1)',
-              marginRight: 'var(--ds-space-2)',
-            }}
+            tone='ghost'
+            size='sm'
+            composition='icon-only'
+            aria-label={expanded ? 'Collapse diff' : 'Expand diff'}
+            icon={expanded ? <ExpandMore /> : <ChevronRight />}
+            style={{ marginRight: 'var(--ds-space-2)' }}
             onClick={(e) => {
               e.stopPropagation();
               setExpanded(!expanded);
             }}
-          >
-            {expanded ? <ExpandMore sx={{ fontSize: 'var(--ds-text-title)' }} /> : <ChevronRight sx={{ fontSize: 'var(--ds-text-title)' }} />}
-          </Button>
+          />
 
           <Code sx={{ fontSize: 'var(--ds-text-body-lg)', marginRight: 'var(--ds-space-2)' }} />
 
