@@ -305,13 +305,19 @@ func (s *SplunkEnterpriseMetricSource) GetQuery(ctx *security.RequestContext, re
 	}
 
 	items, raw := splunkEnterpriseQueryItems(req)
-	for _, key := range sortedKeys(rawKeys(items, raw)) {
-		if items != nil {
-			return buildSplunkMStatsQuery(items[key], req.Labels, index, req.StepInterval, req.Instant)
-		}
-		return raw[key], nil
+	keys := sortedKeys(rawKeys(items, raw))
+	if len(keys) == 0 {
+		return "", nil
 	}
-	return "", nil
+
+	// GetQuery renders ONE query for display, but a request may carry several. The
+	// lowest-sorted key is the representative one; sorting is what makes that choice
+	// stable rather than dependent on map iteration order.
+	key := keys[0]
+	if items != nil {
+		return buildSplunkMStatsQuery(items[key], req.Labels, index, req.StepInterval, req.Instant)
+	}
+	return raw[key], nil
 }
 
 // rawKeys returns a set-like map of the keys present in whichever of the two shapes is
