@@ -1,6 +1,7 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { Box, Typography, Menu, MenuItem, ListItemText, ListItemIcon } from '@mui/material';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { Box, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
+import { DropdownMenu } from '@ui/DropdownMenu';
 import { ContentCopy, Check, FormatAlignLeft, KeyboardArrowDown, AutoAwesome } from '@mui/icons-material';
 import { Input } from '@ui/Input';
 import { getPresetsForField, FIELD_HELPER_TEXT, FIELD_PLACEHOLDERS, type Preset } from './advancedConfigPresets';
@@ -42,7 +43,6 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
   const [isValid, setIsValid] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
   const { copied, copy } = useCopyToClipboard();
-  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
   const presets = getPresetsForField(field);
   const helperText = customHelperText || FIELD_HELPER_TEXT[field] || '';
@@ -106,25 +106,31 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
     await copy(localValue);
   };
 
-  const handlePresetClick = (event: React.MouseEvent<HTMLElement>) => {
-    setAnchorEl(event.currentTarget);
-  };
+  const handlePresetSelect = useCallback(
+    (preset: Preset) => {
+      const presetValue = typeof preset.value === 'string' ? preset.value : JSON.stringify(preset.value, null, 2);
+      setLocalValue(presetValue);
+      setIsValid(true);
+      setErrorMessage('');
 
-  const handlePresetClose = () => {
-    setAnchorEl(null);
-  };
+      if (typeof preset.value === 'object') {
+        onChange(preset.value);
+      }
+    },
+    [onChange]
+  );
 
-  const handlePresetSelect = (preset: Preset) => {
-    const presetValue = typeof preset.value === 'string' ? preset.value : JSON.stringify(preset.value, null, 2);
-    setLocalValue(presetValue);
-    setIsValid(true);
-    setErrorMessage('');
-
-    if (typeof preset.value === 'object') {
-      onChange(preset.value);
-    }
-    handlePresetClose();
-  };
+  const menuItems = useMemo(
+    () =>
+      presets.map((preset, index) => ({
+        id: `${field}-preset-${index}`,
+        label: preset.label,
+        description: preset.description,
+        icon: <AutoAwesome sx={{ fontSize: 'var(--ds-text-title)' }} />,
+        onSelect: () => handlePresetSelect(preset),
+      })),
+    [presets, field, handlePresetSelect]
+  );
 
   return (
     <Box>
@@ -137,38 +143,26 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
         </Typography>
         <Box sx={{ display: 'flex', gap: 0.5 }}>
           {presets.length > 0 && (
-            <>
-              <Button
-                composition='icon-only'
-                tone='ghost'
-                size='xs'
-                tooltip='Apply preset'
-                aria-label='Apply preset'
-                disabled={disabled}
-                onClick={handlePresetClick}
-                icon={
-                  <Box sx={{ display: 'inline-flex', alignItems: 'center' }}>
-                    <AutoAwesome sx={{ fontSize: 'var(--ds-text-title)' }} />
-                    <KeyboardArrowDown sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
-                  </Box>
-                }
-              />
-              <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={handlePresetClose}>
-                {presets.map((preset, index) => (
-                  <MenuItem key={index} onClick={() => handlePresetSelect(preset)} sx={{ minWidth: 200 }}>
-                    <ListItemIcon>
+            <DropdownMenu
+              align='end'
+              items={menuItems}
+              trigger={
+                <Button
+                  composition='icon-only'
+                  tone='ghost'
+                  size='xs'
+                  tooltip='Apply preset'
+                  aria-label='Apply preset'
+                  disabled={disabled}
+                  icon={
+                    <Box sx={{ display: 'inline-flex', alignItems: 'center' }}>
                       <AutoAwesome sx={{ fontSize: 'var(--ds-text-title)' }} />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={preset.label}
-                      secondary={preset.description}
-                      primaryTypographyProps={{ fontSize: 'var(--ds-text-body)' }}
-                      secondaryTypographyProps={{ fontSize: 'var(--ds-text-caption)' }}
-                    />
-                  </MenuItem>
-                ))}
-              </Menu>
-            </>
+                      <KeyboardArrowDown sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
+                    </Box>
+                  }
+                />
+              }
+            />
           )}
           <Button
             composition='icon-only'
