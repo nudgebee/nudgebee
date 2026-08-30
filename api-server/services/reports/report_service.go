@@ -474,8 +474,7 @@ func isPayloadEmpty(insights common.GqlResponse) bool {
 
 func calculateTotalPotentialSavings(data map[string]interface{}) float64 {
 	totalSavings := big.NewFloat(0)
-	rows := data["rows"].([]query.QueryRow)
-	for _, row := range rows {
+	for _, row := range toStringMapSlice(rowsOf(data)) {
 		if sumEstimatedSavings, ok := row["sum_estimated_savings"].(float64); ok {
 			totalSavings = new(big.Float).Add(totalSavings, big.NewFloat(sumEstimatedSavings))
 		}
