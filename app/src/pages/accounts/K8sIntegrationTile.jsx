@@ -7,7 +7,9 @@ import { toast as snackbar } from '@ui/Toast';
 import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
 import { hasWriteAccess, fetchFeatureFlagsForAccount, canManage } from '@lib/auth';
-import { Box, Grid, Stack, Typography } from '@mui/material';
+import { Box, Grid, IconButton, Stack, Typography } from '@mui/material';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import Tooltip from '@ui/Tooltip';
 import { Input } from '@ui/Input';
 import { Link } from '@ui/Link';
 import { useEffect, useRef, useState } from 'react';
@@ -28,6 +30,7 @@ import { Checkbox } from '@ui/Checkbox';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import apiUser from '@api1/user';
 import CopyButton from '@shared/buttons/CopyButton';
+import AccountEnvToggle, { ACCOUNT_ENV_PROD, ACCOUNT_ENV_TOOLTIP, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 
 // Agents connect asynchronously minutes after an account is created, so the
 // health columns are still empty on the fetch that follows install. Poll to
@@ -38,6 +41,7 @@ const K8sIntegrationTile = () => {
   const headers = [
     'Name',
     { name: 'Status', width: '10%' },
+    { name: 'Environment', width: '10%' },
     { name: 'Installed At', width: '10%' },
     { name: 'Last Connected At', width: '10%' },
     { name: 'Created By', width: '15%' },
@@ -65,6 +69,8 @@ const K8sIntegrationTile = () => {
   const [k8sCurlCommand, setK8sCurlCommand] = useState('');
   const [selectedAnomalyConfigs, setSelectedAnomalyConfigs] = useState([]);
   const [accountName, setAccountName] = useState('');
+  const [accountEnv, setAccountEnv] = useState(DEFAULT_ACCOUNT_ENV);
+  const [initialAccountEnv, setInitialAccountEnv] = useState(DEFAULT_ACCOUNT_ENV);
   const [nameInput, setNameInput] = useState('');
   const [selectedNameFilter, setSelectedNameFilter] = useState('');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('active');
@@ -143,6 +149,8 @@ const K8sIntegrationTile = () => {
       setSelectedAccountName(data.account_name);
       setAccountName(data.account_name);
       setSelectedAccountId(data.id);
+      setAccountEnv(data.account_env || DEFAULT_ACCOUNT_ENV);
+      setInitialAccountEnv(data.account_env || DEFAULT_ACCOUNT_ENV);
     } else if (menuItem.id === 'renew-token') {
       apiAccount.generateAgentToken(data.id).then((res) => {
         if (res?.data?.data?.agents_create_token?.access_secret) {
@@ -188,6 +196,9 @@ const K8sIntegrationTile = () => {
               },
               {
                 component: <Label text={item.status} />,
+              },
+              {
+                text: item.account_env === ACCOUNT_ENV_PROD ? 'Production' : 'Non-production',
               },
               {
                 component: <Datetime value={item.created_at} />,
@@ -252,9 +263,12 @@ const K8sIntegrationTile = () => {
         prevData.map((itemData) => {
           const item = healthByAccountId.get(itemData[0].drilldownQuery.id);
           const updatedItemData = [...itemData];
-          updatedItemData[3] = item?.last_connected_at ? { component: <Datetime value={item.last_connected_at} /> } : { text: '-' };
-          updatedItemData[5] = { text: item?.k8s_version || '-' };
-          updatedItemData[6] = { text: item?.version || '-' };
+          // Column indices below account for the Environment column inserted at
+          // index 2 (after Status): Last Connected At → 4, K8s Version → 6,
+          // Installed Agent Version → 7.
+          updatedItemData[4] = item?.last_connected_at ? { component: <Datetime value={item.last_connected_at} /> } : { text: '-' };
+          updatedItemData[6] = { text: item?.k8s_version || '-' };
+          updatedItemData[7] = { text: item?.version || '-' };
           return updatedItemData;
         })
       );
@@ -350,6 +364,8 @@ const K8sIntegrationTile = () => {
     setCertificateExpiry(0);
     setNetworkThreshold(0);
     setObservationDays(0);
+    setAccountEnv(DEFAULT_ACCOUNT_ENV);
+    setInitialAccountEnv(DEFAULT_ACCOUNT_ENV);
     setUpdating(false);
   };
 
@@ -468,6 +484,25 @@ const K8sIntegrationTile = () => {
       } catch (error) {
         console.log('error', error);
         snackbar.error('Failed to Update Account Name');
+      }
+    }
+
+    if (accountEnv !== initialAccountEnv) {
+      try {
+        const res = await apiAccount.updateAccount({ id: selectedAccountId }, { account_env: accountEnv });
+
+        // updateAccount swallows failures and RETURNS the Error (resolves, not
+        // rejects), so guard against an Error/absent-data shape here — otherwise
+        // a failed update falls through to the success toast.
+        if (res instanceof Error || !res?.data || res?.data?.errors?.length > 0) {
+          const error = (res instanceof Error ? res.message : res?.data?.errors?.[0]?.message) || 'Failed to Update Environment';
+          snackbar.error(error);
+        } else {
+          snackbar.success('Account Environment Updated successfully');
+        }
+      } catch (error) {
+        console.log('error', error);
+        snackbar.error('Failed to Update Environment');
       }
     }
     setUpdating(false);
@@ -600,6 +635,18 @@ const K8sIntegrationTile = () => {
                 disabled={!hasWriteAccess()}
               />
             </Box>
+          </Box>
+
+          <Box sx={{ mt: ds.space[4] }}>
+            <Box sx={{ display: 'flex', alignItems: 'center' }}>
+              <Heading value='Environment' borderWidth='md' />
+              <Tooltip title={ACCOUNT_ENV_TOOLTIP} placement='right'>
+                <IconButton id='k8s-account-env-info-btn' size='small' sx={{ p: 0.5 }}>
+                  <InfoOutlinedIcon fontSize='small' />
+                </IconButton>
+              </Tooltip>
+            </Box>
+            <AccountEnvToggle id='k8s-account-env' label='' value={accountEnv} onChange={setAccountEnv} disabled={updating || !hasWriteAccess()} />
           </Box>
 
           <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
@@ -832,7 +879,7 @@ const K8sIntegrationTile = () => {
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           <CustomTable
-            stickyColumnIndex={'8'}
+            stickyColumnIndex={'9'}
             loading={loading}
             tableData={tableData}
             headers={headers}
