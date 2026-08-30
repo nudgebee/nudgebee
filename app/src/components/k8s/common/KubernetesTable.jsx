@@ -18,7 +18,7 @@ import Datetime from '@shared/format/Datetime';
 import SafeIcon from '@shared/icons/SafeIcon';
 import Loader from '@shared/Loader';
 import { getDateString, getLast30Days, getSpecificTime, getTimeString, timeFormatIn24HoursCompact } from '@lib/datetime';
-import KubernetesPodYaml from '@components/k8s/details/KubernetesPodYaml';
+const KubernetesPodYaml = dynamic(() => import('@components/k8s/details/KubernetesPodYaml'), { ssr: false });
 import {
   convertNumberToTimestamp,
   getMsInTimestamp,
@@ -53,7 +53,7 @@ import { FiArrowRight } from 'react-icons/fi';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import KubernetesPlusMinusLogsGradual from '@components/k8s/details/KubernetesPlusMinusLogsGradual';
-import CodeMirrorDiffViewer from '@shared/viewers/DiffViewer';
+const CodeMirrorDiffViewer = dynamic(() => import('@shared/viewers/DiffViewer'), { ssr: false });
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { md5 } from '@lib/encode';
 import { buildNubiChartPrompt } from 'src/utils/nubiPromptBuilder';

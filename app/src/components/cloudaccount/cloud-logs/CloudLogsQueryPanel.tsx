@@ -67,6 +67,7 @@ export function useCloudLogsQueryPanel({ provider, accountId, onChange, initialR
     if (!accountId) {
       return;
     }
+    let cancelled = false;
     const fetchRegions = async () => {
       try {
         const resp = await apiCloudAccount.getCloudResource({
@@ -74,6 +75,9 @@ export function useCloudLogsQueryPanel({ provider, accountId, onChange, initialR
           type: provider === 'AWS' ? 'log-group' : provider === 'Azure' ? 'workspaces' : 'cloud-logging',
           status: 'Active',
         });
+        if (cancelled) {
+          return;
+        }
         const resources = resp?.data?.data?.cloud_resourses || [];
         const uniqueRegions = [...new Set(resources.map((r: any) => r.region).filter(Boolean))] as string[];
         setRegions(uniqueRegions.sort((a, b) => a.localeCompare(b)));
@@ -90,16 +94,22 @@ export function useCloudLogsQueryPanel({ provider, accountId, onChange, initialR
           setLogGroups(resources);
         }
       } catch (err) {
-        console.error('Failed to fetch regions for cloud logs', err);
+        if (!cancelled) {
+          console.error('Failed to fetch regions for cloud logs', err);
+        }
       }
     };
     fetchRegions();
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, provider]);
 
   useEffect(() => {
     if (provider !== 'AWS' || !accountId || !selectedRegion) {
       return;
     }
+    let cancelled = false;
     const fetchLogGroups = async () => {
       setLogGroupsLoading(true);
       try {
@@ -109,16 +119,26 @@ export function useCloudLogsQueryPanel({ provider, accountId, onChange, initialR
           region: selectedRegion,
           status: 'Active',
         });
+        if (cancelled) {
+          return;
+        }
         const resources = resp?.data?.data?.cloud_resourses || [];
         setLogGroups(resources);
         setSelectedLogGroup(null);
       } catch (err) {
-        console.error('Failed to fetch log groups', err);
+        if (!cancelled) {
+          console.error('Failed to fetch log groups', err);
+        }
       } finally {
-        setLogGroupsLoading(false);
+        if (!cancelled) {
+          setLogGroupsLoading(false);
+        }
       }
     };
     fetchLogGroups();
+    return () => {
+      cancelled = true;
+    };
   }, [provider, accountId, selectedRegion]);
 
   const emitChange = useCallback(() => {

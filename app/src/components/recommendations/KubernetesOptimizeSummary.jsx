@@ -428,43 +428,64 @@ const KubernetesOptimizeSummary = ({ kubernetes }) => {
     }));
   };
 
-  const loadInforgraphicData = useCallback(async () => {
-    if (!selectedCluster.value) {
-      return;
-    }
-    try {
-      const optimizeSummary = await recommendationApi.optimizeSummaryInfographic(selectedCluster.value);
-      const autoPilotData = await apiAutoPilot.getAutoPilotAggregate({ accountId: selectedCluster.value });
-      if (selectedCluster?.k8s_provider === 'EKS') {
-        const clusterUpgrade = await recommendationApi.getK8sRecommendation({
-          accountId: selectedCluster.value,
-          ruleName: 'eks_cluster_upgrade',
-          category: 'InfraUpgrade',
-          status: ['Open'],
-          recommendation: {},
-          limit: 1,
-          offset: 0,
-          fetchTicket: false,
-        });
-        const recommendationObject = clusterUpgrade?.data?.recommendation?.[0]?.recommendation || {};
-        if (Object.keys(recommendationObject).length > 0) {
-          setEksUpgrade(recommendationObject);
+  const loadInforgraphicData = useCallback(
+    async (isCancelled = () => false) => {
+      if (!selectedCluster.value) {
+        return;
+      }
+      try {
+        const [optimizeSummary, autoPilotData] = await Promise.all([
+          recommendationApi.optimizeSummaryInfographic(selectedCluster.value),
+          apiAutoPilot.getAutoPilotAggregate({ accountId: selectedCluster.value }),
+        ]);
+        if (isCancelled()) {
+          return;
+        }
+        if (selectedCluster?.k8s_provider === 'EKS') {
+          const clusterUpgrade = await recommendationApi.getK8sRecommendation({
+            accountId: selectedCluster.value,
+            ruleName: 'eks_cluster_upgrade',
+            category: 'InfraUpgrade',
+            status: ['Open'],
+            recommendation: {},
+            limit: 1,
+            offset: 0,
+            fetchTicket: false,
+          });
+          if (isCancelled()) {
+            return;
+          }
+          const recommendationObject = clusterUpgrade?.data?.recommendation?.[0]?.recommendation || {};
+          if (Object.keys(recommendationObject).length > 0) {
+            setEksUpgrade(recommendationObject);
+          }
+        }
+        updateDataStates(optimizeSummary, autoPilotData);
+      } catch (error) {
+        if (!isCancelled()) {
+          console.error('Failed to load infographic data:', error);
         }
       }
-      updateDataStates(optimizeSummary, autoPilotData);
-    } catch (error) {
-      console.error('Failed to load infographic data:', error);
-    }
-  }, [selectedCluster]);
+    },
+    [selectedCluster]
+  );
 
-  const loadInforgraphicNodeRecommendationData = useCallback(async () => {
-    if (selectedCluster.value) {
-      const nodeRecommendation = await getNodeRecommendation(selectedCluster, includeGraviton);
-      updateNodeRecommendationState(nodeRecommendation?.ml_generate_node_recommendations?.data || {});
-    }
-  }, [selectedCluster]);
+  const loadInforgraphicNodeRecommendationData = useCallback(
+    async (isCancelled = () => false) => {
+      if (selectedCluster.value) {
+        const nodeRecommendation = await getNodeRecommendation(selectedCluster, includeGraviton);
+        if (isCancelled()) {
+          return;
+        }
+        updateNodeRecommendationState(nodeRecommendation?.ml_generate_node_recommendations?.data || {});
+      }
+    },
+    [selectedCluster]
+  );
 
   useEffect(() => {
+    let cancelled = false;
+    const isCancelled = () => cancelled;
     setData(initialStateData);
     setNodeRecommendation(nodeRecommendationInitialStateData);
     setSavingsData(initialStateSavingsData);
@@ -472,9 +493,14 @@ const KubernetesOptimizeSummary = ({ kubernetes }) => {
     setLoading(true);
     setEksUpgrade({});
     // Load data in parallel - both APIs will be called simultaneously
-    Promise.all([loadInforgraphicData(), loadInforgraphicNodeRecommendationData()]).finally(() => {
-      setLoading(false);
+    Promise.all([loadInforgraphicData(isCancelled), loadInforgraphicNodeRecommendationData(isCancelled)]).finally(() => {
+      if (!cancelled) {
+        setLoading(false);
+      }
     });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCluster, loadInforgraphicData, loadInforgraphicNodeRecommendationData]);
 
   const getNodeRecommendation = async (selectedCluster, includeGraviton) => {
