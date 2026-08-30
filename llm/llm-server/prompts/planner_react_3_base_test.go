@@ -11,7 +11,7 @@ import (
 // the A/B separation):
 //
 //   - "DO NOT use shell_execute for code/repo work — use code_analyzer"
-//   - "Specialized agents over raw shell" (kubectl/aws/gcp/azure)
+//   - Active domain routing before generic specialist preference
 //   - Cross-tool artifact handling (tool observations name the exact saved
 //     file / the "Evidence already gathered" index → grep that exact file)
 //
@@ -26,7 +26,8 @@ func TestPlannerReact3Base_ShellGuidanceIsStrategyOnly(t *testing.T) {
 	// across multiple tools that can't live in any single tool's
 	// description.
 	required := []string{
-		"Specialized Agents vs. Shell",          // routing rule: prefer kubectl/aws/gcp/azure over raw shell
+		"Follow explicit tool-choice instructions",                   // concrete system-prompt precedence, without inferred ownership
+		"Never delegate to the agent currently handling the request", // aliases must not cause self-delegation
 		"code_analyzer",                         // routing rule: code/repo work uses code_analyzer
 		"Artifacts & Files",                     // cross-tool: how shell consumes other tools' file output
 		"Evidence already gathered",             // points at the real file-ref channel (the evidence index), not a dead <artifacts> tag
@@ -57,6 +58,11 @@ func TestPlannerReact3Base_ShellGuidanceIsStrategyOnly(t *testing.T) {
 		assert.NotContains(t, GetPromptForTest(PromptReact3Base), snippet,
 			"planner_react_3_base.txt should not carry tool-mechanics snippet %q — that lives in ShellTool.Description() now", snippet)
 	}
+
+	assert.NotContains(t, GetPromptForTest(PromptReact3Base), "Specialized Agents vs. Shell",
+		"the duplicate absolute shell rule conflicts with agent-specific routing")
+	assert.NotContains(t, GetPromptForTest(PromptReact3Base), "Prefer specialized agents",
+		"generic delegation must not override an active agent's domain routing")
 }
 
 func TestPlannerReact3Base_DelegationReusesResolvedResourceIdentity(t *testing.T) {

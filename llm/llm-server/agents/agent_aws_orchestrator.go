@@ -50,7 +50,8 @@ func init() {
 // prompt (agent_aws_lean). Every specialist (databases, kubectl, aws_observability,
 // other clouds, github, tickets, …) is dropped from context and reached on-demand
 // via search_tools + delegate_agent. Everything else — including the answer
-// critique — runs through the same ReAct3 planner under the standard gates.
+// critique — runs through the runtime-selected ReAct planner under the standard
+// gates.
 type AwsOrchestratorAgent struct {
 	accountId string
 }
@@ -69,7 +70,7 @@ func (a *AwsOrchestratorAgent) GetNameAliases() []string {
 }
 
 func (a *AwsOrchestratorAgent) GetDescription() string {
-	return `Lean-loop AWS SRE/DevOps troubleshooting orchestrator: minimal principle-level prompt, direct aws_execute, specialists reached on-demand via search_tools + delegate_agent.`
+	return `Lean-loop AWS SRE/DevOps troubleshooting orchestrator: workspace-based AWS reads and local analysis, approval-aware direct AWS mutations, and specialists reached on-demand via search_tools + delegate_agent.`
 }
 
 func (a *AwsOrchestratorAgent) GetPlannerType() core.AgentPlannerType {

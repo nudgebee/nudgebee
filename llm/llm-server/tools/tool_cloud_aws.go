@@ -25,6 +25,7 @@ func init() {
 // investigation methodology, decision trees, and rich examples.
 func (t AwsCliTool) ToolPrompt() []string {
 	return []string{
+		"**Routing boundary:** These rules apply after the active agent has selected `aws_execute`; they do not override an agent policy that routes AWS reads and local computation through the workspace shell.",
 		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs, ARNs, or IPs — empty CLI results = 'not found'.",
 		"**IAM safety:** NEVER attempt to modify your own IAM permissions or roles to grant access. `aws iam add-user-policy`, `aws iam attach-role-policy`, and similar are OFF LIMITS. Report missing permissions as a finding.",
 		"**Filter syntax gotcha:** `--filters` is plural. Values follow `Name=<filter>,Values=<value>` — e.g. `--filters Name=vpc-id,Values=vpc-12345`. Common wrong forms: `--filter …` (singular), `vpc-id=vpc-12345` (missing Name=/Values=).",
@@ -73,8 +74,7 @@ func (t AwsCliTool) Description() string {
 
 		**Usage:**
 
-		* **Prioritize this tool:**  When interacting with AWS, use this tool to retrieve information or perform actions.
-		* **Prioritize this tool:**  When interacting with AWS, use this tool to retrieve information or perform actions.
+		* **Routing:** Availability does not make this tool the default for every AWS command. Follow the active agent's system prompt when choosing between this direct tool and a workspace shell. If that prompt assigns AWS reads to the workspace shell, do not use this tool for those reads; keep this direct path for mutations and commands with uncertain effects so approval and resume behavior is preserved.
 		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions.
 		* **Output:**  The raw output of the executed 'aws' CLI command.
 
