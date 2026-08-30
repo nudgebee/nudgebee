@@ -290,6 +290,7 @@ const AdaptiveServiceNode = memo(
   ({ data, isConnectable }) => {
     const isZoomedOut = useStore(zoomSelector);
     const borderColor = data.type === 'Workload' ? 'var(--ds-blue-500)' : 'var(--ds-green-400)';
+    const contextLine = [data.accountName, data.namespace].filter(Boolean).join(' · ');
 
     return (
       <div className={`service-node-wrapper ${isZoomedOut ? 'lod-dot' : 'lod-full'}`}>
@@ -308,7 +309,11 @@ const AdaptiveServiceNode = memo(
           <div className='node-content'>
             <div className='node-title'>{data.name}</div>
             <span className='node-sub'>{[data.subtitle, ROLE_BADGE_LABELS[data.role], data.location].filter(Boolean).join(' · ')}</span>
-            <span className='node-sub'>{data.accountName}</span>
+            {contextLine && (
+              <span className='node-sub' title={contextLine}>
+                {contextLine}
+              </span>
+            )}
           </div>
           <button
             className='info-btn'
@@ -344,6 +349,7 @@ const AdaptiveServiceNode = memo(
     prev.data.name === next.data.name &&
     prev.data.subtitle === next.data.subtitle &&
     prev.data.accountName === next.data.accountName &&
+    prev.data.namespace === next.data.namespace &&
     prev.data.location === next.data.location
 );
 AdaptiveServiceNode.displayName = 'AdaptiveServiceNode';
@@ -353,6 +359,7 @@ AdaptiveServiceNode.propTypes = {
     name: PropTypes.string,
     subtitle: PropTypes.string,
     accountName: PropTypes.string,
+    namespace: PropTypes.string,
     type: PropTypes.string,
     subType: PropTypes.string,
     role: PropTypes.string,
@@ -659,6 +666,7 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
           subType: n.logo_id,
           role: n.role, // datastore facet: 'database' | 'cache' | 'messagequeue' (in-cluster datastores)
           location: n.location, // region/zone/AZ for cloud resources; disambiguates same-named nodes (e.g. "default" subnets)
+          namespace: n.namespace,
           id: n.id,
           properties: { node_id: n.id },
           accountId: n.account_id,
