@@ -16,6 +16,7 @@ import (
 	"nudgebee/services/tenant"
 	"nudgebee/services/user"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -195,6 +196,32 @@ func toInt64(v interface{}) int64 {
 	case []uint8:
 		var n int64
 		_, _ = fmt.Sscan(string(val), &n)
+		return n
+	default:
+		return 0
+	}
+}
+
+// toFloat64 coerces numeric values scanned from SQL or JSON into float64.
+// lib/pq + sqlx.MapScan typically yield string or []uint8 for numeric/decimal
+// columns, and float64 for float8. Garbage input returns 0.
+func toFloat64(v interface{}) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case float32:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case int:
+		return float64(val)
+	case int32:
+		return float64(val)
+	case string:
+		n, _ := strconv.ParseFloat(val, 64)
+		return n
+	case []uint8:
+		n, _ := strconv.ParseFloat(string(val), 64)
 		return n
 	default:
 		return 0
@@ -475,7 +502,7 @@ func isPayloadEmpty(insights common.GqlResponse) bool {
 func calculateTotalPotentialSavings(data map[string]interface{}) float64 {
 	totalSavings := big.NewFloat(0)
 	for _, row := range toStringMapSlice(rowsOf(data)) {
-		if sumEstimatedSavings, ok := row["sum_estimated_savings"].(float64); ok {
+		if sumEstimatedSavings := toFloat64(row["sum_estimated_savings"]); sumEstimatedSavings != 0 {
 			totalSavings = new(big.Float).Add(totalSavings, big.NewFloat(sumEstimatedSavings))
 		}
 	}

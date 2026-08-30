@@ -264,6 +264,28 @@ func TestToInt64(t *testing.T) {
 	}
 }
 
+func TestToFloat64(t *testing.T) {
+	cases := []struct {
+		name  string
+		input interface{}
+		want  float64
+	}{
+		{"float64 passthrough", float64(100.5), 100.5},
+		{"float32 promotes", float32(1.5), 1.5},
+		{"int64 promotes", int64(7), 7},
+		{"int promotes", int(3), 3},
+		{"numeric string (lib/pq numeric)", "50.5", 50.5},
+		{"[]uint8 (sqlx MapScan numeric)", []uint8("25.25"), 25.25},
+		{"nil returns zero — no panic", nil, 0},
+		{"non-numeric string returns zero", "not-a-float", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.InDelta(t, tc.want, toFloat64(tc.input), 0.001)
+		})
+	}
+}
+
 // countForAccount
 
 // countForAccount tallies how many rows in a grouping response belong to a
@@ -371,17 +393,18 @@ func TestCalculateTotalPotentialSavings_EmptyRowsIsZero(t *testing.T) {
 	assert.Equal(t, float64(0), calculateTotalPotentialSavings(data))
 }
 
-// Rows whose sum_estimated_savings is not a float64 (e.g. string from a
-// misconfigured DB view) must be silently skipped rather than panicking or
-// adding a nonsense value to the total.
-func TestCalculateTotalPotentialSavings_SkipsNonFloatRows(t *testing.T) {
+// Garbage savings values must be skipped; numeric strings and []uint8 (the
+// shapes sqlx.MapScan / lib/pq yield for numeric columns) must still be summed.
+func TestCalculateTotalPotentialSavings_CoercesDriverNumericTypes(t *testing.T) {
 	data := map[string]interface{}{
 		"rows": queryRows(
 			query.QueryRow{"sum_estimated_savings": "not-a-float"},
 			query.QueryRow{"sum_estimated_savings": float64(100)},
+			query.QueryRow{"sum_estimated_savings": "50.5"},
+			query.QueryRow{"sum_estimated_savings": []uint8("25.25")},
 		),
 	}
-	assert.InDelta(t, 100.0, calculateTotalPotentialSavings(data), 0.001)
+	assert.InDelta(t, 175.75, calculateTotalPotentialSavings(data), 0.001)
 }
 
 // A nil value for data["rows"] (missing key in the map) must return 0 instead
