@@ -173,6 +173,57 @@ def is_no_change_workload(container_priorities: List[int]) -> bool:
     return bool(container_priorities) and all(priority == GOOD_PRIORITY for priority in container_priorities)
 
 
+def _request_value(entry: Any, side: str) -> Optional[float]:
+    """The request number on one side ("allocated"/"recommended") of a content entry.
+
+    None means unusable — missing, unset, "?" (the scanner's NaN placeholder), or
+    NaN — as opposed to a real number we can compare.
+    """
+    if not isinstance(entry, dict):
+        return None
+    side_dict = entry.get(side)
+    if not isinstance(side_dict, dict):
+        return None
+    value = side_dict.get("request")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or math.isnan(value):
+        return None
+    return float(value)
+
+
+def is_value_no_change_workload(merged_content: Any) -> bool:
+    """True iff every recommended request in the merged payload equals its allocated one.
+
+    Complements is_no_change_workload: the GOOD-priority test misses workloads the
+    scanner flags as over-provisioned whose recommendation then clamps back to the
+    allocated floor (round_resource_value's 10m/100Mi minimums), landing on the
+    exact numbers already set. Those rows advise changing a value to itself.
+
+    Requests only, deliberately: the strategy always recommends the CPU limit
+    unset and derives the memory limit from the cgroup high-water mark, and the
+    UI renders request changes only — a limit-inclusive comparison would keep
+    rows that display as pure '='.
+
+    Fail-open: any entry whose either side is unusable (unset request, "?", or a
+    malformed payload) keeps the workload — an unset allocated request is a real
+    change (set it), and a value we cannot read is not proof of "nothing to do".
+    """
+    if not isinstance(merged_content, dict):
+        return False
+    saw_entry = False
+    for entries in merged_content.values():
+        if not isinstance(entries, list):
+            return False
+        for entry in entries:
+            saw_entry = True
+            allocated = _request_value(entry, "allocated")
+            recommended = _request_value(entry, "recommended")
+            if allocated is None or recommended is None:
+                return False
+            if not math.isclose(allocated, recommended, rel_tol=1e-9):
+                return False
+    return saw_entry
+
+
 def get_severity(priority: int) -> str:
     """Map a scan priority to a recommendation severity.
 
@@ -280,16 +331,16 @@ def finalize_workload_rows(
 
     Returns the number of workloads dropped.
     """
+    no_change_resource_ids = []
     for resource_id, row in recommendations_to_insert.items():
-        row["category"] = classify_pod_right_sizing_category(json.loads(row["recommendation"]))
+        merged_content = json.loads(row["recommendation"])
+        row["category"] = classify_pod_right_sizing_category(merged_content)
         row["severity"] = get_severity(worst_priority(priorities_by_resource[resource_id]))
         row["estimated_savings"] = max(row["estimated_savings"], 0.0)
-
-    no_change_resource_ids = [
-        resource_id
-        for resource_id in recommendations_to_insert
-        if is_no_change_workload(priorities_by_resource[resource_id])
-    ]
+        # Either signal suffices: an all-GOOD scan, or a recommendation whose
+        # numbers clamp back to exactly what is already allocated.
+        if is_no_change_workload(priorities_by_resource[resource_id]) or is_value_no_change_workload(merged_content):
+            no_change_resource_ids.append(resource_id)
     for resource_id in no_change_resource_ids:
         del recommendations_to_insert[resource_id]
 
