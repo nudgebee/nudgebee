@@ -1246,6 +1246,58 @@ def classify_pod_right_sizing_category(merged_content):
     return "Configuration" if saw_entry else "RightSizing"
 
 
+def _request_value(entry, side):
+    """The request number on one side ("allocated"/"recommended") of a content entry.
+
+    None means unusable — missing, unset, "?" (KRR's NaN placeholder), or NaN —
+    as opposed to a real number we can compare.
+    """
+    if not isinstance(entry, dict):
+        return None
+    side_dict = entry.get(side)
+    if not isinstance(side_dict, dict):
+        return None
+    value = side_dict.get("request")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or math.isnan(value):
+        return None
+    return float(value)
+
+
+def is_value_no_change_workload(merged_content):
+    """True iff every recommended request in the merged payload equals its allocated one.
+
+    The per-container threshold ignore in process_resource_recommendation only
+    fires when a container has BOTH a cpu and a memory request set, so a workload
+    with a single request whose recommendation clamps back onto it still gets a
+    row that advises changing a value to itself. This runs on the merged workload
+    payload and catches those. Keep in sync with the twin in ml-k8s-server
+    vertical_rightsizing/__init__.py.
+
+    Requests only: KRR's limit handling is derived, and the UI renders request
+    changes only — a limit-inclusive comparison would keep rows that display as
+    pure '='.
+
+    Fail-open: any entry whose either side is unusable (unset request, malformed
+    payload) keeps the workload — an unset allocated request is a real change
+    (set it), and a value we cannot read is not proof of "nothing to do".
+    """
+    if not isinstance(merged_content, dict):
+        return False
+    saw_entry = False
+    for entries in merged_content.values():
+        if not isinstance(entries, list):
+            return False
+        for entry in entries:
+            saw_entry = True
+            allocated = _request_value(entry, "allocated")
+            recommended = _request_value(entry, "recommended")
+            if allocated is None or recommended is None:
+                return False
+            if not math.isclose(allocated, recommended, rel_tol=1e-9):
+                return False
+    return saw_entry
+
+
 def generate_krr_recommendation(cloud_account_id, report, resource_map, tenant):
     recommendations = {}
     settings = get_recommendation_settings(cloud_account_id, "pod_right_sizing")
@@ -1268,10 +1320,22 @@ def generate_krr_recommendation(cloud_account_id, report, resource_map, tenant):
             recommendations[resource_id[0]] = recommendation
         else:
             recommendations[resource_id[0]] = recommendation
-    # Classify on the MERGED payload — a per-container pass would let the last
-    # container win for mixed workloads.
-    for row in recommendations.values():
-        row["category"] = classify_pod_right_sizing_category(json.loads(row["recommendation"]))
+    # Classify and value-check on the MERGED payload — a per-container pass would
+    # let the last container win for mixed workloads. Dropped workloads are also
+    # retired in the DB for free: the caller archives every Open row for the
+    # account and only re-inserts what this dict still contains.
+    no_change_resource_ids = []
+    for resource_id, row in recommendations.items():
+        merged_content = json.loads(row["recommendation"])
+        row["category"] = classify_pod_right_sizing_category(merged_content)
+        if is_value_no_change_workload(merged_content):
+            no_change_resource_ids.append(resource_id)
+    for resource_id in no_change_resource_ids:
+        del recommendations[resource_id]
+    if no_change_resource_ids:
+        logging.info(
+            f"Dropped {len(no_change_resource_ids)} no-change rightsizing workloads " f"for account {cloud_account_id}"
+        )
     return recommendations
 
 
