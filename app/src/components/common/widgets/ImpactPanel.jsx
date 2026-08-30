@@ -168,7 +168,7 @@ const TierRow = ({ item, color, goTo, showRarity, isChange, folded, seedName }) 
               fontWeight: 600,
               color: badge.fg,
               bgcolor: badge.bg,
-              borderRadius: '999px',
+              borderRadius: 'var(--ds-radius-pill)',
             }}
           >
             {badge.label}

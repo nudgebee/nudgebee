@@ -544,7 +544,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         display: 'flex',
         flexDirection: 'column',
         border: `1px solid ${ds.gray[300]}`,
-        borderRadius: '8px',
+        borderRadius: ds.radius.lg,
         background: ds.background[100],
       }}
     >

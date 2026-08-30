@@ -128,7 +128,7 @@ const SortablePanel: React.FC<Props> = React.memo(function SortablePanel({
         opacity: isDragging ? 0.4 : 1,
         outline: resizing ? `2px solid ${ds.blue[500]}` : 'none',
         outlineOffset: '-2px',
-        borderRadius: '8px',
+        borderRadius: ds.radius.lg,
         /*
          * Charts own their pointer events — a Chart.js canvas swallows the mousemove a drag needs, and
          * tooltips chase a cursor that is dragging rather than pointing.

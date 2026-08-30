@@ -107,7 +107,7 @@ const EntityQueryBuilder: React.FC<Props> = ({ draft, tables, onChange }) => {
       {/* Which of the two event tables to reach for is the one thing an author
           cannot work out from the column names, so it is spelled out rather
           than hidden in a tooltip. */}
-      <Box sx={{ p: 1.5, border: `1px solid ${ds.gray[300]}`, background: ds.background[200], borderRadius: '6px' }}>
+      <Box sx={{ p: 1.5, border: `1px solid ${ds.gray[300]}`, background: ds.background[200], borderRadius: ds.radius.md }}>
         <Typography variant='body2' sx={{ color: ds.gray[700], fontWeight: 600, mb: 0.25 }}>
           {table.label} — {table.description}
         </Typography>
