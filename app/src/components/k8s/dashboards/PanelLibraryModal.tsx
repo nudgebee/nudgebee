@@ -356,7 +356,7 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
                 p: 2,
                 textAlign: 'center',
                 border: `1px dashed ${ds.gray[300]}`,
-                borderRadius: '8px',
+                borderRadius: ds.radius.lg,
                 background: ds.background[100],
               }}
               data-testid='panel-library-preview-empty'

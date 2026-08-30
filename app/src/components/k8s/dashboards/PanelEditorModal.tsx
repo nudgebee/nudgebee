@@ -618,7 +618,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                           >
                             <Input value={expr} onChange={(v) => patchTarget({ expr: v })} placeholder={commandHelp.placeholder} />
                           </Form.Field>
-                          <Box sx={{ p: 1.5, border: `1px solid ${ds.gray[300]}`, background: ds.background[200], borderRadius: '6px' }}>
+                          <Box sx={{ p: 1.5, border: `1px solid ${ds.gray[300]}`, background: ds.background[200], borderRadius: ds.radius.md }}>
                             <Typography variant='body2' sx={{ color: ds.gray[700] }}>
                               Allowed: {commandHelp.allowed}. The result is a snapshot — this panel ignores the dashboard&apos;s time range. Example:{' '}
                               <Box component='code' sx={{ fontFamily: 'monospace' }}>
@@ -645,7 +645,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                         </Form.Field>
                       )}
                       {templateVars.length > 0 && (
-                        <Box sx={{ p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: '6px' }}>
+                        <Box sx={{ p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: ds.radius.md }}>
                           <Typography variant='body2' sx={{ color: ds.gray[700] }}>
                             {commandHelp ? (
                               <>
@@ -800,7 +800,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                       )}
 
                       {unfinishedLinks.length > 0 && (
-                        <Box sx={{ mt: 1, p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: '6px' }}>
+                        <Box sx={{ mt: 1, p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: ds.radius.md }}>
                           <Typography variant='body2' sx={{ color: ds.gray[700] }}>
                             Every link needs a header (or a column to attach to) and a path inside the product — starting with a single <code>/</code>
                             , as in <code>/investigate?id={'{{id}}'}</code>. Anyone who can see this dashboard follows these links, which is why an
@@ -810,7 +810,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                       )}
 
                       {unknownPlaceholders.length > 0 && (
-                        <Box sx={{ mt: 1, p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: '6px' }}>
+                        <Box sx={{ mt: 1, p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: ds.radius.md }}>
                           <Typography variant='body2' sx={{ color: ds.gray[700] }}>
                             {unknownPlaceholders.map((c) => `{{${c}}}`).join(', ')} {unknownPlaceholders.length === 1 ? 'is' : 'are'} not selected in
                             Columns above, so {unknownPlaceholders.length === 1 ? 'it' : 'they'} cannot be filled in — those cells will be blank. Add

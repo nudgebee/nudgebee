@@ -24,7 +24,7 @@ const PanelSkeleton: React.FC = () => (
   <Box
     sx={{
       border: `1px solid ${ds.gray[300]}`,
-      borderRadius: '8px',
+      borderRadius: ds.radius.lg,
       background: ds.background[100],
       overflow: 'hidden',
     }}
