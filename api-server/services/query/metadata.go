@@ -305,6 +305,15 @@ func GetTracesProviderAndUrl(ctx *security.RequestContext, accountId string) (st
 	return traceProvider, traceProviderConfig, hasMaterializedColumn
 }
 
+func TracesConfigured(accountId string) bool {
+	agentDetails, err := account.GetAgentConnectionDetails(accountId)
+	if err != nil {
+		return false
+	}
+	f := agentDetails.Features
+	return f.TracesEnabled != nil && *f.TracesEnabled && f.TracesUrl != nil && *f.TracesUrl != ""
+}
+
 func getSource(tableName string) database.DatabaseManagerType {
 	if tableName == "ticket_groupings_v2" || tableName == "spend_groupings_v2" || tableName == "event_groupings_v2" || tableName == "events_v2" || tableName == "k8s_metrics_groupings_v2" || tableName == "metric_groupings_v2" || tableName == "dw_query_groupings_v2" || tableName == "event_rules_groupings_v2" || tableName == "slo_report_groupings_v2" || tableName == "autooptimize_aggregate" {
 		return database.Metastore

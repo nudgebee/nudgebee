@@ -1137,6 +1137,10 @@ func processTraceAggregationRuleForAccount(ctx *security.RequestContext, rule In
 		}
 	}()
 
+	if !query.TracesConfigured(accountId) {
+		return Insight{}, nil
+	}
+
 	// traces_groupings_v2 only has SQL definitions for the otel_clickhouse and bigquery providers;
 	// running it for any other trace provider produces invalid SQL (e.g. bare p95_latency identifier).
 	traceProvider, _, _ := query.GetTracesProviderAndUrl(ctx, accountId)
