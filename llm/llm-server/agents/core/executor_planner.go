@@ -1703,7 +1703,9 @@ func (e *plannerExecutor) doIterationParallel(
 			// Call()'s consecutive-failed-iterations guard still bounds retries.
 			newStepsThisIteration = append(newStepsThisIteration, n.Result)
 
-			// CRITICAL: If the tool returned a terminal response, return early
+			// A terminal response is an explicit parent-finalization contract (the
+			// agent-as-tool wrappers suppress ordinary child completion). Preserve
+			// the short-circuit for specialized tools such as automation_builder.
 			if n.Result.IsTerminal {
 				e.ctx.GetLogger().Info("plannerexecutor: detected terminal response in parallel execution, returning early", "tool", n.Action.Tool)
 				mu.Lock()

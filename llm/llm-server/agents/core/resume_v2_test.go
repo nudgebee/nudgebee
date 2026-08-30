@@ -322,8 +322,8 @@ func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 }
 
 // TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits covers the #31997 fix:
-// when a resumed sub-agent completes with IsTerminal (its answer IS the final
-// answer — e.g. automation_builder returning the built workflow JSON after
+// when an opted-in resumed sub-agent completes with IsTerminal (its answer IS the
+// final answer — e.g. automation_builder returning the built workflow JSON after
 // "Approve and Build"), the bubble-up must finalize from the child and NOT resume
 // the parent. Resuming the parent re-runs an ancestor planner which, for a nested
 // builder (k8s_debug → automation → automation_builder), re-delegates a fresh
@@ -344,13 +344,17 @@ func TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits(t *testing.T) {
 	convID := uuid.New()
 
 	const builtJSON = `{"name":"k8s-pod-inventory","definition":{"triggers":[{"type":"manual"}]}}`
+	const terminalAgentName = "test_parent_terminal_agent"
+	RegisterNBAgentFactory(terminalAgentName, func(string) (NBAgent, error) {
+		return parentTerminalAgent{}, nil
+	})
 	terminalChild := NBAgentResponse{
 		Response:   []string{builtJSON},
 		Status:     ConversationStatusCompleted,
 		IsTerminal: true,
-		AgentName:  "automation_builder",
+		AgentName:  terminalAgentName,
 	}
-	childAgent := ConversationAgent{ID: childID, ParentAgentID: parentID, MessageID: msgID}
+	childAgent := ConversationAgent{ID: childID, ParentAgentID: parentID, MessageID: msgID, AgentName: terminalAgentName}
 	req := NBAgentRequest{
 		ConversationId: convID.String(),
 		MessageId:      msgID.String(),
@@ -371,7 +375,7 @@ func TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits(t *testing.T) {
 
 		assert.Equal(t, []string{builtJSON}, resp.Response, "terminal child's response is the final answer")
 		assert.Equal(t, ConversationStatusCompleted, resp.Status)
-		assert.Equal(t, "automation_builder", resp.AgentName, "non-Response fields preserved from childResp")
+		assert.Equal(t, terminalAgentName, resp.AgentName, "non-Response fields preserved from childResp")
 		assert.Equal(t, msgID.String(), fake.persistedMsgID)
 		assert.Equal(t, builtJSON, fake.persistedContent, "generation message persisted with the built workflow")
 		assert.Equal(t, ConversationStatusCompleted, fake.persistedMsgStatus)

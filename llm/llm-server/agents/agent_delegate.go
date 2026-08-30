@@ -179,6 +179,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 		Context: input.Context,
 	}
 	resp, err := core.ExecuteAgentToolCall(ctx, dynamicAgent, subInput)
+	parentTerminal := core.ResolveAgentParentTerminal(dynamicAgent, resp.IsTerminal)
 
 	// Build additionalDetails ONCE, upfront, so every return path below (including
 	// the early err != nil path) carries agent_id. Without agent_id, the parent's
@@ -238,7 +239,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 		return toolcore.NBToolResponse{
 			Status:            toolcore.NBToolResponseStatusError,
 			Data:              fmt.Sprintf("Sub-agent execution failed: %s", err.Error()),
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			SubAgentEvidence:  subAgentEvidence,
 		}, nil
@@ -266,7 +267,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 			Data:              data,
 			Status:            toolcore.NBToolResponseStatusWaiting,
 			Type:              toolcore.NBToolResponseTypeText,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			SubAgentEvidence:  subAgentEvidence,
 		}, nil
@@ -281,7 +282,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 			Data:              responseData,
 			Status:            toolcore.NBToolResponseStatusError,
 			Type:              toolcore.NBToolResponseTypeText,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			SubAgentEvidence:  subAgentEvidence,
 		}, nil
@@ -292,7 +293,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 			Data:              resp.Response[0],
 			Status:            toolcore.NBToolResponseStatusSuccess,
 			Type:              toolcore.NBToolResponseTypeText,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			SubAgentEvidence:  subAgentEvidence,
 		}, nil
@@ -305,7 +306,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 				Data:              resp.AgentStepResponse[i].Response.Content,
 				Status:            toolcore.NBToolResponseStatusSuccess,
 				Type:              toolcore.NBToolResponseTypeText,
-				IsTerminal:        resp.IsTerminal,
+				IsTerminal:        parentTerminal,
 				AdditionalDetails: additionalDetails,
 				SubAgentEvidence:  subAgentEvidence,
 			}, nil
@@ -316,7 +317,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 		Data:              "Sub-agent completed but produced no output.",
 		Status:            toolcore.NBToolResponseStatusError,
 		Type:              toolcore.NBToolResponseTypeText,
-		IsTerminal:        resp.IsTerminal,
+		IsTerminal:        parentTerminal,
 		AdditionalDetails: additionalDetails,
 	}, nil
 }

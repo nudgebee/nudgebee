@@ -67,8 +67,8 @@ func newK8sOrchestratorAgent(accountId string) core.NBAgent {
 // search_skills) plus a short principle-level prompt (agent_k8s_lean). Every
 // specialist (databases, helm, cloud CLIs, …) is dropped from context and
 // reached on-demand via search_tools + delegate_agent. Everything else —
-// including the answer critique — runs through the same ReAct3 planner under
-// the standard gates.
+// including the answer critique — runs through the runtime-selected ReAct
+// planner under the standard gates.
 type K8sLeanAgent struct {
 	accountId string
 	// name is the handle this instance runs under. Currently always
@@ -88,7 +88,7 @@ func (l *K8sLeanAgent) GetNameAliases() []string {
 }
 
 func (l *K8sLeanAgent) GetDescription() string {
-	return `Lean-loop SRE/DevOps troubleshooting orchestrator: minimal principle-level prompt, direct kubectl/helm, specialists reached on-demand via search_tools + delegate_agent.`
+	return `Lean-loop SRE/DevOps troubleshooting orchestrator: workspace-based Kubernetes reads and local analysis, approval-aware direct kubectl mutations, and specialists such as Helm reached on-demand via search_tools + delegate_agent.`
 }
 
 func (l *K8sLeanAgent) GetPlannerType() core.AgentPlannerType {
@@ -254,7 +254,7 @@ func appendMemoryToolName(names []string) []string {
 // early. A tool description alone doesn't reliably drive call ordering (the model
 // reads it as "what the tool does", not "when to call it"), so the ordering hint
 // lives in the system prompt instead.
-const memoryToolNudge = "**Check memory first:** When investigating a named service, pod, or workload, call the `memory` tool with keywords (service/pod name + symptom) as an early step — before running live tools — to recall this user's known recurring patterns, past root causes, and preferences for that resource. Use relevant hits to focus the investigation; if nothing relevant returns, proceed normally. Call it at most once."
+const memoryToolNudge = "**Check memory early:** When investigating a named service, pod, or workload, call the `memory` tool at most once with keywords (service/pod name + symptom) to recall this user's known recurring patterns, past root causes, and preferences for that resource. When the memory input and grounding inputs are already known, issue memory alongside independent, non-conflicting live checks in the same batch. Wait for memory first only when its result is needed to construct the live checks. Use relevant hits to focus the investigation; if nothing relevant returns, proceed normally."
 
 // memoryNudgeIfEnabled returns the memory-first nudge when path B is on, else "".
 func memoryNudgeIfEnabled() string {
@@ -276,7 +276,7 @@ func memoryNudgeIfEnabled() string {
 // in-cluster dev host" subject swap). It scopes the investigation, never replaces it. Appended (not baked into k8s_lean.yaml)
 // so it stays behind K8sGroundingEnabled for a clean A/B and cannot regress the shared
 // prompt when the flag is off.
-const k8sGroundingNudge = "**Ground before you fan out.** For a live symptom — a CPU/memory surge, restarts, pending pods, a workload erroring right now — your opening move is the cheap authoritative tools you already hold: `kubectl top`/`get`/`describe` on the named workload and its recent `events`, issued together in one parallel batch. Read those first, THEN delegate to a heavier surface — `metrics` for a historical trend the live numbers don't explain, `logs` for the error text, `traces` for a latency path — scoped to the specific question the snapshot raised, rather than opening with a broad `metrics`/`logs` delegation and blocking on it. When the symptom is a hostname or URL (e.g. an uptime/downtime alert), first resolve WHAT SERVES IT — `kubectl get ingress -A` (or the Service) for that host — before assuming a workload; if no in-cluster ingress serves that host, say so plainly (\"not served by this cluster\") rather than diagnosing a similarly-named workload. This first look SCOPES the investigation; it never replaces it — a healthy live snapshot doesn't close a \"why did it happen\" question, so carry it through to the mechanism."
+const k8sGroundingNudge = "**Ground before scoped investigation when the target is unknown.** For a live symptom — a CPU/memory surge, restarts, pending pods, a workload erroring right now — use the cheap authoritative tools you already hold: `kubectl top`/`get`/`describe` on the named workload and its recent `events`, issued together in one parallel batch. If the workload, namespace, symptom, and time window are already known, issue independent historical evidence calls (`metrics`, `logs`, or `traces`) alongside that live batch instead of waiting. If their inputs depend on what the live snapshot reveals, observe it first and then delegate with the resolved scope. When the symptom is a hostname or URL (e.g. an uptime/downtime alert), first resolve WHAT SERVES IT — `kubectl get ingress -A` (or the Service) for that host — before assuming a workload; if no in-cluster ingress serves that host, say so plainly (\"not served by this cluster\") rather than diagnosing a similarly-named workload. Grounding SCOPES the investigation; it never replaces it — a healthy live snapshot doesn't close a \"why did it happen\" question, so carry it through to the mechanism."
 
 // k8sGroundingIfEnabled returns the grounding discipline when the flag is on, else "".
 func k8sGroundingIfEnabled() string {
@@ -292,7 +292,7 @@ func k8sGroundingIfEnabled() string {
 // agent fabricates a confident root cause anyway. This nudge makes the agent treat the
 // symptom as a claim to verify first, accept an honest "not occurring" / "cannot confirm"
 // outcome, and never read a tool failure or empty result as proof the symptom is real.
-const k8sPremiseNudge = "**Confirm the symptom before you diagnose it.** The user's wording often ASSERTS a problem (\"X is down\", \"there's a surge on Y\") — treat that as a claim to verify FIRST, not a fact. Your cheap probe also answers \"is this actually happening?\": if the endpoint they say is unreachable returns a success, or the metric they say is surging reads normal, say so plainly — \"the reported <symptom> is not occurring\" with the evidence — and do NOT manufacture a root cause for a problem you didn't confirm (you may note incidental findings and offer to look into them). If the tool that would confirm it FAILS or returns nothing (connection refused, relay unavailable, empty), you cannot confirm the symptom — say \"cannot confirm <symptom> — <tool> unavailable\" and stop, or label any suspected cause as UNVERIFIED. A failed or empty measurement is never evidence the symptom is real."
+const k8sPremiseNudge = "**Confirm the symptom before you diagnose it.** The user's wording often ASSERTS a problem (\"X is down\", \"there's a surge on Y\") — treat that as a claim to verify FIRST, not a fact. Your cheap probe also answers \"is this actually happening?\": if the endpoint they say is unreachable returns a success, or the metric they say is surging reads normal, say so plainly — \"the reported <symptom> is not occurring\" with the evidence — and do NOT manufacture a root cause for a problem you didn't confirm (you may note incidental findings and offer to look into them). If the first tool that would confirm it FAILS or returns nothing (connection refused, relay unavailable, empty), try an available independent confirmation path. If no alternative can establish the premise, say \"cannot confirm <symptom> — <evidence source> unavailable\" and stop, or label any suspected cause as UNVERIFIED. A failed or empty measurement is never evidence the symptom is real."
 
 // k8sPremiseIfEnabled returns the premise-verification nudge when the flag is on, else "".
 func k8sPremiseIfEnabled() string {

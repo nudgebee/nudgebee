@@ -7,6 +7,34 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+type parentTerminalAgent struct{ NBAgent }
+
+func (parentTerminalAgent) PropagateTerminalResponseToParent() bool { return true }
+
+func TestResolveAgentParentTerminal_RequiresExplicitOptIn(t *testing.T) {
+	ordinary := &struct{ NBAgent }{}
+	optedIn := parentTerminalAgent{}
+
+	tests := []struct {
+		name          string
+		agent         NBAgent
+		childTerminal bool
+		want          bool
+	}{
+		{name: "ordinary completed child stays evidence", agent: ordinary, childTerminal: true, want: false},
+		{name: "opted-in terminal child bubbles", agent: optedIn, childTerminal: true, want: true},
+		{name: "opt-in cannot promote non-terminal child", agent: optedIn, childTerminal: false, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveAgentParentTerminal(tc.agent, tc.childTerminal); got != tc.want {
+				t.Fatalf("ResolveAgentParentTerminal() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRegisterNBAgentFactoryWithAliases verifies that a factory registered under
 // a primary name plus legacy aliases is resolvable under every name — the
 // back-compat guarantee relied on by the *_debug → *_orchestrator rename so that

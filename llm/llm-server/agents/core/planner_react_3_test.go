@@ -86,7 +86,9 @@ func TestReAct3CustomAgentPromptHidesBuiltInToolAssumptions(t *testing.T) {
 	assert.NotContains(t, out, "If a `remediation` tool is available")
 	assert.NotContains(t, out, "Step 1 — target is unknown")
 	assert.Contains(t, out, "A dependency is concrete")
-	assert.Contains(t, out, "fan out the cheapest independent read-only checks")
+	assert.Contains(t, out, "fan out the cheapest independent checks")
+	assert.Contains(t, out, "When no model interpretation is required")
+	assert.NotContains(t, out, "read-only")
 	assert.Contains(t, out, "generic approach, not a requirement")
 	assert.Contains(t, out, "independent checks may span several hypotheses")
 }
@@ -151,9 +153,11 @@ func TestReAct3HypothesisModeFence(t *testing.T) {
 func TestReAct3InvestigationPromptDistinguishesDependenciesFromParallelBranches(t *testing.T) {
 	out := renderReact3Base(t, true, true)
 
-	assert.Contains(t, out, "Chain dependent steps; parallelize independent branches")
-	assert.Contains(t, out, "three parallel actions")
+	assert.Contains(t, out, "Start another planner turn only at a reasoning boundary")
+	assert.Contains(t, out, "background jobs plus `wait`")
 	assert.Contains(t, out, "shared purpose, target, hypothesis, or tool name does not by itself create a dependency")
+	assert.NotContains(t, out, "read-only")
+	assert.NotContains(t, out, "Never parallelize actions that create")
 	assert.NotContains(t, out, "Worked investigation pattern")
 	assert.NotContains(t, out, "at most one targeted confirmation")
 }

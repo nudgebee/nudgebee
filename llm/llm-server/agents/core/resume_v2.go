@@ -487,20 +487,29 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		return childResp, nil
 	}
 
-	// All siblings done. If the completed child's answer IS the final answer
-	// (IsTerminal — e.g. automation_builder returning the built workflow JSON after
-	// "Approve and Build"), finalize from it and do NOT resume the parent. Resuming
-	// would re-run the ancestor planner, which for a nested builder
+	// All siblings done. If the completed child explicitly declares that its
+	// terminal answer is also the parent's final answer (e.g. automation_builder
+	// returning workflow JSON after "Approve and Build"), finalize from it and do
+	// NOT resume the parent. Resuming would re-run the ancestor planner, which for
+	// a nested builder
 	// (k8s_debug → automation → automation_builder) re-delegates a FRESH build,
 	// regenerating the plan and re-prompting for approval in a loop (#31997).
 	//
-	// This mirrors the non-resume executor, which already finalizes on a nested
-	// sub-agent's IsTerminal everywhere — the ReAct loop and parallel exec paths in
-	// executor_planner.go, and waiting-tool resume. The V2 bubble-up
-	// was the one path that forgot the terminal short-circuit; this restores parity.
+	// This mirrors the non-resume agent-tool wrapper, which converts the child's
+	// IsTerminal flag into an explicit parent-terminal flag only for opted-in agents.
 	// Placed AFTER the waitingCount>0 guard above so a still-waiting parallel sibling
 	// is never stranded — we only short-circuit once no sibling needs user input.
+	childMayFinalizeParent := false
 	if childResp.IsTerminal {
+		childAgentName := childAgent.AgentName
+		if childAgentName == "" {
+			childAgentName = childResp.AgentName
+		}
+		if runtimeAgent, found := GetNBAgent(ctx, childAgentName, req.AccountId, AgentStatusEnabled); found {
+			childMayFinalizeParent = ResolveAgentParentTerminal(runtimeAgent, true)
+		}
+	}
+	if childMayFinalizeParent {
 		logger.Info("resume_v2: child returned terminal response; finalizing without ancestor re-run",
 			"child_agent_id", childAgent.ID.String(),
 			"agent_name", childAgent.AgentName,

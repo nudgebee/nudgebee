@@ -334,6 +334,13 @@ func (a *WorkflowBuilderAgent) GetName() string {
 	return WorkflowBuilderAgentName
 }
 
+// The builder's finalized artifact is the caller's final result. Unlike an
+// ordinary investigative sub-agent response, it must bubble through ancestor
+// planners unchanged after all waiting siblings have settled.
+func (a *WorkflowBuilderAgent) PropagateTerminalResponseToParent() bool {
+	return true
+}
+
 func (a *WorkflowBuilderAgent) GetNameAliases() []string {
 	return []string{"AutomationBuilder", "WorkflowBuilder", "workflow_builder"}
 }

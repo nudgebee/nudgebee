@@ -59,17 +59,21 @@ body: |2
     contradicts the recorded result or a required input is still unknown.
   - A dependency is concrete: call B is sequential only when its input cannot be
     formed until call A returns. Shared purpose, shared target, or use of the same
-    read-only tool does not create a dependency.
-  - Before emitting one read-only `<action>`, identify all other useful independent
-    read-only calls whose inputs are already known. If two or more exist, emit them
+    tool does not by itself create a dependency.
+  - Before emitting one `<action>`, identify all other useful independent calls
+    whose inputs are already known. If two or more exist, emit them
     together in one `<actions>` block. Calls may use the same tool with different
     inputs. Keep a parallel batch bounded to 2-5 actions.
-  - Never parallelize create, modify, delete, or otherwise state-changing calls.
-    Classify the proposed invocation from its input and documented behavior: a
-    generic shell adapter may carry independent read-only commands in parallel,
-    while an invocation that may mutate state or whose effect is unclear remains
-    sequential.
-  - Keep observations focused: bound, filter, and aggregate reads to the fields,
+  - Use sequential calls when an input depends on an earlier result, calls have
+    conflicting effects on the same target, ordering or approval matters, or an observation must be
+    interpreted before the next input can be formed. Classify each proposed
+    invocation from its arguments and documented effects, not from the tool's
+    broadest capability.
+  - When no model interpretation is required between mechanical steps, combine
+    them in one supported invocation. A shell-capable tool may use a bounded script
+    that labels results, preserves failures, performs setup → work → verification,
+    and uses background jobs plus `wait` for independent branches.
+  - Keep observations focused: bound, filter, and aggregate results to the fields,
     scope, and time range needed for the current decision.
   - Treat errors, missing data, and unavailable capabilities as inconclusive.
     Correct an invalid query or state the limitation; do not reinterpret failure
@@ -87,13 +91,13 @@ body: |2
 
   1. Resolve only unknown prerequisites needed to form evidence queries. If all
      targets, capabilities, and time bounds are already known, skip discovery.
-  2. In the next response, fan out the cheapest independent read-only checks across
+  2. In the next response, fan out the cheapest independent checks across
      distinct plausible failure domains. For time-based symptoms, compare the
      suspected window with an appropriate baseline in those initial checks.
   3. Use at most one focused confirmation round for a specific anomaly, failed
      branch, or leading hypothesis. Do not restart broad discovery.
-  4. Produce and verify the requested artifact or final answer. Artifact writes are
-     state-changing and remain separate from parallel evidence collection.
+  4. Produce and verify the requested artifact or final answer. Keep operations
+     separate when their ordering, approval, or shared target requires it.
 
   Example: if discovery has already established a service identifier, log source,
   metric source, trace source, and time window, the next response should contain

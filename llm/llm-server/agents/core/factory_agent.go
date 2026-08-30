@@ -319,6 +319,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 	}
 
 	resp, err := ExecuteAgentToolCall(nbRequestContext, agent, input)
+	parentTerminal := ResolveAgentParentTerminal(agent, resp.IsTerminal)
 	additionalDetails := map[string]any{
 		nbToolCallAdditionalDatailsAgentId:   resp.AgentId,
 		nbToolCallAdditionalDatailsMessageId: resp.MessageId,
@@ -342,7 +343,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Data:              resp.Response[0],
 			Status:            toolcore.NBToolResponseStatusWaiting,
 			Type:              toolcore.NBToolResponseTypeText,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			References:        resp.References,
 			SubAgentEvidence:  subAgentEvidence,
@@ -356,7 +357,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Data:              responseData,
 			Status:            toolcore.NBToolResponseStatusError,
 			Type:              toolcore.NBToolResponseTypeText,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			References:        resp.References,
 		}, toolcore.ErrUnableToFetchData
@@ -376,7 +377,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 					Data:              content,
 					Type:              toolcore.NBToolResponseTypeJson,
 					Status:            toolcore.NBToolResponseStatusSuccess,
-					IsTerminal:        resp.IsTerminal,
+					IsTerminal:        parentTerminal,
 					AdditionalDetails: additionalDetails,
 					References:        resp.References,
 					SubAgentEvidence:  subAgentEvidence,
@@ -387,7 +388,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Data:              resp.Response[0],
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			References:        resp.References,
 			SubAgentEvidence:  subAgentEvidence,
@@ -400,7 +401,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Type:              toolcore.NBToolResponseTypeJson,
 			AdditionalDetails: additionalDetails,
 			Status:            toolcore.NBToolResponseStatusError,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			References:        resp.References,
 			SubAgentEvidence:  subAgentEvidence,
 		}, nil
