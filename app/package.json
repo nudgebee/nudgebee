@@ -52,7 +52,6 @@
     "driver.js": "^1.4.0",
     "elastic-builder": "^2.29.0",
     "file-saver": "^2.0.5",
-    "form-urlencoded": "6.1.6",
     "graphql": "^16.14.0",
     "identity-obj-proxy": "^3.0.0",
     "jose": "^4.15.5",
