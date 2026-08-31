@@ -128,6 +128,21 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
   if (selectedTenant) {
     tenant = selectedTenant;
   }
+  // pickDefaultTenant is synchronous and only sees built-in role rows
+  // (user_roles / group tenant roles). Dynamic-RBAC custom-role grants live on a
+  // separate async path (resolveUserCustomPermissions), so a user whose ONLY
+  // access to their explicit default tenant is a custom role reads as "no access"
+  // there and gets skipped into whichever tenant carries a built-in role (issue
+  // #36117). When the marked default was skipped for exactly that reason, resolve
+  // its custom grants and honor the default if the user holds any — one extra
+  // resolve, only on the path that would otherwise discard the explicit default.
+  const markedDefault = (user.tenants ?? []).find((t: any) => t.is_default);
+  if (markedDefault && selectedTenant && markedDefault.id !== selectedTenant.id) {
+    const resolved = await resolveUserCustomPermissions(user.id, markedDefault.id);
+    if (resolved.permissions.length > 0) {
+      tenant = markedDefault;
+    }
+  }
   //filter roles based on tenant
   user.user_roles = user.user_roles ?? [];
 
