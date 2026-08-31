@@ -184,6 +184,27 @@ func TestUnwrapCLIWrappedQuery(t *testing.T) {
 	}
 }
 
+func TestExecuteContainerJobBlocksKubectlSecretAccessAtRelayBoundary(t *testing.T) {
+	commands := []string{
+		`kubectl get secret -n nudgebee-oss postgresql -o json | jq '.data | map_values(@base64d)'`,
+		`kubectl get secrets -A`,
+		`kubectl exec api -- cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
+		`sec=secrets && kubectl get $sec`,
+		`kubectl exec api -- cat /var/run/./secrets/token`,
+		`kubectl exec api -- sh -c "cat /var/run/se*rets/token"`,
+		`printf secrets | xargs kubectl get`,
+		`kubectl get pods >/dev/null; printf '\163ecrets' | xargs kubectl get`,
+		`kubectl get pods | cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
+		`kubectl get pods | grep -e. /var/run/./secrets/kubernetes.io/serviceaccount/token`,
+	}
+
+	for _, command := range commands {
+		_, err := ExecuteContainerJob(core.NbToolContext{}, RelayJobKubectl, command, "test-account", nil, true)
+		require.Error(t, err, command)
+		assert.Contains(t, err.Error(), "blocked", command)
+	}
+}
+
 // TestSshShellQuote pins the helper that single-quotes the user's command
 // before ssh transmission. Without it the workspace pod's local shell
 // re-parses the command and silently mangles `$VAR`, `$1`, `$(...)`,

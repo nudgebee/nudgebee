@@ -670,6 +670,17 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 		return nil, errors.New("module not supported")
 	}
 
+	// This is the final shared boundary for kubectl relay execution. Several
+	// legitimate callers dispatch here directly instead of going through
+	// KubectlExecuteTool.Call, so enforcing the hard-deny policy here prevents
+	// workspace shims and any current or future direct caller from reading
+	// secret-bearing resources or mounted secret paths.
+	if module == RelayJobKubectl {
+		if err := validateKubectlCommandAccess(query); err != nil {
+			return nil, err
+		}
+	}
+
 	// Route DB queries to proxy agent for vm_agent integrations
 	if isDBProxyModule(module) && isVMAgentMode(toolContext.ToolConfig.Values) {
 		// When called from the workspace shim (raw=true) the query is already
