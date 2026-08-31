@@ -36,6 +36,20 @@ type investigationCompletedEnvelope struct {
 	Error         string `json:"error,omitempty"`
 }
 
+// autoAnalysisGateApplies reports whether the EVENT_AUTO_AI_SUMMARY kill
+// switch should be consulted for a troubleshoot request.
+//
+// It applies to the automatic path only. The flag means "analyse every event
+// as it arrives, without anyone asking for it" — a request carrying a
+// task_token was asked for: it came from an llm.event_investigate node someone
+// deliberately placed in a workflow, and the Temporal activity behind it is
+// suspended waiting for a completion envelope. Gating that path skips the
+// publish, so the activity hangs until StartToCloseTimeout and the workflow
+// falls back to "AI investigation did not complete".
+func autoAnalysisGateApplies(taskToken string) bool {
+	return taskToken == ""
+}
+
 // publishInvestigationCompleted emits a completion envelope to the
 // configured exchange. Best-effort: failures are logged but never bubble
 // up — they would only delay the suspended workflow until its activity
@@ -310,26 +324,37 @@ func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) erro
 	}
 
 	// Defense-in-depth kill switch — primary gate is api-server's ProcessEvent.
-	if enabled, ffErr := common.IsFeatureEnabledByDefaultForAccount(
-		"EVENT_AUTO_AI_SUMMARY",
-		ctx.GetSecurityContext().GetTenantId(),
-		eventAnalysisRequest.AccountId,
-	); ffErr == nil && !enabled {
-		ctx.GetLogger().Info("eventasync: auto-analysis disabled for this scope, skipping",
-			"eventId", eventAnalysisRequest.EventId,
-			"tenant", ctx.GetSecurityContext().GetTenantId(),
-			"account", eventAnalysisRequest.AccountId)
-		skipPublish = true
-		// api-server's llm.ProcessEvent passed its own feature gate and may
-		// have deferred this event's downstream processors pending a
-		// completion callback. This re-check disagreeing (a transient
-		// flag-toggle race against the primary gate) must not strand them —
-		// emit one terminal envelope so api-server still runs them. No token
-		// is set, so runbook-server drops it.
-		publishState.Status = string(events.AnalysisStatusFailed)
-		publishState.StatusReason = "auto-analysis disabled at llm-server"
-		publishCompletionUnconditional(msgCtx, publishState)
-		return nil
+	//
+	// Scope: the AUTOMATIC path only. EVENT_AUTO_AI_SUMMARY governs analysing
+	// every event as it arrives "without anyone asking for it". A request that
+	// carries a task_token came from an llm.event_investigate node someone
+	// deliberately put in a workflow, so the auto-gate must not swallow it:
+	// skipPublish would strand the suspended Temporal activity until its
+	// StartToCloseTimeout, and the token-less envelope emitted below is dropped
+	// by runbook-server (`empty task_token, dropping`). Budget limits below
+	// still apply to both paths.
+	if autoAnalysisGateApplies(taskToken) {
+		if enabled, ffErr := common.IsFeatureEnabledByDefaultForAccount(
+			"EVENT_AUTO_AI_SUMMARY",
+			ctx.GetSecurityContext().GetTenantId(),
+			eventAnalysisRequest.AccountId,
+		); ffErr == nil && !enabled {
+			ctx.GetLogger().Info("eventasync: auto-analysis disabled for this scope, skipping",
+				"eventId", eventAnalysisRequest.EventId,
+				"tenant", ctx.GetSecurityContext().GetTenantId(),
+				"account", eventAnalysisRequest.AccountId)
+			skipPublish = true
+			// api-server's llm.ProcessEvent passed its own feature gate and may
+			// have deferred this event's downstream processors pending a
+			// completion callback. This re-check disagreeing (a transient
+			// flag-toggle race against the primary gate) must not strand them —
+			// emit one terminal envelope so api-server still runs them. No token
+			// is set, so runbook-server drops it.
+			publishState.Status = string(events.AnalysisStatusFailed)
+			publishState.StatusReason = "auto-analysis disabled at llm-server"
+			publishCompletionUnconditional(msgCtx, publishState)
+			return nil
+		}
 	}
 
 	// Check budget limits for event analysis from MQ
