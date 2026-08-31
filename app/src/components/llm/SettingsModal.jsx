@@ -303,7 +303,7 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
             />
           )}
         </Box>
-        <Box sx={{ padding: `0px ${ds.space[5]}` }}>
+        <Box sx={{ padding: `0px ${ds.space[5]} ${ds.space[5]}` }}>
           {typeSelected == 'agents' ? (
             <ListAgents
               accountId={accountId}
