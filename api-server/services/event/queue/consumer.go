@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -79,6 +80,7 @@ func loadEventMap(msgCtx context.Context, eventID string, logger *slog.Logger) (
 	// Fail fast on an empty id rather than issuing a guaranteed-miss query.
 	// Both callers already guard this, so it is defensive belt-and-suspenders;
 	// the error is permanent (callers ACK), never requeued.
+	eventID = strings.TrimSpace(eventID)
 	if eventID == "" {
 		logger.Error("event_queue: eventID is empty")
 		return nil, nil, fmt.Errorf("eventID is empty")

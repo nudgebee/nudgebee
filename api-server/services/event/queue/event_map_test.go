@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 
 	"nudgebee/services/event"
@@ -46,5 +48,15 @@ func TestStructToMapDropsEvidencesButKeepsLabels(t *testing.T) {
 	}
 	if labels["anomaly_current"] != "820m" || labels["anomaly_baseline"] != "140m" {
 		t.Fatalf("anomaly stat labels did not survive: %#v", labels)
+	}
+}
+
+func TestLoadEventMapEmptyOrWhitespaceEventID(t *testing.T) {
+	testCases := []string{"", "   ", "\t\n "}
+	for _, id := range testCases {
+		_, _, err := loadEventMap(context.Background(), id, slog.Default())
+		if err == nil || err.Error() != "eventID is empty" {
+			t.Fatalf("expected 'eventID is empty' error for id %q, got %v", id, err)
+		}
 	}
 }
