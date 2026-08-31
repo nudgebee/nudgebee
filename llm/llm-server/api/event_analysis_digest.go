@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
@@ -32,8 +34,18 @@ const (
 	// averages ~5.5k chars; the tail is usually raw log spool rather than finding.
 	digestMaxCharsPerAnalysis = 6000
 
-	// digestGenerationTimeout bounds one account-week: ~13 LLM calls worst case.
-	digestGenerationTimeout = 10 * time.Minute
+	// digestGenerationTimeout bounds one account-week. Sized for the worst week
+	// seen rather than the typical one: class count is unbounded and a 335-class
+	// week is real, so the old 10 minutes cut such weeks off mid-run and stored a
+	// failure no rerun could clear.
+	digestGenerationTimeout = 30 * time.Minute
+
+	// digestClassConcurrency caps class summaries in flight. Each is one LLM call,
+	// so this is the knob that decides whether a large week finishes at all: at 8,
+	// 335 classes take about a tenth of the serial time. Kept well under the
+	// planner's parallelism because the digest is a background job and must not
+	// crowd out interactive traffic on the same provider quota.
+	digestClassConcurrency = 8
 )
 
 // RegisterEventAnalysisDigestJob schedules the weekly digest generator.
@@ -184,34 +196,66 @@ func generateDigestForPeriod(ctx *security.RequestContext, p events.DigestPeriod
 
 	findings := make([]classFinding, 0, len(classes))
 	var textless int
-	for _, c := range classes {
-		// Stop rather than grind through the rest: once the context is done every
-		// remaining LLM call fails immediately, producing a run of useless warnings
-		// and no findings.
-		if cerr := ctx.GetContext().Err(); cerr != nil {
-			return storeDigestFailure(ctx, p, fmt.Errorf("cancelled after %d/%d classes: %w",
-				len(findings), len(classes), cerr), source)
-		}
-		finding, ferr := summariseClass(ctx, p, c)
-		if ferr != nil {
-			// A dead context is not a per-class problem: every remaining call will
-			// fail the same way, so stop here rather than logging a warning per
-			// class. The pre-loop check catches it between iterations; this catches
-			// a cancellation that lands mid-call.
-			if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
-				return storeDigestFailure(ctx, p, fmt.Errorf("cancelled after %d/%d classes: %w",
-					len(findings), len(classes), ferr), source)
+
+	// One LLM call per class, and a busy week carries hundreds of them, so these
+	// run in a bounded pool rather than one after another. Serially a 335-class
+	// week needed roughly 50 minutes and died on the deadline every time — the
+	// scheduled run and the on-demand rerun both, which is what made such a week
+	// permanently unreportable rather than merely slow.
+	type classOutcome struct {
+		finding classFinding
+		err     error
+	}
+	outcomes := make([]classOutcome, len(classes))
+	pool := new(errgroup.Group)
+	pool.SetLimit(digestClassConcurrency)
+	for i, c := range classes {
+		pool.Go(func() error {
+			// Checked per task, not once up front: tasks queued behind the limit
+			// start long after the pool does, and once the context is done every
+			// remaining call fails immediately. This keeps the tail cheap.
+			if cerr := ctx.GetContext().Err(); cerr != nil {
+				outcomes[i] = classOutcome{err: cerr}
+				return nil
+			}
+			finding, ferr := summariseClass(ctx, p, c)
+			outcomes[i] = classOutcome{finding: finding, err: ferr}
+			return nil
+		})
+	}
+	// Failures are carried on each outcome and never returned to the group: a
+	// returned error cancels the group's remaining work, which would turn one bad
+	// class into a lost digest. Only the context can stop the run.
+	_ = pool.Wait()
+
+	// Walked in class order so the digest reads exactly as it did serially —
+	// concurrency changes the timing, not the content.
+	var cancelled error
+	for i, o := range outcomes {
+		if o.err != nil {
+			// A dead context is not a per-class problem: every other class failed
+			// the same way, so report it once as a cancellation rather than emitting
+			// a warning per class.
+			if errors.Is(o.err, context.Canceled) || errors.Is(o.err, context.DeadlineExceeded) {
+				if cancelled == nil {
+					cancelled = o.err
+				}
+				continue
 			}
 			// A class that fails to summarise is dropped from the prose, not fatal
 			// — the briefing is still worth producing from the classes that worked.
-			if errors.Is(ferr, errClassHasNoText) {
+			if errors.Is(o.err, errClassHasNoText) {
 				textless++
 			}
 			ctx.GetLogger().Warn("digest: class summary skipped",
-				"error", ferr, "account_id", c.AccountID, "class", c.AggregationKey)
+				"error", o.err, "account_id", classes[i].AccountID, "class", classes[i].AggregationKey)
 			continue
 		}
-		findings = append(findings, finding)
+		findings = append(findings, o.finding)
+	}
+	if cancelled != nil {
+		return storeDigestFailure(ctx, p, fmt.Errorf("cancelled after %d/%d classes: %w",
+			len(findings), len(classes), cancelled), source)
 	}
 
 	if len(findings) == 0 {
