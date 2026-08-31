@@ -130,8 +130,8 @@ func (s *NewRelicLogSource) QueryLabelValues(ctx *security.RequestContext, req F
 	startTime, endTime := s.getTimeRangeSeconds(req.StartTime, req.EndTime)
 
 	// escapeNRQLField prevents NRQL injection via backtick breakout in user-supplied label names
-	nrqlQuery := fmt.Sprintf("SELECT uniques(%s, 100) FROM Log SINCE %d UNTIL %d",
-		escapeNRQLField(labelName), startTime, endTime)
+	nrqlQuery := fmt.Sprintf("SELECT uniques(%s, %d) FROM Log SINCE %d UNTIL %d",
+		escapeNRQLField(labelName), labelValuesPageSize, startTime, endTime)
 
 	results, err := integrations.ExecuteNRQL(apiKey, nrAccountId, region, nrqlQuery)
 	if err != nil {

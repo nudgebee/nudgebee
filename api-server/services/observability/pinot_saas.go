@@ -414,7 +414,7 @@ func (p *PinotSaasSource) QueryLabelValues(ctx *security.RequestContext, req Fet
 	}
 
 	colQ := pinotQuoteIdent(col)
-	sqlQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT 100", colQ, pinotQuoteIdent(cfg.Table), colQ)
+	sqlQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT %d", colQ, pinotQuoteIdent(cfg.Table), colQ, labelValuesPageSize)
 	sqlBody, marshalErr := json.Marshal(map[string]string{"sql": sqlQuery})
 	if marshalErr != nil {
 		return nil, fmt.Errorf("pinot.QueryLabelValues: failed to marshal SQL: %w", marshalErr)

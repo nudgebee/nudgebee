@@ -23,10 +23,19 @@ type fakeLabelSource struct {
 	valuesErr     error
 	lastValuesReq FetchLogLabelValuesRequest
 	lastLabelsReq FetchLogLabelRequest
+	// probeLogs / probeErr are what QueryLogs answers the labelValueExists probe with:
+	// probeLogs non-empty means the backend does hold the value, probeErr means the probe
+	// could not be run. Both must make the diagnosis fail open.
+	probeLogs   []OutputLog
+	probeErr    error
+	probeReqs   []FetchLogRequest
+	probeCalled int
 }
 
-func (f *fakeLabelSource) QueryLogs(*security.RequestContext, FetchLogRequest) ([]OutputLog, error) {
-	return nil, nil
+func (f *fakeLabelSource) QueryLogs(_ *security.RequestContext, req FetchLogRequest) ([]OutputLog, error) {
+	f.probeCalled++
+	f.probeReqs = append(f.probeReqs, req)
+	return f.probeLogs, f.probeErr
 }
 func (f *fakeLabelSource) QueryLabels(_ *security.RequestContext, req FetchLogLabelRequest) ([]OutputLogLabel, error) {
 	f.lastLabelsReq = req

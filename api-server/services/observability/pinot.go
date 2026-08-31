@@ -335,7 +335,7 @@ func (p *PinotSource) QueryLabelValues(ctx *security.RequestContext, req FetchLo
 	}
 	table := pinotStringParam(req.Request, "pinot_table", "")
 	colQ := pinotQuoteIdent(col)
-	sqlQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT 100", colQ, pinotQuoteIdent(table), colQ)
+	sqlQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT %d", colQ, pinotQuoteIdent(table), colQ, labelValuesPageSize)
 
 	resp, err := relay.Execute(relay.RelayExecuteRequest{
 		NoSinks: true,

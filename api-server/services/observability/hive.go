@@ -293,8 +293,8 @@ func (h *HiveSource) QueryLabelValues(ctx *security.RequestContext, req FetchLog
 	db := hiveStringParam(req.Request, "hive_database", "default")
 	table := hiveStringParam(req.Request, "hive_table", "")
 	colQ := hiveQuoteIdent(col)
-	sqlQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT 100",
-		colQ, hiveQualifiedTable(db, table), colQ)
+	sqlQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT %d",
+		colQ, hiveQualifiedTable(db, table), colQ, labelValuesPageSize)
 
 	resp, err := relay.Execute(relay.RelayExecuteRequest{
 		NoSinks: true,
