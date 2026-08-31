@@ -21,6 +21,7 @@ import {
   GitLabIcon,
   GitMergeIcon,
   ArgocdIcon,
+  TektonIcon,
   K8sIcon,
   newAwsLogo,
   ouAzure,
@@ -230,6 +231,7 @@ const getSpecificTaskIcon = (taskName: string) => {
 
     // CI/CD
     'cicd.argocd.cli': ArgocdIcon,
+    'cicd.tekton.cli': TektonIcon,
 
     // MCP
     'llm.mcp_call': McpIcon,

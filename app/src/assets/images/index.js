@@ -566,6 +566,7 @@ export const DatadogIcon = require('@assets/datadog-icon.svg');
 export const DynatraceIcon = require('@assets/dynatrace-icon.png');
 export const SignozIcon = require('@assets/signoz-icon.svg');
 export const ArgocdIcon = require('@assets/argocd.svg');
+export const TektonIcon = require('@assets/tekton.svg');
 export const ElasticSearchIcon = require('@assets/elasticsearch-icon.svg');
 export const PinotIcon = require('@assets/pinot-icon.svg');
 export const HiveIcon = require('@assets/hive-icon.svg');

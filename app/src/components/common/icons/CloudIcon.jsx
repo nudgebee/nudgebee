@@ -30,6 +30,7 @@ import {
   DatadogIcon,
   DynatraceIcon,
   ArgocdIcon,
+  TektonIcon,
   LlmIcon,
   McpIcon,
   LoggleIcon,
@@ -115,6 +116,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = DynatraceIcon;
   } else if (cloud_provider.toUpperCase() === 'ARGOCD') {
     Icon = ArgocdIcon;
+  } else if (cloud_provider.toUpperCase() === 'TEKTON') {
+    Icon = TektonIcon;
   } else if (cloud_provider.toUpperCase() === 'RABBITMQ') {
     Icon = RabbitmqIcon;
   } else if (cloud_provider.toUpperCase() === 'MYSQL') {

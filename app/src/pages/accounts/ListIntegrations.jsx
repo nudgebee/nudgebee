@@ -87,6 +87,7 @@ const integrationConnectionKey = {
   kafka_proxy: 'brokers',
   llm: 'llm_provider_api_endpoint',
   argocd: 'server',
+  tekton: 'namespace',
 };
 
 // LLM Gateway rows have no single fixed connection key — surface the provider (and the
@@ -118,6 +119,7 @@ const ListIntegrations = ({ integrationName }) => {
     'clickhouse',
     'datadog',
     'argocd',
+    'tekton',
     'mysql',
     'mssql',
     'oracle',

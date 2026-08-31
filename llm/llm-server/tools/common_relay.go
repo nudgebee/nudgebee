@@ -40,6 +40,7 @@ func sshShellQuote(s string) string {
 // have unit tests that vet the same metacharacter set.
 var sshHostRe = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
 var sshUserRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]{0,31}$`)
+var tektonNamespaceRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 type RelayJob string
 
@@ -48,6 +49,7 @@ const (
 	RelayJobKubectl    RelayJob = "kubectl"
 	RelayJobHelm       RelayJob = "helm"
 	RelayJobArgoCD     RelayJob = "argocd"
+	RelayJobTekton     RelayJob = "tekton"
 	RelayJobPostgres   RelayJob = "postgres"
 	RelayJobMysql      RelayJob = "mysql"
 	RelayJobRabbitmq   RelayJob = "rabbitmq"
@@ -666,7 +668,7 @@ func rewriteRabbitmqAPICommand(command string) (string, error) {
 
 func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query string, accountId string, configs map[string]any, raw bool) (any, error) {
 
-	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMysql, RelayJobMssql, RelayJobClickhouse, RelayJobOracle, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobSSH, RelayJobKafka}, module) {
+	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMysql, RelayJobMssql, RelayJobClickhouse, RelayJobOracle, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobTekton, RelayJobSSH, RelayJobKafka}, module) {
 		return nil, errors.New("module not supported")
 	}
 
@@ -979,6 +981,25 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 		// Add server URL and authentication if provided via environment variables
 		if strings.Contains(query, "argocd app") || strings.Contains(query, "argocd proj") || strings.Contains(query, "argocd cluster") || strings.Contains(query, "argocd repo") {
 			query = strings.Replace(query, "argocd ", "argocd "+argoCDFlags+" ", 1)
+		}
+	case RelayJobTekton:
+		if !strings.HasPrefix(query, "tkn") {
+			query = "tkn " + query
+		}
+		var ns string
+		for _, cfg := range toolContext.ToolConfig.Values {
+			if cfg.Name == "namespace" {
+				ns = cfg.Value
+				break
+			}
+		}
+		if ns != "" {
+			if !tektonNamespaceRegex.MatchString(ns) || len(ns) > 63 {
+				return nil, fmt.Errorf("invalid tekton namespace %q", ns)
+			}
+			if !strings.Contains(query, " -n ") && !strings.Contains(query, " --namespace") {
+				query = strings.Replace(query, "tkn ", "tkn -n "+ns+" ", 1)
+			}
 		}
 	}
 	actionName := "pod_script_run_enricher"

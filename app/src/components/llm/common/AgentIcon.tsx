@@ -26,6 +26,7 @@ import {
   ServiceMapIcon,
   DatadogIcon,
   ArgocdIcon,
+  TektonIcon,
   SignozIcon,
   DocumentationIconBlue,
   WrenchIcon,
@@ -131,6 +132,8 @@ export const getIcon = (toolName: string) => {
     return DatadogIcon;
   } else if (toolName.includes('argocd')) {
     return ArgocdIcon;
+  } else if (toolName.includes('tekton')) {
+    return TektonIcon;
   } else if (toolName.includes('signoz')) {
     return SignozIcon;
   } else if (toolName.includes('log') || toolName.includes('query')) {
