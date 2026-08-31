@@ -77,6 +77,30 @@ func ListBudgetConfigs(dbManager *common.DatabaseManager, entityType, entityID, 
 	return configs, nil
 }
 
+// ListAccountBudgetConfigsForTenant lists the account-scoped budget configs
+// owned by one tenant. llm_budget_config carries no tenant_id column —
+// entity_id holds a cloud_accounts.id on 'account' rows — so the tenant filter
+// has to go through cloud_accounts. Without it, an account listing with no
+// entity_id spans every tenant in the database (#37020).
+func ListAccountBudgetConfigsForTenant(dbManager *common.DatabaseManager, tenantID, module string) ([]BudgetConfig, error) {
+	query := `SELECT ` + budgetConfigColumns + ` FROM llm_budget_config
+	          WHERE entity_type = $1
+	            AND entity_id IN (SELECT id FROM cloud_accounts WHERE tenant = $2)`
+	args := []interface{}{EntityTypeAccount, tenantID}
+	if module != "" {
+		query += " AND module = $3"
+		args = append(args, module)
+	}
+	query += " ORDER BY entity_id, module"
+
+	var configs []BudgetConfig
+	err := dbManager.Db.Select(&configs, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("ListAccountBudgetConfigsForTenant: %w", err)
+	}
+	return configs, nil
+}
+
 // ValidateMaxCaps checks that the given limit values do not exceed system max caps.
 // Returns an error message describing the first violation, or empty string if all valid.
 func ValidateMaxCaps(req *BudgetConfigUpsertRequest) string {
