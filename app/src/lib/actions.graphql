@@ -7356,6 +7356,7 @@ type RecommendationRowResponse {
   recommendation_action: String
   note: String
   severity: String
+  severity_weight: Int
   estimated_savings: Float
   status: String
   category: String

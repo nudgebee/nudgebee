@@ -14,6 +14,7 @@ import { CloudLogsViewer } from '@components/cloudaccount/cloud-logs';
 import { CloudMetricsViewer } from '@components/cloudaccount/cloud-metrics';
 import KubernetesTracesListing from '@components/k8s/details/KubernetesTracesListing';
 import CloudAccountSecurity from '@components/cloudaccount/CloudAccountSecurity';
+import VulnerabilityTable from '@components/vulnerabilities/VulnerabilityTable';
 import CloudAccountTools from '@components/cloudaccount/CloudAccountTools';
 import CloudAccountAlertManager from '@components/cloudaccount/CloudAccountAlertManager';
 import TriageRulesManager from '@components/triage/TriageRulesManager';
@@ -173,6 +174,15 @@ const CloudAccounts = () => {
             ? [{ id: 'traces', text: 'Traces', value: 3, fragment: 'traces', icon: LogsTracesIcon }]
             : []),
         ],
+      },
+      {
+        // OS-package CVEs for the account's scanned hosts. Kept separate from the
+        // (still disabled) Security tab below, which is about cloud-provider
+        // security *events* — a different source and a different question.
+        name: 'Vulnerabilities',
+        fragment: 'vulnerabilities',
+        value: 11,
+        icon: SecuritytoolsBlue,
       },
       {
         name: 'Security',
@@ -874,6 +884,14 @@ const CloudAccounts = () => {
               {selectedSubTab === 3 && <CloudAccountEvents accountId={accountId} serviceName={getServiceName()} />}
             </>
           )}
+          {selectedFilter === getFilterValue('vulnerabilities') &&
+            (!loading ? (
+              <Box sx={{ px: 'var(--ds-space-5)', pb: 'var(--ds-space-5)' }}>
+                <VulnerabilityTable accountId={accountId} />
+              </Box>
+            ) : (
+              <Loader />
+            ))}
           {selectedFilter === getFilterValue('security') && (!loading ? <CloudAccountSecurity accountId={accountId} /> : <Loader />)}
           {selectedFilter === getFilterValue('tools') && (!loading ? <CloudAccountTools accountId={accountId} /> : <Loader />)}
         </Box>

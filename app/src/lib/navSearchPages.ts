@@ -402,6 +402,8 @@ export const awsDetailsSearchFragments: AwsDetailsSearchFragment[] = [
 
   { label: 'AWS Services', slug: 'aws/services', fragment: 'services' },
 
+  { label: 'AWS Vulnerabilities', slug: 'aws/vulnerabilities', fragment: 'vulnerabilities' },
+
   { label: 'AWS Events', slug: 'aws/troubleshoot/events', fragment: 'events/events' },
   { label: 'AWS Triage Rules', slug: 'aws/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
   {
@@ -460,6 +462,8 @@ export const azureDetailsSearchFragments: AzureDetailsSearchFragment[] = [
   },
 
   { label: 'Azure Services', slug: 'azure/services', fragment: 'services' },
+
+  { label: 'Azure Vulnerabilities', slug: 'azure/vulnerabilities', fragment: 'vulnerabilities' },
 
   { label: 'Azure Events', slug: 'azure/troubleshoot/events', fragment: 'events/events' },
   { label: 'Azure Triage Rules', slug: 'azure/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
@@ -521,6 +525,8 @@ export const gcpDetailsSearchFragments: GcpDetailsSearchFragment[] = [
   },
 
   { label: 'GCP Services', slug: 'gcp/services', fragment: 'services' },
+
+  { label: 'GCP Vulnerabilities', slug: 'gcp/vulnerabilities', fragment: 'vulnerabilities' },
 
   { label: 'GCP Events', slug: 'gcp/troubleshoot/events', fragment: 'events/events' },
   { label: 'GCP Triage Rules', slug: 'gcp/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
