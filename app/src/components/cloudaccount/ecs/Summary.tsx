@@ -122,19 +122,28 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
 
   useEffect(() => {
     if (!accountId || !showSummary) return;
+    let cancelled = false;
 
     // The top 3-column summary is only relevant for the account-wide ECS view
     // (rendered with `showSummary`); resource-scoped drilldowns skip it entirely.
     setLoadingSummary(true);
     apiCloudAccount
       .cloudAccountECSSummary(accountId, { serviceName: 'AmazonECS' })
-      .then((res: any) => setSummaryData(res || {}))
+      .then((res: any) => {
+        if (!cancelled) setSummaryData(res || {});
+      })
       .catch((err) => {
         console.error(`Error fetching ECS summary for account ${accountId}:`, err);
+        if (cancelled) return;
         snackbar.error(`Failed to load ECS summary: ${err.message}`);
         setSummaryData({});
       })
-      .finally(() => setLoadingSummary(false));
+      .finally(() => {
+        if (!cancelled) setLoadingSummary(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, serviceName, showSummary]);
 
   useEffect(() => {
@@ -145,6 +154,7 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
       setRenderMetricsData({});
       return;
     }
+    let cancelled = false;
     setLoadingMetrics(true);
     apiCloudAccount
       .getCloudResourceMetricsDirect({
@@ -155,6 +165,7 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
         endDate: new Date(selectedDateRange.endDate),
       })
       .then((res) => {
+        if (cancelled) return;
         const metricsData = res?.data?.data?.cloud_metric_groupings_v2?.rows || [];
         if (metricsData.length > 0) {
           const groupedByMetrics = metricsData.reduce((acc: any, curr: any) => {
@@ -169,9 +180,14 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
       })
       .catch((error) => {
         console.error('Error fetching ECS metrics', { resourceId, accountId, error });
-        setRenderMetricsData({});
+        if (!cancelled) setRenderMetricsData({});
       })
-      .finally(() => setLoadingMetrics(false));
+      .finally(() => {
+        if (!cancelled) setLoadingMetrics(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, serviceName, resourceId, selectedDateRange]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {

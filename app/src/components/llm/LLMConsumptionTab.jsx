@@ -1137,7 +1137,6 @@ const LLMConsumptionTab = ({ accountId }) => {
   const [budgetData, setBudgetData] = useState(null);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [accountName, setAccountName] = useState('');
 
   // Lifted budget-config state — top-level "Add Budget" button and the
   // collapsed list section both feed this single modal.
@@ -1191,10 +1190,10 @@ const LLMConsumptionTab = ({ accountId }) => {
   // Derive the friendly account-name label from the cached accounts list.
   // Falls back to empty string until accounts have loaded; the budget-status
   // effect doesn't need to wait for accounts to finish before fetching.
-  useEffect(() => {
-    if (!accountId || accounts.length === 0) return;
+  const accountName = useMemo(() => {
+    if (!accountId || accounts.length === 0) return '';
     const acc = accounts.find((a) => a.id === accountId);
-    if (acc) setAccountName(`${acc.account_name} (${acc.cloud_provider})`);
+    return acc ? `${acc.account_name} (${acc.cloud_provider})` : '';
   }, [accountId, accounts]);
 
   useEffect(() => {

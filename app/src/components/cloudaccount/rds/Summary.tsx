@@ -471,17 +471,22 @@ const OptimizeSummary = ({ accountId = '', serviceName = '' }) => {
 
   useEffect(() => {
     if (!accountId) return;
+    let cancelled = false;
     setLoadingSummary(true);
     apiCloudAccount
       .cloudAccountRDSSummary(accountId, { serviceName })
       .then((res) => {
+        if (cancelled) return;
         setSummary(res);
         setLoadingSummary(false);
       })
       .catch((error) => {
         console.error('Error fetching RDS summary:', error);
-        setLoadingSummary(false);
+        if (!cancelled) setLoadingSummary(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, serviceName]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {

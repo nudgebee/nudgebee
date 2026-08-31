@@ -502,7 +502,7 @@ const CloudAccountEvents = (props: {
     return rowData;
   };
 
-  const listCloudAccountEvents = () => {
+  const listCloudAccountEvents = (isCancelled: () => boolean = () => false) => {
     setLoading(true);
 
     apiCloudAccount
@@ -525,6 +525,7 @@ const CloudAccountEvents = (props: {
         page * rowsPerPage
       )
       .then(async (res: any) => {
+        if (isCancelled()) return;
         const events = res.data?.events || [];
         const totalCount = res.data?.events_aggregate?.aggregate?.count ?? 0;
 
@@ -547,6 +548,7 @@ const CloudAccountEvents = (props: {
         try {
           // 2. Fetch Tickets for all events in one go
           const ticketRes: any = await ticketsApi.listTicketsSummary({ reference_id: references });
+          if (isCancelled()) return;
 
           // 3. Create a Map for quick lookup
           const ticketReferenceMap = new Map();
@@ -567,11 +569,11 @@ const CloudAccountEvents = (props: {
           console.error('Error fetching ticket summaries', err);
           // Optional: handle partial failure (show events without tickets)
         } finally {
-          setLoading(false);
+          if (!isCancelled()) setLoading(false);
         }
       })
       .catch(() => {
-        setLoading(false);
+        if (!isCancelled()) setLoading(false);
       });
   };
 
@@ -579,7 +581,11 @@ const CloudAccountEvents = (props: {
     if (!props?.accountId) {
       return;
     }
-    listCloudAccountEvents();
+    let cancelled = false;
+    listCloudAccountEvents(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [
     props?.accountId,
     page,
