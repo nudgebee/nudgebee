@@ -2197,7 +2197,7 @@ const Home = () => {
                 icon={<KeyboardArrowRightIcon />}
                 iconPlacement='end'
                 onClick={() =>
-                  window.open(`/optimise?accountId=${selectedCluster?.value || ''}&account=${selectedCluster?.value || ''}#recommendations`, '_blank')
+                  window.open(`/optimise?accountId=${selectedCluster?.value || ''}&account=${selectedCluster?.value || ''}#cost`, '_blank')
                 }
               >
                 View all recommendations

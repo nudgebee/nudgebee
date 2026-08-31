@@ -40,7 +40,7 @@ def get_gchat_recommendation_proactive_nudge_template(
             lines.append(f"  _and {remaining} more..._")
         lines.append("")
 
-    lines.append(f"View all recommendations: {base_url}/optimise?utm=gchat#recommendations")
+    lines.append(f"View all recommendations: {base_url}/optimise?utm=gchat#cost")
     lines.append(f"Ask Nubi: {build_ask_nubi_url(params, base_url, 'gchat')}")
 
     return {"text": "\n".join(lines)}

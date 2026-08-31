@@ -26,7 +26,7 @@ def get_discord_recommendation_resolution_template(params: RecommendationResolut
     branding = settings.urls.branding_name
 
     cta_url = f"{base_url}/optimise?id={params.recommendation_id}#resolutions"
-    view_all_url = f"{base_url}/optimise?utm=discord#recommendations"
+    view_all_url = f"{base_url}/optimise?utm=discord#cost"
     description_lines = [
         f"**{params.resource_name}**",
         f"{format_rule_name(params.rule_name)} · {params.account_name}",

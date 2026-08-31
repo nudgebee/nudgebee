@@ -14,7 +14,7 @@ if (!BASE_URL) {
 // Fragments from filterOptions in app/src/pages/optimise/index.jsx. LLM Analyser and
 // AI Gateway are omitted deliberately: both are feature-flagged per tenant, so a suite
 // that asserted them would pass or fail on the flag rather than on the module.
-export type OptimizeModuleTab = "summary" | "recommendations" | "resolutions" | "security" | "auto-optimize";
+export type OptimizeModuleTab = "summary" | "cost" | "resolutions" | "security" | "auto-optimize";
 
 // Precondition named once, so an environment that never rendered the strip fails with
 // the reason rather than with an unexplained missing element on every test.
@@ -69,7 +69,7 @@ export function tabLocator(locators: OptimizeModuleLocators, fragment: OptimizeM
   switch (fragment) {
     case "summary":
       return locators.SummaryTab;
-    case "recommendations":
+    case "cost":
       return locators.RecommendationsTab;
     case "resolutions":
       return locators.ResolutionsTab;

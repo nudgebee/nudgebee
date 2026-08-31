@@ -5,8 +5,8 @@ import { OptimizeLocators } from "../OptimizeLocators";
 // LLM Analyser — the Cost Analyser tab on the tenant Optimize page
 // (app/src/components/llm/cost-analyser/CostAnalyser.tsx), mounted by
 // app/src/pages/optimise/index.jsx as filterOptions id 'llm-analyser', fragment
-// 'cost-analyser'. Its own screens are a CustomTabs strip that writes
-// #cost-analyser/<screen> into the URL.
+// 'llm-analyser'. Its own screens are a CustomTabs strip that writes
+// #llm-analyser/<screen> into the URL.
 //
 // Rung choices below follow the qa-automation-code-check ladder against what the
 // module actually renders, measured rather than assumed:

@@ -61,7 +61,7 @@ def get_discord_recommendation_proactive_nudge_template(params: ProactiveNudgePa
         )
 
     links = (
-        f"[View All Recommendations]({base_url}/optimise?utm=discord#recommendations) · "
+        f"[View All Recommendations]({base_url}/optimise?utm=discord#cost) · "
         f"[Ask Nubi]({build_ask_nubi_url(params, base_url, 'discord')})"
     )
     last = embeds[-1]

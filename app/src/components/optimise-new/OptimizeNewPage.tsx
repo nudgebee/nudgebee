@@ -1126,8 +1126,9 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
 
   const configRollupAccountIds = useMemo(() => (filters.account.length > 0 ? filters.account : Object.keys(accounts)), [filters.account, accounts]);
 
-  // Notification deep link: /optimise?id=<recommendation_id>#recommendations opens
-  // that recommendation's detail panel. Fetched by id, independent of the table's
+  // Notification deep link: /optimise?id=<recommendation_id>#cost (or the legacy
+  // #recommendations, aliased on the Optimise page) opens that recommendation's
+  // detail panel. Fetched by id, independent of the table's
   // filters and default status, so closed or filtered-out items still open. Tracks
   // the last handled id so a different deep link arriving without a remount still
   // opens, while filter changes stripping the param don't re-trigger.
@@ -1147,14 +1148,15 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
         const rec = result?.data?.recommendation?.[0];
         if (rec) {
           // The link's hash predates the Configuration tab — producers still
-          // write #recommendations for every category — so the recommendation's
-          // own category decides which tab should host it. Hand off by rewriting
-          // the hash rather than by setting the tab directly: the tab strip
-          // parses the hash itself and would immediately put it back. ?id= is
-          // kept, so the tab that takes over resolves the same recommendation
-          // and opens its panel.
-          const ownerFragment = rec.category === 'Configuration' ? 'configuration' : 'recommendations';
-          const hostedHere = (lockedCategory ? 'configuration' : 'recommendations') === ownerFragment;
+          // write the Cost fragment (old #recommendations, aliased to #cost by
+          // the Optimise page) for every category — so the recommendation's own
+          // category decides which tab should host it. Hand off by rewriting the
+          // hash rather than by setting the tab directly: the tab strip parses
+          // the hash itself and would immediately put it back. ?id= is kept, so
+          // the tab that takes over resolves the same recommendation and opens
+          // its panel.
+          const ownerFragment = rec.category === 'Configuration' ? 'configuration' : 'cost';
+          const hostedHere = (lockedCategory ? 'configuration' : 'cost') === ownerFragment;
           if (!hostedHere) {
             routerRef.current.replace({ pathname: routerRef.current.pathname, query: routerRef.current.query, hash: ownerFragment }, undefined, {
               shallow: true,

@@ -103,7 +103,7 @@ def get_recommendation_resolution_message_template(
         text="\n".join(lines),
         actions=[
             link_button("View Details", cta_url, style="primary"),
-            link_button("View All Recommendations", f"{base_url}/optimise?utm=slack#recommendations"),
+            link_button("View All Recommendations", f"{base_url}/optimise?utm=slack#cost"),
         ],
     )
 

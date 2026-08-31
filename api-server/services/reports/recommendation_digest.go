@@ -178,7 +178,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 			// channel(s) this payload will be rendered for. Footer-button URLs
 			// are appended per platform in the notifications-server formatters
 			// where the platform IS known (utm=slack-digest, teams-digest, etc.).
-			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "&utm=digest&d=" + digestDate + "#recommendations"
+			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "&utm=digest&d=" + digestDate + "#cost"
 			recMap := map[string]any{
 				"id":                    rec.ID,
 				"rule_name":             rec.RuleName,

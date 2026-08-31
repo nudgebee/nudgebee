@@ -217,8 +217,8 @@ const FEATURE_TABLE_HEADERS = [
 
 // Where a flag surfaces once it's on: `route` for a plain in-app path, or `path`/`reason` when it needs context this modal doesn't have.
 const FEATURE_NAVIGATION = {
-  LLM_ANALYSER: { route: '/optimise#cost-analyser' },
-  AI_COST_REPORT: { route: '/optimise#cost-analyser' },
+  LLM_ANALYSER: { route: '/optimise#llm-analyser' },
+  AI_COST_REPORT: { route: '/optimise#llm-analyser' },
   CUSTOM_ROLES: { route: '/user-management#roles' },
   CHANNEL_AWARENESS: { route: '/user-management#integrations' },
   TROUBLESHOOT: { route: '/troubleshoot' },

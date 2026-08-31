@@ -27,13 +27,13 @@ const NO_ROOT_HINT =
 //
 // The Optimize page resolves its tab from window.location.hash on every filterOptions
 // change, and CostAnalyser resolves its own screen from the sub-fragment after the slash —
-// so `#cost-analyser/models` opens that screen directly. Clicking the strip is exercised on
+// so `#llm-analyser/models` opens that screen directly. Clicking the strip is exercised on
 // its own by the navigation test, so the other tests do not all depend on that interaction.
 export async function openAnalyser(page: Page, screen?: AnalyserScreen): Promise<LlmAnalyserLocators> {
   const locators = new LlmAnalyserLocators(page);
   await new LoginPage(page).doFullLogin();
 
-  await page.goto(`/optimise#cost-analyser${screen ? `/${screen}` : ""}`);
+  await page.goto(`/optimise#llm-analyser${screen ? `/${screen}` : ""}`);
   await expect(locators.llmAnalyserTab, NO_TAB_HINT).toBeVisible({ timeout: 60000 });
   await expect(locators.root, NO_ROOT_HINT).toBeVisible({ timeout: 60000 });
 
@@ -47,7 +47,7 @@ export async function openAnalyserWithFragment(page: Page, fragment: string): Pr
   const locators = new LlmAnalyserLocators(page);
   await new LoginPage(page).doFullLogin();
 
-  await page.goto(`/optimise#cost-analyser/${fragment}`);
+  await page.goto(`/optimise#llm-analyser/${fragment}`);
   await expect(locators.llmAnalyserTab, NO_TAB_HINT).toBeVisible({ timeout: 60000 });
   await expect(locators.root, NO_ROOT_HINT).toBeVisible({ timeout: 60000 });
 

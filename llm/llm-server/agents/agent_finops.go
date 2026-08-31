@@ -395,14 +395,14 @@ func (a *FinOpsAgent) renderAccountContext(ctx *security.RequestContext, withSpe
 	}
 
 	// Optimize-page deep-link base. Surfaced so the agent can render per-row
-	// "Action" links that jump the user straight to the optimise recommendations
+	// "Action" links that jump the user straight to the optimise Cost
 	// table, pre-filtered to a specific resource. The optimise page reads the
-	// account/category/search query params and the #recommendations anchor.
+	// account/category/search query params and the #cost anchor.
 	baseURL := strings.TrimRight(config.Config.BaseUrl, "/")
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
 	}
-	fmt.Fprintf(&b, "Optimize page deep-link base: %s/optimise?account=%s&category=<Category>&search=<workload_name>#recommendations\n", baseURL, a.accountId)
+	fmt.Fprintf(&b, "Optimize page deep-link base: %s/optimise?account=%s&category=<Category>&search=<workload_name>#cost\n", baseURL, a.accountId)
 	b.WriteString("For the deep-link 'search' param use the workload/controller name (the resource 'name'), NEVER pod_name — the optimise table is keyed by workload, so a pod name matches no recommendations.\n")
 	b.WriteString("Before emitting any deep-link, replace every placeholder with a real value or drop that query parameter entirely — never output '<Category>', '<workload_name>', or empty values like 'category=&search='.\n")
 

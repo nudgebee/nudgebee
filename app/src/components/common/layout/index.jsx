@@ -398,7 +398,7 @@ const PageLayout = ({ children }) => {
       { text: 'Summary', path: '/optimise#summary', id: 'sidenav-optimise-summary', module: 'recommendations', icon: OptimizeSummaryIcon },
       {
         text: 'Cost',
-        path: '/optimise#recommendations',
+        path: '/optimise#cost',
         id: 'sidenav-optimise-recommendations',
         module: 'recommendations',
         icon: DollarIcon,
@@ -426,7 +426,7 @@ const PageLayout = ({ children }) => {
       },
       { text: 'Auto Optimize', path: '/optimise#auto-optimize', id: 'sidenav-optimise-auto-optimize', module: 'autooptimize', icon: AutomateBlue },
       ...(llmAnalyserEnabled && canReadAccount
-        ? [{ text: 'LLM Analyser', path: '/optimise#cost-analyser', id: 'sidenav-optimise-cost-analyser', icon: LLMConsumptionIcon }]
+        ? [{ text: 'LLM Analyser', path: '/optimise#llm-analyser', id: 'sidenav-optimise-cost-analyser', icon: LLMConsumptionIcon }]
         : []),
       // `llm` is a TENANT-scoped module (@lib/permissionCatalog): the gateway usage
       // API resolves the tenant from the session and takes no account, so the

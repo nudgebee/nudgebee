@@ -65,7 +65,7 @@ def get_gchat_recommendation_nudge_digest_template(
     footer_url = f"{base_url}/optimise?utm=gchat-digest"
     if params.digest_date:
         footer_url += f"&d={params.digest_date}"
-    footer_url += "#recommendations"
+    footer_url += "#cost"
     lines.append(f"View all recommendations: {footer_url}")
 
     return {"text": "\n".join(lines)}

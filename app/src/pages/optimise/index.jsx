@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
@@ -51,6 +51,13 @@ export async function getServerSideProps() {
 // tab switch starts from that tab's own defaults.
 const TAB_SCOPED_FILTER_PARAMS = ['category', 'search', 'severity', 'account', 'safety', 'rules', 'status', 'savings', 'seen'];
 
+// Fragments renamed in-app but still live in already-sent notifications, the
+// FinOps apply CTA and user bookmarks. Rewritten to the current fragment on
+// load so those links keep landing on the right tab. Backend producers
+// (api-server, llm-server, notifications-server) still emit the old values by
+// design — this is the app-side compatibility shim.
+const LEGACY_FRAGMENT_ALIASES = { recommendations: 'cost', 'cost-analyser': 'llm-analyser' };
+
 const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
@@ -69,6 +76,11 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
   // can only be resolved client-side via hasFeatureAccess — same pattern as
   // UPGRADE_PLANNER.
   const [llmAnalyserEnabled, setLlmAnalyserEnabled] = useState(false);
+  // Guards the one-shot legacy-fragment rewrite below. The hash-resolution
+  // effect re-runs whenever filterOptions changes identity (securityCounts,
+  // isMounted…), and firing a second router.replace while the first is still
+  // in flight makes Next abort it with an uncaught "Cancel rendering route".
+  const didAliasFragment = useRef(false);
 
   useEffect(() => {
     setIsMounted(true);
@@ -89,10 +101,13 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
     () =>
       [
         { name: 'Summary', id: 'summary', fragment: 'summary', value: 0, icon: OptimizeSummaryIcon },
-        // Labelled "Cost" but keyed 'recommendations': the fragment is the deep-link
-        // contract every notification, the FinOps agent prompt and the apply CTA
-        // already write, and it is independent of what the strip displays.
-        { name: 'Cost', id: 'recommendations', fragment: 'recommendations', value: 1, icon: DollarIcon, iconSize: 18 },
+        // Labelled and keyed "Cost". `id` stays 'recommendations' so the tab
+        // anchor (#anchor-tab-recommendations) and its e2e/tour hooks don't
+        // move; only the URL fragment changed from 'recommendations' to 'cost'.
+        // The old fragment is still written by backend notifications, the FinOps
+        // agent prompt and the apply CTA, plus shared/bookmarked links —
+        // LEGACY_FRAGMENT_ALIASES rewrites it to 'cost' on load.
+        { name: 'Cost', id: 'recommendations', fragment: 'cost', value: 1, icon: DollarIcon, iconSize: 18 },
         { name: 'Configuration', id: 'configuration', fragment: 'configuration', value: 2, icon: ToolIconBlue, iconSize: 18 },
         {
           name: 'Security',
@@ -140,7 +155,9 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
           hasReadAccess(selectedCluster?.value) && {
             name: 'LLM Analyser',
             id: 'llm-analyser',
-            fragment: 'cost-analyser',
+            // Was 'cost-analyser'; `id` is unchanged. The old fragment is still
+            // written by the AI cost Slack digest and is aliased on load.
+            fragment: 'llm-analyser',
             value: 6,
             icon: LLMConsumptionIcon,
             iconSize: 18,
@@ -172,13 +189,28 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
 
   useEffect(() => {
     if (!router.isReady) return;
-    const hash = router.asPath.split('#')[1];
+    let hash = router.asPath.split('#')[1];
+    // Rewrite a legacy fragment (#recommendations, #cost-analyser) to its
+    // current name before anything else reads it, so old notification and
+    // bookmark links resolve to the right tab. Keeps ?id= and every other
+    // query param; shallow so it doesn't re-run getServerSideProps.
+    if (hash && !didAliasFragment.current) {
+      const [legacyFragment, legacySubFragment] = hash.split('/');
+      const aliasedFragment = LEGACY_FRAGMENT_ALIASES[legacyFragment];
+      if (aliasedFragment) {
+        didAliasFragment.current = true;
+        hash = legacySubFragment ? `${aliasedFragment}/${legacySubFragment}` : aliasedFragment;
+        // Fire-and-forget: a fast navigation away rejects this with "Cancel
+        // rendering route", which is expected here and not worth surfacing.
+        router.replace({ pathname: router.pathname, query: router.query, hash }, undefined, { shallow: true }).catch(() => {});
+      }
+    }
     // Per-recommendation notification links (?id=) historically targeted #summary,
-    // which ignores the id. Route them to the Recommendations tab, whose detail
-    // panel opens the linked recommendation.
+    // which ignores the id. Route them to the Cost tab, whose detail panel opens
+    // the linked recommendation.
     const hasRecDeepLink = typeof router.query.id === 'string' && router.query.id;
     if (hasRecDeepLink && (!hash || hash === 'summary')) {
-      const recommendationsTab = filterOptions.find((option) => option.fragment === 'recommendations');
+      const recommendationsTab = filterOptions.find((option) => option.fragment === 'cost');
       if (recommendationsTab) {
         setActiveTab(recommendationsTab.value);
         return;
@@ -188,19 +220,20 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
       setActiveTab(0);
       return;
     }
-    // Configuration used to be a card on the Recommendations tab, so shared and
-    // bookmarked links still carry ?category=Configuration#recommendations. That
-    // tab no longer queries the category, so honouring the hash would land the
-    // reader on an empty list; send them to the tab that now owns it.
+    // Configuration used to be a card on the Cost tab, so shared and bookmarked
+    // links still carry ?category=Configuration with the Cost fragment (old
+    // #recommendations, aliased to #cost above). That tab no longer queries the
+    // category, so honouring the hash would land the reader on an empty list;
+    // send them to the tab that now owns it.
     const categoryParam = router.query.category;
     const wantsConfiguration = Array.isArray(categoryParam) ? categoryParam.includes('Configuration') : categoryParam === 'Configuration';
-    if (hash.split('/')[0] === 'recommendations' && wantsConfiguration) {
+    if (hash.split('/')[0] === 'cost' && wantsConfiguration) {
       const configurationTab = filterOptions.find((option) => option.fragment === 'configuration');
       if (configurationTab) {
         // Rewrite the URL rather than only moving activeTab: the tab strip parses
-        // the hash itself, so leaving #recommendations there would render the
-        // Configuration list under a highlighted Recommendations tab. Dropping
-        // the now-redundant category param keeps the link shareable.
+        // the hash itself, so leaving #cost there would render the Configuration
+        // list under a highlighted Cost tab. Dropping the now-redundant category
+        // param keeps the link shareable.
         const { category: _legacyCategory, ...query } = router.query;
         router.replace({ pathname: router.pathname, query, hash: 'configuration' }, undefined, { shallow: true });
         setActiveTab(configurationTab.value);

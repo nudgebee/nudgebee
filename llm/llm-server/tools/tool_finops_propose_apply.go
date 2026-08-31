@@ -104,5 +104,5 @@ func (t ProposeRecommendationApplyTool) Call(ctx core.NbToolContext, input core.
 // (config base URL + /optimise?id=...).
 func buildRecommendationApplyLink(recID, accountID string) string {
 	base := strings.TrimRight(config.Config.BaseUrl, "/")
-	return fmt.Sprintf("%s/optimise?id=%s&accountId=%s#recommendations", base, url.QueryEscape(recID), url.QueryEscape(accountID))
+	return fmt.Sprintf("%s/optimise?id=%s&accountId=%s#cost", base, url.QueryEscape(recID), url.QueryEscape(accountID))
 }

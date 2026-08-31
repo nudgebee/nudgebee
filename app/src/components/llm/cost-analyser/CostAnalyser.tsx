@@ -132,7 +132,7 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   // picked a date on the Cost Report tab.
   const [costReportReferenceDate, setCostReportReferenceDate] = React.useState<string>(() => anchorToday());
 
-  // Deep-link support: a URL like #cost-analyser/cost-report (e.g. the Slack
+  // Deep-link support: a URL like #llm-analyser/cost-report (e.g. the Slack
   // digest's "View in Cost Analyser" link) should land directly on that
   // sub-tab instead of always defaulting to Overview. Consumed once the
   // router is ready; after that, tab switches are driven by clicking
@@ -230,7 +230,7 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   // CustomTabs' built-in icon styling (idle grey, selected color change),
   // matching how every other CustomTabs usage feeds in its icons.
   // fragment mirrors value on every entry — CustomTabs' `behavior='router'`
-  // mode uses it to build the URL hash (#cost-analyser/{fragment}) so the tab
+  // mode uses it to build the URL hash (#llm-analyser/{fragment}) so the tab
   // strip actually navigates instead of only updating local state (that's
   // also what the deep-link effect above reads back on load).
   const tabOptions = [
@@ -254,7 +254,7 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
     <Box id='cost-analyser-root' sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)', pb: 'var(--ds-space-5)' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
         <CustomTabs
-          options={{ tabOptions, fragment: 'cost-analyser' }}
+          options={{ tabOptions, fragment: 'llm-analyser' }}
           value={tab}
           onChange={(next: string) => setTab(next as TabId)}
           behavior='router'

@@ -392,7 +392,7 @@ const ResolutionDetailPanel = ({ open, onClose, resolution, accounts, onRetry, r
                       )}
                       {recommendationId && (
                         <Link
-                          href={`/optimise?id=${recommendationId}#recommendations`}
+                          href={`/optimise?id=${recommendationId}#cost`}
                           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: ds.text.small }}
                         >
                           View

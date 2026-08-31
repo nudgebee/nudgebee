@@ -95,7 +95,7 @@ def get_teams_recommendation_proactive_nudge_template(
             {
                 "type": "Action.OpenUrl",
                 "title": "View All Recommendations",
-                "url": f"{base_url}/optimise?utm=teams#recommendations",
+                "url": f"{base_url}/optimise?utm=teams#cost",
             },
             {
                 "type": "Action.OpenUrl",

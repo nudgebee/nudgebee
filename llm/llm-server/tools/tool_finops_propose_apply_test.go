@@ -69,7 +69,7 @@ func TestProposeRecommendationApplyTool_LinkAndReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
-	for _, want := range []string{"/optimise?id=rec-1", "accountId=acc-1", "#recommendations"} {
+	for _, want := range []string{"/optimise?id=rec-1", "accountId=acc-1", "#cost"} {
 		if !strings.Contains(resp.Data, want) {
 			t.Errorf("response data missing %q: %s", want, resp.Data)
 		}

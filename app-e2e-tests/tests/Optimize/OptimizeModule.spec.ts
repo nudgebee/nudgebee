@@ -32,8 +32,9 @@ test.describe("Optimize", () => {
         // would test the flag rather than the module.
         const strip = [
           { tab: locators.SummaryTab, name: "Summary" },
-          // The strip labels this tab "Cost"; its id and fragment stay
-          // `recommendations`, which is what RecommendationsTab locates it by.
+          // The strip labels this tab "Cost" and its fragment is `cost`; its id
+          // stays `recommendations`, which is what RecommendationsTab (the
+          // #anchor-tab-recommendations locator) matches on.
           { tab: locators.RecommendationsTab, name: "Cost" },
           { tab: locators.securityTab, name: "Security" },
           { tab: locators.ResolutionsTab, name: "Resolutions" },
@@ -83,7 +84,7 @@ test.describe("Optimize", () => {
     "Optimize Cost - open the Cost tab, verify the five severity chips, the four safety chips and all five listing filters render",
     { tag: ["@dev", "@smoke", "@functional"] },
     async ({ page }) => {
-      const locators = await openOptimizeTab(page, "recommendations");
+      const locators = await openOptimizeTab(page, "cost");
       await waitForRecommendations(locators);
 
       await test.step("The severity row renders one chip per band", async () => {
@@ -119,7 +120,7 @@ test.describe("Optimize", () => {
     "Optimize Cost - search for a resource name that cannot exist, verify the table empties and the listing reports that no recommendations match these filters",
     { tag: ["@dev", "@regression", "@negative", "@search"] },
     async ({ page }) => {
-      const locators = await openOptimizeTab(page, "recommendations");
+      const locators = await openOptimizeTab(page, "cost");
       await waitForRecommendations(locators);
 
       const term = noMatchTerm();
@@ -148,7 +149,7 @@ test.describe("Optimize", () => {
     "Optimize Cost - search for a resource name that cannot exist, reload the page, verify the search term and its filtered empty result both survive the reload",
     { tag: ["@dev", "@regression", "@functional", "@search"] },
     async ({ page }) => {
-      const locators = await openOptimizeTab(page, "recommendations");
+      const locators = await openOptimizeTab(page, "cost");
       await waitForRecommendations(locators);
 
       const term = noMatchTerm();
@@ -177,7 +178,7 @@ test.describe("Optimize", () => {
     "Optimize Cost - apply a no-match search on top of the default severity filter, click Clear all, verify the search leaves the field, the URL and the empty-state message",
     { tag: ["@dev", "@regression", "@functional", "@search"] },
     async ({ page }) => {
-      const locators = await openOptimizeTab(page, "recommendations");
+      const locators = await openOptimizeTab(page, "cost");
       await waitForRecommendations(locators);
 
       await test.step("The tab opens with its default Critical and High severity filter already applied", async () => {
@@ -286,7 +287,7 @@ test.describe("Optimize", () => {
         await locators.RecommendationsTab.click();
         await parkCursor(page);
         await expectSelectedTab(locators.RecommendationsTab);
-        await expect(page).toHaveURL(/#recommendations\b/);
+        await expect(page).toHaveURL(/#cost\b/);
         await waitForRecommendations(locators);
       });
 

@@ -119,7 +119,7 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Dashboards', label: 'Application Grouping', path: '/dashboards#groups' },
 
   { group: 'Optimize', label: 'Optimize Summary', path: '/optimise#summary' },
-  { group: 'Optimize', label: 'Optimize Cost', path: '/optimise#recommendations' },
+  { group: 'Optimize', label: 'Optimize Cost', path: '/optimise#cost' },
   { group: 'Optimize', label: 'Optimize Configuration', path: '/optimise#configuration' },
   { group: 'Optimize', label: 'Security - Image Scan', path: '/optimise#security/image-scan' },
   { group: 'Optimize', label: 'Security - CIS Scan', path: '/optimise#security/cis-scan' },
@@ -132,7 +132,7 @@ export const navSearchPages: NavSearchPage[] = [
   // use: LLM Analyser on the per-tenant LLM_ANALYSER feature flag, AI Gateway on
   // the deployment's UI_ENABLE_LLM_GATEWAY env var (read off the session — see
   // optimise/index.jsx), each narrowed by hasReadAccess(selectedCluster?.value).
-  { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#cost-analyser' },
+  { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#llm-analyser' },
   { group: 'Optimize', label: 'AI Gateway', path: '/optimise#ai-gateway' },
 
   // Infra → VM. The account in scope comes from the header cluster dropdown, and

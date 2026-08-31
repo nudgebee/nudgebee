@@ -1333,7 +1333,7 @@ const automationFromScratchTour: TourDef = {
  * and the page itself only gates on session presence.
  *
  * `route` is '/optimise' with NO hash on purpose. useLaunchGuide compares base
- * paths and ignores the fragment, so a '/optimise#recommendations' route would
+ * paths and ignores the fragment, so a '/optimise#cost' route would
  * skip navigation for a user already on '/optimise#summary' — starting the tour
  * on Summary, where these anchors don't exist. Step 2 clicks through to
  * Recommendations instead, which also makes the guide robust when launched from
@@ -1805,8 +1805,7 @@ const optimizeAutoOptimizeTour: TourDef = {
  * the tenant flag is the gate that actually decides visibility.
  *
  * Anchors (all pre-existing):
- *   #anchor-tab-llm-analyser → the tab (id 'llm-analyser'; note its hash is
- *                              'cost-analyser' — fragment and id differ here)
+ *   #anchor-tab-llm-analyser → the tab (id and hash are both 'llm-analyser')
  *   #cost-kpi-row / #cost-over-time / #cost-filter-bar / #cost-filter-reset
  *   #auto-complete-cost-filter-{account,model,user} → FilterDropdown rewrites ids
  *   #tab-conversations / #tab-models / #tab-agents / #tab-tools / #tab-users /

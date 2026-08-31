@@ -391,7 +391,7 @@ def get_recommendation_nudge_digest_message_template(
     footer_url = f"{base_url}/optimise?utm=slack-digest"
     if params.digest_date:
         footer_url += f"&d={params.digest_date}"
-    footer_url += "#recommendations"
+    footer_url += "#cost"
     remaining = len(ranked) - MAX_ALERT_ITEMS
     attachments.append(
         neutral_footer_attachment(
