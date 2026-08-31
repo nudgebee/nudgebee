@@ -32,6 +32,9 @@
  * visually distinct from the neutral, right-aligned `type` chip. Use it to show
  * a second dimension per row (e.g. a KG node's type on the left while the right
  * chip shows its namespace/region). Optional; rows without it are unchanged.
+ * Both flank the label, which is the growth slot: `badge` and `type` are capped
+ * at 150px/160px (or 35%/40% of a narrower row, whichever is smaller) and hand
+ * whatever they don't use to the label.
  *
  * Option search: search matches an option's visible label plus an optional
  * `searchText` field. Set `searchText` when the label is intentionally short but
@@ -225,14 +228,19 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
     >
       {multiple && <OverlayCheckbox checked={selected} />}
       {opt?.icon && <SafeIcon src={opt.icon} alt={opt?.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />}
+      {/* Badge and type are capped in px as well as by share of the row: the
+          percentages alone let them reserve 75% of a wide panel even when their
+          text is short, starving the label — the one field that usually
+          distinguishes same-named rows. min() keeps the old proportional
+          behaviour on a narrow panel (the 220px floor). */}
       {opt?.badge && (
-        <Box sx={{ flexShrink: 0, maxWidth: '35%' }}>
+        <Box sx={{ flexShrink: 0, maxWidth: 'min(150px, 35%)' }}>
           <Label text={opt.badge} tone='info' maxWidth='100%' displayTooltip tooltipCharLimit={18} />
         </Box>
       )}
       <OptionLabel label={getLabel(opt)} />
       {opt?.type && (
-        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: '40%' }}>
+        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: 'min(160px, 40%)' }}>
           {/* Label capitalizes by default; pass typeTextTransform='none' for
               chips holding case-sensitive identifiers (k8s namespace, region,
               vpc/resource id) so their casing is preserved verbatim. */}

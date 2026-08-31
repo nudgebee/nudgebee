@@ -97,6 +97,32 @@ describe('FilterDropdown', () => {
     expect(screen.getByText('Production')).toBeInTheDocument();
   });
 
+  it('renders an option row with all four slots (icon, badge, label, type chip)', () => {
+    // Shape the KG Node filter builds: the icon names the provider, the badge the
+    // resource kind, the right chip the location — and the label keeps the rest.
+    const rowOptions = [
+      {
+        label: 'otel-deployment-collector-collector',
+        value: 'n1',
+        badge: 'Config Map',
+        type: 'k8s-prod \u00b7 otel',
+        icon: (
+          <span role='img' aria-label='k8s'>
+            i
+          </span>
+        ),
+      },
+    ];
+    render(<FilterDropdown options={rowOptions} value={[]} onSelect={jest.fn()} label='Node' multiple />);
+    fireEvent.click(screen.getByText('Node'));
+    expect(screen.getByText('otel-deployment-collector-collector')).toBeInTheDocument();
+    expect(screen.getByText('Config Map')).toBeInTheDocument();
+    expect(screen.getByText('k8s-prod \u00b7 otel')).toBeInTheDocument();
+    // An element `icon` is returned verbatim by SafeIcon, so its own aria-label is
+    // what names it \u2014 SafeIcon's `alt` never reaches it.
+    expect(screen.getByLabelText('k8s')).toBeInTheDocument();
+  });
+
   it('matches search against opt.searchText, not just the visible label', () => {
     // Short labels, but the full key lives in searchText (KG node-row shape).
     const nodeOptions = Array.from({ length: 9 }, (_, i) => ({
