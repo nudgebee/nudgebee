@@ -121,8 +121,18 @@ func persistArchive(tx *sqlx.Tx, ctx *security.RequestContext, account ScanAccou
 		// image's open rows to Archive on each call, leaving only the last image
 		// scanned in a cycle visible in the UI. Scope the archive to THIS image,
 		// keyed on the image_name the parser embeds. account.TargetImage is the
-		// image being scanned; rides idx_recommendation_security_account_image_name.
+		// image being scanned; rides idx_recommendation_image_scan_account_image_name.
 		// Empty TargetImage matches no rows (image_name is never "") — a safe no-op.
+		//
+		// Do NOT narrow this with `account_object_id IS NOT NULL` to court an index:
+		// V733's index carried that predicate, which is why this statement could not
+		// use it at all (the planner can't prove an unasserted predicate) and fell
+		// back to scanning every image_scan row in the account, detoasting the
+		// recommendation JSONB per row to evaluate image_name as a filter. V902
+		// widened the index instead — adding the predicate here would leave rows with
+		// a NULL account_object_id permanently un-archived. That is not hypothetical:
+		// dev carries one such row today, status 'Open', which the narrowed form
+		// would strand forever.
 		_, err := tx.Exec(
 			`UPDATE recommendation SET status = 'Archive', updated_at = $1
 			 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = 'Security'
