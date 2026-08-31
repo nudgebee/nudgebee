@@ -96,6 +96,42 @@ const CHANGE_CLASS_PRESENTATION: Record<ChangeClass, { label: string; tone: Labe
 export const changeClassLabel = (cls?: ChangeClass | null): string | null => (cls ? CHANGE_CLASS_PRESENTATION[cls].label : null);
 export const changeClassTone = (cls?: ChangeClass | null): LabelTone => (cls ? CHANGE_CLASS_PRESENTATION[cls].tone : 'neutral');
 
+// deriveVerdict turns the band plus the impact counts into the one-line
+// headline above the safety card. The band is the verdict, so the headline
+// must never argue with it: production dependents lead the banner only when
+// the band actually grades them dangerous — an additive change is Review
+// *because* a larger allocation cannot starve them, and a red "N production
+// dependents affected" would contradict the reason line right beneath it.
+// A success tone means the card renders no banner at all, just the quiet
+// reason text.
+export const deriveVerdict = (
+  band?: string,
+  prod?: number,
+  depCount?: number,
+  truncated?: boolean,
+  changeClass?: ChangeClass | null
+): { tone: 'success' | 'warning' | 'critical'; title: string } => {
+  const prodCount = prod ?? 0;
+  if (band === 'risky') {
+    if (prodCount > 0) return { tone: 'critical', title: `${prodCount} production dependent${prodCount === 1 ? '' : 's'} affected` };
+    if (truncated) return { tone: 'critical', title: 'Large blast radius' };
+    if (changeClass === 'destructive') return { tone: 'critical', title: 'Irreversible change' };
+    return { tone: 'critical', title: 'Dependents would be affected' };
+  }
+  if (band === 'unknown') return { tone: 'warning', title: 'Impact unknown' };
+  // Removal is irreversible even when the neighbourhood looks empty, so it
+  // keeps a visible caution rather than a green "no known dependents".
+  if (changeClass === 'destructive') return { tone: 'warning', title: 'Irreversible change' };
+  // prodCount is checked alongside depCount because the two arrive from the
+  // same persisted summary and a partial one must still name the additive
+  // case rather than falling through to a generic headline.
+  if (changeClass === 'additive' && ((depCount ?? 0) > 0 || prodCount > 0)) {
+    return { tone: 'success', title: 'Capacity increase — dependents unaffected' };
+  }
+  if (depCount === 0 || band === 'safe') return { tone: 'success', title: 'No known dependents' };
+  return { tone: 'success', title: 'Contained blast radius' };
+};
+
 export const CHANGE_CLASS_HELP: Record<ChangeClass, string> = {
   additive:
     'This change only adds capacity or commitments — dependents cannot be starved by it, so production callers cap the verdict at Review instead of Risky. The remaining risk is apply mechanics (e.g. a rolling restart).',

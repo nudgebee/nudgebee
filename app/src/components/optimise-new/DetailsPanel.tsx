@@ -36,6 +36,7 @@ import {
   getChangeClass,
   changeClassLabel,
   changeClassTone,
+  deriveVerdict,
   CHANGE_CLASS_HELP,
   coverageTone,
   coverageSubtitle,
@@ -109,22 +110,6 @@ const SAFETY_BAND_HELP: Record<string, string> = {
     'Dependents exist but none look production, the change only adds capacity, or nothing was found but graph coverage is limited. Safe to apply after a quick human check.',
   risky: 'Production dependents would be affected, the blast radius is very large, or the change is irreversible. Review carefully before applying.',
   unknown: "This resource isn't in the dependency graph, so its impact can't be measured — don't assume it's safe.",
-};
-
-// Turns the safety band + impact counts into a one-line verdict for the banner
-// at the top of the card. Non-success verdicts get a colored callout; success
-// verdicts stay quiet (no banner).
-const deriveVerdict = (
-  band?: string,
-  prod?: number,
-  depCount?: number,
-  truncated?: boolean
-): { tone: 'success' | 'warning' | 'critical'; title: string } => {
-  if ((prod ?? 0) > 0) return { tone: 'critical', title: `${prod} production dependent${prod === 1 ? '' : 's'} affected` };
-  if (band === 'risky' || truncated) return { tone: 'critical', title: 'Large blast radius' };
-  if (band === 'unknown') return { tone: 'warning', title: 'Impact unknown' };
-  if (depCount === 0 || band === 'safe') return { tone: 'success', title: 'No known dependents' };
-  return { tone: 'success', title: 'Contained blast radius' };
 };
 
 // Wraps a chip so the tooltip gets a ref-holding element (Label doesn't forward refs).
@@ -278,7 +263,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
     (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
   );
   if (!band && !hasImpactData) return null;
-  const verdict = deriveVerdict(band, impact?.production_dependents, impact?.dependent_count, impact?.truncated);
+  const verdict = deriveVerdict(band, impact?.production_dependents, impact?.dependent_count, impact?.truncated, changeClass);
   return (
     <Card
       elevation='flat'

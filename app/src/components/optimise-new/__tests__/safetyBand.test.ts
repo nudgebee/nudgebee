@@ -14,6 +14,7 @@ import {
   getChangeClass,
   changeClassLabel,
   changeClassTone,
+  deriveVerdict,
 } from '../safetyBand';
 
 describe('safetyBand dependent categorization helpers', () => {
@@ -153,6 +154,37 @@ describe('changeClass presentation', () => {
     expect(changeClassTone('destructive')).toBe('critical');
     expect(changeClassLabel(null)).toBeNull();
     expect(changeClassTone(null)).toBe('neutral');
+  });
+});
+
+describe('deriveVerdict', () => {
+  it('headlines production dependents only when the band grades them dangerous', () => {
+    expect(deriveVerdict('risky', 10, 10, false, 'reductive')).toEqual({ tone: 'critical', title: '10 production dependents affected' });
+    expect(deriveVerdict('risky', 1, 1, false, 'reductive')).toEqual({ tone: 'critical', title: '1 production dependent affected' });
+  });
+
+  it('never contradicts a Review verdict on an additive change with production dependents', () => {
+    const v = deriveVerdict('review', 5, 5, false, 'additive');
+    expect(v.tone).toBe('success');
+    expect(v.title).toBe('Capacity increase — dependents unaffected');
+
+    // A partial summary (prod count without the total) must still name the case.
+    const partial = deriveVerdict('review', 5, undefined, false, 'additive');
+    expect(partial.tone).toBe('success');
+    expect(partial.title).toBe('Capacity increase — dependents unaffected');
+  });
+
+  it('keeps a visible caution on irreversible changes, even with an empty neighbourhood', () => {
+    expect(deriveVerdict('review', 0, 0, false, 'destructive')).toEqual({ tone: 'warning', title: 'Irreversible change' });
+    expect(deriveVerdict('risky', 0, 0, false, 'destructive')).toEqual({ tone: 'critical', title: 'Irreversible change' });
+  });
+
+  it('keeps the pre-existing verdicts for everything else', () => {
+    expect(deriveVerdict('risky', 0, 500, true, 'reductive')).toEqual({ tone: 'critical', title: 'Large blast radius' });
+    expect(deriveVerdict('unknown', 0, 0, false, null)).toEqual({ tone: 'warning', title: 'Impact unknown' });
+    expect(deriveVerdict('safe', 0, 0, false, 'reductive')).toEqual({ tone: 'success', title: 'No known dependents' });
+    expect(deriveVerdict('review', 0, 3, false, 'reductive')).toEqual({ tone: 'success', title: 'Contained blast radius' });
+    expect(deriveVerdict(undefined, undefined, undefined, undefined, null).tone).toBe('success');
   });
 });
 
