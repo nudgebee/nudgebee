@@ -261,9 +261,16 @@ const getDrillDownQuery = (row) => {
 };
 
 export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = false, tabPadding }) => {
+  // Most expandable configs declare only `text`, no `value`. MUI then falls
+  // back to the child index for each Tab's value, but the Tabs highlight guard
+  // (`opt.value === value`) doesn't — so switching works while the selected
+  // tab never gets its blue pill. Defaulting `value` to the array index keeps
+  // both sides on the same identity; explicit values (semantic slugs like
+  // 'evidence') pass through untouched.
+  const normalizedTabs = tabOptions.map((o, i) => ({ ...o, value: o.value ?? i }));
   // Use ?? so a valid but falsy tab value (e.g. 0) isn't clobbered by the
   // fallback. Falls back to 0 only when the first tab has no value at all.
-  const [tab, setTab] = useState(tabOptions[0]?.value ?? 0);
+  const [tab, setTab] = useState(normalizedTabs[0]?.value ?? 0);
   // Sticky "has been opened" flag, flipped on synchronously during render so
   // the very first render with isExpanded=true already includes the inner
   // content — MUI Collapse then measures the correct expanded height up front
@@ -301,12 +308,12 @@ export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = f
       {/* A strip exists to switch tabs; with one tab there is nothing to
           switch, so it renders only when a choice exists. Most expandable
           tables pass a single tab, where the strip was ~50px of dead chrome. */}
-      {tabOptions.length > 1 && (
+      {normalizedTabs.length > 1 && (
         <Box mb={ds.space[3]}>
-          <Tabs padding={tabPadding} options={tabOptions} value={tab} onChange={handleChangeTab} />
+          <Tabs padding={tabPadding} options={normalizedTabs} value={tab} onChange={handleChangeTab} />
         </Box>
       )}
-      {tabOptions.map((option, tabIndex) => {
+      {normalizedTabs.map((option, tabIndex) => {
         // Prefer the tab option's own `value` (semantic slug like 'evidence')
         // for both the React key and the TabPanel identity — falling back to
         // the array index if the caller didn't provide one. Using `option.key
