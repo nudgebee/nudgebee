@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"nudgebee/services/integrations/core"
 
@@ -336,5 +337,71 @@ func TestZendutyAlertPayloadURL(t *testing.T) {
 		bare := zendutyAlert{UniqueID: "x", CreationDate: "2026-07-29T05:24:24Z"}
 		_, err = zendutyAlertPayloadURL(bare, "acct-1")
 		assert.Error(t, err, "no team/service/integration")
+	})
+}
+
+// Rate-limit handling. A 429 must be recognisable as such (so the breaker can
+// open) and must surface whatever Zenduty said about the limit — the enrichment
+// path silently degraded for weeks on dev because the 429 was flattened into an
+// opaque error string.
+
+func TestZendutyEnrich_FetchAlerts_RateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "42")
+		w.Header().Set("X-RateLimit-Limit", "60")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`Too many requests`))
+	}))
+	defer srv.Close()
+
+	prev := zendutyAPIBaseURL
+	zendutyAPIBaseURL = srv.URL
+	defer func() { zendutyAPIBaseURL = prev }()
+
+	_, err := fetchZendutyAlertsForIncident("ZDFAKEINC0429", "key")
+	assert.Error(t, err)
+
+	httpErr, limited := isRateLimited(err)
+	assert.True(t, limited, "a 429 must be detectable through the wrapped error")
+	assert.Equal(t, 42*time.Second, httpErr.RetryAfter)
+	assert.Equal(t, "60", httpErr.RateLimit["X-Ratelimit-Limit"])
+	assert.Equal(t, "0", httpErr.RateLimit["X-Ratelimit-Remaining"])
+}
+
+// The presigned S3 object is the one hop that is not Zenduty. Amazon throttling
+// an object read must not pause Zenduty enrichment for the whole tenant.
+func TestZendutyEnrich_PresignedObject429_DoesNotTripBreaker(t *testing.T) {
+	err := &zendutyHTTPError{
+		What:       zendutyPayloadObjectCall,
+		StatusCode: http.StatusTooManyRequests,
+	}
+	_, limited := isRateLimited(err)
+	assert.False(t, limited, "S3 throttling is not a Zenduty rate limit")
+}
+
+func TestZendutyEnrich_NonRateLimitErrorIsNotABreaker(t *testing.T) {
+	err := &zendutyHTTPError{
+		What:       "zenduty alerts API",
+		StatusCode: http.StatusUnauthorized,
+	}
+	_, limited := isRateLimited(err)
+	assert.False(t, limited)
+}
+
+func TestZendutyThrottleHints(t *testing.T) {
+	t.Run("absent headers yield nothing", func(t *testing.T) {
+		retryAfter, hints := zendutyThrottleHints(http.Header{})
+		assert.Zero(t, retryAfter)
+		assert.Empty(t, hints)
+	})
+
+	t.Run("non-numeric Retry-After is ignored", func(t *testing.T) {
+		header := http.Header{}
+		// Retry-After also permits an HTTP-date, which we deliberately do not
+		// parse — falling back to the default cooldown is safe.
+		header.Set("Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT")
+		retryAfter, _ := zendutyThrottleHints(header)
+		assert.Zero(t, retryAfter)
 	})
 }

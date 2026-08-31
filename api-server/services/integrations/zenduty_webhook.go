@@ -339,6 +339,13 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	default:
 		alert.RuleId = incident.UniqueID
 		alert.RuleName = incident.Title
+		// Last resort: neither the summary nor the API yielded an alertname, so
+		// the only identifier left is the incident's own unique_id — which
+		// Zenduty generates fresh per incident. Every firing of the same alert
+		// therefore lands a different RuleId (and aggregation_key). Flag it so
+		// event-type registration skips it instead of minting one event_rules
+		// row per firing (see event.LabelUnstableAggregationKey).
+		alert.Labels[event.LabelUnstableAggregationKey] = "true"
 	}
 
 	// Title rewrite: prefer the human-readable annotation summary or rule name

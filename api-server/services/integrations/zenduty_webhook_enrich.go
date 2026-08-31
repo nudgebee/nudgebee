@@ -49,6 +49,18 @@ const zendutyEnrichCacheNamespace = "zenduty_alert_enrichment"
 const zendutyEnrichCacheTTL = 30 * time.Minute
 const zendutyEnrichAPITimeout = 10 * time.Second
 
+// Rate-limit breaker. Zenduty throttles per account, so a 429 on one incident
+// means the next incident's call is throttled too — without this, every webhook
+// delivery re-hammers an endpoint we already know is refusing us, and the
+// enrichment cache never helps because it is only written on success.
+//
+// Cooldown honours Retry-After when the response carries one, clamped to
+// [zendutyRateLimitMinCooldown, zendutyEnrichCacheTTL] — the upper bound keeps
+// the entry within the namespace's own expiration.
+const zendutyRateLimitKeyPrefix = "ratelimit:"
+const zendutyRateLimitCooldown = 5 * time.Minute
+const zendutyRateLimitMinCooldown = 1 * time.Minute
+
 // zendutyAPIBaseURL is the base URL used by enrichment fetches. Package-level
 // var (not const) so tests can swap it for an httptest.Server URL.
 var zendutyAPIBaseURL = ZenDutyDefaultURL
@@ -136,6 +148,14 @@ func enrichWithZendutyAPI(sc *security.RequestContext, alert *core.EventIncoming
 		}
 	}
 
+	// Zenduty throttles per account: while a cooldown from an earlier 429 is
+	// open, every call would be refused too. Skip without spending the request.
+	if zendutyRateLimited(tenantId) {
+		sc.GetLogger().Debug("zendutywebhook: API enrichment skipped (rate-limit cooldown open)",
+			"incident", incidentID)
+		return
+	}
+
 	apiKey, err := getZendutyAPIKey(sc, tenantId)
 	if err != nil {
 		sc.GetLogger().Debug("zendutywebhook: API enrichment skipped (no API key)",
@@ -145,6 +165,9 @@ func enrichWithZendutyAPI(sc *security.RequestContext, alert *core.EventIncoming
 
 	alerts, err := fetchZendutyAlertsForIncident(incidentID, apiKey)
 	if err != nil {
+		if httpErr, limited := isRateLimited(err); limited {
+			noteZendutyRateLimit(sc, tenantId, httpErr)
+		}
 		sc.GetLogger().Warn("zendutywebhook: alerts API fetch failed, continuing with webhook data",
 			"incident", incidentID, "error", err)
 		return
@@ -166,6 +189,9 @@ func enrichWithZendutyAPI(sc *security.RequestContext, alert *core.EventIncoming
 	if !hadSummaryLabels {
 		labels, payloadErr := fetchZendutyAlertPayloadLabels(sc, selected, tenantId, apiKey)
 		if payloadErr != nil {
+			if httpErr, limited := isRateLimited(payloadErr); limited {
+				noteZendutyRateLimit(sc, tenantId, httpErr)
+			}
 			sc.GetLogger().Debug("zendutywebhook: alert payload unavailable, falling back to summary parsing",
 				"incident", incidentID, "alert", selected.UniqueID, "error", payloadErr)
 		} else {
@@ -283,6 +309,85 @@ func normalizeZendutyIntegrationName(name string) string {
 	}
 }
 
+// zendutyHTTPError is a non-200 response from a Zenduty endpoint. It carries the
+// status and any throttling hints the response advertised, so callers can both
+// detect a 429 and log what Zenduty actually told us about the limit — the
+// question "is this a burst limit we can back off from, or a plan quota we
+// cannot" is unanswerable without those headers.
+type zendutyHTTPError struct {
+	What       string
+	StatusCode int
+	RetryAfter time.Duration
+	RateLimit  map[string]string
+	Body       string
+}
+
+func (e *zendutyHTTPError) Error() string {
+	return fmt.Sprintf("%s returned %d: %s", e.What, e.StatusCode, e.Body)
+}
+
+// zendutyPayloadObjectCall labels the presigned-S3 fetch. It is the one hop that
+// does not hit Zenduty, so a 429 there is Amazon throttling the object read and
+// must not open a Zenduty-wide cooldown.
+const zendutyPayloadObjectCall = "zenduty alert payload object"
+
+// isRateLimited reports whether err is a Zenduty 429 anywhere in its chain.
+func isRateLimited(err error) (*zendutyHTTPError, bool) {
+	var httpErr *zendutyHTTPError
+	if errors.As(err, &httpErr) &&
+		httpErr.StatusCode == http.StatusTooManyRequests &&
+		httpErr.What != zendutyPayloadObjectCall {
+		return httpErr, true
+	}
+	return nil, false
+}
+
+// zendutyThrottleHints extracts Retry-After and any RateLimit-family headers.
+// Vendors spell these inconsistently (X-RateLimit-Remaining, RateLimit-Reset,
+// ...), so match on the canonical name containing "ratelimit" rather than
+// guessing an exact set.
+func zendutyThrottleHints(header http.Header) (time.Duration, map[string]string) {
+	var retryAfter time.Duration
+	if raw := header.Get("Retry-After"); raw != "" {
+		if seconds, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && seconds > 0 {
+			retryAfter = time.Duration(seconds) * time.Second
+		}
+	}
+
+	hints := map[string]string{}
+	for name, values := range header {
+		if strings.Contains(strings.ToLower(name), "ratelimit") && len(values) > 0 {
+			hints[name] = values[0]
+		}
+	}
+	return retryAfter, hints
+}
+
+// zendutyRateLimited reports whether the tenant is inside a rate-limit cooldown.
+func zendutyRateLimited(tenantId string) bool {
+	_, hit := common.CacheGet(zendutyEnrichCacheNamespace, zendutyRateLimitKeyPrefix+tenantId)
+	return hit
+}
+
+// noteZendutyRateLimit opens the cooldown for a tenant after a 429, and logs the
+// throttling hints Zenduty returned so the limit can be characterised.
+func noteZendutyRateLimit(sc *security.RequestContext, tenantId string, httpErr *zendutyHTTPError) {
+	cooldown := zendutyRateLimitCooldown
+	if httpErr.RetryAfter > 0 {
+		cooldown = httpErr.RetryAfter
+	}
+	cooldown = max(zendutyRateLimitMinCooldown, min(cooldown, zendutyEnrichCacheTTL))
+
+	sc.GetLogger().Warn("zendutywebhook: rate limited by Zenduty, pausing API enrichment",
+		"what", httpErr.What, "cooldown", cooldown.String(),
+		"retry_after", httpErr.RetryAfter.String(), "rate_limit_headers", httpErr.RateLimit)
+
+	if err := common.CacheSet(zendutyEnrichCacheNamespace, zendutyRateLimitKeyPrefix+tenantId,
+		[]byte("1"), common.CacheSetWithExpiration(cooldown)); err != nil {
+		sc.GetLogger().Debug("zendutywebhook: failed to record rate-limit cooldown", "error", err)
+	}
+}
+
 // zendutyGet performs an authenticated GET and returns the body on HTTP 200.
 // Pass an empty apiKey for presigned URLs, which must NOT carry an auth header.
 func zendutyGet(url, apiKey, what string) ([]byte, error) {
@@ -305,7 +410,14 @@ func zendutyGet(url, apiKey, what string) ([]byte, error) {
 		return nil, fmt.Errorf("read %s response: %w", what, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s returned %d: %s", what, resp.StatusCode, truncate(string(bodyBytes), 300))
+		retryAfter, rateLimit := zendutyThrottleHints(resp.Header)
+		return nil, &zendutyHTTPError{
+			What:       what,
+			StatusCode: resp.StatusCode,
+			RetryAfter: retryAfter,
+			RateLimit:  rateLimit,
+			Body:       truncate(string(bodyBytes), 300),
+		}
 	}
 	return bodyBytes, nil
 }
@@ -398,7 +510,7 @@ func fetchZendutyAlertPayloadLabels(sc *security.RequestContext, a zendutyAlert,
 	}
 
 	// Presigned — an Authorization header would conflict with the signature.
-	payloadBytes, err := zendutyGet(presigned.URL, "", "zenduty alert payload object")
+	payloadBytes, err := zendutyGet(presigned.URL, "", zendutyPayloadObjectCall)
 	if err != nil {
 		return nil, err
 	}
