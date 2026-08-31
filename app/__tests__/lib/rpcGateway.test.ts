@@ -341,6 +341,10 @@ describe('tryBypassGraphQL', () => {
 
   beforeEach(() => {
     process.env.SERVICE_API_SERVER_URL = 'http://test-api';
+    // Actions routed at llm-server (ai_create_agent, …) need their handler var
+    // resolvable too — an unset one is now a `handler_unresolved` short-circuit
+    // rather than a relative URL handed to the fetch mock.
+    process.env.LLM_SERVER_URL = 'http://test-llm';
   });
 
   afterEach(() => {
