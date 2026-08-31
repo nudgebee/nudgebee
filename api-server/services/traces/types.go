@@ -86,15 +86,22 @@ type SpanAttributes struct {
 }
 
 type ServiceDependency struct {
-	Source        string  `json:"source"`
-	Target        string  `json:"target"`
-	CallCount     int64   `json:"call_count"`
-	TotalDuration float64 `json:"total_duration_ns"`
-	AvgDuration   float64 `json:"avg_duration_ms"`
-	ErrorCount    int64   `json:"error_count"`
-	ErrorRate     float64 `json:"error_rate"`
-	Protocol      string  `json:"protocol"`
-	Environment   string  `json:"environment"`
+	Source string `json:"source"`
+	Target string `json:"target"`
+	// SourceNamespace/TargetNamespace qualify the endpoints above. Source and
+	// Target deliberately stay bare names — they are consumed as raw hostnames
+	// by createFilterHints (which feeds SpanAttributeFilters for trace re-query)
+	// and by trackExternalService, so a "ns/name" composite would silently break
+	// every drill-down. Only identity keys are namespace-qualified.
+	SourceNamespace string  `json:"source_namespace,omitempty"`
+	TargetNamespace string  `json:"target_namespace,omitempty"`
+	CallCount       int64   `json:"call_count"`
+	TotalDuration   float64 `json:"total_duration_ns"`
+	AvgDuration     float64 `json:"avg_duration_ms"`
+	ErrorCount      int64   `json:"error_count"`
+	ErrorRate       float64 `json:"error_rate"`
+	Protocol        string  `json:"protocol"`
+	Environment     string  `json:"environment"`
 	// Enhanced metadata for drill-down
 	TraceIds       []string         `json:"trace_ids,omitempty"`
 	FailedTraceIds []string         `json:"failed_trace_ids,omitempty"`

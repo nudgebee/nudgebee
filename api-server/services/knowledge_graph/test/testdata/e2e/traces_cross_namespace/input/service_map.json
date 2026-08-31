@@ -1,0 +1,35 @@
+{
+  "_comment": "Two namespaces run a service named notification-server. Each has its own caller. The ns-staging copy is listed AFTER the ns-prod one so that any name-only application lookup resolves both callers to it — which is the cross-namespace bug this scenario locks out.",
+  "Applications": [
+    {
+      "Id": { "name": "checkout", "kind": "Service", "namespace": "ns-prod" },
+      "Upstreams": [
+        {
+          "Id": "ns-prod:Service:notification-server",
+          "Protocol": "HTTP",
+          "RequestCount": 120,
+          "FailureCount": 2,
+          "Latency": 14.5
+        }
+      ]
+    },
+    {
+      "Id": { "name": "probe", "kind": "Service", "namespace": "ns-staging" },
+      "Upstreams": [
+        {
+          "Id": "ns-staging:Service:notification-server",
+          "Protocol": "HTTP",
+          "RequestCount": 8,
+          "FailureCount": 0,
+          "Latency": 3.25
+        }
+      ]
+    },
+    {
+      "Id": { "name": "notification-server", "kind": "Service", "namespace": "ns-prod" }
+    },
+    {
+      "Id": { "name": "notification-server", "kind": "Service", "namespace": "ns-staging" }
+    }
+  ]
+}
