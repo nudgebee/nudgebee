@@ -44,22 +44,40 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image:
-          - services-server
-          - services-server-sidecar
-          - migrations
-          - app
-          - ticket-server
-          - code-analysis-agent
-          - notifications
-          - k8s-collector
-          - cloud-collector-server
-          - cost-server
-          - relay-server
-          - workflow-server
-          - llm-server
-          - rag-server
-          - ml-k8s-server
+        # include-only (not a bare `image:` list) so a few entries can override
+        # the tag. `tag` unset means the default below — `edge`, the tip of main,
+        # overridable per-run via the workflow_dispatch input.
+        include:
+          - image: services-server
+          - image: services-server-sidecar
+          - image: migrations
+          - image: app
+          - image: ticket-server
+          - image: code-analysis-agent
+          - image: notifications
+          - image: k8s-collector
+          - image: cloud-collector-server
+          - image: cost-server
+          - image: relay-server
+          - image: workflow-server
+          # llm-gateway is deliberately absent: it is published by release.yaml
+          # but had no edge build until this change added it to edge.yaml, so
+          # `llm-gateway:edge` only exists from the first main build after this
+          # merges. Add `- image: llm-gateway` here once that tag is published —
+          # adding it now would fail this workflow's own pull_request run.
+          - image: llm-server
+          - image: rag-server
+          - image: ml-k8s-server
+          # These two ship as `:latest`, NOT `:edge` — postgres_migrations.image.tag
+          # and llm-server's LLM_SERVER_AGENT_CODEAGENT_IMAGE in
+          # deploy/kubernetes/nudgebee/values.yaml both pin `latest`, and the two
+          # tags are different digests. Scanning only `edge` reported numbers for
+          # an image no operator installs, so scan both: `edge` tracks what main
+          # will ship, `latest` is what a chart install pulls today.
+          - image: migrations
+            tag: latest
+          - image: code-analysis-agent
+            tag: latest
     steps:
       - name: Resolve namespace
         id: ns
@@ -97,9 +115,12 @@ jobs:
             echo "DB download attempt $n failed; retrying in 15s..."; sleep 15
           done
 
-      - name: Scan ${{ matrix.image }}
+      - name: Scan ${{ matrix.image }}:${{ matrix.tag || github.event.inputs.tag || 'edge' }}
         env:
-          IMAGE_REF: ${{ env.REGISTRY }}/${{ steps.ns.outputs.namespace }}/${{ matrix.image }}:${{ github.event.inputs.tag || 'edge' }}
+          # matrix.tag wins over the dispatch input: the `latest` entries below
+          # exist precisely to pin a tag, so a dispatch asking for some other tag
+          # must not collapse them back onto it.
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ steps.ns.outputs.namespace }}/${{ matrix.image }}:${{ matrix.tag || github.event.inputs.tag || 'edge' }}
         run: |
           set -euo pipefail
           echo "Scanning $IMAGE_REF"
@@ -150,7 +171,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scan-${{ matrix.image }}
+          # Tag suffix only for the pinned-tag entries, so the `edge` artifacts
+          # keep their existing `scan-<image>` names. Without it the two
+          # `migrations` jobs would both upload `scan-migrations` and the second
+          # would fail on the duplicate name.
+          name: scan-${{ matrix.image }}${{ matrix.tag && format('-{0}', matrix.tag) || '' }}
           path: result.json
           retention-days: 14
 
@@ -178,11 +203,25 @@ jobs:
           - ghcr.io/nudgebee/postgres-exporter:v0.20.1-nb1
           - ghcr.io/nudgebee/nginx:stable-alpine3.20-slim-nb1
           - ghcr.io/nudgebee/kubewatch:2.14.1-nb.2
-          # --- genuinely third-party (upstream-owned) ---
-          # temporal-ui removed: the Web UI is disabled in the chart (not deployed).
+          # --- genuinely third-party, pulled from our ghcr clones ---
+          # These are the refs the chart actually deploys: values.yaml points
+          # temporal.{server,admintools}.image.repository at ghcr.io/nudgebee/*,
+          # cloned by nudgebee-mirrors/clone-third-party.sh, so nothing pulls from
+          # Docker Hub. Scan the clone, not the docker.io original — same digest
+          # today, but a chart bump moves the clone and the docker.io ref would
+          # silently keep reporting on whatever it was pinned to here.
+          # temporal-ui not scanned: the Web UI is disabled in the chart (cloned
+          # so re-enabling needs no Docker Hub pull, but nothing deploys it).
           - ghcr.io/nudgebee/qdrant:v1.18.3
-          - docker.io/temporalio/server:1.31.2
-          - docker.io/temporalio/admin-tools:1.31.2
+          - ghcr.io/nudgebee/temporal-server:1.31.2
+          - ghcr.io/nudgebee/temporal-admin-tools:1.31.2
+          # --- init / helper images the service charts mount ---
+          # global.initImages.curl, global.testImage, and rag-server's
+          # .Values.migrationHookImage. Small, but they run in-cluster and were
+          # never measured.
+          - ghcr.io/nudgebee/curl:8.10.1
+          - ghcr.io/nudgebee/busybox:1.37.0
+          - ghcr.io/nudgebee/alpine-k8s:1.32.13
           # --- first-party agents / sidecars built in sibling repos ---
           # Measured here so the daily scan covers the whole deployed surface;
           # fixes land in the k8s-agent / node-agent / forager repos and these
