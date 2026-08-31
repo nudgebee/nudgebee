@@ -3467,6 +3467,9 @@ func recordTokenUsageFailure(
 	}
 
 	requestStatus := requestStatusForError(rawErr)
+	if requestStatus == "timeout" {
+		requestStatus = "failure"
+	}
 
 	cacheTTL := config.Config.LlmCacheTTLMinutes
 	record := &TokenUsageRecord{
