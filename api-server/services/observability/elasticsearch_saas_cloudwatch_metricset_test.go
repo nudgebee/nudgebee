@@ -185,9 +185,13 @@ func TestParseESMetricsHits_GenericFallbackReadsSystemMetricset(t *testing.T) {
 	assert.InDelta(t, 8.0, got["system.cpu.cores"], 1e-9)
 	assert.InDelta(t, 2048.0, got["process.memory.rss.bytes"], 1e-9)
 
-	// Document metadata is not a measurement: event.duration must not become a metric.
-	_, hasEventDuration := got["event.duration"]
-	assert.False(t, hasEventDuration, "metadata branches must be skipped, got: %v", got)
+	// event.duration IS emitted, and that is deliberate. The branch was skipped
+	// wholesale as metadata until a customer APM document showed event.success_count
+	// living beside it — a real measurement thrown out with the metadata. Keeping the
+	// branch admits some low-value numbers; losing real ones silently is worse, and is
+	// the failure this whole path exists to remove.
+	assert.InDelta(t, 123456.0, got["event.duration"], 1e-9,
+		"the event branch is kept; per-document uniqueness is handled by value, not by name")
 
 	// String leaves outside the skip list become labels.
 	assert.Equal(t, "node-1", results[0].Metric["host.name"])

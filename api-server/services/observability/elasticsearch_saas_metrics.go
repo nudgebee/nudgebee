@@ -1302,6 +1302,19 @@ func esGenericTruncationNote(leafDocs int, seriesCapped bool) string {
 	return ""
 }
 
+// esLooksLikeTimestamp reports whether a string is an RFC3339 instant.
+//
+// Shape-checked before parsing: this runs on every string leaf of every document, and
+// the overwhelming majority are names, versions and identifiers that would fail the
+// parse anyway.
+func esLooksLikeTimestamp(v string) bool {
+	if len(v) < 20 || len(v) > 35 || !strings.Contains(v, "T") {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339, v)
+	return err == nil
+}
+
 // esGenericMaxLeavesPerDoc and esGenericMaxSeries bound the generic reader.
 //
 // It emits one series per numeric leaf, labelled from every string leaf, for every
@@ -1322,6 +1335,12 @@ const (
 // genericMetricSkip are top-level branches that describe a document rather than
 // measure anything. Walking them would emit series for log offsets, event durations
 // and agent metadata alongside the real metrics.
+// genericMetricSkip are top-level branches dropped as document metadata.
+//
+// `agent` stays on the list despite carrying a useful agent.name: it also carries
+// agent.id and agent.ephemeral_id, which change per agent and per restart, and no
+// value-based rule catches a UUID the way esLooksLikeTimestamp catches an instant.
+// `data_stream` came off it — see below.
 var genericMetricSkip = map[string]bool{
 	"@timestamp":    true,
 	"@version":      true,
@@ -1332,9 +1351,7 @@ var genericMetricSkip = map[string]bool{
 	"ecs":           true,
 	"agent":         true,
 	"elastic_agent": true,
-	"event":         true,
 	"log":           true,
-	"data_stream":   true,
 	"stream":        true,
 	"input":         true,
 	"error":         true,
@@ -1389,7 +1406,10 @@ func genericNumericLeafSeries(src map[string]any) (labels map[string]string, val
 func walkGenericLeaves(node map[string]any, path string, labels map[string]string, values map[string]float64) {
 	atRoot := path == ""
 	for k, v := range node {
-		if atRoot && genericMetricSkip[k] {
+		// Elasticsearch's own document fields are underscore-prefixed. _doc_count
+		// rides along on aggregated documents (APM rollups carry one per bucket) and
+		// is bookkeeping, not something anyone asked to measure.
+		if atRoot && (genericMetricSkip[k] || strings.HasPrefix(k, "_")) {
 			continue
 		}
 		p := k
@@ -1415,7 +1435,13 @@ func walkGenericLeaves(node map[string]any, path string, labels map[string]strin
 				values[p+"."+stat] = n
 			}
 		case string:
-			if !containsLabelSkip(p, genericLabelSkip) {
+			// A timestamp-valued string is unique per document, so as a label it
+			// would put every document in its own series — the cardinality blow-up
+			// the skip list was over-reaching to prevent. Dropping them by VALUE
+			// rather than by field name is what lets whole branches stay in: `event`
+			// holds event.ingested (a timestamp, dropped here) alongside
+			// event.success_count (a real APM measurement that used to go with it).
+			if !containsLabelSkip(p, genericLabelSkip) && !esLooksLikeTimestamp(tv) {
 				labels[p] = tv
 			}
 		}
