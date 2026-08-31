@@ -78,6 +78,7 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		DelegateAgentToolName,
 		SearchToolsToolName,
 		WebSearchAgentName,
+		NudgebeeAgentName,
 		toolcore.ToolExecuteShellCommand,
 	}
 
@@ -132,8 +133,8 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		t.Run(tt.name+"_bounded_size", func(t *testing.T) {
 			// 8 shared + memory (conditional but usually 1) + followup (conditional).
 			// Allow generous ceiling to avoid brittle test on every optional add.
-			assert.LessOrEqual(t, len(tt.names), 15,
-				"%s reduced core has %d tools; lean should stay ≤15 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
+			assert.LessOrEqual(t, len(tt.names), 16,
+				"%s reduced core has %d tools; lean should stay ≤16 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
 				tt.name, len(tt.names))
 		})
 	}

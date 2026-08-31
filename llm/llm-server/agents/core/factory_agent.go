@@ -48,6 +48,17 @@ func RegisterNBAgentFactoryAndTool(agent string, agentFactory func(accountId str
 	})
 }
 
+// RegisterNBAgentFactoryAndToolWithAliases registers one canonical agent-tool
+// plus direct-address aliases. Aliases resolve for @mentions and stored history,
+// but only the canonical name is exposed as a tool to parent orchestrators.
+func RegisterNBAgentFactoryAndToolWithAliases(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, aliases ...string) {
+	RegisterNBAgentFactoryAndTool(agent, agentFactory, toolDescription, toolInput, toolOutput)
+	for _, alias := range aliases {
+		RegisterNBAgentFactory(alias, agentFactory)
+		nbSystemAgentAliases[strings.ToLower(alias)] = true
+	}
+}
+
 func RegisterNBAgentFactoryAsTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
 	slog.Info("registering agent as tool", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {

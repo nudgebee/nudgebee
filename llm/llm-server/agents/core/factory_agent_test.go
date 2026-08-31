@@ -1,6 +1,7 @@
 package core
 
 import (
+	toolcore "nudgebee/llm/tools/core"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -30,6 +31,31 @@ func TestRegisterNBAgentFactoryWithAliases(t *testing.T) {
 	// Case-insensitivity: lookup lowercases the key, so a mixed-case alias resolves.
 	if _, err := getSystemAgent("TEST_LEGACY_DEBUG", "acct-1"); err != nil {
 		t.Errorf("expected case-insensitive alias resolution, got error: %v", err)
+	}
+}
+
+func TestRegisterNBAgentFactoryAndToolWithAliases(t *testing.T) {
+	sentinel := &struct{ NBAgent }{}
+	factory := func(accountId string) (NBAgent, error) { return sentinel, nil }
+	RegisterNBAgentFactoryAndToolWithAliases(
+		"test_tool_primary", factory, "description", "input", "output", "test_tool_alias",
+	)
+
+	alias, err := getSystemAgent("test_tool_alias", "account-1")
+	if err != nil || alias != sentinel {
+		t.Fatalf("alias did not resolve to canonical factory: agent=%v error=%v", alias, err)
+	}
+	if !IsSystemAgentAlias("test_tool_alias") {
+		t.Fatal("alias was not recorded")
+	}
+
+	tool, ok := toolcore.GetNBTool("account-1", "test_tool_primary")
+	if !ok || tool.Name() != "test_tool_primary" {
+		t.Fatalf("canonical tool was not registered: tool=%v found=%v", tool, ok)
+	}
+	_, aliasToolExists := toolcore.GetNBTool("account-1", "test_tool_alias")
+	if aliasToolExists {
+		t.Fatal("alias must not create a duplicate tool")
 	}
 }
 

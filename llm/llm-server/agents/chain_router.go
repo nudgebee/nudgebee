@@ -171,7 +171,6 @@ func (l RouterAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Explanation: `Matches InvestigateAgent because user wants to resolve a conflict, not build an automation. The word "Workflow" appears only in a GitHub Actions link context.`,
 		},
 	}
-
 	plannerAgentName := GetDebugAgentName(query.AccountId)
 
 	constrains := []string{
@@ -336,7 +335,9 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 		agentName = WorkflowAgentName
 	case "code", "code_debugger", "code_rca_agent", agentCodeAnalyzerLegacyName, AgentCodeAnalyzer:
 		agentName = AgentCodeAnalyzer
-	case "nudgebee_docs", "nudgebee", "nubidocs", "product_docs", "nudgebeedocsagent",
+	case NudgebeeAgentName, "nubi", "nudgebeeagent":
+		agentName = NudgebeeAgentName
+	case "nudgebee_docs", "nubidocs", "product_docs", "nudgebeedocsagent",
 		"knowledge_base", "kb", "knowledgebase",
 		"unifiedsearchagent", "unified_search", "search", WebSearchAgentName:
 		// NudgebeeDocsAgent and KBAgent were consolidated into UnifiedSearchAgent;
