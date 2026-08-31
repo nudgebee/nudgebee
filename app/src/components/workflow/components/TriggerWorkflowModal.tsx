@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Typography, Box } from '@mui/material';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
@@ -54,9 +54,21 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
 
   const hasDefaults = inputSchema.some((input) => input.default !== undefined && input.default !== null && input.default !== '');
 
-  // Initialize inputs when modal opens or defaultInputs change
+  // Tracks the previous `open` value so the seeding effect below only fires on
+  // the closed -> open transition.
+  const wasOpenRef = useRef<boolean>(false);
+
+  // Seed the inputs once, when the modal opens.
+  //
+  // `defaultInputs` / `inputSchema` are built inline at every call site
+  // (getDefaultTriggerInputs(w) / getWorkflowInputSchema(w)), so they get a new
+  // identity on every parent render. The listing polls the workflow list every
+  // 10s and a running execution every 0.5-3s, so re-seeding on those deps wiped
+  // whatever the user had typed into the JSON box a moment later. Gate on the
+  // open transition instead, and leave the box alone for the rest of the
+  // session. Fixes #37242.
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       try {
         let initialInputs = {};
 
@@ -74,12 +86,15 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
 
         setInputsJson(JSON.stringify(initialInputs, null, 2));
         setJsonError('');
+        setUseDefaults(true);
       } catch (_error) {
         console.error(_error);
         setInputsJson('{}');
         setJsonError('');
+        setUseDefaults(true);
       }
     }
+    wasOpenRef.current = open;
   }, [open, defaultInputs, inputSchema]);
 
   const validateJson = (jsonString: string): boolean => {
