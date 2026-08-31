@@ -29,12 +29,6 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
       ? toolData.config.command[0]
       : ''
   );
-  const [containerArgs, setContainerArgs] = React.useState(
-    editMode && toolData && (toolData.executor_type || '').toLowerCase() === 'container' && toolData.config?.args?.length
-      ? toolData.config.args.join(' ')
-      : ''
-  );
-
   const [loading, setLoading] = React.useState(false);
   const [errors, setErrors] = React.useState({
     name: '',
@@ -104,7 +98,6 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
         config: {
           image: containerImage,
           command: containerCommand ? [containerCommand.trim()] : [],
-          args: containerArgs ? containerArgs.trim().split(/\s+/).filter(Boolean) : [],
         },
       };
     }
@@ -193,12 +186,6 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
               onChange={(next) => setContainerCommand(next)}
               placeholder='e.g., /bin/sh or printenv (overrides image ENTRYPOINT)'
             />
-            <Input
-              label='Container Arguments (Optional, space-separated)'
-              value={containerArgs}
-              onChange={(next) => setContainerArgs(next)}
-              placeholder='e.g., -c "echo hello" or --verbose'
-            />
           </>
         )}
       </Box>
@@ -229,7 +216,6 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
             setName('');
             setContainerImage('');
             setContainerCommand('');
-            setContainerArgs('');
             handleClose('');
             setErrors({
               name: '',
