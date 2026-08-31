@@ -12,9 +12,9 @@ import (
 // / SubjectType / Labels) and fall back to a relay `get_resource` lookup when
 // the agent-side payload didn't carry enough context.
 
-// subjectPodNamespace extracts (name, namespace) for a pod-subject event.
+// SubjectPodNamespace extracts (name, namespace) for a pod-subject event.
 // Returns empty strings when the event's subject is not a pod.
-func subjectPodNamespace(event PlaybookEvent) (string, string) {
+func SubjectPodNamespace(event PlaybookEvent) (string, string) {
 	if !strings.EqualFold(event.SubjectType, "pod") {
 		// Trigger-matched k8s events set SubjectType="pod"; alertmanager alerts
 		// may not, so fall back to a "pod" label when present.
@@ -31,6 +31,14 @@ func subjectPodNamespace(event PlaybookEvent) (string, string) {
 		namespace = event.Labels["namespace"]
 	}
 	return name, namespace
+}
+
+// PodNamespaceFromEvent is SubjectPodNamespace exported for the provider-agnostic
+// actions that live in the observability package. Those cannot be defined here:
+// observability imports this package to register actions, so a playbook action that
+// needs a metrics provider has to be registered from that side of the dependency.
+func PodNamespaceFromEvent(event PlaybookEvent) (string, string) {
+	return SubjectPodNamespace(event)
 }
 
 // subjectJobName extracts the K8s Job name for job-subject events. Empty when
@@ -71,7 +79,7 @@ func nodeNameFromPodDict(p map[string]any) string {
 	return ""
 }
 
-// subjectNodeName extracts the node name for an event. Order:
+// SubjectNodeName extracts the node name for an event. Order:
 //  1. canonical event.SubjectNode field — populated by the collector from
 //     the kubewatch payload (events.subject_node column).
 //  2. SubjectName when SubjectType=="node" (the subject IS the node).
@@ -80,7 +88,7 @@ func nodeNameFromPodDict(p map[string]any) string {
 //
 // Enrichers that need the host node should always call this rather than
 // re-fetching the Pod via relay — the data is already in hand.
-func subjectNodeName(event PlaybookEvent) string {
+func SubjectNodeName(event PlaybookEvent) string {
 	if event.SubjectNode != "" {
 		return event.SubjectNode
 	}
@@ -150,7 +158,7 @@ func rangeQueryWindow(event PlaybookEvent, lookbackMinutes int, now time.Time) (
 	return end.Add(-time.Duration(lookbackMinutes) * time.Minute), end
 }
 
-// promRangeQueries fires N named range queries against prometheus_queries_enricher
+// PromRangeQueries fires N named range queries against prometheus_queries_enricher
 // over the given lookback duration (minutes). Returns the per-key payload —
 // each value is the {result_type, series_list_result, vector_result, …}
 // envelope the relay produces.
@@ -160,7 +168,7 @@ func rangeQueryWindow(event PlaybookEvent, lookbackMinutes int, now time.Time) (
 // for alerts) we centre the window on the event so the graph reflects
 // cluster state AT incident time, not at investigation time. Falls back to
 // (now - lookback, now) for ad-hoc / manual playbook runs.
-func promRangeQueries(ctx PlaybookActionContext, queries []NamedQuery, lookbackMinutes int) (map[string]any, error) {
+func PromRangeQueries(ctx PlaybookActionContext, queries []NamedQuery, lookbackMinutes int) (map[string]any, error) {
 	if lookbackMinutes <= 0 {
 		lookbackMinutes = 60
 	}

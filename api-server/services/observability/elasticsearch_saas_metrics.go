@@ -9,6 +9,7 @@ import (
 	"nudgebee/services/security"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -1620,55 +1621,6 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 	}, nil
 }
 
-// esOtlpMetricName maps abstract utilisation keys to OTLP metric names
-// available in the Elasticsearch OTLP metrics index.
-//
-// Only metrics currently present in the ES pipeline are mapped.
-// Resource request/limit and node capacity metrics are not available
-// because k8sclusterreceiver metrics are not currently exported into ES.
-//
-// Returns ("", false) when no equivalent OTLP metric exists.
-func esOtlpMetricName(key string, isNode bool) (otlpName string, found bool) {
-	if isNode {
-		switch key {
-		case "cpu_real":
-			// Available from hostmetrics/kubeletstats receiver.
-			return "system.cpu.utilization", true
-
-		case "mem_real":
-			// Represents current memory usage on the node.
-			return "system.memory.usage", true
-
-			// Not currently available in ES metrics pipeline:
-			// - mem_total (no node memory capacity metric)
-			// - cpu_total (no node CPU capacity metric)
-			// - requests/limits (requires k8sclusterreceiver)
-		}
-		return "", false
-	}
-
-	switch key {
-	case "cpu_real":
-		// Container CPU usage metric from kubeletstatsreceiver.
-		return "container.cpu.usage", true
-
-	case "mem_real":
-		// Recommended container working set metric.
-		return "container.memory.working_set", true
-
-		// Not currently available in ES metrics pipeline:
-		// - mem_total (container memory capacity/limit metric missing)
-		// - cpu_total (k8s.container.cpu_limit not present)
-		// - cpu_request
-		// - cpu_limit
-		// - memory_request
-		// - memory_limit
-		// These require k8sclusterreceiver metrics to be enabled and exported.
-	}
-
-	return "", false
-}
-
 // fetchESMetricUtilisation executes utilisation queries against Elasticsearch.
 // Documents follow the OTLP/Data-Prepper schema produced by kubeletstatsreceiver:
 //
@@ -1690,208 +1642,180 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 		index = cfg.MetricsIndex
 	}
 
-	isNode := meta.Kind == "node" || (meta.Namespace == "" && meta.Name == "" && meta.NodeName != "")
+	scope := esUtilisationScope(meta)
+	stepSec := esUtilStepSeconds(meta, req.StartTime, req.EndTime)
 
-	var results []QueryResult
-	for _, metricKey := range meta.RequestedMetrics {
-		otlpName, ok := esOtlpMetricName(metricKey, isNode)
+	// One request per metric key, run concurrently. They were sequential, and on a
+	// real cluster each takes ~250ms, so the fourteen keys the utilisation panel asks
+	// for cost ~3.5s of round-trips before the page can draw anything. The queries are
+	// independent — separate keys, separate aggregations — so the only reason they
+	// were serial was the loop.
+	//
+	// Bounded so a wide request cannot open an unbounded fan-out against a customer's
+	// cluster; the panel asks for fourteen, and esUtilisationConcurrency keeps that to
+	// a couple of waves.
+	results := make([]QueryResult, len(meta.RequestedMetrics))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, esUtilisationConcurrency)
+
+	// Keys that resolve to the same candidate sources produce byte-identical search
+	// bodies and differ only in which reduction they read back — cpu_real, p50_cpu,
+	// p90_cpu and max_usage_cpu are one query, not four. Group them so each distinct
+	// search is issued once. On the panel's fourteen keys this is six searches.
+	groups := map[string]*esUtilQueryGroup{}
+	var groupOrder []string
+	plans := make([]esUtilMetric, len(meta.RequestedMetrics))
+
+	// Every plan is resolved before any body is rendered, because the pod join below has
+	// to run first: it fills meta.NodePods, which changes the filters those bodies carry.
+	// Rendering first and joining second would silently produce the pre-join queries.
+	resolved := make([]bool, len(meta.RequestedMetrics))
+	for idx, metricKey := range meta.RequestedMetrics {
+		plan, ok := esUtilisationMetric(metricKey, scope, meta.ContainerName != "")
 		if !ok {
-			// Not available in this ES schema (e.g. K8s resource specs from kube-state-metrics).
-			// Return empty payload with no error — same as a query that matches zero documents.
-			results = append(results, QueryResult{QueryKey: metricKey, Payload: []Result{}})
+			// No equivalent in any Elasticsearch layout. Say so: the old code returned
+			// an empty payload here, which the caller could not tell apart from a
+			// cluster that simply has no data for a metric we do support.
+			results[idx] = QueryResult{
+				QueryKey: metricKey,
+				Payload:  []Result{},
+				Note:     esUtilUnsupportedNote(metricKey, scope),
+			}
 			continue
 		}
-
-		queryBody := buildESUtilisationQuery(meta, otlpName, req.StartTime, req.EndTime)
-		renderedJSON, marshalErr := json.Marshal(queryBody)
-		if marshalErr != nil {
-			slog.Warn("ES utilisation: failed to marshal query body", "metric", metricKey, "err", marshalErr)
-		}
-		renderedQuery := string(renderedJSON)
-
-		esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
-		slog.Info("ES utilisation query", "index", index, "url", esURL,
-			"metric", metricKey, "otlp", otlpName,
-			"start_ms", req.StartTime, "end_ms", req.EndTime,
-			"body", renderedQuery)
-
-		resp, reqErr := esRequestJSON("POST", esURL, queryBody, cfg) //nolint:bodyclose
-		if reqErr != nil {
-			errStr := fmt.Sprintf("failed to query metric %s: %v", metricKey, reqErr)
-			results = append(results, QueryResult{QueryKey: metricKey, Query: renderedQuery, Error: &errStr})
-			continue
-		}
-
-		bodyBytes, readErr := readResponse(resp, "utilisation query")
-		if readErr != nil {
-			errStr := readErr.Error()
-			results = append(results, QueryResult{QueryKey: metricKey, Query: renderedQuery, Error: &errStr})
-			continue
-		}
-
-		payload, parseErr := parseOtlpMetricsHits(bodyBytes)
-		if parseErr != nil {
-			errStr := fmt.Sprintf("failed to parse ES response for metric %s: %v", metricKey, parseErr)
-			results = append(results, QueryResult{QueryKey: metricKey, Query: renderedQuery, Error: &errStr})
-			continue
-		}
-
-		results = append(results, QueryResult{QueryKey: metricKey, Query: renderedQuery, Payload: payload})
+		plans[idx] = plan
+		resolved[idx] = true
 	}
+
+	// One join for the whole request: node-scoped keys whose source carries no node
+	// field (requests and limits, from state_container) are narrowed by the pods on the
+	// node instead. Done once here rather than per key, and only when a candidate needs it.
+	if esScopeNeedsPodJoin(plans, meta, scope) {
+		pods, truncated, joinErr := esPodsOnNode(ctx, cfg, index, meta, req.StartTime, req.EndTime)
+		switch {
+		case joinErr != nil:
+			// NodePods stays empty, which leaves those sources unusable at this scope —
+			// the affected lines stay absent rather than showing the cluster total.
+			ctx.GetLogger().Warn("ES utilisation: node pod join failed; node-less sources omitted",
+				"node", meta.NodeName, "err", joinErr)
+		case truncated:
+			// A short pod list under-counts the node without looking like it did.
+			ctx.GetLogger().Warn("ES utilisation: node pod list truncated by terms cap",
+				"node", meta.NodeName, "cap", esUtilTermsSize, "pods", len(pods))
+			meta.NodePods = pods
+		default:
+			meta.NodePods = pods
+		}
+	}
+
+	for idx, metricKey := range meta.RequestedMetrics {
+		if !resolved[idx] {
+			continue
+		}
+		plan := plans[idx]
+
+		// The grouping key is the rendered query itself, not a summary of the fields
+		// that went into it. A hand-listed signature has to be updated every time
+		// esMetricSource grows a field, and forgetting one groups two keys that need
+		// different searches — they would then share a single response, and one of
+		// them would be answered by the other's query. Keying on the bytes that will
+		// actually be sent makes that impossible to get wrong. json.Marshal sorts map
+		// keys, so equal bodies render to equal strings.
+		body := buildESUtilisationAggQuery(plan, meta, scope, req.StartTime, req.EndTime, stepSec)
+		rendered, marshalErr := json.Marshal(body)
+		if marshalErr != nil {
+			errStr := fmt.Sprintf("failed to marshal query for metric %s: %v", metricKey, marshalErr)
+			results[idx] = QueryResult{QueryKey: metricKey, Error: &errStr}
+			continue
+		}
+		sig := string(rendered)
+		g, seen := groups[sig]
+		if !seen {
+			g = &esUtilQueryGroup{body: body, rendered: sig}
+			groups[sig] = g
+			groupOrder = append(groupOrder, sig)
+		}
+		g.members = append(g.members, idx)
+	}
+
+	for _, sig := range groupOrder {
+		group := groups[sig]
+		members := group.members
+		// Every member rendered this identical body, so any one of them names it.
+		plan := plans[members[0]]
+		metricKey := meta.RequestedMetrics[members[0]]
+
+		wg.Add(1)
+		go func(group *esUtilQueryGroup, members []int, metricKey string, plan esUtilMetric) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			queryBody, renderedQuery := group.body, group.rendered
+
+			esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+			slog.Info("ES utilisation query", "index", index, "url", esURL,
+				"metric", metricKey, "scope", scope, "sources", len(plan.Sources), "step_sec", stepSec,
+				"start_ms", req.StartTime, "end_ms", req.EndTime)
+
+			resp, reqErr := esRequestJSON("POST", esURL, queryBody, cfg) //nolint:bodyclose
+			if reqErr != nil {
+				errStr := fmt.Sprintf("failed to query metric %s: %v", metricKey, reqErr)
+				esUtilAssignError(results, meta.RequestedMetrics, members, renderedQuery, errStr)
+				return
+			}
+
+			bodyBytes, readErr := readResponse(resp, "utilisation query")
+			if readErr != nil {
+				errStr := readErr.Error()
+				esUtilAssignError(results, meta.RequestedMetrics, members, renderedQuery, errStr)
+				return
+			}
+
+			// Decode the envelope once; every member then reads it with its own
+			// reduction rather than re-unmarshalling the same bytes per key.
+			var aggResp esUtilAggResponse
+			if unmarshalErr := json.Unmarshal(bodyBytes, &aggResp); unmarshalErr != nil {
+				errStr := fmt.Sprintf("failed to parse ES response: %v", unmarshalErr)
+				esUtilAssignError(results, meta.RequestedMetrics, members, renderedQuery, errStr)
+				return
+			}
+
+			// One response, read once per member with that member's own reduction.
+			for _, m := range members {
+				memberPlan := plans[m]
+				memberKey := meta.RequestedMetrics[m]
+				out, parseErr := parseESUtilisationResponse(&aggResp, memberPlan, meta)
+				if parseErr != nil {
+					errStr := fmt.Sprintf("failed to parse ES response for metric %s: %v", memberKey, parseErr)
+					results[m] = QueryResult{QueryKey: memberKey, Query: renderedQuery, Error: &errStr}
+					continue
+				}
+				matched := out.DocsMatched
+				qr := QueryResult{QueryKey: memberKey, Query: renderedQuery, Payload: out.Series, DocsMatched: &matched}
+				switch {
+				case len(out.Series) == 0:
+					qr.Payload = []Result{}
+					qr.Note = esUtilNoDataNote(memberPlan, matched)
+					slog.Info("ES utilisation: no series", "metric", memberKey, "scope", scope, "docs_matched", matched)
+				case out.TruncatedDocs > 0:
+					// The cap dropped series from the sum, so the number reads low.
+					// Say so on the result: logging it alone leaves a wrong figure
+					// looking authoritative in the UI.
+					field := memberPlan.Sources[out.SourceIdx].Field
+					qr.Note = esUtilTruncatedNote(field, out.TruncatedDocs)
+					slog.Warn("ES utilisation: series truncated by terms cap",
+						"metric", memberKey, "scope", scope, "field", field,
+						"cap", esUtilTermsSize, "dropped_docs", out.TruncatedDocs)
+				default:
+					slog.Info("ES utilisation: series resolved", "metric", memberKey, "scope", scope,
+						"source", memberPlan.Sources[out.SourceIdx].Field, "points", len(out.Series[0].Values))
+				}
+				results[m] = qr
+			}
+		}(group, members, metricKey, plan)
+	}
+	wg.Wait()
 
 	return OutputMetricQuery{Results: results}, nil
-}
-
-// buildESUtilisationQuery builds an ES DSL query for a single OTLP metric name within the time
-// range, filtered by the OTLP attribute paths produced by kubeletstatsreceiver / Data Prepper:
-//
-//	Namespace → attributes.metric.attributes.namespace
-//	Workload  → attributes.metric.attributes.pod (wildcard prefix: "name-*")
-//	Node      → attributes.resource.attributes.k8s@node@name
-func buildESUtilisationQuery(meta RequestMetadata, otlpName string, startMs, endMs int64) map[string]any {
-	filters := []any{
-		map[string]any{"term": map[string]any{"name.keyword": otlpName}},
-		esMetricsTimeRangeClause(startMs, endMs),
-	}
-	if meta.Namespace != "" {
-		filters = append(filters, map[string]any{"term": map[string]any{
-			"attributes.metric.attributes.namespace.keyword": meta.Namespace,
-		}})
-	}
-	if meta.Name != "" {
-		// Pod names follow {workload}-{rs-hash}-{pod-hash}; prefix wildcard covers all pods.
-		filters = append(filters, map[string]any{"wildcard": map[string]any{
-			"attributes.metric.attributes.pod.keyword": escapeESWildcard(meta.Name) + "-*",
-		}})
-	}
-	if meta.NodeName != "" {
-		filters = append(filters, map[string]any{"term": map[string]any{
-			"attributes.resource.attributes.k8s@node@name.keyword": meta.NodeName,
-		}})
-	}
-	return map[string]any{
-		"size": 10000,
-		"query": map[string]any{
-			"bool": map[string]any{
-				"filter": filters,
-			},
-		},
-	}
-}
-
-// parseOtlpMetricsHits parses an ES response whose documents follow the OTLP/Data-Prepper schema.
-// Attributes are nested as attributes.metric.attributes.* and attributes.resource.attributes.*.
-// Each unique combination of (name + metric attrs) becomes one time-series Result.
-func parseOtlpMetricsHits(bodyBytes []byte) ([]Result, error) {
-	var esResp struct {
-		Hits struct {
-			Total struct {
-				Value int `json:"value"`
-			} `json:"total"`
-			Hits []struct {
-				Source map[string]any `json:"_source"`
-			} `json:"hits"`
-		} `json:"hits"`
-	}
-	if err := json.Unmarshal(bodyBytes, &esResp); err != nil {
-		return nil, err
-	}
-
-	slog.Info("ES OTLP metrics hits", "total", esResp.Hits.Total.Value, "returned", len(esResp.Hits.Hits))
-
-	type seriesData struct {
-		metric     map[string]string
-		timestamps []int64
-		values     []float64
-	}
-
-	groups := make(map[string]*seriesData)
-	var groupOrder []string
-
-	for _, hit := range esResp.Hits.Hits {
-		src := hit.Source
-
-		name, _ := src["name"].(string)
-		timeStr, ok := src["time"].(string)
-		if !ok || timeStr == "" {
-			timeStr, _ = src["@timestamp"].(string)
-		}
-		// Log the first document's raw fields to diagnose field names/formats
-		if len(groups) == 0 && len(groupOrder) == 0 {
-			slog.Info("ES OTLP sample doc", "name", name, "time_field", src["time"], "timestamp_field", src["@timestamp"], "value_field", src["value"])
-		}
-
-		var val float64
-		if v, ok := src["value"].(float64); ok {
-			val = v
-		} else if v, ok := src["sum"].(float64); ok {
-			val = v
-		} else if v, ok := src["count"].(float64); ok {
-			val = v
-		}
-
-		t, err := time.Parse(time.RFC3339Nano, timeStr)
-		if err != nil {
-			slog.Warn("ES OTLP: skipping hit with unparseable timestamp", "timeStr", timeStr, "err", err)
-			continue
-		}
-		ts := t.Unix()
-
-		labels := map[string]string{}
-		if name != "" {
-			labels["__name__"] = name
-		}
-
-		// attributes in _source may be a flat map with dotted string keys or a nested
-		// map (Data Prepper OTLP schema: metric.attributes.* / resource.attributes.*).
-		// Handle both: if a top-level value is itself a map, descend one level into
-		// its "attributes" child to avoid stringified map values in labels.
-		if topAttrs, ok := src["attributes"].(map[string]any); ok {
-			for section, sectionVal := range topAttrs {
-				if sectionMap, ok := sectionVal.(map[string]any); ok {
-					if innerAttrs, ok := sectionMap["attributes"].(map[string]any); ok {
-						for k, v := range innerAttrs {
-							labels[k] = fmt.Sprintf("%v", v)
-						}
-					}
-				} else {
-					labels[section] = fmt.Sprintf("%v", sectionVal)
-				}
-			}
-		}
-
-		keyBytes, _ := json.Marshal(labels)
-		key := string(keyBytes)
-		if _, exists := groups[key]; !exists {
-			groups[key] = &seriesData{metric: labels}
-			groupOrder = append(groupOrder, key)
-		}
-		groups[key].timestamps = append(groups[key].timestamps, ts)
-		groups[key].values = append(groups[key].values, val)
-	}
-
-	results := make([]Result, 0, len(groups))
-	for _, key := range groupOrder {
-		g := groups[key]
-		indices := make([]int, len(g.timestamps))
-		for i := range indices {
-			indices[i] = i
-		}
-		sort.Slice(indices, func(i, j int) bool {
-			return g.timestamps[indices[i]] < g.timestamps[indices[j]]
-		})
-		sortedTs := make([]int64, len(indices))
-		sortedVals := make([]float64, len(indices))
-		for i, idx := range indices {
-			sortedTs[i] = g.timestamps[idx]
-			sortedVals[i] = g.values[idx]
-		}
-		results = append(results, Result{
-			Metric:     g.metric,
-			Timestamps: sortedTs,
-			Values:     sortedVals,
-		})
-	}
-
-	return results, nil
 }

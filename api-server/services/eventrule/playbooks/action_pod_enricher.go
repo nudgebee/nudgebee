@@ -24,12 +24,12 @@ func (a *podEnricherAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 	if !podEnricherAggKeys[ctx.GetEvent().AggregationKey] {
 		return false
 	}
-	name, ns := subjectPodNamespace(ctx.GetEvent())
+	name, ns := SubjectPodNamespace(ctx.GetEvent())
 	return name != "" && ns != ""
 }
 
 func (a *podEnricherAction) AutoExecute(ctx PlaybookActionContext) (PlaybookActionResponse, error) {
-	name, ns := subjectPodNamespace(ctx.GetEvent())
+	name, ns := SubjectPodNamespace(ctx.GetEvent())
 	return a.Execute(ctx, map[string]any{"pod_name": name, "namespace": ns})
 }
 

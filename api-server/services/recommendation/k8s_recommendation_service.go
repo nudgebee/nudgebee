@@ -975,6 +975,14 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 					}
 				}
 			} else {
+				if metricsProvider == "ES" {
+					esCfg, esErr := observability.ElasticsearchRightsizingConfig(accountCtx, accountId)
+					if esErr != nil {
+						accountCtx.GetLogger().Error("error getting elasticsearch config for volume rightsizing", "error", esErr, "account_id", accountId)
+					} else {
+						request.Elasticsearch = esCfg
+					}
+				}
 				if _, err := ml.TriggerVolumeRightsizing(accountCtx, request); err != nil {
 					accountCtx.GetLogger().Error("error triggering volume rightsizing", "error", err, "account_id", accountId, "metrics_provider", metricsProvider)
 				}

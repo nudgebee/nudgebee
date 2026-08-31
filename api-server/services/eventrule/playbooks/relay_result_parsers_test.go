@@ -78,9 +78,9 @@ func TestVectorResultEntries_AcceptsBothShapes(t *testing.T) {
 		}
 		entries := vectorResultEntries(raw)
 		assert.Len(t, entries, 2)
-		assert.Equal(t, float64(100), entries[0].value)
-		assert.Equal(t, float64(200), entries[1].value)
-		assert.Equal(t, "pod-a", entries[0].metric["pod"])
+		assert.Equal(t, float64(100), entries[0].Value)
+		assert.Equal(t, float64(200), entries[1].Value)
+		assert.Equal(t, "pod-a", entries[0].Metric["pod"])
 	})
 
 	t.Run("prometheus_tuple_shape", func(t *testing.T) {
@@ -94,7 +94,7 @@ func TestVectorResultEntries_AcceptsBothShapes(t *testing.T) {
 		}
 		entries := vectorResultEntries(raw)
 		assert.Len(t, entries, 1)
-		assert.Equal(t, float64(42), entries[0].value)
+		assert.Equal(t, float64(42), entries[0].Value)
 	})
 
 	t.Run("malformed_entries_skipped", func(t *testing.T) {
@@ -107,7 +107,7 @@ func TestVectorResultEntries_AcceptsBothShapes(t *testing.T) {
 		}
 		entries := vectorResultEntries(raw)
 		assert.Len(t, entries, 1)
-		assert.Equal(t, "good", entries[0].metric["pod"])
+		assert.Equal(t, "good", entries[0].Metric["pod"])
 	})
 
 	t.Run("nil_input", func(t *testing.T) {
@@ -135,9 +135,9 @@ func TestVectorResultEntries_AcceptsBothShapes(t *testing.T) {
 		}
 		entries := vectorResultEntries(raw)
 		assert.Len(t, entries, 2)
-		assert.Equal(t, float64(1148727296), entries[0].value)
-		assert.Equal(t, "load-generator", entries[0].metric["container"])
-		assert.Equal(t, float64(919887872), entries[1].value)
+		assert.Equal(t, float64(1148727296), entries[0].Value)
+		assert.Equal(t, "load-generator", entries[0].Metric["container"])
+		assert.Equal(t, float64(919887872), entries[1].Value)
 	})
 
 	t.Run("bare_instant_array_empty", func(t *testing.T) {
@@ -145,8 +145,13 @@ func TestVectorResultEntries_AcceptsBothShapes(t *testing.T) {
 	})
 }
 
-func TestFirstInstantValue_AcceptsObjectShape(t *testing.T) {
-	raw := map[string]any{
+// firstLatestValue / latestValueEntries must accept both the instant shapes
+// (vector_result / bare array) and the RANGE matrix shape (series_list_result,
+// last sample per series) — noisy_neighbours now runs range queries because
+// the agent's live instant batch returns empty at event-processing time.
+func TestFirstLatestValue_AcceptsAllShapes(t *testing.T) {
+	// Instant wrapped (vector_result) — fallback path.
+	wrapped := map[string]any{
 		"vector_result": []any{
 			map[string]any{
 				"metric": map[string]any{},
@@ -154,8 +159,8 @@ func TestFirstInstantValue_AcceptsObjectShape(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, float64(12345), firstInstantValue(raw))
-	assert.Equal(t, float64(0), firstInstantValue(nil))
+	assert.Equal(t, float64(12345), FirstLatestValue(wrapped))
+	assert.Equal(t, float64(0), FirstLatestValue(nil))
 
 	// Bare-instant array — the shape the Go-agent emits for instant+success.
 	bare := []any{
@@ -164,7 +169,19 @@ func TestFirstInstantValue_AcceptsObjectShape(t *testing.T) {
 			"value":  []any{float64(1), "12945174528"},
 		},
 	}
-	assert.Equal(t, float64(12945174528), firstInstantValue(bare))
+	assert.Equal(t, float64(12945174528), FirstLatestValue(bare))
+
+	// Range matrix (series_list_result) — the primary path. Takes the LAST
+	// sample of the first series.
+	rangeRaw := map[string]any{
+		"series_list_result": []any{
+			map[string]any{
+				"metric": map[string]any{"node": "ip-1"},
+				"values": []any{"100", "200", "32220610560"},
+			},
+		},
+	}
+	assert.Equal(t, float64(32220610560), FirstLatestValue(rangeRaw))
 }
 
 // indexByPodContainer is the join-key builder for merging
@@ -201,13 +218,35 @@ func TestIndexByPodContainer(t *testing.T) {
 			},
 		},
 	}
-	idx := indexByPodContainer(raw)
+	idx := IndexByPodContainer(raw)
 	assert.Equal(t, float64(104857600), idx["ns-a/pod-a/app"])
 	assert.Equal(t, float64(52428800), idx["ns-a/pod-a/sidecar"])
 	_, hasMissing := idx["ns-b/pod-b/"]
 	assert.False(t, hasMissing, "entries without container label must be skipped")
 	assert.Len(t, idx, 2)
 
-	assert.Empty(t, indexByPodContainer(nil))
-	assert.Empty(t, indexByPodContainer(map[string]any{}))
+	assert.Empty(t, IndexByPodContainer(nil))
+	assert.Empty(t, IndexByPodContainer(map[string]any{}))
+}
+
+// noisy_neighbours runs RANGE queries, so the join index must also build
+// from the matrix shape (series_list_result), taking the last sample per
+// series. Without this the requests/limits never attach to neighbours.
+func TestIndexByPodContainer_RangeShape(t *testing.T) {
+	raw := map[string]any{
+		"series_list_result": []any{
+			map[string]any{
+				"metric": map[string]any{"namespace": "ns-a", "pod": "pod-a", "container": "app"},
+				"values": []any{"100", "104857600"},
+			},
+			map[string]any{
+				// Missing container — must be skipped.
+				"metric": map[string]any{"namespace": "ns-b", "pod": "pod-b"},
+				"values": []any{"999"},
+			},
+		},
+	}
+	idx := IndexByPodContainer(raw)
+	assert.Equal(t, float64(104857600), idx["ns-a/pod-a/app"])
+	assert.Len(t, idx, 1)
 }

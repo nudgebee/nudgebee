@@ -19,12 +19,12 @@ func (a *oomKillerAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 	if ctx.GetEvent().AggregationKey != "pod_oom_killer_enricher" {
 		return false
 	}
-	name, ns := subjectPodNamespace(ctx.GetEvent())
+	name, ns := SubjectPodNamespace(ctx.GetEvent())
 	return name != "" && ns != ""
 }
 
 func (a *oomKillerAction) AutoExecute(ctx PlaybookActionContext) (PlaybookActionResponse, error) {
-	podName, namespace := subjectPodNamespace(ctx.GetEvent())
+	podName, namespace := SubjectPodNamespace(ctx.GetEvent())
 	return a.Execute(ctx, map[string]any{"pod_name": podName, "namespace": namespace})
 }
 
@@ -54,7 +54,7 @@ func (a *oomKillerAction) Execute(ctx PlaybookActionContext, rawParams map[strin
 	// Prefer the pre-resolved subject_node from the event (the collector
 	// already pulled it off the kubewatch payload). Falls back to the Pod
 	// payload we just fetched in case the event came in without it set.
-	nodeName := subjectNodeName(ctx.GetEvent())
+	nodeName := SubjectNodeName(ctx.GetEvent())
 	if nodeName == "" {
 		nodeName = nodeNameFromPodDict(pod)
 	}
