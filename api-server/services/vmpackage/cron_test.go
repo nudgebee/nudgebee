@@ -33,6 +33,73 @@ func TestListDiscoveryDatasources_FiltersIneligible(t *testing.T) {
 	assert.Empty(t, datasources[1].TargetAccountID, "unassociated datasource must resolve to an empty TargetAccountID, not error")
 }
 
+func TestListDiscoveryDatasourcesForAccount_FiltersByTargetAndEligibility(t *testing.T) {
+	mock := withMockDB(t)
+	rows := sqlmock.NewRows([]string{"integration_id", "tenant_id", "account_id", "target_account_id", "labels"}).
+		AddRow("int-1", "tenant-1", "account-1", "aws-account-1", `{"actions":["discovery_sweep","discovery_inventory"],"allowed_cidrs":["172.31.0.0/28"],"pack_versions":[2]}`)
+	mock.ExpectQuery("SELECT i.id::text AS integration_id").
+		WithArgs("aws-account-1").
+		WillReturnRows(rows)
+
+	datasources, err := ListDiscoveryDatasourcesForAccount(mockDBManager, "aws-account-1")
+	require.NoError(t, err)
+	require.Len(t, datasources, 1)
+	assert.Equal(t, "int-1", datasources[0].IntegrationID)
+	assert.Equal(t, "aws-account-1", datasources[0].TargetAccountID)
+}
+
+// A self-hosted forager discovery datasource that runs in the queried account
+// but carries no explicit discovery_target row must still be returned — this
+// is the case that previously 400'd with "no discovery agent is configured to
+// scan this account". The row shape here (own account_id == queried account,
+// target_account_id NULL) is what the own-fallback arm of the WHERE clause
+// matches.
+func TestListDiscoveryDatasourcesForAccount_MatchesOwnAccountWithoutTarget(t *testing.T) {
+	mock := withMockDB(t)
+	rows := sqlmock.NewRows([]string{"integration_id", "tenant_id", "account_id", "target_account_id", "labels"}).
+		AddRow("int-1", "tenant-1", "self-hosted-acct", nil, `{"actions":["discovery_sweep","discovery_inventory"],"allowed_cidrs":["172.31.0.0/28"],"pack_versions":[2]}`)
+	mock.ExpectQuery("SELECT i.id::text AS integration_id").
+		WithArgs("self-hosted-acct").
+		WillReturnRows(rows)
+
+	datasources, err := ListDiscoveryDatasourcesForAccount(mockDBManager, "self-hosted-acct")
+	require.NoError(t, err)
+	require.Len(t, datasources, 1)
+	assert.Equal(t, "int-1", datasources[0].IntegrationID)
+	assert.Equal(t, "self-hosted-acct", datasources[0].AccountID)
+	assert.Empty(t, datasources[0].TargetAccountID)
+}
+
+// Pins the WHERE clause: an explicit discovery_target must win over the 'own'
+// account, so a datasource with own=A / target=B is scannable only from B, not
+// A. Matching it from A would mis-scan (A untouched, B's findings rewritten by
+// resolveTargets against ds.TargetAccountID) and let a caller with access to A
+// only trigger a scan on B. sqlmock does not execute the SQL, so this asserts
+// the guarded predicate is present in the query text rather than its runtime
+// effect — full behavioural coverage would need a real-Postgres fixture.
+func TestListDiscoveryDatasourcesForAccount_ExplicitTargetWinsOverOwn(t *testing.T) {
+	mock := withMockDB(t)
+	mock.ExpectQuery(`target\.cloud_account_id IS NULL AND own\.cloud_account_id = \$1`).
+		WithArgs("host-acct").
+		WillReturnRows(sqlmock.NewRows([]string{"integration_id", "tenant_id", "account_id", "target_account_id", "labels"}))
+
+	datasources, err := ListDiscoveryDatasourcesForAccount(mockDBManager, "host-acct")
+	require.NoError(t, err)
+	assert.Empty(t, datasources)
+}
+
+func TestListDiscoveryDatasourcesForAccount_NoneEligible(t *testing.T) {
+	mock := withMockDB(t)
+	rows := sqlmock.NewRows([]string{"integration_id", "tenant_id", "account_id", "target_account_id", "labels"})
+	mock.ExpectQuery("SELECT i.id::text AS integration_id").
+		WithArgs("aws-account-2").
+		WillReturnRows(rows)
+
+	datasources, err := ListDiscoveryDatasourcesForAccount(mockDBManager, "aws-account-2")
+	require.NoError(t, err)
+	assert.Empty(t, datasources)
+}
+
 func TestGetDiscoveryDatasourceByID_Found(t *testing.T) {
 	mock := withMockDB(t)
 	rows := sqlmock.NewRows([]string{"tenant_id", "target_account_id", "labels"}).

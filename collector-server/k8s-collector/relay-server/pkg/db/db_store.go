@@ -457,6 +457,26 @@ func (p *pgStore) UpdateDatasourceHealth(ctx context.Context, accountID, agentTy
 	return nil
 }
 
+// defaultDiscoveryTargetSQL gives a discovery integration a
+// link_role='discovery_target' row pointing at the agent's own account, but
+// only when it has no discovery_target row yet — so a target a user set via
+// integrations_upsert_discovery_target is never clobbered on the next agent
+// reconnect. Args: $1 integration_id, $2 cloud_account_id, $3 tenant_id.
+//
+// WHERE NOT EXISTS is the guard against a differently-scoped user target;
+// ON CONFLICT DO NOTHING covers the narrower race where two concurrent
+// callers (rapid reconnect, multiple relay instances) both pass the guard
+// and insert the identical own-account tuple — without it, the loser gets a
+// spurious unique-constraint error.
+const defaultDiscoveryTargetSQL = `
+	INSERT INTO integrations_cloud_accounts (integration_id, cloud_account_id, tenant_id, link_role)
+	SELECT $1, $2, $3, 'discovery_target'
+	WHERE NOT EXISTS (
+		SELECT 1 FROM integrations_cloud_accounts
+		WHERE integration_id = $1 AND link_role = 'discovery_target'
+	)
+	ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role) DO NOTHING`
+
 // UpsertAgentDatasources auto-registers locally configured datasources as integrations.
 // This follows the same pattern as k8s-collector's _upsert_integration in telemetry_handler.py.
 func (p *pgStore) UpsertAgentDatasources(ctx context.Context, accountID, agentType string, datasources []AgentDatasource) error {
@@ -516,6 +536,26 @@ func (p *pgStore) UpsertAgentDatasources(ctx context.Context, accountID, agentTy
 			slog.Error("failed to upsert integration mapping, skipping datasource", "datasource", ds.Name, "err", err)
 			errs = append(errs, fmt.Errorf("datasource %s mapping: %w", ds.Name, err))
 			continue
+		}
+
+		// A discovery integration is only scannable once it is associated with
+		// the account whose network it covers (link_role='discovery_target' —
+		// see vmpackage.ListDiscoveryDatasourcesForAccount, the manual
+		// account-scan trigger). For a self-hosted forager that runs in and
+		// scans the same account, default that association to the agent's own
+		// account so the "Scan account" button works without a separate
+		// integrations_upsert_discovery_target call. Only when no target row
+		// exists yet: a user who has pointed this datasource at a different
+		// cloud account via that RPC must never be overwritten from here, and
+		// this runs on every datasource_inventory message (every reconnect).
+		if integrationType == "discovery" {
+			res, terr := p.db.ExecContext(ctx, defaultDiscoveryTargetSQL, integrationID, accountID, tenantID)
+			if terr != nil {
+				slog.Error("failed to set default discovery target, skipping", "datasource", ds.Name, "err", terr)
+				errs = append(errs, fmt.Errorf("datasource %s discovery target: %w", ds.Name, terr))
+			} else if n, _ := res.RowsAffected(); n > 0 {
+				slog.Info("defaulted discovery target to agent's own account", "datasource", ds.Name, "account_id", accountID)
+			}
 		}
 
 		// For dual-mode types (db-proxy, redis-proxy), set config values
