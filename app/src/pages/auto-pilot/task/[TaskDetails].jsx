@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import apiAutoPilot from '@api1/autoPilot';
 import { useRouter } from 'next/router';
@@ -50,6 +50,8 @@ import AutoOptimizeContinuousVerticalRightSizingSingleConfiguration from '@compo
 import { Modal } from '@ui/Modal';
 import apiAccount from '@api1/account';
 import apiRecommendations from '@api1/recommendation';
+import { useData } from '@context/DataContext';
+import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
 import { ds } from 'src/utils/colors';
 
 const PRTicketLink = ({ prResolution, ticketLink }) => {
@@ -634,6 +636,27 @@ const AutoOptimizeDetails = () => {
   };
   const router = useRouter();
 
+  const { allCluster } = useData();
+  const updateAllClusters = useUpdateAllClusterOption();
+
+  // allCluster is populated by the header cluster dropdown elsewhere; this page
+  // doesn't render it, so fetch it if missing. The edit modal needs the account
+  // list to resolve the config's account_id into the cluster/namespace fields —
+  // without it selectedCluster stays null and both render empty.
+  useEffect(() => {
+    if (allCluster == null) {
+      updateAllClusters();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allCluster]);
+
+  // Auto Optimize only targets Kubernetes workloads, so scope to K8s accounts
+  // (matches AutoOptimizeTabs, the other place this modal is opened from).
+  const accountOptions = useMemo(
+    () => (allCluster || []).filter((cluster) => cluster.cloud_provider === 'K8s').map((cluster) => ({ label: cluster.label, value: cluster.value })),
+    [allCluster]
+  );
+
   const [autoOptimizeTab, setAutoOptimizeTab] = useState(null);
 
   // Sync tab from hash — runs on mount and on back/forward navigation
@@ -887,6 +910,8 @@ const AutoOptimizeDetails = () => {
             isGoogleChannelsLoading={false}
             setIsLoading={setLoading}
             currentData={{}}
+            accountOptions={accountOptions}
+            defaultAccountId={autoOptimizeData?.account_id || router.query?.accountId || ''}
           />
         )}
         {openCreateAutoOptimizeType === 'horizontal_rightsize' && (
@@ -899,6 +924,8 @@ const AutoOptimizeDetails = () => {
             isGoogleChannelsLoading={false}
             setIsLoading={setLoading}
             currentData={{}}
+            accountOptions={accountOptions}
+            defaultAccountId={autoOptimizeData?.account_id || router.query?.accountId || ''}
           />
         )}
         {openCreateAutoOptimizeType === 'pvc_rightsize' && (
@@ -910,6 +937,8 @@ const AutoOptimizeDetails = () => {
             googleChannelList={googleChannelList}
             isGoogleChannelsLoading={false}
             setIsLoading={setLoading}
+            accountOptions={accountOptions}
+            defaultAccountId={autoOptimizeData?.account_id || router.query?.accountId || ''}
           />
         )}
         {openCreateAutoOptimizeType === 'continuous_rightsize' && (
@@ -921,6 +950,8 @@ const AutoOptimizeDetails = () => {
             googleChannelList={googleChannelList}
             isGoogleChannelsLoading={false}
             setIsLoading={setLoading}
+            accountOptions={accountOptions}
+            defaultAccountId={autoOptimizeData?.account_id || router.query?.accountId || ''}
           />
         )}
       </Modal>
