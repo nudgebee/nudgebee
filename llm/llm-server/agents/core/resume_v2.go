@@ -512,8 +512,27 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		return childResp, nil
 	}
 
-	// All siblings done. Resume parent.
-	_, parentState := dao.GetConversationAgentParentAgentIdAndPreviousState(parentAgentID)
+	// All siblings done. Resolve the executable parent before reading state.
+	// Dynamic wrappers such as delegate_agent have their own persisted row but
+	// no registered implementation; their state is not the state the ancestor
+	// orchestrator must resume with.
+	originalParentID := parentAgentID
+	parentAgentImpl, executableParent, grandparentID, parentState, walkedLevels, resolveErr := resolveBubbleUpParent(
+		ctx, dao, parentAgentID, req.AccountId, childAgent.ID,
+	)
+	if resolveErr != nil {
+		return childResp, resolveErr
+	}
+	parentAgentID = executableParent.ID.String()
+	parentName := executableParent.AgentName
+	if walkedLevels > 0 {
+		logger.Info("resume_v2: skipping unregistered dynamic parent agent",
+			"original_parent_agent_id", originalParentID,
+			"resolved_parent_agent_id", parentAgentID,
+			"resolved_parent_name", parentName,
+			"walked_levels", walkedLevels)
+	}
+
 	if parentState == "" {
 		// The parent already completed out-of-band and its state was cleared, so
 		// it cannot be re-run — but its final answer is on the agent row. Surface
@@ -537,20 +556,6 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		persistFinalMessage(ctx, req.MessageId, finalResp)
 		_ = dao.UpdateConversationStatus(req.ConversationId, ConversationStatusCompleted)
 		return finalResp, nil
-	}
-
-	parentName, nameErr := dao.GetAgentNameFromAgentId(parentAgentID)
-	if nameErr != nil || parentName == "" {
-		return childResp, fmt.Errorf("resume_v2: parent agent name lookup failed: %w", nameErr)
-	}
-	parentAgentImpl, ok := GetNBAgent(ctx, parentName, req.AccountId, AgentStatusEnabled)
-	if !ok {
-		return childResp, fmt.Errorf("resume_v2: parent agent impl not registered: %s", parentName)
-	}
-
-	grandparentID, _ := dao.GetConversationAgentParentAgentIdAndPreviousState(parentAgentID)
-	if grandparentID == "" || grandparentID == uuid.Nil.String() {
-		grandparentID = parentAgentID
 	}
 
 	// For parent resume: the parent's followup message is already COMPLETED
@@ -650,6 +655,36 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		logger.Warn("resume_v2: failed to persist post-parent status", "error", err)
 	}
 	return parentResp, nil
+}
+
+// resolveBubbleUpParent resolves past dynamic wrapper rows, then loads the
+// ancestry and saved state from the executable agent row. Keeping these steps
+// together prevents callers from accidentally pairing an ancestor
+// implementation with a delegate_agent state blob.
+func resolveBubbleUpParent(
+	ctx *security.RequestContext,
+	dao IConversationDao,
+	parentAgentID, accountID string,
+	originID uuid.UUID,
+) (NBAgent, *ConversationAgent, string, string, int, error) {
+	parentUUID, err := uuid.Parse(parentAgentID)
+	if err != nil {
+		return nil, nil, "", "", 0, fmt.Errorf("resume_v2: invalid parent agent id %s: %w", parentAgentID, err)
+	}
+
+	agent, executableParent, walkedLevels, err := resolveRegisteredAncestor(ctx, parentUUID, accountID, originID)
+	if err != nil {
+		return nil, nil, "", "", 0, fmt.Errorf("resume_v2: failed to resolve executable parent agent: %w", err)
+	}
+	if agent == nil || executableParent == nil {
+		return nil, nil, "", "", 0, fmt.Errorf("resume_v2: no registered parent agent found from %s", parentAgentID)
+	}
+
+	grandparentID, state := dao.GetConversationAgentParentAgentIdAndPreviousState(executableParent.ID.String())
+	if grandparentID == "" || grandparentID == uuid.Nil.String() {
+		grandparentID = executableParent.ID.String()
+	}
+	return agent, executableParent, grandparentID, state, walkedLevels, nil
 }
 
 // persistFinalMessage writes the agent response content + status to the

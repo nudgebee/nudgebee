@@ -159,7 +159,23 @@ func ResolveAgentByConversationAgentId(ctx *security.RequestContext, agentUUID u
 		return candidate, &dto, 0, nil
 	}
 
-	currentID := dto.ParentAgentID
+	candidate, _, walked, err := resolveRegisteredAncestor(ctx, dto.ParentAgentID, accountId, agentUUID)
+	if err != nil {
+		return nil, &dto, 0, err
+	}
+	if candidate != nil {
+		return candidate, &dto, walked + 1, nil
+	}
+	return nil, &dto, 0, nil
+}
+
+// resolveRegisteredAncestor walks from startID (inclusive) until it finds a
+// persisted agent row whose implementation can be instantiated. Dynamic tool
+// wrappers such as delegate_agent deliberately have no registered factory, so
+// resume paths must skip them and continue to their executable orchestrator.
+// walkedLevels is zero when startID itself is registered.
+func resolveRegisteredAncestor(ctx *security.RequestContext, startID uuid.UUID, accountID string, originID uuid.UUID) (agent NBAgent, agentDTO *ConversationAgent, walkedLevels int, err error) {
+	currentID := startID
 	for i := 0; i < maxAncestorWalkForAgentResolution && currentID != uuid.Nil; i++ {
 		// DAO errors in the walk are propagated (not swallowed) so a transient
 		// DB failure surfaces as 500 at the API layer instead of getting
@@ -167,18 +183,18 @@ func ResolveAgentByConversationAgentId(ctx *security.RequestContext, agentUUID u
 		// a clean chain-break — leave the loop and let the caller decide.
 		parents, pErr := GetConversationDao().ListConversationAgents("", currentID.String())
 		if pErr != nil {
-			return nil, &dto, 0, fmt.Errorf("ResolveAgentByConversationAgentId: list parent agents for %s (starting from %s): %w", currentID, agentUUID, pErr)
+			return nil, nil, 0, fmt.Errorf("resolveRegisteredAncestor: list parent agents for %s (starting from %s): %w", currentID, originID, pErr)
 		}
 		if len(parents) == 0 {
 			break
 		}
 		parent := parents[0]
-		if candidate, ok := GetNBAgent(ctx, parent.AgentName, accountId, AgentStatusEnabled); ok {
-			return candidate, &dto, i + 1, nil
+		if candidate, ok := GetNBAgent(ctx, parent.AgentName, accountID, AgentStatusEnabled); ok {
+			return candidate, &parent, i, nil
 		}
 		currentID = parent.ParentAgentID
 	}
-	return nil, &dto, 0, nil
+	return nil, nil, 0, nil
 }
 
 const nbToolCallAdditionalDatailsAgentId = "agent_id"

@@ -114,6 +114,111 @@ type bubbleFakeDao struct {
 	convStatus         ConversationStatus
 }
 
+type ancestorFakeDao struct {
+	IConversationDao
+	agents       map[string]ConversationAgent
+	parentStates map[string]struct {
+		parentID string
+		state    string
+	}
+}
+
+type resumeTestAgent struct {
+	name string
+}
+
+func (a *resumeTestAgent) GetName() string { return a.name }
+func (a *resumeTestAgent) GetNameAliases() []string {
+	return nil
+}
+func (a *resumeTestAgent) GetDescription() string { return "resume test agent" }
+func (a *resumeTestAgent) GetSupportedTools(_ *security.RequestContext) []toolcore.NBTool {
+	return nil
+}
+func (a *resumeTestAgent) GetSystemPrompt(_ *security.RequestContext, _ NBAgentRequest) NBAgentPrompt {
+	return NBAgentPrompt{}
+}
+func (a *resumeTestAgent) GetPlannerType() AgentPlannerType { return AgentPlannerTypeOrchestrating }
+
+func (f *ancestorFakeDao) ListConversationAgents(_, agentID string) ([]ConversationAgent, error) {
+	agent, ok := f.agents[agentID]
+	if !ok {
+		return nil, nil
+	}
+	return []ConversationAgent{agent}, nil
+}
+
+func (f *ancestorFakeDao) GetConversationAgentParentAgentIdAndPreviousState(agentID string) (string, string) {
+	value := f.parentStates[agentID]
+	return value.parentID, value.state
+}
+
+func TestResolveRegisteredAncestorSkipsDynamicDelegateAgent(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+
+	const registeredName = "test_resume_registered_ancestor"
+	RegisterNBAgentFactory(registeredName, func(string) (NBAgent, error) {
+		return &resumeTestAgent{name: registeredName}, nil
+	})
+
+	rootID := uuid.New()
+	delegateID := uuid.New()
+	SetConversationDao(&ancestorFakeDao{agents: map[string]ConversationAgent{
+		delegateID.String(): {ID: delegateID, AgentName: "delegate_agent", ParentAgentID: rootID},
+		rootID.String():     {ID: rootID, AgentName: registeredName, ParentAgentID: uuid.Nil},
+	}})
+
+	agent, dto, walked, err := resolveRegisteredAncestor(
+		security.NewRequestContextForSuperAdmin(), delegateID, uuid.NewString(), uuid.New(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, agent)
+	require.NotNil(t, dto)
+	assert.Equal(t, registeredName, agent.GetName())
+	assert.Equal(t, rootID, dto.ID)
+	assert.Equal(t, 1, walked)
+}
+
+func TestResolveBubbleUpParentLoadsExecutableAncestorState(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+
+	const registeredName = "test_bubble_up_registered_ancestor"
+	RegisterNBAgentFactory(registeredName, func(string) (NBAgent, error) {
+		return &resumeTestAgent{name: registeredName}, nil
+	})
+
+	rootID := uuid.New()
+	delegateID := uuid.New()
+	dao := &ancestorFakeDao{
+		agents: map[string]ConversationAgent{
+			delegateID.String(): {ID: delegateID, AgentName: "delegate_agent", ParentAgentID: rootID},
+			rootID.String():     {ID: rootID, AgentName: registeredName, ParentAgentID: uuid.Nil, Query: "original task"},
+		},
+		parentStates: map[string]struct {
+			parentID string
+			state    string
+		}{
+			delegateID.String(): {parentID: rootID.String(), state: "wrong delegate state"},
+			rootID.String():     {parentID: uuid.Nil.String(), state: "saved orchestrator state"},
+		},
+	}
+	SetConversationDao(dao)
+
+	agent, dto, parentID, state, walked, err := resolveBubbleUpParent(
+		security.NewRequestContextForSuperAdmin(), dao, delegateID.String(), uuid.NewString(), uuid.New(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, agent)
+	require.NotNil(t, dto)
+	assert.Equal(t, registeredName, agent.GetName())
+	assert.Equal(t, rootID, dto.ID)
+	assert.Equal(t, rootID.String(), parentID, "top-level executable ancestor resumes as its own parent")
+	assert.Equal(t, "saved orchestrator state", state)
+	assert.Equal(t, 1, walked)
+}
+
 func (f *bubbleFakeDao) CountWaitingSubAgents(parentAgentId, messageId string) (int, error) {
 	return f.waitingCount, nil
 }
@@ -153,6 +258,10 @@ func (f *bubbleFakeDao) UpdateConversationStatus(conversationId string, status C
 func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 	original := GetConversationDao()
 	defer SetConversationDao(original)
+	const parentAgentName = "test_stateless_bubble_parent"
+	RegisterNBAgentFactory(parentAgentName, func(string) (NBAgent, error) {
+		return &resumeTestAgent{name: parentAgentName}, nil
+	})
 
 	ctx := security.NewRequestContextForSuperAdmin()
 	parentID := uuid.New()
@@ -177,7 +286,7 @@ func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 		fake := &bubbleFakeDao{
 			parentState:  "", // stateless → enters the fix branch
 			waitingCount: 0,  // all siblings done
-			parentAgent:  ConversationAgent{ID: parentID, AgentName: "k8s_debug", Response: &parentAnswer},
+			parentAgent:  ConversationAgent{ID: parentID, AgentName: parentAgentName, Response: &parentAnswer},
 		}
 		SetConversationDao(fake)
 
@@ -197,7 +306,7 @@ func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 		fake := &bubbleFakeDao{
 			parentState:  "",
 			waitingCount: 0,
-			parentAgent:  ConversationAgent{ID: parentID, AgentName: "k8s_debug", Response: nil},
+			parentAgent:  ConversationAgent{ID: parentID, AgentName: parentAgentName, Response: nil},
 		}
 		SetConversationDao(fake)
 
