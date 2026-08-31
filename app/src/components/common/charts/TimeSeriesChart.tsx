@@ -138,6 +138,13 @@ export function TimeSeriesChart({
   const singleColumn = labels.length === 1;
   const options = {
     ...base,
+    // Bars are fat enough to hit directly; snap-to-nearest reads as a phantom
+    // tooltip on sparse data. Scoped to the tooltip plugin only — the global
+    // interaction stays intersect:false so onClick/onSelectPoint keeps working
+    // on zero-value columns (their bars have no pixels to hit). Line/area keep
+    // intersect:false everywhere: pointRadius is 0, so a direct-hit requirement
+    // would make their tooltips unreachable.
+    ...(isBar ? { plugins: { ...base.plugins, tooltip: { ...base.plugins.tooltip, mode: 'index' as const, intersect: true } } } : {}),
     ...(singleColumn ? { scales: { ...base.scales, x: { ...base.scales.x, offset: true } } } : {}),
     ...(onSelectPoint
       ? { onClick: (_e: unknown, els: { index: number }[]) => els?.length && onSelectPoint(labels[els[0].index], els[0].index) }
