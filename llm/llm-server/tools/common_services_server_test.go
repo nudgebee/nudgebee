@@ -118,6 +118,15 @@ func TestCloudProviderToObservabilityFallback(t *testing.T) {
 	}
 }
 
+func TestIsCloudObservabilityProvider(t *testing.T) {
+	for _, provider := range []string{"aws", " AWS ", "gcp", "azure"} {
+		assert.True(t, isCloudObservabilityProvider(provider), provider)
+	}
+	for _, provider := range []string{"", "prometheus", "datadog"} {
+		assert.False(t, isCloudObservabilityProvider(provider), provider)
+	}
+}
+
 // TestGetLogProvider_ServesCachedEntry asserts the cache-hit path short-circuits
 // before the services-server round-trip. A single fetch_logs call resolves the
 // log provider three times (LogAgent construction, FetchLogsAgent construction,

@@ -48,6 +48,27 @@ func TestCollectSearchToolCandidates_OnlyConfiguredSpecialistsAndLeafTools(t *te
 	assert.Equal(t, "tool", got[1].kind)
 }
 
+func TestCollectSearchToolCandidates_NeverExposesInternalObservabilityProvider(t *testing.T) {
+	agentDtos := []core.AgentDto{
+		{Name: "aws_metrics", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeReAct},
+		{Name: "metrics", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeReAct},
+	}
+	// A same-name tool can come from an account-sourced/custom registration. It
+	// must not turn the internal AWS implementation into a public capability.
+	enabledTools := []toolcore.NBTool{
+		searchToolsTestTool{name: "aws_metrics", typ: toolcore.NBToolTypeAgent},
+		searchToolsTestTool{name: "metrics", typ: toolcore.NBToolTypeAgent},
+	}
+
+	got := collectSearchToolCandidates(agentDtos, enabledTools)
+	names := make([]string, 0, len(got))
+	for _, candidate := range got {
+		names = append(names, candidate.name)
+	}
+
+	assert.Equal(t, []string{"metrics"}, names)
+}
+
 func TestScoreAndRankSearchTools_NameBeatsDescription(t *testing.T) {
 	cands := []searchToolCandidate{
 		{name: "postgres", kind: "agent", description: "Troubleshoot PostgreSQL databases."},

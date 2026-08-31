@@ -189,7 +189,7 @@ func collectSearchToolCandidates(agentDtos []core.AgentDto, enabledTools []toolc
 			continue
 		}
 		lower := strings.ToLower(a.Name)
-		if a.ExecutorType == core.AgentPlannerTypeOrchestrating || !enabledNames[lower] || seen[lower] {
+		if a.ExecutorType == core.AgentPlannerTypeOrchestrating || isInternalObservabilityProvider(lower) || !enabledNames[lower] || seen[lower] {
 			continue
 		}
 		seen[lower] = true
@@ -210,7 +210,7 @@ func collectSearchToolCandidates(agentDtos []core.AgentDto, enabledTools []toolc
 			continue
 		}
 		lower := strings.ToLower(tool.Name())
-		if seen[lower] || orchestratorNames[lower] {
+		if seen[lower] || orchestratorNames[lower] || isInternalObservabilityProvider(lower) {
 			continue
 		}
 		// Don't advertise discovery of the discovery tool itself.
@@ -227,6 +227,25 @@ func collectSearchToolCandidates(agentDtos []core.AgentDto, enabledTools []toolc
 	}
 
 	return candidates
+}
+
+// Provider-specific observability agents are implementation details behind the
+// public metrics/logs/traces dispatchers. They must never be advertised as
+// directly callable capabilities: doing so bypasses the dispatcher's provider
+// selection and can route an account to a cloud integration it cannot use.
+//
+// Keep this guard independent of the same-name-tool join above. Account-sourced
+// tools may collide with a system-agent name, and such a collision must not make
+// an internal provider agent discoverable.
+func isInternalObservabilityProvider(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "aws_metrics", "aws_logs", "aws_traces",
+		"gcp_metrics", "gcp_logs", "gcp_traces",
+		"azure_metrics", "azure_logs", "azure_traces":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseSearchToolsQuery extracts the query from structured Arguments or the raw

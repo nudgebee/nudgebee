@@ -507,7 +507,10 @@ func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider
 	providerFromServicesServer, err := getProvider(accountId, "metrics", "")
 	if err == nil {
 		if providerFromServicesServer.Provider != "" {
-			return providerFromServicesServer, nil
+			if !isCloudObservabilityProvider(providerFromServicesServer.Provider) || hasActiveCloudProvider(accountId, providerFromServicesServer.Provider) {
+				return providerFromServicesServer, nil
+			}
+			slog.Warn("metrics: ignoring cloud provider for inactive account", "provider", providerFromServicesServer.Provider, "accountId", accountId)
 		}
 	}
 
@@ -516,11 +519,10 @@ func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider
 	}
 
 	// No first-class metrics provider (Prometheus / Datadog / Elasticsearch) is
-	// configured. For a cloud-ONLY GCP/Azure account (no connected k8s agent) the
+	// configured. For a cloud-only account (no connected k8s agent) the
 	// in-cluster Prometheus default can't answer, so fall back to the account's
-	// cloud CLI (Cloud Monitoring / Azure Monitor). The hasConnectedK8sAgent guard
-	// keeps a GKE/AKS account that merely also has cloud creds on its cluster's
-	// Prometheus. AWS and unknown providers keep the prometheus default.
+	// cloud CLI. The hasConnectedK8sAgent guard keeps an account that merely also
+	// has cloud creds on its cluster's Prometheus.
 	if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedK8sAgent(accountId) {
 		return services_server.ObservabilityProvider{
 			Provider:          cloud,
@@ -534,30 +536,66 @@ func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider
 	}, nil
 }
 
-// cloudFallbackProvider returns "gcp" or "azure" when the account is a GCP/Azure
-// cloud account, else "". It is the shared "decide the fallback observability
-// backend from the account's cloud type" hook used by the Get*Provider resolvers
-// when no first-class observability provider (Loki/Prometheus/Datadog/…) is
-// configured. AWS is intentionally excluded — it has no CLI-based observability
-// fallback wired here and keeps the existing k8s/prometheus/clickhouse defaults.
-// A lookup failure degrades to "" (no fallback) so provider resolution never
-// blocks on a missing cloud_accounts row.
+// cloudFallbackProvider returns the CLI observability provider for an active
+// AWS/GCP/Azure cloud account, else "". A lookup failure degrades to "" (no
+// fallback) so provider resolution never enables a cloud capability on doubt.
 func cloudFallbackProvider(accountId string) string {
 	if _, err := uuid.Parse(accountId); err != nil {
 		return ""
 	}
-	creds, err := GetCloudAccountCredentials(accountId)
+	cloudProvider, err := getActiveCloudProvider(accountId)
 	if err != nil {
 		slog.Warn("observability: could not resolve cloud type for CLI fallback", "error", err, "accountId", accountId)
 		return ""
 	}
-	return cloudProviderToObservabilityFallback(creds.CloudProvider)
+	return cloudProviderToObservabilityFallback(cloudProvider)
+}
+
+// getActiveCloudProvider deliberately reads only the provider field and only
+// from an active account. GetCloudAccountCredentials also returns disabled
+// rows, which is appropriate for some lifecycle operations but unsafe for
+// deciding whether an integration-backed runtime capability may execute.
+func getActiveCloudProvider(accountId string) (string, error) {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return "", fmt.Errorf("get database manager: %w", err)
+	}
+
+	var cloudProviders []string
+	if err := dbms.Db.Select(&cloudProviders, `
+		SELECT cloud_provider
+		FROM cloud_accounts
+		WHERE id = $1 AND status = 'active'
+	`, accountId); err != nil {
+		return "", fmt.Errorf("get active cloud provider: %w", err)
+	}
+	if len(cloudProviders) == 0 {
+		return "", nil
+	}
+	return cloudProviders[0], nil
+}
+
+func isCloudObservabilityProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "aws", "gcp", "azure":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasActiveCloudProvider(accountId, requestedProvider string) bool {
+	activeProvider, err := getActiveCloudProvider(accountId)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(activeProvider), strings.TrimSpace(requestedProvider))
 }
 
 // cloudProviderToObservabilityFallback maps a cloud_accounts.cloud_provider value
 // to the observability fallback provider name, or "" when the cloud has no
 // fallback provider wired here. Pure (no DB) so the mapping — including the
-// case/whitespace normalization — is unit-testable in isolation from GetCloudAccountCredentials.
+// case/whitespace normalization — is unit-testable without a database.
 func cloudProviderToObservabilityFallback(cloudProvider string) string {
 	switch strings.ToLower(strings.TrimSpace(cloudProvider)) {
 	case "aws":
