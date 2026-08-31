@@ -267,7 +267,12 @@ export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = f
   // tab never gets its blue pill. Defaulting `value` to the array index keeps
   // both sides on the same identity; explicit values (semantic slugs like
   // 'evidence') pass through untouched.
-  const normalizedTabs = tabOptions.map((o, i) => ({ ...o, value: o.value ?? i }));
+  // Guard: KubernetesTable seeds `expandable.tabs` with the caller's per-row
+  // tabs *function* and only resolves it to an array on first expand — so on
+  // collapsed rows tabOptions can be a function (or anything). The old code
+  // tolerated that because its .map lived after the hasBeenOpened early
+  // return; this map runs on every render, so it must not assume an array.
+  const normalizedTabs = Array.isArray(tabOptions) ? tabOptions.map((o, i) => ({ ...o, value: o.value ?? i })) : [];
   // Use ?? so a valid but falsy tab value (e.g. 0) isn't clobbered by the
   // fallback. Falls back to 0 only when the first tab has no value at all.
   const [tab, setTab] = useState(normalizedTabs[0]?.value ?? 0);
