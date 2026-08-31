@@ -380,7 +380,7 @@ func (c *ZenDutyClient) AddIncidentNote(ctx context.Context, incidentID, note st
 // GetIncidentNotes fetches all notes for an incident from ZenDuty.
 func (c *ZenDutyClient) GetIncidentNotes(ctx context.Context, incidentID string) ([]ZenDutyIncidentNote, error) {
 	var notes []ZenDutyIncidentNote
-	endpoint := fmt.Sprintf("/incidents/%s/notes/", incidentID)
+	endpoint := fmt.Sprintf("/incidents/%s/note/", incidentID)
 	if err := c.getJSON(ctx, endpoint, &notes); err != nil {
 		return nil, fmt.Errorf("failed to get incident notes: %w", err)
 	}
