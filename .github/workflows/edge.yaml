@@ -75,6 +75,8 @@ jobs:
           - { image: relay-server,            context: collector-server/k8s-collector/relay-server,      platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: workflow-server,         context: runbook-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: workflow-server,         context: runbook-server,                                   platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: llm-gateway,             context: llm/gateway,                                      platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: llm-gateway,             context: llm/gateway,                                      platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           # ---------- amd64-only (ML-base-derived: CUDA/conda) ----------
           - { image: llm-server,              context: llm/llm-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: rag-server,              context: llm/rag-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
@@ -168,6 +170,7 @@ jobs:
           - { image: cost-server,             archs: "amd64 arm64" }
           - { image: relay-server,            archs: "amd64 arm64" }
           - { image: workflow-server,         archs: "amd64 arm64" }
+          - { image: llm-gateway,             archs: "amd64 arm64" }
           - { image: llm-server,              archs: "amd64" }
           - { image: rag-server,              archs: "amd64" }
           # benchmark-server intentionally not published to GHCR (see build matrix above).
