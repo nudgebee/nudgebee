@@ -18,10 +18,11 @@ func TestGetConversationTimeAggregates_RollupShape(t *testing.T) {
 	accountID := os.Getenv("TEST_ACCOUNT")
 
 	filter := ConversationTimeAggregatesFilter{
-		AccountIDs:     []string{accountID},
-		StartDate:      time.Now().Add(-7 * 24 * time.Hour),
-		EndDate:        time.Now(),
-		ExcludedTitles: []string{EventDetailsRetrievalTitle},
+		AccountIDs:            []string{accountID},
+		StartDate:             time.Now().Add(-7 * 24 * time.Hour),
+		EndDate:               time.Now(),
+		ExcludedTitles:        []string{EventDetailsRetrievalTitle},
+		ExcludedTitlePrefixes: []string{EventDetailsRetrievalTitlePrefix},
 	}
 	result, err := GetConversationDao().GetConversationTimeAggregates(filter)
 
@@ -40,6 +41,16 @@ func TestGetConversationTimeAggregates_RollupShape(t *testing.T) {
 		assert.Equal(t, 0.0, result.TotalAgentActiveTimeSeconds, "agent time must be 0 when no completed rows")
 		assert.Equal(t, 0.0, result.TotalToolTimeSeconds, "tool time must be 0 when no completed rows")
 	}
+
+	// Wall time is exactly one duration per completed conversation, so the
+	// per-row cap gives it a hard ceiling. This is the regression guard for the
+	// defect that made the frontend's time-saved widget read 0.0 hrs: an
+	// uncapped SUM let one re-stamped row contribute 4,460 hours to a 7-day
+	// window and swamp every real investigation in it.
+	assert.LessOrEqual(t,
+		result.TotalWallTimeSeconds,
+		float64(result.CompletedCount*maxMeasuredDurationSeconds),
+		"wall time must stay within maxMeasuredDurationSeconds per completed conversation")
 }
 
 func TestGetConversationTimeAggregates_NoAccounts(t *testing.T) {

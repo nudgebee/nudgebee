@@ -3386,21 +3386,44 @@ type TimeBreakdown struct {
 	ToolTimeSeconds        float64
 }
 
+// maxMeasuredDurationSeconds caps any single wall / agent / tool duration in
+// the time rollup. These tables record no end-of-work timestamp, so a duration
+// is (updated_at - created_at) — row mtime, which anything touching the row
+// later re-stamps. Uncapped, one such row buries the sum: on dev the median
+// root-agent duration is 42 seconds while a single re-touched row measured
+// 4,460 hours. One hour is far above any real investigation and far below the
+// re-stamp artifacts, so it discards the artifacts without truncating real work.
+const maxMeasuredDurationSeconds = 3600
+
+// escapeLikePattern neutralises the LIKE metacharacters in a literal prefix so
+// it matches only itself. Postgres LIKE uses backslash as the default escape
+// character, so the backslash has to be escaped first.
+func escapeLikePattern(literal string) string {
+	replaced := strings.ReplaceAll(literal, `\`, `\\`)
+	replaced = strings.ReplaceAll(replaced, "%", `\%`)
+	return strings.ReplaceAll(replaced, "_", `\_`)
+}
+
 // ConversationTimeAggregatesFilter selects which conversations to roll up.
 // AccountIDs scopes the rollup to the caller's accessible accounts (matches
 // RPC RLS behavior for the existing GraphQL widgets); empty means "no
 // accessible accounts" and short-circuits to a zero result. Empty Sources
 // means "any source"; EventScoped narrows to conversations whose title
 // contains a UUID, matching the auto-investigation tab in the UI.
-// ExcludedTitles filters out infrastructure conversations like the
-// "Event details retrieval by ID" lookup that never represents real work.
+// ExcludedTitles filters out infrastructure conversations that never represent
+// real work, by exact title. ExcludedTitlePrefixes does the same for the ones
+// that carry the event id in the title, so no exact string can match them —
+// "Get the details of Event with id - <uuid>" is both infrastructure AND a
+// UUID-bearing title, so without a prefix filter it passes EventScoped and gets
+// counted as an investigation.
 type ConversationTimeAggregatesFilter struct {
-	AccountIDs     []string
-	StartDate      time.Time
-	EndDate        time.Time
-	Sources        []string
-	ExcludedTitles []string
-	EventScoped    bool
+	AccountIDs            []string
+	StartDate             time.Time
+	EndDate               time.Time
+	Sources               []string
+	ExcludedTitles        []string
+	ExcludedTitlePrefixes []string
+	EventScoped           bool
 }
 
 // ConversationTimeAggregates rolls up TimeBreakdown numbers across many
@@ -3568,9 +3591,17 @@ func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId, accoun
 // (excluding user-input wait, complexity-aware baselines) only land in one
 // place.
 //
-// Window semantics match the existing groupings_v2 / list_v2 frontend queries:
-// filter by updated_at, exclude infrastructure titles, and optionally narrow to
-// auto-investigations (title contains a UUID).
+// The window is on created_at — when the work STARTED — not updated_at.
+// updated_at is row mtime: a cleanup job, a resume, or a status backfill
+// re-stamps it, which sweeps months-old conversations into a seven-day window
+// and drags their equally stale durations in with them. On dev one conversation
+// created in February and touched in August contributed 4,460 hours to a 7-day
+// rollup, 98% of the total, which drove the frontend's time-saved widget
+// negative. created_at cannot be re-stamped, so the population is stable.
+//
+// For the same reason every per-row duration below is capped at
+// maxMeasuredDurationSeconds: the only end-of-work timestamp these tables carry
+// is updated_at, so a single re-touched row would otherwise dominate a SUM.
 //
 // All three time totals (wall / agent / tool) are scoped to COMPLETED
 // conversations so that any future caller doing `time / completed_count`
@@ -3601,6 +3632,18 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 	if len(filter.ExcludedTitles) > 0 {
 		excludedTitleClause = fmt.Sprintf(" AND (c.title IS NULL OR c.title <> ALL($%d))", argCounter)
 		args = append(args, pq.Array(filter.ExcludedTitles))
+		argCounter++
+	}
+
+	// LIKE patterns are built here rather than taken from the caller so a
+	// prefix containing % or _ cannot silently widen the exclusion.
+	if len(filter.ExcludedTitlePrefixes) > 0 {
+		patterns := make([]string, 0, len(filter.ExcludedTitlePrefixes))
+		for _, prefix := range filter.ExcludedTitlePrefixes {
+			patterns = append(patterns, escapeLikePattern(prefix)+"%")
+		}
+		excludedTitleClause += fmt.Sprintf(" AND (c.title IS NULL OR c.title NOT LIKE ALL($%d))", argCounter)
+		args = append(args, pq.Array(patterns))
 	}
 
 	eventScopedClause := ""
@@ -3621,8 +3664,8 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 			SELECT c.id, c.status, c.created_at, c.updated_at
 			FROM llm_conversations c
 			WHERE c.account_id = ANY($1::uuid[])
-				AND c.updated_at >= $2
-				AND c.updated_at <= $3
+				AND c.created_at >= $2
+				AND c.created_at <= $3
 				AND EXISTS (
 					SELECT 1 FROM llm_conversation_messages m
 					WHERE m.conversation_id = c.id
@@ -3636,11 +3679,11 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 			WHERE status = 'COMPLETED'
 		),
 		wall_time AS (
-			SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (updated_at - created_at))), 0) AS seconds
+			SELECT COALESCE(SUM(LEAST(EXTRACT(EPOCH FROM (updated_at - created_at)), %[4]d)), 0) AS seconds
 			FROM completed_conversations
 		),
 		agent_time AS (
-			SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (a.updated_at - a.created_at))), 0) AS seconds
+			SELECT COALESCE(SUM(LEAST(EXTRACT(EPOCH FROM (a.updated_at - a.created_at)), %[4]d)), 0) AS seconds
 			FROM llm_conversation_agent a
 			WHERE a.conversation_id IN (SELECT id FROM completed_conversations)
 				AND a.updated_at IS NOT NULL
@@ -3648,7 +3691,7 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 				AND (a.parent_agent_id IS NULL OR a.parent_agent_id = '00000000-0000-0000-0000-000000000000')
 		),
 		tool_time AS (
-			SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (tc.updated_at - tc.created_at))), 0) AS seconds
+			SELECT COALESCE(SUM(LEAST(EXTRACT(EPOCH FROM (tc.updated_at - tc.created_at)), %[4]d)), 0) AS seconds
 			FROM llm_conversation_tool_calls tc
 			WHERE tc.conversation_id IN (SELECT id FROM completed_conversations)
 				AND tc.metadata->>'parent_tool_call_id' IS NULL
@@ -3667,7 +3710,7 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 			(SELECT seconds FROM wall_time) AS wall_time,
 			(SELECT seconds FROM agent_time) AS agent_time,
 			(SELECT seconds FROM tool_time) AS tool_time;`,
-		sourceClause, excludedTitleClause, eventScopedClause)
+		sourceClause, excludedTitleClause, eventScopedClause, maxMeasuredDurationSeconds)
 
 	var result struct {
 		CompletedCount int     `db:"completed_count"`

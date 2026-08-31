@@ -2,6 +2,7 @@ package core
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,4 +129,37 @@ func TestGetConversationTimeAggregates_RollupShape(t *testing.T) {
 		assert.Equal(t, 0.0, result.TotalAgentActiveTimeSeconds, "agent time must be 0 when no completed rows")
 		assert.Equal(t, 0.0, result.TotalToolTimeSeconds, "tool time must be 0 when no completed rows")
 	}
+}
+
+// TestEscapeLikePattern verifies that a literal title prefix cannot widen the
+// exclusion. "%" and "_" are LIKE wildcards, so an unescaped prefix containing
+// either would silently drop conversations that should have been counted.
+func TestEscapeLikePattern(t *testing.T) {
+	cases := []struct {
+		name     string
+		literal  string
+		expected string
+	}{
+		{"plain prefix is unchanged", "Get the details of Event with id", "Get the details of Event with id"},
+		{"percent is escaped", "100% done", `100\% done`},
+		{"underscore is escaped", "event_id", `event\_id`},
+		{"backslash is escaped first", `a\b`, `a\\b`},
+		{"backslash before wildcard stays literal", `a\%`, `a\\\%`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			assert.Equal(t, testCase.expected, escapeLikePattern(testCase.literal))
+		})
+	}
+}
+
+// TestEventDetailsRetrievalTitlePrefix_MatchesTheUUIDBearingTitle pins the
+// prefix to the title it exists for. That title carries the event id, so it
+// passes the EventScoped UUID filter and was counted as an investigation —
+// and its stale agent rows drove the time-saved widget negative.
+func TestEventDetailsRetrievalTitlePrefix_MatchesTheUUIDBearingTitle(t *testing.T) {
+	title := "Get the details of Event with id - 52b4d494-403f-4ea7-aec7-5f5e5c5b5a5d"
+
+	assert.True(t, strings.HasPrefix(title, EventDetailsRetrievalTitlePrefix))
+	assert.NotEqual(t, EventDetailsRetrievalTitle, title, "the exact-title filter cannot reach this one")
 }

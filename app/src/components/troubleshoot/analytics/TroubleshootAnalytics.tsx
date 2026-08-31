@@ -10,6 +10,7 @@ import { Stat, type DeltaTone } from '@ui/Stat';
 import WidgetCard from '@ui/WidgetCard';
 import TimeSeriesChart from '@components/common/charts/TimeSeriesChart';
 import { useBriefingWindow } from '@components/troubleshoot/briefing/useBriefingData';
+import { resolveTimeSaved } from '@components/troubleshoot/analytics/timeSaved';
 import { useRouter } from 'next/router';
 import { ds } from 'src/utils/colors';
 
@@ -646,12 +647,11 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
               size='md'
               label='Investigations finished'
               value={effort?.completed_count ? num(effort.completed_count).toLocaleString() : '—'}
-              // Deliberately NOT "x of y". The backend's total_count windows on
-              // updated_at rather than created_at, so it sweeps in conversations
-              // created up to a year earlier that a cleanup job happened to touch —
-              // on dev that turned a ~93% in-window completion rate into a reported
-              // 8%. Until the DAO windows on created_at there is no trustworthy
-              // denominator, so show none.
+              // Still NOT "x of y", but the reason has changed: the backend now
+              // windows on created_at, so total_count is a trustworthy denominator
+              // (1,476 against 1,447 completed over a week on dev, where the old
+              // updated_at window reported a ~93% completion rate as 8%). Adding
+              // the ratio is a deliberate follow-up rather than part of this fix.
               sub='finished in this window'
             />
           </WidgetCard>
@@ -695,26 +695,21 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
             />
           </WidgetCard>
           {(() => {
-            const completed = num(effort?.completed_count);
-            const baselineMin = num(effort?.manual_baseline_minutes);
-            const rate = num(effort?.engineer_hourly_rate_usd);
-            const agentHours = num(effort?.total_agent_active_time_seconds) / 3600;
-            const savedHours = Math.max(0, (completed * baselineMin) / 60 - agentHours);
-            const savedCost = Math.round(savedHours * rate);
+            const { completed, savedHours, savedCost, measurable } = resolveTimeSaved(effort);
             return (
               <WidgetCard sx={CARD_SX}>
                 <Stat
                   size='md'
                   label='Engineer time saved'
-                  value={completed > 0 ? `${savedHours.toFixed(1)} hrs` : '—'}
-                  sub={completed > 0 && rate > 0 ? `≈$${savedCost.toLocaleString()} vs doing this by hand` : 'vs doing the same first pass by hand'}
+                  value={measurable ? `${savedHours.toFixed(1)} hrs` : '—'}
+                  sub={measurable && savedCost > 0 ? `≈$${savedCost.toLocaleString()} vs doing this by hand` : 'vs doing the same first pass by hand'}
                   // No rate, no baseline, no arithmetic — anywhere, including the
                   // tooltip. Those are internal assumptions, and exposing them turns
                   // every reading of this tile into an argument about our model
                   // rather than the work it represents. The tooltip says what the
                   // number means; it does not show its inputs.
                   info={
-                    completed > 0
+                    measurable
                       ? {
                           tooltip: `An estimate of the first-pass investigation time your team did not have to spend, across the ${completed.toLocaleString()} problems the agents explained on their own.`,
                         }
