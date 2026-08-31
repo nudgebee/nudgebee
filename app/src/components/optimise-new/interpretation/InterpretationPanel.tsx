@@ -93,7 +93,7 @@ const ViewTrendLink = ({ onClick }: { onClick: () => void }) => (
     style={{ whiteSpace: 'nowrap' }}
   >
     <Box component='span' data-testid='view-usage-trend' sx={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
-      <TrendingUpIcon sx={{ fontSize: '14px' }} />
+      <TrendingUpIcon sx={{ fontSize: ds.text.bodyLg }} />
       View usage trend
     </Box>
   </Link>
@@ -128,7 +128,7 @@ const InterpretationPanel = ({
               >
                 <HelpOutlineIcon
                   aria-label='Why it matters'
-                  sx={{ fontSize: '16px', color: ds.gray[400], cursor: 'help', '&:hover': { color: ds.blue[600] } }}
+                  sx={{ fontSize: ds.text.title, color: ds.gray[400], cursor: 'help', '&:hover': { color: ds.blue[600] } }}
                 />
               </Tooltip>
             )}

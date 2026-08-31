@@ -39,7 +39,7 @@ function StatusPill({ status }) {
         color: s.fg,
         border: `1px solid ${s.border}`,
         fontWeight: 600,
-        fontSize: '11px',
+        fontSize: 'var(--ds-text-caption)',
         height: '22px',
       }}
       data-testid={`watch-status-${status.toLowerCase()}`}
@@ -111,7 +111,9 @@ function WatchRow({ watch: w, onCancel }) {
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <StatusPill status={w.status} />
           <Tooltip title={hoverDetails} placement='right'>
-            <Typography sx={{ fontFamily: 'monospace', fontSize: '12px', color: 'var(--ds-gray-500)' }}>{w.id.slice(0, 8)}…</Typography>
+            <Typography sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
+              {w.id.slice(0, 8)}…
+            </Typography>
           </Tooltip>
         </Box>
         {!isTerminal && (
@@ -130,20 +132,20 @@ function WatchRow({ watch: w, onCancel }) {
 
       {/* mid row: poll progress + interval + duration cap */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-        <Typography sx={{ fontSize: '12px', color: 'var(--ds-gray-500)' }}>
+        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
           <strong>{w.poll_count}</strong> polls
           {w.failure_count > 0 && <span style={{ color: '#B91C1C', marginLeft: 6 }}>· {w.failure_count} failed</span>}
         </Typography>
-        <Typography sx={{ fontSize: '12px', color: 'var(--ds-gray-500)' }}>
+        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
           every <strong>{w.poll_interval_sec}s</strong>
         </Typography>
         {!isTerminal && w.next_poll_at && (
-          <Typography sx={{ fontSize: '12px', color: 'var(--ds-gray-500)' }}>next {formatRelative(w.next_poll_at)}</Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>next {formatRelative(w.next_poll_at)}</Typography>
         )}
         {isTerminal ? (
-          <Typography sx={{ fontSize: '12px', color: 'var(--ds-gray-500)' }}>terminated {formatRelative(w.updated_at)}</Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>terminated {formatRelative(w.updated_at)}</Typography>
         ) : (
-          <Typography sx={{ fontSize: '12px', color: 'var(--ds-gray-500)' }}>expires {formatRelative(w.expires_at)}</Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>expires {formatRelative(w.expires_at)}</Typography>
         )}
       </Box>
 
@@ -156,7 +158,7 @@ function WatchRow({ watch: w, onCancel }) {
             bgcolor: 'var(--ds-gray-100)',
             borderRadius: 1,
             fontFamily: 'monospace',
-            fontSize: '11px',
+            fontSize: 'var(--ds-text-caption)',
             color: 'var(--ds-gray-500)',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',

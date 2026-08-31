@@ -202,7 +202,7 @@ const K8sMemoryCpuIndicator = ({
                 onClick={onOpenTrend}
                 sx={{ p: '2px', color: 'var(--ds-brand-400)' }}
               >
-                <OpenInNewIcon sx={{ fontSize: '14px' }} />
+                <OpenInNewIcon sx={{ fontSize: ds.text.bodyLg }} />
               </IconButton>
             </Box>
           )}
