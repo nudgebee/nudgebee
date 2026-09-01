@@ -1,5 +1,6 @@
 import { LogsIcon } from '@assets';
 import SignozDatadogLogs from '@components/k8s/details/SignozDatadogLogs';
+import ExecutedQueryInfo from '@shared/ExecutedQueryInfo';
 import { base64Converter, unzipData } from './util';
 import { safeJSONParse } from 'src/utils/common';
 
@@ -116,7 +117,12 @@ class SignozDatadogLogCard {
   };
 
   renderSignozLogs = () => {
-    return <SignozDatadogLogs logData={this.logsData} />;
+    return (
+      <>
+        <ExecutedQueryInfo query={this.logs?.additional_info?.executed_query} provider={this.logs?.additional_info?.provider} />
+        <SignozDatadogLogs logData={this.logsData} />
+      </>
+    );
   };
 }
 

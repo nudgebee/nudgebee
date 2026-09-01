@@ -2,6 +2,7 @@ import { titleCase } from '@lib/formatter';
 import LogsIcon from '@assets/investigation/logs-blue.svg';
 import { safeJSONParse } from 'src/utils/common';
 import CloudLogsTable from '@components/cloudaccount/cloud-logs/CloudLogsTable';
+import ExecutedQueryInfo from '@shared/ExecutedQueryInfo';
 
 // Default card titles per log source, used when the enricher didn't stamp an explicit
 // additional_info.title (e.g. evidence captured before title propagation). Without this
@@ -85,7 +86,14 @@ class CloudLog {
   };
 
   getContentComponents = () => {
-    return [() => <CloudLogsTable id={this.id} logs={this.logs} />];
+    return [
+      () => (
+        <>
+          <ExecutedQueryInfo query={this.enricherData?.additional_info?.executed_query} provider={this.enricherData?.additional_info?.provider} />
+          <CloudLogsTable id={this.id} logs={this.logs} />
+        </>
+      ),
+    ];
   };
 }
 
