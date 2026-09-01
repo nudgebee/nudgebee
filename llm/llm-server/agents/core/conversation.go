@@ -1577,6 +1577,12 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 		if status == ConversationStatusCompleted && agentResponse.AgentName != ToolLlm {
 			computeProductivityMetricsAsync(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId)
+			// Post-hoc answer grading. Runs only after the answer row is
+			// committed above, so the grader reads the same text the user sees,
+			// and is fire-and-forget — the turn is already complete and its
+			// status does not depend on the outcome. Self-gates on the feature
+			// flag and on the turn being an investigation.
+			ScoreAnswerConfidenceAsync(ctx, request, agentResponseContent)
 		}
 	} else {
 		ctx.GetLogger().Info("conversation: skipping save-back", "reason", skipReason, "message_id", request.MessageId)

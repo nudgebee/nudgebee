@@ -65,6 +65,7 @@ const (
 	PromptMemorySessionExtractor             = "memory_session_extractor"
 	PromptMemorySoulConsolidate              = "memory_soul_consolidate"
 	PromptAgentLlm                           = "agent_llm"
+	PromptAnswerConfidence                   = "answer_confidence"
 	PromptResponseFormatter                  = "response_formatter"
 	PromptResponseFormatterSlack             = "response_formatter_slack"
 	PromptScratchpadContextSummarizer        = "scratchpad_context_summarizer"
@@ -85,6 +86,7 @@ var promptCategories = map[string]PromptCategory{
 	PromptMemoryConsumptionRules:             CategoryFragments,
 	PromptSecurityRules:                      CategoryFragments,
 	PromptTimeHandlingRules:                  CategoryFragments,
+	PromptAnswerConfidence:                   CategoryUtilities,
 	PromptVoteSubject:                        CategoryUtilities,
 	PromptUnifiedContextMemory:               CategoryFragments,
 	PromptAwsLean:                            CategoryAgents,

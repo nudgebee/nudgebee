@@ -338,6 +338,7 @@ type IConversationDao interface {
 	DeleteLongTermMemory(id, accountId string) error
 	UpdateMessageProductivityMetrics(messageId string, classification string, successfulTasks int) error
 	GetSuccessfulToolCallsCountByMessage(messageId string) (int, error)
+	ListToolCallOutcomesByMessage(messageId string) ([]ToolCallOutcome, error)
 	RetrieveRelevantMemories(accountId string, query string, limit int) ([]LongTermMemory, error)
 	// FindSimilarMemories performs a RAG similarity search using content as the query and
 	// populates SimilarityScore on each result. Unlike RetrieveRelevantMemories it does NOT
@@ -4289,4 +4290,33 @@ func (chat *ConversationDao) GetSuccessfulToolCallsCountByMessage(messageId stri
 		return 0, fmt.Errorf("history: failed to count successful tool calls for message: %w", err)
 	}
 	return count, nil
+}
+
+// ToolCallOutcome is one row of a message's execution manifest: which tool ran
+// and how it ended. Deliberately carries NO tool response body — the post-hoc
+// answer-confidence scorer only needs to know which distinct sources were
+// consulted and whether any failed, and shipping raw observations into a second
+// LLM call would both balloon the prompt and re-expose infrastructure output
+// that already passed the egress filter once.
+type ToolCallOutcome struct {
+	ToolName string `db:"tool_name"`
+	Status   string `db:"status"`
+	Count    int    `db:"count"`
+}
+
+// ListToolCallOutcomesByMessage returns the distinct (tool, status) pairs for a
+// message with their call counts, ordered most-used first. Used to build the
+// execution manifest handed to the answer-confidence scorer.
+func (chat *ConversationDao) ListToolCallOutcomesByMessage(messageId string) ([]ToolCallOutcome, error) {
+	query := `
+	SELECT tool_name, status, count(*) AS count
+	FROM llm_conversation_tool_calls
+	WHERE message_id = $1 AND COALESCE(tool_name, '') <> ''
+	GROUP BY tool_name, status
+	ORDER BY count DESC, tool_name ASC;`
+	outcomes := []ToolCallOutcome{}
+	if err := chat.dbManager.Db.Select(&outcomes, query, messageId); err != nil {
+		return nil, fmt.Errorf("history: failed to list tool call outcomes for message: %w", err)
+	}
+	return outcomes, nil
 }
