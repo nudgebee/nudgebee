@@ -19,7 +19,7 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
-import { hasWriteAccess, hasPermission, missingPermissionMessage, hasFeatureAccess, getUserSession, getCurrentTenant } from '@lib/auth';
+import { hasWriteAccess, hasPermission, missingPermissionMessage, getUserSession, getCurrentTenant } from '@lib/auth';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import { readPersistedAccounts, writePersistedAccounts } from './utils/accountFilterPersistence';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
@@ -272,8 +272,6 @@ const WorkflowListing: React.FC = () => {
   const [createWorkflowOptionsOpen, setCreateWorkflowOptionsOpen] = useState<boolean>(false);
   const [createFromCodeOpen, setCreateFromCodeOpen] = useState<boolean>(false);
   const [templateModalOpen, setTemplateModalOpen] = useState<boolean>(false);
-  const [aiFeatureEnabled, setAiFeatureEnabled] = useState<boolean>(false);
-  const [templateFeatureEnabled, setTemplateFeatureEnabled] = useState<boolean>(false);
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>({ id: '', name: '' });
   const [triggerLoading, setTriggerLoading] = useState<boolean>(false);
   const router = useRouter();
@@ -1615,20 +1613,6 @@ const WorkflowListing: React.FC = () => {
     return () => clearInterval(handle);
   }, [listWorkflows]);
 
-  // Check AI workflow feature flag
-  useEffect(() => {
-    const checkAiFeatureAccess = async () => {
-      try {
-        const hasAccess = await hasFeatureAccess('WORKFLOWS');
-        setAiFeatureEnabled(hasAccess);
-      } catch (error) {
-        console.error('Error checking AI workflow feature access:', error);
-        setAiFeatureEnabled(false);
-      }
-    };
-    checkAiFeatureAccess();
-  }, []);
-
   // Accounts backing the Account filter, the Account column and the create
   // modal's picker. Non-blocking: the listing renders fine with raw ids if this
   // fails, it just loses the friendly names.
@@ -1717,20 +1701,6 @@ const WorkflowListing: React.FC = () => {
     const only = filtered.length === 1 ? filtered[0] : writableAccountOptions.length === 1 ? writableAccountOptions[0].value : '';
     setCreateAccountId(only);
   }, [writableAccountOptions, selectedAccounts, createAccountId]);
-
-  // Check workflow templates feature flag
-  useEffect(() => {
-    const checkTemplateFeatureAccess = async () => {
-      try {
-        const hasAccess = await hasFeatureAccess('WORKFLOW_TEMPLATES');
-        setTemplateFeatureEnabled(hasAccess);
-      } catch (error) {
-        console.error('Error checking workflow templates feature access:', error);
-        setTemplateFeatureEnabled(false);
-      }
-    };
-    checkTemplateFeatureAccess();
-  }, []);
 
   const tableHeaders = [
     { name: 'Name', width: '26%' },
@@ -2019,8 +1989,6 @@ const WorkflowListing: React.FC = () => {
           onUseTemplate={handleUseTemplate}
           onAskAI={handleAskAIFromOptions}
           onCreateFromCode={handleCreateFromCode}
-          aiFeatureEnabled={aiFeatureEnabled}
-          templateFeatureEnabled={templateFeatureEnabled}
           accountOptions={writableAccountOptions}
           selectedAccountId={createAccountId}
           onAccountChange={setCreateAccountId}

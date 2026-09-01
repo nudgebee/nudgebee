@@ -122,3 +122,19 @@ func TestWorkflowDaoCountWorkflows_RejectsEmptyScope(t *testing.T) {
 	_, err = dao.CountWorkflows(context.Background(), "", []string{"acct-1"}, "", "")
 	assert.Error(t, err)
 }
+
+// A dry-run execution stamps "dry-run-<uuid>" into the nb_workflow_id search
+// attribute, so the ids reaching GetWorkflowNames are not all UUIDs. Passing one
+// through to `id = ANY($3::uuid[])` failed the whole statement with "invalid
+// input syntax for type uuid", which blanked the automation name on every row of
+// the executions dashboard. They must be dropped before the query runs — the nil
+// db here is the assertion: reaching QueryContext would panic.
+func TestWorkflowDaoGetWorkflowNames_DropsNonUUIDIDs(t *testing.T) {
+	dao := &WorkflowDao{}
+
+	names, err := dao.GetWorkflowNames(context.Background(), "t1", []string{"acct-1"},
+		[]string{"dry-run-98091125-f8fb-4681-ad83-b86f7be4f370", "inline-group-1", ""})
+
+	assert.NoError(t, err)
+	assert.Empty(t, names)
+}

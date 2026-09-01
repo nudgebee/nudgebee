@@ -9,7 +9,6 @@ import (
 	"nudgebee/llm/security"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -17,6 +16,38 @@ import (
 // actionError returns an error response in the format RPC action webhooks expect: { "message": "..." }
 func actionError(c *gin.Context, code int, msg string) {
 	c.JSON(code, gin.H{"message": msg})
+}
+
+// requireBudgetAdminTenant gates the three budget-config endpoints and returns
+// the tenant they must operate inside, or "" after writing the error response.
+//
+// The tenant scope binds EVERY caller, super admins included. A super-admin
+// session still carries the tenant it is viewing (x-tenant-id / session
+// variables), and the Usage & Limits screen these endpoints serve is
+// single-tenant: it labels every row with the session tenant's name and reads
+// usage back for the session tenant only. Letting a super admin see or write
+// another tenant's rows both leaked those rows and made an edit land on a row
+// the usage panel never reads — the config showed the new value while the
+// usage section kept the old one (#37020).
+func requireBudgetAdminTenant(c *gin.Context, sc *security.SecurityContext) string {
+	if !sc.IsSuperAdmin() && !sc.IsTenantAdmin() {
+		actionError(c, 403, "api: admin access required")
+		return ""
+	}
+	tenantId := sc.GetTenantId()
+	if tenantId == "" {
+		actionError(c, 400, "api: unable to identify tenant")
+		return ""
+	}
+	return tenantId
+}
+
+// canAccessAccountBudget reports whether the caller may act on accountId's
+// budget config. HasAccountAccess alone is not enough: it returns true for ANY
+// account id once the caller is a super admin, so the tenant-membership check
+// is what keeps a super-admin session inside the tenant it is viewing.
+func canAccessAccountBudget(sc *security.SecurityContext, tenantId, accountId string, access security.SecurityAccessType) bool {
+	return security.IsAccountInTenant(accountId, tenantId) && sc.HasAccountAccess(accountId, access)
 }
 
 // handleBudgetStatusApi registers all budget endpoints (all POST for RPC action compatibility)
@@ -116,8 +147,8 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		}
 
 		sc := agentContext.GetSecurityContext()
-		if !sc.IsSuperAdmin() && !sc.IsTenantAdmin() {
-			actionError(c, 403, "api: admin access required")
+		tenantId := requireBudgetAdminTenant(c, sc)
+		if tenantId == "" {
 			return
 		}
 
@@ -128,27 +159,24 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		entityID := listReq.EntityID
 		module := listReq.Module
 
-		// Non-super-admins: enforce tenant scoping
-		if !sc.IsSuperAdmin() {
-			switch entityType {
-			case budget.EntityTypeTenant:
-				tenantId := sc.GetTenantId()
-				if entityID != "" && entityID != tenantId {
-					actionError(c, 403, errorUserAccessMessage)
-					return
-				}
-				entityID = tenantId
-			case budget.EntityTypeAccount:
-				if entityID != "" && !sc.HasAccountAccess(entityID, security.SecurityAccessTypeRead) {
-					actionError(c, 403, errorUserAccessMessage)
-					return
-				}
-				// entityID="" means list all account configs — filter handled below
-			default:
-				// No entity_type specified — show tenant configs for the caller's tenant
-				entityType = budget.EntityTypeTenant
-				entityID = sc.GetTenantId()
+		switch entityType {
+		case budget.EntityTypeTenant:
+			if entityID != "" && entityID != tenantId {
+				actionError(c, 403, errorUserAccessMessage)
+				return
 			}
+			entityID = tenantId
+		case budget.EntityTypeAccount:
+			if entityID != "" && !canAccessAccountBudget(sc, tenantId, entityID, security.SecurityAccessTypeRead) {
+				actionError(c, 403, errorUserAccessMessage)
+				return
+			}
+			// entityID="" means list every account config IN THIS TENANT — the
+			// tenant filter is pushed into SQL below.
+		default:
+			// No entity_type specified — show tenant configs for the caller's tenant
+			entityType = budget.EntityTypeTenant
+			entityID = tenantId
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
@@ -157,17 +185,24 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 			return
 		}
 
-		configs, err := budget.ListBudgetConfigs(dbManager, entityType, entityID, module)
+		listAllTenantAccounts := entityType == budget.EntityTypeAccount && entityID == ""
+
+		var configs []budget.BudgetConfig
+		if listAllTenantAccounts {
+			configs, err = budget.ListAccountBudgetConfigsForTenant(dbManager, tenantId, module)
+		} else {
+			configs, err = budget.ListBudgetConfigs(dbManager, entityType, entityID, module)
+		}
 		if err != nil {
 			slog.Error("api: failed to list budget configs", "error", err)
 			actionError(c, 500, "api: failed to list budget configs")
 			return
 		}
 
-		// For non-super-admins listing account configs without specific entityID,
-		// filter to only accounts they have access to
-		if !sc.IsSuperAdmin() && entityType == budget.EntityTypeAccount && entityID == "" {
-			filtered := make([]budget.BudgetConfig, 0)
+		// Narrow the tenant's account configs to the accounts this caller may
+		// actually read (a scoped account admin sees only their own).
+		if listAllTenantAccounts {
+			filtered := make([]budget.BudgetConfig, 0, len(configs))
 			for _, cfg := range configs {
 				if sc.HasAccountAccess(cfg.EntityID, security.SecurityAccessTypeRead) {
 					filtered = append(filtered, cfg)
@@ -229,8 +264,8 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 			return
 		}
 
-		if !sc.IsSuperAdmin() && !sc.IsTenantAdmin() {
-			actionError(c, 403, "api: admin access required")
+		tenantId := requireBudgetAdminTenant(c, sc)
+		if tenantId == "" {
 			return
 		}
 
@@ -247,27 +282,18 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 			request.BudgetDisabled = &disabled
 		}
 
-		// Non-super-admin access check.
-		// For tenant-scoped upserts, the caller's own tenant is the only valid target —
-		// take it from the security context (matches /config/list behaviour at
-		// line 138,148 and the rest of the llm-server API surface, e.g.
-		// functions.go:161,182).
-		if !sc.IsSuperAdmin() {
-			if request.EntityType == budget.EntityTypeTenant {
-				request.EntityID = sc.GetTenantId()
-				logger = logger.With("entity_id", request.EntityID)
-			}
-			if request.EntityType == budget.EntityTypeAccount && !sc.HasAccountAccess(request.EntityID, security.SecurityAccessTypeCreate) {
-				actionError(c, 403, errorUserAccessMessage)
-				return
-			}
-		}
-
+		// The caller's own tenant is the only valid target for a tenant-scoped
+		// upsert, whatever entity_id the form posted (the Add-Budget form posts
+		// the tenant NAME, not its id). Matches /config/list behaviour and the
+		// rest of the llm-server API surface, e.g. functions.go:161,182.
 		if request.EntityType == budget.EntityTypeTenant {
-			if _, err := uuid.Parse(request.EntityID); err != nil {
-				request.EntityID = sc.GetTenantId()
-				logger = logger.With("entity_id", request.EntityID)
-			}
+			request.EntityID = tenantId
+			logger = logger.With("entity_id", request.EntityID)
+		}
+		if request.EntityType == budget.EntityTypeAccount &&
+			!canAccessAccountBudget(sc, tenantId, request.EntityID, security.SecurityAccessTypeCreate) {
+			actionError(c, 403, errorUserAccessMessage)
+			return
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
@@ -319,8 +345,8 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		}
 
 		sc := agentContext.GetSecurityContext()
-		if !sc.IsSuperAdmin() && !sc.IsTenantAdmin() {
-			actionError(c, 403, "api: admin access required")
+		tenantId := requireBudgetAdminTenant(c, sc)
+		if tenantId == "" {
 			return
 		}
 
@@ -352,16 +378,15 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 			return
 		}
 
-		// Non-super-admin: verify ownership
-		if !sc.IsSuperAdmin() {
-			if cfg.EntityType == budget.EntityTypeTenant && cfg.EntityID != sc.GetTenantId() {
-				actionError(c, 403, errorUserAccessMessage)
-				return
-			}
-			if cfg.EntityType == budget.EntityTypeAccount && !sc.HasAccountAccess(cfg.EntityID, security.SecurityAccessTypeCreate) {
-				actionError(c, 403, errorUserAccessMessage)
-				return
-			}
+		// Verify ownership — the row must belong to the caller's tenant.
+		if cfg.EntityType == budget.EntityTypeTenant && cfg.EntityID != tenantId {
+			actionError(c, 403, errorUserAccessMessage)
+			return
+		}
+		if cfg.EntityType == budget.EntityTypeAccount &&
+			!canAccessAccountBudget(sc, tenantId, cfg.EntityID, security.SecurityAccessTypeCreate) {
+			actionError(c, 403, errorUserAccessMessage)
+			return
 		}
 
 		err = budget.DeleteBudgetConfig(dbManager, req.ID)

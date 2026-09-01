@@ -26,6 +26,14 @@ const (
 	DatasourcePostgres = "postgresql"
 )
 
+// IsProviderDatasource reports whether a panel resolves an observability provider
+// per account — the only datasources on which Panel.Provider means anything. The
+// entity datasources read the internal query engine, and a command datasource IS
+// its integration.
+func IsProviderDatasource(datasource string) bool {
+	return datasource == DatasourceMetrics || datasource == DatasourceLogs || datasource == DatasourceTraces
+}
+
 // IsCommandDatasource reports whether a panel's data comes from running a
 // command through the relay rather than from an observability provider.
 func IsCommandDatasource(datasource string) bool {
@@ -38,6 +46,7 @@ func IsCommandDatasource(datasource string) bool {
 const (
 	VizTimeseries = "timeseries"
 	VizStat       = "stat"
+	VizGauge      = "gauge"
 	VizTable      = "table"
 	VizBar        = "bar"
 	VizText       = "text"
@@ -107,10 +116,31 @@ type Panel struct {
 	// Definitions written before the change still carry it; upgradeDefinition
 	// folds it into AccountIds on read and clears it, so `omitempty` drops it the
 	// next time the dashboard is written. Never set this.
-	LegacyAccountId string        `json:"account_id,omitempty"`
-	GridPos         GridPos       `json:"grid_pos"`
-	Targets         []PanelTarget `json:"targets,omitempty"`
-	Unit            string        `json:"unit,omitempty"`
+	LegacyAccountId string  `json:"account_id,omitempty"`
+	GridPos         GridPos `json:"grid_pos"`
+	// Provider pins which observability backend the panel's expression is written
+	// for — "prometheus", "ES", "datadog", … — on a metrics/logs/traces panel.
+	//
+	// A panel holds ONE expression in ONE query language, but each of its accounts
+	// resolves its own provider server-side, so a panel spanning a Prometheus
+	// account and an Elasticsearch one is only ever valid for one of them. Naming
+	// the provider makes the panel say which, and sends it on the query rather
+	// than letting each account fall back to its own default.
+	//
+	// Empty means "each account's own default", which is what every panel written
+	// before this field did and still does — so it needs no migration.
+	Provider string `json:"provider,omitempty"`
+	// ProviderIndex pins the Elasticsearch index (or wildcard pattern) the panel
+	// queries, for a panel whose Provider is ES.
+	//
+	// Empty means each account's own configured index — the per-account
+	// `index_account_mapping` override, else the integration's top-level
+	// {metrics,log,trace}_index, exactly as every panel resolved before this
+	// field. Only meaningful alongside Provider: without one, each account is on
+	// its own default provider and forcing one index across them is nonsense.
+	ProviderIndex string        `json:"provider_index,omitempty"`
+	Targets       []PanelTarget `json:"targets,omitempty"`
+	Unit          string        `json:"unit,omitempty"`
 	// Content backs the `text` panel type.
 	Content string `json:"content,omitempty"`
 	// Options carries per-visualisation settings the renderer understands.

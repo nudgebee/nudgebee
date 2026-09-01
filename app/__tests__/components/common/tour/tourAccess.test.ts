@@ -246,8 +246,6 @@ describe('TOURS gating contract', () => {
   );
 
   it('only uses requiresFeature for opt-in flags', () => {
-    expect(TOURS['automation-with-ai'].requiresFeature).toBe('WORKFLOWS');
-    expect(TOURS['automation-from-template'].requiresFeature).toBe('WORKFLOW_TEMPLATES');
     expect(TOURS['llm-analyser'].requiresFeature).toBe('LLM_ANALYSER');
   });
 

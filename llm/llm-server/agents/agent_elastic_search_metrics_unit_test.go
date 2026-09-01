@@ -96,9 +96,9 @@ func TestClassifyIndex(t *testing.T) {
 		{"metrics-*", schemaOTel},
 		{"metrix-*", schemaOTel},
 		// Any OTHER unmatched name is UNKNOWN, not OTel. Asserting OTel here is what
-		// taught Elastic Agent accounts (`metrics-*-gd-ehq-non-prod`) the wrong fields.
+		// taught Elastic Agent accounts (`metrics-*-prod`) the wrong fields.
 		{"custom-metrics-index", ""},
-		{"metrics-*-gd-ehq-non-prod", ""},
+		{"metrics-*-prod", ""},
 		{"telemetry-prod-2026", ""},
 	}
 
@@ -271,10 +271,10 @@ func TestElasticSearchMetricsAgent_SystemPrompt_CoversAllSchemas(t *testing.T) {
 // and `metrix-*` appended beside it, and the model then preferred the wildcard.
 // On a shared ES endpoint that wildcard also spans other environments' data streams.
 func TestDetectMetricSchemas_ConfiguredIndexIsNotDilutedByWildcards(t *testing.T) {
-	cfg := utils.ESIndexConfig{DefaultIndex: "metrics-*-gd-ehq-non-prod"}
+	cfg := utils.ESIndexConfig{DefaultIndex: "metrics-*-prod"}
 	_, indices, _, _ := detectMetricSchemas(cfg, nil)
 
-	assert.Equal(t, []string{"metrics-*-gd-ehq-non-prod"}, indices,
+	assert.Equal(t, []string{"metrics-*-prod"}, indices,
 		"a configured index must be the only offered target")
 	assert.NotContains(t, indices, "metrics-*", "stock wildcard must not be offered beside a configured index")
 	assert.NotContains(t, indices, "metrix-*", "stock wildcard must not be offered beside a configured index")
@@ -317,7 +317,7 @@ func TestDetectSchemasFromFields(t *testing.T) {
 			wantTS:   esTimestampOTel,
 		},
 		{
-			// EHQ `metrics-*-gd-ehq-non-prod`: Elastic Agent body, name implies nothing.
+			// the customer's `metrics-*-prod`: Elastic Agent body, name implies nothing.
 			name: "elastic agent k8s body",
 			fields: []string{
 				"@timestamp", "kubernetes.pod.name", "kubernetes.container.memory.usage.bytes",

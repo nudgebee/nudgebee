@@ -14,12 +14,12 @@ func (a *impactedServicesAction) CanAutoExecute(ctx PlaybookActionContext) bool 
 	if ctx.GetEvent().AggregationKey != "report_crash_loop" {
 		return false
 	}
-	name, ns := subjectPodNamespace(ctx.GetEvent())
+	name, ns := SubjectPodNamespace(ctx.GetEvent())
 	return name != "" && ns != ""
 }
 
 func (a *impactedServicesAction) AutoExecute(ctx PlaybookActionContext) (PlaybookActionResponse, error) {
-	podName, ns := subjectPodNamespace(ctx.GetEvent())
+	podName, ns := SubjectPodNamespace(ctx.GetEvent())
 	return a.Execute(ctx, map[string]any{"pod_name": podName, "namespace": ns})
 }
 
@@ -39,7 +39,7 @@ func (a *impactedServicesAction) Execute(ctx PlaybookActionContext, rawParams ma
 			`)`,
 		podName, namespace,
 	)
-	res, err := promRangeQueries(ctx, []NamedQuery{{Key: "impacted", Query: q}}, 30)
+	res, err := PromRangeQueries(ctx, []NamedQuery{{Key: "impacted", Query: q}}, 30)
 	if err != nil {
 		return nil, fmt.Errorf("impacted_services_enricher: prom: %w", err)
 	}

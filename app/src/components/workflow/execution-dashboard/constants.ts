@@ -71,3 +71,22 @@ export const executionUserLabel = (userName?: string, triggeredBy?: string): str
   // rather than pretending the run was automated.
   return triggeredBy;
 };
+
+/**
+ * Prefixes the backend stamps on the `nb_workflow_id` search attribute for runs
+ * that have no `workflows` row: a dry run executes a definition that was never
+ * saved, and inline children (`core.group` / `core.foreach`) are synthesised at
+ * runtime. Neither has a name to resolve or a builder page to open.
+ */
+const NON_PERSISTED_WORKFLOW_LABELS: [string, string][] = [
+  ['dry-run-', 'Dry run'],
+  ['inline-', 'Inline'],
+];
+
+/** Label for a run whose automation was never persisted, else undefined. */
+export const nonPersistedAutomationLabel = (workflowId?: string): string | undefined =>
+  NON_PERSISTED_WORKFLOW_LABELS.find(([prefix]) => workflowId?.startsWith(prefix))?.[1];
+
+/** Resolved display name for an execution's "Automation" column. */
+export const executionAutomationLabel = (workflowName?: string, workflowId?: string): string =>
+  workflowName || nonPersistedAutomationLabel(workflowId) || workflowId || '';

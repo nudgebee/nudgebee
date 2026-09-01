@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"path/filepath"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -276,6 +277,23 @@ func kubectlReadsSecretFilesystemPath(command string) bool {
 	if !hasFilesystemVerb {
 		return false
 	}
+	// Globs are resolved inside the target pod, where the validator cannot
+	// know which path they select. Fail closed for filesystem-capable verbs so
+	// `/var/run/se*rets` cannot hide a mounted-secret path.
+	if strings.ContainsAny(cmd, "*?[") {
+		return true
+	}
+	// Clean every path-shaped token before matching. This covers normal shell
+	// path resolution such as `/var/run/./secrets` and
+	// `/var/run/tmp/../secrets`, including the `pod:/path` form used by cp.
+	cleanedTokens := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		if strings.Contains(tok, "/") {
+			tok = filepath.Clean(tok)
+		}
+		cleanedTokens = append(cleanedTokens, tok)
+	}
+	cmd = strings.Join(cleanedTokens, " ")
 	for _, pat := range kubectlSecretFilesystemPatterns {
 		if strings.Contains(cmd, pat) {
 			return true
@@ -457,6 +475,202 @@ func (m KubectlExecuteTool) InputSchema() core.ToolSchema {
 	}
 }
 
+// hasShellExpansion detects shell-evaluated expansion while allowing literal
+// dollar signs and backticks inside single quotes and escaped dollar signs.
+// Expansion remains active inside double quotes, so those forms are rejected.
+func hasShellExpansion(command string) bool {
+	var singleQuoted, doubleQuoted, escaped bool
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			continue
+		}
+		if !singleQuoted && (char == '$' || char == '`') {
+			return true
+		}
+	}
+	return false
+}
+
+// kubectlCommandHasUnsafeShellStructure permits one direct kubectl invocation
+// with optional stdout-only filters. Compound commands, redirections, and
+// downstream executors can manufacture a blocked resource name after static
+// validation, so they fail closed at the relay boundary.
+func kubectlCommandHasUnsafeShellStructure(command string) bool {
+	var stages []string
+	start := 0
+	var singleQuoted, doubleQuoted, escaped bool
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			continue
+		}
+		if singleQuoted || doubleQuoted {
+			continue
+		}
+		if strings.ContainsRune(";&<>\n\r(){}", rune(char)) {
+			return true
+		}
+		if char == '|' {
+			stages = append(stages, command[start:i])
+			start = i + 1
+		}
+	}
+	if singleQuoted || doubleQuoted || escaped {
+		return true
+	}
+	stages = append(stages, command[start:])
+
+	first, ok := splitShellWords(stages[0])
+	if !ok {
+		return true
+	}
+	if len(first) == 0 || first[0] != "kubectl" {
+		return true
+	}
+	for _, stage := range stages[1:] {
+		parts, ok := splitShellWords(stage)
+		if !ok || !isSafeKubectlPipelineFilter(parts) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitShellWords(input string) ([]string, bool) {
+	var words []string
+	var word strings.Builder
+	var singleQuoted, doubleQuoted, escaped, active bool
+	flush := func() {
+		if active {
+			words = append(words, word.String())
+			word.Reset()
+			active = false
+		}
+	}
+	for i := 0; i < len(input); i++ {
+		char := input[i]
+		if escaped {
+			word.WriteByte(char)
+			escaped = false
+			active = true
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			active = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			active = true
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			active = true
+			continue
+		}
+		if !singleQuoted && !doubleQuoted && (char == ' ' || char == '\t') {
+			flush()
+			continue
+		}
+		word.WriteByte(char)
+		active = true
+	}
+	flush()
+	return words, !singleQuoted && !doubleQuoted && !escaped
+}
+
+// isSafeKubectlPipelineFilter accepts only filters whose arguments cannot name
+// an input file. grep/jq get one positional expression; head/tail/wc get none
+// and therefore must consume stdin. This intentionally rejects richer option
+// forms when their operand roles are ambiguous.
+func isSafeKubectlPipelineFilter(parts []string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	var maxPositionals int
+	switch parts[0] {
+	case "grep", "egrep", "fgrep", "rgrep", "jq":
+		maxPositionals = 1
+	case "head", "tail", "wc":
+		maxPositionals = 0
+	default:
+		return false
+	}
+	positionals := 0
+	for _, part := range parts[1:] {
+		if strings.Contains(parts[0], "grep") && (part == "-e" || strings.HasPrefix(part, "-e") || part == "--regexp" || strings.HasPrefix(part, "--regexp=")) {
+			return false
+		}
+		if !strings.HasPrefix(part, "-") {
+			positionals++
+		}
+	}
+	return positionals <= maxPositionals
+}
+
+// validateKubectlCommandAccess applies the kubectl hard-deny policy at both
+// the direct tool path and the final relay boundary. Keeping the relay check
+// prevents any caller that dispatches without calling KubectlExecuteTool.Call
+// (workspace shims, remediation, resource search, or future paths) from
+// bypassing secret-access restrictions.
+func validateKubectlCommandAccess(command string) error {
+	if kubectlCommandHasUnsafeShellStructure(command) {
+		return errors.New("kubectl: compound commands, redirections, and unsafe pipeline filters are blocked")
+	}
+	words, _ := splitShellWords(command)
+	normalizedCommand := shellQuoteStripper.Replace(command)
+	for _, word := range words {
+		if strings.Contains(word, "/") {
+			normalizedCommand += " " + filepath.Clean(word)
+		}
+	}
+	for _, path := range kubectlSecretFilesystemPatterns {
+		if strings.Contains(normalizedCommand, path) {
+			return errors.New("kubectl: reading mounted secret filesystem paths is blocked")
+		}
+	}
+	if hasShellExpansion(command) {
+		return errors.New("kubectl: shell variable and command expansion ($, $(), and backticks) is blocked")
+	}
+	if blocked := kubectlBlockedKind(command); blocked != "" {
+		return fmt.Errorf("kubectl: access to %q is blocked. Secret-bearing kinds (secrets, sealedsecrets, externalsecrets, secretstores, secretproviderclasses) are not readable via this tool", blocked)
+	}
+	if kubectlReadsSecretFilesystemPath(command) {
+		return errors.New("kubectl: reading mounted secret filesystem paths (/var/run/secrets, /var/lib/kubelet/pods, /run/secrets) via exec/cp/attach is blocked")
+	}
+
+	return nil
+}
+
 func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 
 	if nbRequestContext.ToolConfig.Name == "" {
@@ -466,21 +680,11 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 	nbRequestContext.Ctx.GetLogger().Info("k8s: executing executeShellCommand tool call", "query", input.Command)
 	command := strings.TrimSpace(input.Command)
 
+	if err := validateKubectlCommandAccess(command); err != nil {
+		return core.NBToolResponse{}, err
+	}
+
 	command1 := strings.ToLower(command)
-	// Block secret-bearing resource kinds. Uses a shell-aware tokenizer
-	// (kubectlBlockedKind) instead of a substring check so that
-	// `kubectl get secret/my-tls -o yaml`, `kubectl get -o yaml secret X`,
-	// `kubectl get secrets.v1.core`, `kubectl get pods,secrets`, and
-	// `kubectl get sealedsecrets.bitnami.com/foo` are all caught.
-	if blocked := kubectlBlockedKind(command); blocked != "" {
-		return core.NBToolResponse{}, fmt.Errorf("kubectl: access to %q is blocked. Secret-bearing kinds (secrets, sealedsecrets, externalsecrets, secretstores, secretproviderclasses) are not readable via this tool", blocked)
-	}
-	// Block exec/cp/attach reads from well-known secret mount paths so
-	// `kubectl exec mypod -- cat /var/run/secrets/...` can't bypass the
-	// kind-level check above.
-	if kubectlReadsSecretFilesystemPath(command) {
-		return core.NBToolResponse{}, errors.New("kubectl: reading mounted secret filesystem paths (/var/run/secrets, /var/lib/kubelet/pods, /run/secrets) via exec/cp/attach is blocked")
-	}
 
 	// Safety net: auto-inject --tail for kubectl logs if not already limited
 	if strings.Contains(command1, " logs ") || strings.HasPrefix(command1, "kubectl logs") {

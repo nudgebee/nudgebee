@@ -21,6 +21,7 @@ import NumberFormat from '@shared/format/Number';
 import { formatDurationInTrace } from '@utils/common';
 import type { AccountOption, Panel } from '@api1/dashboards';
 import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
+import PanelGauge from './PanelGauge';
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind } from './usePanelData';
 import { describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
@@ -370,6 +371,19 @@ const DashboardPanel: React.FC<Props> = ({
           </Box>
         );
       }
+      case 'gauge': {
+        // Same read as the stat panel — the dial is a stat with a bounded scale.
+        const last = lastValue(data.series[0]?.values);
+        const caption = statCaption(
+          data.series[0]?.label,
+          (panel.targets || []).map((t) => t.ref_id || 'A')
+        );
+        return (
+          <Box data-testid={`panel-gauge-${panel.id}`} sx={{ height: '100%' }}>
+            <PanelGauge value={last} caption={caption} />
+          </Box>
+        );
+      }
       case 'table': {
         const headers = [
           { name: 'Series', width: '60%' },
@@ -434,6 +448,19 @@ const DashboardPanel: React.FC<Props> = ({
               component='span'
               sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}
               data-testid={`panel-description-${panel.id}`}
+            >
+              <InfoOutlinedIcon sx={{ fontSize: 13 }} />
+            </Box>
+          </Tooltip>
+        )}
+        {/* The dial's scale is a contract the panel cannot show on its own — the
+            same affordance, in the same title-side spot, as the description icon. */}
+        {panel.type === 'gauge' && (
+          <Tooltip title='The dial runs 0 to 100 — the value is read as a percentage, and anything outside that range pins to the ends.'>
+            <Box
+              component='span'
+              sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}
+              data-testid={`panel-gauge-info-${panel.id}`}
             >
               <InfoOutlinedIcon sx={{ fontSize: 13 }} />
             </Box>

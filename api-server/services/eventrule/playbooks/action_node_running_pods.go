@@ -13,11 +13,11 @@ func (a *nodeRunningPodsAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 	if ctx.GetEvent().AggregationKey != "node_not_ready" {
 		return false
 	}
-	return subjectNodeName(ctx.GetEvent()) != ""
+	return SubjectNodeName(ctx.GetEvent()) != ""
 }
 
 func (a *nodeRunningPodsAction) AutoExecute(ctx PlaybookActionContext) (PlaybookActionResponse, error) {
-	return a.Execute(ctx, map[string]any{"node_name": subjectNodeName(ctx.GetEvent())})
+	return a.Execute(ctx, map[string]any{"node_name": SubjectNodeName(ctx.GetEvent())})
 }
 
 func (a *nodeRunningPodsAction) Execute(ctx PlaybookActionContext, rawParams map[string]any) (PlaybookActionResponse, error) {

@@ -486,6 +486,24 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	return &wf, nil
 }
 
+// uuidsOnly drops the ids Postgres cannot cast to uuid.
+//
+// Every id resolved for the executions views comes from a Temporal search
+// attribute, which as far as Postgres is concerned is free-form text: dry-run
+// and inline runs stamp synthetic values like "dry-run-<uuid>" there. A single
+// one of those fails the whole `= ANY($n::uuid[])` batch with "invalid input
+// syntax for type uuid", and the callers treat that error as "no names" — so one
+// bad id blanks the name on every row of the page. Drop them instead.
+func uuidsOnly(ids []string) []string {
+	valid := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err == nil {
+			valid = append(valid, id)
+		}
+	}
+	return valid
+}
+
 func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	if len(ids) == 0 {
@@ -494,9 +512,15 @@ func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID string, acc
 	if tenantID == "" || len(accountIDs) == 0 {
 		return nil, fmt.Errorf("tenantID and at least one accountID are required")
 	}
+	// dry-run/inline runs stamp a non-UUID nb_workflow_id ("dry-run-<uuid>"), and
+	// one of those failed the whole batch and blanked the name on every row.
+	validIDs := uuidsOnly(ids)
+	if len(validIDs) == 0 {
+		return out, nil
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND id = ANY($3::uuid[])`,
-		tenantID, pq.Array(accountIDs), pq.Array(ids))
+		tenantID, pq.Array(accountIDs), pq.Array(validIDs))
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch workflow names: %w", err)
 	}
@@ -561,16 +585,7 @@ func (s *WorkflowDao) GetUserNames(ctx context.Context, ids []string) (map[strin
 	if len(ids) == 0 {
 		return out, nil
 	}
-	// These ids come from a Temporal search attribute, which as far as Postgres
-	// is concerned is free-form text. One non-UUID value would fail the whole
-	// batch with "invalid input syntax for type uuid" and blank out every name
-	// on the page, so drop them rather than let one poison the rest.
-	validIDs := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if _, err := uuid.Parse(id); err == nil {
-			validIDs = append(validIDs, id)
-		}
-	}
+	validIDs := uuidsOnly(ids)
 	if len(validIDs) == 0 {
 		return out, nil
 	}

@@ -131,8 +131,8 @@ export interface TourDef {
    */
   requires?: TourCapability;
   /**
-   * Tenant feature flag (a `feature_id`) this guide needs — e.g. the "Ask AI"
-   * guide, whose card only renders when WORKFLOWS is on. Resolved via the cached
+   * Tenant feature flag (a `feature_id`) this guide needs — e.g. the LLM
+   * Analyser guide, whose tab only renders when LLM_ANALYSER is on. Resolved via the cached
    * feature flags (`hasFeatureAccessCached`); see `canAccessTour`.
    *
    * ONLY for opt-in flags (absent row = feature off). `hasFeatureAccessCached`
@@ -1104,8 +1104,7 @@ const connectAzureTour: TourDef = {
  * walks one path. Anchors — the option cards + "Create Automation" button +
  * builder trigger cards (#wf-builder-trigger-option-*-card) pre-exist; the
  * sub-modal ids (#wf-code-*, #wf-ai-*, #wf-template-*) were added alongside
- * these guides. AI and templates are feature-gated, so those two guides declare
- * `requiresFeature` (WORKFLOWS / WORKFLOW_TEMPLATES) and hide where it's off.
+ * these guides.
  *
  * All four are 'account-write': the "Create Automation" button they drive is
  * gated on `hasWriteAccess(accountId)` (WorkflowListing.tsx), which account
@@ -1164,8 +1163,6 @@ const automationWithAiTour: TourDef = {
   description: 'Describe what you want in plain language and let AI draft the automation.',
   route: '/automation',
   requires: 'account-write',
-  // The "Ask AI" card is enabled by the WORKFLOWS feature flag.
-  requiresFeature: 'WORKFLOWS',
   steps: [
     {
       element: '#workflow-listing-create-btn',
@@ -1212,8 +1209,6 @@ const automationFromTemplateTour: TourDef = {
   description: 'Start from a pre-built automation for a common scenario.',
   route: '/automation',
   requires: 'account-write',
-  // The "From a template" card is enabled by the WORKFLOW_TEMPLATES flag.
-  requiresFeature: 'WORKFLOW_TEMPLATES',
   steps: [
     {
       element: '#workflow-listing-create-btn',

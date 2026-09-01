@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -695,7 +697,24 @@ func (s *EbpfFlowSource) parseServiceMapFromRelay(relayResponse map[string]any) 
 	// Extract data array
 	dataArrayAny, ok := dataMap["data"]
 	if !ok {
-		return nil, fmt.Errorf("relay response missing 'data.data' field")
+		// Agent-side failures never trip the `success` check above: the Go
+		// k8s-agent answers an unregistered action, a handler error, a task
+		// timeout or an auth reject with
+		// {"status_code": N, "data": {"error": "..."}} (pkg/dispatch/dispatch.go),
+		// a map carrying neither `success` nor `data`. Repeating the agent's own
+		// message here is the difference between "action not registered:
+		// service_map" (PROMETHEUS_URL unset on that cluster, so the agent never
+		// registers the handler) and an opaque "missing 'data.data'" that tells
+		// the reader nothing without pulling the agent's logs.
+		statusCode := "unknown"
+		if sc := relayResponse["status_code"]; sc != nil {
+			statusCode = fmt.Sprintf("%v", sc)
+		}
+		if agentErr, isStr := dataMap["error"].(string); isStr {
+			return nil, fmt.Errorf("relay agent returned an error (status_code %s): %s", statusCode, agentErr)
+		}
+		return nil, fmt.Errorf("relay response missing 'data.data' field (status_code %s, 'data' keys: %v)",
+			statusCode, slices.Sorted(maps.Keys(dataMap)))
 	}
 
 	// Marshal and unmarshal to convert to ServiceApplication slice
