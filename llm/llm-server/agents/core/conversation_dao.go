@@ -1080,6 +1080,20 @@ func (chat *ConversationDao) UpdateConversationModel(conversationId, provider, m
 	return chat.UpdateConversationModelBlanket(conversationId, provider, model)
 }
 
+const saveConversationQueryWithUser = `
+    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides, llm_config_source)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, $13)
+    ON CONFLICT (session_id, user_id, account_id)
+    DO UPDATE SET context = EXCLUDED.context, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, llm_provider = EXCLUDED.llm_provider, llm_model = EXCLUDED.llm_model, llm_tier_overrides = EXCLUDED.llm_tier_overrides, llm_config_source = EXCLUDED.llm_config_source RETURNING llm_conversations.id;`
+
+// Postgres treats NULL <> NULL, so a NULL user_id needs its own conflict
+// target: the partial unique index from migration V904 (GH #37367).
+const saveConversationQueryNullUser = `
+    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides, llm_config_source)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, $13)
+    ON CONFLICT (session_id, account_id) WHERE user_id IS NULL
+    DO UPDATE SET context = EXCLUDED.context, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, llm_provider = EXCLUDED.llm_provider, llm_model = EXCLUDED.llm_model, llm_tier_overrides = EXCLUDED.llm_tier_overrides, llm_config_source = EXCLUDED.llm_config_source RETURNING llm_conversations.id;`
+
 func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string) (uuid.UUID, error) {
 	if accountID == "" || tenantId == "" {
 		return uuid.Nil, errors.New("history: accountID and tenantId are required")
@@ -1118,11 +1132,10 @@ func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID
 		tierOverridesArg = *llmTierOverrides
 	}
 
-	query := `
-    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides, llm_config_source)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, $13)
-    ON CONFLICT (session_id, user_id, account_id)
-    DO UPDATE SET context = EXCLUDED.context, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, llm_provider = EXCLUDED.llm_provider, llm_model = EXCLUDED.llm_model, llm_tier_overrides = EXCLUDED.llm_tier_overrides, llm_config_source = EXCLUDED.llm_config_source RETURNING llm_conversations.id;`
+	query := saveConversationQueryWithUser
+	if !userIdSql.Valid {
+		query = saveConversationQueryNullUser
+	}
 	var lastId uuid.UUID
 	err := chat.dbManager.Db.QueryRow(query, id, sessionID, tenantId, accountID, userIdSql, context, status, source, title, llmProviderSql, llmModelSql, tierOverridesArg, llmConfigSourceSql).Scan(&lastId)
 	if err != nil {
@@ -1532,7 +1545,8 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 		return Conversation{}, errors.New("history: accountID is required")
 	}
 	query := `SELECT id, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides, llm_config_source FROM llm_conversations
-	WHERE session_id = $1 AND account_id = $2`
+	WHERE session_id = $1 AND account_id = $2
+	ORDER BY updated_at DESC LIMIT 1`
 	rows, err := chat.dbManager.Db.Queryx(query, sessionID, accountID)
 	if err != nil {
 		return Conversation{}, fmt.Errorf("history: failed to load conversation: %w", err)

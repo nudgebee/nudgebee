@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS llm_conversations_session_account_null_user_uniq;
