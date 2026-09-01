@@ -3,10 +3,29 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"html"
+	"net/url"
+	"regexp"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+)
+
+const (
+	nudgebeeDocsModule          = "knowledge_base"
+	nudgebeeDocsSource          = "nudgebee_docs"
+	nudgebeeDocsResultLimit     = 5
+	nudgebeeDocsExcerptMaxRunes = 1600
+	nudgebeeDocsOutputMaxRunes  = 6000
+	nudgebeeDocsNoResult        = "No matching Nudgebee product documentation was found for this query."
+)
+
+var (
+	queryNudgebeeDocs = core.QueryRAG
+	nudgebeeHTMLTags  = regexp.MustCompile(`(?i)</?[a-z](?:[^'">]|"[^"]*"|'[^']*')*?>`)
 )
 
 const (
@@ -321,8 +340,8 @@ func (t NudgebeeIntegrationGetStatusTool) Call(nbCtx core.NbToolContext, input c
 	})
 }
 
-// NudgebeeDocsSearchTool gives the existing account-scoped documentation
-// search an explicit Nudgebee-owned name without duplicating its RAG logic.
+// NudgebeeDocsSearchTool searches only the centrally indexed Nudgebee product
+// documentation. It deliberately does not fall back to tenant knowledge bases.
 type NudgebeeDocsSearchTool struct{}
 
 func (NudgebeeDocsSearchTool) Name() string             { return ToolNudgebeeDocsSearch }
@@ -331,7 +350,7 @@ func (NudgebeeDocsSearchTool) InferToolRequestType(ctx *security.RequestContext,
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeDocsSearchTool) Description() string {
-	return "Search indexed Nudgebee product documentation and the requesting account's authorized knowledge sources. Use for product concepts and instructions, never as evidence for current counts or status."
+	return "Search indexed Nudgebee product documentation. Use once for product concepts, features, setup, and instructions; never use it as evidence for current tenant counts, configuration, or status."
 }
 func (NudgebeeDocsSearchTool) InputSchema() core.ToolSchema {
 	return DocsAgentTool{}.InputSchema()
@@ -344,5 +363,138 @@ func (NudgebeeDocsSearchTool) Call(nbCtx core.NbToolContext, input core.NBToolCa
 	if input.Command == "" {
 		return triageErrorResponse(fmt.Errorf("%s requires a search query", ToolNudgebeeDocsSearch)), nil
 	}
-	return DocsAgentTool{}.Call(nbCtx, input)
+
+	started := time.Now()
+	userID := nbCtx.Ctx.GetSecurityContext().EffectiveUserIdForRPC()
+	results := queryNudgebeeDocs(
+		userID, nbCtx.AccountId, input.Command, nudgebeeDocsModule,
+		nudgebeeDocsResultLimit, nbCtx.ConversationId, nbCtx.MessageId,
+		nbCtx.ParentAgentId, true, map[string]any{"source": nudgebeeDocsSource},
+	)
+	data, references, selected, truncated := formatNudgebeeDocsResults(results)
+	if nbCtx.Ctx != nil {
+		nbCtx.Ctx.GetLogger().Info("nudgebee: product docs search completed",
+			"source", nudgebeeDocsSource,
+			"result_count", len(results),
+			"selected_count", selected,
+			"no_result", selected == 0,
+			"truncated", truncated,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
+	}
+	return core.NBToolResponse{
+		Data: data, Type: core.NBToolResponseTypeText,
+		Status: core.NBToolResponseStatusSuccess, References: references,
+	}, nil
+}
+
+func formatNudgebeeDocsResults(results core.RAGSearchResults) (string, []core.NBToolResponseReference, int, bool) {
+	var blocks []string
+	var references []core.NBToolResponseReference
+	seenDocuments := make(map[string]bool)
+	seenURLs := make(map[string]bool)
+	totalRunes := utf8.RuneCountInString("Nudgebee product documentation:\n")
+	truncated := false
+
+	for _, result := range results {
+		title := nudgebeeMetadataString(result.Metadata, "title")
+		section := nudgebeeMetadataString(result.Metadata, "section")
+		if section == "" {
+			section = nudgebeeMetadataString(result.Metadata, "path")
+		}
+		sourceURL := nudgebeeDocsURL(result.Metadata)
+		excerpt := normalizeNudgebeeDocsText(result.Document)
+		if excerpt == "" {
+			continue
+		}
+		if utf8.RuneCountInString(excerpt) > nudgebeeDocsExcerptMaxRunes {
+			excerpt = truncateNudgebeeDocsText(excerpt, nudgebeeDocsExcerptMaxRunes)
+			truncated = true
+		}
+		dedupeKey := strings.ToLower(sourceURL + "\x00" + title + "\x00" + section + "\x00" + excerpt)
+		if seenDocuments[dedupeKey] {
+			continue
+		}
+		seenDocuments[dedupeKey] = true
+
+		var lines []string
+		if title != "" {
+			lines = append(lines, "Title: "+title)
+		}
+		if section != "" {
+			lines = append(lines, "Section: "+section)
+		}
+		lines = append(lines, "Evidence: "+excerpt)
+		if sourceURL != "" {
+			lines = append(lines, "Source: "+sourceURL)
+		}
+		block := fmt.Sprintf("[%d] %s", len(blocks)+1, strings.Join(lines, "\n"))
+		blockRunes := utf8.RuneCountInString(block) + 2
+		if totalRunes+blockRunes > nudgebeeDocsOutputMaxRunes {
+			truncated = true
+			break
+		}
+		blocks = append(blocks, block)
+		totalRunes += blockRunes
+
+		if sourceURL != "" && !seenURLs[sourceURL] {
+			seenURLs[sourceURL] = true
+			label := title
+			if label == "" {
+				label = sourceURL
+			}
+			references = append(references, core.NBToolResponseReference{Text: label, Url: sourceURL, Type: "link"})
+		}
+	}
+	if len(blocks) == 0 {
+		return nudgebeeDocsNoResult, nil, 0, truncated
+	}
+	return "Nudgebee product documentation:\n" + strings.Join(blocks, "\n\n"), references, len(blocks), truncated
+}
+
+func normalizeNudgebeeDocsText(value string) string {
+	unescaped := html.UnescapeString(value)
+	stripped := nudgebeeHTMLTags.ReplaceAllString(unescaped, " ")
+	return strings.Join(strings.Fields(stripped), " ")
+}
+
+func nudgebeeMetadataString(metadata map[string]any, key string) string {
+	value, ok := metadata[key].(string)
+	if !ok {
+		return ""
+	}
+	return normalizeNudgebeeDocsText(value)
+}
+
+func nudgebeeDocsURL(metadata map[string]any) string {
+	raw, ok := metadata["url"].(string)
+	if !ok {
+		return ""
+	}
+	raw = html.UnescapeString(strings.TrimSpace(raw))
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return ""
+	}
+	return parsed.String()
+}
+
+func truncateNudgebeeDocsText(value string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(value) <= maxRunes {
+		return value
+	}
+	if maxRunes == 1 {
+		return "…"
+	}
+	keptRunes := 0
+	for byteIndex := range value {
+		if keptRunes == maxRunes-1 {
+			return strings.TrimSpace(value[:byteIndex]) + "…"
+		}
+		keptRunes++
+	}
+	return value
 }

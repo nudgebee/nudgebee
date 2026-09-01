@@ -33,6 +33,7 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 			UserId                       string
 			ExpectedToolCalls            []expectedNudgebeeToolCall
 			MaxToolCalls                 int
+			RequireExternalReference     bool
 			ExpectedFinalAnswerFragments []string
 		}{
 			{
@@ -67,8 +68,9 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				AccountId:                    os.Getenv("TEST_ACCOUNT"),
 				UserId:                       os.Getenv("TEST_USER"),
 				Query:                        "What is a Nudgebee account?",
-				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 4}},
-				MaxToolCalls:                 4,
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 1}},
+				MaxToolCalls:                 1,
+				RequireExternalReference:     true,
 				ExpectedFinalAnswerFragments: []string{"account"},
 			},
 			{
@@ -77,10 +79,11 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				UserId:    os.Getenv("TEST_USER"),
 				Query:     "What is an integration in Nudgebee, and how many GitHub integrations do I have?",
 				ExpectedToolCalls: []expectedNudgebeeToolCall{
-					{Name: "nudgebee_docs_search", MaxOccurrences: 3},
+					{Name: "nudgebee_docs_search", MaxOccurrences: 1},
 					{Name: "nudgebee_integrations_count", ParameterFragment: `"type":"github"`},
 				},
-				MaxToolCalls:                 4,
+				MaxToolCalls:                 2,
+				RequireExternalReference:     true,
 				ExpectedFinalAnswerFragments: []string{"integration", "github"},
 			},
 		}
@@ -107,6 +110,10 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 		assert.NotContains(t, responseLower, "i am unable to retrieve")
 		for _, fragment := range tc.ExpectedFinalAnswerFragments {
 			assert.Contains(t, responseLower, fragment)
+		}
+		if tc.RequireExternalReference {
+			require.NotEmpty(t, resp.References, "documentation answers must propagate source references")
+			assert.NotEmpty(t, resp.References[0].Url)
 		}
 
 		detail, err := core.GetConversationDao().GetConversationAgentDetail(tc.SessionId, tc.AccountId, resp.AgentId, "")

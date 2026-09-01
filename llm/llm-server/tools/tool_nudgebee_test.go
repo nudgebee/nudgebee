@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"nudgebee/llm/config"
@@ -186,4 +187,109 @@ func TestNudgebeeToolsAreReadOnly(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, core.ToolRequestTypeRead, requestType)
 	}
+}
+
+func TestNudgebeeDocsSearchFiltersAndFormatsProductDocs(t *testing.T) {
+	previous := queryNudgebeeDocs
+	t.Cleanup(func() { queryNudgebeeDocs = previous })
+	queryNudgebeeDocs = func(userID, accountID, query, module string, count int, conversationID, messageID, agentID string, track bool, filters ...map[string]any) core.RAGSearchResults {
+		assert.Equal(t, "user-1", userID)
+		assert.Equal(t, "acc-1", accountID)
+		assert.Equal(t, "what is an account?", query)
+		assert.Equal(t, nudgebeeDocsModule, module)
+		assert.Equal(t, nudgebeeDocsResultLimit, count)
+		assert.True(t, track)
+		require.Equal(t, []map[string]any{{"source": nudgebeeDocsSource}}, filters)
+		return core.RAGSearchResults{
+			{Document: "<p>An account&nbsp;groups   resources.</p>", Metadata: map[string]any{
+				"title": "Accounts &amp; access", "section": " Concepts ", "url": "https://docs.nudgebee.com/accounts",
+			}},
+			{Document: "<p>An account&nbsp;groups   resources.</p>", Metadata: map[string]any{
+				"title": "Accounts &amp; access", "section": " Concepts ", "url": "https://docs.nudgebee.com/accounts",
+			}},
+			{Document: "Accounts can contain integrations.", Metadata: map[string]any{
+				"title": "Accounts &amp; access", "section": "Integrations", "url": "https://docs.nudgebee.com/accounts",
+			}},
+			{Document: "A second useful result.", Metadata: map[string]any{
+				"title": 123, "section": []string{"bad"}, "url": 42,
+			}},
+		}
+	}
+
+	resp, err := NudgebeeDocsSearchTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: "  what is an account?  "})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	assert.Equal(t, core.NBToolResponseTypeText, resp.Type)
+	assert.Contains(t, resp.Data, "Title: Accounts & access")
+	assert.Contains(t, resp.Data, "Evidence: An account groups resources.")
+	assert.Contains(t, resp.Data, "A second useful result.")
+	assert.NotContains(t, resp.Data, "<p>")
+	assert.Contains(t, resp.Data, "Accounts can contain integrations.")
+	assert.Equal(t, 1, strings.Count(resp.Data, "Evidence: An account groups resources."))
+	require.Len(t, resp.References, 1)
+	assert.Equal(t, "https://docs.nudgebee.com/accounts", resp.References[0].Url)
+	assert.Equal(t, "Accounts & access", resp.References[0].Text)
+}
+
+func TestNudgebeeDocsSearchNoResultDoesNotFallback(t *testing.T) {
+	previous := queryNudgebeeDocs
+	t.Cleanup(func() { queryNudgebeeDocs = previous })
+	calls := 0
+	queryNudgebeeDocs = func(_, _, _, _ string, _ int, _, _, _ string, _ bool, _ ...map[string]any) core.RAGSearchResults {
+		calls++
+		return nil
+	}
+
+	resp, err := NudgebeeDocsSearchTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: "unknown feature"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+	assert.Equal(t, nudgebeeDocsNoResult, resp.Data)
+	assert.Empty(t, resp.References)
+}
+
+func TestFormatNudgebeeDocsResultsBoundsAndDeduplicates(t *testing.T) {
+	longDocument := strings.Repeat("évidence ", nudgebeeDocsExcerptMaxRunes)
+	data, references, selected, truncated := formatNudgebeeDocsResults(core.RAGSearchResults{
+		{Document: longDocument, Metadata: map[string]any{"title": "Long", "url": "https://docs.nudgebee.com/long"}},
+		{Document: longDocument, Metadata: map[string]any{"title": "Long", "url": "https://docs.nudgebee.com/long"}},
+		{Document: "unsafe URL remains evidence-only", Metadata: map[string]any{"url": "javascript:alert(1)"}},
+	})
+
+	assert.True(t, truncated)
+	assert.Equal(t, 2, selected)
+	assert.LessOrEqual(t, len([]rune(data)), nudgebeeDocsOutputMaxRunes)
+	assert.Contains(t, data, "…")
+	assert.NotContains(t, data, "ignored duplicate")
+	assert.NotContains(t, data, "javascript:")
+	require.Len(t, references, 1)
+}
+
+func TestFormatNudgebeeDocsResultsDeduplicatesTruncatedEvidence(t *testing.T) {
+	sharedPrefix := strings.Repeat("same ", nudgebeeDocsExcerptMaxRunes)
+	_, _, selected, truncated := formatNudgebeeDocsResults(core.RAGSearchResults{
+		{Document: sharedPrefix + "first suffix"},
+		{Document: sharedPrefix + "second suffix"},
+	})
+
+	assert.True(t, truncated)
+	assert.Equal(t, 1, selected)
+}
+
+func TestNormalizeNudgebeeDocsTextHandlesEscapedAndAttributedTags(t *testing.T) {
+	input := `2 < 3 &amp;&amp; &lt;p note="latency > 500ms"&gt;healthy&nbsp;now&lt;/p&gt;`
+	assert.Equal(t, "2 < 3 && healthy now", normalizeNudgebeeDocsText(input))
+}
+
+func TestNudgebeeDocsURLPreservesQueryParameters(t *testing.T) {
+	assert.Equal(t,
+		"https://docs.nudgebee.com/search?q=accounts&section=setup",
+		nudgebeeDocsURL(map[string]any{"url": "  https://docs.nudgebee.com/search?q=accounts&amp;section=setup  "}),
+	)
+}
+
+func TestTruncateNudgebeeDocsTextPreservesRuneBound(t *testing.T) {
+	assert.Empty(t, truncateNudgebeeDocsText("content", 0))
+	assert.Equal(t, "…", truncateNudgebeeDocsText("évidence", 1))
+	assert.Equal(t, "év…", truncateNudgebeeDocsText("évidence", 3))
+	assert.Equal(t, "short", truncateNudgebeeDocsText("short", 5))
 }
