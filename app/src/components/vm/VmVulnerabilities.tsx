@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import CustomTable from '@shared/tables/CustomTable';
 import ListingLayout from '@ui/ListingLayout';
@@ -300,9 +300,9 @@ const VmVulnerabilities = ({
     };
   }, [accountId, embedded]);
 
-  const onMenuClick = (item: { id: string }, finding: VmVulnerability) => {
+  const onMenuClick = useCallback((item: { id: string }, finding: VmVulnerability) => {
     if (item.id === 'create-ticket') setTicketFinding(finding);
-  };
+  }, []);
 
   // Where the VM goes depends on what the table is already scoped to. Scoped to
   // one VM (the inventory row's drill-down) it is not worth a line at all. Under
@@ -312,56 +312,65 @@ const VmVulnerabilities = ({
   const vmUnderVulnerability = Boolean(vulnId) && !cloudResourceId;
   const showVm = !cloudResourceId;
 
-  const tableData = rows.map((finding) => {
-    const payload = finding.recommendation || {};
-    const packageSubtext = [payload.package?.type, showVm && !vmUnderVulnerability ? finding.resource_name : undefined].filter(Boolean).join(' · ');
-    const vulnSubtext = [payload.kev ? 'Known exploited' : undefined, vmUnderVulnerability ? finding.resource_name : undefined]
-      .filter(Boolean)
-      .join(' · ');
-    return [
-      ...(accountsById
-        ? [{ component: <CellText text={accountsById[finding.account_id] || finding.account_id} />, drilldownQuery: { finding } }]
-        : []),
-      { component: <SeverityIcon level={toSeverityLevel(finding.severity)} size={14} aria-label={finding.severity} />, drilldownQuery: { finding } },
-      { component: <CellText text={payload.vuln_id} subtext={vulnSubtext || undefined} mono /> },
-      { component: <CellText text={payload.package?.name} subtext={packageSubtext || undefined} /> },
-      { component: <CellText text={payload.package?.version} mono /> },
-      {
-        component: payload.fixed_version ? (
-          <CellText text={payload.fixed_version} mono />
-        ) : (
-          <Label tone='neutral' size='sm' text={payload.fix_state || 'No fix'} />
-        ),
-      },
-      { component: <CellText text={payload.cvss_v3_score != null ? String(payload.cvss_v3_score) : undefined} /> },
-      { component: <Datetime value={finding.updated_at} /> },
-      {
-        component: (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-            {/* Asking the assistant about a CVE finding isn't wired up yet — the
-                icon holds its place, disabled, and says so on hover. */}
-            <DsButton
-              tone='ghost'
-              size='xs'
-              composition='icon-only'
-              disabled
-              tooltip={`Ask ${assistantName} · Coming Soon`}
-              aria-label={`Ask ${assistantName} · Coming Soon`}
-              id={`vm-vulnerability-ask-nubi-${finding.id}`}
-              icon={<SafeIcon src={getNubiIconCircleUrl()} alt='' width={18} height={18} />}
-            />
-            <ThreeDotsMenu
-              id={`vm-vulnerability-actions-${finding.id}`}
-              menuItems={menuItems(canCreateTicket)}
-              data={finding}
-              onMenuClick={onMenuClick}
-              menuWidth={260}
-            />
-          </Box>
-        ),
-      },
-    ];
-  });
+  const tableData = useMemo(
+    () =>
+      rows.map((finding) => {
+        const payload = finding.recommendation || {};
+        const packageSubtext = [payload.package?.type, showVm && !vmUnderVulnerability ? finding.resource_name : undefined]
+          .filter(Boolean)
+          .join(' · ');
+        const vulnSubtext = [payload.kev ? 'Known exploited' : undefined, vmUnderVulnerability ? finding.resource_name : undefined]
+          .filter(Boolean)
+          .join(' · ');
+        return [
+          ...(accountsById
+            ? [{ component: <CellText text={accountsById[finding.account_id] || finding.account_id} />, drilldownQuery: { finding } }]
+            : []),
+          {
+            component: <SeverityIcon level={toSeverityLevel(finding.severity)} size={14} aria-label={finding.severity} />,
+            drilldownQuery: { finding },
+          },
+          { component: <CellText text={payload.vuln_id} subtext={vulnSubtext || undefined} mono /> },
+          { component: <CellText text={payload.package?.name} subtext={packageSubtext || undefined} /> },
+          { component: <CellText text={payload.package?.version} mono /> },
+          {
+            component: payload.fixed_version ? (
+              <CellText text={payload.fixed_version} mono />
+            ) : (
+              <Label tone='neutral' size='sm' text={payload.fix_state || 'No fix'} />
+            ),
+          },
+          { component: <CellText text={payload.cvss_v3_score != null ? String(payload.cvss_v3_score) : undefined} /> },
+          { component: <Datetime value={finding.updated_at} /> },
+          {
+            component: (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                {/* Asking the assistant about a CVE finding isn't wired up yet — the
+                    icon holds its place, disabled, and says so on hover. */}
+                <DsButton
+                  tone='ghost'
+                  size='xs'
+                  composition='icon-only'
+                  disabled
+                  tooltip={`Ask ${assistantName} · Coming Soon`}
+                  aria-label={`Ask ${assistantName} · Coming Soon`}
+                  id={`vm-vulnerability-ask-nubi-${finding.id}`}
+                  icon={<SafeIcon src={getNubiIconCircleUrl()} alt='' width={18} height={18} />}
+                />
+                <ThreeDotsMenu
+                  id={`vm-vulnerability-actions-${finding.id}`}
+                  menuItems={menuItems(canCreateTicket)}
+                  data={finding}
+                  onMenuClick={onMenuClick}
+                  menuWidth={260}
+                />
+              </Box>
+            ),
+          },
+        ];
+      }),
+    [rows, accountsById, showVm, vmUnderVulnerability, assistantName, canCreateTicket, onMenuClick]
+  );
 
   // Which filter the drill-down applies is the only thing that differs per
   // grouping — the expanded row is this same component, scoped.

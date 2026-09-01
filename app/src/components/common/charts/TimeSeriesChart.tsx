@@ -76,14 +76,20 @@ function areaFill(color: string, strong: boolean) {
   };
 }
 
+/** Module-level so these defaults keep one identity across renders — inline
+ *  defaults would be new functions each render and defeat the memos keyed on
+ *  them (`datasets` on colorFor, `endLabels` on format). */
+const paletteColorFor = (_key: string, index: number) => SERIES_PALETTE[index % SERIES_PALETTE.length];
+const roundedFormat = (value: number) => String(Math.round(value));
+
 export function TimeSeriesChart({
   labels,
   series,
   shape = 'bar',
-  format = (v) => String(Math.round(v)),
+  format = roundedFormat,
   compactFormat = compactCurrency,
   integerY = false,
-  colorFor = (_k, i) => SERIES_PALETTE[i % SERIES_PALETTE.length],
+  colorFor = paletteColorFor,
   showLegend = true,
   height = 264,
   id,
@@ -93,35 +99,39 @@ export function TimeSeriesChart({
   const isArea = shape === 'area';
   const stacked = isBar || isArea;
 
-  const datasets = series.map(({ key, data }, i) => {
-    const color = colorFor(key, i);
-    if (isBar) {
-      return {
-        label: key,
-        data: data.map((v) => Number((v ?? 0).toFixed(2))),
-        backgroundColor: barGradient(color),
-        borderColor: withAlpha(color, 0.9),
-        borderWidth: { top: 1, right: 0, bottom: 0, left: 0 },
-        borderRadius: 3,
-        maxBarThickness: 40,
-      };
-    }
-    // line / area: a single line reads richer with a fill; many thin strokes
-    // keep subtle gradient fills so they layer without mud. `area` forces fills.
-    const fill = isArea || series.length <= 3;
-    return {
-      label: key,
-      data,
-      borderColor: color,
-      backgroundColor: fill ? areaFill(color, isArea) : color,
-      fill: isArea ? (i === 0 ? 'origin' : '-1') : fill ? 'origin' : false,
-      borderWidth: isArea ? 1.5 : 2.5,
-      pointRadius: 0,
-      pointHoverRadius: 4,
-      pointBackgroundColor: color,
-      tension: 0.35,
-    };
-  });
+  const datasets = React.useMemo(
+    () =>
+      series.map(({ key, data }, i) => {
+        const color = colorFor(key, i);
+        if (isBar) {
+          return {
+            label: key,
+            data: data.map((v) => Number((v ?? 0).toFixed(2))),
+            backgroundColor: barGradient(color),
+            borderColor: withAlpha(color, 0.9),
+            borderWidth: { top: 1, right: 0, bottom: 0, left: 0 },
+            borderRadius: 3,
+            maxBarThickness: 40,
+          };
+        }
+        // line / area: a single line reads richer with a fill; many thin strokes
+        // keep subtle gradient fills so they layer without mud. `area` forces fills.
+        const fill = isArea || series.length <= 3;
+        return {
+          label: key,
+          data,
+          borderColor: color,
+          backgroundColor: fill ? areaFill(color, isArea) : color,
+          fill: isArea ? (i === 0 ? 'origin' : '-1') : fill ? 'origin' : false,
+          borderWidth: isArea ? 1.5 : 2.5,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          pointBackgroundColor: color,
+          tension: 0.35,
+        };
+      }),
+    [series, colorFor, isBar, isArea]
+  );
 
   const seriesTotals = React.useMemo(() => {
     const totals: Record<string, number> = {};
