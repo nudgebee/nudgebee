@@ -63,7 +63,7 @@ func TestEventAgentExecuteWithIdLogs(t *testing.T) {
 			UserId    string
 		}{
 			{
-				SessionId: "ut-events-chain-1",
+				SessionId: "ut-events-rca-by-id",
 				AccountId: os.Getenv("TEST_ACCOUNT"),
 				UserId:    os.Getenv("TEST_USER"),
 				Query:     fmt.Sprintf("Get RCA of Event with Id %s", eventID),
@@ -200,7 +200,7 @@ func TestEventAgentSLODetection(t *testing.T) {
 			UserId    string
 		}{
 			{
-				SessionId: "ut-events-chain-10",
+				SessionId: "ut-events-slo-latest",
 				AccountId: os.Getenv("TEST_ACCOUNT"),
 				UserId:    os.Getenv("TEST_USER"),
 				Query:     "Get me latest SLO violations in the system",
@@ -234,7 +234,7 @@ func TestEventAgentAnamolyCount(t *testing.T) {
 			UserId    string
 		}{
 			{
-				SessionId: "ut-events-chain-10",
+				SessionId: "ut-events-anomaly-count",
 				AccountId: os.Getenv("TEST_ACCOUNT"),
 				UserId:    os.Getenv("TEST_USER"),
 				Query:     "get me total anomalies count in the system",

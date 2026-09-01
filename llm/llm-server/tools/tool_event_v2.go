@@ -158,6 +158,14 @@ func resolveTimeRange(input core.NBToolCallRequest) (startISO, endISO string, er
 	return start, end, nil
 }
 
+func appendDefaultEventStart(whereClauses []string, startTime string, now time.Time) []string {
+	if startTime != "" {
+		return whereClauses
+	}
+	defaultStart := now.AddDate(0, 0, -30).UTC().Format(time.RFC3339)
+	return append(whereClauses, fmt.Sprintf("starts_at >= %s", pq.QuoteLiteral(defaultStart)))
+}
+
 // buildManifestOnlyEvidence replaces each row's raw evidences JSON with a
 // lightweight manifest (available evidence types + key insights), regardless
 // of row count. list_events is a discovery tool, not a deep-dive tool — full
@@ -181,6 +189,27 @@ func buildManifestOnlyEvidence(data []map[string]any) {
 			continue
 		}
 		et.buildEvidenceManifest(row, evs)
+	}
+}
+
+func mergeEvidenceManifests(data, evidenceData []map[string]any) {
+	manifestsByID := make(map[string]any, len(evidenceData))
+	for _, row := range evidenceData {
+		id, ok := row["id"].(string)
+		if !ok || row["evidences"] == nil {
+			continue
+		}
+		manifestsByID[id] = row["evidences"]
+	}
+
+	for _, row := range data {
+		id, ok := row["id"].(string)
+		if !ok {
+			continue
+		}
+		if manifest, found := manifestsByID[id]; found {
+			row["evidences"] = manifest
+		}
 	}
 }
 
@@ -643,23 +672,31 @@ func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	if endTime != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("starts_at <= %s", pq.QuoteLiteral(endTime)))
 	}
+	whereClauses = appendDefaultEventStart(whereClauses, startTime, time.Now())
 
 	limit := intArg(input, "limit", 10)
 
-	query := "SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, " +
-		"subject_name, subject_namespace, evidences, nb_status, computed_priority, computed_score, event_count FROM events"
-	if len(whereClauses) > 0 {
-		query += " WHERE " + strings.Join(whereClauses, " AND ")
-	}
-	query += " ORDER BY starts_at DESC"
-
-	view := resolveEventsViewPlaceholders(eventsViewWithRanking, nbCtx.AccountId, false)
-	resp, data, err := sqlToolCall(nbCtx, query, "events", view, limit, nil)
+	metadataView := buildListEventsMetadataView(nbCtx.AccountId, whereClauses)
+	metadataQuery := "SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, " +
+		"subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count " +
+		"FROM events ORDER BY starts_at DESC"
+	resp, data, err := sqlToolCall(nbCtx, metadataQuery, "events", metadataView, limit, nil)
 	if err != nil {
 		return resp, err
 	}
 
-	buildManifestOnlyEvidence(data)
+	if len(data) > 0 {
+		evidenceView := buildListEventsEvidenceView(nbCtx.AccountId, data)
+		if evidenceView != "" {
+			evidenceQuery := "SELECT id, evidences FROM events"
+			_, evidenceData, evidenceErr := sqlToolCall(nbCtx, evidenceQuery, "events", evidenceView, len(data), nil)
+			if evidenceErr != nil {
+				return core.NBToolResponse{}, evidenceErr
+			}
+			buildManifestOnlyEvidence(evidenceData)
+			mergeEvidenceManifests(data, evidenceData)
+		}
+	}
 
 	bytesData, marshalErr := common.MarshalJson(data)
 	if marshalErr != nil {
@@ -668,6 +705,38 @@ func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	resp.Data = string(bytesData)
 	resp.References = eventReferences(nbCtx, data)
 	return resp, nil
+}
+
+func buildListEventsMetadataView(accountID string, whereClauses []string) string {
+	where := append([]string{
+		fmt.Sprintf("cloud_account_id = %s::uuid", pq.QuoteLiteral(accountID)),
+	}, whereClauses...)
+
+	return `SELECT id::text, title, starts_at, priority, source, aggregation_key, finding_type, ` +
+		`subject_type, subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count ` +
+		`FROM (` +
+		`SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, ` +
+		`subject_name, subject_namespace, nb_status, computed_priority, computed_score, ` +
+		`COUNT(*) OVER (PARTITION BY aggregation_key, subject_name, subject_type, subject_namespace, fingerprint) AS event_count, ` +
+		`ROW_NUMBER() OVER (PARTITION BY aggregation_key, subject_name, subject_type, subject_namespace, fingerprint ORDER BY starts_at DESC) AS rn ` +
+		`FROM events WHERE ` + strings.Join(where, " AND ") +
+		`) ranked_events WHERE rn = 1`
+}
+
+func buildListEventsEvidenceView(accountID string, data []map[string]any) string {
+	ids := make([]string, 0, len(data))
+	for _, row := range data {
+		if id, ok := row["id"].(string); ok {
+			if _, err := uuid.Parse(id); err == nil {
+				ids = append(ids, pq.QuoteLiteral(id)+"::uuid")
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	return "SELECT id::text, evidences::text FROM events WHERE cloud_account_id = " +
+		pq.QuoteLiteral(accountID) + "::uuid AND id IN (" + strings.Join(ids, ", ") + ")"
 }
 
 // ---------------------------------------------------------------------------
@@ -696,7 +765,7 @@ func (t AggregateEventsTool) GetType() core.NBToolType { return core.NBToolTypeT
 
 func (t AggregateEventsTool) Description() string {
 	return "Count or group events by a single column (aggregation_key, subject_namespace, subject_type, " +
-		"finding_type, priority, source, or nb_status), optionally scoped by subject_namespace/finding_type/" +
+		"finding_type, priority, source, or nb_status), optionally scoped by subject_namespace/finding_type/priority/" +
 		"time range. Set count_distinct_fingerprint=true to count unique event patterns (dedup) instead of " +
 		"raw occurrences. Use this for 'how many X' / 'top N by Y' / alert-noise questions instead of " +
 		"writing raw SQL with GROUP BY/COUNT."
@@ -719,6 +788,10 @@ func (t AggregateEventsTool) InputSchema() core.ToolSchema {
 			"finding_type": {
 				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
 				Description: "Optional: one or more of issue, configuration_change, SLO, Anomaly.",
+			},
+			"priority": {
+				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+				Description: "Optional: one or more of DEBUG, INFO, LOW, MEDIUM, HIGH.",
 			},
 			"start_time":     {Type: core.ToolSchemaTypeString, Description: "ISO8601. Alternative to relative_range."},
 			"end_time":       {Type: core.ToolSchemaTypeString, Description: "ISO8601. Defaults to now."},
@@ -750,6 +823,9 @@ func (t AggregateEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 	if vs := stringArrayArg(input, "finding_type"); len(vs) > 0 {
 		whereClauses = append(whereClauses, "finding_type IN ("+quotedList(vs)+")")
 	}
+	if vs := stringArrayArg(input, "priority"); len(vs) > 0 {
+		whereClauses = append(whereClauses, "priority IN ("+quotedList(vs)+")")
+	}
 	startTime, endTime, err := resolveTimeRange(input)
 	if err != nil {
 		return eventsV2ErrorResponse(err), nil
@@ -760,6 +836,7 @@ func (t AggregateEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 	if endTime != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("starts_at <= %s", pq.QuoteLiteral(endTime)))
 	}
+	whereClauses = appendDefaultEventStart(whereClauses, startTime, time.Now())
 
 	// group_by is enum-validated above against a fixed allowlist, so it's safe
 	// to interpolate directly — this is the one column name events_v2 lets
@@ -770,7 +847,10 @@ func (t AggregateEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 	}
 	query += fmt.Sprintf(" GROUP BY %s ORDER BY count DESC", groupBy)
 
-	view := resolveEventsViewPlaceholders(eventsViewWithId, nbCtx.AccountId, false)
+	// The typed time predicates above are authoritative. Do not reapply the
+	// legacy view's fixed 30-day lower bound: explicit older ranges must remain
+	// queryable, while calls without a start bound already received the default.
+	view := resolveEventsViewPlaceholders(eventsViewWithId, nbCtx.AccountId, true)
 	resp, _, err := sqlToolCall(nbCtx, query, "events", view, 0, nil)
 	if err != nil {
 		return resp, err

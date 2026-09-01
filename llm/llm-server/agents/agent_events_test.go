@@ -1,12 +1,62 @@
 package agents
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
+	"nudgebee/llm/agents/core"
 	"nudgebee/llm/events"
+	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 )
+
+func TestAgentEventsExposesStructuredEventTools(t *testing.T) {
+	agent := AgentEvents{}
+	names := map[string]bool{}
+	for _, tool := range agent.GetSupportedTools(security.NewRequestContextForSuperAdmin()) {
+		names[tool.Name()] = true
+	}
+
+	assert.True(t, names[tools.ToolGetEventById])
+	assert.True(t, names[tools.ToolListEvents])
+	assert.True(t, names[tools.ToolAggregateEvents])
+	assert.True(t, names[tools.ToolEventExecuteSql], "raw SQL must remain available as a fallback")
+}
+
+func TestAgentEventsPromptPrefersStructuredTools(t *testing.T) {
+	prompt := AgentEvents{}.GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{})
+	joined := strings.Join(append(append([]string{}, prompt.Instructions...), prompt.Constraints...), "\n")
+
+	assert.Contains(t, joined, "use get_event_by_id for an exact event UUID")
+	assert.Contains(t, joined, "list_events for recent or filtered event lists")
+	assert.Contains(t, joined, "aggregate_events for counts or grouping")
+	assert.NotContains(t, joined, "Always use the 'events_execute' tool")
+	assert.NotContains(t, joined, "You must generate the SQL query")
+}
+
+func TestAgentEventsExamplesRouteSupportedIntentsToStructuredTools(t *testing.T) {
+	prompt := AgentEvents{}.GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{})
+	want := map[string]string{
+		"What  are latest errors?":                                                        tools.ToolListEvents,
+		"Get all events for nodes within a specific time range?":                          tools.ToolListEvents,
+		"How many events are thre for each aggregation key within a specific time range?": tools.ToolAggregateEvents,
+		"Group all HIGH priority events from the last 7 days by their aggregation key.":   tools.ToolAggregateEvents,
+		"Why is this event suppressed / why is it only P3?":                               tools.ToolGetEventById,
+	}
+
+	for _, example := range prompt.Examples {
+		toolName, ok := want[example.Question]
+		if !ok {
+			continue
+		}
+		assert.NotEmpty(t, example.AnswerSteps)
+		assert.Equal(t, toolName, example.AnswerSteps[0].Tool, example.Question)
+		delete(want, example.Question)
+	}
+	assert.Empty(t, want, "every representative intent must have a structured-tool example")
+}
 
 func TestCountEventsInResponse(t *testing.T) {
 	tests := []struct {
