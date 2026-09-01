@@ -6,17 +6,21 @@ import (
 )
 
 type PlaybookEvent struct {
-	EventId          string            `json:"event_id"`
-	Name             string            `json:"name"`
-	Source           string            `json:"source"`
-	Labels           map[string]string `json:"labels"`
-	Annotations      map[string]string `json:"annotations"`
-	StartedAt        *time.Time        `json:"started_at"`
-	EndedAt          *time.Time        `json:"ended_at"`
-	SubjectName      string            `json:"subject_name"`
-	SubjectType      string            `json:"subject_type"`
-	SubjectOwner     string            `json:"subject_owner"`
-	SubjectNamespace string            `json:"subject_namespace"`
+	EventId      string            `json:"event_id"`
+	Name         string            `json:"name"`
+	Source       string            `json:"source"`
+	Labels       map[string]string `json:"labels"`
+	Annotations  map[string]string `json:"annotations"`
+	StartedAt    *time.Time        `json:"started_at"`
+	EndedAt      *time.Time        `json:"ended_at"`
+	SubjectName  string            `json:"subject_name"`
+	SubjectType  string            `json:"subject_type"`
+	SubjectOwner string            `json:"subject_owner"`
+	// SubjectOwnerKind is the kind of SubjectOwner (the pod's top-level
+	// controller), e.g. "Deployment"/"StatefulSet"/"DaemonSet". Casing is not
+	// normalized upstream.
+	SubjectOwnerKind string `json:"subject_owner_kind"`
+	SubjectNamespace string `json:"subject_namespace"`
 	// SubjectNode is the K8s node hosting the pod-subject. Populated by the
 	// trigger engine (kubewatch payload) for pod events, by `node` label for
 	// alert-driven events. Enrichers that key on the pod's host node
