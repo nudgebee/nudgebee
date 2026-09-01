@@ -356,6 +356,9 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 	if fingerprint == "" {
 		fingerprint = inc.IncidentID
 	}
+	for k, v := range gcpLogEnrichmentLabels(inc, projectID, policyPath) {
+		labels[k] = v
+	}
 
 	// EventId (finding_id): use the GCP API's native incident path format so the
 	// polling path (which uses alert.Name) produces the same finding_id for dedup.
@@ -506,6 +509,32 @@ func mapGCPSeverityToPriority(sev string) event.EventPriority {
 	default:
 		return event.EventPriorityMedium
 	}
+}
+
+// gcpLogEnrichmentLabels returns the labels the cloud_logs enricher reads but that the
+// webhook payload alone does not spell the way the polling path does. Split out of
+// ProcessEventWebook so the contract with cloud.gcpLogRawParams is unit-testable.
+//
+// Until #36870 the webhook path set none of these, so a log-based metric alert ingested
+// by webhook could not narrow its log query the way the same alert does when polled.
+func gcpLogEnrichmentLabels(inc GCPMonitoringIncident, projectID, policyPath string) map[string]string {
+	labels := map[string]string{}
+	if projectID != "" {
+		// gcpLogRawParams reads gcp_project_id, not the project_id label set above.
+		labels["gcp_project_id"] = projectID
+	}
+	// A log-based metric names the log it counts in its metric labels. The polling path
+	// carries that as metric_log; cloud_logs turns it into a log_group_name that narrows
+	// the query to that log instead of the whole resource.
+	if metricLog := inc.Metric.Labels["log"]; metricLog != "" {
+		labels["metric_log"] = metricLog
+	}
+	// Native log alerts scope themselves off the policy's own log-match filter; the
+	// collector's scope resolver reads the policy path as policy_id.
+	if policyPath != "" {
+		labels["gcp_policy_id"] = policyPath
+	}
+	return labels
 }
 
 // gcpResourceTypeToServiceName maps GCP monitored resource types to human-readable service names.

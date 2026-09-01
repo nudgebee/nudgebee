@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/internal/testenv"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -97,6 +98,44 @@ func TestGCPLogRawParams(t *testing.T) {
 	})
 	assert.Equal(t, "log4j_exploits", logMetric["log_metric_name"])
 	assert.Equal(t, "", logMetric["policy_id"], "a metric alert has no log policy to scope by")
+	assert.NotContains(t, logMetric, "log_group_name",
+		"without metric_log there is no single log to narrow to")
+
+	// metric_log names the log the metric counts; with the project it narrows the query
+	// to that log instead of the whole resource. Webhook-ingested alerts only carry it
+	// since #36870 — before that they had neither metric_log nor gcp_project_id.
+	narrowed := gcpLogRawParams(map[string]string{
+		"gcp_project_id":  "example-project",
+		"gcp_metric_type": "logging.googleapis.com/user/slow_queries",
+		"metric_log":      "cloudsql.googleapis.com/postgres.log",
+	})
+	assert.Equal(t, "projects/example-project/logs/cloudsql.googleapis.com%2Fpostgres.log",
+		narrowed["log_group_name"])
+}
+
+// TestLogMetricLookbackWindow covers the query window for log-based metric alerts.
+// Pure unit test — no cloud/DB access.
+func TestLogMetricLookbackWindow(t *testing.T) {
+	fired := time.Date(2026, 8, 24, 9, 5, 6, 0, time.UTC)
+	closed := fired.Add(10 * time.Minute)
+
+	// Polling path: the event has an end, so the hour before it is the window.
+	start, end := logMetricLookbackWindow(&fired, &closed, &fired)
+	assert.Equal(t, closed.Add(-1*time.Hour), *start)
+	assert.Equal(t, closed, *end)
+
+	// Webhook path (#36870): gcp_monitoring_webhook events carry no ends_at. Anchoring
+	// on when the alert fired keeps the window behind it — the logs a log-based metric
+	// counted are always older than the alert. Leaving end nil made buildLogFilter
+	// default it to time.Now(), giving a forward-looking window that matched nothing.
+	start, end = logMetricLookbackWindow(&fired, nil, &fired)
+	assert.Equal(t, fired.Add(-1*time.Hour), *start)
+	assert.Equal(t, fired, *end)
+
+	// No anchor at all: leave the window untouched rather than invent one.
+	start, end = logMetricLookbackWindow(nil, nil, nil)
+	assert.Nil(t, start)
+	assert.Nil(t, end)
 }
 
 // TestGCPEnricherGating covers the region-optional gating and the incident-ID guard

@@ -2084,7 +2084,7 @@ func isCloudEventSource(source string) bool {
 	switch source {
 	case "Azure_Monitor_Alert", "azure_monitor_webhook",
 		"AWS_CloudWatch_Alarm", "AWS_EventBridge",
-		"GCP_Metric_Alert":
+		"GCP_Metric_Alert", "gcp_monitoring_webhook":
 		return true
 	}
 	return false

@@ -1403,6 +1403,31 @@ func gcpLogRawParams(labels map[string]string) map[string]any {
 	return params
 }
 
+// logMetricLookbackWindow returns the query window for a log-based metric alert: the
+// hour ending at the alert. The default 10-minute window from getPlaybookStartEndTime is
+// too narrow because such alerts accumulate over time before firing; with the metric's
+// own filter applied the result set stays small enough for the wider window.
+//
+// The window is anchored on the event's end when it has one, else on when it fired.
+// Webhook-ingested GCP alerts (gcp_monitoring_webhook) carry no ends_at, so before the
+// startedAt fallback the widening was skipped entirely and buildLogFilter defaulted the
+// end to time.Now() — a forward-looking [fired, now] window. A log-based metric fires
+// *because* of logs that already happened, so that window structurally cannot contain
+// them, the query returned nothing, and no Logs card was ever rendered (#36870).
+func logMetricLookbackWindow(startTime, endTime, startedAt *time.Time) (*time.Time, *time.Time) {
+	anchor := endTime
+	if anchor == nil {
+		anchor = startedAt
+	}
+	if anchor == nil {
+		return startTime, endTime
+	}
+	// Copy rather than hand back the event's own StartedAt pointer.
+	end := *anchor
+	start := end.Add(-1 * time.Hour)
+	return &start, &end
+}
+
 // logQueryIncomplete reports whether a log query ended before it finished, as opposed to
 // finishing with nothing to show. Both cases used to return zero rows and no card, so a
 // provider rate-limit was indistinguishable from a resource that simply has no logs.
@@ -1554,13 +1579,8 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		params.EndTime = ctx.GetEvent().EndedAt
 	}
 
-	// For log-based metric alerts, widen the time window to 1 hour.
-	// The default 10-minute window from getPlaybookStartEndTime is too narrow
-	// because alerts accumulate over time before firing. With the metric filter
-	// applied, the result set will be small enough for a wider window.
-	if params.LogMetricName != "" && params.EndTime != nil {
-		widerStart := params.EndTime.Add(-1 * time.Hour)
-		params.StartTime = &widerStart
+	if params.LogMetricName != "" {
+		params.StartTime, params.EndTime = logMetricLookbackWindow(params.StartTime, params.EndTime, ctx.GetEvent().StartedAt)
 	}
 
 	query := params.Query
