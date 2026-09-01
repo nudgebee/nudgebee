@@ -37,7 +37,7 @@
   "dependencies": {
     "@axe-core/playwright": "^4.13.0",
     "axios": "^1.20.0",
-    "googleapis": "^174.0.1",
+    "googleapis": "^176.0.0",
     "node-fetch": "^3.3.2"
   }
 }
