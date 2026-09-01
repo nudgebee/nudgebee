@@ -3,8 +3,8 @@ name: Release
 # Triggered when a `v*` tag is pushed (e.g. `v0.99.1`). For each release:
 #   1. Build every first-party service image on a *native* runner for
 #      each supported platform (no QEMU emulation). amd64 builds use
-#      ubuntu-latest, arm64 builds use ubuntu-24.04-arm. ML-base-derived
-#      images (CUDA/conda) build amd64 only.
+#      ubuntu-latest, arm64 builds use ubuntu-24.04-arm. Every published
+#      image is amd64 + arm64.
 #      Per-platform images are pushed to:
 #         ghcr.io/<repo>/<service>:<version>-amd64
 #         ghcr.io/<repo>/<service>:<version>-arm64
@@ -116,13 +116,24 @@ jobs:
           - { image: relay-server,            context: collector-server/k8s-collector/relay-server,      platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: workflow-server,         context: runbook-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: workflow-server,         context: runbook-server,                                   platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
-          # ---------- amd64-only (ML-base-derived: CUDA/conda) ----------
+          # ---------- ML-base-derived ----------
+          # These were amd64-only on the theory that the ML base was CUDA/conda
+          # and could not go arm64. Neither half held: there is no CUDA in this
+          # graph, and both bases (nudgebee-ml-base:wolfi,
+          # nudgebee-llm-server-base:ubuntu-noble) already publish arm64. The
+          # enterprise pipeline has been building all three on native arm64
+          # runners the whole time. Note the wolfi base ships no build
+          # toolchain, so a pin without an aarch64 wheel fails outright instead
+          # of building from sdist — treat a red arm64 cell as a real signal.
           - { image: llm-server,              context: llm/llm-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: llm-server,              context: llm/llm-server,                                   platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: rag-server,              context: llm/rag-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: rag-server,              context: llm/rag-server,                                   platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           # benchmark-server image is intentionally not published to GHCR (OSS skip);
           # the source lives under llm/benchmark for local use, and benchmark-server.yaml
           # CI still tests the code. Re-add this line if/when publishing resumes.
           - { image: ml-k8s-server,           context: ml-k8s-server,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: ml-k8s-server,           context: ml-k8s-server,                                    platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
     steps:
       # Move Docker's data-root to /mnt (~80 GB free) so large image
       # layer extraction doesn't OOM on the small / partition (~14 GB).
@@ -194,8 +205,8 @@ jobs:
 
   # Stitch per-arch images into a single multi-arch manifest and apply
   # the canonical tags (:<version>, :<version>-<sha>, :sha-<sha>,
-  # :latest). For amd64-only images the merge produces a single-platform
-  # manifest list pointing at the amd64 image — same shape, one entry.
+  # :latest). `archs` must list exactly the arches the build matrix above
+  # produced for that image — a missing per-arch tag fails the merge.
   merge-manifests:
     needs: [prepare, build-images]
     runs-on: ubuntu-latest
@@ -217,10 +228,10 @@ jobs:
           - { image: cost-server,             archs: "amd64 arm64" }
           - { image: relay-server,            archs: "amd64 arm64" }
           - { image: workflow-server,         archs: "amd64 arm64" }
-          - { image: llm-server,              archs: "amd64" }
-          - { image: rag-server,              archs: "amd64" }
+          - { image: llm-server,              archs: "amd64 arm64" }
+          - { image: rag-server,              archs: "amd64 arm64" }
           # benchmark-server intentionally not published to GHCR (see build matrix above).
-          - { image: ml-k8s-server,           archs: "amd64" }
+          - { image: ml-k8s-server,           archs: "amd64 arm64" }
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       SHA_SHORT: ${{ needs.prepare.outputs.sha_short }}

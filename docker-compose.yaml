@@ -175,7 +175,6 @@ services:
   # Then docker compose up will pick up the locally-built image instead.
   api-server-services:
     profiles: [full]
-    platform: linux/amd64
     image: ghcr.io/nudgebee/services-server:edge
     build:
       context: ./api-server/services
@@ -201,7 +200,6 @@ services:
 
   ticket-server:
     profiles: [full]
-    platform: linux/amd64
     image: ghcr.io/nudgebee/ticket-server:edge
     build:
       context: ./ticket-server
@@ -219,7 +217,6 @@ services:
 
   cloud-collector:
     profiles: [full]
-    platform: linux/amd64
     image: ghcr.io/nudgebee/cloud-collector-server:edge
     build:
       context: ./collector-server/cloud-collector
@@ -236,7 +233,6 @@ services:
 
   relay-server:
     profiles: [full]
-    platform: linux/amd64
     image: ghcr.io/nudgebee/relay-server:edge
     build:
       context: ./collector-server/k8s-collector/relay-server
@@ -254,6 +250,9 @@ services:
 
   llm-server:
     profiles: [full]
+    # TODO: drop this pin once :edge carries arm64 for this image.
+    # release.yaml/edge.yaml now build it for arm64; the pin comes off in a
+    # follow-up once the first dual-arch :edge tag is published.
     platform: linux/amd64
     image: ghcr.io/nudgebee/llm-server:edge
     build:
@@ -284,7 +283,6 @@ services:
 
   workflow-server:
     profiles: [full]
-    platform: linux/amd64
     image: ghcr.io/nudgebee/workflow-server:edge
     build:
       context: ./runbook-server
@@ -306,7 +304,6 @@ services:
   # ---------- Python services ----------
   k8s-collector-app:
     profiles: [full]
-    platform: linux/amd64
     image: ghcr.io/nudgebee/k8s-collector:edge
     build:
       context: ./collector-server/k8s-collector/app
@@ -333,6 +330,9 @@ services:
 
   rag-server:
     profiles: [full]
+    # TODO: drop this pin once :edge carries arm64 for this image.
+    # release.yaml/edge.yaml now build it for arm64; the pin comes off in a
+    # follow-up once the first dual-arch :edge tag is published.
     platform: linux/amd64
     image: ghcr.io/nudgebee/rag-server:edge
     build:
@@ -351,6 +351,9 @@ services:
 
   ml-k8s-server:
     profiles: [full]
+    # TODO: drop this pin once :edge carries arm64 for this image.
+    # release.yaml/edge.yaml now build it for arm64; the pin comes off in a
+    # follow-up once the first dual-arch :edge tag is published.
     platform: linux/amd64
     image: ghcr.io/nudgebee/ml-k8s-server:edge
     build:
@@ -367,7 +370,6 @@ services:
 
   notifications-server:
     profiles: [full]
-    platform: linux/amd64
     image: ghcr.io/nudgebee/notifications:edge
     build:
       context: ./notifications-server
@@ -385,7 +387,6 @@ services:
   # ---------- Frontend ----------
   app:
     profiles: [full]
-    platform: linux/amd64
     image: ghcr.io/nudgebee/app:edge
     build:
       context: ./app
