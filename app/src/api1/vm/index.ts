@@ -7,8 +7,8 @@
  *
  *   VMs           cloud_resourses rows owned by the account (cloud_resources_list_v2)
  *   Agents        vm_agent integration configs + relay connection health
- *   SSH targets   ssh integration configs in connection_mode = vm_agent — one per
- *                 reachable host; their id is the `datasource_id` a scan runs through
+ *   Scan targets  forager discovery integrations; their id is the `datasource_id`
+ *                 a scan runs through
  *   Packages      vm_package rows, written by services/vmpackage after a scan
  *   Findings      recommendation rows with rule_name = 'vm_package_vulnerability'
  *
@@ -123,7 +123,7 @@ export interface VmAgent {
   version?: string;
 }
 
-export interface VmSshTarget {
+export interface VmScanTarget {
   id: string;
   name: string;
   status: string;
@@ -292,13 +292,6 @@ const safeParse = (value: any) => {
   } catch {
     return value;
   }
-};
-
-/** Pull one named config value out of the integration_config_values blob. */
-const configValue = (item: any, key: string): string => {
-  const values = Array.isArray(item?.integration_config_values) ? item.integration_config_values : safeParse(item?.integration_config_values) || [];
-  const match = Array.isArray(values) ? values.find((v: any) => v?.name === key) : undefined;
-  return match?.value ?? '';
 };
 
 /**
@@ -587,21 +580,21 @@ const apiVm = {
   },
 
   /**
-   * SSH integration configs in vm_agent mode — the pickable `datasource_id`s for
-   * a scan. k8s-mode SSH configs are excluded: they route through the in-cluster
-   * relay, not a forager, so discovery_inventory has nothing to run against.
+   * Forager discovery integrations — the pickable `datasource_id`s for a scan.
+   * The relay auto-registers a forager discovery datasource as type `discovery`,
+   * so it must not be looked up as an SSH integration.
    */
-  async listSshTargets(accountId: string): Promise<VmSshTarget[]> {
-    const response: any = await apiIntegrations.listIntegrations({ type: 'ssh', cloudAccountId: accountId, limit: 100 });
-    return (response?.data?.data?.integrations_list?.rows || [])
-      .filter((row: any) => configValue(row, 'connection_mode') === 'vm_agent')
-      .map((row: any) => ({
-        id: row.id,
-        name: row.name,
-        status: row.status,
-        host: configValue(row, 'host'),
-        username: configValue(row, 'username'),
-      }));
+  async listDiscoveryTargets(accountId: string): Promise<VmScanTarget[]> {
+    const response: any = await apiIntegrations.listIntegrations({ type: 'discovery', cloudAccountId: accountId, limit: 100 });
+    return (response?.data?.data?.integrations_list?.rows || []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      // Discovery integrations cover a network, not one saved SSH host.
+      // The VM's IP is supplied by the scan RPC.
+      host: '',
+      username: '',
+    }));
   },
 
   /**
