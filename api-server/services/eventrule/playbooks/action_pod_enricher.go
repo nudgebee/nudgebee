@@ -53,7 +53,7 @@ func (a *podEnricherAction) Execute(ctx PlaybookActionContext, rawParams map[str
 	}
 	// get_resource does not reliably honor the name/namespace filter for pods
 	// (observed returning hundreds of unrelated pods for a single-pod query).
-	data = filterPodsByNameNamespace(data, podName, namespace)
+	data = stripManagedFields(filterPodsByNameNamespace(data, podName, namespace))
 
 	if additionalInfo == nil {
 		additionalInfo = map[string]any{}
@@ -69,6 +69,30 @@ func (a *podEnricherAction) Execute(ctx PlaybookActionContext, rawParams map[str
 		"query":                rawParams,
 	}
 	return NewPlaybookActionResponseJson(data, additionalInfo, []PlaybookActionResponseInsight{}, metadata), nil
+}
+
+// stripManagedFields removes metadata.managedFields from each object in a
+// get_resource response. It is Kubernetes' own field-ownership bookkeeping —
+// never useful for diagnosing a pod, and a large share of the ~10KB every
+// pod_enricher evidence carries into the LLM context and the UI.
+func stripManagedFields(data any) any {
+	list, ok := data.([]any)
+	if !ok {
+		return data
+	}
+	for _, item := range list {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		meta, ok := obj["metadata"].(map[string]any)
+		if !ok {
+			continue
+		}
+		delete(meta, "managed_fields")
+		delete(meta, "managedFields")
+	}
+	return data
 }
 
 // filterPodsByNameNamespace narrows a get_resource "pods" response down to

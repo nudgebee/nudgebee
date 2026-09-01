@@ -14,6 +14,41 @@ import (
 // can render, so it only ever trips on a runaway.
 const maxDecodedPayloadBytes = 32 << 20 // 32 MiB
 
+// logRetrievalFailureMarkers are the kubelet's ways of saying "there are no
+// logs here", returned on the same successful path as real output.
+//
+// They matter twice over. As evidence they read as log content — an LLM
+// summarising "unable to retrieve container logs for containerd://a6a6ce…"
+// is summarising a plumbing failure as if it were the workload's output. And
+// because k8s_pod_log_enricher belongs to eventrule.logActions, a stored
+// failure marks the whole log category collected, so the account's configured
+// log source is never asked. 23 OOM/crash-loop events on dev carried one of
+// these instead of logs.
+var logRetrievalFailureMarkers = []string{
+	"unable to retrieve container logs for",
+	"is waiting to start",
+	"not found in pod",
+	"previous terminated container",
+}
+
+// IsLogRetrievalFailure reports whether decoded pod-log output is one of the
+// kubelet's "no logs available" responses rather than actual log lines.
+// Deliberately anchored on a short prefix of the payload: a real log line
+// quoting one of these phrases appears mid-stream, not as the entire body.
+func IsLogRetrievalFailure(decoded string) bool {
+	trimmed := strings.TrimSpace(decoded)
+	if trimmed == "" || strings.Count(trimmed, "\n") > 2 {
+		return false
+	}
+	lowered := strings.ToLower(trimmed)
+	for _, marker := range logRetrievalFailureMarkers {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // DecodeAgentPayload turns an agent enrichment payload into text.
 //
 // The k8s agent gzips file-shaped enrichments (pod logs, mostly) and hands back

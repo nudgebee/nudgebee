@@ -140,7 +140,11 @@ func TestFetchLogsViaKubectlRejectsUnknownKind(t *testing.T) {
 		SubjectNamespace: "demo",
 	})
 
-	for _, kind := range []string{"pod", "job; rm -rf /", "", "Secret"} {
+	// "pod" and "job" are allowlisted now (they route here for the time bound
+	// logs_enricher cannot give), so the injection cases are what remain: a
+	// shell metacharacter smuggled through an allowlisted prefix, an empty
+	// kind, and a kind that is simply not in the set.
+	for _, kind := range []string{"job; rm -rf /", "", "Secret", "configmap"} {
 		t.Run(kind, func(t *testing.T) {
 			resp, err := action.fetchLogsViaKubectl(ctx, kind, "web", "demo")
 			require.Error(t, err)
@@ -158,5 +162,7 @@ func TestKubectlLogKindsMatchesRelayRouting(t *testing.T) {
 		"daemonset":   true,
 		"statefulset": true,
 		"replicaset":  true,
+		"pod":         true,
+		"job":         true,
 	}, kubectlLogKinds)
 }

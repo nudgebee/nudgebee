@@ -41,6 +41,9 @@ func (a *resourceEventsAction) AutoExecute(ctx PlaybookActionContext) (PlaybookA
 		"name":      ctx.GetEvent().SubjectName,
 		"namespace": ctx.GetEvent().SubjectNamespace,
 		"kind":      subjectKind,
+		// Only for the failure classes: the extra lookup below costs a relay
+		// round-trip, and only these have a node-recorded counterpart.
+		"node_name": nodeNameForNodeScopedEvents(ctx),
 	})
 }
 
@@ -48,6 +51,7 @@ func (a *resourceEventsAction) Execute(ctx PlaybookActionContext, rawParams map[
 	name, _ := rawParams["name"].(string)
 	namespace, _ := rawParams["namespace"].(string)
 	kind, _ := rawParams["kind"].(string)
+	nodeName, _ := rawParams["node_name"].(string)
 	if name == "" {
 		return nil, errors.New("resource_events_enricher: name required")
 	}
@@ -74,7 +78,41 @@ func (a *resourceEventsAction) Execute(ctx PlaybookActionContext, rawParams map[
 		return nil, fmt.Errorf("resource_events_enricher: %w", err)
 	}
 
-	rows, headers := eventListToTable(filterEventsByInvolvedObject(data, kind, name, namespace))
+	matched := filterEventsByInvolvedObject(data, kind, name, namespace)
+
+	// Node Events are recorded in the "default" namespace, so the namespace
+	// fetch above cannot see them however the filter is written. A second,
+	// reason-filtered lookup is what puts the actual kill in the table.
+	if nodeName != "" && namespace != "default" {
+		nodeData, _, nodeErr := getResourceViaRelay(ctx, map[string]any{
+			"resource_type":  "events",
+			"group":          "",
+			"version":        "v1",
+			"namespace":      []string{"default"},
+			"all_namespaces": false,
+			"name":           []string{},
+		})
+		if nodeErr != nil {
+			ctx.GetLogger().Info("resource_events_enricher: node event lookup failed", "node", nodeName, "error", nodeErr)
+		} else {
+			matched = append(matched, nodeScopedFailureEvents(nodeData, nodeName)...)
+		}
+	} else {
+		matched = append(matched, nodeScopedFailureEvents(data, nodeName)...)
+	}
+	rows, headers := eventListToTable(matched)
+
+	insight := []PlaybookActionResponseInsight{}
+	if len(rows) == 0 {
+		// Kubernetes garbage collects Events an hour after they are emitted
+		// (kube-apiserver --event-ttl, default 1h). A re-reported occurrence
+		// firing hours after the underlying restart finds nothing, and an
+		// empty table reads as "the object was healthy". Say which it is.
+		insight = append(insight, PlaybookActionResponseInsight{
+			Message:  fmt.Sprintf("No Kubernetes Events found for %s/%s. Events older than the cluster's event TTL (1h by default) have already been garbage collected, so this is expected when the finding is a re-report of an earlier failure.", kind, name),
+			Severity: "info",
+		})
+	}
 
 	if additionalInfo == nil {
 		additionalInfo = map[string]any{}
@@ -89,8 +127,75 @@ func (a *resourceEventsAction) Execute(ctx PlaybookActionContext, rawParams map[
 		Rows:           rows,
 		Headers:        headers,
 		AdditionalInfo: additionalInfo,
-		Insight:        []PlaybookActionResponseInsight{},
+		Insight:        insight,
 	}, nil
+}
+
+// nodeNameForNodeScopedEvents returns the node to pull node-recorded failure
+// Events for, and "" when this event class has none worth a second round-trip.
+func nodeNameForNodeScopedEvents(ctx PlaybookActionContext) string {
+	if !nodeRecordedFailureAggKeys[ctx.GetEvent().AggregationKey] {
+		return ""
+	}
+	return SubjectNodeName(ctx.GetEvent())
+}
+
+// nodeRecordedFailureAggKeys are the classes Kubernetes records against the Node
+// as well as the Pod, and so the only ones worth the extra default-namespace
+// lookup. An ImagePullBackOff or a crash loop has no node-side counterpart, so
+// asking would spend a relay round-trip per event to find nothing.
+var nodeRecordedFailureAggKeys = map[string]bool{
+	"pod_oom_killer_enricher": true,
+	"node_not_ready":          true,
+}
+
+// nodeScopedFailureReasons are the Event reasons Kubernetes records against the
+// Node object rather than the Pod. The kubelet's OOM watcher emits OOMKilling /
+// SystemOOM on the Node, so a Pod-scoped filter never sees the very kill the
+// event is about: across 176 OOMKilled events on dev, not one "Recent Pod
+// Events" table mentioned an OOM.
+var nodeScopedFailureReasons = map[string]bool{
+	"OOMKilling":            true,
+	"SystemOOM":             true,
+	"Evicted":               true,
+	"NodeNotReady":          true,
+	"NodeHasMemoryPressure": true,
+	"NodeHasDiskPressure":   true,
+}
+
+// nodeScopedFailureEvents returns the failure Events recorded against the node
+// the subject ran on. Restricted to nodeScopedFailureReasons because a busy
+// node emits a great many Events that have nothing to do with this subject.
+func nodeScopedFailureEvents(data any, nodeName string) []any {
+	if nodeName == "" {
+		return nil
+	}
+	arr, ok := data.([]any)
+	if !ok {
+		return nil
+	}
+	out := []any{}
+	for _, item := range arr {
+		ev, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		io := getMapField(ev, "involved_object", "involvedObject")
+		if io == nil {
+			continue
+		}
+		if k, _ := io["kind"].(string); !strings.EqualFold(k, "Node") {
+			continue
+		}
+		if n, _ := io["name"].(string); n != nodeName {
+			continue
+		}
+		if reason, _ := ev["reason"].(string); !nodeScopedFailureReasons[reason] {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
 }
 
 // filterEventsByInvolvedObject narrows a list of Events to those whose

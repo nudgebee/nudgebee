@@ -2234,12 +2234,14 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 			existingEvidenceActions := extractEvidenceActionNames(webhookEvent.Evidences)
 
 			evidenceResponse, err = eventrule.ExecutePlaybook(sc, webhookEvent.AccountId, playbooks.PlaybookEvent{
-				EventId:                 id,
-				Name:                    playbookName,
-				Labels:                  webhookEvent.Labels,
-				Annotations:             map[string]string{},
-				StartedAt:               &eventruleStart,
-				EndedAt:                 &eventruleEnd,
+				EventId:     id,
+				Name:        playbookName,
+				Labels:      webhookEvent.Labels,
+				Annotations: map[string]string{},
+				StartedAt:   &eventruleStart,
+				EndedAt:     &eventruleEnd,
+				IncidentAt: resolveIncidentAt(sc, webhookEvent.AggregationKey, webhookEvent.AccountId,
+					webhookEvent.SubjectName, webhookEvent.SubjectNamespace, webhookEvent.StartsAt),
 				Source:                  webhookEvent.Source,
 				SubjectName:             webhookEvent.SubjectName,
 				SubjectType:             webhookEvent.SubjectType,
@@ -2363,6 +2365,28 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	}
 }
 
+// resolveIncidentAt returns when the subject container actually terminated, for
+// the event classes where that differs from when the event was raised. Returns
+// nil whenever the cluster cannot answer, so enrichment falls back to the
+// event's own timestamps. See playbooks.PodTerminationTime.
+func resolveIncidentAt(sc *security.RequestContext, aggregationKey, accountId, subjectName, subjectNamespace string, startsAt *time.Time) *time.Time {
+	if !playbooks.NeedsIncidentTimeAnchor(aggregationKey) {
+		return nil
+	}
+	terminatedAt, ok := playbooks.PodTerminationTime(accountId, subjectName, subjectNamespace, sc.GetLogger())
+	if !ok {
+		return nil
+	}
+	if startsAt != nil {
+		if skew := startsAt.Sub(terminatedAt); skew > 2*time.Minute {
+			sc.GetLogger().Info("event: anchoring evidence on container termination rather than detection time",
+				"aggregation_key", aggregationKey, "pod", subjectName, "namespace", subjectNamespace,
+				"detected_at", startsAt.UTC(), "terminated_at", terminatedAt, "skew_seconds", int(skew.Seconds()))
+		}
+	}
+	return &terminatedAt
+}
+
 func extractEvidenceActionNames(evidences []any) map[string]bool {
 	actions := map[string]bool{}
 	for _, e := range evidences {
@@ -2419,6 +2443,9 @@ func evidenceHasContent(evidence map[string]any) bool {
 			if err != nil {
 				// Undecodable is not the same as empty — leave the old behaviour.
 				return true
+			}
+			if playbooks.IsLogRetrievalFailure(decoded) {
+				return false
 			}
 			return strings.TrimSpace(decoded) != ""
 		}
@@ -2538,12 +2565,14 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 	}
 
 	newEvidenceResponse, err := eventrule.ExecutePlaybook(eventSc, accountId, playbooks.PlaybookEvent{
-		EventId:          eventId,
-		Name:             playbookName,
-		Labels:           labels,
-		Annotations:      map[string]string{},
-		StartedAt:        &eventruleStart,
-		EndedAt:          &eventruleEnd,
+		EventId:     eventId,
+		Name:        playbookName,
+		Labels:      labels,
+		Annotations: map[string]string{},
+		StartedAt:   &eventruleStart,
+		EndedAt:     &eventruleEnd,
+		IncidentAt: resolveIncidentAt(sc, *event.AggregationKey, accountId,
+			*event.SubjectName, subjectNamespace, event.StartsAt),
 		Source:           *event.Source,
 		SubjectName:      *event.SubjectName,
 		SubjectType:      *event.SubjectType,

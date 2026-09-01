@@ -1623,7 +1623,24 @@ func isK8sLogTarget(workloadName, namespace string) bool {
 	return workloadName != "" && len(workloadName) <= 253 && k8sObjectNamePattern.MatchString(workloadName)
 }
 
+// noWorkloadLogAggKeys are event classes where a workload-scoped log query
+// cannot return the subject's logs, so whatever it does return is another pod's.
+//
+// An ImagePullBackOff pod never started a container and has no logs by
+// definition, but `logs` queries by workload, so it answered with the healthy
+// replicas still serving the old image. On dev, 130 of 133 such payloads
+// contained no reference to the failing pod at all, and 48 carried error lines
+// from unrelated work — rendered under the failing pod's finding. The image
+// name, the pull error and the pod events are the evidence here, and
+// pod_enricher plus resource_events_enricher already collect them.
+var noWorkloadLogAggKeys = map[string]bool{
+	"image_pull_backoff_reporter": true,
+}
+
 func (a *observabilityLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
+	if noWorkloadLogAggKeys[ctx.GetEvent().AggregationKey] {
+		return false
+	}
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 	source, err := getLogSourceForAccount(requestCtx, ctx.GetAccountId(), "", "")
 	namespace := getEventNamespace(ctx.GetEvent())
@@ -1843,17 +1860,33 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 // fetchLogsViaRelay fetches logs via relay. For workload kinds (Deployment, DaemonSet,
 // StatefulSet, ReplicaSet) it uses kubectl logs since logs_enricher expects a pod name.
 func (a *observabilityLogAction) fetchLogsViaRelay(ctx playbooks.PlaybookActionContext, workloadName, namespace string) (playbooks.PlaybookActionResponse, error) {
+	// The kind has to describe workloadName, not the event's subject. For a pod
+	// event with SubjectOwner set, getEventWorkload already resolved the name up
+	// to the owning workload ("llm-server", not "llm-server-8b5f-tc2jd"), so the
+	// matching kind is SubjectOwnerKind. Reading SubjectType here instead pairs a
+	// deployment name with kind "pod".
+	event := ctx.GetEvent()
 	kind := ""
-	if ctx.GetEvent().Labels != nil {
-		kind = ctx.GetEvent().Labels["kind"]
+	if event.SubjectOwner != "" && workloadName == event.SubjectOwner && event.SubjectOwnerKind != "" {
+		kind = event.SubjectOwnerKind
+	}
+	if kind == "" && event.Labels != nil {
+		kind = event.Labels["kind"]
 	}
 	// Fall back to SubjectType for agent-generated events (lowercase, e.g. "deployment")
 	if kind == "" {
-		kind = ctx.GetEvent().SubjectType
+		kind = event.SubjectType
 	}
 
 	if kubectlLogKinds[strings.ToLower(kind)] {
-		return a.fetchLogsViaKubectl(ctx, kind, workloadName, namespace)
+		resp, err := a.fetchLogsViaKubectl(ctx, kind, workloadName, namespace)
+		if err == nil {
+			return resp, nil
+		}
+		// kubectl could not resolve the subject (RBAC, a kind this cluster
+		// shapes differently). logs_enricher may still answer for a pod name.
+		ctx.GetLogger().Info("observability: kubectl logs failed, falling back to logs_enricher",
+			"kind", kind, "workload", workloadName, "namespace", namespace, "error", err)
 	}
 
 	return a.fetchLogsViaLogsEnricher(ctx, workloadName, namespace)
@@ -1916,15 +1949,25 @@ func (a *observabilityLogAction) fetchLogsViaLogsEnricher(ctx playbooks.Playbook
 		map[string]any{"data": logs}, additionalInfo, insight, metadata), nil
 }
 
-// kubectlLogKinds are the workload kinds `kubectl logs <kind>/<name>` resolves and that
-// logs_enricher cannot (it expects a pod name). Doubles as the allowlist for the only
-// value interpolated into the kubectl command that isK8sLogTarget does not already
-// screen — see fetchLogsViaKubectl.
+// kubectlLogKinds are the kinds `kubectl logs <kind>/<name>` resolves. Doubles as the
+// allowlist for the only value interpolated into the kubectl command that isK8sLogTarget
+// does not already screen — see fetchLogsViaKubectl.
+//
+// Pods and Jobs are here even though logs_enricher can also answer for them, because
+// this path bounds the read and that one does not. logs_enricher takes no time argument
+// — podLogParams has declared since_time/tail_lines since it was written and never sent
+// them, and nothing in the agent contract accepts them — so it returns the container's
+// whole lifetime up to the agent's own tail. Measured over a week on dev, that is a
+// median 4.8 days of log per evidence, 42 of 53 payloads truncated at the line cap, and
+// 19 of 53 with no parseable timestamp at all. The kubectl path asks for
+// --since-time=<event window> --timestamps and lands at a 570s median.
 var kubectlLogKinds = map[string]bool{
 	"deployment":  true,
 	"daemonset":   true,
 	"statefulset": true,
 	"replicaset":  true,
+	"pod":         true,
+	"job":         true,
 }
 
 // fetchLogsViaKubectl uses kubectl logs <kind>/<name> via kubectl_command_executor

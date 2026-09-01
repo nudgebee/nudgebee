@@ -45,6 +45,16 @@ func (e PlaybookEvent) ResolveQueryWindow(durationMinutes int) (time.Time, time.
 	if e.EndedAt != nil {
 		end = *e.EndedAt
 	}
+	// A re-reported occurrence is stamped with the sweep that noticed it, which
+	// for a container that died hours earlier puts the entire window after the
+	// incident: the logs and metrics that explain the failure fall outside it,
+	// and what comes back is the healthy replacement. Anchor on the termination
+	// when the cluster gave us one, and let the floor below extend backwards
+	// from there into the lead-up.
+	if e.IncidentAt != nil && !e.IncidentAt.IsZero() {
+		end = e.IncidentAt.UTC()
+		start = end
+	}
 	if end.IsZero() {
 		end = time.Now().UTC()
 	}

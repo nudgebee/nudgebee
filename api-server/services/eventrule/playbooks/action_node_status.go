@@ -36,7 +36,7 @@ func (a *nodeStatusAction) Execute(ctx PlaybookActionContext, rawParams map[stri
 	if err != nil {
 		return nil, fmt.Errorf("node_status_enricher: %w", err)
 	}
-	node := firstResourceDict(data)
+	node := resourceDictNamed(data, nodeName, "")
 	if node == nil {
 		return nil, errors.New("node_status_enricher: node not found")
 	}

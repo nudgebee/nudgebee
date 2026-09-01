@@ -36,7 +36,7 @@ func (a *nodeAllocatableAction) Execute(ctx PlaybookActionContext, rawParams map
 	if err != nil {
 		return nil, fmt.Errorf("node_allocatable_resources_enricher: %w", err)
 	}
-	node := firstResourceDict(data)
+	node := resourceDictNamed(data, nodeName, "")
 	if node == nil {
 		return nil, errors.New("node_allocatable_resources_enricher: node not found")
 	}

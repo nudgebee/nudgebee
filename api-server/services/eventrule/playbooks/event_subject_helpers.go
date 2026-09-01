@@ -147,7 +147,10 @@ func getResourceViaRelay(ctx PlaybookActionContext, params map[string]any) (any,
 // what kept the Noisy Neighbours card empty on every OOM event.
 func rangeQueryWindow(event PlaybookEvent, lookbackMinutes int, now time.Time) (time.Time, time.Time) {
 	end := now
-	if t := event.EndedAt; t != nil && !t.IsZero() {
+	if t := event.IncidentAt; t != nil && !t.IsZero() {
+		// See PlaybookEvent.IncidentAt — the failure time, not the detection time.
+		end = t.UTC()
+	} else if t := event.EndedAt; t != nil && !t.IsZero() {
 		end = t.UTC()
 	} else if t := event.StartedAt; t != nil && !t.IsZero() {
 		end = t.UTC()

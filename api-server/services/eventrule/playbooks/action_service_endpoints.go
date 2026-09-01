@@ -55,7 +55,7 @@ func (a *serviceEndpointsAction) Execute(ctx PlaybookActionContext, rawParams ma
 	if err != nil {
 		return nil, fmt.Errorf("service_endpoints_enricher: get service: %w", err)
 	}
-	svc := firstResourceDict(svcData)
+	svc := resourceDictNamed(svcData, serviceName, namespace)
 	if svc == nil {
 		return nil, errors.New("service_endpoints_enricher: service not found (deleted since the finding fired?)")
 	}
@@ -73,7 +73,7 @@ func (a *serviceEndpointsAction) Execute(ctx PlaybookActionContext, rawParams ma
 		"name":           []string{serviceName},
 	})
 	if err == nil {
-		if ep := firstResourceDict(epData); ep != nil {
+		if ep := resourceDictNamed(epData, serviceName, namespace); ep != nil {
 			addressCount = endpointsAddressCount(ep)
 		}
 	}

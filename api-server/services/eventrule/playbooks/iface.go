@@ -6,16 +6,23 @@ import (
 )
 
 type PlaybookEvent struct {
-	EventId      string            `json:"event_id"`
-	Name         string            `json:"name"`
-	Source       string            `json:"source"`
-	Labels       map[string]string `json:"labels"`
-	Annotations  map[string]string `json:"annotations"`
-	StartedAt    *time.Time        `json:"started_at"`
-	EndedAt      *time.Time        `json:"ended_at"`
-	SubjectName  string            `json:"subject_name"`
-	SubjectType  string            `json:"subject_type"`
-	SubjectOwner string            `json:"subject_owner"`
+	EventId     string            `json:"event_id"`
+	Name        string            `json:"name"`
+	Source      string            `json:"source"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
+	StartedAt   *time.Time        `json:"started_at"`
+	EndedAt     *time.Time        `json:"ended_at"`
+	// IncidentAt is when the failure actually happened, as opposed to when we
+	// noticed it. Set only when something authoritative told us — currently the
+	// container termination time read off the pod object for the
+	// terminated-container classes. When present it is the anchor every
+	// observability window is centred on; StartedAt stays the detection time,
+	// which is what triage, dedup and the inbox key on.
+	IncidentAt   *time.Time `json:"incident_at,omitempty"`
+	SubjectName  string     `json:"subject_name"`
+	SubjectType  string     `json:"subject_type"`
+	SubjectOwner string     `json:"subject_owner"`
 	// SubjectOwnerKind is the kind of SubjectOwner (the pod's top-level
 	// controller), e.g. "Deployment"/"StatefulSet"/"DaemonSet". Casing is not
 	// normalized upstream.

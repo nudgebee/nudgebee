@@ -53,15 +53,33 @@ func (a *podLogAction) AutoExecute(ctx PlaybookActionContext) (PlaybookActionRes
 		"name":      ctx.GetEvent().SubjectName,
 		"namespace": namespace,
 	}
-	// For crash_loop, OOM, and image_pull_backoff the current container is
-	// either restarting or unable to start — log_enricher hitting the live
-	// container would return empty or NotReady error. Run with
-	// `previous: true` so we collect the dying container's stderr instead.
-	switch ctx.GetEvent().AggregationKey {
-	case "report_crash_loop", "pod_oom_killer_enricher", "image_pull_backoff_reporter":
+	// The subject container of these classes has already exited by the time
+	// enrichment runs — hitting the live container returns the replacement's
+	// startup banner, a NotReady error, or nothing. Ask for the dying
+	// container's stderr instead.
+	if terminatedContainerAggKeys[ctx.GetEvent().AggregationKey] {
 		params["previous"] = true
 	}
 	return a.Execute(ctx, params)
+}
+
+// terminatedContainerAggKeys is the set of event classes whose subject
+// container is already dead when enrichment runs.
+//
+// It is not a list of "things that crash". job_failure, KubeJobFailed,
+// KubePodCrashLooping and KubeContainerWaiting are all terminated-container
+// cases that were reading the live container: a finished Job has no live
+// container at all, so those events carried the replacement pod's output or
+// none. Guessing wrong is cheap — Execute retries against the live container
+// when the previous one's logs have already been garbage collected.
+var terminatedContainerAggKeys = map[string]bool{
+	"report_crash_loop":           true,
+	"pod_oom_killer_enricher":     true,
+	"image_pull_backoff_reporter": true,
+	"job_failure":                 true,
+	"KubeJobFailed":               true,
+	"KubePodCrashLooping":         true,
+	"KubeContainerWaiting":        true,
 }
 
 func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]any) (PlaybookActionResponse, error) {
@@ -71,22 +89,7 @@ func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 		return nil, err
 	}
 
-	relayRequest := relay.RelayExecuteRequest{
-		Body: relay.ActionExecuteBody{
-			AccountID:  ctx.GetAccountId(),
-			ActionName: "logs_enricher",
-			ActionParams: map[string]any{
-				"container_name": params.ContainerName,
-				"name":           params.Name,
-				"namespace":      params.Namespace,
-				"previous":       params.Previous,
-			},
-			Origin: "services-server",
-		},
-		NoSinks: true,
-		Cache:   false,
-	}
-	relayResponse, additionalInfo, err := relay.ExecuteAndExtractResponse(relayRequest)
+	relayResponse, additionalInfo, err := a.fetch(ctx, params, params.Previous)
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +98,25 @@ func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 		ctx.GetLogger().Error("relay: unable to process request", "response", slog.AnyValue(relayResponse))
 		return nil, errors.New("relay: unable to execute relay query")
 	}
+
+	// A previous container's logs live on the node that ran it and are garbage
+	// collected with it, so `previous: true` can answer "unable to retrieve
+	// container logs for containerd://…" — a successful response carrying no
+	// logs. Storing that string is worse than storing nothing: it reads as the
+	// workload's output, and because this action belongs to
+	// eventrule.logActions it also marks the log category collected, so the
+	// account's configured log source is never asked. Retry live instead.
+	usedPrevious := params.Previous
+	if params.Previous && !usableAgentLogOutput(data) {
+		ctx.GetLogger().Info("k8s_pod_log_enricher: previous container logs unavailable, retrying live container",
+			"pod", params.Name, "namespace", params.Namespace)
+		if liveResponse, liveInfo, liveErr := a.fetch(ctx, params, false); liveErr == nil {
+			if liveData, ok := liveResponse["data"].(string); ok && usableAgentLogOutput(liveData) {
+				relayResponse, additionalInfo, data, usedPrevious = liveResponse, liveInfo, liveData, false
+			}
+		}
+	}
+
 	filename, ok := relayResponse["filename"].(string)
 	if !ok {
 		ctx.GetLogger().Error("relay: unable to process request", "response", slog.AnyValue(relayResponse))
@@ -106,11 +128,77 @@ func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 		return nil, errors.New("relay: unable to execute relay query")
 	}
 	insight := InsightFromRelayResponse(relayResponse)
+
+	// Record which container instance was read and over what window. Without
+	// this, stored evidence does not say whether a payload is the dying
+	// container or its replacement, and no audit of past events can tell.
+	if additionalInfo == nil {
+		additionalInfo = map[string]any{}
+	}
+	additionalInfo["previous_container"] = usedPrevious
+	if params.Previous != usedPrevious {
+		additionalInfo["previous_container_unavailable"] = true
+	}
+	if params.SinceTime > 0 {
+		additionalInfo["since_time"] = params.SinceTime
+	}
+	if params.TailLines > 0 {
+		additionalInfo["tail_lines"] = params.TailLines
+	}
+
 	return PlaybookActionResponseFile{
 		AdditionalInfo: additionalInfo,
 		Data:           data,
 		Filename:       filename,
 		Type:           typeVal,
 		Insight:        insight,
-	}, err
+	}, nil
+}
+
+// fetch runs one logs_enricher round-trip for the given container instance.
+func (a *podLogAction) fetch(ctx PlaybookActionContext, params podLogParams, previous bool) (map[string]any, map[string]any, error) {
+	actionParams := map[string]any{
+		"container_name": params.ContainerName,
+		"name":           params.Name,
+		"namespace":      params.Namespace,
+		"previous":       previous,
+	}
+	// Forwarded only when a caller set them. podLogParams has declared these
+	// since it was written and never sent them, so the agent has always
+	// answered with its own default tail over the container's whole lifetime.
+	if params.SinceTime > 0 {
+		actionParams["since_time"] = params.SinceTime
+	}
+	if params.TailLines > 0 {
+		actionParams["tail_lines"] = params.TailLines
+	}
+	if params.FilterRegex != "" {
+		actionParams["filter_regex"] = params.FilterRegex
+	}
+	relayRequest := relay.RelayExecuteRequest{
+		Body: relay.ActionExecuteBody{
+			AccountID:    ctx.GetAccountId(),
+			ActionName:   "logs_enricher",
+			ActionParams: actionParams,
+			Origin:       "services-server",
+		},
+		NoSinks: true,
+		Cache:   false,
+	}
+	return relay.ExecuteAndExtractResponse(relayRequest)
+}
+
+// usableAgentLogOutput reports whether an agent log payload carries actual log
+// lines, as opposed to being empty or one of the kubelet's "no logs here"
+// answers. Undecodable payloads count as usable — unreadable is not the same
+// as absent, and the old behaviour was to keep them.
+func usableAgentLogOutput(payload string) bool {
+	decoded, err := DecodeAgentPayload(payload)
+	if err != nil {
+		return true
+	}
+	if strings.TrimSpace(decoded) == "" {
+		return false
+	}
+	return !IsLogRetrievalFailure(decoded)
 }

@@ -1468,6 +1468,19 @@ func (a *observabilityTracesAction) autoExecuteByWorkload(ctx playbooks.Playbook
 	traceRows := convertOTelTracesToMapRows(finalSpans)
 	insights := traceHandleTracesInsight(traceRows)
 
+	// Say so when this is the phase-3 sample rather than the traces the finding
+	// is about. Unlabelled, a card of 23 arbitrary healthy spans reads as the
+	// evidence for an error-rate alert: on dev, 429 of 951 trace evidences were
+	// this fallback, every one of them with error_span_count 0 — including all
+	// 266 attached to OtelDemoGRPCClientErrorRate, an alert that fires on errors.
+	if queryMode == "fallback_recent_sample" {
+		insights = append([]playbooks.PlaybookActionResponseInsight{{
+			Message: "No error spans were found for " + workloadName + " in this window. " +
+				"The spans below are a recent traffic sample for context, not traces of the failure.",
+			Severity: "Info",
+		}}, insights...)
+	}
+
 	metadata := map[string]any{
 		"query-result-version": "1.0",
 		"query": map[string]any{

@@ -46,7 +46,7 @@ func (a *oomKillerAction) Execute(ctx PlaybookActionContext, rawParams map[strin
 	if err != nil {
 		return nil, fmt.Errorf("oom_killer_enricher: get pod: %w", err)
 	}
-	pod := firstResourceDict(podData)
+	pod := resourceDictNamed(podData, podName, namespace)
 	if pod == nil {
 		return nil, errors.New("oom_killer_enricher: pod not found")
 	}
@@ -76,15 +76,21 @@ func (a *oomKillerAction) Execute(ctx PlaybookActionContext, rawParams map[strin
 			"name":           []string{nodeName},
 		})
 		if err == nil {
-			if node := firstResourceDict(nodeData); node != nil {
+			if node := resourceDictNamed(nodeData, nodeName, ""); node != nil {
 				if allocStr, capStr := nodeMemAllocatableCapacity(node); allocStr != "" && capStr != "" {
 					alloc, errA := parseK8sMemoryMi(allocStr)
 					cap, errC := parseK8sMemoryMi(capStr)
 					if errA == nil && errC == nil && cap > 0 {
-						pct := float64(cap-alloc) * 100 / float64(cap)
+						// capacity - allocatable is the kubelet/system reservation: a
+						// static property of the machine type, not how much memory the
+						// node was using when the container died. Labelled "Node
+						// allocated memory" it read as live pressure, and was byte
+						// identical across every node of the same type — 286 OOM cards
+						// in dev all said "17.60% out of 12345MB". Name the quantity.
+						reservedPct := float64(cap-alloc) * 100 / float64(cap)
 						rows = append(rows, []any{
-							"Node allocated memory",
-							fmt.Sprintf("%.2f%% out of %dMB allocatable", pct, alloc),
+							"Node memory",
+							fmt.Sprintf("%dMB allocatable of %dMB capacity (%.2f%% reserved by the node)", alloc, cap, reservedPct),
 						})
 					}
 				}
@@ -139,6 +145,48 @@ func (a *oomKillerAction) Execute(ctx PlaybookActionContext, rawParams map[strin
 		},
 		Insight: []PlaybookActionResponseInsight{},
 	}, nil
+}
+
+// resourceDictNamed unwraps a get_resource response and returns the object
+// whose metadata.name — and, when namespace is non-empty, metadata.namespace —
+// matches what was asked for.
+//
+// It exists because get_resource does not reliably honor its name filter: a
+// single-pod query has been observed returning every pod in the namespace (see
+// filterPodsByNameNamespace, which works around the same thing for
+// pod_enricher). Taking element [0] of that list meant oom_killer_enricher read
+// an unrelated pod and never found the OOMKilled container state the card exists
+// to report — every OOM event rendered Pod/Namespace/Node only, dropping the
+// container name, its memory request/limit, and the kill timestamp.
+//
+// Returns nil when the payload is a list and nothing in it matches, so callers
+// report "not found" rather than describing the wrong object. Falls through to
+// firstResourceDict when the payload is not a list at all.
+func resourceDictNamed(data any, name, namespace string) map[string]any {
+	list, ok := data.([]any)
+	if !ok {
+		return firstResourceDict(data)
+	}
+	for _, item := range list {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		meta := getMapField(obj, "metadata")
+		if meta == nil {
+			continue
+		}
+		if n, _ := meta["name"].(string); n != name {
+			continue
+		}
+		if namespace != "" {
+			if ns, _ := meta["namespace"].(string); ns != namespace {
+				continue
+			}
+		}
+		return obj
+	}
+	return nil
 }
 
 // firstResourceDict unwraps the get_resource response. Agent returns
