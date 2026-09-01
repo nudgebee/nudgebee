@@ -77,7 +77,12 @@ def get_llm_conversation_by_session(session: Session, session_id: str) -> Option
         Dict with conversation details or None
     """
     try:
-        conversation = session.query(LlmConversation).filter(LlmConversation.session_id == session_id).first()
+        conversation = (
+            session.query(LlmConversation)
+            .filter(LlmConversation.session_id == session_id)
+            .order_by(LlmConversation.updated_at.desc())
+            .first()
+        )
 
         if not conversation:
             return None
