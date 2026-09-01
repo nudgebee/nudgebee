@@ -1133,9 +1133,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                       disabled={isAiLoading || (qLEditor === 'ai' && !logQuery)}
                     />
                   </Box>
-                  {logProvider !== 'ES' && (
-                    <UserHistoryButton key={'user-history-button'} accountId={accountId} module={`log_query_${logProvider?.toLowerCase()}`} />
-                  )}
+                  <UserHistoryButton key={'user-history-button'} accountId={accountId} module={`log_query_${logProvider?.toLowerCase()}`} />
                 </>
               )}
               <DownloadButton onClick={() => ({ tableId: k8sLogs })} />
