@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/audit"
@@ -44,6 +45,23 @@ type ValidationResponse struct {
 	Message string `json:"message"`
 	Error   string `json:"error,omitempty"`
 }
+
+type IntegrationDiagnosisResponse struct {
+	Success           bool      `json:"success"`
+	Health            string    `json:"health"`
+	Stage             string    `json:"stage"`
+	ReasonCode        string    `json:"reason_code"`
+	Summary           string    `json:"summary"`
+	RecommendedAction string    `json:"recommended_action"`
+	CheckedAt         time.Time `json:"checked_at"`
+}
+
+var (
+	listDiagnosisIntegrationAccountIDs = core.ListLinkedCloudAccountIDsByIntegrationID
+	testDiagnosisIntegrationConnection = core.TestIntegrationConnectionForAccount
+)
+
+var errIntegrationNotFound = errors.New("integration not found")
 
 // ESIndexesResponse is returned by integrations_list_es_indexes: the cluster's
 // queryable index targets (data-stream / index names) for the ES index picker.
@@ -332,6 +350,36 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		})
 		return
 
+	case "integrations_diagnose_connection":
+		request := map[string]string{}
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		if err := common.UnmarshalMapToStruct(requestInput, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		integrationID := strings.TrimSpace(request["integration_id"])
+		if integrationID == "" {
+			c.JSON(400, common.ErrorActionBadRequest("integration_id is required"))
+			return
+		}
+
+		diagnosis, diagnosisErr := diagnoseIntegrationConnection(ctx, integrationID)
+		if errors.Is(diagnosisErr, errIntegrationNotFound) {
+			c.JSON(404, common.ErrorActionBadRequest("integration not found"))
+			return
+		}
+		if diagnosisErr != nil {
+			ctx.GetLogger().Error("integrations: diagnosis failed", "integration_id", integrationID, "error", diagnosisErr)
+			c.JSON(500, common.ErrorActionInternal("integration diagnosis failed"))
+			return
+		}
+		c.JSON(200, diagnosis)
+		return
+
 	case "integrations_test_connection_config", "integrations_check_connection_config":
 		var request IntegrationCreateRequest
 		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
@@ -565,5 +613,67 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 	default:
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 		return
+	}
+}
+
+func diagnoseIntegrationConnection(ctx *security.RequestContext, integrationID string) (IntegrationDiagnosisResponse, error) {
+	accountIDs, err := listDiagnosisIntegrationAccountIDs(ctx, integrationID)
+	if err != nil {
+		return IntegrationDiagnosisResponse{}, err
+	}
+	securityContext := ctx.GetSecurityContext()
+	authorizedAccountID := ""
+	for _, accountID := range accountIDs {
+		if securityContext.HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+			authorizedAccountID = accountID
+			break
+		}
+	}
+	if authorizedAccountID == "" {
+		// Use the same response for missing, cross-tenant and inaccessible
+		// integrations so callers cannot enumerate integration identifiers.
+		return IntegrationDiagnosisResponse{}, errIntegrationNotFound
+	}
+
+	checkedAt := time.Now().UTC()
+	if testErr := testDiagnosisIntegrationConnection(ctx, integrationID, authorizedAccountID); testErr != nil {
+		stage, reasonCode, summary, recommendedAction := classifyIntegrationDiagnosisError(testErr)
+		ctx.GetLogger().Warn("integrations: connection diagnosis test failed",
+			"integration_id", integrationID,
+			"stage", stage,
+			"reason_code", reasonCode,
+		)
+		return IntegrationDiagnosisResponse{
+			Success: false, Health: "unhealthy", Stage: stage,
+			ReasonCode: reasonCode, Summary: summary,
+			RecommendedAction: recommendedAction, CheckedAt: checkedAt,
+		}, nil
+	}
+	return IntegrationDiagnosisResponse{
+		Success: true, Health: "healthy", Stage: "connection",
+		ReasonCode: "CONNECTION_SUCCEEDED", Summary: "The integration connection test succeeded.",
+		RecommendedAction: "No connection remediation is required.", CheckedAt: checkedAt,
+	}, nil
+}
+
+func classifyIntegrationDiagnosisError(err error) (stage, reasonCode, summary, recommendedAction string) {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "no such host"), strings.Contains(message, "dns"):
+		return "dns", "DNS_RESOLUTION_FAILED", "The integration host could not be resolved.", "Verify the configured hostname and DNS resolution from the Nudgebee connection path."
+	case strings.Contains(message, "x509"), strings.Contains(message, "certificate"), strings.Contains(message, "tls"):
+		return "tls", "TLS_VALIDATION_FAILED", "The integration endpoint failed TLS certificate validation.", "Verify the endpoint certificate, hostname, validity period, and trusted certificate authority."
+	case strings.Contains(message, "401"), strings.Contains(message, "unauthorized"), strings.Contains(message, "authentication"), strings.Contains(message, "credential"):
+		return "authentication", "AUTHENTICATION_FAILED", "The integration endpoint rejected authentication.", "Update or re-authorize the integration credentials, then retry the connection test."
+	case strings.Contains(message, "403"), strings.Contains(message, "forbidden"), strings.Contains(message, "permission denied"):
+		return "authorization", "AUTHORIZATION_FAILED", "The configured identity is not authorized to access the integration endpoint.", "Grant the configured identity the required provider permissions, then retry."
+	case strings.Contains(message, "no accounts associated"), strings.Contains(message, "configuration"), strings.Contains(message, "url is required"), strings.Contains(message, "endpoint is required"):
+		return "configuration", "CONFIGURATION_INVALID", "The integration configuration is incomplete or invalid.", "Review the integration settings and linked accounts, then retry the connection test."
+	case strings.Contains(message, "deadline exceeded"), strings.Contains(message, "timed out"), strings.Contains(message, "timeout"):
+		return "connectivity", "CONNECTION_TIMEOUT", "The integration endpoint did not respond before the connection test timed out.", "Verify endpoint availability, routing, firewall rules, and proxy settings."
+	case strings.Contains(message, "connection refused"), strings.Contains(message, "network is unreachable"), strings.Contains(message, "no route to host"), strings.Contains(message, "dial tcp"):
+		return "connectivity", "ENDPOINT_UNREACHABLE", "The integration endpoint could not be reached.", "Verify the endpoint address, service availability, routing, and firewall rules."
+	default:
+		return "connection", "CONNECTION_FAILED", "The integration connection test failed.", "Review the integration configuration and provider availability, then retry."
 	}
 }

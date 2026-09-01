@@ -1984,6 +1984,24 @@ func TestIntegrationConnectionByConfig(
 // It fetches the integration config, decrypts encrypted values, and runs the
 // integration's ValidateConfig (for K8s mode) or proxy connectivity test (for vm_agent mode).
 func TestIntegrationConnection(ctx *security.RequestContext, integrationID string) error {
+	return testIntegrationConnection(ctx, integrationID, "")
+}
+
+// TestIntegrationConnectionForAccount tests a saved integration through one
+// exact linked account. The account is independently authorized here so callers
+// cannot accidentally fall back to a different linked account during an active
+// connection probe.
+func TestIntegrationConnectionForAccount(ctx *security.RequestContext, integrationID, accountID string) error {
+	if accountID == "" {
+		return errors.New("integrations: account_id is required")
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+		return errors.New("integrations: connection test is not permitted")
+	}
+	return testIntegrationConnection(ctx, integrationID, accountID)
+}
+
+func testIntegrationConnection(ctx *security.RequestContext, integrationID, requestedAccountID string) error {
 	if integrationID == "" {
 		return errors.New("integrations: integration_id is required")
 	}
@@ -2077,6 +2095,20 @@ func TestIntegrationConnection(ctx *security.RequestContext, integrationID strin
 	if len(accountIDs) == 0 {
 		return errors.New("no accounts associated with this integration")
 	}
+	testAccountID := accountIDs[0]
+	if requestedAccountID != "" {
+		linked := false
+		for _, accountID := range accountIDs {
+			if accountID == requestedAccountID {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			return errors.New("integrations: connection test is not permitted")
+		}
+		testAccountID = requestedAccountID
+	}
 
 	// Apply schema defaults so hidden fields like connection_mode are always present
 	configValues = applySchemaDefaults(integration, configValues)
@@ -2087,7 +2119,7 @@ func TestIntegrationConnection(ctx *security.RequestContext, integrationID strin
 		if buildErr != nil {
 			return fmt.Errorf("failed to build datasource config: %w", buildErr)
 		}
-		if testErr := relay.TestProxyDatasourceConfig(accountIDs[0], dsConfig); testErr != nil {
+		if testErr := relay.TestProxyDatasourceConfig(testAccountID, dsConfig); testErr != nil {
 			return fmt.Errorf("connection test failed: %w", testErr)
 		}
 		return nil
@@ -2098,13 +2130,13 @@ func TestIntegrationConnection(ctx *security.RequestContext, integrationID strin
 		slog.Warn("integrations: dual-mode type routed to K8s validation instead of proxy test",
 			"type", integrationType, "integration_id", integrationID)
 	}
-	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, accountIDs[0])
+	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, testAccountID)
 	if len(validationErrors) > 0 {
 		return validationErrors[0]
 	}
 
 	if testable, ok := integration.(TestableIntegration); ok {
-		if testErr := testable.TestConnection(ctx, configValues, accountIDs[0]); testErr != nil {
+		if testErr := testable.TestConnection(ctx, configValues, testAccountID); testErr != nil {
 			return testErr
 		}
 	}

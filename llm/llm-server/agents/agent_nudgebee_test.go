@@ -37,6 +37,7 @@ func TestNudgebeeAgentToolAllowlist(t *testing.T) {
 		tools.ToolNudgebeeIntegrationsList,
 		tools.ToolNudgebeeIntegrationsCount,
 		tools.ToolNudgebeeIntegrationGetStatus,
+		tools.ToolNudgebeeIntegrationDiagnose,
 	}
 	assert.Len(t, got, len(want))
 	for _, name := range want {
@@ -60,7 +61,7 @@ func TestNudgebeeAgentEffectiveToolSurfaceIsClosed(t *testing.T) {
 	for _, tool := range effective {
 		got = append(got, tool.Name())
 	}
-	assert.Len(t, got, 7)
+	assert.Len(t, got, 8)
 	assert.NotContains(t, got, toolcore.ToolExecuteShellCommand)
 	assert.NotContains(t, got, tools.LoadSkillsToolName)
 }
@@ -79,7 +80,10 @@ func TestNudgebeeAgentPromptSeparatesDocsFromLiveState(t *testing.T) {
 	text := strings.Join(prompt.Instructions, "\n") + "\n" + strings.Join(prompt.Constraints, "\n")
 	assert.Contains(t, text, tools.ToolNudgebeeDocsSearch)
 	assert.Contains(t, text, tools.ToolNudgebeeIntegrationGetStatus)
+	assert.Contains(t, text, tools.ToolNudgebeeIntegrationDiagnose)
 	assert.Contains(t, text, "Never answer current state from documentation")
+	assert.Contains(t, text, "do not infer that a disabled match is the one the user meant")
+	assert.Contains(t, text, "If nudgebee_integration_diagnose returns an error, stop")
 	assert.Contains(t, text, "Never invent or accept a tenant id")
 }
 

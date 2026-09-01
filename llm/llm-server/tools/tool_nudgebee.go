@@ -35,6 +35,7 @@ const (
 	ToolNudgebeeIntegrationsList     = "nudgebee_integrations_list"
 	ToolNudgebeeIntegrationsCount    = "nudgebee_integrations_count"
 	ToolNudgebeeIntegrationGetStatus = "nudgebee_integration_get_status"
+	ToolNudgebeeIntegrationDiagnose  = "nudgebee_integration_diagnose"
 	ToolNudgebeeDocsSearch           = "nudgebee_docs_search"
 )
 
@@ -59,6 +60,7 @@ func init() {
 	register(ToolNudgebeeIntegrationsList, func() core.NBTool { return NudgebeeIntegrationsListTool{} })
 	register(ToolNudgebeeIntegrationsCount, func() core.NBTool { return NudgebeeIntegrationsCountTool{} })
 	register(ToolNudgebeeIntegrationGetStatus, func() core.NBTool { return NudgebeeIntegrationGetStatusTool{} })
+	register(ToolNudgebeeIntegrationDiagnose, func() core.NBTool { return NudgebeeIntegrationDiagnoseTool{} })
 	register(ToolNudgebeeDocsSearch, func() core.NBTool { return NudgebeeDocsSearchTool{} })
 }
 
@@ -338,6 +340,44 @@ func (t NudgebeeIntegrationGetStatusTool) Call(nbCtx core.NbToolContext, input c
 		"where":   where,
 		"limit":   10,
 	})
+}
+
+// NudgebeeIntegrationDiagnoseTool runs the api-server's bounded connection
+// diagnostic after the planner has resolved a visible integration to its id.
+// api-server independently rechecks linked-account read access and returns only
+// classified, sanitized failure details.
+type NudgebeeIntegrationDiagnoseTool struct{}
+
+func (NudgebeeIntegrationDiagnoseTool) Name() string { return ToolNudgebeeIntegrationDiagnose }
+func (NudgebeeIntegrationDiagnoseTool) GetType() core.NBToolType {
+	return core.NBToolTypeTool
+}
+func (NudgebeeIntegrationDiagnoseTool) InferToolRequestType(ctx *security.RequestContext, input, conversation string) (core.ToolRequestType, error) {
+	return nudgebeeReadRequestType(ctx, input, conversation)
+}
+func (NudgebeeIntegrationDiagnoseTool) Description() string {
+	return "Actively test and safely diagnose one configured Nudgebee integration by exact id. Use only when the user explicitly asks why an integration is not working or connected. First resolve a name to an id with nudgebee_integration_get_status. Returns normalized health, failure stage, reason code, and sanitized summary; it never returns credentials or raw provider errors."
+}
+func (NudgebeeIntegrationDiagnoseTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
+		"id": nudgebeeStringProperty("Exact integration id returned by nudgebee_integration_get_status."),
+	}, Required: []string{"id"}}
+}
+func (NudgebeeIntegrationDiagnoseTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if err := requireNudgebeeUser(nbCtx); err != nil {
+		return triageErrorResponse(err), nil
+	}
+	integrationID := nudgebeeStringArg(input, "id")
+	if integrationID == "" {
+		return triageErrorResponse(errors.New("nudgebee_integration_diagnose requires an exact integration id")), nil
+	}
+	data, err := doApiServerActionRequest(nbCtx, "/rpc/integration", "integrations_diagnose_connection", map[string]any{
+		"request": map[string]any{"integration_id": integrationID},
+	}, ToolNudgebeeIntegrationDiagnose)
+	if err != nil {
+		return triageErrorResponse(err), nil
+	}
+	return triageResponse(data), nil
 }
 
 // NudgebeeDocsSearchTool searches only the centrally indexed Nudgebee product

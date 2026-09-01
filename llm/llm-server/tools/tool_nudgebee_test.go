@@ -66,6 +66,9 @@ func TestNudgebeeToolsRequireRequestingUser(t *testing.T) {
 		func() (core.NBToolResponse, error) {
 			return NudgebeeDocsSearchTool{}.Call(nudgebeeContextWithoutUser(), core.NBToolCallRequest{Command: "what is an account?"})
 		},
+		func() (core.NBToolResponse, error) {
+			return NudgebeeIntegrationDiagnoseTool{}.Call(nudgebeeContextWithoutUser(), core.NBToolCallRequest{Arguments: map[string]any{"id": "integration-1"}})
+		},
 	}
 	for _, call := range calls {
 		resp, err := call()
@@ -180,6 +183,7 @@ func TestNudgebeeToolsAreReadOnly(t *testing.T) {
 	}{
 		NudgebeeAccountsListTool{}, NudgebeeAccountsCountTool{}, NudgebeeAccountGetTool{},
 		NudgebeeIntegrationsListTool{}, NudgebeeIntegrationsCountTool{}, NudgebeeIntegrationGetStatusTool{},
+		NudgebeeIntegrationDiagnoseTool{},
 		NudgebeeDocsSearchTool{},
 	}
 	for _, tool := range tools {
@@ -187,6 +191,28 @@ func TestNudgebeeToolsAreReadOnly(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, core.ToolRequestTypeRead, requestType)
 	}
+}
+
+func TestNudgebeeIntegrationDiagnoseTool(t *testing.T) {
+	cleanup := startRPCStub(t, "/rpc/integration", func(action string, input map[string]any) (int, string) {
+		assert.Equal(t, "integrations_diagnose_connection", action)
+		request := input["request"].(map[string]any)
+		assert.Equal(t, "integration-1", request["integration_id"])
+		return http.StatusOK, `{"success":false,"health":"unhealthy","stage":"authentication","reason_code":"AUTHENTICATION_FAILED","summary":"The integration endpoint rejected authentication."}`
+	})
+	defer cleanup()
+
+	resp, err := NudgebeeIntegrationDiagnoseTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Arguments: map[string]any{"id": "  integration-1  "}})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	assert.Contains(t, resp.Data, `"reason_code":"AUTHENTICATION_FAILED"`)
+}
+
+func TestNudgebeeIntegrationDiagnoseToolRequiresID(t *testing.T) {
+	resp, err := NudgebeeIntegrationDiagnoseTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Arguments: map[string]any{}})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, "exact integration id")
 }
 
 func TestNudgebeeDocsSearchFiltersAndFormatsProductDocs(t *testing.T) {

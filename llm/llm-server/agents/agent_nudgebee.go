@@ -18,7 +18,7 @@ func init() {
 		"nubi")
 }
 
-const nudgebeeAgentDescription = "Nubi, Nudgebee's self-aware product assistant. Use for Nudgebee product concepts and docs, or the requesting user's authorized Nudgebee configuration: account inventory, configured integrations, counts, providers, and integration status. Do not use for workloads, Kubernetes resources, logs, metrics, traces, cloud resources, incidents, or troubleshooting."
+const nudgebeeAgentDescription = "Nubi, Nudgebee's self-aware product assistant. Use for Nudgebee product concepts and docs, the requesting user's authorized configuration including account inventory and configured integrations, or diagnosing why a configured Nudgebee integration is not connected. Do not use for workloads, Kubernetes, logs, metrics, traces, cloud resources, incidents, or general operational troubleshooting."
 
 type NudgebeeAgent struct {
 	accountId string
@@ -66,6 +66,7 @@ func (a *NudgebeeAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 		tools.ToolNudgebeeIntegrationsList,
 		tools.ToolNudgebeeIntegrationsCount,
 		tools.ToolNudgebeeIntegrationGetStatus,
+		tools.ToolNudgebeeIntegrationDiagnose,
 	}
 	result := make([]toolcore.NBTool, 0, len(names))
 	for _, name := range names {
@@ -86,6 +87,10 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 			"For a single live-state question, make exactly one purpose-built call: use a *_count tool for how-many questions and a *_list tool for show/list questions. Put every explicit status, provider, type or name constraint into that first call; never make a broad discovery call first.",
 			"Use group_by only when the user asks for a breakdown across groups. When the user asks about one provider or integration type, filter by cloud_provider or type instead.",
 			"For mixed questions, call documentation and live-data tools as independent actions, then combine the evidence into one concise answer.",
+			"A recorded integration status means configured state, not runtime health. Never call an active integration healthy from status alone.",
+			"When the user explicitly asks why an integration is not working or connected, first resolve the visible integration and its exact id with nudgebee_integration_get_status, then call nudgebee_integration_diagnose once. Do not diagnose multiple ambiguous matches.",
+			"If an integration status lookup returns multiple matches, stop after that lookup: do not search documentation, do not diagnose, and do not infer that a disabled match is the one the user meant. List the matching names, types, and recorded statuses, then ask the user to choose the exact integration.",
+			"If nudgebee_integration_diagnose returns an error, stop: do not search documentation and do not infer the connection failure from configured status. State that the active diagnosis could not be completed, include the safe tool error, and keep configured status separate from runtime health.",
 			"Treat an empty result as no visible matching resource, not proof that the resource does not exist outside the requesting user's permissions.",
 			"If any tool reports that the operation is not permitted or that a requesting user is required, stop immediately and report that error. Do not try another tool, broaden the query, or suggest bypassing permissions.",
 		},
@@ -116,7 +121,10 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 				"Answer how many configured integrations are visible; filter a requested type/status directly and group only for an explicit breakdown.",
 			},
 			tools.ToolNudgebeeIntegrationGetStatus: {
-				"Answer whether a named integration is active or report the exact recorded status. If multiple names match, show the matches instead of guessing.",
+				"Report configured status or resolve a named integration to its exact id. If multiple names match, show the matches instead of guessing. Configured status is not health.",
+			},
+			tools.ToolNudgebeeIntegrationDiagnose: {
+				"Actively investigate one exact integration id after an explicit not-working/not-connected request and a successful status lookup.",
 			},
 		},
 		OutputFormat: "Lead with the direct answer. Clearly distinguish facts from documentation from current tenant data. Keep lists concise and state when results are limited by the requesting user's permissions.",

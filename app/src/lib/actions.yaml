@@ -3361,6 +3361,21 @@ actions:
       timeout: 120
     permissions:
       - role: tenant_admin
+  - name: integrations_diagnose_connection
+    comment: Safely diagnose connectivity of a saved integration visible through a linked account
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/integration'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: account_admin_readonly
   - name: integrations_check_connection_config
     comment: Test connectivity of integration settings before saving
     definition:
