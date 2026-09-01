@@ -57,7 +57,7 @@ func WSHandler(
 		}
 		if !status {
 			logger.Info("agent not connected", "account", acct)
-			c.JSON(400, utils.BuildError(400, "agent not connected"))
+			c.JSON(http.StatusServiceUnavailable, utils.BuildError(http.StatusServiceUnavailable, "agent not connected"))
 			return
 		}
 

@@ -198,7 +198,7 @@ func processRequest(c *gin.Context, accountID string, logger *slog.Logger, store
 	}
 	if !connected {
 		logger.Info("agent not connected", "account", accountID)
-		c.JSON(400, utils.BuildError(400, "agent not connected"))
+		c.JSON(http.StatusServiceUnavailable, utils.BuildError(http.StatusServiceUnavailable, "agent not connected"))
 		return
 	}
 

@@ -92,7 +92,7 @@ def fetch_metrics(
                     "POST", endpoint, headers=headers_with_context, data=payload, timeout=60
                 )
                 if response.status_code != 200:
-                    if response.status_code == 400 and "agent not connected" in response.text:
+                    if response.status_code in (400, 503) and "agent not connected" in response.text:
                         logger.warning(f"Agent not connected for account {account_id}. Returning empty results.")
                         return []
                     msg = f"""Failed to fetch metrics from server.

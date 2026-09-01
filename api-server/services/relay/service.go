@@ -489,7 +489,7 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 		}
 
 		switch resp.StatusCode {
-		case 400:
+		case 400, 503:
 			// Check if error matches "Agent not found/connected"
 			var errorResponse struct {
 				Errors []struct {
@@ -500,7 +500,7 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 
 			if err := common.UnmarshalJson(jsonBody, &errorResponse); err == nil {
 				for _, e := range errorResponse.Errors {
-					if e.Code == 400 && e.Message == errMsgAgentNotConnected {
+					if (e.Code == 400 || e.Code == 503) && e.Message == errMsgAgentNotConnected {
 						slog.Warn("relay: Agent not found/connected", "account_id", accountID)
 						return data, errors.New(errMsgAgentNotConnected)
 					} else {
@@ -596,7 +596,7 @@ func ExecuteRelayProxyApi(accountID string, params map[string]any, apiPath strin
 		}
 
 		switch resp.StatusCode {
-		case 400:
+		case 400, 503:
 			// Check if error matches "Agent not found/connected"
 			var errorResponse struct {
 				Errors []struct {
@@ -607,7 +607,7 @@ func ExecuteRelayProxyApi(accountID string, params map[string]any, apiPath strin
 
 			if err := common.UnmarshalJson(jsonBody, &errorResponse); err == nil {
 				for _, e := range errorResponse.Errors {
-					if e.Code == 400 && e.Message == errMsgAgentNotConnected {
+					if (e.Code == 400 || e.Code == 503) && e.Message == errMsgAgentNotConnected {
 						slog.Warn("relay: Agent not found/connected", "account_id", accountID)
 						return data, errors.New(errMsgAgentNotConnected)
 					} else {
@@ -878,7 +878,7 @@ func TestProxyDatasourceConfig(accountID string, datasource ProxyDatasourceConfi
 		return fmt.Errorf("failed to read relay test response: %w", readErr)
 	}
 
-	if resp.StatusCode == http.StatusBadRequest {
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusServiceUnavailable {
 		var errResp struct {
 			Errors []struct {
 				Message string `json:"message"`

@@ -131,7 +131,7 @@ func NewWorkspaceExecuteHandler(
 		}
 		if !connected {
 			logger.Warn("workspace: agent not connected", "account_id", req.AccountId)
-			c.JSON(http.StatusBadRequest, utils.BuildError(400, "agent not connected"))
+			c.JSON(http.StatusServiceUnavailable, utils.BuildError(http.StatusServiceUnavailable, "agent not connected"))
 			return
 		}
 

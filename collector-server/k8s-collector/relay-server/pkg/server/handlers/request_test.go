@@ -198,6 +198,27 @@ func TestRequestHandler_StoreError(t *testing.T) {
 	require.Equal(t, "internal server error", body["errors"][0]["message"])
 }
 
+func TestRequestHandler_AgentNotConnected(t *testing.T) {
+	store := &fakeStore{allowed: false}
+	rpc := fakeRPCClient{}
+	router := setupRouter(store, rpc)
+
+	input := models.ExternalActionRequest{
+		Body: models.ActionRequestBody{AccountID: "acct1"},
+	}
+	b, _ := json.Marshal(input)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/request", bytes.NewBuffer(b))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, 503, w.Code)
+	var body map[string][]map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, float64(503), body["errors"][0]["code"])
+	require.Equal(t, "agent not connected", body["errors"][0]["message"])
+}
+
 func TestRequestHandler_RPCError(t *testing.T) {
 	store := &fakeStore{allowed: true}
 	rpc := fakeRPCClient{err: context.DeadlineExceeded}

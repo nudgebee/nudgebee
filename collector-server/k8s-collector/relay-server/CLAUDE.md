@@ -123,7 +123,7 @@ Each request publishes to exchange `nudgebee-relay` with routing key `relay_requ
 
 **Correlation ID Matching**: RPC client stores pending requests in `sync.Map`, consumer goroutine dispatches responses by ID without blocking request handlers.
 
-**Multi-Level Fallback**: If WS disabled → direct HTTP to fallback URL; if agent not connected → 400 error; if RPC timeout → 504 error.
+**Multi-Level Fallback**: If WS disabled → direct HTTP to fallback URL; if agent not connected → 503 error; if RPC timeout → 504 error.
 
 **Graceful Shutdown**: 2s grace period for in-flight requests before terminating on SIGINT/SIGTERM.
 
