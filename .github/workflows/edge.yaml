@@ -1,9 +1,9 @@
 name: Edge
 
 # Rolling builds for every push to main. Produces a single `:edge` tag
-# per service on GHCR (multi-arch where supported, amd64-only for ML
-# images). docker-compose.yaml pulls from these tags so `docker compose
-# up` always tracks the tip of main.
+# per service on GHCR (amd64 + arm64 for every image).
+# docker-compose.yaml pulls from these tags so `docker compose up` always
+# tracks the tip of main.
 #
 # Stable / versioned releases come from release.yaml on `git tag v*`
 # and produce `:latest`, `:<version>`, `:<version>-<sha7>`, `:sha-<sha7>`.
@@ -77,13 +77,18 @@ jobs:
           - { image: workflow-server,         context: runbook-server,                                   platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: llm-gateway,             context: llm/gateway,                                      platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: llm-gateway,             context: llm/gateway,                                      platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
-          # ---------- amd64-only (ML-base-derived: CUDA/conda) ----------
+          # ---------- ML-base-derived ----------
+          # See release.yaml for why these are no longer amd64-only: there is no
+          # CUDA in this graph, and both bases already publish arm64.
           - { image: llm-server,              context: llm/llm-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: llm-server,              context: llm/llm-server,                                   platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: rag-server,              context: llm/rag-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: rag-server,              context: llm/rag-server,                                   platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           # benchmark-server image is intentionally not published to GHCR (OSS skip);
           # the source lives under llm/benchmark for local use, and benchmark-server.yaml
           # CI still tests the code. Re-add this line if/when publishing resumes.
           - { image: ml-k8s-server,           context: ml-k8s-server,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: ml-k8s-server,           context: ml-k8s-server,                                    platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
     steps:
       # Reclaim disk so large layer extraction doesn't OOM on / (~14 GB).
       # Same approach as release.yaml.
@@ -171,10 +176,10 @@ jobs:
           - { image: relay-server,            archs: "amd64 arm64" }
           - { image: workflow-server,         archs: "amd64 arm64" }
           - { image: llm-gateway,             archs: "amd64 arm64" }
-          - { image: llm-server,              archs: "amd64" }
-          - { image: rag-server,              archs: "amd64" }
+          - { image: llm-server,              archs: "amd64 arm64" }
+          - { image: rag-server,              archs: "amd64 arm64" }
           # benchmark-server intentionally not published to GHCR (see build matrix above).
-          - { image: ml-k8s-server,           archs: "amd64" }
+          - { image: ml-k8s-server,           archs: "amd64 arm64" }
     env:
       NS: ${{ needs.prepare.outputs.namespace }}
       SHA_SHORT: ${{ needs.prepare.outputs.sha_short }}
