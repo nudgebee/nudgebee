@@ -1855,10 +1855,21 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 		// Allow accounts to bypass the service label requirement via feature flag
 		serviceCheckDisabled, _ := common.IsFeatureEnabledForAccount("EVENT_INVESTIGATION_SKIP_SERVICE_LABEL_CHECK", ctx.GetSecurityContext().GetTenantId(), request.AccountId)
 		if !serviceCheckDisabled {
-			// Disable debug analysis for datadog events if both services and service labels are missing or empty
-			if !common.HasNonEmptyValue(parsedLabels["services"]) && !common.HasNonEmptyValue(parsedLabels["service"]) {
+			// The gate is "we cannot tell which service this is about", but it was
+			// asking only whether Datadog happened to send a service/services
+			// label. By this point the pipeline has already resolved the subject
+			// itself — and the log query that ran for this very event used it.
+			// Without this fallback, an event with subject_owner=workflow-server,
+			// subject_owner_kind=Deployment, subject_namespace=nudgebee and 1000
+			// collected log lines had its log analysis AND its investigation
+			// written as COMPLETED with an empty body, so the investigate page
+			// showed nothing at all.
+			hasServiceLabel := common.HasNonEmptyValue(parsedLabels["services"]) || common.HasNonEmptyValue(parsedLabels["service"])
+			hasResolvedSubject := event.SubjectNamespace != "" &&
+				(event.SubjectOwner != "" || event.SubjectName != "")
+			if !hasServiceLabel && !hasResolvedSubject {
 				debugAnalysisEnabled = false
-				debugAnalysisSkipReason = "skipped - event missing 'service' or 'services' label required for investigation"
+				debugAnalysisSkipReason = "skipped - event identifies no service: no 'service'/'services' label and no resolved subject"
 			} else {
 				debugAnalysisEnabled = true
 				debugAnalysisSkipReason = ""
