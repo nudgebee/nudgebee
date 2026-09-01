@@ -4,6 +4,12 @@ import KubernetesLogs, { buildStructuredQueryFromOperations } from '@components/
 import { useData } from '@context/DataContext';
 import apiAccount from '@api1/account';
 import observability from '@api1/observability';
+import apiUser from '@api1/user';
+
+// KubernetesLogs pulls in useTenantBranding, which calls useSession at render.
+jest.mock('next-auth/react', () => ({
+  useSession: () => ({ data: null, status: 'unauthenticated' }),
+}));
 
 jest.mock('@shared/buttons/DownloadButton', () => ({
   __esModule: true,
@@ -60,6 +66,16 @@ jest.mock('@api1/account', () => ({
   __esModule: true,
   default: {
     getDefaultProvider: jest.fn(),
+  },
+}));
+
+// The History modal is unmounted while closed, so opening the page must not
+// fetch history — that was the second half of the ES bug (#25180).
+jest.mock('@api1/user', () => ({
+  __esModule: true,
+  default: {
+    getHistory: jest.fn(),
+    getUserPreferencesTablePageSize: jest.fn(() => 10),
   },
 }));
 
@@ -161,10 +177,61 @@ describe('KubernetesLogs Signoz', () => {
       />
     );
 
-    // Wait for logProvider to be set
+    // Wait for logProvider to be set. Queried by text rather than by role: the
+    // accessible-name computation runs getComputedStyle over the emotion styles
+    // the earlier suite left in document.head, which jsdom cannot parse.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Builder/i })).toBeInTheDocument();
+      expect(screen.getByText('Builder')).toBeInTheDocument();
     });
+  });
+});
+
+// The History button used to be hidden for ES while api-server recorded
+// log_query_es rows all along, so ES users had history they could never open.
+describe('KubernetesLogs ES', () => {
+  const accountId = '123';
+
+  beforeEach(() => {
+    useData.mockReturnValue({
+      selectedCluster: {
+        agent: { connection_status: { logsConnectionProvider: 'ES' } },
+        cloud_account_attrs: [],
+      },
+    });
+
+    apiAccount.getDefaultProvider.mockResolvedValue({
+      data: { data: { get_default_provider: { provider: 'ES' } }, errors: null },
+    });
+
+    observability.fetchLogs.mockResolvedValue({
+      data: { data: { logs_list: [] } },
+      error: null,
+    });
+
+    observability.fetchLogLabels.mockResolvedValue({
+      data: { data: { logs_list_labels: [] } },
+      error: null,
+    });
+  });
+
+  it('renders the History button', async () => {
+    const { container } = render(
+      <KubernetesLogs
+        accountId={accountId}
+        showQueryTextBox={true}
+        showDateFilter={false}
+        showPolling={true}
+        dateTime={{
+          startTime: new Date().getTime() - 3600 * 1000,
+          endTime: new Date().getTime(),
+        }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('button[aria-label="History"]')).toBeInTheDocument();
+    });
+    expect(apiUser.getHistory).not.toHaveBeenCalled();
   });
 });
 
