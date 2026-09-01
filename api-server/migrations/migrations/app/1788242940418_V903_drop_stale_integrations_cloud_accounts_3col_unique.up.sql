@@ -1,0 +1,32 @@
+-- Drop the pre-link_role 3-column unique constraint on
+-- integrations_cloud_accounts (integration_id, cloud_account_id, tenant_id).
+--
+-- V863 added the link_role-aware 4-column constraint and DELIBERATELY kept this
+-- one, on the assumption that a 'discovery_target' row's cloud_account_id always
+-- differs from its integration's 'own' row so the two never collide on the
+-- 3-column key, with a note to "drop the old constraint in a follow-up migration
+-- once relay-server/api-server are confirmed rolled out on the new one".
+--
+-- That assumption broke with #37291 (PR #37287): a self-hosted forager runs in
+-- AND scans the same account, so relay's UpsertAgentDatasources now writes an
+-- 'own' row and a 'discovery_target' row sharing one (integration_id,
+-- cloud_account_id, tenant_id) triple. The 3-column constraint rejects the
+-- second insert with a 23505 that the ON CONFLICT (... link_role) arbiter
+-- cannot absorb, so the discovery target is silently never recorded and swept
+-- hosts are never matched back to their cloud account.
+--
+-- Safe to drop now: every remaining writer of integrations_cloud_accounts uses
+-- the 4-column ON CONFLICT (relay pkg/db/db_store.go,
+-- services/integrations/core/integration_config.go) or a bare ON CONFLICT DO
+-- NOTHING (services/account/service.go) -- nothing infers this constraint as an
+-- arbiter index anymore, and the rollout window V863 was protecting closed when
+-- V863 shipped. DROP CONSTRAINT is metadata-only (drops the backing unique
+-- index, no table scan or rewrite); brief ACCESS EXCLUSIVE lock on the table.
+--
+-- IF EXISTS: dev has drifted and may not carry this constraint. The name below
+-- is the 63-byte form Postgres actually stored: V569's ADD CONSTRAINT passed the
+-- 71-char "..._tenant_id_key" identifier, which Postgres truncated to
+-- "..._cloud_account_id_ten" (NAMEDATALEN) with a NOTICE. Spelling the stored
+-- name out here drops it with an exact match and no truncation NOTICE.
+alter table "public"."integrations_cloud_accounts"
+  drop constraint if exists "integrations_cloud_accounts_integration_id_cloud_account_id_ten";
