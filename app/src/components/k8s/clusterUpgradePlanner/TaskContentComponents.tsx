@@ -48,9 +48,14 @@ export const PdbContent: React.FC<{ accountId?: string; onInsightsChange?: (insi
   const [pdbComponent, setPdbComponent] = useState<React.ReactNode>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     const initializePdb = async () => {
       const pdb = new Pdb();
       await pdb.canRenderContent(accountId);
+      if (cancelled) {
+        return;
+      }
       const contentComponents = pdb.getContentComponents();
       const insights = pdb.getHighLightsData();
 
@@ -66,6 +71,10 @@ export const PdbContent: React.FC<{ accountId?: string; onInsightsChange?: (insi
     if (accountId) {
       initializePdb();
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, onInsightsChange]);
 
   return <>{pdbComponent}</>;
@@ -98,20 +107,32 @@ export const HelmContent: React.FC<{ accountId?: string; onInsightsChange?: (ins
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (accountId) {
       apiKubernetes1
         .getClusterHealth(accountId, 'helm_compatibility')
         .then((response: any) => {
+          if (cancelled) {
+            return;
+          }
           if (response?.res?.helm_compatibility) {
             setData(response.res.helm_compatibility);
           }
           setLoading(false);
         })
         .catch(() => {
+          if (cancelled) {
+            return;
+          }
           setError('Failed to fetch Helm compatibility data');
           setLoading(false);
         });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   useEffect(() => {
@@ -246,9 +267,14 @@ export const AddOnContent: React.FC<{ accountId?: string; onInsightsChange?: (in
   const [addOnComponent, setAddOnComponent] = useState<React.ReactNode>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     const initializeAddOn = async () => {
       const addOn = new EksAddOn();
       await addOn.canRenderContent(accountId);
+      if (cancelled) {
+        return;
+      }
       const contentComponents = addOn.getContentComponents();
       const insights = addOn.getHighLightsData();
 
@@ -264,6 +290,10 @@ export const AddOnContent: React.FC<{ accountId?: string; onInsightsChange?: (in
     if (accountId) {
       initializeAddOn();
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, onInsightsChange]);
 
   return <>{addOnComponent}</>;
@@ -273,9 +303,14 @@ export const KubeProxyContent: React.FC<{ accountId?: string; onInsightsChange?:
   const [kubeProxyComponent, setKubeProxyComponent] = useState<React.ReactNode>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     const initializeKubeProxy = async () => {
       const kubeProxy = new KubeVersion();
       await kubeProxy.canRenderContent(accountId);
+      if (cancelled) {
+        return;
+      }
       const contentComponents = kubeProxy.getContentComponents();
       const insights = kubeProxy.getHighLightsData();
 
@@ -291,6 +326,10 @@ export const KubeProxyContent: React.FC<{ accountId?: string; onInsightsChange?:
     if (accountId) {
       initializeKubeProxy();
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, onInsightsChange]);
 
   return <>{kubeProxyComponent}</>;
@@ -304,9 +343,14 @@ export const DeprecatedApisContent: React.FC<{ accountId?: string; targetVersion
   const [deprecatedApisComponent, setDeprecatedApisComponent] = useState<React.ReactNode>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     const initializeDeprecatedApis = async () => {
       const deprecatedApis = new DeprecatedApis({ disabledInfographic: true });
       await deprecatedApis.canRenderContent(accountId, targetVersion);
+      if (cancelled) {
+        return;
+      }
       const contentComponents = deprecatedApis.getContentComponents();
       const insights = deprecatedApis.getHighLightsData();
 
@@ -322,6 +366,10 @@ export const DeprecatedApisContent: React.FC<{ accountId?: string; targetVersion
     if (accountId) {
       initializeDeprecatedApis();
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, targetVersion, onInsightsChange]);
 
   return <>{deprecatedApisComponent}</>;
@@ -340,20 +388,32 @@ export const ClusterHealthWorkloadsContent: React.FC<{ accountId?: string }> = (
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (accountId) {
       apiKubernetes1
         .getClusterHealth(accountId, 'workloads')
         .then((response: any) => {
+          if (cancelled) {
+            return;
+          }
           if (response?.res?.workloads) {
             setWorkloads(response.res.workloads);
           }
           setLoading(false);
         })
         .catch(() => {
+          if (cancelled) {
+            return;
+          }
           setError('Failed to fetch workloads health data');
           setLoading(false);
         });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   if (loading) {
@@ -468,14 +528,30 @@ export const ClusterHealthServicesContent: React.FC<{ accountId?: string }> = ({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (accountId) {
-      apiKubernetes1.getClusterHealth(accountId, 'services').then((response: any) => {
-        if (response?.res?.services) {
-          setServices(response.res.services);
-        }
-        setLoading(false);
-      });
+      apiKubernetes1
+        .getClusterHealth(accountId, 'services')
+        .then((response: any) => {
+          if (cancelled) {
+            return;
+          }
+          if (response?.res?.services) {
+            setServices(response.res.services);
+          }
+          setLoading(false);
+        })
+        // This component has no error state, unlike its ClusterHealth* siblings; leaving
+        // `loading` set keeps the skeleton up as before rather than flashing an empty table.
+        .catch((error) => {
+          console.error('Failed to fetch cluster health services:', error);
+        });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   if (loading) {
@@ -596,20 +672,32 @@ export const ClusterHealthNodesContent: React.FC<{ accountId?: string }> = ({ ac
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (accountId) {
       apiKubernetes1
         .getClusterHealth(accountId, 'nodes')
         .then((response: any) => {
+          if (cancelled) {
+            return;
+          }
           if (response?.res?.nodes) {
             setNodes(response.res.nodes);
           }
           setLoading(false);
         })
         .catch(() => {
+          if (cancelled) {
+            return;
+          }
           setError('Failed to fetch nodes health data');
           setLoading(false);
         });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   if (loading) {
@@ -744,20 +832,32 @@ export const ClusterHealthLoadBalancerContent: React.FC<{ accountId?: string }> 
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (accountId) {
       apiKubernetes1
         .getClusterHealth(accountId, 'load_balancer')
         .then((response: any) => {
+          if (cancelled) {
+            return;
+          }
           if (response?.res?.load_balancers) {
             setLoadBalancers(response.res.load_balancers);
           }
           setLoading(false);
         })
         .catch(() => {
+          if (cancelled) {
+            return;
+          }
           setError('Failed to fetch load balancer health data');
           setLoading(false);
         });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   if (loading) {
@@ -1035,20 +1135,32 @@ export const ClusterHealthNodeGroupsContent: React.FC<{ accountId?: string }> = 
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (accountId) {
       apiKubernetes1
         .getClusterHealth(accountId, 'node_groups')
         .then((response: any) => {
+          if (cancelled) {
+            return;
+          }
           if (response?.res?.node_groups) {
             setNodeGroups(response.res.node_groups);
           }
           setLoading(false);
         })
         .catch(() => {
+          if (cancelled) {
+            return;
+          }
           setError('Failed to fetch node groups health data');
           setLoading(false);
         });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   if (loading) {
@@ -1269,20 +1381,32 @@ export const ClusterHealthPvContent: React.FC<{ accountId?: string }> = ({ accou
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (accountId) {
       apiKubernetes1
         .getClusterHealth(accountId, 'persistentvolumes')
         .then((response: any) => {
+          if (cancelled) {
+            return;
+          }
           if (response?.res?.persistentVolumes) {
             setPersistentVolumes(response.res.persistentVolumes);
           }
           setLoading(false);
         })
         .catch(() => {
+          if (cancelled) {
+            return;
+          }
           setError('Failed to fetch persistent volumes health data');
           setLoading(false);
         });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   if (loading) {

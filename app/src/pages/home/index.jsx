@@ -1556,7 +1556,7 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
           flexShrink: 0,
         }}
       >
-        <SafeIcon src={QuickLink} width='14px' height='14px' />
+        <SafeIcon src={QuickLink} alt='' width='14px' height='14px' />
       </Box>
       <Typography
         sx={{
