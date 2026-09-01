@@ -25,7 +25,7 @@ jobs:
       image_tag: ${{ steps.set-tag.outputs.IMAGE_TAG }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
