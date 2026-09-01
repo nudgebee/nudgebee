@@ -308,32 +308,34 @@ func main() {
 	}
 
 	// --- System Schedule Setup ---
-	// Load cron triggers from embedded YAML config (similar to RPC cron_triggers.yaml)
-	cronTriggers, err := system.LoadCronTriggers()
-	if err != nil {
-		slog.Warn("Failed to load cron triggers, continuing without cron schedules", "error", err)
-		cronTriggers = nil
-	}
-
-	sysManager := system.NewSystemJobManager(temporalClient, slog.Default())
-	if err := sysManager.EnsureSchedules(context.Background(), cronTriggers); err != nil {
-		// One retry to ride out a transient Temporal frontend stall on a single
-		// UpdateSchedule RPC (the SDK's default per-call timeout is ~10s, so a
-		// single slow call here would otherwise crash-loop the pod).
-		slog.Warn("failed to ensure system schedules, retrying once", "error", err)
-		time.Sleep(5 * time.Second)
-		if err := sysManager.EnsureSchedules(context.Background(), cronTriggers); err != nil {
-			slog.Error("failed to ensure system schedules, terminating", "error", err)
-			os.Exit(1)
+	go func() {
+		// Load cron triggers from embedded YAML config (similar to RPC cron_triggers.yaml)
+		cronTriggers, err := system.LoadCronTriggers()
+		if err != nil {
+			slog.Warn("Failed to load cron triggers, continuing without cron schedules", "error", err)
+			cronTriggers = nil
 		}
-	}
 
-	// Ensure Search Attributes
-	// This might fail if the user (temporal client) doesn't have permissions (e.g. generic worker vs admin).
-	// We log warn but don't exit, as they might already exist.
-	if err := system.EnsureSearchAttributes(context.Background(), temporalClient, slog.Default(), "default"); err != nil {
-		slog.Warn("Failed to ensure search attributes (this is expected if not admin)", "error", err)
-	}
+		sysManager := system.NewSystemJobManager(temporalClient, slog.Default())
+		if err := sysManager.EnsureSchedules(context.Background(), cronTriggers); err != nil {
+			// One retry to ride out a transient Temporal frontend stall on a single
+			// UpdateSchedule RPC (the SDK's default per-call timeout is ~10s, so a
+			// single slow call here would otherwise crash-loop the pod).
+			slog.Warn("failed to ensure system schedules, retrying once", "error", err)
+			time.Sleep(5 * time.Second)
+			if err := sysManager.EnsureSchedules(context.Background(), cronTriggers); err != nil {
+				slog.Error("failed to ensure system schedules, terminating", "error", err)
+				os.Exit(1)
+			}
+		}
+
+		// Ensure Search Attributes
+		// This might fail if the user (temporal client) doesn't have permissions (e.g. generic worker vs admin).
+		// We log warn but don't exit, as they might already exist.
+		if err := system.EnsureSearchAttributes(context.Background(), temporalClient, slog.Default(), "default"); err != nil {
+			slog.Warn("Failed to ensure search attributes (this is expected if not admin)", "error", err)
+		}
+	}()
 	// ---------------------------
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
