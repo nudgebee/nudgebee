@@ -1,0 +1,26 @@
+{{- /*
+Install-time value checks. Renders nothing; exists only to stop an install that
+cannot produce a usable deployment.
+
+A template rather than `required` or values.schema.json, for two reasons that
+rule both of those out: the rule is conditional on other values (a licensed
+install takes its admin address from the licence), and it must apply to installs
+only — neither mechanism can see .Release.IsInstall.
+
+Install-only is the point. An existing deployment already has its admin, so
+failing its upgrades over a value that would change nothing is pure noise, and
+would strand every operator who upgrades before reading a release note.
+
+The licence is read as "an address exists elsewhere" rather than decoded — a
+chart cannot verify a JWT. An operator who brings their own Secret is trusted
+the same way, since the licence is inside it and unreadable from here.
+*/ -}}
+{{- if .Release.IsInstall }}
+  {{- $licensed := or .Values.nudgebee_secret.NUDGEBEE_LICENSE .Values.global.existingNudgebeeSecretName }}
+  {{- if and (not .Values.admin.email) (not $licensed) }}
+    {{- fail "\n\n[ERROR] admin.email is required.\n\nThe first admin and their organisation are created during install, so the deployment is complete when `helm install` returns. Without an address there is nobody to create, and the install would finish in a half-configured state that only a first login can resolve.\n\nSet it:\n\n  --set admin.email=you@example.com\n\nor in your values file:\n\n  admin:\n    email: you@example.com\n\nA licensed install does not need this — the licence carries its own address and takes over. Set nudgebee_secret.NUDGEBEE_LICENSE instead.\n" }}
+  {{- end }}
+  {{- if and .Values.admin.email (not (regexMatch "^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$" .Values.admin.email)) }}
+    {{- fail (printf "\n\n[ERROR] admin.email is not a valid address: %q\n\nThe organisation name is derived from the local part of this address and cannot be changed afterwards, so a typo here is permanent.\n" .Values.admin.email) }}
+  {{- end }}
+{{- end }}

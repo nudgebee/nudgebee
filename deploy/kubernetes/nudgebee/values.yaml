@@ -314,7 +314,7 @@ rabbitmq:
             summary: RabbitMQ unroutable messages
             description: 'A queue has unroutable messages'
 # ---------------------------------------------------------------------------
-# Install-time setup. Both parts are optional and independent: an install can
+# Install-time setup. The two parts are independent: an install can
 # pre-provision its admin without bundling an agent, or bundle an agent and let
 # the first login provision the admin.
 # ---------------------------------------------------------------------------
@@ -325,9 +325,14 @@ admin:
   # somebody signs in. The tenant is named after it ("admin@acme.com" ->
   # "admin's Org"), matching what first-login provisioning would have produced.
   #
-  # Leave empty to keep today's behaviour: everything is provisioned by the
-  # first login instead. Enterprise can leave it empty regardless — the licence
-  # carries its own address and takes over.
+  # Required on a fresh install that has no licence: with neither, nothing
+  # carries an admin address, and the install fails rather than completing into
+  # a deployment that still has to be provisioned by hand at first login.
+  # Upgrades are never checked — they already have an admin.
+  #
+  # A licence carries its own address and takes over, so a licensed install does
+  # not need this — and does not honour it, a conflicting value is ignored with
+  # a warning.
   #
   # Sign in with this address and the generated password:
   #   kubectl get secret nudgebee -n <ns> \
@@ -339,11 +344,14 @@ agent:
   # hosting it, so the first cluster needs no second install and no copied auth
   # key. Additional clusters keep the normal two-step flow.
   #
-  # Defaults to false so an upgrade never silently gains a privileged eBPF
-  # DaemonSet across its nodes, or a duplicate account for a cluster it already
-  # monitors. New installs should set it true — the quickstart values file in
-  # the install guide does.
-  enabled: false
+  # On by default: a server that monitors nothing is not a usable install, and
+  # the cluster it runs on is the one cluster every deployment has.
+  #
+  # Set false when upgrading a deployment that already monitors this cluster
+  # through a separately installed agent — otherwise the same cluster registers
+  # a second time under a different name. Note also that enabling it adds a
+  # privileged eBPF DaemonSet across the nodes.
+  enabled: true
   # Name this cluster appears under — the cluster hosting the NudgeBee control
   # plane. More than 3 characters; "Demo" is reserved.
   clusterName: 'nb-control-plane-k8s'

@@ -30,20 +30,14 @@ during install, so there is nothing to set up on first login.
 
 {{- if .Values.agent.enabled }}
 
-This install bundles the NudgeBee agent, so the cluster hosting the server
-connects itself and needs no second install.
-
-  kubectl get pods -n {{ .Release.Namespace }} -l app={{ .Release.Name }}-nudgebee-agent-runner
-
-The cluster appears under Kubernetes as "{{ .Values.agent.clusterName | default "nb-control-plane-k8s" }}".
-If it does not, check services-server for the reason:
+The bundled agent connects this cluster as
+"{{ .Values.agent.clusterName | default "nb-control-plane-k8s" }}". If it does not appear:
 
   kubectl logs -n {{ .Release.Namespace }} deploy/services-server | grep -iE 'first run|local agent'
 
-Two things worth knowing. The agent shares this release, so `helm uninstall`
-removes it too. And its credential lives in the nudgebee-bootstrap Secret — if
-you render offline (Argo CD, Flux), set agent.accessKey and agent.accessSecret
-explicitly or upgrades will refuse rather than silently re-issue it.
+It is on by default — if this cluster is already monitored by a separately
+installed agent, set agent.enabled=false to avoid a duplicate account.
+Offline render (Argo CD, Flux) must set agent.accessKey/accessSecret.
 {{- end }}
 
 {{- /* The chart has no local/dev/prod environment marker, so this warns on
