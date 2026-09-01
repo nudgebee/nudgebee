@@ -42,7 +42,7 @@ func init() {
 // prompt (agent_gcp_lean). Every specialist (databases, kubectl, other clouds,
 // github, tickets, …) is dropped from context and reached on-demand via
 // search_tools + delegate_agent. Everything else — including the answer critique
-// — runs through the same ReAct3 planner under the standard gates.
+// — runs through the runtime-selected ReAct planner under the standard gates.
 type GcpOrchestratorAgent struct {
 	accountId string
 }
@@ -61,7 +61,7 @@ func (a *GcpOrchestratorAgent) GetNameAliases() []string {
 }
 
 func (a *GcpOrchestratorAgent) GetDescription() string {
-	return `Lean-loop GCP SRE/DevOps troubleshooting orchestrator: minimal principle-level prompt, direct gcloud_execute, specialists reached on-demand via search_tools + delegate_agent.`
+	return `Lean-loop GCP SRE/DevOps troubleshooting orchestrator: workspace-based GCP reads and local analysis, approval-aware direct GCP mutations, and specialists reached on-demand via search_tools + delegate_agent.`
 }
 
 func (a *GcpOrchestratorAgent) GetPlannerType() core.AgentPlannerType {

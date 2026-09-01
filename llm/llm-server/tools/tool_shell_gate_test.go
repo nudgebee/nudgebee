@@ -264,6 +264,79 @@ func TestShellTool_CompoundUsesStrongestWrappedStaticMutation(t *testing.T) {
 	}
 }
 
+func TestShellTool_InferToolRequestType_AzureAndGcpCompoundReadsAreRead(t *testing.T) {
+	tool := ShellTool{AccountId: "test-account"}
+	tests := map[string]string{
+		"azure": "az vm list --resource-group rg-prod --output json > /tmp/vms.json && " +
+			"az network nsg list --resource-group rg-prod --output json > /tmp/nsgs.json && " +
+			"jq -n --slurpfile vms /tmp/vms.json --slurpfile nsgs /tmp/nsgs.json '{vms: $vms, nsgs: $nsgs}'",
+		"gcp": "gcloud compute instances list --project prod --format=json > /tmp/instances.json && " +
+			"gcloud compute networks list --project prod --format=json > /tmp/networks.json && " +
+			"jq -n --slurpfile instances /tmp/instances.json --slurpfile networks /tmp/networks.json '{instances: $instances, networks: $networks}'",
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := tool.InferToolRequestType(nil, "shell_execute", input)
+			require.NoError(t, err)
+			assert.Equal(t, core.ToolRequestTypeRead, got)
+		})
+	}
+}
+
+func TestShellTool_InferToolRequestType_AzureAndGcpMutationsFailClosed(t *testing.T) {
+	tool := ShellTool{AccountId: "test-account"}
+	tests := map[string]struct {
+		input    string
+		expected core.ToolRequestType
+	}{
+		"azure compound": {
+			"az vm list --resource-group rg-prod && az vm stop --resource-group rg-prod --name vm-prod",
+			core.ToolRequestTypeUpdate,
+		},
+		"azure remote command": {
+			"az vm run-command invoke --resource-group rg-prod --name vm-prod --command-id RunShellScript --scripts 'ps aux'",
+			core.ToolRequestTypeCreate,
+		},
+		"gcp compound": {
+			"gcloud compute instances list --project prod && gcloud compute instances stop vm-prod --project prod --zone us-central1-a",
+			core.ToolRequestTypeUpdate,
+		},
+		"bigquery query job": {
+			"bq query --use_legacy_sql=false 'SELECT 1'",
+			core.ToolRequestTypeUpdate,
+		},
+		"bigquery query job with assigned global flags": {
+			"bq --project_id=my-project --location=US query --use_legacy_sql=false 'SELECT 1'",
+			core.ToolRequestTypeUpdate,
+		},
+		"bigquery query job with space-separated global flags": {
+			"bq --project_id my-project --location US query --use_legacy_sql=false 'SELECT 1'",
+			core.ToolRequestTypeUpdate,
+		},
+		"bigquery query job after boolean global flag": {
+			"bq --nosync query --use_legacy_sql=false 'SELECT 1'",
+			core.ToolRequestTypeUpdate,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := tool.InferToolRequestType(nil, "shell_execute", tc.input)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+func TestShellTool_InferToolRequestType_BigQueryQuotedQueryTextIsNotAJob(t *testing.T) {
+	tool := ShellTool{AccountId: "test-account"}
+	input := `bq show --description "my query table" dataset.table`
+
+	got, err := tool.InferToolRequestType(nil, "shell_execute", input)
+	require.NoError(t, err)
+	assert.Equal(t, core.ToolRequestTypeRead, got,
+		"the word query inside a quoted flag value must not be mistaken for the query subcommand")
+}
+
 func TestShellTool_InferToolRequestType_RegisteredCLINameInArgumentIsUnclassified(t *testing.T) {
 	tool := ShellTool{AccountId: "test-account"}
 	inputs := []string{

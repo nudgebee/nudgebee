@@ -100,6 +100,7 @@ func TestAwsCliTool_DescriptionDefersReadRoutingToAgent(t *testing.T) {
 }
 func TestGcpCliTool_ToolPromptSafetyRules(t *testing.T) {
 	joined := joinLines(GcpCliTool{}.ToolPrompt())
+	assert.Contains(t, joined, "do not override an agent policy", "gcp ToolPrompt must defer read routing to the active agent")
 	assert.Contains(t, joined, "IAM", "gcp ToolPrompt must warn against self-IAM-modify")
 	assert.Contains(t, joined, "gcloud config set project", "gcp ToolPrompt must call out the project-preconfigured gotcha")
 	assert.Contains(t, joined, "gcloud_execute", "gcp ToolPrompt must state the canonical tool name (planner-fail guard)")
@@ -107,10 +108,30 @@ func TestGcpCliTool_ToolPromptSafetyRules(t *testing.T) {
 }
 func TestAzureCliTool_ToolPromptSafetyRules(t *testing.T) {
 	joined := joinLines(AzureCliTool{}.ToolPrompt())
+	assert.Contains(t, joined, "do not override an agent policy", "azure ToolPrompt must defer read routing to the active agent")
 	assert.Contains(t, joined, "role assignment", "azure ToolPrompt must warn against self-role-modify")
 	assert.Contains(t, joined, "az monitor metrics list", "azure ToolPrompt must cover monitoring disambiguation")
 	assert.Contains(t, joined, "run-command", "azure ToolPrompt must cover OS-detect-before-run-command")
 	assert.Contains(t, joined, "Evidence-based", "azure ToolPrompt must include evidence-based invariant")
+}
+
+func TestAzureAndGcpCliToolDescriptionsDeferReadRoutingToAgent(t *testing.T) {
+	tests := []struct {
+		name        string
+		description string
+		provider    string
+	}{
+		{"azure", AzureCliTool{}.Description(), "Azure"},
+		{"gcp", GcpCliTool{}.Description(), "GCP"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Contains(t, tc.description, "Follow the active agent's system prompt")
+			assert.Contains(t, tc.description, "assigns "+tc.provider+" reads to the workspace shell")
+			assert.Contains(t, tc.description, "approval and resume behavior is preserved")
+			assert.NotContains(t, tc.description, "Prioritize this tool")
+		})
+	}
 }
 func TestKubectlExecuteTool_ToolPromptSafetyRules(t *testing.T) {
 	joined := joinLines(KubectlExecuteTool{}.ToolPrompt())

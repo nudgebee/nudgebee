@@ -28,6 +28,7 @@ func init() {
 // gotchas only. Orchestrator prompt owns investigation methodology.
 func (t AzureCliTool) ToolPrompt() []string {
 	return []string{
+		"**Routing boundary:** These rules apply after the active agent has selected `azure_execute`; they do not override an agent policy that routes Azure reads and local computation through the workspace shell.",
 		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs, IPs, or names — empty CLI results mean 'not found'.",
 		"**RBAC safety:** NEVER attempt to modify your own role assignments or permissions. `az role assignment create`, `az ad app permission grant` for self are OFF LIMITS. Report AuthorizationFailed / 403 as a finding: state which command failed and which role is required on which scope.",
 		"**Monitoring disambiguation:** `az monitor metrics list` = numeric time-series (CPU, DTU, latency). `az monitor activity-log list` = control-plane audit events (who did what). `az monitor metrics alert list` = configured alert rules. Not interchangeable. Never install extensions to list alerts — the built-in works.",
@@ -62,7 +63,7 @@ func (t AzureCliTool) Description() string {
 
 		**Usage:**
 
-		* **Prioritize this tool:**  When interacting with Azure, use this tool to retrieve information or perform actions.
+		* **Routing:** Availability does not make this tool the default for every Azure command. Follow the active agent's system prompt when choosing between this direct tool and a workspace shell. If that prompt assigns Azure reads to the workspace shell, do not use this tool for those reads; keep this direct path for mutations, remote command execution, and commands with uncertain effects so approval and resume behavior is preserved.
 		* **Input:**  A valid 'az' CLI command string.  Include necessary options and arguments. 'login'/'logout' and 'account set|clear|import' are blocked.
 		* **Output:**  The raw output of the executed 'az' CLI command.
 
@@ -76,7 +77,6 @@ func (t AzureCliTool) Description() string {
 
 		* Ensure correct command formatting and arguments.
 		* Do not include Azure credentials in commands.  Assume they are configured correctly in the environment.
-		* For complex queries, use tools like 'jq' to parse and filter the JSON output.  Indicate this in the command.
 		`
 }
 

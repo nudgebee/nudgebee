@@ -42,7 +42,7 @@ func init() {
 // prompt (agent_azure_lean). Every specialist (databases, kubectl, other clouds,
 // github, tickets, …) is dropped from context and reached on-demand via
 // search_tools + delegate_agent. Everything else — including the answer critique
-// — runs through the same ReAct3 planner under the standard gates.
+// — runs through the runtime-selected ReAct planner under the standard gates.
 type AzureOrchestratorAgent struct {
 	accountId string
 }
@@ -61,7 +61,7 @@ func (a *AzureOrchestratorAgent) GetNameAliases() []string {
 }
 
 func (a *AzureOrchestratorAgent) GetDescription() string {
-	return `Lean-loop Azure SRE/DevOps troubleshooting orchestrator: minimal principle-level prompt, direct azure_execute, specialists reached on-demand via search_tools + delegate_agent.`
+	return `Lean-loop Azure SRE/DevOps troubleshooting orchestrator: workspace-based Azure reads and local analysis, approval-aware direct Azure mutations, and specialists reached on-demand via search_tools + delegate_agent.`
 }
 
 func (a *AzureOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
