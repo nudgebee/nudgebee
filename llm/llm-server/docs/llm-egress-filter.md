@@ -364,9 +364,22 @@ type PIIScrubEvent struct {
 }
 ```
 
-Deliberate non-fields (both event types): the matched values themselves.
-They ARE the sensitive content — recording them would re-leak exactly
-what the detector caught.
+Both event types also carry a per-item breakdown — `PIIScrubEvent.Values[]`
+and `FilterEvent.Hits[]` — describing what was matched and where it came from:
+`source` / `agent` / `tool`, `origin` + `doc_url` when the value arrived via a
+retrieved KB document, and `length` + `shape`.
+
+`shape` is a character-class mask (`zaphod.b@galaxy.test` renders as
+`aaaaaa.a@aaaaaa.aaaa`): letters collapse to `a`/`A` in any script, digits to
+`9`, a closed set of structural characters (`@ . - _ / : +` and space)
+survives, and everything else becomes `#`. Every value of a given shape
+renders identically, so it answers "did the detector grab the right span?"
+without carrying content.
+
+The matched values themselves are NOT recorded by default — they ARE the
+sensitive content. `value` is populated only for tenants enrolled in the
+`EGRESSFILTER_REVEAL_VALUES` feature flag, which is testing-only; see §9. Both arrays are capped at 250 entries, with `values_truncated` /
+`hits_truncated` recording the trim while `hit_count` stays the true total.
 
 The UI reads `message.metadata.egressfilter` and renders however it wants —
 a banner, a badge, an icon, nothing. The shape is structured JSON, not an
@@ -432,6 +445,31 @@ All values are read at LLM-factory time and baked into the cached wrapper.
 Changing them requires either a process restart or
 `InvalidateAllLLMClientCache()` to flush the cache so the next
 `GetLLMModel` call re-reads config.
+
+### Raw value reveal (`EGRESSFILTER_REVEAL_VALUES`)
+
+**DANGEROUS — testing environments only.** When a tenant is enrolled, every
+audit event carries the RAW matched value alongside `shape`: API keys,
+database passwords and personal data are written verbatim into
+`llm_conversation_messages.metadata` — a persistent, queryable table — and
+rendered in the browser. That is the exact at-rest exposure the scrubber
+exists to prevent, and a tenant running `pii_mode=enforce` for HIPAA/GDPR is
+**not compliant** with it on. Off, events carry `length` + `shape` instead.
+
+Unlike the settings above this is **not an env var**: it is a per-tenant
+feature flag (registered by migration V905), so it can be turned on for one
+tenant under investigation without exposing every other tenant sharing the
+instance. It appears as a checkbox in Tenant Settings → Feature Flags, or
+enrol directly:
+
+```sql
+INSERT INTO public.feature_flag (feature_id, tenant_id, status)
+VALUES ('EGRESSFILTER_REVEAL_VALUES', '<tenant-uuid>', 'enabled');
+```
+
+Default is OFF: no `feature_flag` row means disabled, and `RevealValues`
+fails closed on a missing tenant or any lookup error. Reads are cached, so a
+UI flip takes effect within the cache TTL rather than instantly.
 
 ## 10. Threat model (in scope for this package)
 

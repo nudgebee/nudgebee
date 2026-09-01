@@ -957,9 +957,12 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	// of many calls that reference the same email would otherwise show
 	// e.g. "95 PII scrubbed" for what is really 1-few distinct values.
 	//
-	// Values live only in the accumulator's in-memory map for the duration
-	// of this turn — never serialized or persisted. Same risk profile as
-	// the per-call mapping the wrapper already holds for rehydration.
+	// Raw values live only in the accumulator's in-memory map for the
+	// duration of this turn. The consolidated event persists a per-value
+	// breakdown (category, source, tool, KB origin, length, character-class
+	// shape) but NOT the values themselves — unless the testing-only
+	// EGRESSFILTER_REVEAL_VALUES feature flag is enabled for the tenant, which writes them
+	// verbatim and must never be enabled in production.
 	// At message-end we call Consolidated() to build ONE PIIScrubEvent
 	// with the true-distinct hit_count + union of categories + agent list.
 	piiAccumulator := egressfilter.NewPIIValueAccumulator()

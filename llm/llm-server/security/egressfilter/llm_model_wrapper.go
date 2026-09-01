@@ -132,6 +132,17 @@ func (w *wrappedModel) scanAndDecide(
 	ruleIDs := result.RuleIDs()
 	auditID := newAuditID()
 	agentName, _ := AgentNameFromContext(ctx)
+	// Annotate each reported hit: length + character-class shape always, the
+	// raw value only under the testing-only reveal flag, plus KB attribution
+	// when the match sat inside a retrieved-knowledge block. Works on a copy,
+	// so the security decision below still evaluates the untouched result;
+	// length and order are preserved, keeping reportMask aligned.
+	// Only pay for annotation when something will actually read the event.
+	// With no reporter on ctx the event is built and dropped, so the shape /
+	// KB work would be pure waste on the LLM hot path.
+	if reporterFromContext(ctx) != nil {
+		reportHits = annotateHits(ctx, reportHits, payload)
+	}
 	// Build the structured event once from the current-turn hit subset; the
 	// reporter (if any) surfaces it as the per-message badge. Agent name is
 	// carried for downstream dashboard queries (and the future per-agent
@@ -290,7 +301,7 @@ func serializeMessagesWithSources(messages []llms.MessageContent) (string, []Sou
 	// of every LLM call. currentMIdx / currentPIdx are updated at the top
 	// of each iteration and read by the closure via capture.
 	var currentMIdx, currentPIdx int
-	addRegion := func(text string, src Source) {
+	addRegion := func(text string, src Source, tool string) {
 		if text == "" {
 			return
 		}
@@ -299,41 +310,41 @@ func serializeMessagesWithSources(messages []llms.MessageContent) (string, []Sou
 		b.WriteByte('\n')
 		regions = append(regions, SourceRegion{
 			Start: start, End: b.Len(), Source: src,
-			MsgIdx: currentMIdx, PartIdx: currentPIdx,
+			MsgIdx: currentMIdx, PartIdx: currentPIdx, Tool: tool,
 		})
 	}
 
 	for mIdx, m := range messages {
-		textSource := sourceForRole(m.Role)
+		textSource := SourceForRole(m.Role)
 		for pIdx, p := range m.Parts {
 			currentMIdx = mIdx
 			currentPIdx = pIdx
 			switch part := p.(type) {
 			case llms.TextContent:
-				addRegion(part.Text, textSource)
+				addRegion(part.Text, textSource, "")
 			case *llms.TextContent:
 				if part != nil {
-					addRegion(part.Text, textSource)
+					addRegion(part.Text, textSource, "")
 				}
 			case llms.ToolCall:
 				if part.FunctionCall != nil {
-					addRegion(part.FunctionCall.Arguments, SourceToolCallArgs)
+					addRegion(part.FunctionCall.Arguments, SourceToolCallArgs, part.FunctionCall.Name)
 				}
 			case *llms.ToolCall:
 				if part != nil && part.FunctionCall != nil {
-					addRegion(part.FunctionCall.Arguments, SourceToolCallArgs)
+					addRegion(part.FunctionCall.Arguments, SourceToolCallArgs, part.FunctionCall.Name)
 				}
 			case llms.ToolCallResponse:
-				addRegion(part.Content, SourceToolResult)
+				addRegion(part.Content, SourceToolResult, part.Name)
 			case *llms.ToolCallResponse:
 				if part != nil {
-					addRegion(part.Content, SourceToolResult)
+					addRegion(part.Content, SourceToolResult, part.Name)
 				}
 			case llms.ImageURLContent:
-				addRegion(part.URL, SourceImageURL)
+				addRegion(part.URL, SourceImageURL, "")
 			case *llms.ImageURLContent:
 				if part != nil {
-					addRegion(part.URL, SourceImageURL)
+					addRegion(part.URL, SourceImageURL, "")
 				}
 			}
 		}
@@ -341,10 +352,10 @@ func serializeMessagesWithSources(messages []llms.MessageContent) (string, []Sou
 	return b.String(), regions
 }
 
-// sourceForRole maps a langchaingo chat-message role to the Source we
+// SourceForRole maps a langchaingo chat-message role to the Source we
 // assign to its TextContent parts. Tool/Image/ToolCall parts are tagged by
 // their own type regardless of role.
-func sourceForRole(role llms.ChatMessageType) Source {
+func SourceForRole(role llms.ChatMessageType) Source {
 	switch role {
 	case llms.ChatMessageTypeSystem:
 		return SourceSystem

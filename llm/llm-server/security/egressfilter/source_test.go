@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -20,7 +21,7 @@ func TestSourceForRole(t *testing.T) {
 		{llms.ChatMessageType("unknown_role"), SourceUser}, // conservative fallback
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, sourceForRole(c.role), "role=%q", c.role)
+		assert.Equal(t, c.want, SourceForRole(c.role), "role=%q", c.role)
 	}
 }
 
@@ -208,4 +209,34 @@ func TestWrapModel_FilterEvent_CarriesSourceAndAgent(t *testing.T) {
 	assert.Equal(t,
 		[]Source{SourceSystem, SourceToolResult, SourceUser},
 		captured.HitSources)
+}
+
+// Hit.Tool must survive the REAL path: serializeMessagesWithSources builds the
+// regions, tagHitsBySource copies onto the hit. A fixture-based test in the
+// frontend previously asserted this worked while the copy was missing
+// entirely, so this one deliberately goes through the producer.
+func TestTagHitsBySource_CopiesToolFromRealRegions(t *testing.T) {
+	msgs := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{
+			llms.TextContent{Text: "check the cluster"},
+		}},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+			llms.ToolCallResponse{Name: "kubectl_execute", Content: "AKIAIOSFODNN7EXAMPLE"},
+		}},
+	}
+	payload, regions := serializeMessagesWithSources(msgs)
+
+	res := Scan(payload)
+	require.NotEmpty(t, res.Hits, "fixture must produce a hit")
+	tagged := tagHitsBySource(res.Hits, regions)
+
+	var found bool
+	for _, h := range tagged {
+		if h.RuleID == "aws-access-key-id" {
+			found = true
+			assert.Equal(t, SourceToolResult, h.Source)
+			assert.Equal(t, "kubectl_execute", h.Tool, "tool name must reach the Hit")
+		}
+	}
+	assert.True(t, found, "aws-access-key-id hit not found")
 }

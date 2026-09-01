@@ -4,8 +4,10 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -31,9 +33,11 @@ const DetectorPII = "pii"
 // itself (the /scrub HTTP client + LLM wrapper) is EE and lives in
 // `ee/scrubbing`; only the metadata contract is OSS.
 //
-// Deliberate non-field: the matched values. They ARE the PII; recording them
-// would re-leak exactly what the scrubber removed. Only counts, categories,
-// and correlation metadata are kept.
+// Matched values are NOT recorded by default — they ARE the PII, and this
+// struct is persisted. Values[] carries per-value length + character-class
+// shape, which answers "did the detector grab the right span" without keeping
+// what it grabbed. The raw value appears only under the testing-only reveal
+// flag (see PIIValueDetail.Value / RevealValues).
 type PIIScrubEvent struct {
 	// AuditID correlates the event with logs. Format: "scrub-<12 lowercase hex>".
 	// Distinct prefix from FilterEvent's "egress-" so log-tailers can tell
@@ -82,7 +86,90 @@ type PIIScrubEvent struct {
 	// generated the most PII" for the diagnostic view without exposing
 	// values. Present only on consolidated events.
 	AgentCounts map[string]int `json:"agent_counts,omitempty"`
+
+	// Values is the per-value breakdown: what was matched, where it came
+	// from, and what it became. One entry per distinct value, capped at
+	// maxDetailValues. Present only on consolidated events. Carries the raw
+	// value ONLY when value reveal is enabled — see PIIValueDetail.Value.
+	Values []PIIValueDetail `json:"values,omitempty"`
+
+	// ValuesTruncated is set when HitCount exceeded maxDetailValues and
+	// Values carries only the first maxDetailValues entries. Lets the UI say
+	// "showing 250 of N" rather than silently presenting a partial list as
+	// complete.
+	ValuesTruncated bool `json:"values_truncated,omitempty"`
 }
+
+// PIIValueDetail describes one scrubbed value: what it was identified as,
+// where in the payload it came from, and what it was replaced with.
+//
+// The provenance fields exist because "PII in the events agent" is not an
+// actionable answer. A value reaching the LLM from a retrieved Confluence
+// runbook is a knowledge-base curation problem; the same value arriving in a
+// kubectl response is a cluster-data problem. Before these fields, telling
+// the two apart meant reading `llm_conversation_token_usage.prompt_messages`
+// by hand.
+type PIIValueDetail struct {
+	// Token is the replacement the LLM saw, e.g. "[EMAIL_1]" — the "changed
+	// it to" half of before/after.
+	Token string `json:"token"`
+
+	// Category is the soft-PII type: EMAIL, PHONE, PERSON, LOCATION.
+	Category string `json:"category"`
+
+	// Source is which kind of message part carried the value — user input,
+	// a tool result, a prior assistant turn, and so on. Same taxonomy the
+	// secrets detector uses, so both halves of the UI read alike.
+	Source Source `json:"source,omitempty"`
+
+	// Agent is the agent whose wrapper call first introduced this value.
+	Agent string `json:"agent,omitempty"`
+
+	// Tool is the tool that produced the piece, set when Source is
+	// tool_result or tool_call_args (e.g. "kubectl_execute", "fetch_logs").
+	Tool string `json:"tool,omitempty"`
+
+	// Origin marks a recognisable injected region the value sat inside.
+	// Currently only OriginKnowledgeBase — RAG content injected by the KB
+	// pre-step, which is a distinct remediation path from live cluster data.
+	Origin string `json:"origin,omitempty"`
+
+	// DocURL is the retrieved document's Source url, when Origin is
+	// knowledge_base and the block carried one. This is the pointer that
+	// turns "PII from RAG" into "PII from this Confluence page".
+	DocURL string `json:"doc_url,omitempty"`
+
+	// Length is the RUNE count of the original value — the UI renders it as
+	// "N chars", and bytes would report 24 for a 16-character Japanese
+	// address. Always recorded: it is metadata about the value, not the value.
+	Length int `json:"length"`
+
+	// Shape is the character-class mask of the original (see ValueShape),
+	// e.g. "aaaaaa.a@aaaaaa.aaaa". Always recorded.
+	Shape string `json:"shape"`
+
+	// Value is the raw original. Populated ONLY when value reveal is on
+	// (EGRESSFILTER_REVEAL_VALUES feature flag) — testing environments only.
+	// See RevealValues for why this must not be enabled in production.
+	Value string `json:"value,omitempty"`
+}
+
+// maxDetailValues bounds the per-value array so one turn cannot write an
+// unbounded blob into llm_conversation_messages.metadata. HitCount stays the
+// TRUE distinct count and ValuesTruncated flags the trim, so a cap never makes
+// the audit trail understate what was detected.
+//
+// 250 is derived from the observed distribution over 2165 PII events on dev:
+// p50=8, p90=30, p99=73, p99.9=115, max=131. That is ~1.9x the largest event
+// ever recorded, so no real turn is trimmed today, while the array is bounded
+// at roughly 60KB (measured ~240 bytes per entry) instead of growing without
+// limit. Raise it only with fresh numbers, not by intuition.
+const maxDetailValues = 250
+
+// OriginKnowledgeBase marks a value that sat inside the KB pre-step's
+// <retrieved_knowledge> block — i.e. it arrived via RAG retrieval rather than
+// from live infrastructure or user input.
+const OriginKnowledgeBase = "knowledge_base"
 
 // NewPIIScrubEvent builds an event from a scrub result. mapping is the
 // {token: original} map the scrubber returns; only its keys (tokens) are read
@@ -144,6 +231,40 @@ func FilterPIIMappingByCategory(mapping map[string]string, disabledCategories []
 	return
 }
 
+// compareTokens orders "[TYPE_n]" tokens by category then NUMERIC index, so
+// [EMAIL_10] follows [EMAIL_9] rather than [EMAIL_1]. Plain lexicographic
+// order would interleave them confusingly in the UI list.
+func compareTokens(a, b string) int {
+	ca, na := piiTokenCategory(a), piiTokenIndex(a)
+	cb, nb := piiTokenCategory(b), piiTokenIndex(b)
+	if ca != cb {
+		return strings.Compare(ca, cb)
+	}
+	// Direct comparison, not `na - nb` -> tokens also arrive from the
+	// ml-k8s /scrub response and from jsonb reads, so the operands are not
+	// all self-generated and the subtraction could overflow.
+	if na < nb {
+		return -1
+	}
+	if na > nb {
+		return 1
+	}
+	return strings.Compare(a, b)
+}
+
+// piiTokenIndex extracts n from "[TYPE_n]"; returns 0 when absent.
+func piiTokenIndex(token string) int {
+	i := strings.LastIndexByte(token, '_')
+	if i < 0 || !strings.HasSuffix(token, "]") {
+		return 0
+	}
+	n, err := strconv.Atoi(token[i+1 : len(token)-1])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // piiTokenCategory extracts "EMAIL" from "[EMAIL_1]". Returns "" for anything
 // not shaped like a "[TYPE_n]" reversible token (e.g. a fixed "[REDACTED_*]"
 // placeholder, which never appears in the reversible mapping anyway).
@@ -182,7 +303,8 @@ func newPIIAuditID() string {
 // invoke the wrapper from multiple goroutines under one turn).
 type PIIValueAccumulator struct {
 	mu           sync.Mutex
-	values       map[string]string // raw value -> category (first-seen wins)
+	values       map[string]PIIValueDetail // raw value -> detail (first-seen wins)
+	order        []string                  // raw values in first-seen order, for stable output
 	payloadBytes int
 	// agentContributions tracks how many NEW distinct values each agent's
 	// wrapper call contributed to `values` (i.e., values the agent was
@@ -197,7 +319,7 @@ type PIIValueAccumulator struct {
 // to ctx via WithPIIValueAccumulator.
 func NewPIIValueAccumulator() *PIIValueAccumulator {
 	return &PIIValueAccumulator{
-		values:             make(map[string]string),
+		values:             make(map[string]PIIValueDetail),
 		agentContributions: make(map[string]int),
 	}
 }
@@ -209,27 +331,73 @@ func NewPIIValueAccumulator() *PIIValueAccumulator {
 // A value's category is stable in practice (an email is always EMAIL);
 // first-seen wins if a value ever changes category, which should not
 // happen but is defended against so the accumulator degrades gracefully.
-func (a *PIIValueAccumulator) Add(mapping map[string]string, agentName string, payloadBytes int) {
+// No production caller today — the EE wrapper uses AddWithProvenance. Kept as
+// the unattributed entry point for callers outside the message tree (tests,
+// and any future producer that has a mapping but no pieces to attribute it
+// against); such a caller still gets category, length and shape.
+func (a *PIIValueAccumulator) Add(ctx context.Context, mapping map[string]string, agentName string, payloadBytes int) {
+	a.AddWithProvenance(ctx, mapping, nil, agentName, payloadBytes)
+}
+
+// AddWithProvenance is Add plus per-value origin. provenance is keyed by raw
+// value and supplies Source / Tool / Origin / DocURL; a value missing from it
+// still records category, length and shape. Kept separate from Add so callers
+// that cannot attribute (tests, any future non-message caller) keep working.
+//
+// First-seen wins, matching Add's dedup: the agent and provenance recorded are
+// those of the call that first introduced the value this turn.
+func (a *PIIValueAccumulator) AddWithProvenance(
+	ctx context.Context,
+	mapping map[string]string,
+	provenance map[string]PIIValueDetail,
+	agentName string,
+	payloadBytes int,
+) {
 	if a == nil || len(mapping) == 0 {
 		return
 	}
+	// Resolved ONCE per event: every value in one audit record agrees on the
+	// decision, and the per-tenant lookup is not repeated per value.
+	reveal := RevealValues(ctx)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	// Lazy-init so a caller using &PIIValueAccumulator{} (bypassing
 	// NewPIIValueAccumulator) still works — nil-map assignment would
 	// otherwise panic. Cheap; hit on first Add per accumulator.
 	if a.values == nil {
-		a.values = make(map[string]string)
+		a.values = make(map[string]PIIValueDetail)
 	}
 	if a.agentContributions == nil {
 		a.agentContributions = make(map[string]int)
 	}
+	// Sorted, not map order: Go randomises map iteration, so ranging directly
+	// would append to a.order in a different sequence on every run — and once
+	// the maxDetailValues cap trims the list, WHICH values survive would be
+	// random too. Sorting by token gives a stable, reproducible order.
+	tokens := make([]string, 0, len(mapping))
+	for token := range mapping {
+		tokens = append(tokens, token)
+	}
+	slices.SortFunc(tokens, compareTokens)
+
 	newFromThisCall := 0
-	for token, value := range mapping {
-		if _, seen := a.values[value]; !seen {
-			a.values[value] = piiTokenCategory(token)
-			newFromThisCall++
+	for _, token := range tokens {
+		value := mapping[token]
+		if _, seen := a.values[value]; seen {
+			continue
 		}
+		d := provenance[value] // zero value when unattributed
+		d.Token = token
+		d.Category = piiTokenCategory(token)
+		d.Length = utf8.RuneCountInString(value)
+		d.Shape = ValueShape(value)
+		d.Value = revealed(reveal, value)
+		if d.Agent == "" {
+			d.Agent = agentName
+		}
+		a.values[value] = d
+		a.order = append(a.order, value)
+		newFromThisCall++
 	}
 	a.payloadBytes += payloadBytes
 	if agentName != "" && newFromThisCall > 0 {
@@ -256,9 +424,9 @@ func (a *PIIValueAccumulator) Consolidated() *PIIScrubEvent {
 		return nil
 	}
 	catSet := make(map[string]struct{}, 4)
-	for _, cat := range a.values {
-		if cat != "" {
-			catSet[cat] = struct{}{}
+	for _, d := range a.values {
+		if d.Category != "" {
+			catSet[d.Category] = struct{}{}
 		}
 	}
 	cats := make([]string, 0, len(catSet))
@@ -277,9 +445,27 @@ func (a *PIIValueAccumulator) Consolidated() *PIIScrubEvent {
 	// (bounded by the ~4 known categories × distinct-value count) and
 	// gives the UI a breakdown without a schema round-trip.
 	categoryCounts := make(map[string]int, len(catSet))
-	for _, cat := range a.values {
-		if cat != "" {
-			categoryCounts[cat]++
+	for _, d := range a.values {
+		if d.Category != "" {
+			categoryCounts[d.Category]++
+		}
+	}
+
+	// Emitted in first-seen order, not map order, so the UI list and any
+	// diff of two audit rows are stable across runs.
+	// First-seen order, capped. HitCount below still reports every distinct
+	// value, so the count and the list can disagree by design — that is what
+	// ValuesTruncated records.
+	limit := len(a.order)
+	truncated := false
+	if limit > maxDetailValues {
+		limit = maxDetailValues
+		truncated = true
+	}
+	details := make([]PIIValueDetail, 0, limit)
+	for _, v := range a.order[:limit] {
+		if d, ok := a.values[v]; ok {
+			details = append(details, d)
 		}
 	}
 
@@ -289,15 +475,17 @@ func (a *PIIValueAccumulator) Consolidated() *PIIScrubEvent {
 	maps.Copy(agentCounts, a.agentContributions)
 
 	return &PIIScrubEvent{
-		AuditID:        newPIIAuditID(),
-		Detector:       DetectorPII,
-		HitCount:       len(a.values),
-		Categories:     cats,
-		Reversible:     true,
-		PayloadBytes:   a.payloadBytes,
-		AgentName:      strings.Join(agents, ","),
-		CategoryCounts: categoryCounts,
-		AgentCounts:    agentCounts,
+		AuditID:         newPIIAuditID(),
+		Detector:        DetectorPII,
+		HitCount:        len(a.values),
+		Categories:      cats,
+		Reversible:      true,
+		PayloadBytes:    a.payloadBytes,
+		AgentName:       strings.Join(agents, ","),
+		CategoryCounts:  categoryCounts,
+		AgentCounts:     agentCounts,
+		Values:          details,
+		ValuesTruncated: truncated,
 	}
 }
 

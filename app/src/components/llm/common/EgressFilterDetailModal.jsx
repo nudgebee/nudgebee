@@ -2,21 +2,27 @@
  * EgressFilterDetailModal — the per-message diagnostic view for the egressfilter
  * chip. Click a secrets or PII chip in ResponseMetaRail to open.
  *
- * Answers "what fired and where" WITHOUT exposing raw values — same
- * design principle as the audit events themselves (no PII / secrets at
- * rest). Renders three attribution axes for each detector:
+ * Answers what fired, where it came from, and what it became. Renders four
+ * attribution axes for each detector:
  *
  *   1. What triggered it (rules for secrets / categories for PII)
  *   2. Which agent(s) contributed
  *   3. Which message roles (user / system / tool response) held the hits
+ *   4. Per-value detail: origin (incl. RAG document) and before -> after
+ *
+ * Raw values are NOT persisted by default — the per-value rows show a
+ * character-class shape (`aaaaaa.a@aaaaaa.aaaa`) plus length instead. A
+ * backend testing flag (EGRESSFILTER_REVEAL_VALUES, per-tenant) makes the
+ * backend emit `value`; when present we render it and badge the section so
+ * nobody mistakes a test environment for a safe one.
  *
  * Aggregation is done client-side from data the backend already emits:
  *   - FilterEvent has a per-hit array (rule_id + source per hit) already
  *   - PIIScrubEvent (post-2026-08-01 backend enrichment) carries
  *     category_counts + agent_counts alongside the flat hit_count
  *
- * Values are never shown. Audit IDs are surfaced verbatim for log
- * correlation — ops paste the "egress-abc123" prefix into their log tool.
+ * Audit IDs are surfaced verbatim for log correlation — ops paste the
+ * "egress-abc123" prefix into their log tool.
  */
 import * as React from 'react';
 import { Box } from '@mui/material';
@@ -117,7 +123,19 @@ const aggregateSecrets = (events) => {
     }
   });
 
-  return { rules, sources, agents, auditIds, totalHits };
+  // Per-hit detail rows (backend >= 2026-08-07). Only hits that carry the
+  // descriptive fields are shown; older events simply render no detail list.
+  const details = [];
+  let truncated = false;
+  events.forEach((e) => {
+    if (e?.hits_truncated) truncated = true;
+    if (!Array.isArray(e?.hits)) return;
+    e.hits.forEach((h) => {
+      if (h?.shape || h?.value) details.push(h);
+    });
+  });
+
+  return { rules, sources, agents, auditIds, totalHits, details, truncated };
 };
 
 /**
@@ -160,7 +178,20 @@ const aggregatePii = (events) => {
     }
   });
 
-  return { categories, agents, auditIds, totalHits };
+  // Per-value detail rows (backend >= 2026-08-07). Absent on older events.
+  const details = [];
+  // The backend caps values[] but still reports the true hit_count, so the
+  // list can legitimately be shorter than the count — say so rather than
+  // showing a partial list as if it were complete.
+  let truncated = false;
+  events.forEach((e) => {
+    // filter(Boolean): a null element would throw on destructure in ValueRow
+    // and take the whole modal down. (Gemini review on PR #35859.)
+    if (Array.isArray(e?.values)) details.push(...e.values.filter(Boolean));
+    if (e?.values_truncated) truncated = true;
+  });
+
+  return { categories, agents, auditIds, totalHits, details, truncated };
 };
 
 // Sort a {key: count} map descending by count, then alphabetically for
@@ -206,6 +237,118 @@ Section.propTypes = {
 
 Section.defaultProps = { hintMap: undefined };
 
+// Where an injected value came from, when the backend could attribute it.
+// knowledge_base means RAG retrieval — a KB curation problem rather than a
+// live-infrastructure one, so it gets its own label.
+const ORIGIN_HINTS = { knowledge_base: 'Retrieved KB document (RAG)' };
+
+const SOURCE_HINTS = {
+  user: 'User-role message (includes the agent scratchpad)',
+  system: 'Assembled system prompt',
+  assistant: 'A prior assistant turn',
+  tool_result: 'Output of a tool call',
+  tool_call_args: 'Arguments the model proposed for a tool',
+  image_url: 'Image URL (often a pre-signed link)',
+};
+
+// Only http(s) links are rendered. doc_url originates in KB document metadata
+// synced from Confluence, so it is not fully trusted input — a `javascript:`
+// url in a synced document would otherwise become a clickable XSS vector. Also
+// guards the non-string case, which would throw on render.
+// Scheme is case-insensitive (RFC 3986) -> /i, matching sanitizeDocURL.
+const isSafeHttpUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u);
+
+const valueBoxSx = {
+  ...monoSx,
+  bgcolor: 'var(--ds-gray-100)',
+  borderRadius: 'var(--ds-radius-sm, 4px)',
+  px: 'var(--ds-space-1)',
+  py: '2px',
+};
+
+/**
+ * One detected value: what it was (raw when the backend revealed it, else the
+ * character-class shape), and what it became. `token` is PII-only — the
+ * secrets detector does not tokenize, so its rows show the match alone.
+ */
+const ValueRow = ({ detail }) => {
+  const { token, category, rule_id: ruleId, source, agent, tool, origin, doc_url: docURL, length, shape, value } = detail;
+  const shown = value || shape;
+  return (
+    <Box sx={{ py: 'var(--ds-space-1)', borderTop: '1px solid var(--ds-gray-100)' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
+        <Chip variant='count' tone='neutral' size='xs'>
+          {category || ruleId}
+        </Chip>
+        {shown && <Box sx={valueBoxSx}>{shown}</Box>}
+        {token && (
+          <>
+            <Box sx={{ ...descSx, opacity: 0.7 }}>→</Box>
+            <Box sx={valueBoxSx}>{token}</Box>
+          </>
+        )}
+        {Number(length) > 0 && <Box sx={descSx}>{length} chars</Box>}
+      </Box>
+      <Box sx={{ ...descSx, mt: '2px' }}>
+        {[
+          'from ' + (SOURCE_HINTS[source] || source || 'unknown source'),
+          agent && 'agent: ' + agent,
+          tool && 'tool: ' + tool,
+          origin && (ORIGIN_HINTS[origin] || origin),
+        ]
+          .filter(Boolean)
+          .join(' · ')}
+        {isSafeHttpUrl(docURL) && (
+          <>
+            {' · '}
+            <Box component='a' href={docURL} target='_blank' rel='noopener noreferrer' sx={{ color: 'var(--ds-blue-600)' }}>
+              source document
+            </Box>
+          </>
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+ValueRow.propTypes = { detail: PropTypes.object.isRequired };
+
+/**
+ * Per-value detail list. `revealed` is derived from the data itself (any row
+ * carrying a raw `value`) rather than from a separate config read — the UI
+ * cannot see the backend env, and the presence of the field IS the signal.
+ */
+const DetectedValues = ({ details, truncated }) => {
+  if (!details || details.length === 0) return null;
+  const revealed = details.some((d) => d?.value);
+  return (
+    <Box sx={{ mb: 'var(--ds-space-3)' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', mb: 'var(--ds-space-1)' }}>
+        <Box sx={rowLabelSx}>Detected values</Box>
+        {revealed && (
+          <Chip variant='count' tone='critical' size='xs'>
+            raw values shown — testing mode
+          </Chip>
+        )}
+      </Box>
+      {!revealed && (
+        <Box sx={{ ...descSx, mb: 'var(--ds-space-1)' }}>Shown as a character-class shape (letters → a, digits → 9); the original is not stored.</Box>
+      )}
+      {details.map((d, i) => (
+        <ValueRow key={d.token || `${d.rule_id}-${d.shape}-${i}`} detail={d} />
+      ))}
+      {truncated && (
+        <Box sx={{ ...descSx, mt: 'var(--ds-space-1)', fontStyle: 'italic' }}>
+          Showing the first {details.length} values; the count above is the full total.
+        </Box>
+      )}
+    </Box>
+  );
+};
+
+DetectedValues.propTypes = { details: PropTypes.array, truncated: PropTypes.bool };
+DetectedValues.defaultProps = { details: [], truncated: false };
+
 const AuditIds = ({ ids }) => {
   if (!ids || ids.length === 0) return null;
   // Dedupe — same event can appear twice on retry / duplicate emission,
@@ -231,10 +374,11 @@ const SecretsPanel = ({ events }) => {
         Secrets — {agg.totalHits} hit{agg.totalHits === 1 ? '' : 's'}
       </Box>
       <Box sx={{ ...descSx, mb: 'var(--ds-space-3)' }}>
-        The outbound egressfilter matched these patterns in the LLM payload (raw values never persisted). The payload includes prior conversation,
-        tool responses, and system prompt — not just what you typed.
+        The outbound egressfilter matched these patterns in the LLM payload. The payload includes prior conversation, tool responses, and system
+        prompt — not just what you typed.
       </Box>
       <Section title='Rules fired' entries={sortedEntries(agg.rules)} hintMap={RULE_HINTS} />
+      <DetectedValues details={agg.details} truncated={agg.truncated} />
       <Section title='Contributing agents' entries={sortedEntries(agg.agents)} />
       <Section title='Source roles' entries={sortedEntries(agg.sources)} />
       <AuditIds ids={agg.auditIds} />
@@ -258,6 +402,7 @@ const PiiPanel = ({ events }) => {
         to introduce it).
       </Box>
       <Section title='Categories' entries={sortedEntries(agg.categories)} hintMap={CATEGORY_HINTS} />
+      <DetectedValues details={agg.details} truncated={agg.truncated} />
       <Section title='Contributing agents (new distinct values introduced)' entries={sortedEntries(agg.agents)} />
       <AuditIds ids={agg.auditIds} />
     </Box>
@@ -307,3 +452,8 @@ export default EgressFilterDetailModal;
 // Exported for direct unit testing of the aggregators.
 export const __aggregateSecretsForTest = aggregateSecrets;
 export const __aggregatePiiForTest = aggregatePii;
+// Exported for render tests: the "raw values shown" badge is the only thing
+// standing between a viewer and misreading a test environment as a safe one,
+// so it needs coverage beyond the pure aggregators.
+export const __DetectedValuesForTest = DetectedValues;
+export const __isSafeHttpUrlForTest = isSafeHttpUrl;
