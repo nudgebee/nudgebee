@@ -643,7 +643,18 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                 },
                 {
                   component: hasWriteAccess(accountId) ? (
-                    <ThreeDotsMenu menuItems={getMenuItems(agent)} onMenuClick={handleMenuAction} data={agent} sx={{ padding: ds.space[1] }} />
+                    // Portal the menu to <body> so it escapes the nested
+                    // overflow:auto + sticky-column stack this table lives in
+                    // (scrollable TableContainer inside the fixed-height Settings
+                    // modal). Rendered inline, Safari mis-lays-out the popover
+                    // surface into a tall empty panel; a body portal avoids that.
+                    <ThreeDotsMenu
+                      menuItems={getMenuItems(agent)}
+                      onMenuClick={handleMenuAction}
+                      data={agent}
+                      disablePortal={false}
+                      sx={{ padding: ds.space[1] }}
+                    />
                   ) : (
                     <></>
                   ),
