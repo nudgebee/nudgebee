@@ -468,9 +468,11 @@ func (s *EbpfFlowSource) processK8sAccount(
 				//
 				// Caller cluster is unknown here (the bypass branch has no
 				// source-node cluster context) — pass "" and rely on the
-				// resolvers' global-unique fallback.
+				// resolvers' global-unique fallback. K8sAccountID still scopes
+				// that fallback to this account, which is the only guard left
+				// once the cluster is unknown.
 				upstreamNode, resolvedFromIP, resolvedReason, resolutionSource, resolvedOK =
-					resolveIPNamedExternalService(upstreamID.Name, "", ipResolver, podIPResolver, nodeIPResolver)
+					resolveIPNamedExternalService(upstreamID.Name, K8sAccountID, "", ipResolver, podIPResolver, nodeIPResolver)
 				switch {
 				case resolvedOK:
 					skipNodeSearch = true

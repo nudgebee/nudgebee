@@ -22,6 +22,12 @@ import (
 // Mirrors K8sServiceIPResolver semantics — same-scope lookup preferred,
 // global-unique fallback when the caller scope is unknown, refuse-to-guess on
 // ambiguity.
+//
+// Unlike K8sServiceIPResolver and K8sNodeIPResolver, Resolve/ResolvePodName take
+// no callerAccount: this resolver is built per K8s account and its workload
+// index is filtered to that account at construction, so every node it can hand
+// back already belongs to the caller. The account scope is enforced once, at
+// index-build time, rather than on every lookup.
 type PodIPResolver struct {
 	byClusterIP        map[clusterIPKey]*core.DbNode
 	byIPAcrossClusters map[string][]*core.DbNode
@@ -57,7 +63,10 @@ func NewPodIPResolver(k8sAccountID string, existingNodes []*core.DbNode, logger 
 		byNameGlobal:       make(map[string][]*core.DbNode),
 	}
 
-	workloadIdx := indexWorkloadsByOwner(existingNodes)
+	// Scoped to k8sAccountID: existingNodes spans the whole tenant, and every
+	// node this resolver hands back is looked up through this index, so scoping
+	// it here is what keeps the resolver's output inside the caller's account.
+	workloadIdx := indexWorkloadsByOwner(existingNodes, k8sAccountID)
 	if workloadIdx.empty() {
 		return r
 	}
@@ -323,22 +332,30 @@ const (
 // cluster scoping prevents wrong-cluster edges in multi-cluster tenants where
 // the same IP belongs to different K8s objects in different clusters.
 //
+// callerAccount scopes the two tenant-wide resolvers (ClusterIP and Node) to a
+// single cloud account. It matters most precisely where callerCluster does not
+// help: two of this function's three call sites pass callerCluster="" and run
+// entirely on the global-unique fallback. podIPResolver needs no account
+// argument — it is constructed per account and its index is account-scoped at
+// build time (see indexWorkloadsByOwner), so everything it can return already
+// belongs to the caller's account.
+//
 // Returns (node, ip, reason, source, ok). `source` distinguishes which
 // resolver matched so the resulting edge's provenance is debuggable. ok=false
 // means the caller should fall back to creating an orphan ExternalService.
 func resolveIPNamedExternalService(
-	name, callerCluster string,
+	name, callerAccount, callerCluster string,
 	clusterIPResolver *K8sServiceIPResolver,
 	podIPResolver *PodIPResolver,
 	nodeIPResolver *K8sNodeIPResolver,
 ) (*core.DbNode, string, string, string, bool) {
-	if node, reason, ok := ResolveIPToK8sService(name, callerCluster, clusterIPResolver); ok {
+	if node, reason, ok := ResolveIPToK8sService(name, callerAccount, callerCluster, clusterIPResolver); ok {
 		return node, name, reason, IPResolutionSourceClusterIP, true
 	}
 	if node, reason, ok := ResolveIPToPodWorkload(name, callerCluster, podIPResolver); ok {
 		return node, name, reason, IPResolutionSourcePodIP, true
 	}
-	if node, reason, ok := ResolveIPToK8sNode(name, callerCluster, nodeIPResolver); ok {
+	if node, reason, ok := ResolveIPToK8sNode(name, callerAccount, callerCluster, nodeIPResolver); ok {
 		return node, name, reason, IPResolutionSourceNodeIP, true
 	}
 	return nil, "", "", "", false
@@ -390,7 +407,26 @@ func (idx workloadIndex) lookup(cluster, namespace, ownerKind, ownerName, podNam
 // indexWorkloadsByOwner builds an index of existing Workload and Pod nodes
 // keyed by their K8s identity. Used by NewPodIPResolver to map a
 // kube_pod_info row to the node K8sSource already emitted.
-func indexWorkloadsByOwner(nodes []*core.DbNode) workloadIndex {
+//
+// accountID scopes the index to a single cloud account. This is load-bearing,
+// not defensive: the resolver is built per K8s account but fed the *tenant-wide*
+// node set, and workloadOwnerKey has no account component. Two clusters in one
+// tenant running the same deployment name in the same namespace (e.g. a
+// prod-cluster and a dev-cluster both running nudgebee/ml-k8s-server) therefore
+// collapse onto one `withoutCluster` key, last-write-wins — and nodes arrive
+// created_at DESC, so the *oldest* cluster silently won. That handed pods from
+// one account the Workload node of another, producing cross-cluster CALLS edges.
+//
+// Filtering here rather than adding an account field to workloadOwnerKey keeps
+// lookup's signature and the cluster-less fallback intact — that fallback exists
+// because `cluster` is legitimately empty (missing kube_pod_info scrape label;
+// public.k8s_pods has no cluster column) and must keep working *within* an account.
+//
+// An empty accountID matches only nodes with an empty CloudAccountID. In
+// production every K8s node carries one (it is NOT NULL and part of NodeIDFor),
+// so a caller that passes "" gets an empty index and the resolver refuses to
+// resolve — failing closed rather than guessing across accounts.
+func indexWorkloadsByOwner(nodes []*core.DbNode, accountID string) workloadIndex {
 	idx := workloadIndex{
 		withCluster:    make(map[workloadOwnerKey]*core.DbNode),
 		withoutCluster: make(map[workloadOwnerKey]*core.DbNode),
@@ -401,6 +437,9 @@ func indexWorkloadsByOwner(nodes []*core.DbNode) workloadIndex {
 			continue
 		}
 		if n.NodeType != core.NodeTypeWorkload && n.NodeType != core.NodeTypePod {
+			continue
+		}
+		if n.CloudAccountID != accountID {
 			continue
 		}
 		name := stringProp(n, "name")

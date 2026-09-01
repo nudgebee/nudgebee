@@ -59,20 +59,25 @@ func NewK8sNodeIPResolver(existingNodes []*core.DbNode) *K8sNodeIPResolver {
 	return r
 }
 
-// Resolve returns a K8s Node for the given IP, scoped to callerCluster.
-// Same semantics as K8sServiceIPResolver.Resolve and PodIPResolver.Resolve:
-// same-cluster preferred, global-unique fallback when caller cluster is
-// unknown, refuse to guess on cross-cluster ambiguity.
-func (r *K8sNodeIPResolver) Resolve(callerCluster, ip string) (*core.DbNode, bool) {
+// Resolve returns a K8s Node for the given IP, scoped to callerAccount and
+// callerCluster. Same semantics as K8sServiceIPResolver.Resolve: account first,
+// then same-cluster preferred, global-unique fallback within that account when
+// the caller cluster is unknown, refuse to guess on remaining ambiguity.
+//
+// Like the Service resolver this one is built once per tenant, so its index
+// spans every cloud account; node internal IPs come from private VPC ranges
+// that overlap freely across clusters, which makes the account filter the only
+// reliable scope when callerCluster is empty.
+func (r *K8sNodeIPResolver) Resolve(callerAccount, callerCluster, ip string) (*core.DbNode, bool) {
 	if r == nil || ip == "" {
 		return nil, false
 	}
 	if callerCluster != "" {
-		if n, ok := r.byClusterIP[clusterIPKey{callerCluster, ip}]; ok {
+		if n, ok := r.byClusterIP[clusterIPKey{callerCluster, ip}]; ok && nodeInAccount(n, callerAccount) {
 			return n, true
 		}
 	}
-	candidates := r.byIPAcrossClusters[ip]
+	candidates := filterNodesByAccount(r.byIPAcrossClusters[ip], callerAccount)
 	if len(candidates) == 1 {
 		return candidates[0], true
 	}
@@ -86,7 +91,7 @@ func (r *K8sNodeIPResolver) Resolve(callerCluster, ip string) (*core.DbNode, boo
 //
 // Returns (matchedNode, reason, ok) where reason is the same constants as
 // the other resolvers — IPResolutionReasonSameCluster / IPResolutionReasonGlobalUnique.
-func ResolveIPToK8sNode(name, callerCluster string, r *K8sNodeIPResolver) (*core.DbNode, string, bool) {
+func ResolveIPToK8sNode(name, callerAccount, callerCluster string, r *K8sNodeIPResolver) (*core.DbNode, string, bool) {
 	if r == nil || name == "" {
 		return nil, "", false
 	}
@@ -98,7 +103,7 @@ func ResolveIPToK8sNode(name, callerCluster string, r *K8sNodeIPResolver) (*core
 	if parsed == nil || isSpecialIP(parsed) {
 		return nil, "", false
 	}
-	node, ok := r.Resolve(callerCluster, ip)
+	node, ok := r.Resolve(callerAccount, callerCluster, ip)
 	if !ok {
 		return nil, "", false
 	}

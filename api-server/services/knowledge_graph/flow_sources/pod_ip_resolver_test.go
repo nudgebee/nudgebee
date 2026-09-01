@@ -186,7 +186,7 @@ func TestIndexWorkloadsByOwner_BuildsWorkloadAndPodEntries(t *testing.T) {
 		// noise: missing required fields
 		{NodeType: core.NodeTypeWorkload, Properties: map[string]interface{}{"name": "x"}},
 	}
-	idx := indexWorkloadsByOwner(nodes)
+	idx := indexWorkloadsByOwner(nodes, "")
 
 	if got, ok := idx.lookup("k8s-prod", "rabbit", "StatefulSet", "rabbitmq", ""); !ok || got.Properties["name"] != "rabbitmq" {
 		t.Errorf("expected StatefulSet rabbitmq lookup to hit, got=%v ok=%v", got, ok)
@@ -297,7 +297,7 @@ func TestResolveIPNamedExternalService_PrefersClusterIPOverPodIP(t *testing.T) {
 		{"k8s-prod", "10.0.0.99", wl},
 	})
 
-	node, _, _, source, ok := resolveIPNamedExternalService("10.0.0.99", "", clusterIPResolver, podResolver, nil)
+	node, _, _, source, ok := resolveIPNamedExternalService("10.0.0.99", "", "", clusterIPResolver, podResolver, nil)
 	if !ok {
 		t.Fatalf("expected resolution to succeed")
 	}
@@ -323,7 +323,7 @@ func TestResolveIPNamedExternalService_FallsThroughToPodIP(t *testing.T) {
 		{"k8s-prod", "172.31.5.25", wl},
 	})
 
-	node, ip, _, source, ok := resolveIPNamedExternalService("172.31.5.25", "", clusterIPResolver, podResolver, nil)
+	node, ip, _, source, ok := resolveIPNamedExternalService("172.31.5.25", "", "", clusterIPResolver, podResolver, nil)
 	if !ok {
 		t.Fatalf("expected pod-IP fallback to resolve 172.31.5.25 to rabbitmq")
 	}
@@ -360,7 +360,7 @@ func TestResolveIPNamedExternalService_FallsThroughToNodeIP(t *testing.T) {
 	nodeIPResolver := NewK8sNodeIPResolver([]*core.DbNode{k8sNode})
 
 	node, ip, _, source, ok := resolveIPNamedExternalService(
-		"172.31.8.2", "", clusterIPResolver, podResolver, nodeIPResolver)
+		"172.31.8.2", "", "", clusterIPResolver, podResolver, nodeIPResolver)
 	if !ok {
 		t.Fatalf("expected Node-IP fallback to resolve 172.31.8.2")
 	}
@@ -395,7 +395,7 @@ func TestResolveIPNamedExternalService_PodIPWinsOverNodeIP(t *testing.T) {
 	nodeIPResolver := NewK8sNodeIPResolver([]*core.DbNode{k8sNode})
 
 	node, _, _, source, ok := resolveIPNamedExternalService(
-		"172.31.5.25", "", clusterIPResolver, podResolver, nodeIPResolver)
+		"172.31.5.25", "", "", clusterIPResolver, podResolver, nodeIPResolver)
 	if !ok {
 		t.Fatalf("expected resolution to succeed")
 	}
@@ -410,7 +410,7 @@ func TestResolveIPNamedExternalService_PodIPWinsOverNodeIP(t *testing.T) {
 func TestResolveIPNamedExternalService_NoMatchReturnsFalse(t *testing.T) {
 	clusterIPResolver := NewK8sServiceIPResolver(nil)
 	podResolver := resolverWithPods(nil)
-	if _, _, _, _, ok := resolveIPNamedExternalService("203.0.113.1", "", clusterIPResolver, podResolver, nil); ok {
+	if _, _, _, _, ok := resolveIPNamedExternalService("203.0.113.1", "", "", clusterIPResolver, podResolver, nil); ok {
 		t.Errorf("unknown IP should fall through to ok=false (caller creates ExternalService)")
 	}
 }
@@ -431,18 +431,18 @@ func TestResolveIPNamedExternalService_CallerClusterScopesBothResolvers(t *testi
 	})
 	clusterIPResolver := NewK8sServiceIPResolver(nil)
 
-	gotA, _, _, _, okA := resolveIPNamedExternalService("172.31.5.25", "cluster-a", clusterIPResolver, podResolver, nil)
+	gotA, _, _, _, okA := resolveIPNamedExternalService("172.31.5.25", "", "cluster-a", clusterIPResolver, podResolver, nil)
 	if !okA || gotA.Properties["cluster"] != "cluster-a" {
 		t.Errorf("caller in cluster-a should resolve to cluster-a's rabbitmq, got %v ok=%v", gotA, okA)
 	}
 
-	gotB, _, _, _, okB := resolveIPNamedExternalService("172.31.5.25", "cluster-b", clusterIPResolver, podResolver, nil)
+	gotB, _, _, _, okB := resolveIPNamedExternalService("172.31.5.25", "", "cluster-b", clusterIPResolver, podResolver, nil)
 	if !okB || gotB.Properties["cluster"] != "cluster-b" {
 		t.Errorf("caller in cluster-b should resolve to cluster-b's rabbitmq, got %v ok=%v", gotB, okB)
 	}
 
 	// With no caller cluster, ambiguous IP must refuse to guess.
-	if _, _, _, _, ok := resolveIPNamedExternalService("172.31.5.25", "", clusterIPResolver, podResolver, nil); ok {
+	if _, _, _, _, ok := resolveIPNamedExternalService("172.31.5.25", "", "", clusterIPResolver, podResolver, nil); ok {
 		t.Errorf("ambiguous IP without caller cluster should not resolve")
 	}
 }
@@ -549,7 +549,7 @@ func TestPodIPResolver_ResolvePodName_NilAndEmptySafe(t *testing.T) {
 
 func TestPodIPResolver_AddInventoryPodName_MapsRowSkipsDuplicateAndUnknownOwner(t *testing.T) {
 	redis := makeWorkloadNode("StatefulSet", "redis-master", "redis", "k8s-dev")
-	idx := indexWorkloadsByOwner([]*core.DbNode{redis})
+	idx := indexWorkloadsByOwner([]*core.DbNode{redis}, "")
 	r := &PodIPResolver{byNamespaceName: make(map[nsNameKey]*core.DbNode)}
 
 	// First source (k8s_pods) resolves the owner and indexes the pod.

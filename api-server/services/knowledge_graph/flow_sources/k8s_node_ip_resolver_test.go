@@ -26,7 +26,7 @@ func TestK8sNodeIPResolver_SameClusterHit(t *testing.T) {
 		makeK8sNode("ip-172-31-32-204.ec2.internal", "k8s-prod", "172.31.32.204"),
 	})
 
-	got, ok := r.Resolve("k8s-prod", "172.31.8.2")
+	got, ok := r.Resolve("", "k8s-prod", "172.31.8.2")
 	if !ok {
 		t.Fatalf("expected same-cluster hit")
 	}
@@ -42,7 +42,7 @@ func TestK8sNodeIPResolver_GlobalUniqueFallback(t *testing.T) {
 		makeK8sNode("ip-172-31-8-2.ec2.internal", "k8s-prod", "172.31.8.2"),
 	})
 
-	got, reason, ok := ResolveIPToK8sNode("172.31.8.2", "", r)
+	got, reason, ok := ResolveIPToK8sNode("172.31.8.2", "", "", r)
 	if !ok {
 		t.Fatalf("expected global-unique hit")
 	}
@@ -62,21 +62,21 @@ func TestK8sNodeIPResolver_CrossClusterAmbiguityRefused(t *testing.T) {
 		makeK8sNode("ip-b", "cluster-b", "172.31.8.2"),
 	})
 
-	if _, ok := r.Resolve("", "172.31.8.2"); ok {
+	if _, ok := r.Resolve("", "", "172.31.8.2"); ok {
 		t.Errorf("ambiguous IP without caller cluster should refuse to resolve")
 	}
 	// But scoped lookups still work.
-	if got, ok := r.Resolve("cluster-a", "172.31.8.2"); !ok || got.Properties["name"] != "ip-a" {
+	if got, ok := r.Resolve("", "cluster-a", "172.31.8.2"); !ok || got.Properties["name"] != "ip-a" {
 		t.Errorf("caller in cluster-a should resolve to ip-a, got %v ok=%v", got, ok)
 	}
 }
 
 func TestK8sNodeIPResolver_NilSafe(t *testing.T) {
 	var r *K8sNodeIPResolver
-	if _, ok := r.Resolve("any", "172.31.8.2"); ok {
+	if _, ok := r.Resolve("", "any", "172.31.8.2"); ok {
 		t.Errorf("nil resolver should return ok=false")
 	}
-	if _, _, ok := ResolveIPToK8sNode("172.31.8.2", "any", r); ok {
+	if _, _, ok := ResolveIPToK8sNode("172.31.8.2", "", "any", r); ok {
 		t.Errorf("ResolveIPToK8sNode with nil resolver should return ok=false")
 	}
 }
@@ -86,7 +86,7 @@ func TestResolveIPToK8sNode_StripsPort(t *testing.T) {
 		makeK8sNode("ip-172-31-8-2.ec2.internal", "k8s-prod", "172.31.8.2"),
 	})
 
-	got, _, ok := ResolveIPToK8sNode("172.31.8.2:10250", "k8s-prod", r)
+	got, _, ok := ResolveIPToK8sNode("172.31.8.2:10250", "", "k8s-prod", r)
 	if !ok || got.Properties["name"] != "ip-172-31-8-2.ec2.internal" {
 		t.Errorf("port-suffixed IP should resolve, got %v ok=%v", got, ok)
 	}
@@ -102,7 +102,7 @@ func TestResolveIPToK8sNode_RejectsSpecialIPs(t *testing.T) {
 	})
 
 	for _, ip := range []string{"127.0.0.1", "169.254.169.254", "::1", "0.0.0.0"} {
-		if _, _, ok := ResolveIPToK8sNode(ip, "k8s-prod", r); ok {
+		if _, _, ok := ResolveIPToK8sNode(ip, "", "k8s-prod", r); ok {
 			t.Errorf("special IP %q must not resolve", ip)
 		}
 	}
@@ -125,7 +125,7 @@ func TestNewK8sNodeIPResolver_SkipsNonK8sSourceNodes(t *testing.T) {
 		makeK8sNode("ip-172-31-81-38.ec2.internal", "k8s-prod", "172.31.81.38"),
 	})
 
-	got, ok := r.Resolve("k8s-prod", "172.31.81.38")
+	got, ok := r.Resolve("", "k8s-prod", "172.31.81.38")
 	if !ok || got.Properties["name"] != "ip-172-31-81-38.ec2.internal" {
 		t.Errorf("expected k8s-source Node to win, got %v ok=%v", got, ok)
 	}
@@ -146,7 +146,7 @@ func TestNewK8sNodeIPResolver_SkipsNodesWithoutInternalIP(t *testing.T) {
 		},
 	})
 
-	if _, ok := r.Resolve("k8s-prod", "172.31.8.2"); ok {
+	if _, ok := r.Resolve("", "k8s-prod", "172.31.8.2"); ok {
 		t.Errorf("resolver should be empty when no Node has internal_ip")
 	}
 }

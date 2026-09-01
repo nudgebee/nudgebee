@@ -23,7 +23,7 @@ func TestK8sServiceIPResolver_SameClusterHit(t *testing.T) {
 	}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, ok := r.Resolve("prod-us-east", "10.0.0.10")
+	got, ok := r.Resolve("", "prod-us-east", "10.0.0.10")
 	if !ok {
 		t.Fatalf("expected hit for same-cluster IP")
 	}
@@ -40,12 +40,12 @@ func TestK8sServiceIPResolver_MultiClusterDisambiguates(t *testing.T) {
 	}
 	r := NewK8sServiceIPResolver(nodes)
 
-	gotA, okA := r.Resolve("cluster-a", "10.0.0.1")
+	gotA, okA := r.Resolve("", "cluster-a", "10.0.0.1")
 	if !okA || gotA.Properties["name"] != "svc-a" {
 		t.Errorf("caller in cluster-a should resolve to svc-a, got %v ok=%v", gotA, okA)
 	}
 
-	gotB, okB := r.Resolve("cluster-b", "10.0.0.1")
+	gotB, okB := r.Resolve("", "cluster-b", "10.0.0.1")
 	if !okB || gotB.Properties["name"] != "svc-b" {
 		t.Errorf("caller in cluster-b should resolve to svc-b, got %v ok=%v", gotB, okB)
 	}
@@ -60,7 +60,7 @@ func TestK8sServiceIPResolver_AmbiguousIPWithoutCallerCluster(t *testing.T) {
 	}
 	r := NewK8sServiceIPResolver(nodes)
 
-	if _, ok := r.Resolve("", "10.0.0.1"); ok {
+	if _, ok := r.Resolve("", "", "10.0.0.1"); ok {
 		t.Errorf("ambiguous IP without caller cluster should return false")
 	}
 }
@@ -72,7 +72,7 @@ func TestK8sServiceIPResolver_UniqueIPWithoutCallerClusterHits(t *testing.T) {
 	}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, ok := r.Resolve("", "10.0.0.99")
+	got, ok := r.Resolve("", "", "10.0.0.99")
 	if !ok || got.Properties["name"] != "only-svc" {
 		t.Errorf("unique global IP should resolve, got %v ok=%v", got, ok)
 	}
@@ -117,16 +117,16 @@ func TestK8sServiceIPResolver_HeadlessServiceSkipped(t *testing.T) {
 	}
 	r := NewK8sServiceIPResolver(nodes)
 
-	if _, ok := r.Resolve("cluster-a", "None"); ok {
+	if _, ok := r.Resolve("", "cluster-a", "None"); ok {
 		t.Errorf(`"None" should not be resolvable`)
 	}
-	if _, ok := r.Resolve("cluster-a", ""); ok {
+	if _, ok := r.Resolve("", "cluster-a", ""); ok {
 		t.Errorf("empty IP should not be resolvable")
 	}
-	if _, ok := r.Resolve("cluster-a", "0.0.0.0"); ok {
+	if _, ok := r.Resolve("", "cluster-a", "0.0.0.0"); ok {
 		t.Errorf("0.0.0.0 should not be resolvable")
 	}
-	got, ok := r.Resolve("cluster-a", "10.0.0.5")
+	got, ok := r.Resolve("", "cluster-a", "10.0.0.5")
 	if !ok || got.Properties["name"] != "real" {
 		t.Errorf("real IP should resolve, got %v ok=%v", got, ok)
 	}
@@ -149,7 +149,7 @@ func TestK8sServiceIPResolver_NonK8sNodesIgnored(t *testing.T) {
 	}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, ok := r.Resolve("prod", "10.0.0.10")
+	got, ok := r.Resolve("", "prod", "10.0.0.10")
 	if !ok || got.Properties["name"] != "real" {
 		t.Errorf("expected K8s Service hit, got %v ok=%v", got, ok)
 	}
@@ -167,7 +167,7 @@ func TestK8sServiceIPResolver_ServiceWithoutClusterFallsBackToGlobalIndex(t *tes
 	}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, ok := r.Resolve("", "172.16.0.1")
+	got, ok := r.Resolve("", "", "172.16.0.1")
 	if !ok || got.Properties["name"] != "no-cluster-svc" {
 		t.Errorf("unique-IP global lookup should succeed, got %v ok=%v", got, ok)
 	}
@@ -179,7 +179,7 @@ func TestResolveIPToK8sService_SameClusterHit(t *testing.T) {
 	}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, reason, ok := ResolveIPToK8sService("34.118.228.207", "k8s-dev", r)
+	got, reason, ok := ResolveIPToK8sService("34.118.228.207", "", "k8s-dev", r)
 	if !ok {
 		t.Fatalf("expected hit")
 	}
@@ -195,7 +195,7 @@ func TestResolveIPToK8sService_PortStripped(t *testing.T) {
 	nodes := []*core.DbNode{makeServiceNode("svc", "c", "10.0.0.5")}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, _, ok := ResolveIPToK8sService("10.0.0.5:8000", "c", r)
+	got, _, ok := ResolveIPToK8sService("10.0.0.5:8000", "", "c", r)
 	if !ok || got.Properties["name"] != "svc" {
 		t.Errorf("expected port-stripped hit, got %v ok=%v", got, ok)
 	}
@@ -205,7 +205,7 @@ func TestResolveIPToK8sService_IPv6PortStripped(t *testing.T) {
 	nodes := []*core.DbNode{makeServiceNode("v6svc", "c", "fd00::1")}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, _, ok := ResolveIPToK8sService("[fd00::1]:8443", "c", r)
+	got, _, ok := ResolveIPToK8sService("[fd00::1]:8443", "", "c", r)
 	if !ok || got.Properties["name"] != "v6svc" {
 		t.Errorf("expected bracketed-IPv6 hit, got %v ok=%v", got, ok)
 	}
@@ -215,7 +215,7 @@ func TestResolveIPToK8sService_BareIPv6(t *testing.T) {
 	nodes := []*core.DbNode{makeServiceNode("v6svc", "c", "fd00::1")}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, _, ok := ResolveIPToK8sService("fd00::1", "c", r)
+	got, _, ok := ResolveIPToK8sService("fd00::1", "", "c", r)
 	if !ok || got.Properties["name"] != "v6svc" {
 		t.Errorf("expected bare-IPv6 hit, got %v ok=%v", got, ok)
 	}
@@ -226,7 +226,7 @@ func TestResolveIPToK8sService_GlobalUniqueFallback(t *testing.T) {
 	nodes := []*core.DbNode{makeServiceNode("only", "any", "10.0.0.99")}
 	r := NewK8sServiceIPResolver(nodes)
 
-	got, reason, ok := ResolveIPToK8sService("10.0.0.99", "", r)
+	got, reason, ok := ResolveIPToK8sService("10.0.0.99", "", "", r)
 	if !ok {
 		t.Fatalf("expected global-unique hit")
 	}
@@ -250,7 +250,7 @@ func TestResolveIPToK8sService_SpecialIPsRejected(t *testing.T) {
 	r := NewK8sServiceIPResolver(nodes)
 
 	for _, ip := range []string{"127.0.0.1", "169.254.169.254", "0.0.0.0", "::1", "fe80::1"} {
-		if _, _, ok := ResolveIPToK8sService(ip, "c", r); ok {
+		if _, _, ok := ResolveIPToK8sService(ip, "", "c", r); ok {
 			t.Errorf("special IP %q should be rejected", ip)
 		}
 	}
@@ -259,32 +259,32 @@ func TestResolveIPToK8sService_SpecialIPsRejected(t *testing.T) {
 func TestResolveIPToK8sService_NonIPRejected(t *testing.T) {
 	r := NewK8sServiceIPResolver(nil)
 	for _, name := range []string{"", "services-server.nudgebee.svc.cluster.local", "rds-host.eu-west-1.rds.amazonaws.com", "12345"} {
-		if _, _, ok := ResolveIPToK8sService(name, "c", r); ok {
+		if _, _, ok := ResolveIPToK8sService(name, "", "c", r); ok {
 			t.Errorf("non-IP %q should be rejected", name)
 		}
 	}
 }
 
 func TestResolveIPToK8sService_NilResolver(t *testing.T) {
-	if _, _, ok := ResolveIPToK8sService("10.0.0.1", "c", nil); ok {
+	if _, _, ok := ResolveIPToK8sService("10.0.0.1", "", "c", nil); ok {
 		t.Errorf("nil resolver should return false")
 	}
 }
 
 func TestK8sServiceIPResolver_NilSafety(t *testing.T) {
 	r := NewK8sServiceIPResolver(nil)
-	if _, ok := r.Resolve("any", "1.2.3.4"); ok {
+	if _, ok := r.Resolve("", "any", "1.2.3.4"); ok {
 		t.Errorf("empty resolver should return false")
 	}
 
 	var nilResolver *K8sServiceIPResolver
-	if _, ok := nilResolver.Resolve("any", "1.2.3.4"); ok {
+	if _, ok := nilResolver.Resolve("", "any", "1.2.3.4"); ok {
 		t.Errorf("nil resolver should return false")
 	}
 
 	// Nil node in input shouldn't panic.
 	r2 := NewK8sServiceIPResolver([]*core.DbNode{nil, makeServiceNode("ok", "c", "10.0.0.1")})
-	if _, ok := r2.Resolve("c", "10.0.0.1"); !ok {
+	if _, ok := r2.Resolve("", "c", "10.0.0.1"); !ok {
 		t.Errorf("expected hit after skipping nil")
 	}
 }

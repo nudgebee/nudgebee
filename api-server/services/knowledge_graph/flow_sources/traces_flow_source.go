@@ -486,7 +486,7 @@ func (s *TracesFlowSource) BuildGraphFromServiceMap(
 				// get dropped entirely (no useful topology signal). Provenance
 				// gets stamped on the edge below.
 				resolvedNode, resolvedFromIP, resolvedReason, resolutionSource, resolvedOK :=
-					resolveIPNamedExternalService(targetName, stringProp(sourceNode, "cluster"), ipResolver, podIPResolver, nodeIPResolver)
+					resolveIPNamedExternalService(targetName, account.CloudAccountID, stringProp(sourceNode, "cluster"), ipResolver, podIPResolver, nodeIPResolver)
 				switch {
 				case resolvedOK:
 					upstreamNode = resolvedNode
@@ -577,7 +577,7 @@ func (s *TracesFlowSource) BuildGraphFromServiceMap(
 				// service making the call into this app) — unknown at this point,
 				// so we pass "" and rely on the resolvers' global-unique fallback.
 				resolvedNode, resolvedFromIP, resolvedReason, resolutionSource, resolvedOK :=
-					resolveIPNamedExternalService(downstreamName, "", ipResolver, podIPResolver, nodeIPResolver)
+					resolveIPNamedExternalService(downstreamName, account.CloudAccountID, "", ipResolver, podIPResolver, nodeIPResolver)
 				switch {
 				case resolvedOK:
 					downstreamNode = resolvedNode

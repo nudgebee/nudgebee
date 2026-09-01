@@ -219,13 +219,16 @@ func TestNewRelicAPMFlowSource_FindDatabaseNode_CrossAccountFallback(t *testing.
 
 func TestNewRelicAPMFlowSource_ResolveTarget_ClusterIP_MultiCluster(t *testing.T) {
 	src := NewNewRelicAPMFlowSource(slog.Default())
+	// Both services live in the caller's own cloud account ("acct"); the two
+	// clusters are what distinguishes them. Without the account on the nodes the
+	// resolver's account filter would reject them before cluster scoping runs.
 	nodes := []*core.DbNode{
 		{
-			ID: "svc-a", NodeType: core.NodeTypeK8sService,
+			ID: "svc-a", NodeType: core.NodeTypeK8sService, CloudAccountID: "acct",
 			Properties: map[string]interface{}{"name": "loki", "cluster": "cluster-a", "cluster_ip": "10.0.0.1"},
 		},
 		{
-			ID: "svc-b", NodeType: core.NodeTypeK8sService,
+			ID: "svc-b", NodeType: core.NodeTypeK8sService, CloudAccountID: "acct",
 			Properties: map[string]interface{}{"name": "loki", "cluster": "cluster-b", "cluster_ip": "10.0.0.1"},
 		},
 	}
