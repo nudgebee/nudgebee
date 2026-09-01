@@ -86,8 +86,12 @@ export function sourceText(levels: ChainLevel[], effIndex: number): string {
  *
  * `levels` may be a fresh array each render — it is compared by the
  * (resourceType, resourceKey) pairs it contains, not by identity.
+ *
+ * `reloadToken` forces a re-resolve when it changes, even if the chain is
+ * identical — bump it after a write (assign/remove owner) so a caller that sets
+ * ownership in place refreshes without swapping the resource.
  */
-export default function useResourceOwner(levels: ChainLevel[]): ResourceOwner {
+export default function useResourceOwner(levels: ChainLevel[], reloadToken = 0): ResourceOwner {
   const [resolved, setResolved] = useState<ChainLevel[]>([]);
   const [loading, setLoading] = useState(true);
   // Set when there is no valid result to show — either the resolve errored, or the
@@ -154,7 +158,7 @@ export default function useResourceOwner(levels: ChainLevel[]): ResourceOwner {
       setUnresolvable(true);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, reloadToken]);
 
   const effectiveIndex = resolved.findIndex((l) => l.own);
   const effective = effectiveIndex >= 0 ? { ...(resolved[effectiveIndex].own as OwnerResult), via: viaFor(resolved, effectiveIndex) } : null;

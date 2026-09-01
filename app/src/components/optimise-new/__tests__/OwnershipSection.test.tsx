@@ -1,14 +1,35 @@
 import '@testing-library/jest-dom';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import OwnershipSection, { buildLevels } from '@components/optimise-new/OwnershipSection';
 import apiOwnership from '@api1/ownership';
+import { isTenantAdmin } from '@lib/auth';
 
 jest.mock('@api1/ownership', () => ({
   __esModule: true,
   default: { resolveOwners: jest.fn() },
 }));
 
+// Writing is tenant-admin only; default to admin so the assign action renders,
+// and flip it off in the one test that checks the read-only path.
+jest.mock('@lib/auth', () => ({ __esModule: true, isTenantAdmin: jest.fn(() => true) }));
+
+// The modal has its own suite; here we stub it to a marker that echoes the props
+// OwnershipSection wires, so we can assert which resource the assign targets.
+jest.mock('@components/ownership/AssignOwnerModal', () => ({
+  __esModule: true,
+  default: (props: { open: boolean; resourceType: string; resourceKey: string; cloudAccountId?: string }) =>
+    props.open ? (
+      <div
+        data-testid='assign-modal'
+        data-resource-type={props.resourceType}
+        data-resource-key={props.resourceKey}
+        data-cloud-account={props.cloudAccountId}
+      />
+    ) : null,
+}));
+
 const resolveOwners = apiOwnership.resolveOwners as jest.Mock;
+const mockIsTenantAdmin = isTenantAdmin as jest.Mock;
 
 // A k8s recommendation: resource_id is the workload's cloud_resourses id, and
 // resource_k8s_namespace is what makes it k8s rather than cloud.
@@ -54,6 +75,7 @@ const respond = (chain: { resource_type: string; resource_key: string }[], ...re
 
 beforeEach(() => {
   resolveOwners.mockReset();
+  mockIsTenantAdmin.mockReturnValue(true);
 });
 
 describe('buildLevels', () => {
@@ -98,17 +120,21 @@ describe('OwnershipSection', () => {
 
     expect(await screen.findByText('Matched by an ownership rule.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Manage rules/ })).toHaveAttribute('href', '/user-management#ownership');
+    // Hybrid: a rule match still offers an in-place assign to override it.
+    expect(screen.getByRole('button', { name: 'Assign owner' })).toBeInTheDocument();
   });
 
-  it('links a manually-owned k8s workload back to its filtered workloads list', async () => {
+  it('sets a manually-owned k8s workload in place, targeting its workload ref', async () => {
     resolveOwners.mockResolvedValue(respond(K8S_CHAIN, owner(), unowned, unowned));
     render(<OwnershipSection rec={k8sRec()} />);
 
     expect(await screen.findByText('Assigned directly to this resource.')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Manage ownership/ })).toHaveAttribute(
-      'href',
-      '/kubernetes/details/acct-1?namespace=sonarqube&workloadName=sonarqube-postgresql#kubernetes/applications'
-    );
+    // No navigate-away link anymore — a direct owner offers "Change owner" instead.
+    expect(screen.queryByRole('link', { name: /Manage ownership/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Change owner' }));
+    const modal = screen.getByTestId('assign-modal');
+    expect(modal).toHaveAttribute('data-resource-type', 'workload');
+    expect(modal).toHaveAttribute('data-resource-key', 'res-1');
   });
 
   it('warns when nobody owns the resource', async () => {
@@ -117,6 +143,17 @@ describe('OwnershipSection', () => {
 
     expect(await screen.findByText('No owner set yet')).toBeInTheDocument();
     expect(screen.queryByText('Ownership chain')).not.toBeInTheDocument();
+    // An admin can still assign from scratch on an unowned resource.
+    expect(screen.getByRole('button', { name: 'Assign owner' })).toBeInTheDocument();
+  });
+
+  it('hides the assign action from non-admins, leaving the card read-only', async () => {
+    mockIsTenantAdmin.mockReturnValue(false);
+    resolveOwners.mockResolvedValue(respond(K8S_CHAIN, owner(), unowned, unowned));
+    render(<OwnershipSection rec={k8sRec()} />);
+
+    expect(await screen.findByText('Assigned directly to this resource.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /owner/i })).not.toBeInTheDocument();
   });
 
   it('resolves a cloud recommendation against cloud_resource, not workload', async () => {
@@ -131,7 +168,12 @@ describe('OwnershipSection', () => {
       ],
       expect.any(AbortSignal)
     );
-    expect(screen.getByRole('link', { name: /Manage ownership/ })).toHaveAttribute('href', '/cloud-account/details/acct-1#summary');
+    // The modal targets cloud_resource (not workload) for a cloud recommendation.
+    fireEvent.click(screen.getByRole('button', { name: 'Change owner' }));
+    const modal = screen.getByTestId('assign-modal');
+    expect(modal).toHaveAttribute('data-resource-type', 'cloud_resource');
+    expect(modal).toHaveAttribute('data-resource-key', 'res-1');
+    expect(modal).toHaveAttribute('data-cloud-account', 'acct-1');
   });
 
   it('leaves the Workload rung empty for a Pod recommendation rather than guessing', async () => {
