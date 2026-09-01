@@ -15,6 +15,14 @@ import { Link } from '@ui/Link';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from '@ui/Modal';
 import Heading from '@components/common/Heading';
+import TenantAccountCommonSettings from '@shared/settings/TenantAccountCommonSettings';
+import {
+  EMPTY_TRACE_LABEL_SETTINGS,
+  TRACE_LABEL_ADVANCED_FIELDS,
+  TRACE_LABEL_FIELDS,
+  traceLabelsToSettings,
+  traceSettingsToLabelsValue,
+} from '@shared/settings/labelMapperFields';
 import { Divider } from '@ui/Divider';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { ListingLayout } from '@ui/ListingLayout';
@@ -62,6 +70,7 @@ const K8sIntegrationTile = () => {
   const [logAppLabel, setLogAppLabel] = useState('');
   const [cloudAccountAttributes, setCloudAccountAttributes] = useState({});
   const [logDefaultQuery, setLogDefaultQuery] = useState('');
+  const [traceSettings, setTraceSettings] = useState({ ...EMPTY_TRACE_LABEL_SETTINGS });
   const [certificateExpiry, setCertificateExpiry] = useState(0);
   const [networkThreshold, setNetworkThreshold] = useState(0);
   const [observationDays, setObservationDays] = useState(0);
@@ -292,6 +301,12 @@ const K8sIntegrationTile = () => {
 
   useEffect(() => {
     if (accountSettings) {
+      // Outside the attrs-present guard below, and assigned unconditionally: an account
+      // with no attributes at all must show an empty mapper rather than the previously
+      // selected account's values. safeJSONParse returns null for a missing attribute,
+      // so that path yields the all-empty shape.
+      const accountAttrs = cloudAccountAttributes[selectedAccountId] || [];
+      setTraceSettings(traceLabelsToSettings(safeJSONParse(accountAttrs.find((l) => l.name === 'trace_labels')?.value)));
       if (
         selectedAccountId in cloudAccountAttributes &&
         cloudAccountAttributes[selectedAccountId] &&
@@ -362,6 +377,7 @@ const K8sIntegrationTile = () => {
     setLogNamespaceLabel('');
     setLogPodLabel('');
     setLogDefaultQuery('');
+    setTraceSettings({ ...EMPTY_TRACE_LABEL_SETTINGS });
     setCertificateExpiry(0);
     setNetworkThreshold(0);
     setObservationDays(0);
@@ -438,6 +454,13 @@ const K8sIntegrationTile = () => {
           app: logAppLabel,
           defaultQuery: logDefaultQuery,
         }),
+        cloud_account_id: selectedAccountId,
+      },
+      // Unconditional for the same reason as log_labels above: trace_labels has no
+      // non-empty defaults, and gating the write would make clearing an override a no-op.
+      {
+        name: 'trace_labels',
+        value: traceSettingsToLabelsValue(traceSettings),
         cloud_account_id: selectedAccountId,
       },
     ];
@@ -673,6 +696,23 @@ const K8sIntegrationTile = () => {
               <Typography sx={styles.label}>Default query</Typography>
               <Input value={logDefaultQuery} placeholder='Default Query' onChange={(value) => setLogDefaultQuery(value)} />
             </Box>
+          </Box>
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
+
+          {/* title={null} so this section carries the same accented <Heading> as the ones
+              either side of it, instead of the shared component's plain heading. */}
+          <Heading value='Trace Label Mapper' borderWidth='md' />
+          <Box sx={{ mt: ds.space[4] }}>
+            <TenantAccountCommonSettings
+              title={null}
+              idPrefix='trace-label'
+              fields={TRACE_LABEL_FIELDS}
+              advancedFields={TRACE_LABEL_ADVANCED_FIELDS}
+              advancedLabel='advanced trace fields'
+              settings={traceSettings}
+              setSettings={setTraceSettings}
+              disabled={!hasWriteAccess()}
+            />
           </Box>
           <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 

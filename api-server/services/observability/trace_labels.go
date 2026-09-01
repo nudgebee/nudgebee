@@ -163,6 +163,37 @@ func getTenantTraceLabels(ctx *security.RequestContext, tenantId string) map[str
 	return result
 }
 
+// InvalidateTraceLabelsCacheForAccount drops the cached account-scoped trace label overrides so a
+// Settings save takes effect on the next query instead of waiting out the 10-minute TTL.
+// With the redis cache provider (the Helm chart and .env.example default) the entry is
+// shared by every api-server pod, so without this a save is invisible fleet-wide.
+//
+// Plain CacheDelete rather than CacheDeleteWithTag, which InvalidateDefaultLogFiltersCache
+// uses: that cache keys on an (account, provider, source) triple and needs a tag to find
+// every entry. These entries are keyed on the id directly and are written by CacheSet with
+// no tags at all, so a tag delete would match nothing — or, on the bigcache fallback,
+// degenerate into wiping the whole namespace.
+func InvalidateTraceLabelsCacheForAccount(accountId string) {
+	if accountId == "" {
+		return
+	}
+	if err := common.CacheDelete(traceLabelsCacheNamespace, accountId); err != nil {
+		slog.Warn("InvalidateTraceLabelsCacheForAccount: failed to invalidate", "account_id", accountId, "error", err)
+	}
+}
+
+// InvalidateTraceLabelsCacheForTenant drops the tenant-wide entry. Keyed with the same
+// tenantCacheKeyPrefix getTenantTraceLabels caches under — a bare tenantId would address
+// the account key space and delete the wrong entry.
+func InvalidateTraceLabelsCacheForTenant(tenantId string) {
+	if tenantId == "" {
+		return
+	}
+	if err := common.CacheDelete(traceLabelsCacheNamespace, tenantCacheKeyPrefix+tenantId); err != nil {
+		slog.Warn("InvalidateTraceLabelsCacheForTenant: failed to invalidate", "tenant_id", tenantId, "error", err)
+	}
+}
+
 // getMergedTraceLabelMapping returns the trace provider's static label mapping merged
 // with tenant-wide, account-specific, and (optionally) integration-dynamic overrides.
 // Precedence (highest → lowest): dynamic (integration config) > account > tenant > static.

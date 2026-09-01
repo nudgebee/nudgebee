@@ -393,3 +393,93 @@ func TestGetProviderCapabilities_TracesMergesAccountOverride(t *testing.T) {
 	// A datadog static key must still be present.
 	assert.Contains(t, caps.LabelMappings, "workload_name", "static datadog keys should remain")
 }
+
+// ---------------------------------------------------------------------------
+// Cache invalidation
+// ---------------------------------------------------------------------------
+
+// TestInvalidateTraceLabelsCacheForAccount covers the reason the Settings form needs a
+// hook at all: without one a saved trace mapping takes up to the 10 min TTL to apply,
+// so an operator who saves and immediately re-asks sees the old behaviour and reports
+// the form as broken. Mirrors TestInvalidateLogLabelsCacheForAccount.
+func TestInvalidateTraceLabelsCacheForAccount(t *testing.T) {
+	const accountId = "unit-invalidate-trace-account"
+	const tenantId = "unit-invalidate-trace-tenant"
+
+	seedTraceCache(t, accountId, map[string]string{"service_name": "old_service"})
+	seedTraceCache(t, tenantCacheKeyPrefix+tenantId, map[string]string{"service_name": "tenant_service"})
+
+	InvalidateTraceLabelsCacheForAccount(accountId)
+
+	_, accountCached := common.CacheGet(traceLabelsCacheNamespace, accountId)
+	assert.False(t, accountCached, "the account entry must be dropped")
+
+	_, tenantCached := common.CacheGet(traceLabelsCacheNamespace, tenantCacheKeyPrefix+tenantId)
+	assert.True(t, tenantCached, "an account invalidation must not drop the tenant entry")
+}
+
+// TestInvalidateTraceLabelsCacheForAccount_LeavesOtherAccounts is the assertion that
+// distinguishes a per-key CacheDelete from a tag/namespace-wide invalidate: the latter
+// would wipe every account and still pass a single-account test.
+func TestInvalidateTraceLabelsCacheForAccount_LeavesOtherAccounts(t *testing.T) {
+	const accountA = "unit-invalidate-trace-a"
+	const accountB = "unit-invalidate-trace-b"
+
+	seedTraceCache(t, accountA, map[string]string{"service_name": "a"})
+	seedTraceCache(t, accountB, map[string]string{"service_name": "b"})
+
+	InvalidateTraceLabelsCacheForAccount(accountA)
+
+	_, aCached := common.CacheGet(traceLabelsCacheNamespace, accountA)
+	assert.False(t, aCached, "the invalidated account must be dropped")
+
+	_, bCached := common.CacheGet(traceLabelsCacheNamespace, accountB)
+	assert.True(t, bCached, "invalidating one account must not wipe the namespace")
+}
+
+// TestInvalidateTraceLabelsCacheForTenant pins the "t:" key prefix. A bare tenantId
+// would address the account key space and delete the wrong entry.
+func TestInvalidateTraceLabelsCacheForTenant(t *testing.T) {
+	const tenantId = "unit-invalidate-trace-tenant-only"
+
+	seedTraceCache(t, tenantId, map[string]string{"service_name": "same_id_as_account"})
+	seedTraceCache(t, tenantCacheKeyPrefix+tenantId, map[string]string{"service_name": "tenant_service"})
+
+	InvalidateTraceLabelsCacheForTenant(tenantId)
+
+	_, tenantCached := common.CacheGet(traceLabelsCacheNamespace, tenantCacheKeyPrefix+tenantId)
+	assert.False(t, tenantCached, "the prefixed tenant entry must be dropped")
+
+	_, unprefixedCached := common.CacheGet(traceLabelsCacheNamespace, tenantId)
+	assert.True(t, unprefixedCached, "a tenant invalidation must not touch the unprefixed (account) key")
+}
+
+// TestInvalidateTraceLabelsCache_DoesNotTouchLogLabels proves the namespace isolation
+// the two caches are separated for: the same id is a legal key in both.
+func TestInvalidateTraceLabelsCache_DoesNotTouchLogLabels(t *testing.T) {
+	const accountId = "unit-invalidate-shared-id"
+
+	seedTraceCache(t, accountId, map[string]string{"service_name": "trace_service"})
+	seedCache(t, accountId, map[string]string{"pod": "log_pod"})
+
+	InvalidateTraceLabelsCacheForAccount(accountId)
+
+	_, traceCached := common.CacheGet(traceLabelsCacheNamespace, accountId)
+	assert.False(t, traceCached, "the trace entry must be dropped")
+
+	_, logCached := common.CacheGet(logLabelsCacheNamespace, accountId)
+	assert.True(t, logCached, "a trace invalidation must not drop the log entry for the same account")
+}
+
+func TestInvalidateTraceLabelsCache_EmptyIdsAreNoOps(t *testing.T) {
+	const accountId = "unit-invalidate-trace-empty-guard"
+	seedTraceCache(t, accountId, map[string]string{"service_name": "kept"})
+
+	assert.NotPanics(t, func() {
+		InvalidateTraceLabelsCacheForAccount("")
+		InvalidateTraceLabelsCacheForTenant("")
+	})
+
+	_, cached := common.CacheGet(traceLabelsCacheNamespace, accountId)
+	assert.True(t, cached, "an empty id must be a no-op, not a namespace wipe")
+}

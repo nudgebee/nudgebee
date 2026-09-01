@@ -191,7 +191,16 @@ func CacheDelete(namespace string, key string) error {
 	if err != nil {
 		return err
 	}
-	return cache.Delete(context.Background(), namespace+":"+key)
+	err = cache.Delete(context.Background(), namespace+":"+key)
+	// Deleting a key that was never cached is the desired end state, not a failure.
+	// The bigcache backend reports it as an error (redis DEL just returns 0), which
+	// made every invalidation of an uncached entry log a warning plus a stack trace
+	// on the normal path. Callers treat Delete as best-effort; none distinguishes
+	// "absent" from "removed".
+	if errors.Is(err, bigcache_store.ErrEntryNotFound) {
+		return nil
+	}
+	return err
 }
 
 func CacheDeleteWithTag(namespace string, tags ...string) error {

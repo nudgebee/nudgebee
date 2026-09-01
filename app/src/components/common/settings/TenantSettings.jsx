@@ -8,6 +8,13 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import TenantAccountCommonSettings from '@shared/settings/TenantAccountCommonSettings';
+import {
+  EMPTY_TRACE_LABEL_SETTINGS,
+  TRACE_LABEL_ADVANCED_FIELDS,
+  TRACE_LABEL_FIELDS,
+  traceLabelsToSettings,
+  traceSettingsToLabelsValue,
+} from '@shared/settings/labelMapperFields';
 import { Input } from '@ui/Input';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
@@ -363,6 +370,7 @@ const TenantSettings = ({ open, title, onClose }) => {
     logAppLabel: '',
     logDefaultQuery: '',
   });
+  const [traceSettings, setTraceSettings] = useState({ ...EMPTY_TRACE_LABEL_SETTINGS });
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('general');
   const [activeLabelTab, setActiveLabelTab] = useState('log');
@@ -418,6 +426,15 @@ const TenantSettings = ({ open, title, onClose }) => {
               logAppLabel: labels.app || '',
               logDefaultQuery: labels.defaultQuery || '',
             });
+          }
+          // Guarded on the stored value, not on the row having keys the way the log
+          // block above does — a found attribute row always has keys, so that test is
+          // always true and says nothing about whether a mapping was configured.
+          const traceLabelValues = tenantAttributes.find((attr) => attr.name === 'trace_labels');
+          if (traceLabelValues?.value) {
+            // safeJSONParse returns null on a malformed blob; traceLabelsToSettings then
+            // yields the all-empty shape rather than spraying undefined into the inputs.
+            setTraceSettings(traceLabelsToSettings(safeJSONParse(traceLabelValues.value)));
           }
           if (allowedDomains && Object.keys(allowedDomains).length > 0) {
             try {
@@ -534,6 +551,11 @@ const TenantSettings = ({ open, title, onClose }) => {
             defaultQuery: logSettings.logDefaultQuery,
           }),
         },
+        // Written unconditionally, like log_labels and unlike webhook_label_mapping:
+        // trace_labels has no non-empty defaults, so an untouched form serialises to all
+        // empty strings, which getTenantTraceLabels discards. Gating the write instead
+        // would make clearing the last override a silent no-op.
+        { name: 'trace_labels', value: traceSettingsToLabelsValue(traceSettings) },
         { name: 'default_log_provider', value: selectedObservabilityPlatform ? selectedObservabilityPlatform : '' },
         { name: 'log_cluster_label', value: logClusterLabel ? logClusterLabel : '' },
       ];
@@ -550,7 +572,7 @@ const TenantSettings = ({ open, title, onClose }) => {
       const response = await upsertTenantAttributes(attrsToSave);
 
       if (response?.data?.errors) {
-        snackbar.error(`Failed to save loki labels configuration - ${parseHttpResponseBodyMessage(response.data)}`);
+        snackbar.error(`Failed to save label configuration - ${parseHttpResponseBodyMessage(response.data)}`);
         return;
       }
 
@@ -808,6 +830,7 @@ const TenantSettings = ({ open, title, onClose }) => {
               options={{
                 tabOptions: [
                   { value: 'log', text: 'Logs' },
+                  { value: 'trace', text: 'Traces' },
                   { value: 'webhook', text: 'Webhook alerts' },
                 ],
               }}
@@ -821,7 +844,7 @@ const TenantSettings = ({ open, title, onClose }) => {
             {activeLabelTab === 'log' && (
               <Card variant='outlined' elevation='flat' header={<SectionHeader description='Map Logs label keys to product concepts.' />}>
                 <Box display='flex' flexDirection='column' gap={ds.space[3]}>
-                  <TenantAccountCommonSettings logSettings={logSettings} setLogSettings={setLogSettings} disabled={!canEdit} />
+                  <TenantAccountCommonSettings idPrefix='log-label' settings={logSettings} setSettings={setLogSettings} disabled={!canEdit} />
                   <Input
                     size='sm'
                     label='Cluster Label'
@@ -831,6 +854,27 @@ const TenantSettings = ({ open, title, onClose }) => {
                     disabled={!canEdit}
                   />
                 </Box>
+              </Card>
+            )}
+
+            {activeLabelTab === 'trace' && (
+              <Card
+                variant='outlined'
+                elevation='flat'
+                header={
+                  <SectionHeader description="Map your trace backend's field names onto the canonical trace fields. Leave a field blank to use the provider default." />
+                }
+              >
+                <TenantAccountCommonSettings
+                  title='Trace Label Mapper'
+                  idPrefix='trace-label'
+                  fields={TRACE_LABEL_FIELDS}
+                  advancedFields={TRACE_LABEL_ADVANCED_FIELDS}
+                  advancedLabel='advanced trace fields'
+                  settings={traceSettings}
+                  setSettings={setTraceSettings}
+                  disabled={!canEdit}
+                />
               </Card>
             )}
 

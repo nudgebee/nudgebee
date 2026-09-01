@@ -102,3 +102,21 @@ func TestCachingRedis(t *testing.T) {
 	assert.Equal(t, []string{"k1", "k2", "k3"}, keys)
 
 }
+
+// TestCacheDeleteMissingKeyIsNoOp pins delete as idempotent. The bigcache backend
+// reports a missing key as an error (redis DEL just returns 0), so without the
+// not-found guard every invalidation of an entry nobody had cached yet logged a
+// warning plus a stack trace on a completely normal path.
+func TestCacheDeleteMissingKeyIsNoOp(t *testing.T) {
+	const ns = "test_delete_missing"
+	CacheCreateNamespace(ns, CacheNamespaceWithExpiration(time.Minute))
+
+	assert.NoError(t, CacheDelete(ns, "never-cached"), "deleting an absent key must not error")
+
+	assert.NoError(t, CacheSet(ns, "present", []byte("v")))
+	assert.NoError(t, CacheDelete(ns, "present"), "deleting a present key must not error")
+	_, found := CacheGet(ns, "present")
+	assert.False(t, found, "the key must actually be gone")
+
+	assert.NoError(t, CacheDelete(ns, "present"), "deleting the same key twice must stay a no-op")
+}
