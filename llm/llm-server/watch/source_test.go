@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -494,4 +495,107 @@ func superAdminCtx() *security.RequestContext {
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// ---------------------------------------------------------------------------
+// tool_config_name resolution
+// ---------------------------------------------------------------------------
+
+// fakeConfigTool also implements NBToolConfig -> Observe takes the config
+// branch. Records the QueryConfig it got so tests can assert what bound.
+type fakeConfigTool struct {
+	fakeTool
+	gotToolConfigs map[string]string
+}
+
+func (f *fakeConfigTool) ConfigSchema(_ *security.RequestContext) toolcore.ToolConfigSchema {
+	return toolcore.ToolConfigSchema{ConfigType: "fake", ConfigSource: toolcore.ToolConfigSourceTicket}
+}
+
+func (f *fakeConfigTool) Call(ctx toolcore.NbToolContext, _ toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	f.called++
+	f.gotToolConfigs = ctx.QueryConfig.ToolConfigs
+	return f.resp, f.err
+}
+
+// seedToolConfigCache primes the ListToolConfigs cache so the resolution path
+// runs without a metastore. Mirrors the cache key ListToolConfigs computes.
+func seedToolConfigCache(t *testing.T, accountID, toolName string, names ...string) {
+	t.Helper()
+	configs := make([]toolcore.ToolConfig, 0, len(names))
+	for _, n := range names {
+		configs = append(configs, toolcore.ToolConfig{Name: n})
+	}
+	blob, err := json.Marshal(configs)
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(
+		toolcore.CacheNamespaceLlmToolConfig,
+		"list_tool_configs:"+accountID+":"+toolName,
+		blob,
+	))
+}
+
+func newFakeConfigTool(name string) *fakeConfigTool {
+	return &fakeConfigTool{fakeTool: fakeTool{
+		name: name,
+		resp: toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusSuccess, Data: "completed"},
+	}}
+}
+
+// Regression: an invented name (matches no integration) must not bind verbatim
+// -> old behavior failed every poll and terminated the watch FAILED.
+func TestToolSource_Observe_UnknownToolConfigNameFallsBack(t *testing.T) {
+	accountID := freshAccountID()
+	toolName := "fake_cfg_unknown_" + accountID[:8]
+	ft := newFakeConfigTool(toolName)
+	toolcore.RegisterNBToolFactory(toolName, func(string) (toolcore.NBTool, error) { return ft, nil })
+	// Account has exactly one enabled config, named "nudgebee".
+	seedToolConfigCache(t, accountID, toolName, "nudgebee")
+
+	w := Watch{
+		AccountID:    uuid.MustParse(accountID),
+		SourceConfig: `{"tool_name":"` + toolName + `","tool_input":{"command":"gh run view 1"},"tool_config_name":"github"}`,
+	}
+	_, err := toolSource{}.Observe(superAdminCtx(), w)
+	require.NoError(t, err)
+	// Fabricated name must not reach the tool -> single config means
+	// NewNbToolContext auto-resolves (ToolConfigs stays empty).
+	assert.NotEqual(t, "github", ft.gotToolConfigs[toolName])
+	assert.Empty(t, ft.gotToolConfigs[toolName])
+}
+
+// A tool_config_name that DOES match an enabled config is honoured, and the
+// registered casing is adopted.
+func TestToolSource_Observe_KnownToolConfigNameIsHonoured(t *testing.T) {
+	accountID := freshAccountID()
+	toolName := "fake_cfg_known_" + accountID[:8]
+	ft := newFakeConfigTool(toolName)
+	toolcore.RegisterNBToolFactory(toolName, func(string) (toolcore.NBTool, error) { return ft, nil })
+	seedToolConfigCache(t, accountID, toolName, "nudgebee", "other")
+
+	w := Watch{
+		AccountID:    uuid.MustParse(accountID),
+		SourceConfig: `{"tool_name":"` + toolName + `","tool_input":{"command":"gh run view 1"},"tool_config_name":"NUDGEBEE"}`,
+	}
+	_, err := toolSource{}.Observe(superAdminCtx(), w)
+	require.NoError(t, err)
+	assert.Equal(t, "nudgebee", ft.gotToolConfigs[toolName])
+}
+
+// With several configs and no usable name, the first is picked to break the
+// tie (pre-existing behaviour, preserved).
+func TestToolSource_Observe_MultipleConfigsPicksFirstWhenNameUnusable(t *testing.T) {
+	accountID := freshAccountID()
+	toolName := "fake_cfg_multi_" + accountID[:8]
+	ft := newFakeConfigTool(toolName)
+	toolcore.RegisterNBToolFactory(toolName, func(string) (toolcore.NBTool, error) { return ft, nil })
+	seedToolConfigCache(t, accountID, toolName, "alpha", "beta")
+
+	w := Watch{
+		AccountID:    uuid.MustParse(accountID),
+		SourceConfig: `{"tool_name":"` + toolName + `","tool_input":{"command":"gh run view 1"},"tool_config_name":"nope"}`,
+	}
+	_, err := toolSource{}.Observe(superAdminCtx(), w)
+	require.NoError(t, err)
+	assert.Equal(t, "alpha", ft.gotToolConfigs[toolName])
 }

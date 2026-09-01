@@ -200,28 +200,39 @@ func (toolSource) Observe(ctx *security.RequestContext, w Watch) (Observation, e
 		return Observation{}, fmt.Errorf("tool source: %q is an agent-style tool; watch sources must use a primitive *_execute tool (e.g. kubectl_execute, github_execute, shell_execute) — agent tools assume a parent message context that watch polls do not have", cfg.ToolName)
 	}
 
-	// Resolve which tool config the poll should use. The chat planner does
-	// this through followupForMultipleToolConfigs (which can prompt the
-	// user); the watch path runs unattended, so we use a deterministic
-	// rule:
-	//   1) If source_config.tool_config_name is set, use it verbatim.
-	//   2) If the tool implements NBToolConfig and exactly one enabled
-	//      config exists for the account, NewNbToolContext picks it
-	//      automatically (existing behaviour).
-	//   3) If multiple exist, pick the first by name and pass the name
-	//      via QueryConfig.ToolConfigs so NewNbToolContext binds it.
-	// Without this, tools like github_execute (35 tenant integrations,
-	// 3 enabled) leave ToolConfig empty and every poll fails with
-	// "no tool configs found".
+	// tool_config_name is VALIDATED not trusted -> nothing grounds it (LLM
+	// invents it, e.g. "github" vs real "nudgebee"). Unmatched -> auto-resolve, not FAILED.
 	queryConfig := toolcore.NBQueryConfig{}
-	if cfg.ToolConfigName != "" {
-		queryConfig.ToolConfigs = map[string]string{cfg.ToolName: cfg.ToolConfigName}
-	} else if _, isCfg := tool.(toolcore.NBToolConfig); isCfg {
+	if _, isCfg := tool.(toolcore.NBToolConfig); isCfg {
 		availableConfigs, err := toolcore.ListToolConfigs(ctx, w.AccountID.String(), tool)
-		if err == nil && len(availableConfigs) > 1 {
-			queryConfig.ToolConfigs = map[string]string{cfg.ToolName: availableConfigs[0].Name}
-			ctx.GetLogger().Info("watch.source: multiple tool configs available, picking first",
-				"tool", cfg.ToolName, "picked", availableConfigs[0].Name, "candidates", len(availableConfigs))
+		if err != nil {
+			// Can't validate/auto-pick -> leave ToolConfigs empty, tool self-resolves.
+			ctx.GetLogger().Warn("watch.source: unable to list tool configs; leaving config resolution to the tool",
+				"tool", cfg.ToolName, "error", err)
+		} else {
+			picked := ""
+			if cfg.ToolConfigName != "" {
+				for _, c := range availableConfigs {
+					if strings.EqualFold(c.Name, cfg.ToolConfigName) {
+						picked = c.Name // adopt the registered casing
+						break
+					}
+				}
+				if picked == "" {
+					ctx.GetLogger().Warn("watch.source: configured tool_config_name does not match any enabled config; falling back to auto-resolution",
+						"tool", cfg.ToolName, "requested", cfg.ToolConfigName, "candidates", len(availableConfigs))
+				}
+			}
+			// Bind only for a confirmed name or a multi-config tie-break.
+			// Single config -> leave empty, NewNbToolContext auto-binds it.
+			if picked == "" && len(availableConfigs) > 1 {
+				picked = availableConfigs[0].Name
+				ctx.GetLogger().Info("watch.source: multiple tool configs available, picking first",
+					"tool", cfg.ToolName, "picked", picked, "candidates", len(availableConfigs))
+			}
+			if picked != "" {
+				queryConfig.ToolConfigs = map[string]string{cfg.ToolName: picked}
+			}
 		}
 	}
 
