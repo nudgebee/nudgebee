@@ -277,8 +277,11 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
         }}
         sx={{
           // Fixed height so the dialog does not resize between tabs -- Soul is a
-          // few fields, Model Pricing is a long table.
-          '& .MuiPaper-root': { height: '90vh' },
+          // few fields, Model Pricing is a long table. Scope to `.MuiDialog-paper`
+          // (the dialog's own Paper) -- a bare `.MuiPaper-root` also matches every
+          // MUI Menu/Popover Paper rendered inline (disablePortal) inside the
+          // modal, forcing dropdowns and kebab menus to a 90vh empty panel.
+          '& .MuiDialog-paper': { height: '90vh' },
         }}
       >
         <Box
