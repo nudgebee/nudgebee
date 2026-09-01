@@ -592,22 +592,41 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 				ctx.GetLogger().Error(fmt.Sprintf("unable to get agent details, for account %s", accountId), "error", err)
 				return "", "", nil, err
 			}
-			if providerType == "logs" && agentDetails.Features.LogsConnectionProvider != nil {
-				defaultProvider = *agentDetails.Features.LogsConnectionProvider
-			} else if providerType == "traces" && agentDetails.Features.TraceProvider != nil {
-				if agentDetails.Features.PrometheusUrl != nil && strings.Contains(*agentDetails.Features.PrometheusUrl, "chronosphere") {
-					defaultProvider = "chronosphere"
-				} else {
-					defaultProvider = *agentDetails.Features.TraceProvider
+			// Agent-reported features go stale once it disconnects; only trust them while live.
+			if agentDetails.Status == "CONNECTED" {
+				candidateProvider := ""
+				switch {
+				case providerType == "logs" && agentDetails.Features.LogsConnectionProvider != nil:
+					candidateProvider = *agentDetails.Features.LogsConnectionProvider
+				case providerType == "traces" && agentDetails.Features.TraceProvider != nil:
+					if agentDetails.Features.PrometheusUrl != nil && strings.Contains(*agentDetails.Features.PrometheusUrl, "chronosphere") {
+						candidateProvider = "chronosphere"
+					} else {
+						candidateProvider = *agentDetails.Features.TraceProvider
+					}
+				case providerType == "metrics" && agentDetails.Features.PrometheusUrl != nil:
+					if strings.Contains(*agentDetails.Features.PrometheusUrl, "chronosphere") {
+						candidateProvider = "chronosphere"
+					} else {
+						candidateProvider = "prometheus"
+					}
 				}
-			} else if providerType == "metrics" && agentDetails.Features.PrometheusUrl != nil {
-				if agentDetails.Features.PrometheusUrl != nil && strings.Contains(*agentDetails.Features.PrometheusUrl, "chronosphere") {
-					defaultProvider = "chronosphere"
-				} else {
-					defaultProvider = "prometheus"
+
+				if candidateProvider != "" {
+					// Don't resurrect a provider the account has an explicit (possibly disabled) record for.
+					// Fail closed on lookup error — silently continuing here is exactly the bug this guards against.
+					hasExistingRecord, hErr := core.HasAccountSourceIntegration(ctx, accountId, candidateProvider, "agent")
+					if hErr != nil {
+						ctx.GetLogger().Error("getLogsMetricsTracesProviderWithIntegration: failed to check for a disabled account-level record",
+							"account_id", accountId, "provider", candidateProvider, "error", hErr)
+						return "", "", nil, hErr
+					}
+					if !hasExistingRecord {
+						defaultProvider = candidateProvider
+						defaultSource = "agent"
+					}
 				}
 			}
-			defaultSource = "agent"
 		}
 	} else if defaultSource == "" {
 		integrationDto, err := core.GetIntegrationByType(ctx, accountId, defaultProvider)

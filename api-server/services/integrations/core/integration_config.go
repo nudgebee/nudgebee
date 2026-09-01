@@ -2375,6 +2375,44 @@ func GetIntegrationByType(
 	return result, nil
 }
 
+// HasAccountSourceIntegration reports whether an integration of the given type
+// and source is linked to the account at all, regardless of status or the
+// per-account default-provider flag.
+func HasAccountSourceIntegration(
+	context *security.RequestContext,
+	accountId string,
+	integrationType string,
+	source string,
+) (bool, error) {
+	if context == nil || context.GetSecurityContext() == nil {
+		return false, errors.New("integrations: request context and security context are required")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, err
+	}
+
+	var exists bool
+	err = dbms.Db.Get(&exists, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM integrations i
+			JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id
+			WHERE ica.cloud_account_id = $1
+			  AND i.tenant_id = $2
+			  AND i.type = $3
+			  AND i.source = $4
+		)
+	`, accountId, context.GetSecurityContext().GetTenantId(), integrationType, source)
+	if err != nil {
+		context.GetLogger().Error("integrations: failed to check account-source integration existence",
+			"account_id", accountId, "type", integrationType, "source", source, "error", err)
+		return false, err
+	}
+	return exists, nil
+}
+
 // GetIntegrationConfigValueByName returns the value of a single config entry
 // for the given integration. Returns an empty string (no error) when the
 // entry is not present. Encrypted values are returned as stored (encrypted);

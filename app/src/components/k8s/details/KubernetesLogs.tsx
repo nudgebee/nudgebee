@@ -838,7 +838,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
         }
 
         const obs = res?.data?.data?.observability_get_default_provider;
-        const provider = obs?.provider || selectedCluster?.agent?.connection_status?.logsConnectionProvider || '';
+        const provider = obs?.provider || '';
         const resolvedDefaultIndex = obs?.default_index || '';
         const descriptors = obs?.capabilities?.supported_operator_descriptors;
         // Drop any malformed entry without a provider name so the dropdown map
@@ -1067,7 +1067,11 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           }}
         />
         <Text
-          value='A log provider has not been configured for this namespace or pod. Please check your settings or try again later.'
+          value={
+            hasConnectedAgent
+              ? 'A log provider has not been configured for this namespace or pod. Please check your settings or try again later.'
+              : 'No agent is connected for this cluster. Connect an agent or configure a log provider to view logs.'
+          }
           sx={{ color: 'var(--ds-gray-600)' }}
         />
       </WidgetCard>
