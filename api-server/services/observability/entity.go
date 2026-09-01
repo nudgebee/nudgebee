@@ -444,6 +444,12 @@ type TracesV3Request struct {
 	// the labels the trace provider exposes and fails with an actionable error if any
 	// are unknown. Off by default; opt-in callers (notably the LLM agent) enable it.
 	ValidateRequest bool `json:"validate_request" mapstructure:"validate_request"`
+	// IncludeExecutedQuery asks GetTraces to resolve the provider query it ran and return
+	// it on TracesResult, so the caller can record what was actually asked (the enrichers
+	// stamp it onto evidence as `executed_query`). Off by default because resolving it
+	// costs an extra GetQuery round trip on some providers, and the hot read paths — the
+	// traces UI listing and the service map — have no use for it.
+	IncludeExecutedQuery bool `json:"include_executed_query" mapstructure:"include_executed_query"`
 }
 
 // RawTraceResult carries an arbitrary ClickHouse result set with column order and types preserved.
@@ -468,6 +474,16 @@ type TracesQueryResult struct {
 type TracesResult struct {
 	Traces     []common.OpenTelemetryTrace `json:"traces"`
 	Suggestion string                      `json:"suggestion,omitempty"`
+	// Query is the provider query that produced Traces, resolved only when the caller sets
+	// IncludeExecutedQuery. It is the provider-native string when the source exposes one
+	// (ClickHouse SQL, KQL, NRQL, ES DSL); for sources that consume the where clause
+	// natively and emit no query string (Datadog, Jaeger, Chronosphere), it falls back to
+	// the canonical where-clause JSON — already in provider space, so it is what the source
+	// was handed. Mirrors FetchLogsResult.Query.
+	Query string `json:"query,omitempty"`
+	// Provider is the trace provider the query ran against, e.g. `clickhouse`. Resolved
+	// whenever provider resolution succeeded, including on the empty and error paths.
+	Provider string `json:"provider,omitempty"`
 }
 
 type TracesHeatMapRequest struct {

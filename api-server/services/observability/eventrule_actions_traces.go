@@ -1391,21 +1391,28 @@ func (a *observabilityTracesAction) autoExecuteByWorkload(ctx playbooks.Playbook
 	reqCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 
 	// Phase 1: error spans involving the workload as caller OR callee via top-level columns.
-	errorSpans, err := a.queryErrorSpansForWorkload(reqCtx, ctx.GetAccountId(), workloadName, namespace, startTime, endTime, errorSpanLimit)
+	errorRes, err := a.queryErrorSpansForWorkload(reqCtx, ctx.GetAccountId(), workloadName, namespace, startTime, endTime, errorSpanLimit)
 	if err != nil {
 		ctx.GetLogger().Warn("traces auto action: phase 1 error-span query failed, falling back", "error", err)
 	}
+	errorSpans := errorRes.Traces
+
+	// The query worth showing a reader is the one that produced the spans they are looking
+	// at, so it follows the branch taken below rather than being pinned to phase 1.
+	sourceRes := errorRes
 
 	queryMode := "error_plus_expansion"
 
 	// Phase 1b: if top-level filters found nothing, sample recent spans and post-filter
 	// for errors that only show up in span_attributes (gRPC non-zero, exception events).
 	if len(errorSpans) == 0 {
-		sample, sampleErr := a.queryRecentSpansForWorkload(reqCtx, ctx.GetAccountId(), workloadName, namespace, startTime, endTime, errorScanLimit)
+		sampleRes, sampleErr := a.queryRecentSpansForWorkload(reqCtx, ctx.GetAccountId(), workloadName, namespace, startTime, endTime, errorScanLimit)
+		sample := sampleRes.Traces
 		if sampleErr != nil {
 			ctx.GetLogger().Warn("traces auto action: phase 1b sample query failed", "error", sampleErr)
 		} else if attrErrors := filterErrorSpans(sample); len(attrErrors) > 0 {
 			errorSpans = attrErrors
+			sourceRes = sampleRes
 			queryMode = "error_plus_expansion_attr"
 			ctx.GetLogger().Info("traces auto action: recovered errors via attribute post-filter",
 				"workload", workloadName, "namespace", namespace, "sample_size", len(sample), "attr_errors", len(attrErrors))
@@ -1417,12 +1424,12 @@ func (a *observabilityTracesAction) autoExecuteByWorkload(ctx playbooks.Playbook
 	if len(errorSpans) > 0 {
 		// Phase 2: expand by trace_id to bring in the full call graph for each error trace.
 		traceIDs := uniqueTraceIDs(errorSpans, traceExpansionLimit)
-		expansion, expErr := a.queryTraceTrees(reqCtx, ctx.GetAccountId(), traceIDs, startTime, endTime, traceSpanLimit)
+		expansionRes, expErr := a.queryTraceTrees(reqCtx, ctx.GetAccountId(), traceIDs, startTime, endTime, traceSpanLimit)
 		if expErr != nil {
 			ctx.GetLogger().Warn("traces auto action: phase 2 trace expansion failed, returning errors only", "error", expErr)
 			finalSpans = errorSpans
 		} else {
-			finalSpans = mergeSpansDedup(errorSpans, expansion)
+			finalSpans = mergeSpansDedup(errorSpans, expansionRes.Traces)
 		}
 		ctx.GetLogger().Info("traces auto action: error-centric result",
 			"workload", workloadName, "namespace", namespace,
@@ -1431,11 +1438,12 @@ func (a *observabilityTracesAction) autoExecuteByWorkload(ctx playbooks.Playbook
 		// Phase 3: fallback — no errors found for the workload window. Return a small
 		// recent sample so the evidence still carries traffic context.
 		queryMode = "fallback_recent_sample"
-		fallback, fbErr := a.queryRecentSpansForWorkload(reqCtx, ctx.GetAccountId(), workloadName, namespace, startTime, endTime, fallbackSpanLimit)
+		fallbackRes, fbErr := a.queryRecentSpansForWorkload(reqCtx, ctx.GetAccountId(), workloadName, namespace, startTime, endTime, fallbackSpanLimit)
 		if fbErr != nil {
 			return nil, fbErr
 		}
-		finalSpans = fallback
+		finalSpans = fallbackRes.Traces
+		sourceRes = fallbackRes
 		ctx.GetLogger().Info("traces auto action: no error spans found, using recent-sample fallback",
 			"workload", workloadName, "namespace", namespace, "spans", len(finalSpans))
 	}
@@ -1471,7 +1479,7 @@ func (a *observabilityTracesAction) autoExecuteByWorkload(ctx playbooks.Playbook
 			"dropped_span_count": droppedSpans,
 		},
 	}
-	return playbooks.NewPlaybookActionResponseJson(map[string]any{"data": finalSpans}, map[string]any{}, insights, metadata), nil
+	return playbooks.NewPlaybookActionResponseJson(map[string]any{"data": finalSpans}, addTraceExecutedQueryInfo(nil, sourceRes), insights, metadata), nil
 }
 
 // queryErrorSpansForWorkload returns spans involving the workload (as source
@@ -1479,7 +1487,7 @@ func (a *observabilityTracesAction) autoExecuteByWorkload(ctx playbooks.Playbook
 // or HTTP 4xx/5xx. In both the OTel demo and most instrumented systems, the
 // error is visible on the caller span even when the callee's server span is
 // STATUS_CODE_UNSET, so querying caller-OR-callee is essential.
-func (a *observabilityTracesAction) queryErrorSpansForWorkload(ctx *security.RequestContext, accountId, workload, namespace string, startMs, endMs int64, limit int) ([]common.OpenTelemetryTrace, error) {
+func (a *observabilityTracesAction) queryErrorSpansForWorkload(ctx *security.RequestContext, accountId, workload, namespace string, startMs, endMs int64, limit int) (TracesResult, error) {
 	workloadSide := query.QueryWhereClause{
 		Or: []query.QueryWhereClause{
 			{Binary: query.BinaryWhereClause{
@@ -1501,10 +1509,11 @@ func (a *observabilityTracesAction) queryErrorSpansForWorkload(ctx *security.Req
 		},
 	}
 
-	res, err := GetTraces(ctx, TracesV3Request{
-		AccountId: accountId,
-		StartTime: startMs,
-		EndTime:   endMs,
+	return GetTraces(ctx, TracesV3Request{
+		AccountId:            accountId,
+		StartTime:            startMs,
+		EndTime:              endMs,
+		IncludeExecutedQuery: true,
 		QueryRequest: TracesQueryBuilderRequest{
 			Where: query.QueryWhereClause{
 				And: []query.QueryWhereClause{workloadSide, errorSide},
@@ -1513,25 +1522,25 @@ func (a *observabilityTracesAction) queryErrorSpansForWorkload(ctx *security.Req
 			OrderBy: []query.QueryOrderBy{{Column: "timestamp", Order: query.Desc}},
 		},
 	})
-	return res.Traces, err
 }
 
 // queryTraceTrees returns all spans for the given trace_ids within the time
 // window. Caller is responsible for bounding len(traceIDs); we additionally cap
 // the total spans returned via `limit` to prevent runaway payloads on very
 // chatty traces (e.g. a load-generator burst).
-func (a *observabilityTracesAction) queryTraceTrees(ctx *security.RequestContext, accountId string, traceIDs []string, startMs, endMs int64, limit int) ([]common.OpenTelemetryTrace, error) {
+func (a *observabilityTracesAction) queryTraceTrees(ctx *security.RequestContext, accountId string, traceIDs []string, startMs, endMs int64, limit int) (TracesResult, error) {
 	if len(traceIDs) == 0 {
-		return nil, nil
+		return TracesResult{}, nil
 	}
 	ids := make([]any, 0, len(traceIDs))
 	for _, id := range traceIDs {
 		ids = append(ids, id)
 	}
-	res, err := GetTraces(ctx, TracesV3Request{
-		AccountId: accountId,
-		StartTime: startMs,
-		EndTime:   endMs,
+	return GetTraces(ctx, TracesV3Request{
+		AccountId:            accountId,
+		StartTime:            startMs,
+		EndTime:              endMs,
+		IncludeExecutedQuery: true,
 		QueryRequest: TracesQueryBuilderRequest{
 			Where: query.QueryWhereClause{
 				Binary: query.BinaryWhereClause{
@@ -1545,16 +1554,16 @@ func (a *observabilityTracesAction) queryTraceTrees(ctx *security.RequestContext
 			},
 		},
 	})
-	return res.Traces, err
 }
 
 // queryRecentSpansForWorkload is the no-errors fallback: small recent sample,
 // mirrors the pre-Fix-4 behaviour but with a smaller limit.
-func (a *observabilityTracesAction) queryRecentSpansForWorkload(ctx *security.RequestContext, accountId, workload, namespace string, startMs, endMs int64, limit int) ([]common.OpenTelemetryTrace, error) {
-	res, err := GetTraces(ctx, TracesV3Request{
-		AccountId: accountId,
-		StartTime: startMs,
-		EndTime:   endMs,
+func (a *observabilityTracesAction) queryRecentSpansForWorkload(ctx *security.RequestContext, accountId, workload, namespace string, startMs, endMs int64, limit int) (TracesResult, error) {
+	return GetTraces(ctx, TracesV3Request{
+		AccountId:            accountId,
+		StartTime:            startMs,
+		EndTime:              endMs,
+		IncludeExecutedQuery: true,
 		QueryRequest: TracesQueryBuilderRequest{
 			Where: query.QueryWhereClause{
 				Or: []query.QueryWhereClause{
@@ -1572,7 +1581,6 @@ func (a *observabilityTracesAction) queryRecentSpansForWorkload(ctx *security.Re
 			OrderBy: []query.QueryOrderBy{{Column: "timestamp", Order: query.Desc}},
 		},
 	})
-	return res.Traces, err
 }
 
 // filterErrorSpans returns the subset of spans that traceHasError flags as
@@ -1731,11 +1739,12 @@ func (a *observabilityTracesAction) Execute(ctx playbooks.PlaybookActionContext,
 	}
 
 	traceResult, err := GetTraces(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), TracesV3Request{
-		AccountId: params.AccountId,
-		Query:     params.Query,
-		StartTime: startTime,
-		EndTime:   endTime,
-		Request:   params.QueryOptions,
+		AccountId:            params.AccountId,
+		Query:                params.Query,
+		StartTime:            startTime,
+		EndTime:              endTime,
+		Request:              params.QueryOptions,
+		IncludeExecutedQuery: true,
 	})
 
 	if err != nil {
@@ -1766,7 +1775,24 @@ func (a *observabilityTracesAction) Execute(ctx playbooks.PlaybookActionContext,
 		"query":                rawParams,
 		"dropped_span_count":   droppedSpans,
 	}
-	return playbooks.NewPlaybookActionResponseJson(map[string]any{"data": traceoutput}, map[string]any{}, insights, metadata), err
+	return playbooks.NewPlaybookActionResponseJson(map[string]any{"data": traceoutput}, addTraceExecutedQueryInfo(nil, traceResult), insights, metadata), err
+}
+
+// addTraceExecutedQueryInfo records the provider query GetTraces actually ran (and the
+// resolved provider) into an evidence's additional_info, so the UI can show them for
+// reference. Empty values are skipped. Mirrors addExecutedQueryInfo on the logs side —
+// same keys, so one frontend component serves both.
+func addTraceExecutedQueryInfo(info map[string]any, result TracesResult) map[string]any {
+	if info == nil {
+		info = map[string]any{}
+	}
+	if result.Query != "" {
+		info["executed_query"] = result.Query
+	}
+	if result.Provider != "" {
+		info["provider"] = result.Provider
+	}
+	return info
 }
 
 // Datadog Traces Action
@@ -1967,6 +1993,12 @@ func getDatadogTracesForAction(sc *security.RequestContext, apiKey, appKey, site
 			"actual_action_name":     "datadog_traces",
 			"action_title":           "Datadog Traces",
 			"conditional_expression": "",
+			// This action bypasses GetTraces, so stamp the same keys by hand. Record the
+			// query string only — never the request URL built above, which is not something
+			// a reader can act on. The Datadog credentials travel as DD-API-KEY /
+			// DD-APPLICATION-KEY headers and so are absent from the query either way.
+			"executed_query": tracesQueryParams.TraceQuery,
+			"provider":       "datadog",
 		}
 	}
 

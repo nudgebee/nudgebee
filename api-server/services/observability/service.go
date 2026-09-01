@@ -2425,6 +2425,14 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 
 	traces, err := source.QueryTraces(context, fetchTracesRequest)
 
+	// Resolve the query that was actually used so callers (the enrichers, the LLM agent) can
+	// record it — including on the empty-result diagnosis early-returns below and the error
+	// return, not just the success path: an empty card is exactly where a reader needs to
+	// know what ran. Resolved AFTER QueryTraces so sources that normalise the clause while
+	// executing (ClickHouse injects the time filter) report the normalised query, and after
+	// convertWhereClauseWithMApping above so the clause is in provider space either way.
+	usedQuery := resolveExecutedTraceQuery(context, source, fetchTracesRequest)
+
 	// A trace query that matched nothing — or failed outright — is frequently caused by a
 	// mistyped field NAME (e.g. "namespace" where the provider has "workload_namespace") or a
 	// mistyped VALUE (e.g. workload_name="services-serve"). The caller, notably an LLM agent,
@@ -2448,7 +2456,7 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId, source)
 		if verr := validateReferencedTraceLabels(context, source, fetchTracesRequest, referencedLabels, mergedMap); verr != nil {
 			outcome = "unknown_label_name"
-			return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: verr.Error()}, nil
+			return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: verr.Error(), Query: usedQuery, Provider: traceProvider}, nil
 		}
 		// Value suggestions only apply to a query that ran cleanly but matched nothing. On a
 		// backend error the value-set fetch would be unreliable and the real error is more
@@ -2456,14 +2464,46 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 		if err == nil && len(traces) == 0 {
 			if verr := validateReferencedTraceLabelValues(context, source, fetchTracesRequest, referencedValues); verr != nil {
 				outcome = "unknown_label_value"
-				return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: verr.Error()}, nil
+				return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: verr.Error(), Query: usedQuery, Provider: traceProvider}, nil
 			}
 		}
 	}
 	if err != nil {
-		return TracesResult{}, err
+		// Carry the executed query and resolved provider even on failure: the caller has no
+		// other way to learn what actually ran, and Traces stays nil so callers that inspect
+		// the result after a non-nil error are unaffected.
+		return TracesResult{Query: usedQuery, Provider: traceProvider}, err
 	}
-	return TracesResult{Traces: traces}, nil
+	return TracesResult{Traces: traces, Query: usedQuery, Provider: traceProvider}, nil
+}
+
+// resolveExecutedTraceQuery returns the provider query GetTraces just ran, for callers that
+// asked for it via IncludeExecutedQuery. Mirrors the usedQuery block in FetchLogs: prefer the
+// raw query when the caller supplied one, else the source's provider-native rendering, else
+// the canonical where clause — which, already mapped into provider space, is exactly what a
+// source that consumes the clause natively (Datadog, Jaeger, Chronosphere) was handed.
+//
+// Best-effort by design: a source whose GetQuery is unimplemented or fails is a reason to
+// show the reader less, never to fail a query that already returned its traces.
+func resolveExecutedTraceQuery(ctx *security.RequestContext, source TraceSource, req TracesV3Request) string {
+	if !req.IncludeExecutedQuery {
+		return ""
+	}
+	if req.Query != "" {
+		return req.Query
+	}
+	if q, err := source.GetQuery(ctx, req); err != nil {
+		ctx.GetLogger().Warn("GetTraces: GetQuery failed, falling back to the canonical where clause",
+			"error", err, "account_id", req.AccountId)
+	} else if q != "" {
+		return q
+	}
+	if hasWhereData(req.QueryRequest.Where) {
+		if b, mErr := json.Marshal(req.QueryRequest.Where); mErr == nil {
+			return string(b)
+		}
+	}
+	return ""
 }
 
 // GetRootSpansByTrace resolves the trace source and returns one root span per trace for the
