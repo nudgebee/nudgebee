@@ -392,6 +392,11 @@ ticket-server:
 ml-k8s-server:
   enabled: true
   fullnameOverride: ml-server
+  resources:
+    requests:
+      memory: 4Gi
+    limits:
+      memory: 4Gi
 postgres_migrations:
   fullnameOverride: postgres_migrations
   image:
