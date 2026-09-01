@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import { Box, Typography, Card, Stack, Paper, Alert, CircularProgress } from '@mui/material';
+import { Box, Typography, Stack, Alert, CircularProgress } from '@mui/material';
+import { Card } from '@ui/Card';
 import { Chip } from '@ui/Chip';
 import { Divider } from '@ui/Divider';
 import { Checkbox } from '@ui/Checkbox';
@@ -340,7 +341,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
             {(currentValue || []).length > 0 && (
               <Stack spacing={2} sx={{ mb: ds.space[4] }}>
                 {(currentValue || []).map((_obj, index) => (
-                  <Card key={index} variant='outlined' sx={{ p: ds.space[4], position: 'relative' }}>
+                  <Card key={index} variant='outlined' size='sm' elevation='flat' sx={{ position: 'relative' }}>
                     <Box sx={{ position: 'absolute', top: ds.space[2], right: ds.space[2] }}>
                       <DsButton
                         tone='secondary'
@@ -369,7 +370,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
 
             {/* Inputs for a NEW object */}
             {field.extra_params && (
-              <Card variant='outlined' sx={{ p: ds.space[4], borderStyle: 'dashed' }}>
+              <Card variant='outlined' size='sm' elevation='flat' sx={{ borderStyle: 'dashed' }}>
                 <Typography variant='body2' sx={{ mb: ds.space[2], fontWeight: 'var(--ds-font-weight-medium)' }}>
                   Add New {(field.display_name || key).toLowerCase()}
                 </Typography>
@@ -400,31 +401,27 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
         if (field.extra_params) {
           return (
             <Box key={key} sx={{ mb: ds.space[5] }}>
-              <Card variant='outlined' sx={{ backgroundColor: depth === 0 ? ds.background[200] : ds.background[100] }}>
-                <Box sx={{ p: ds.space[4] }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: ds.space[2] }}>
-                    <Typography
-                      sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}
-                    >
-                      {field.display_name || key}
-                      {field.required && (
-                        <Typography component='span' sx={{ color: 'error.main', ml: ds.space[1] }}>
-                          *
-                        </Typography>
-                      )}
-                    </Typography>
-                  </Box>
+              <Card variant={depth === 0 ? 'tinted' : 'outlined'} size='sm' elevation='flat'>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.brand[500] }}>
+                    {field.display_name || key}
+                    {field.required && (
+                      <Typography component='span' sx={{ color: 'error.main', ml: ds.space[1] }}>
+                        *
+                      </Typography>
+                    )}
+                  </Typography>
+                </Box>
 
-                  {field.description && (
-                    <Typography variant='caption' color='text.secondary' sx={{ mb: ds.space[4], display: 'block' }}>
-                      {field.description}
-                    </Typography>
-                  )}
-                  <Box sx={{ pl: ds.space[4], borderLeft: `${ds.space[0]} solid var(--ds-brand-150)`, mt: ds.space[4] }}>
-                    <Stack spacing={2}>
-                      {Object.keys(field.extra_params).map((subKey) => renderFieldGroup(subKey, field.extra_params[subKey], currentPath, depth + 1))}
-                    </Stack>
-                  </Box>
+                {field.description && (
+                  <Typography variant='caption' color='text.secondary' sx={{ mb: ds.space[4], display: 'block' }}>
+                    {field.description}
+                  </Typography>
+                )}
+                <Box sx={{ pl: ds.space[4], borderLeft: `${ds.space[0]} solid var(--ds-brand-150)`, mt: ds.space[4] }}>
+                  <Stack spacing={2}>
+                    {Object.keys(field.extra_params).map((subKey) => renderFieldGroup(subKey, field.extra_params[subKey], currentPath, depth + 1))}
+                  </Stack>
                 </Box>
               </Card>
             </Box>
@@ -539,7 +536,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
         return fieldWrapper(
           <Box>
             {Object.keys(currentValue || {}).length > 0 && (
-              <Paper sx={{ p: ds.space[4], mb: ds.space[4], bgcolor: 'grey.50' }}>
+              <Card variant='tinted' size='sm' elevation='flat' sx={{ mb: ds.space[4] }}>
                 <Typography variant='body2' sx={{ mb: ds.space[2], fontWeight: 'var(--ds-font-weight-medium)' }} />
                 <Stack spacing={1}>
                   {Object.entries(currentValue || {}).map(([mapKey, mapValue]) => (
@@ -556,7 +553,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
                     </Box>
                   ))}
                 </Stack>
-              </Paper>
+              </Card>
             )}
             <Box display='flex' gap={ds.space[2]} alignItems='center'>
               <Box sx={{ flex: 1 }}>
@@ -598,7 +595,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
         return fieldWrapper(
           <Box>
             {(currentValue || []).length > 0 && (
-              <Paper sx={{ p: ds.space[4], mb: ds.space[4], bgcolor: 'grey.50' }}>
+              <Card variant='tinted' size='sm' elevation='flat' sx={{ mb: ds.space[4] }}>
                 <Typography variant='body2' sx={{ mb: ds.space[2], fontWeight: 'var(--ds-font-weight-medium)' }} />
                 <Stack direction='row' spacing={1} flexWrap='wrap' useFlexGap>
                   {(currentValue || []).map((value, index) => (
@@ -613,7 +610,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
                     </Chip>
                   ))}
                 </Stack>
-              </Paper>
+              </Card>
             )}
             <Box display='flex' gap={ds.space[2]} alignItems='center'>
               <Box sx={{ flex: 1, maxWidth: ds.space.mul(0, 200) }}>
