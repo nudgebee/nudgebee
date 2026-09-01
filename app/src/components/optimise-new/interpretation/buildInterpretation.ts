@@ -84,6 +84,12 @@ function deriveImpact(category: string, savings: number): { impact: string; impa
   if (savings && savings > 0) {
     return { impact: `~$${Math.round(savings)}/mo estimated savings.`, impactIsCost: true };
   }
+  // A negative saving is a real cost impact — applying the recommendation raises
+  // the bill. impactIsCost stays false: it renders green, which would read as
+  // money saved.
+  if (Math.round(-savings) >= 1) {
+    return { impact: `Costs ~$${Math.round(-savings)}/mo more to apply.`, impactIsCost: false };
+  }
   switch (category) {
     case 'Security':
       return { impact: 'Security — reduces attack surface. No direct cost.', impactIsCost: false };
@@ -117,9 +123,16 @@ function podRightSizing(
 
   let impact: string;
   let impactIsCost = false;
+  const monthlyIncrease = Math.round(savings < 0 ? -savings : 0);
   if (Math.round(savings) >= 1) {
     impact = `~$${Math.round(savings)}/mo savings${summary.reclaimText ? ` · reclaims ${summary.reclaimText}` : ''}.`;
     impactIsCost = true;
+  } else if (monthlyIncrease >= 1) {
+    // Raising requests buys reliability at a monthly price, and that price is
+    // the whole basis for the trade-off, so name it rather than reporting
+    // "no direct cost change" for a workload whose bill goes up.
+    const reason = summary.direction === 'increase' ? 'prevents CPU throttling and OOM kills' : 'matches requests to observed usage';
+    impact = `Costs ~$${monthlyIncrease}/mo more · ${reason}.`;
   } else if (summary.reclaimText) {
     impact = `Reclaims ~${summary.reclaimText} of guaranteed allocation. No direct cost change.`;
   } else if (summary.direction === 'increase') {

@@ -292,7 +292,10 @@ const RecommendationDetailPanel = ({
                     letterSpacing: '0.04em',
                   }}
                 >
-                  Projected Savings
+                  {/* A negative estimated_savings is a cost increase, not a saving.
+                      The figure below is already rendered as an absolute value, so
+                      only the label distinguishes the two directions. */}
+                  {savings > 0 ? 'Projected Savings' : 'Additional Cost'}
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'flex-end', gap: ds.space[1], mt: ds.space[0] }}>
                   <Currency

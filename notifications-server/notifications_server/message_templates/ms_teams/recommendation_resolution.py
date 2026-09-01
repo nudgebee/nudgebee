@@ -35,7 +35,11 @@ def get_teams_recommendation_resolution_template(
         {"title": "Rule", "value": format_rule_name(params.rule_name)},
         {"title": "Account", "value": params.account_name},
         {"title": "Priority", "value": params.severity},
-        {"title": "Savings", "value": f"{format_savings(params.estimated_savings)}/mo"},
+        (
+            {"title": "Cost impact", "value": f"{format_savings(-params.estimated_savings)}/mo more"}
+            if params.estimated_savings < 0
+            else {"title": "Savings", "value": f"{format_savings(params.estimated_savings)}/mo"}
+        ),
         {"title": "Status", "value": params.status},
     ]
 

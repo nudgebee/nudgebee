@@ -3515,9 +3515,14 @@ var table_metadata = map[string]TableDefinition{
 				Def:          "count(*)",
 				IsAggregated: true,
 			},
+			// GREATEST clamps at the roll-up, not in the stored row: a negative
+			// estimated_savings is a real cost impact (an under-provisioned
+			// right-sizing costs more to apply) that the Optimise table and the
+			// "Cost increase (< $0)" filter both render, so the row keeps its
+			// sign and only the savings headline drops it.
 			"sum_estimated_savings": {
 				Type:         ColumnDefinitionTypeFloat,
-				Def:          "sum(CASE WHEN is_primary_recommendation THEN estimated_savings ELSE 0 END)",
+				Def:          "sum(CASE WHEN is_primary_recommendation THEN GREATEST(estimated_savings, 0) ELSE 0 END)",
 				IsAggregated: true,
 			},
 			// VM package-scan findings (rule_name = 'vm_package_vulnerability') keep
@@ -5626,7 +5631,7 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"sum_estimated_savings": {
 				Type:         ColumnDefinitionTypeFloat,
-				Def:          "sum(estimated_savings)",
+				Def:          "sum(GREATEST(estimated_savings, 0))",
 				IsAggregated: true,
 			},
 		},

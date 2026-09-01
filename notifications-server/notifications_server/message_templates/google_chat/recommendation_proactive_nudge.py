@@ -8,6 +8,7 @@ from notifications_server.message_templates.slack.recommendation_proactive_nudge
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     format_rule_name,
     format_savings,
+    format_savings_clause,
 )
 
 
@@ -30,9 +31,7 @@ def get_gchat_recommendation_proactive_nudge_template(
         lines.append(f"*{acc_data.account_name}*")
         for rec in acc_data.recommendations[:5]:
             lines.append(f"  {counter}. *{rec.resource_name}* \u2014 {format_rule_name(rec.rule_name)}")
-            lines.append(
-                f"     Savings: {format_savings(rec.estimated_savings)}/mo \u00b7 " f"Severity: {rec.severity}"
-            )
+            lines.append(f"     {format_savings_clause(rec.estimated_savings)} \u00b7 " f"Severity: {rec.severity}")
             counter += 1
 
         remaining = len(acc_data.recommendations) - 5

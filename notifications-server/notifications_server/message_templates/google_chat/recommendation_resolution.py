@@ -6,7 +6,7 @@ from notifications_server.message_templates.slack.recommendation_resolution impo
 )
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     format_rule_name,
-    format_savings,
+    format_savings_clause,
 )
 
 
@@ -21,7 +21,7 @@ def get_gchat_recommendation_resolution_template(
     lines.append("-" * 25)
     lines.append(f"*{params.resource_name}*")
     lines.append(f"{format_rule_name(params.rule_name)} \u00b7 {params.account_name}")
-    lines.append(f"{params.severity} priority \u00b7 " f"Savings: {format_savings(params.estimated_savings)}/mo")
+    lines.append(f"{params.severity} priority \u00b7 " f"{format_savings_clause(params.estimated_savings)}")
     lines.append("")
     lines.append(f"Status: {params.status}")
 
