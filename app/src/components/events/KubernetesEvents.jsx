@@ -1971,7 +1971,7 @@ const KubernetesEventsTable = ({
               {isTroubleshootPage && !disabledFilters.includes('nubiRank') && (
                 <FilterDropdown
                   id='filter-nubi-rank'
-                  label='Nubi Rank'
+                  label='Triage Priority'
                   options={nubiRankFilter}
                   value={selectedNubiRank}
                   onSelect={onNubiRankFilterChange}

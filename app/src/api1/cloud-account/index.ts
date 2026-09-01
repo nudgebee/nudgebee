@@ -963,6 +963,7 @@ const apiCloudAccount = {
       principal?: string | string[];
       source?: string | string[];
       nbStatus?: string | string[];
+      nbPriority?: string | string[];
       messageSearch?: string;
       startDate?: Date;
       endDate?: Date;
@@ -1071,6 +1072,14 @@ const apiCloudAccount = {
           filterParams['nb_status'] = { _in: query.nbStatus };
         } else {
           filterParams['nb_status'] = { _eq: query.nbStatus };
+        }
+      }
+
+      if (query?.nbPriority) {
+        if (Array.isArray(query.nbPriority)) {
+          filterParams['computed_priority'] = { _in: query.nbPriority };
+        } else {
+          filterParams['computed_priority'] = { _eq: query.nbPriority };
         }
       }
 

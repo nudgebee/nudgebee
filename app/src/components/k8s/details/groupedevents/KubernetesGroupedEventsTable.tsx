@@ -496,6 +496,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   });
   const [selectedStatus, setSelectedStatus] = useState<string>('');
   const [selectedPriority, setSelectedPriority] = useState('');
+  const [selectedNbPriority, setSelectedNbPriority] = useState('');
 
   const [selectedSource, setSelectedSource] = useState<any[]>([]);
   const [selectedNBStatus, setSelectedNBStatus] = useState<Array<{ label: string; value: string }>>([]);
@@ -869,7 +870,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       priority: selectedPriority,
       priority_nin: !selectedPriority ? ['DEBUG', 'INFO'] : undefined,
       source: selectedSource?.map((f: any) => f.value) || [],
-      nb_priority: '',
+      nb_priority: selectedNbPriority,
       nb_status: selectedNBStatus.length > 0 ? selectedNBStatus.map((s) => s?.value || s) : undefined,
       is_new_issue: selectedIssueType === 'new' ? true : selectedIssueType === 'recurring' ? false : undefined,
     };
@@ -1008,6 +1009,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     selectedAggregationKey,
     selectedStatus,
     selectedPriority,
+    selectedNbPriority,
 
     selectedSource,
     selectedNBStatus,
@@ -1252,6 +1254,22 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       : []),
     ...(groupEventType === 'fingerprint'
       ? [
+          {
+            type: 'dropdown',
+            enabled: true,
+            options: [
+              { value: 'P0', label: 'P0' },
+              { value: 'P1', label: 'P1' },
+              { value: 'P2', label: 'P2' },
+              { value: 'P3', label: 'P3' },
+            ],
+            onSelect: (e: any) => {
+              setSelectedNbPriority(e?.target?.value || '');
+              setCurrentPage(1);
+            },
+            label: 'Triage Priority',
+            value: selectedNbPriority,
+          },
           {
             type: 'dropdown',
             enabled: true,

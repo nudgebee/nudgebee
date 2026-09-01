@@ -169,6 +169,7 @@ const CloudAccountEvents = (props: {
   const [selectedEventName, setSelectedEventName] = useState(() => getValidParam(router?.query?.eventAggregationKey));
   const [selectedSource, setSelectedSource] = useState<{ label: string; value: string }[]>([]);
   const [selectedStatus, setSelectedStatus] = useState(() => getValidParam(router?.query?.eventStatus));
+  const [selectedNbPriority, setSelectedNbPriority] = useState(() => getValidParam(router?.query?.eventNbPriority));
   // Free-text message search. Raw input vs the applied value that actually drives
   // the refetch (the listEvents dep), seeded from the URL so the filter survives
   // reload / share.
@@ -278,6 +279,12 @@ const CloudAccountEvents = (props: {
   const onStatusFilterChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedStatus(e?.target?.value || '');
     applyFiltersOnRouter(router, { eventStatus: e?.target?.value });
+    setPage(0);
+  };
+
+  const onNbPriorityFilterChange = (value: string) => {
+    setSelectedNbPriority(value);
+    applyFiltersOnRouter(router, { eventNbPriority: value || undefined });
     setPage(0);
   };
 
@@ -518,6 +525,7 @@ const CloudAccountEvents = (props: {
           priority: selectedSeverity,
           source: selectedSource.map((s) => s.value),
           status: selectedStatus,
+          nbPriority: selectedNbPriority || undefined,
           nbStatus: selectedNbStatus.length > 0 ? selectedNbStatus.map((s) => s?.value) : undefined,
           messageSearch: appliedSearchByMessage || undefined,
         },
@@ -595,6 +603,7 @@ const CloudAccountEvents = (props: {
     selectedEventName,
     selectedSource,
     selectedStatus,
+    selectedNbPriority,
     selectedNbStatus,
     appliedSearchByMessage,
     props?.subjectName,
@@ -735,6 +744,18 @@ const CloudAccountEvents = (props: {
             options={(severityFilterType || []).map((s: string) => ({ label: s, value: s }))}
             value={selectedSeverity ? { label: selectedSeverity, value: selectedSeverity } : null}
             onSelect={(_e: any, item: any) => onSeverityFilterChange({ target: { value: item?.value || '' } } as any)}
+          />
+          <FilterDropdown
+            id={`${cloudAccountEventsTable}-filter-triage-priority`}
+            label='Triage Priority'
+            options={[
+              { label: 'P0', value: 'P0' },
+              { label: 'P1', value: 'P1' },
+              { label: 'P2', value: 'P2' },
+              { label: 'P3', value: 'P3' },
+            ]}
+            value={selectedNbPriority ? { label: selectedNbPriority, value: selectedNbPriority } : null}
+            onSelect={(_e: any, item: any) => onNbPriorityFilterChange(item?.value || '')}
           />
           <FilterDropdown
             id={`${cloudAccountEventsTable}-filter-source`}
