@@ -8,7 +8,7 @@
  * why it is `postgresql` rather than `postgres`.
  */
 export type PanelDatasource = 'metrics' | 'logs' | 'traces' | 'nudgebee' | 'redis' | 'rabbitmq' | 'postgresql';
-export type PanelType = 'timeseries' | 'stat' | 'table' | 'bar' | 'text';
+export type PanelType = 'timeseries' | 'stat' | 'gauge' | 'table' | 'bar' | 'text';
 
 export const COMMAND_DATASOURCES: PanelDatasource[] = ['redis', 'rabbitmq', 'postgresql'];
 
@@ -128,6 +128,29 @@ export interface Panel {
    */
   account_type?: string;
   account_ids?: string[];
+  /**
+   * Which observability backend this panel's expression is written for, on a
+   * metrics/logs/traces panel — `prometheus`, `ES`, `datadog`, …
+   *
+   * A panel holds ONE expression in ONE query language, but each account
+   * resolves its own provider server-side, so a panel spanning a Prometheus
+   * account and an Elasticsearch one can only ever be valid for one of them.
+   * Naming it here sends the provider on the query instead of letting each
+   * account fall back to its own default.
+   *
+   * Empty means "each account's own default" — what every panel written before
+   * this field did, and still does.
+   */
+  provider?: string;
+  /**
+   * The Elasticsearch index (or wildcard pattern) this panel queries, when its
+   * `provider` is ES.
+   *
+   * Empty means each account's own configured index — the per-account mapping,
+   * else the integration's top-level one — which is what every panel resolved
+   * before this field. Only meaningful alongside `provider`.
+   */
+  provider_index?: string;
   grid_pos: GridPos;
   targets?: PanelTarget[];
   unit?: string;
@@ -246,6 +269,18 @@ export interface AccountOption {
   label: string;
   value: string;
   cloud_provider: string;
+  /**
+   * `cloud_accounts.status`, straight off `accounts_list`. Anything other than
+   * `active` is a disabled account.
+   *
+   * Carried because nothing downstream filters on it: `get_cloud_accounts_v2`
+   * returns disabled accounts alongside live ones, and the observability read
+   * path never checks the column — a disabled account whose agent row still
+   * exists resolves a provider and looks perfectly healthy. Optional because it
+   * is additive: a caller that has not been updated treats every account as
+   * live, which is exactly what happened before this field.
+   */
+  status?: string;
   /**
    * What the account manages — `kubernetes`, `cloud` or `vm` — straight off
    * `accounts_list`'s `account_type`.

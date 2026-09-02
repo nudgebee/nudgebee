@@ -21,6 +21,7 @@ import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiAccount from '@api1/account';
 import observability from '@api1/observability';
 import ReorderableList, { type DragHandleProps } from '@shared/ReorderableList';
+import { addFormError, removeFormError, type FormErrors } from './formErrorUtils';
 
 interface KubernetesCreateAlertProps {
   accountId: string;
@@ -75,7 +76,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   const [actions, setActions] = useState<any>([]);
   const [selectedActions, setSelectedActions] = useState<Array<{ label: string; value: string; id: string }>>([]);
   const [actionsMap, setActionsMap] = useState<Record<string, any>>({});
-  const [formErrors, setFormErrors] = useState<{ [actionName: string]: { [paramName: string]: string } }>({});
+  const [formErrors, setFormErrors] = useState<FormErrors>({});
   const [loadingActions, setLoadingActions] = useState(false);
   const [expandedAccordions, setExpandedAccordions] = useState<Set<string>>(new Set());
   const [currentStep, setCurrentStep] = useState(1);
@@ -192,7 +193,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   );
 
   const validateFormData = () => {
-    const errors: any = {};
+    const errors: FormErrors = {};
 
     selectedActions.forEach((action: any) => {
       const actionConfig = actionsMap[action.value];
@@ -203,15 +204,9 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
 
           if (paramConfig.required) {
             if (fieldValue === undefined || fieldValue === null || fieldValue === '') {
-              if (!errors[action.id]) {
-                errors[action.id] = {};
-              }
-              errors[action.id][paramName] = `${paramConfig.display_name || paramName} is required`;
+              addFormError(errors, action.id, paramName, `${paramConfig.display_name || paramName} is required`);
             } else if (isArrayType && Array.isArray(fieldValue) && fieldValue.length === 0) {
-              if (!errors[action.id]) {
-                errors[action.id] = {};
-              }
-              errors[action.id][paramName] = `${paramConfig.display_name || paramName} is required`;
+              addFormError(errors, action.id, paramName, `${paramConfig.display_name || paramName} is required`);
             }
           }
         });
@@ -424,16 +419,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   }, [actions]);
 
   const clearFormError = (actionId: string, paramName: string) => {
-    setFormErrors((prevErrors) => {
-      const newErrors = { ...prevErrors };
-      if (newErrors[actionId]) {
-        delete newErrors[actionId][paramName];
-        if (Object.keys(newErrors[actionId]).length === 0) {
-          delete newErrors[actionId];
-        }
-      }
-      return newErrors;
-    });
+    setFormErrors((prevErrors) => removeFormError(prevErrors, actionId, paramName));
   };
 
   const styles = {

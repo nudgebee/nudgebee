@@ -178,7 +178,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
         formatDateForTrace(time.startTime),
         formatDateForTrace(time.endTime),
         '',
-        resource.replaceAll(/'/g, "\\'"),
+        resource.replace(/\\/g, '\\\\').replace(/'/g, "\\'"),
         spanType,
         sortCol,
         sortObject.order,

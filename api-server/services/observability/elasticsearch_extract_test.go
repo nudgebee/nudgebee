@@ -140,7 +140,7 @@ func TestParseSourceMap_ECSShape(t *testing.T) {
 		"message":    "GET /healthz 200",
 		"log":        map[string]any{"level": "info", "offset": float64(1234)},
 		"data_stream": map[string]any{
-			"namespace": "gd-ehq-non-prod",
+			"namespace": "prod",
 			"dataset":   "kubernetes.container_logs",
 		},
 	})
@@ -183,12 +183,12 @@ func TestParseSourceMap_NoMessageRendersSource(t *testing.T) {
 	got, ok := ParseSourceMap(map[string]any{
 		"@timestamp": "2026-08-04T06:22:29.781Z",
 		"data_stream": map[string]any{
-			"namespace": "gd-ehq-non-prod",
+			"namespace": "prod",
 			"dataset":   "network_traffic.tls",
 		},
 	})
 	require.True(t, ok, "doc with structured fields but no message must not be dropped")
-	assert.Equal(t, `{"data_stream":{"dataset":"network_traffic.tls","namespace":"gd-ehq-non-prod"}}`, got.Message)
+	assert.Equal(t, `{"data_stream":{"dataset":"network_traffic.tls","namespace":"prod"}}`, got.Message)
 	assert.NotContains(t, got.Message, "@timestamp", "@timestamp must be excluded from the rendered line")
 	assert.Equal(t, "2026-08-04T06:22:29.781Z", got.Timestamp)
 }

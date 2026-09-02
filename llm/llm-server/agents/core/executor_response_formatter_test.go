@@ -325,7 +325,7 @@ func TestBasePromptTemplate_GatesRcaFrameworkOnQuery(t *testing.T) {
 	// ...but the GENERAL final-answer mechanics stay for BOTH (not inside the gate).
 	assert.Contains(t, inv, "single `<final_answer>` block")
 	assert.Contains(t, qry, "single `<final_answer>` block")
-	assert.Contains(t, qry, "GREETING & SIMPLE QUERIES")
+	assert.Contains(t, qry, "GREETINGS & ANSWERING WITHOUT TOOLS")
 
 	// No leftover template tokens on either branch (balanced {{if}}/{{end}}).
 	assert.NotContains(t, inv, "{{")

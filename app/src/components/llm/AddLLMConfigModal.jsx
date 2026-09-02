@@ -22,7 +22,7 @@ import { computeTierDefaults } from '@utils/tierDefaults';
 
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
-const PROVIDERS = ['anthropic', 'azure', 'bedrock', 'googleai', 'huggingface', 'openai', 'custom', 'sagemaker', 'vertexai'];
+const PROVIDERS = ['anthropic', 'azure', 'bedrock', 'googleai', 'huggingface', 'openai', 'sagemaker', 'vertexai', 'custom'];
 
 const TIER_KEYS = ['reasoning', 'retrieval', 'summary'];
 
@@ -141,6 +141,15 @@ const AUTH_TYPE_OPTIONS = [
   { value: 'oauth_client_credentials', label: 'OAuth2 client credentials' },
 ];
 
+// URL shapes the custom provider can speak. Cleared (empty) = plain
+// OpenAI-style /chat/completions. azure / azure_ad switch to Azure's
+// /openai/deployments/{deployment}/chat/completions grammar — azure sends
+// the key as an api-key header, azure_ad as a Bearer token.
+const API_TYPE_OPTIONS = [
+  { value: 'azure', label: 'Azure (api-key header)' },
+  { value: 'azure_ad', label: 'Azure AD (Bearer token)' },
+];
+
 // providerFieldShape returns which credential inputs apply for a given provider.
 // Mirrors the global section's showsApiKey / showsApiEndpoint / ... booleans so
 // the tier and agent cards can render the same provider-conditional inputs.
@@ -257,6 +266,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [accessKey, setAccessKey] = useState('');
   const [secretKey, setSecretKey] = useState('');
   const [apiType, setApiType] = useState('');
+  const [deploymentName, setDeploymentName] = useState('');
   const [adapterId, setAdapterId] = useState('');
   const [requireAdapterId, setRequireAdapterId] = useState('');
 
@@ -529,6 +539,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setAccessKey('');
       setSecretKey('');
       setApiType(cfg.llm_provider_api_type || '');
+      setDeploymentName(cfg.llm_provider_deployment_name || '');
       setAdapterId(cfg.llm_provider_adapter_id || '');
       setRequireAdapterId(cfg.llm_provider_require_adapter_id || '');
       setAuthType(cfg.llm_auth_type || 'api_key');
@@ -704,6 +715,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setAccessKey('');
       setSecretKey('');
       setApiType('');
+      setDeploymentName('');
       setAdapterId('');
       setRequireAdapterId('');
       setAuthType('api_key');
@@ -786,6 +798,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     setAccessKey('');
     setSecretKey('');
     setApiType('');
+    setDeploymentName('');
     setAdapterId('');
     setRequireAdapterId('');
     setAuthType('api_key');
@@ -957,7 +970,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // Conditional credential visibility — mirrors integrations/llm.go ShowWhen rules.
   const showsApiKey = ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'custom', 'vertexai'].includes(provider);
   const showsApiEndpoint = ['azure', 'openai', 'custom', 'sagemaker', 'anthropic', 'huggingface'].includes(provider);
-  const showsApiVersion = provider === 'azure';
+  const azureShapedCustom = provider === 'custom' && ['azure', 'azure_ad'].includes((apiType || '').toLowerCase());
+  const showsApiVersion = provider === 'azure' || azureShapedCustom;
   const showsRegion = ['bedrock', 'sagemaker'].includes(provider);
   const showsBedrockKeys = provider === 'bedrock';
   const showsApiType = ['openai', 'custom', 'huggingface'].includes(provider);
@@ -1219,6 +1233,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     pushSecret(showsBedrockKeys, 'llm_provider_access_key', accessKey);
     pushSecret(showsBedrockKeys, 'llm_provider_secret_key', secretKey);
     pushPlain(showsApiType, 'llm_provider_api_type', apiType);
+    pushPlain(azureShapedCustom, 'llm_provider_deployment_name', deploymentName);
     pushPlain(showsAdapter, 'llm_provider_adapter_id', adapterId);
     pushPlain(showsAdapter, 'llm_provider_require_adapter_id', requireAdapterId);
     // Per-tier — write provider + model + fallbacks, plus credentials when the
@@ -1687,16 +1702,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               required={['azure', 'sagemaker', 'huggingface', 'anthropic', 'custom'].includes(provider)}
             />
           )}
-          {showsApiVersion && (
-            <Input
-              label='API Version'
-              size='sm'
-              value={apiVersion}
-              onChange={setConnField(setApiVersion)}
-              help='API version of the LLM provider (Azure).'
-              required
-            />
-          )}
           {showsRegion && (
             <Input
               label='Region'
@@ -1730,7 +1735,63 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               />
             </>
           )}
-          {showsApiType && <Input label='API Type' size='sm' value={apiType} onChange={setConnField(setApiType)} help='Type of the API. Optional.' />}
+          {showsApiType && provider === 'custom' && (
+            <Select
+              label='API Type'
+              size='sm'
+              value={apiType}
+              onChange={setConnField(setApiType)}
+              options={API_TYPE_OPTIONS}
+              placeholder='Default (OpenAI-style)'
+              help='URL shape of the gateway. Leave unset for plain /chat/completions; pick azure or azure_ad for gateways that use /openai/deployments/{deployment}/chat/completions.'
+            />
+          )}
+          {showsApiType && provider !== 'custom' && (
+            <Input
+              label='API Type'
+              size='sm'
+              value={apiType}
+              onChange={setConnField(setApiType)}
+              help='Type of the API. Optional. Use "azure" or "azure_ad" for Azure-shaped gateways.'
+            />
+          )}
+          {showsApiVersion && (
+            <Input
+              label='API Version'
+              size='sm'
+              value={apiVersion}
+              onChange={setConnField(setApiVersion)}
+              help={
+                provider === 'azure'
+                  ? 'API version of the LLM provider (Azure).'
+                  : 'api-version query parameter sent with every request (e.g. 2025-01-01-preview). Most Azure-shaped gateways require it.'
+              }
+              required={provider === 'azure'}
+            />
+          )}
+          {azureShapedCustom && (
+            <Input
+              label='Deployment Name'
+              size='sm'
+              value={deploymentName}
+              onChange={setConnField(setDeploymentName)}
+              help='URL deployment segment when it differs from the model name (e.g. gpt-5.6-terra_2026-07-09). The request body still carries the model name. Optional.'
+            />
+          )}
+          {showsOAuthOption && (
+            <Input
+              label='Extra request headers (JSON)'
+              size='sm'
+              type='textarea'
+              rows={3}
+              value={extraHeaders}
+              onChange={setConnField(setExtraHeaders)}
+              onBlur={trimOnBlur(extraHeaders, setExtraHeaders)}
+              error={errors.extraHeaders}
+              placeholder='{"projectId": "abc-123"}'
+              help='Sent with every LLM request — some gateways require identification headers alongside auth. Authorization and api-key cannot be set here. Optional.'
+            />
+          )}
           {showsAdapter && (
             <>
               <Input label='Adapter ID' size='sm' value={adapterId} onChange={setAdapterId} help='Adapter ID for a fine-tuned model. Optional.' />
@@ -1743,7 +1804,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               />
             </>
           )}
-          {(canPrice || showsContextSize(provider) || showsOAuthOption) && (
+          {(canPrice || showsContextSize(provider)) && (
             <Box>
               <Box
                 onClick={() => setShowAdvanced((v) => !v)}
@@ -1791,7 +1852,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                     ? 'Override the built-in pricing rates for this tenant.'
                     : showsContextSize(provider)
                     ? "Set a custom context window for your self-hosted deployment (defaults to the model's built-in window if blank)."
-                    : 'Extra request headers and other optional settings.'}
+                    : 'Other optional settings.'}
                 </Box>
               </Box>
               {showAdvanced && (
@@ -1874,20 +1935,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                       onChange={setContextSize}
                       onBlur={trimOnBlur(contextSize, setContextSize)}
                       help='Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.'
-                    />
-                  )}
-                  {showsOAuthOption && (
-                    <Input
-                      label='Extra request headers (JSON)'
-                      size='sm'
-                      type='textarea'
-                      rows={3}
-                      value={extraHeaders}
-                      onChange={setConnField(setExtraHeaders)}
-                      onBlur={trimOnBlur(extraHeaders, setExtraHeaders)}
-                      error={errors.extraHeaders}
-                      placeholder='{"projectId": "abc-123"}'
-                      help='Sent with every LLM request — some gateways require identification headers alongside auth. Authorization and api-key cannot be set here. Optional.'
                     />
                   )}
                 </Stack>

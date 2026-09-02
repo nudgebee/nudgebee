@@ -625,15 +625,15 @@ func (a *podMetricAction) extractResourceValues(resourceData any) map[string]map
 	// vectorResultEntries already handles the wrapping + both value
 	// shapes (Robusta-coerced object and standard Prometheus tuple).
 	for _, entry := range vectorResultEntries(resourceData) {
-		container, _ := entry.metric["container"].(string)
-		resourceType, _ := entry.metric["resource"].(string)
+		container, _ := entry.Metric["container"].(string)
+		resourceType, _ := entry.Metric["resource"].(string)
 		if container == "" || resourceType == "" {
 			continue
 		}
 		if resourceMap[container] == nil {
 			resourceMap[container] = make(map[string]float64)
 		}
-		resourceMap[container][resourceType] = entry.value
+		resourceMap[container][resourceType] = entry.Value
 	}
 	return resourceMap
 }

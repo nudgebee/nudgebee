@@ -223,10 +223,13 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 			},
 			"llm_provider_api_version": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "API version of the LLM provider to be used. Optional, used for version-specific compatibility.",
+				Description: "API version of the LLM provider. Required for azure; for custom it is the api-version query parameter Azure-shaped gateways expect (e.g. 2025-01-01-preview).",
 				Priority:    16,
 				RequiredWhen: map[string]any{
 					"llm_provider": []string{"azure"},
+				},
+				ShowWhen: map[string]any{
+					"llm_provider": []string{"azure", "custom"},
 				},
 			},
 			"llm_provider_region": {
@@ -268,10 +271,18 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 			},
 			"llm_provider_api_type": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Type of the API. Optional.",
+				Description: "Type of the API. Optional. Set to \"azure\" or \"azure_ad\" for Azure-shaped gateways (URL becomes /openai/deployments/{deployment}/chat/completions?api-version=...).",
 				Priority:    14,
 				ShowWhen: map[string]any{
-					"llm_provider": []string{"openai"},
+					"llm_provider": []string{"openai", "custom"},
+				},
+			},
+			"llm_provider_deployment_name": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Azure-shaped gateways only: the deployment segment in the URL when it differs from the model name (e.g. deployment \"gpt-5.6-terra_2026-07-09\" serving model \"gpt-5.6-terra\"). The request body still carries the model name. Optional.",
+				Priority:    14,
+				ShowWhen: map[string]any{
+					"llm_provider": []string{"custom"},
 				},
 			},
 			"llm_provider_adapter_id": {

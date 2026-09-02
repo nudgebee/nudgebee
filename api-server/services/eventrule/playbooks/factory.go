@@ -37,8 +37,6 @@ func init() {
 	// logs_enricher); the auto-discovery loop in eventrule/service.go invokes
 	// any registered action whose CanAutoExecute predicate matches the event.
 	RegisterAction("oom_killer_enricher", &oomKillerAction{})
-	RegisterAction("noisy_neighbours_enricher", &noisyNeighboursAction{})
-	RegisterAction("pod_node_metrics_enricher_memory", &podNodeMetricsAction{resourceType: "memory"})
 	RegisterAction("pod_enricher", &podEnricherAction{})
 	RegisterAction("resource_events_enricher", &resourceEventsAction{})
 	RegisterAction("impacted_services_enricher", &impactedServicesAction{})

@@ -1238,15 +1238,14 @@ const SentinelOmitTemperature = -1.0
 
 // withoutTemperature returns a CallOption that clears Temperature from CallOptions
 // by setting it to SentinelOmitTemperature (-1.0).
+// The sentinel is the whole signal. Do NOT also record this in
+// CallOptions.Metadata: the OpenAI-compatible client forwards that map verbatim
+// as the request's `metadata` field, which only accepts string values, so a
+// boolean there fails every call with
+// "Invalid type for 'metadata.without_temperature': expected a string".
 func withoutTemperature() llms.CallOption {
 	return func(o *llms.CallOptions) {
 		o.Temperature = SentinelOmitTemperature
-		metadata := make(map[string]any, len(o.Metadata)+1)
-		for key, value := range o.Metadata {
-			metadata[key] = value
-		}
-		metadata["without_temperature"] = true
-		o.Metadata = metadata
 	}
 }
 
@@ -3892,18 +3891,17 @@ func fetchLLMIntegrationConfigByAccount(ctx *security.RequestContext, dbManager 
 // selectAccountLLMIntegration picks which of an account's enabled LLM
 // integrations to resolve against, returning "" when there is no single answer.
 //
-// The choice is, in order:
+// The choice is: the integration flagged default_llm_provider on its account
+// link row, or nothing. An unflagged config never resolves as the account
+// default — not even when it is the only one — so a config a user saved
+// without marking default cannot silently capture all of the account's LLM
+// traffic. Pre-flag accounts were flagged by the V840 backfill; a config
+// created since then only resolves as default once its operator marks it so.
 //
-//  1. the integration flagged default_llm_provider on its account link row;
-//  2. the account's only enabled LLM integration, when nothing is flagged —
-//     this is the shape every account had before multiple configs were allowed,
-//     so single-config accounts keep resolving without needing a backfill;
-//  3. otherwise nothing.
-//
-// Case 3 covers both "several configs, none marked default" and the racy
-// "several marked default". Neither has a right answer, and picking one anyway
-// would silently bind an account to a credential its operator didn't choose —
-// so both fall through to ENV, which is the documented final fallback.
+// Every no-single-answer shape ("none flagged", "several flagged") falls
+// through to ENV, the documented final fallback, rather than guessing —
+// picking one anyway would silently bind an account to a credential its
+// operator didn't choose.
 func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string) (string, error) {
 	query := `SELECT i.id, ia.default_llm_provider FROM integrations i
 			  JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
@@ -3952,10 +3950,8 @@ func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common
 		slog.Error("LLM config: account has multiple integrations flagged default; falling back to ENV",
 			"accountId", accountId, "defaultCount", len(defaults))
 		return "", nil
-	case len(all) == 1:
-		return all[0], nil
-	case len(all) > 1:
-		slog.Warn("LLM config: account has multiple integrations but none flagged default; falling back to ENV",
+	case len(all) > 0:
+		slog.Warn("LLM config: account has enabled integrations but none flagged default; falling back to ENV",
 			"accountId", accountId, "count", len(all))
 		return "", nil
 	}

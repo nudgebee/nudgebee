@@ -214,7 +214,7 @@ func getUsageBucketFromCostReport(ctx providers.CloudProviderContext, account pr
 		ctx.GetLogger().Error("failed to create aws session", "error", err, "accountNumber", account.AccountNumber)
 		return "", "", "", "GZIP", "", "", "", err
 	}
-	svc := costandusagereportservice.NewFromConfig(cfg)
+	svc := costandusagereportservice.NewFromConfig(curServiceConfig(cfg))
 	var nextToken *string
 	for {
 		input := &costandusagereportservice.DescribeReportDefinitionsInput{

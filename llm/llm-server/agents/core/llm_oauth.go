@@ -173,9 +173,38 @@ func oauthTokenSourceFor(oc llmOAuthConfig) oauth2.TokenSource {
 	// oauth2 lib uses http.DefaultClient (no timeout) and a hung token
 	// endpoint blocks the LLM request indefinitely.
 	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Timeout: 30 * time.Second})
-	ts := cc.TokenSource(tokenCtx)
+	ts := oauth2.TokenSource(&loggingTokenSource{inner: cc.TokenSource(tokenCtx), tokenURL: oc.TokenURL, scope: oc.Scope})
 	actual, _ := llmOAuthTokenSources.LoadOrStore(key, ts)
 	return actual.(oauth2.TokenSource)
+}
+
+// loggingTokenSource logs whenever the wrapped source mints a new token — the
+// first fetch and every refresh. The inner source caches until near expiry, so
+// per-request Token() calls that reuse a live token stay silent. Never logs
+// the token itself.
+type loggingTokenSource struct {
+	inner    oauth2.TokenSource
+	tokenURL string
+	scope    string
+
+	mu   sync.Mutex
+	last string
+}
+
+func (l *loggingTokenSource) Token() (*oauth2.Token, error) {
+	tok, err := l.inner.Token()
+	if err != nil || tok == nil {
+		return tok, err
+	}
+	l.mu.Lock()
+	fresh := tok.AccessToken != l.last
+	l.last = tok.AccessToken
+	l.mu.Unlock()
+	if fresh {
+		slog.Info("llm-auth: fetched OAuth token for LLM gateway",
+			"token_url", l.tokenURL, "scope", l.scope, "expires_at", tok.Expiry.Format(time.RFC3339))
+	}
+	return tok, nil
 }
 
 // llmAuthTransport stamps authentication and extra headers on every outbound

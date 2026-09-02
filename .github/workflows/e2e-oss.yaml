@@ -128,7 +128,11 @@ jobs:
             # (page objects, playwright.config.ts, dt.js) changed, run everything
             # since a single shared change can affect the whole suite.
             echo "Base SHA: $PR_BASE_SHA"
-            CHANGED=$(git diff --name-only --diff-filter=ACMR "$PR_BASE_SHA" HEAD -- app-e2e-tests/)
+            # -C the repo root: this step runs in ./app-e2e-tests and git pathspecs are
+            # relative to the cwd, so a bare "app-e2e-tests/" resolves to
+            # app-e2e-tests/app-e2e-tests/ and silently matches nothing — which made
+            # every PR run report "nothing to run" and exit 0 without a single test.
+            CHANGED=$(git -C "$GITHUB_WORKSPACE" diff --name-only --diff-filter=ACMR "$PR_BASE_SHA" HEAD -- app-e2e-tests/)
             echo "Changed e2e files:"
             echo "$CHANGED"
 

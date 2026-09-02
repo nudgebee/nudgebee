@@ -72,6 +72,12 @@ describe('convertNativeDashboard', () => {
     expect(result.warnings.some((w) => w.includes('heatmap'))).toBe(true);
   });
 
+  it('round-trips a gauge panel rather than skipping it as an unknown type', () => {
+    const gauge = { ...PANEL, id: 6, type: 'gauge' };
+    const result = convertNativeDashboard({ title: 'Utilisation', definition: { panels: [gauge] } }, SCOPE);
+    expect(result.definition.panels.map((p) => p.type)).toEqual(['gauge']);
+  });
+
   it('keeps an entity panel’s query object', () => {
     // nudgebee / traces panels store a query document, not an expression — a
     // targets filter written for expressions alone would drop them all.

@@ -783,7 +783,7 @@ func TestESFetchLabelValues_IsTimeBounded(t *testing.T) {
 func TestParseESMetricsHitsWithStats_SeparatesMatchedFromExtracted(t *testing.T) {
 	t.Run("nothing matched", func(t *testing.T) {
 		body := `{"hits":{"total":{"value":0,"relation":"eq"},"hits":[]}}`
-		payload, stats, err := parseESMetricsHitsWithStats([]byte(body))
+		payload, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 		require.NoError(t, err)
 		assert.Empty(t, payload)
 		assert.Zero(t, stats.DocsMatched, "no documents matched the filter")
@@ -797,7 +797,7 @@ func TestParseESMetricsHitsWithStats_SeparatesMatchedFromExtracted(t *testing.T)
 		body := `{"hits":{"total":{"value":1432,"relation":"eq"},"hits":[
 		  {"_source":{"@timestamp":"2026-08-17T10:00:00.000Z","kubernetes":{"pod":{"name":"api-1"}}}}
 		]}}`
-		payload, stats, err := parseESMetricsHitsWithStats([]byte(body))
+		payload, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 		require.NoError(t, err)
 		assert.Empty(t, payload, "no series are extractable")
 		assert.EqualValues(t, 1432, stats.DocsMatched, "but the query itself was correct")
@@ -810,7 +810,7 @@ func TestParseESMetricsHitsWithStats_SeparatesMatchedFromExtracted(t *testing.T)
 		  {"_source":{"@timestamp":"2026-08-17T10:00:00.000Z","kubernetes":{"pod":{"name":"api-1",
 		     "cpu":{"usage":{"nanocores":5611970}}}}}}
 		]}}`
-		payload, stats, err := parseESMetricsHitsWithStats([]byte(body))
+		payload, stats, err := parseESMetricsHitsWithStats([]byte(body), 0)
 		require.NoError(t, err)
 		assert.NotEmpty(t, payload)
 		assert.EqualValues(t, 120, stats.DocsMatched)

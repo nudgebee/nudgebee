@@ -4,10 +4,70 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/agents/core"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
 )
+
+type searchToolsTestTool struct {
+	name string
+	typ  toolcore.NBToolType
+}
+
+func (t searchToolsTestTool) Name() string                     { return t.name }
+func (t searchToolsTestTool) GetType() toolcore.NBToolType     { return t.typ }
+func (t searchToolsTestTool) Description() string              { return t.name + " description" }
+func (t searchToolsTestTool) InputSchema() toolcore.ToolSchema { return toolcore.ToolSchema{} }
+func (t searchToolsTestTool) Call(toolcore.NbToolContext, toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	return toolcore.NBToolResponse{}, nil
+}
+
+func TestCollectSearchToolCandidates_OnlyConfiguredSpecialistsAndLeafTools(t *testing.T) {
+	agentDtos := []core.AgentDto{
+		{Name: "postgres", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeReAct, Description: "Postgres specialist"},
+		{Name: "mysql", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeReAct, Description: "MySQL specialist"},
+		{Name: "datadog_orchestrator", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeOrchestrating},
+		{Name: "k8s_orchestrator_native", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeOrchestrating},
+		{Name: "", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeOrchestrating},
+	}
+	enabledTools := []toolcore.NBTool{
+		searchToolsTestTool{name: "postgres", typ: toolcore.NBToolTypeAgent},
+		searchToolsTestTool{name: "datadog_orchestrator", typ: toolcore.NBToolTypeAgent},
+		searchToolsTestTool{name: "automation_restart_pods", typ: toolcore.NBToolTypeTool},
+	}
+
+	got := collectSearchToolCandidates(agentDtos, enabledTools)
+	names := make([]string, 0, len(got))
+	for _, candidate := range got {
+		names = append(names, candidate.name)
+	}
+
+	assert.Equal(t, []string{"postgres", "automation_restart_pods"}, names)
+	assert.Equal(t, "agent", got[0].kind)
+	assert.Equal(t, "tool", got[1].kind)
+}
+
+func TestCollectSearchToolCandidates_NeverExposesInternalObservabilityProvider(t *testing.T) {
+	agentDtos := []core.AgentDto{
+		{Name: "aws_metrics", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeReAct},
+		{Name: "metrics", Status: core.AgentStatusEnabled, ExecutorType: core.AgentPlannerTypeReAct},
+	}
+	// A same-name tool can come from an account-sourced/custom registration. It
+	// must not turn the internal AWS implementation into a public capability.
+	enabledTools := []toolcore.NBTool{
+		searchToolsTestTool{name: "aws_metrics", typ: toolcore.NBToolTypeAgent},
+		searchToolsTestTool{name: "metrics", typ: toolcore.NBToolTypeAgent},
+	}
+
+	got := collectSearchToolCandidates(agentDtos, enabledTools)
+	names := make([]string, 0, len(got))
+	for _, candidate := range got {
+		names = append(names, candidate.name)
+	}
+
+	assert.Equal(t, []string{"metrics"}, names)
+}
 
 func TestScoreAndRankSearchTools_NameBeatsDescription(t *testing.T) {
 	cands := []searchToolCandidate{

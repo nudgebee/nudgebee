@@ -122,7 +122,10 @@ func TestWithoutTemperature(t *testing.T) {
 	assert.Equal(t, SentinelOmitTemperature, opts.Temperature)
 	assert.Equal(t, 4096, opts.MaxTokens)
 	assert.Equal(t, true, opts.Metadata["existing"])
-	assert.Equal(t, true, opts.Metadata["without_temperature"])
+	// The flag must never reach CallOptions.Metadata — that map is forwarded
+	// verbatim as the OpenAI `metadata` field, which rejects non-string values
+	// with a 400 on every call.
+	assert.NotContains(t, opts.Metadata, "without_temperature")
 	assert.NotContains(t, sharedMetadata, "without_temperature")
 }
 

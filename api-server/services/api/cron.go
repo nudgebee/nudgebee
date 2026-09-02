@@ -800,6 +800,16 @@ func triggerVerticalRightsizing(ctx *security.RequestContext, accountIds []strin
 			request.DatadogSite = site
 		}
 
+		if metricsProvider == "ES" {
+			esCfg, esErr := observability.ElasticsearchRightsizingConfig(tenantCtx, acc.AccountId)
+			if esErr != nil {
+				tenantCtx.GetLogger().Error("vertical rightsizing: error getting elasticsearch config",
+					"account_id", acc.AccountId, "tenant_id", acc.TenantId, "error", esErr)
+				continue
+			}
+			request.Elasticsearch = esCfg
+		}
+
 		_, err := ml.TriggerVerticalRightsizing(tenantCtx, request)
 		if err != nil {
 			tenantCtx.GetLogger().Error("vertical rightsizing: error triggering for account",

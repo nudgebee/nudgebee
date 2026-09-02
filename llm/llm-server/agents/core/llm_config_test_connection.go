@@ -299,6 +299,7 @@ var providerScopedKeys = []string{
 	cfgKeyRegion, cfgKeyAccessKey, cfgKeySecretKey, cfgKeySessionToken,
 	llmAuthTypeKey, llmOAuthTokenURLKey, llmOAuthClientIDKey,
 	llmOAuthClientSecretKey, llmOAuthScopeKey, llmExtraHeadersKey,
+	llmDeploymentNameKey,
 }
 
 // buildScopedCfg returns the effective config for a tier/agent probe target.
@@ -401,14 +402,64 @@ func newOpenAIFromConfig(model string, cfg map[string]string) (llms.Model, error
 		openai.WithToken(token),
 		openai.WithModel(model),
 		openai.WithResponseFormat(&openai.ResponseFormat{Type: "text"}),
-		// OAuth/header client (nil in static mode) rides as the sanitizer's
-		// base, mirroring getOpenAILLM.
-		openai.WithHTTPClient(newOpenAIHTTPClient(authClient)),
 	}
 	if ep := cfg[cfgKeyAPIEndpoint]; ep != "" {
 		opts = append(opts, openai.WithBaseURL(ep))
 	}
+	// Probe/runtime parity (mirrors getOpenAILLM): Azure-shaped gateways need
+	// the api-type + api-version URL grammar, and a deployment segment that can
+	// differ from the body's model name — otherwise Test Connection probes a
+	// different URL than conversations use.
+	apiType := openai.APITypeOpenAI
+	switch strings.ToLower(cfg[cfgKeyAPIType]) {
+	case "azure":
+		apiType = openai.APITypeAzure
+	case "azure_ad":
+		apiType = openai.APITypeAzureAD
+	}
+	opts = append(opts, openai.WithAPIType(apiType))
+	if apiType == openai.APITypeAzure || apiType == openai.APITypeAzureAD {
+		// The client constructor requires an embeddings model on Azure api
+		// types (the runtime always passes one from env). The probe never
+		// embeds, so a placeholder keeps construction failures from masking
+		// the real gateway response.
+		opts = append(opts, openai.WithEmbeddingModel("probe-unused"))
+		if v := cfg[cfgKeyAPIVersion]; v != "" {
+			opts = append(opts, openai.WithAPIVersion(v))
+		}
+		if deployment := strings.TrimSpace(cfg[llmDeploymentNameKey]); deployment != "" && deployment != model {
+			opts = append(opts, openai.WithModel(deployment))
+			authClient = wrapDeploymentBodyModel(authClient, model)
+		}
+	}
+	// OAuth/header client (nil in static mode) rides as the sanitizer's base,
+	// mirroring getOpenAILLM.
+	opts = append(opts, openai.WithHTTPClient(newOpenAIHTTPClient(wrapProbeURLLogging(authClient))))
 	return openai.New(opts...)
+}
+
+// probeURLLoggingTransport logs the final wire URL each probe request hits, so
+// a failing Test Connection can be checked against the exact endpoint —
+// including the deployment segment and api-version on azure-shaped gateways.
+type probeURLLoggingTransport struct{ base http.RoundTripper }
+
+func (t *probeURLLoggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	slog.Info("llm connectivity test: probing endpoint", "method", req.Method, "url", req.URL.String())
+	return base.RoundTrip(req)
+}
+
+func wrapProbeURLLogging(inner *http.Client) *http.Client {
+	out := &http.Client{Timeout: defaultLLMHTTPTimeout}
+	if inner != nil {
+		clone := *inner
+		out = &clone
+	}
+	out.Transport = &probeURLLoggingTransport{base: out.Transport}
+	return out
 }
 
 // newCustomFromConfig mirrors the runtime's getCustomLLM: the OpenAI client

@@ -313,7 +313,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
       // for JSON-parsed log attributes, which 404 against tag facets).
       if (logProvider === 'datadog') {
         const key = String(item.label).trim();
-        const value = String(item.value ?? '').replace(/"/g, '\\"');
+        const value = String(item.value ?? '')
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"');
         const include = item.operator !== '!=';
         const positive = `${key}:"${value}"`;
         const negative = `-${key}:"${value}"`;

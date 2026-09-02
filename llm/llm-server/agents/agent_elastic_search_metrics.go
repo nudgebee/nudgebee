@@ -173,7 +173,7 @@ const (
 // This is preferred over classifyIndex because the index NAME is not evidence of the
 // document shape. Two cases from real accounts:
 //
-//   - `metrics-*-gd-ehq-non-prod` holds Elastic Agent / ECS documents but classifies
+//   - `metrics-*-prod` holds Elastic Agent / ECS documents but classifies
 //     as OTel by name (it matches none of the name hints), so the agent was taught
 //     OTel field paths and every query returned 0 series.
 //   - `metricbeat-otelshape-*` on our own dev cluster holds OTel-shaped documents
@@ -248,7 +248,7 @@ func detectSchemasFromFields(fields []string) (schemas map[esMetricSchema]bool, 
 //
 // ok is false when the name carries no signal. It deliberately does NOT default to
 // OTel: an index called anything other than the three known hints tells us nothing
-// about its documents, and asserting OTel there is how `metrics-*-gd-ehq-non-prod`
+// about its documents, and asserting OTel there is how `metrics-*-prod`
 // (Elastic Agent documents) came to be taught OTel field paths. Callers must treat
 // !ok as "unknown" and make the agent discover the fields instead of guessing.
 func classifyIndex(pattern string) (esMetricSchema, bool) {

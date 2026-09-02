@@ -258,7 +258,7 @@ func TestValidateDefinition_CommandPanels(t *testing.T) {
 
 	// A snapshot of text has nothing to plot, so the chart types are refused at
 	// save rather than rendering an empty chart.
-	for _, viz := range []string{VizTimeseries, VizStat, VizBar} {
+	for _, viz := range []string{VizTimeseries, VizStat, VizGauge, VizBar} {
 		if err := ValidateDefinition(build(func(p *Panel) { p.Type = viz })); err == nil {
 			t.Errorf("expected %s to be rejected for a command datasource", viz)
 		}

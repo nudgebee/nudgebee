@@ -188,7 +188,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// at/after it. This makes a tool's details show only the reasoning that led to that
 	// call (slices sum to the agent total) instead of repeating the agent total on each.
 	reasoningByToolCall := make(map[string]ToolReasoning)
-	if toolAgents, taErr := GetConversationDao().GetConversationToolCallAgents(request.ConversationId); taErr == nil {
+	toolAgents, taErr := GetConversationDao().GetConversationToolCallAgents(request.ConversationId, request.AccountId)
+	if taErr != nil {
+		// Non-fatal: the response is still correct without reasoning attribution.
+		// But it must be visible — this query failed on every call for as long as
+		// it has existed and the swallowed error is why nobody noticed.
+		getLogger(ctx).Error("conversation-usage: failed to load tool call agents",
+			"error", taErr, "conversation_id", request.ConversationId)
+	} else {
 		// Tool calls grouped by agent, each list already chronological (query ORDER BY).
 		toolsByAgent := make(map[string][]ToolCallAgent)
 		for _, ta := range toolAgents {

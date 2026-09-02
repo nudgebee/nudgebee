@@ -162,19 +162,39 @@ type MetricAnomalyDetectResponse struct {
 	HistoricalData      []map[string]any         `json:"historical_data" mapstructure:"historical_data"`
 }
 
+// ElasticsearchMetricsConfig carries the connection an Elasticsearch-backed account
+// needs for rightsizing. ml-k8s-server queries Elasticsearch directly, the way it
+// already does for Datadog — the alternative, proxying series through api-server,
+// would mean a new internal API for what is a two-field query.
+//
+// Cognito-signed clusters are deliberately absent: SigV4 signing is not implemented
+// on the Python side, and AuthType travels so that end can refuse explicitly instead
+// of sending unauthenticated requests.
+type ElasticsearchMetricsConfig struct {
+	Url           string `json:"url"`
+	AuthType      string `json:"auth_type,omitempty"`
+	Username      string `json:"username,omitempty"`
+	Password      string `json:"password,omitempty"`
+	ApiKey        string `json:"api_key,omitempty"`
+	BearerToken   string `json:"bearer_token,omitempty"`
+	MetricsIndex  string `json:"metrics_index,omitempty"`
+	TLSSkipVerify bool   `json:"tls_skip_verify,omitempty"`
+}
+
 // VerticalRightsizingRequest represents the request to ml-k8s-server /rightsizing/vertical
 type VerticalRightsizingRequest struct {
-	AccountId             string   `json:"account_id" validate:"required"`
-	TenantId              string   `json:"tenant_id" validate:"required"`
-	Namespace             string   `json:"namespace,omitempty"`
-	ResourceNames         []string `json:"resource_names,omitempty"`
-	PersistRecommendation bool     `json:"persist_recommendation"`
-	BatchByNamespace      bool     `json:"batch_by_namespace"`
-	MaxRecommendations    *int     `json:"max_recommendations,omitempty"`
-	MetricsProvider       string   `json:"metrics_provider,omitempty"`
-	DatadogApiKey         string   `json:"datadog_api_key,omitempty"`
-	DatadogAppKey         string   `json:"datadog_app_key,omitempty"`
-	DatadogSite           string   `json:"datadog_site,omitempty"`
+	AccountId             string                      `json:"account_id" validate:"required"`
+	TenantId              string                      `json:"tenant_id" validate:"required"`
+	Namespace             string                      `json:"namespace,omitempty"`
+	ResourceNames         []string                    `json:"resource_names,omitempty"`
+	PersistRecommendation bool                        `json:"persist_recommendation"`
+	BatchByNamespace      bool                        `json:"batch_by_namespace"`
+	MaxRecommendations    *int                        `json:"max_recommendations,omitempty"`
+	MetricsProvider       string                      `json:"metrics_provider,omitempty"`
+	DatadogApiKey         string                      `json:"datadog_api_key,omitempty"`
+	DatadogAppKey         string                      `json:"datadog_app_key,omitempty"`
+	DatadogSite           string                      `json:"datadog_site,omitempty"`
+	Elasticsearch         *ElasticsearchMetricsConfig `json:"elasticsearch,omitempty"`
 }
 
 // VerticalRightsizingResponse represents the async acknowledgment from ml-k8s-server
@@ -188,15 +208,16 @@ type VerticalRightsizingResponse struct {
 
 // VolumeRightsizingRequest represents the request to ml-k8s-server /rightsizing/volume
 type VolumeRightsizingRequest struct {
-	AccountId             string `json:"account" validate:"required"`
-	TenantId              string `json:"tenant" validate:"required"`
-	Namespace             string `json:"namespace,omitempty"`
-	PersistRecommendation bool   `json:"persist_recommendation"`
-	MaxRecommendations    *int   `json:"max_recommendations,omitempty"`
-	MetricsProvider       string `json:"metrics_provider,omitempty"`
-	DatadogApiKey         string `json:"datadog_api_key,omitempty"`
-	DatadogAppKey         string `json:"datadog_app_key,omitempty"`
-	DatadogSite           string `json:"datadog_site,omitempty"`
+	AccountId             string                      `json:"account" validate:"required"`
+	TenantId              string                      `json:"tenant" validate:"required"`
+	Namespace             string                      `json:"namespace,omitempty"`
+	PersistRecommendation bool                        `json:"persist_recommendation"`
+	MaxRecommendations    *int                        `json:"max_recommendations,omitempty"`
+	MetricsProvider       string                      `json:"metrics_provider,omitempty"`
+	DatadogApiKey         string                      `json:"datadog_api_key,omitempty"`
+	DatadogAppKey         string                      `json:"datadog_app_key,omitempty"`
+	DatadogSite           string                      `json:"datadog_site,omitempty"`
+	Elasticsearch         *ElasticsearchMetricsConfig `json:"elasticsearch,omitempty"`
 }
 
 // VolumeRightsizingResponse represents the async acknowledgment from ml-k8s-server

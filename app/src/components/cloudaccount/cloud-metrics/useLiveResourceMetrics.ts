@@ -172,7 +172,7 @@ export function useLiveResourceMetrics({
         for (const r of resources) if (r.name) idToName[r.resourse_id] = r.name;
         // GCP resource types carry the API host (e.g. "compute.googleapis.com/Instance");
         // AWS/Azure do not. Used to decide utilization fraction→percent scaling.
-        const isGcp = resources.some((r) => (r.type || '').includes('googleapis.com'));
+        const isGcp = resources.some((r) => /(?:^|\.)googleapis\.com\//.test(r.type || ''));
         const results = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value?.data?.data?.metrics_list?.results || [] : []));
         setDataByMetric(buildChartsFromResults(results, idToName, isGcp));
         if (results.length === 0 && settled.every((s) => s.status === 'rejected')) {

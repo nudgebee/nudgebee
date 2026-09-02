@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSplitKubectlStderrNoise(t *testing.T) {
@@ -234,12 +235,42 @@ func TestKubectlReadsSecretFilesystemPath(t *testing.T) {
 		{"interior backslash bypass in path", "kubectl exec mypod -- cat /var/run/se\\crets/foo", true},
 		{"relative path via serviceaccount marker", "kubectl exec mypod -- sh -c \"cd /var/run && cat secrets/kubernetes.io/serviceaccount/token\"", true},
 		{"kubernetes.io serviceaccount marker on its own", "kubectl exec mypod -- cat kubernetes.io/serviceaccount/token", true},
+		{"dot segment path obfuscation", "kubectl exec mypod -- cat /var/run/./secrets/kubernetes.io/serviceaccount/token", true},
+		{"parent segment path obfuscation", "kubectl exec mypod -- cat /var/run/tmp/../secrets/token", true},
+		{"wildcard path obfuscation", "kubectl exec mypod -- sh -c \"cat /var/run/se*rets/token\"", true},
+		{"cp path normalization", "kubectl cp mypod:/var/run/./secrets/token /tmp/token", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, kubectlReadsSecretFilesystemPath(tc.command))
 		})
 	}
+}
+
+func TestValidateKubectlCommandAccess(t *testing.T) {
+	blocked := []string{
+		`kubectl get secret -n nudgebee-oss postgresql -o json | jq '.data | map_values(@base64d)'`,
+		`kubectl get secret -n nudgebee -o json | jq '.items[].metadata.name'`,
+		`kubectl get pods && kubectl get secrets -A`,
+		`kubectl exec api -- cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
+		`sec=secrets && kubectl get $sec`,
+		`kubectl get $(printf secrets)`,
+		"kubectl get `printf secrets`",
+		`kubectl exec api -- cat /var/run/./secrets/token`,
+		`kubectl exec api -- sh -c "cat /var/run/se*rets/token"`,
+		`printf secrets | xargs kubectl get`,
+		`kubectl get pods >/dev/null; printf '\163ecrets' | xargs kubectl get`,
+		`kubectl get pods | cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
+		`kubectl get pods | grep -e. /var/run/./secrets/kubernetes.io/serviceaccount/token`,
+	}
+	for _, command := range blocked {
+		require.Error(t, validateKubectlCommandAccess(command), command)
+	}
+
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods -A -o json | jq '.items[].metadata.name'`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods -o 'jsonpath={$.items[*].metadata.name}'`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods -o json | jq '.items | length'`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | grep 'foo bar'`))
 }
 
 // TestKubectlErrorHint_Patterns pins the hint discriminator added for

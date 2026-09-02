@@ -18,7 +18,7 @@ import useExecutionDashboard from './useExecutionDashboard';
 import ExecutionSummaryCards from './ExecutionSummaryCards';
 import MostFailedAutomations from './MostFailedAutomations';
 import ExecutionDetailDrawer from './ExecutionDetailDrawer';
-import { EXECUTION_STATUS_OPTIONS, TABLE_HEADERS, executionUserLabel } from './constants';
+import { EXECUTION_STATUS_OPTIONS, TABLE_HEADERS, executionAutomationLabel, executionUserLabel, nonPersistedAutomationLabel } from './constants';
 
 const TABLE_ID = 'execution-dashboard-table';
 
@@ -33,6 +33,61 @@ const ERROR_CELL_CLAMP = {
 };
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
+/**
+ * The "Automation" cell.
+ *
+ * Linking needs an account and a real automation behind the id. A visibility
+ * record written before these search attributes existed carries neither, and
+ * dry-run/inline runs have no `workflows` row and no builder page — so all three
+ * cases are labelled rather than linked to a URL that resolves to nothing.
+ */
+const renderAutomationCell = (execution: AccountExecutionItem) => {
+  const label = executionAutomationLabel(execution.workflow_name, execution.workflow_id);
+
+  if (!execution.account_id || !execution.workflow_id || nonPersistedAutomationLabel(execution.workflow_id)) {
+    return (
+      <Typography
+        title={label}
+        sx={{
+          fontSize: 'var(--ds-text-body)',
+          color: 'var(--ds-gray-700)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {label}
+      </Typography>
+    );
+  }
+
+  return (
+    <Typography
+      component='a'
+      href={`/automation/${execution.workflow_id}?accountId=${execution.account_id}#executions`}
+      // New tab: the dashboard is a triage surface, and losing the
+      // filtered table to inspect one automation is the wrong trade.
+      target='_blank'
+      rel='noopener noreferrer'
+      id={`execution-dashboard-automation-${execution.id}`}
+      title={label}
+      sx={{
+        fontSize: 'var(--ds-text-body)',
+        color: 'var(--ds-blue-500)',
+        textDecoration: 'none',
+        display: 'block',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        '&:hover': { textDecoration: 'underline' },
+      }}
+      onClick={(event: React.MouseEvent) => event.stopPropagation()}
+    >
+      {label}
+    </Typography>
+  );
+};
 
 /**
  * Executions across every automation in every account the caller can read,
@@ -82,50 +137,7 @@ const ExecutionDashboard: React.FC = () => {
           // itself is drawer-only detail, not something to scan a column of.
           drilldownQuery: { executionId: execution.id },
         },
-        {
-          // The builder needs an account, and a visibility record written
-          // before nb_account_id existed carries none — link only when the row
-          // can actually say where it ran, rather than sending the user to
-          // `?accountId=undefined`.
-          component: execution.account_id ? (
-            <Typography
-              component='a'
-              href={`/automation/${execution.workflow_id}?accountId=${execution.account_id}#executions`}
-              // New tab: the dashboard is a triage surface, and losing the
-              // filtered table to inspect one automation is the wrong trade.
-              target='_blank'
-              rel='noopener noreferrer'
-              id={`execution-dashboard-automation-${execution.id}`}
-              title={execution.workflow_name || execution.workflow_id}
-              sx={{
-                fontSize: 'var(--ds-text-body)',
-                color: 'var(--ds-blue-500)',
-                textDecoration: 'none',
-                display: 'block',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                '&:hover': { textDecoration: 'underline' },
-              }}
-              onClick={(event: React.MouseEvent) => event.stopPropagation()}
-            >
-              {execution.workflow_name || execution.workflow_id}
-            </Typography>
-          ) : (
-            <Typography
-              title={execution.workflow_name || execution.workflow_id}
-              sx={{
-                fontSize: 'var(--ds-text-body)',
-                color: 'var(--ds-gray-700)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {execution.workflow_name || execution.workflow_id}
-            </Typography>
-          ),
-        },
+        { component: renderAutomationCell(execution) },
         {
           component: (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, overflow: 'hidden' }}>

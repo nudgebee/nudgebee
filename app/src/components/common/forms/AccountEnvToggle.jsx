@@ -9,6 +9,11 @@ export const ACCOUNT_ENV_NON_PROD = 'non_prod';
 /** Matches the cloud_accounts.account_env column default. */
 export const DEFAULT_ACCOUNT_ENV = ACCOUNT_ENV_NON_PROD;
 
+/** Tooltip copy for the environment picker — exported so a caller that renders
+ *  its own section title (label='') can surface the same explanation itself. */
+export const ACCOUNT_ENV_TOOLTIP =
+  'Determines how NudgeBee prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight. You can change this anytime later.';
+
 /**
  * Environment picker shared by every account onboarding flow (K8s and cloud).
  * The value drives triage scoring — production accounts score their alerts at
@@ -18,17 +23,19 @@ export const DEFAULT_ACCOUNT_ENV = ACCOUNT_ENV_NON_PROD;
 export default function AccountEnvToggle({ value, onChange, disabled, id, label }) {
   return (
     <Box>
-      <Box display='flex' alignItems='center'>
-        <Typography variant='subtitle2'>{label}</Typography>
-        <Tooltip
-          title='Determines how NudgeBee prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight. You can change this anytime later.'
-          placement='right'
-        >
-          <IconButton id={`${id}-info-btn`} size='small' sx={{ p: 0.5 }}>
-            <InfoOutlinedIcon fontSize='small' />
-          </IconButton>
-        </Tooltip>
-      </Box>
+      {/* Pass label='' to suppress the built-in label row when the caller
+          supplies its own section title (e.g. a <Heading> above the toggle) —
+          otherwise the empty label leaves the info icon orphaned on its own line. */}
+      {label && (
+        <Box display='flex' alignItems='center'>
+          <Typography variant='subtitle2'>{label}</Typography>
+          <Tooltip title={ACCOUNT_ENV_TOOLTIP} placement='right'>
+            <IconButton id={`${id}-info-btn`} size='small' sx={{ p: 0.5 }}>
+              <InfoOutlinedIcon fontSize='small' />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
       <RadioGroup row id={id} aria-label='Account environment type' value={value} onChange={(e) => onChange(e.target.value)}>
         <FormControlLabel value={ACCOUNT_ENV_PROD} control={<Radio size='small' />} label='Production' disabled={disabled} />
         <FormControlLabel value={ACCOUNT_ENV_NON_PROD} control={<Radio size='small' />} label='Non-production' disabled={disabled} />

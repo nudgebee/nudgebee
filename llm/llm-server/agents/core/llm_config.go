@@ -1682,7 +1682,25 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 	var responseFormatJSON = &openai.ResponseFormat{Type: "text"}
 	// OAuth/header client (nil in static mode) rides as the sanitizer's base so
 	// both wire concerns compose on one client.
-	llm, err := openai.New(openai.WithResponseFormat(responseFormatJSON), openai.WithAPIType(apiType), openai.WithToken(token), openai.WithModel(modelName), openai.WithEmbeddingModel(embeddingModel), openai.WithBaseURL(baseURL), openai.WithHTTPClient(newOpenAIHTTPClient(authClient)))
+	opts := []openai.Option{
+		openai.WithResponseFormat(responseFormatJSON), openai.WithAPIType(apiType), openai.WithToken(token),
+		openai.WithModel(modelName), openai.WithEmbeddingModel(embeddingModel), openai.WithBaseURL(baseURL),
+	}
+	// Azure-shaped gateways: the URL carries ?api-version=... and a deployment
+	// segment that can differ from the body's model name (see
+	// openai_deployment.go). Conditional so plain-OpenAI shapes are untouched.
+	if apiType == openai.APITypeAzure || apiType == openai.APITypeAzureAD {
+		if v := getLLMApiVersion(accountId, provider, agentName, appendagentName, res); v != "" {
+			opts = append(opts, openai.WithAPIVersion(v))
+		}
+		if deployment := resolveLLMDeploymentName(accountId, res); deployment != "" && deployment != modelName {
+			opts = append(opts, openai.WithModel(deployment))
+			authClient = wrapDeploymentBodyModel(authClient, modelName)
+			slog.Debug("Using Azure deployment name for URL with body model rewrite", "deployment", deployment, "model", modelName)
+		}
+	}
+	opts = append(opts, openai.WithHTTPClient(newOpenAIHTTPClient(authClient)))
+	llm, err := openai.New(opts...)
 	if err != nil {
 		slog.Error("Failed to create OpenAI LLM", "error", err, "modelName", modelName)
 		return nil, err
@@ -1856,6 +1874,9 @@ type LLMConfigResolution struct {
 	PinnedOAuthClientSecret string `json:"-"`
 	PinnedOAuthScope        string `json:"-"`
 	PinnedExtraHeaders      string `json:"-"`
+	// Azure-shaped gateways behind `custom`: URL deployment segment when it
+	// differs from the body's model name (see openai_deployment.go).
+	PinnedDeploymentName string `json:"-"`
 }
 
 // credentialIdentity fingerprints every field that decides where a request goes
@@ -1871,7 +1892,8 @@ func credentialIdentity(res *LLMConfigResolution) string {
 		credsFingerprint(res.PinnedApiKey, res.PinnedEndpoint, res.PinnedApiVersion, res.PinnedRegion,
 			res.PinnedAccessKey, res.PinnedSecretKey, res.PinnedSessionToken,
 			res.PinnedAuthType, res.PinnedOAuthTokenURL, res.PinnedOAuthClientID,
-			res.PinnedOAuthClientSecret, res.PinnedOAuthScope, res.PinnedExtraHeaders) + "|" +
+			res.PinnedOAuthClientSecret, res.PinnedOAuthScope, res.PinnedExtraHeaders,
+			res.PinnedDeploymentName) + "|" +
 		strings.TrimSpace(res.PinnedApiType) + "|" + strings.TrimSpace(res.PinnedAdapterId)
 }
 
@@ -2666,7 +2688,13 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 // IsOpenAIModelWithoutStopSupport checks if the model doesn't support the 'stop' parameter
 // OpenAI's reasoning models (o1, o3) and newer GPT-5 series don't support stop words
 func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
-	if provider != "openai" {
+	// The o1/o3/gpt-5 families reject `stop` whoever serves them: OpenAI direct,
+	// or an OpenAI-compatible gateway on the custom provider. Both route through
+	// the same client, so gating on provider identity alone silently re-enables
+	// stop words for gateway-served models.
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", "custom":
+	default:
 		return false
 	}
 
@@ -3182,6 +3210,7 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 		res.PinnedOAuthClientSecret = cfg["llm_tier_oauth_client_secret_"+p.Name]
 		res.PinnedOAuthScope = cfg["llm_tier_oauth_scope_"+p.Name]
 		res.PinnedExtraHeaders = cfg["llm_tier_extra_headers_"+p.Name]
+		res.PinnedDeploymentName = cfg["llm_tier_deployment_name_"+p.Name]
 	}
 	// Per-field global fallback, matching inheritSlotDefaults and the
 	// non-pinned resolver: a tier may override just the client id/secret
@@ -3204,6 +3233,9 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 	}
 	if res.PinnedExtraHeaders == "" {
 		res.PinnedExtraHeaders = cfg[llmExtraHeadersKey]
+	}
+	if res.PinnedDeploymentName == "" {
+		res.PinnedDeploymentName = cfg[llmDeploymentNameKey]
 	}
 
 	// Fill anything this slot doesn't define from the integration's global slot.
@@ -3493,4 +3525,103 @@ func ConfigNameFor(sourceId, integrationName string) string {
 
 func isModelNamespaceSeparator(char byte) bool {
 	return char == ':' || char == '/' || char == '.' || char == '_' || char == '-'
+}
+
+// Azure-shaped gateway support for the custom provider (#36556).
+//
+// Corporate gateways that front Azure OpenAI expose
+// /openai/deployments/{deployment}/chat/completions?api-version=... where the
+// DEPLOYMENT segment (e.g. "gpt-5.6-terra_2026-07-09") differs from the model
+// name the request body must carry (e.g. "gpt-5.6-terra"). The OpenAI client
+// uses one string for both, so when llm_provider_deployment_name is set the
+// client is constructed with the deployment (making the URL right) and this
+// transport rewrites the body's "model" back to the configured model name.
+// Everything internal — usage rows, pricing, tier picks — keeps seeing the
+// model name; the deployment string exists only at the wire.
+
+const llmDeploymentNameKey = "llm_provider_deployment_name"
+
+// resolveLLMDeploymentName walks pinned → DB-tier → DB-global, mirroring
+// resolveLLMAuthSettings. Deployment names are tenant-supplied through the UI,
+// so like the OAuth keys there are deliberately no ENV layers.
+func resolveLLMDeploymentName(accountId string, res *LLMConfigResolution) string {
+	if res != nil && res.PinnedConfigSource != "" {
+		return res.PinnedDeploymentName
+	}
+	var dbConfig map[string]string
+	var tier ModelTier
+	if res != nil {
+		dbConfig = res.dbConfig
+		tier = res.Tier
+	}
+	if accountId != "" {
+		if cfg, err := getLLMIntegrationConfig(nil, accountId, dbConfig); err == nil && cfg != nil {
+			dbConfig = cfg
+		}
+	}
+	if dbConfig == nil {
+		return ""
+	}
+	if tier != "" {
+		if v := strings.TrimSpace(dbConfig["llm_tier_deployment_name_"+string(tier)]); v != "" {
+			return v
+		}
+	}
+	return strings.TrimSpace(dbConfig[llmDeploymentNameKey])
+}
+
+// deploymentBodyModelTransport rewrites the JSON body's "model" field on chat
+// completion requests. The client was built with the DEPLOYMENT string so the
+// Azure-shaped URL is correct; the gateway's backing service still expects the
+// real model name in the body.
+type deploymentBodyModelTransport struct {
+	base      http.RoundTripper
+	bodyModel string
+}
+
+func (t *deploymentBodyModelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/completions") || req.Body == nil {
+		return base.RoundTrip(req)
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) == nil && payload != nil {
+		if _, ok := payload["model"]; ok {
+			if enc, mErr := json.Marshal(t.bodyModel); mErr == nil {
+				payload["model"] = enc
+				if rewritten, mErr := json.Marshal(payload); mErr == nil {
+					body = rewritten
+				}
+			}
+		}
+	}
+	clone := req.Clone(req.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.ContentLength = int64(len(body))
+	clone.Header.Del("Content-Length")
+	clone.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return base.RoundTrip(clone)
+}
+
+// wrapDeploymentBodyModel layers the body-model rewrite onto an existing HTTP
+// client (or a fresh one when nil), preserving the inner client's transport
+// chain and timeout.
+func wrapDeploymentBodyModel(inner *http.Client, bodyModel string) *http.Client {
+	out := &http.Client{Timeout: defaultLLMHTTPTimeout}
+	if inner != nil {
+		clone := *inner // shallow copy keeps Jar/CheckRedirect/Timeout intact
+		out = &clone
+	}
+	out.Transport = &deploymentBodyModelTransport{base: out.Transport, bodyModel: bodyModel}
+	return out
 }

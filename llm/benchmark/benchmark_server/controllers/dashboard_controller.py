@@ -160,9 +160,9 @@ async def list_accounts(tenant_id: str, authz=Depends(get_authz)):
             return {
                 "accounts": [a for a in all_accounts if a["id"] in allowed],
             }
-    except Exception as e:
-        logger.error("list_accounts failed: %s", e)
-        return {"accounts": [], "error": str(e)}
+    except Exception:
+        logger.exception("list_accounts failed")
+        return {"accounts": [], "error": "Failed to list accounts"}
 
 
 def _resolve_tenant_for_account(account_id: str, tenant_id: Optional[str], authz):
@@ -256,9 +256,9 @@ def get_tool_configs(
         data = r.json()
         configs = data.get("data", {}).get("configs", [])
         return {"configs": configs}
-    except Exception as e:
-        logger.error("get_tool_configs failed: %s", e)
-        return {"configs": [], "error": str(e)}
+    except Exception:
+        logger.exception("get_tool_configs failed")
+        return {"configs": [], "error": "Failed to get tool configs"}
 
 
 @router.get("/models")

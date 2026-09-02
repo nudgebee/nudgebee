@@ -296,7 +296,7 @@ type IConversationDao interface {
 	GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error)
 	GetImageSupportCatalog() (map[string]bool, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
-	GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error)
+	GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error)
 	ResolveSessionId(idOrSessionId string) string
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
 	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
@@ -3198,7 +3198,7 @@ func (chat *ConversationDao) ResolveSessionId(idOrSessionId string) string {
 // GetConversationToolCallAgents returns the tool_call_id, agent_id and created_at for
 // each tool call in a conversation (looked up by session_id, matching the other
 // usage-metric queries), ordered chronologically for time-based reasoning attribution.
-func (chat *ConversationDao) GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error) {
+func (chat *ConversationDao) GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error) {
 	query := `
 		SELECT tc.id::text as ToolCallID, tc.agent_id::text as AgentID, tc.created_at as CreatedAt
 		FROM llm_conversation_tool_calls tc
@@ -3207,7 +3207,7 @@ func (chat *ConversationDao) GetConversationToolCallAgents(conversationId string
 		  AND tc.metadata->>'parent_tool_call_id' IS NULL
 		ORDER BY tc.created_at ASC;`
 
-	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
+	rows, err := chat.dbManager.Db.Queryx(query, conversationId, accountId)
 	if err != nil {
 		slog.Error("executing tool call agents query", "error", err)
 		return nil, err

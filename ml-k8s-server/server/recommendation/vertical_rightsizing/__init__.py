@@ -86,6 +86,7 @@ async def generate_recommendations(
     datadog_api_key: Optional[str] = None,
     datadog_app_key: Optional[str] = None,
     datadog_site: Optional[str] = None,
+    elasticsearch: Optional[Dict[str, Any]] = None,
 ):
     config = Config(
         namespaces=None if namespace is None else [namespace],
@@ -107,6 +108,7 @@ async def generate_recommendations(
         datadog_api_key=datadog_api_key,
         datadog_app_key=datadog_app_key,
         datadog_site=datadog_site,
+        elasticsearch=elasticsearch,
     )
     return await runner.run()
 
@@ -1370,6 +1372,7 @@ async def generate_and_process_recommendation(
     datadog_api_key: Optional[str] = None,
     datadog_app_key: Optional[str] = None,
     datadog_site: Optional[str] = None,
+    elasticsearch: Optional[Dict[str, Any]] = None,
 ) -> RecommendationProcessingResult:
     """Generate and process KRR recommendations with improved modularity."""
     ctx_logger = get_contextual_logger(tenant_id, account_id, namespace)
@@ -1411,6 +1414,7 @@ async def generate_and_process_recommendation(
                     datadog_api_key=datadog_api_key,
                     datadog_app_key=datadog_app_key,
                     datadog_site=datadog_site,
+                    elasticsearch=elasticsearch,
                 )
                 gen_span.set_attribute("krr.recommendations_generated", len(rightsizing_recommendations.scans))
             except Exception as e:

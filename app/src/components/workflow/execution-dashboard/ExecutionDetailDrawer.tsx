@@ -10,7 +10,7 @@ import CopyButton from '@shared/buttons/CopyButton';
 import apiWorkflow from '@api1/workflow';
 import type { AccountExecutionItem } from '@api1/workflow/types';
 import { getDuration, getStatusTone } from '../utils/executionStatus';
-import { executionUserLabel } from './constants';
+import { executionAutomationLabel, executionUserLabel, nonPersistedAutomationLabel } from './constants';
 
 interface ExecutionDetailDrawerProps {
   execution: AccountExecutionItem | null;
@@ -60,9 +60,13 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
 
   if (!execution) return null;
 
-  // Same caveat as the table's link: without an account there is no valid
-  // builder URL, so offer the button only when the row carries one.
-  const fullViewHref = accountId ? `/automation/${execution.workflow_id}?accountId=${accountId}&executionId=${execution.id}#executions` : '';
+  // Same caveats as the table's link: an absent account or workflow id yields no
+  // valid builder URL, and a dry-run/inline id has no builder page at all — so
+  // offer the button only when it would actually land somewhere.
+  const fullViewHref =
+    accountId && execution.workflow_id && !nonPersistedAutomationLabel(execution.workflow_id)
+      ? `/automation/${execution.workflow_id}?accountId=${accountId}&executionId=${execution.id}#executions`
+      : '';
 
   return (
     <CustomDrawer open onClose={onClose} variant='modern' width='640px' storageKey='nb.executionDashboardDrawer.width' title='Execution details'>
@@ -70,7 +74,7 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
           <Label size='md' dot text={execution.status.toUpperCase()} tone={getStatusTone(execution.status)} />
           <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>
-            {execution.workflow_name || execution.workflow_id}
+            {executionAutomationLabel(execution.workflow_name, execution.workflow_id)}
           </Typography>
         </Box>
 

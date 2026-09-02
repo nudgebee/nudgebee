@@ -2501,6 +2501,10 @@ type RequestMetadata struct {
 	InternalIP       string
 	RequestedMetrics []string
 	Regex            bool
+	// NodePods is the pod list resolved for NodeName, used to answer node-scoped
+	// questions from metricsets that carry no node field. Filled in by the
+	// Elasticsearch path just before querying; never parsed from the request.
+	NodePods []string
 	// Aggregation windows (Prometheus/MetricsQL duration literals) for cluster-level
 	// utilisation queries, derived from the picker range so the time filter actually
 	// adjusts the numbers. Empty for direct-constructed metadata (unit tests), where
