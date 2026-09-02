@@ -104,6 +104,16 @@ const (
 	bytesPerGB = 1024 * 1024 * 1024
 )
 
+// logStoragePrice is a resolved per-GB-month rate together with where it came
+// from. The two travel as one value because the flat-rate fallback happens to
+// equal the real us-east-1 Standard rate: comparing the number back against the
+// constant cannot tell a quote from a fallback, and would report every
+// correctly-quoted us-east-1 group as an estimate.
+type logStoragePrice struct {
+	USDPerGBMonth float64
+	Source        string
+}
+
 // cloudWatchStorageUsageTypeSuffix maps a log group's class onto the tail of the
 // Pricing API usage type that bills its stored bytes. The region prefix varies
 // (USE1-, APS3-, EU-) and us-east-1 also publishes a legacy unprefixed entry, so
@@ -137,6 +147,21 @@ func selectCloudWatchStorageRate(products []map[string]interface{}, suffix strin
 		}
 	}
 	return best, found
+}
+
+// resolveLogStoragePrice turns a region's price list into the rate for one
+// storage class, falling back to the published AWS rate when the lookup failed
+// or matched nothing usable. The source travels with the rate rather than being
+// recovered by comparing it to the fallback constant afterwards — the fallback
+// equals the real us-east-1 Standard rate, so that comparison labels every
+// correctly-quoted us-east-1 group an estimate.
+func resolveLogStoragePrice(products []map[string]interface{}, suffix string, lookupErr error) logStoragePrice {
+	if lookupErr == nil {
+		if quoted, ok := selectCloudWatchStorageRate(products, suffix); ok {
+			return logStoragePrice{USDPerGBMonth: quoted, Source: logStorageSourcePricingAPI}
+		}
+	}
+	return logStoragePrice{USDPerGBMonth: cloudWatchLogsStandardStorageUSDPerGBMonth, Source: logStorageSourceFlatRate}
 }
 
 // agedOutFraction estimates the share of a log group's stored bytes older than
@@ -198,7 +223,7 @@ func (a *amazonCloudwatch) GetRecommendations(ctx providers.CloudProviderContext
 		ctx.GetLogger().Error("failed to create aws session", "error", cfgErr, "accountNumber", account.AccountNumber)
 	}
 	// One price list per region, not per log group: an account can hold hundreds.
-	storageRates := map[string]float64{}
+	storageRates := map[string]logStoragePrice{}
 	now := time.Now()
 	for _, resource := range existingResources {
 		if resource.Type != getAwsServiceResourceType(ServiceNameCloudWatch, "log-group") {
@@ -231,35 +256,37 @@ func (a *amazonCloudwatch) GetRecommendations(ctx providers.CloudProviderContext
 			suffix := cloudWatchStorageUsageTypeSuffix(logGroupClass)
 
 			rateKey := resource.Region + "|" + suffix
-			rate, cached := storageRates[rateKey]
-			pricingSource := logStorageSourcePricingAPI
+			price, cached := storageRates[rateKey]
 			if !cached {
-				rate = 0
+				var products []map[string]interface{}
+				lookupErr := cfgErr
 				if cfgErr == nil {
-					products, err := getAvailableInstancesFromPricing(cfg, "AmazonCloudWatch", map[string]string{
+					products, lookupErr = getAvailableInstancesFromPricing(cfg, "AmazonCloudWatch", map[string]string{
 						"regionCode":      resource.Region,
 						"operatingSystem": "",
 					})
-					if err != nil {
-						ctx.GetLogger().Warn("cloudwatch logs pricing lookup failed", "error", err, "region", resource.Region)
-					} else if quoted, ok := selectCloudWatchStorageRate(products, suffix); ok {
-						rate = quoted
+					if lookupErr != nil {
+						ctx.GetLogger().Warn("cloudwatch logs pricing lookup failed", "error", lookupErr, "region", resource.Region)
 					}
 				}
-				if rate <= 0 {
-					rate = cloudWatchLogsStandardStorageUSDPerGBMonth
-					ctx.GetLogger().Warn("cloudwatch logs storage priced at the AWS flat rate; pricing lookup returned nothing usable", "region", resource.Region, "logGroupClass", logGroupClass)
+				price = resolveLogStoragePrice(products, suffix, lookupErr)
+				if price.Source == logStorageSourceFlatRate {
+					// Once per region and class, not per log group: the memo below
+					// covers every remaining group in that region.
+					reason := "no matching product in the region's price list"
+					switch {
+					case cfgErr != nil:
+						reason = "no AWS session for this account"
+					case lookupErr != nil:
+						reason = "pricing lookup failed"
+					}
+					ctx.GetLogger().Warn("cloudwatch logs storage priced at the AWS flat rate", "reason", reason, "region", resource.Region, "logGroupClass", logGroupClass)
 				}
-				storageRates[rateKey] = rate
-			}
-			if rate == cloudWatchLogsStandardStorageUSDPerGBMonth {
-				// Indistinguishable from a quoted us-east-1 Standard rate, and
-				// saying "quoted" when it was not is the worse error.
-				pricingSource = logStorageSourceFlatRate
+				storageRates[rateKey] = price
 			}
 
 			agedOut := agedOutFraction(resource.CreatedAt, cloudWatchLogsProposedRetentionDays, now)
-			savings := logRetentionMonthlySaving(storedBytes, agedOut, rate)
+			savings := logRetentionMonthlySaving(storedBytes, agedOut, price.USDPerGBMonth)
 
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryRightSizing,
@@ -273,8 +300,8 @@ func (a *amazonCloudwatch) GetRecommendations(ctx providers.CloudProviderContext
 					"stored_bytes":            storedBytes,
 					"proposed_retention_days": cloudWatchLogsProposedRetentionDays,
 					"aged_out_fraction":       agedOut,
-					"usd_per_gb_month":        rate,
-					"pricing_source":          pricingSource,
+					"usd_per_gb_month":        price.USDPerGBMonth,
+					"pricing_source":          price.Source,
 					"savings_basis":           fmt.Sprintf("stored bytes older than %d days, estimated from the group's age assuming even ingestion", cloudWatchLogsProposedRetentionDays),
 				},
 				Action:              providers.RecommendationActionModify,

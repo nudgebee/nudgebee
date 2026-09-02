@@ -109,3 +109,38 @@ func TestMetaFloatHandlesSdkAndJsonForms(t *testing.T) {
 		assert.False(t, ok, name)
 	}
 }
+
+// The fallback constant is also the real us-east-1 Standard rate, so a quoted
+// $0.03 must still be reported as quoted. Deriving the source by comparing the
+// rate to the constant labelled every correctly-priced us-east-1 log group an
+// estimate, which is what shipped and what this pins.
+func TestResolveLogStoragePriceLabelsAQuotedRateAsQuoted(t *testing.T) {
+	products := []map[string]interface{}{cwProduct("USE1-TimedStorage-ByteHrs", "0.0300000000")}
+	got := resolveLogStoragePrice(products, "TimedStorage-ByteHrs", nil)
+	assert.InDelta(t, cloudWatchLogsStandardStorageUSDPerGBMonth, got.USDPerGBMonth, 1e-9,
+		"the quote happens to equal the fallback constant")
+	assert.Equal(t, logStorageSourcePricingAPI, got.Source, "and must still be reported as a quote")
+}
+
+func TestResolveLogStoragePriceLabelsARegionalQuoteAsQuoted(t *testing.T) {
+	products := []map[string]interface{}{cwProduct("APS2-TimedStorage-ByteHrs", "0.0330000000")}
+	got := resolveLogStoragePrice(products, "TimedStorage-ByteHrs", nil)
+	assert.InDelta(t, 0.033, got.USDPerGBMonth, 1e-9)
+	assert.Equal(t, logStorageSourcePricingAPI, got.Source)
+}
+
+func TestResolveLogStoragePriceFallsBackAndSaysSo(t *testing.T) {
+	for name, in := range map[string]struct {
+		products []map[string]interface{}
+		err      error
+	}{
+		"lookup failed":  {nil, assert.AnError},
+		"no products":    {nil, nil},
+		"no class match": {[]map[string]interface{}{cwProduct("USE1-DataProcessing-Bytes", "0.5")}, nil},
+		"zero priced":    {[]map[string]interface{}{cwProduct("USE1-TimedStorage-ByteHrs", "0.0000000000")}, nil},
+	} {
+		got := resolveLogStoragePrice(in.products, "TimedStorage-ByteHrs", in.err)
+		assert.InDelta(t, cloudWatchLogsStandardStorageUSDPerGBMonth, got.USDPerGBMonth, 1e-9, name)
+		assert.Equal(t, logStorageSourceFlatRate, got.Source, name)
+	}
+}
