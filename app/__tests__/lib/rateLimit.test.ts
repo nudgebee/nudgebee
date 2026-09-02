@@ -1,5 +1,15 @@
 import type { NextApiRequest } from 'next';
-import { clientIpKey, consumeRateLimit, consumeRateLimits, resetRateLimits, setRateLimitRedisForTests } from '@lib/rateLimit';
+import {
+  clientIpKey,
+  consumeRateLimit,
+  consumeRateLimits,
+  identityKey,
+  limitsFor,
+  parseLimits,
+  rateLimitEnabled,
+  resetRateLimits,
+  setRateLimitRedisForTests,
+} from '@lib/rateLimit';
 
 function makeReq(headers: Record<string, string | string[]> = {}, remoteAddress?: string): NextApiRequest {
   return { headers, socket: { remoteAddress } } as unknown as NextApiRequest;
@@ -301,5 +311,215 @@ describe('clientIpKey', () => {
 
   it('leaves IPv4 addresses untouched', () => {
     expect(clientIpKey(makeReq({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1' }))).toBe('203.0.113.7');
+  });
+});
+
+describe('kill switch', () => {
+  const env = process.env;
+
+  beforeEach(() => {
+    resetRateLimits();
+    setRateLimitRedisForTests(null);
+    process.env = { ...env };
+  });
+
+  afterEach(() => {
+    process.env = env;
+    resetRateLimits();
+  });
+
+  it('is on unless explicitly disabled', () => {
+    expect(rateLimitEnabled()).toBe(true);
+    process.env.RATE_LIMIT_ENABLED = 'true';
+    expect(rateLimitEnabled()).toBe(true);
+    // An unauthenticated endpoint must not lose its throttle to a typo, so
+    // anything that is not a recognised "off" leaves the limiter on.
+    process.env.RATE_LIMIT_ENABLED = 'disabled';
+    expect(rateLimitEnabled()).toBe(true);
+  });
+
+  it('accepts the documented off values', () => {
+    for (const off of ['false', 'FALSE', '0', 'off', 'no', ' false ']) {
+      process.env.RATE_LIMIT_ENABLED = off;
+      expect(rateLimitEnabled()).toBe(false);
+    }
+  });
+
+  it('admits everything while disabled, and resumes when re-enabled', async () => {
+    process.env.RATE_LIMIT_ENABLED = 'false';
+    for (let i = 0; i < 20; i++) {
+      expect((await consumeRateLimit('t', 'k', 1, 60000)).allowed).toBe(true);
+    }
+
+    // Nothing was charged while it was off, so the budget is intact.
+    delete process.env.RATE_LIMIT_ENABLED;
+    expect((await consumeRateLimit('t', 'k', 1, 60000)).allowed).toBe(true);
+    expect((await consumeRateLimit('t', 'k', 1, 60000)).allowed).toBe(false);
+  });
+});
+
+describe('identityKey', () => {
+  it('keeps the address out of the key while preserving the budget', () => {
+    const a = identityKey('victim@example.com');
+    expect(a).not.toContain('victim');
+    expect(a).not.toContain('@');
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    // Same address, same budget.
+    expect(identityKey('victim@example.com')).toBe(a);
+    expect(identityKey('someone-else@example.com')).not.toBe(a);
+  });
+});
+
+describe('degraded bound when the shared store fails', () => {
+  function fakeRedis(counts: Map<string, number>) {
+    return {
+      nbRateLimitConsume(key: string, limit: string) {
+        const cur = counts.get(key) ?? 0;
+        if (cur + 1 > Number(limit)) {
+          return Promise.resolve(0);
+        }
+        counts.set(key, cur + 1);
+        return Promise.resolve(1);
+      },
+    };
+  }
+
+  beforeEach(() => {
+    resetRateLimits();
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    resetRateLimits();
+    setRateLimitRedisForTests(null);
+    jest.restoreAllMocks();
+  });
+
+  it('does not hand a pod a fresh budget when Redis drops out', async () => {
+    // The pod serves its share through Redis, then Redis dies. If the local
+    // counter were cold at that moment the pod would grant a whole new
+    // allowance, making the degraded bound (pods + 1) x limit instead of
+    // pods x limit. Local state is charged all along, so it is not.
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const counts = new Map<string, number>();
+    setRateLimitRedisForTests(fakeRedis(counts));
+
+    for (let i = 0; i < 3; i++) {
+      expect((await consumeRateLimit('t', 'k', 3, 60000)).allowed).toBe(true);
+    }
+
+    // Redis goes away mid-window.
+    setRateLimitRedisForTests({
+      nbRateLimitConsume: () => Promise.reject(new Error('connection refused')),
+    });
+    expect((await consumeRateLimit('t', 'k', 3, 60000)).allowed).toBe(false);
+  });
+
+  it('still allows a pod that has not served its share yet', async () => {
+    // The flip side: a pod that took none of the traffic before the outage
+    // has a full local budget, which is what keeps sign-up working rather
+    // than failing closed cluster-wide.
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    setRateLimitRedisForTests({
+      nbRateLimitConsume: () => Promise.reject(new Error('connection refused')),
+    });
+
+    for (let i = 0; i < 3; i++) {
+      expect((await consumeRateLimit('t', 'cold', 3, 60000)).allowed).toBe(true);
+    }
+    expect((await consumeRateLimit('t', 'cold', 3, 60000)).allowed).toBe(false);
+  });
+});
+
+describe('scoped kill switch', () => {
+  const env = process.env;
+
+  beforeEach(() => {
+    resetRateLimits();
+    setRateLimitRedisForTests(null);
+    process.env = { ...env };
+  });
+
+  afterEach(() => {
+    process.env = env;
+    resetRateLimits();
+  });
+
+  it('turns off one scope without touching the others', async () => {
+    process.env.RATE_LIMIT_ENABLED_GRAPHQL = 'false';
+
+    for (let i = 0; i < 5; i++) {
+      expect((await consumeRateLimit('graphql:user', 'u', 1, 60000)).allowed).toBe(true);
+    }
+    // signup is a different scope and keeps its budget.
+    expect((await consumeRateLimit('signup:ip', 'k', 1, 60000)).allowed).toBe(true);
+    expect((await consumeRateLimit('signup:ip', 'k', 1, 60000)).allowed).toBe(false);
+  });
+
+  it('lets a scope switch override the global one', async () => {
+    process.env.RATE_LIMIT_ENABLED = 'false';
+    process.env.RATE_LIMIT_ENABLED_SIGNUP = 'true';
+
+    expect(rateLimitEnabled('graphql')).toBe(false);
+    expect(rateLimitEnabled('signup')).toBe(true);
+    expect((await consumeRateLimit('signup:ip', 'k', 1, 60000)).allowed).toBe(true);
+    expect((await consumeRateLimit('signup:ip', 'k', 1, 60000)).allowed).toBe(false);
+  });
+});
+
+describe('parseLimits', () => {
+  it('reads count/window pairs', () => {
+    expect(parseLimits('5/1m,20/1h')).toEqual([
+      { limit: 5, windowMs: 60000 },
+      { limit: 20, windowMs: 3600000 },
+    ]);
+    expect(parseLimits(' 2 / 15m ')).toEqual([{ limit: 2, windowMs: 900000 }]);
+    expect(parseLimits('30/90s')).toEqual([{ limit: 30, windowMs: 90000 }]);
+  });
+
+  it('rejects anything it cannot read, including a zero budget', () => {
+    // A zero count would silently admit everything; an operator who wants no
+    // limit has the kill switch for that.
+    for (const bad of ['', 'five/1m', '5', '5/1', '5/1d', '0/1m', '5/0m', '5/1m,broken']) {
+      expect(parseLimits(bad)).toBeNull();
+    }
+  });
+});
+
+describe('limitsFor', () => {
+  const env = process.env;
+
+  beforeEach(() => {
+    resetRateLimits();
+    process.env = { ...env };
+  });
+
+  afterEach(() => {
+    process.env = env;
+    resetRateLimits();
+  });
+
+  it('uses the built-in default when nothing is configured', () => {
+    expect(limitsFor('signup:ip', '5/1m,20/1h')).toEqual([
+      { limit: 5, windowMs: 60000 },
+      { limit: 20, windowMs: 3600000 },
+    ]);
+  });
+
+  it('takes an override from the bucket-derived env var', () => {
+    process.env.RATE_LIMIT_SIGNUP_IP = '50/1m';
+    expect(limitsFor('signup:ip', '5/1m,20/1h')).toEqual([{ limit: 50, windowMs: 60000 }]);
+  });
+
+  it('falls back to the default and warns on a malformed override', () => {
+    // A typo in a limit must not be a way to remove the limit.
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.RATE_LIMIT_GRAPHQL_USER = '600 per minute';
+
+    expect(limitsFor('graphql:user', '600/1m')).toEqual([{ limit: 600, windowMs: 60000 }]);
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    jest.restoreAllMocks();
   });
 });

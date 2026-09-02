@@ -47,6 +47,7 @@
 // throttled to at most one per SWEEP_INTERVAL_MS per bucket — an O(n) scan of
 // the map must not run on the event loop once per inbound request.
 
+import { createHash } from 'crypto';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import Redis from 'ioredis';
 
@@ -138,6 +139,110 @@ function consumeLocal(name: string, key: string, limit: number, windowMs: number
 
   bucket.windows.set(mapKey, { count: 1, resetAt: windowEnd(now, windowMs) });
   return ALLOWED;
+}
+
+/**
+ * Kill switch, global or per scope.
+ *
+ * Enabled unless explicitly turned off, because the endpoints this guards are
+ * unauthenticated (or, for the GraphQL gateway, the whole API surface) and the
+ * failure mode of "off" is the incident this module exists to prevent. Only a
+ * recognised off value disables it, so a typo leaves the limiter on.
+ *
+ *   RATE_LIMIT_ENABLED=false            turns everything off
+ *   RATE_LIMIT_ENABLED_GRAPHQL=false    turns off one scope, others unaffected
+ *
+ * The scope is the part of the bucket name before the first colon
+ * (`signup:ip` -> SIGNUP, `signup_verify:ip` -> SIGNUP_VERIFY, `graphql:user`
+ * -> GRAPHQL), so a new call site cannot forget to honour the switch.
+ */
+export function rateLimitEnabled(scope?: string): boolean {
+  const scoped = scope ? process.env[`RATE_LIMIT_ENABLED_${envSuffix(scope)}`] : undefined;
+  const raw = (scoped ?? process.env.RATE_LIMIT_ENABLED ?? '').trim().toLowerCase();
+  return !(raw === 'false' || raw === '0' || raw === 'off' || raw === 'no');
+}
+
+function envSuffix(name: string): string {
+  return name.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+}
+
+const DURATION_MS: Record<string, number> = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000 };
+
+/**
+ * Parse a budget spec: comma-separated `<count>/<window>` pairs, where the
+ * window is a number followed by s, m or h — e.g. `5/1m,20/1h`.
+ *
+ * Returns null for anything malformed, including a zero count: an operator who
+ * wants no limit should say so with the kill switch, not with a spec that
+ * silently admits everything.
+ */
+export function parseLimits(spec: string): RateLimitWindow[] | null {
+  const windows: RateLimitWindow[] = [];
+  for (const part of spec.split(',')) {
+    const match = /^\s*(\d+)\s*\/\s*(\d+)\s*([smh])\s*$/.exec(part);
+    if (!match) {
+      return null;
+    }
+    const limit = Number(match[1]);
+    const windowMs = Number(match[2]) * DURATION_MS[match[3]];
+    if (!limit || !windowMs) {
+      return null;
+    }
+    windows.push({ limit, windowMs });
+  }
+  return windows.length ? windows : null;
+}
+
+const limitsCache = new Map<string, RateLimitWindow[]>();
+
+/**
+ * Budgets for a bucket, overridable per deployment.
+ *
+ * `signup:ip` reads RATE_LIMIT_SIGNUP_IP, `graphql:user` reads
+ * RATE_LIMIT_GRAPHQL_USER, and so on. A malformed override falls back to the
+ * built-in default and says so once — a bad value must not be a way to
+ * accidentally remove a limit. Parsed once per process; changing an override
+ * takes a restart, like every other env var here.
+ */
+export function limitsFor(name: string, fallback: string): RateLimitWindow[] {
+  const cached = limitsCache.get(name);
+  if (cached) {
+    return cached;
+  }
+  const raw = process.env[`RATE_LIMIT_${envSuffix(name)}`]?.trim();
+  let windows = raw ? parseLimits(raw) : null;
+  if (raw && !windows) {
+    console.warn(`rateLimit: ignoring malformed RATE_LIMIT_${envSuffix(name)}="${raw}", using ${fallback}`);
+  }
+  if (!windows) {
+    windows = parseLimits(fallback);
+  }
+  if (!windows) {
+    throw new Error(`rateLimit: built-in default "${fallback}" for ${name} is not a valid spec`);
+  }
+  limitsCache.set(name, windows);
+  return windows;
+}
+
+// Namespace for shared-store keys. Separate Redis instances per environment
+// make collisions impossible today, but an installation pointed at a Redis it
+// shares with another Nudgebee install would otherwise mix counters — set
+// RATE_LIMIT_KEY_PREFIX to something installation-specific there.
+function keyPrefix(): string {
+  return process.env.RATE_LIMIT_KEY_PREFIX?.trim() || 'nb:rl';
+}
+
+/**
+ * Stable, non-reversible key for a value that identifies a person.
+ *
+ * Email addresses are the budget key for the anti-mail-cannon cap, and a
+ * counter key is not a place to keep PII: keys are visible to anyone with
+ * Redis access, to `MONITOR`, and to whatever backs the instance up. The
+ * truncated digest keeps the budget exactly as strict while making the key
+ * useless to an onlooker.
+ */
+export function identityKey(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 32);
 }
 
 // Check first, INCR only when the call is admitted, and set the TTL on the
@@ -260,14 +365,24 @@ function noteRedisFailure(err: unknown, now: number) {
  * endpoint whose expensive work happens after validation.
  */
 export async function consumeRateLimit(name: string, key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
+  if (!rateLimitEnabled(name.split(':')[0])) {
+    return ALLOWED;
+  }
+
   const now = Date.now();
+  // Charge the in-process counter on every call, even when the shared store is
+  // the one deciding. Without this each pod enters a Redis outage with a fresh
+  // budget, so the degraded bound is (pods + 1) x limit — the shared counter's
+  // full allowance, then a whole new allowance per pod. Keeping local state
+  // warm means a pod that has already served its share has already spent it.
+  const local = consumeLocal(name, key, limit, windowMs, now);
   const client = now >= redisDownUntil ? getRedis(now) : null;
 
   if (client) {
     const resetAt = windowEnd(now, windowMs);
     // The window index is part of the key, so expiry is Redis's TTL rather
     // than anything this process has to remember.
-    const redisKey = `nb:rl:${name}:${key.slice(0, 128)}:${Math.floor(now / windowMs)}`;
+    const redisKey = `${keyPrefix()}:${name}:${key.slice(0, 128)}:${Math.floor(now / windowMs)}`;
     try {
       const allowed = await withTimeout(
         client.nbRateLimitConsume(redisKey, String(limit), String(Math.max(1, resetAt - now))),
@@ -279,7 +394,7 @@ export async function consumeRateLimit(name: string, key: string, limit: number,
     }
   }
 
-  return consumeLocal(name, key, limit, windowMs, now);
+  return local;
 }
 
 export interface RateLimitWindow {
@@ -371,6 +486,7 @@ export function clientIpKey(req: NextApiRequest): string {
 /** Test-only: drop all windows so cases don't leak state into each other. */
 export function resetRateLimits() {
   buckets.clear();
+  limitsCache.clear();
   redisDownUntil = 0;
 }
 
