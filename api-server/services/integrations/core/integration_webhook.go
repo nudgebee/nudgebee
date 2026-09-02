@@ -91,6 +91,7 @@ var eventAnalysisSources = map[string]bool{
 	"elasticsearch_webhook":           true,
 	"prometheus_alertmanager_webhook": true,
 	"workflow_webhook":                true,
+	"incidentio_webhook":              true,
 }
 
 const (
