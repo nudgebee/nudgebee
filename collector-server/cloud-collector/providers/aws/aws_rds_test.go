@@ -16,11 +16,11 @@ func TestGetAvailableRdsInstances(t *testing.T) {
 	})
 	assert.Nil(t, err)
 
-	instances, err := getAvailableRdsInstances(cfg, "us-east-1", "PostgreSQL", "2 GiB", "1", "", "Single-AZ")
+	instances, err := getAvailableRdsInstances(nil, cfg, "us-east-1", "PostgreSQL", "2 GiB", "1", "", "Single-AZ", rdsPricingPins{})
 	assert.Nil(t, err)
 	assert.NotNil(t, instances)
 
-	instances, err = getAvailableRdsInstances(cfg, "us-east-1", "PostgreSQL", "8 GiB", "2", "", "Single-AZ")
+	instances, err = getAvailableRdsInstances(nil, cfg, "us-east-1", "PostgreSQL", "8 GiB", "2", "", "Single-AZ", rdsPricingPins{})
 	assert.Nil(t, err)
 	assert.NotNil(t, instances)
 
@@ -91,4 +91,90 @@ func TestSynthesizeRdsInstanceTypeDetailsHandlesEmptyAttributes(t *testing.T) {
 	price, err := getPricingValue(details)
 	assert.Nil(t, err)
 	assert.Equal(t, 0.0, price)
+}
+
+func TestRdsLicenseModelForPricing(t *testing.T) {
+	cases := map[string]string{
+		"license-included":       "License included",
+		"bring-your-own-license": "Bring your own license",
+		"general-public-license": "No license required",
+		"postgresql-license":     "No license required",
+		"":                       "",
+		"something-new":          "",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, rdsLicenseModelForPricing(in), in)
+	}
+}
+
+func TestRdsEditionForPricing(t *testing.T) {
+	cases := map[string]string{
+		"oracle-ee":           "Enterprise",
+		"oracle-se2":          "Standard Two",
+		"oracle-se1":          "Standard One",
+		"oracle-se":           "Standard",
+		"sqlserver-ee":        "Enterprise",
+		"sqlserver-se":        "Standard",
+		"sqlserver-ex":        "Express",
+		"sqlserver-web":       "Web",
+		"custom-oracle-ee":    "Enterprise",
+		"custom-sqlserver-se": "Standard",
+		"postgres":            "",
+		"mysql":               "",
+		"aurora-postgresql":   "",
+		"Oracle":              "",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, rdsEditionForPricing(in), in)
+	}
+}
+
+func rdsSku(price float64, attrs map[string]any) map[string]interface{} {
+	return synthesizeRdsInstanceTypeDetails(price, attrs)
+}
+
+// The Oracle BYOL/Enterprise case from the live Pricing API: a standard SKU and
+// an RDS Custom SKU share every pinned attribute, and Custom costs 20% more.
+func TestSelectRdsPricingCandidatesDropsCustomAndOrdersCheapestFirst(t *testing.T) {
+	products := []map[string]interface{}{
+		rdsSku(0.438, map[string]any{"licenseModel": "License included", "databaseEdition": "Standard Two"}),
+		rdsSku(0.205, map[string]any{"licenseModel": "Bring your own license", "databaseEdition": "Enterprise", "deploymentModel": "Custom"}),
+		rdsSku(0.171, map[string]any{"licenseModel": "Bring your own license", "databaseEdition": "Enterprise"}),
+	}
+	got := selectRdsPricingCandidates(products, "oracle-ee")
+	if assert.Len(t, got, 2) {
+		p0, _ := getPricingValue(got[0])
+		p1, _ := getPricingValue(got[1])
+		assert.InDelta(t, 0.171, p0, 1e-9, "cheapest standard SKU first")
+		assert.InDelta(t, 0.438, p1, 1e-9)
+		for _, p := range got {
+			assert.False(t, rdsProductIsCustom(p), "no Custom SKU may survive for a standard engine")
+		}
+	}
+}
+
+func TestSelectRdsPricingCandidatesKeepsOnlyCustomForCustomEngines(t *testing.T) {
+	products := []map[string]interface{}{
+		rdsSku(0.171, map[string]any{"databaseEdition": "Enterprise"}),
+		rdsSku(0.205, map[string]any{"databaseEdition": "Enterprise", "deploymentModel": "Custom"}),
+	}
+	got := selectRdsPricingCandidates(products, "custom-oracle-ee")
+	if assert.Len(t, got, 1) {
+		assert.True(t, rdsProductIsCustom(got[0]))
+	}
+}
+
+func TestSelectRdsPricingCandidatesPutsUnpriceableLast(t *testing.T) {
+	noTerms := map[string]interface{}{"product": map[string]any{"attributes": map[string]any{}}}
+	products := []map[string]interface{}{noTerms, rdsSku(0.3, map[string]any{})}
+	got := selectRdsPricingCandidates(products, "postgres")
+	if assert.Len(t, got, 2) {
+		p0, err := getPricingValue(got[0])
+		assert.NoError(t, err)
+		assert.InDelta(t, 0.3, p0, 1e-9)
+	}
+}
+
+func TestSelectRdsPricingCandidatesIsEmptyForEmptyInput(t *testing.T) {
+	assert.Empty(t, selectRdsPricingCandidates(nil, "oracle-ee"))
 }

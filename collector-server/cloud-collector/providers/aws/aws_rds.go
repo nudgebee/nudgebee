@@ -8,6 +8,7 @@ import (
 	"math"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,7 +201,90 @@ func getGravitonInstanceFamily(instanceClass string) string {
 	return getGravitonInstanceType(instanceClass, "db.")
 }
 
-func getAvailableRdsInstances(cfg aws.Config, region string, engine string, memory string, cpu string, instanceType string, deploymentOption string) ([]map[string]interface{}, error) {
+// rdsPricingPins narrows an RDS price lookup to the SKU that matches the
+// instance being priced, in the Pricing API's own vocabulary ("License
+// included", "Standard Two"). An empty field leaves that axis unpinned.
+type rdsPricingPins struct {
+	LicenseModel    string
+	DatabaseEdition string
+}
+
+// rdsLicenseModelForPricing maps the LicenseModel DescribeDBInstances reports
+// onto the Pricing API's licenseModel attribute. Unknown values return "" so the
+// axis stays unpinned rather than matching nothing.
+func rdsLicenseModelForPricing(licenseModel string) string {
+	switch strings.ToLower(strings.TrimSpace(licenseModel)) {
+	case "license-included":
+		return "License included"
+	case "bring-your-own-license":
+		return "Bring your own license"
+	case "general-public-license", "postgresql-license":
+		return "No license required"
+	default:
+		return ""
+	}
+}
+
+// rdsEditionForPricing derives the Pricing API databaseEdition from the engine
+// id's suffix (oracle-se2 -> "Standard Two", sqlserver-ex -> "Express"). Engines
+// without editions return "".
+func rdsEditionForPricing(engine string) string {
+	e := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(engine)), "custom-")
+	switch {
+	case strings.HasSuffix(e, "-ee"):
+		return "Enterprise"
+	case strings.HasSuffix(e, "-se2"):
+		return "Standard Two"
+	case strings.HasSuffix(e, "-se1"):
+		return "Standard One"
+	case strings.HasSuffix(e, "-se"):
+		return "Standard"
+	case strings.HasSuffix(e, "-ex"):
+		return "Express"
+	case strings.HasSuffix(e, "-web"):
+		return "Web"
+	default:
+		return ""
+	}
+}
+
+func isRdsCustomEngine(engine string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(engine)), "custom-")
+}
+
+func rdsProductIsCustom(product map[string]interface{}) bool {
+	p, _ := product["product"].(map[string]any)
+	attrs, _ := p["attributes"].(map[string]any)
+	model, _ := attrs["deploymentModel"].(string)
+	return strings.EqualFold(model, "Custom")
+}
+
+// selectRdsPricingCandidates drops SKUs that cannot apply to the instance and
+// orders the rest cheapest first, so a caller taking [0] gets a deterministic,
+// conservative price. RDS Custom SKUs (deploymentModel=Custom) share instance
+// type, engine, edition and license with standard RDS and cost up to 4x more; the
+// Pricing API cannot filter on an absent attribute, so they are removed here
+// unless the engine itself is a custom-* one.
+func selectRdsPricingCandidates(products []map[string]interface{}, engine string) []map[string]interface{} {
+	custom := isRdsCustomEngine(engine)
+	kept := make([]map[string]interface{}, 0, len(products))
+	for _, product := range products {
+		if rdsProductIsCustom(product) == custom {
+			kept = append(kept, product)
+		}
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		pi, ei := getPricingValue(kept[i])
+		pj, ej := getPricingValue(kept[j])
+		if (ei == nil) != (ej == nil) {
+			return ei == nil // priceable entries first
+		}
+		return pi < pj
+	})
+	return kept
+}
+
+func getAvailableRdsInstances(ctx providers.CloudProviderContext, cfg aws.Config, region string, engine string, memory string, cpu string, instanceType string, deploymentOption string, pins rdsPricingPins) ([]map[string]interface{}, error) {
 	filtersMap := map[string]string{}
 
 	if region != "" {
@@ -223,7 +307,34 @@ func getAvailableRdsInstances(cfg aws.Config, region string, engine string, memo
 	if deploymentOption != "" {
 		filtersMap["deploymentOption"] = deploymentOption
 	}
-	return getAvailableInstancesFromPricing(cfg, "AmazonRDS", filtersMap)
+	// Oracle and SQL Server publish several SKUs per instance type that differ
+	// only by license model and edition, at up to 4x the price of one another.
+	if pins.LicenseModel != "" {
+		filtersMap["licenseModel"] = pins.LicenseModel
+	}
+	edition := pins.DatabaseEdition
+	if edition == "" {
+		edition = rdsEditionForPricing(engine)
+	}
+	if edition != "" {
+		filtersMap["databaseEdition"] = edition
+	}
+	products, err := getAvailableInstancesFromPricing(cfg, "AmazonRDS", filtersMap)
+	if err != nil {
+		return nil, err
+	}
+	candidates := selectRdsPricingCandidates(products, engine)
+	if len(candidates) > 1 {
+		msg := "rds pricing: several SKUs match; using the cheapest"
+		args := []any{"engine", engine, "instanceType", instanceType, "deploymentOption", deploymentOption, "licenseModel", pins.LicenseModel, "databaseEdition", edition, "matches", len(candidates)}
+		// ctx is nil only from unit tests, which exercise the helper without an executor.
+		if ctx != nil {
+			ctx.GetLogger().Warn(msg, args...)
+		} else {
+			slog.Warn(msg, args...)
+		}
+	}
+	return candidates, nil
 }
 
 // normalizeRdsEngineForPricing maps AWS RDS engine values returned by DescribeDBInstances
@@ -274,7 +385,7 @@ const rdsPricingFailureCacheTTL = 1 * time.Hour
 //  3. AWS Pricing API live, with persist-on-success so subsequent runs hit the cache.
 //
 // Returns an empty map when nothing is available; callers must treat empty as "no pricing".
-func getRdsInstanceTypeDetails(ctx providers.CloudProviderContext, cfg aws.Config, region, awsEngine, dbClass, deploymentOption string) map[string]any {
+func getRdsInstanceTypeDetails(ctx providers.CloudProviderContext, cfg aws.Config, region, awsEngine, dbClass, deploymentOption, licenseModel string) map[string]any {
 	if dbClass == "db.serverless" {
 		return map[string]any{}
 	}
@@ -292,7 +403,7 @@ func getRdsInstanceTypeDetails(ctx providers.CloudProviderContext, cfg aws.Confi
 		rdsPricingFailureCache.Delete(cacheKey)
 	}
 
-	instanceTypes, err := getAvailableRdsInstances(cfg, region, awsEngine, "", "", dbClass, deploymentOption)
+	instanceTypes, err := getAvailableRdsInstances(ctx, cfg, region, awsEngine, "", "", dbClass, deploymentOption, rdsPricingPins{LicenseModel: rdsLicenseModelForPricing(licenseModel)})
 	if err != nil {
 		ctx.GetLogger().Warn("rds pricing: AWS Pricing API call failed", "error", err, "instanceClass", dbClass, "engine", awsEngine, "region", region)
 		rdsPricingFailureCache.Store(cacheKey, time.Now().Add(rdsPricingFailureCacheTTL))
@@ -672,7 +783,7 @@ func (a *amazonRds) GetResources(ctx providers.CloudProviderContext, account pro
 				if instance.MultiAZ != nil && *instance.MultiAZ {
 					deploymentOption = "Multi-AZ"
 				}
-				instanceTypeMap[instanceTypeKey] = getRdsInstanceTypeDetails(ctx, cfg, region, *instance.Engine, *instance.DBInstanceClass, deploymentOption)
+				instanceTypeMap[instanceTypeKey] = getRdsInstanceTypeDetails(ctx, cfg, region, *instance.Engine, *instance.DBInstanceClass, deploymentOption, aws.ToString(instance.LicenseModel))
 			}
 			instanceMap["InstanceTypeDetails"] = instanceTypeMap[instanceTypeKey]
 
@@ -1515,6 +1626,10 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 		vcpuAttr, vcpuOk := existingInsatnceDetailAttributes["vcpu"].(string)
 		dbEngineAttr, _ := existingInsatnceDetailAttributes["databaseEngine"].(string)
 		deployOptAttr, _ := existingInsatnceDetailAttributes["deploymentOption"].(string)
+		// The current SKU's own license and edition pin every lookup for a replacement.
+		licenseModelAttr, _ := existingInsatnceDetailAttributes["licenseModel"].(string)
+		editionAttr, _ := existingInsatnceDetailAttributes["databaseEdition"].(string)
+		currentSkuPins := rdsPricingPins{LicenseModel: licenseModelAttr, DatabaseEdition: editionAttr}
 
 		if isUnderutilized && memoryOk && vcpuOk {
 			// reduce memory and cpu by 50pct
@@ -1531,7 +1646,7 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 			}
 			cpu = cpu / 2
 
-			newInstances, err := getAvailableRdsInstances(cfg, resource.Region, dbEngineAttr, fmt.Sprintf("%d GiB", memory), fmt.Sprint(cpu), "", deployOptAttr)
+			newInstances, err := getAvailableRdsInstances(ctx, cfg, resource.Region, dbEngineAttr, fmt.Sprintf("%d GiB", memory), fmt.Sprint(cpu), "", deployOptAttr, currentSkuPins)
 			if err != nil {
 				ctx.GetLogger().Warn("failed to get available rds instances", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
 			}
@@ -1589,7 +1704,7 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 			}
 			cpu = cpu * 2
 
-			newInstances, err := getAvailableRdsInstances(cfg, resource.Region, dbEngineAttr, fmt.Sprintf("%d GiB", memory), fmt.Sprint(cpu), "", deployOptAttr)
+			newInstances, err := getAvailableRdsInstances(ctx, cfg, resource.Region, dbEngineAttr, fmt.Sprintf("%d GiB", memory), fmt.Sprint(cpu), "", deployOptAttr, currentSkuPins)
 			if err != nil {
 				ctx.GetLogger().Warn("failed to get available rds instances", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
 			}
@@ -1784,8 +1899,9 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 				if multiAZ, ok := meta["MultiAZ"].(bool); ok && multiAZ {
 					deploymentOption = "Multi-AZ"
 				}
+				licenseModel, _ := meta["LicenseModel"].(string)
 
-				gravitonInstances, err := getAvailableRdsInstances(cfg, resource.Region, engine, "", "", gravitonClass, deploymentOption)
+				gravitonInstances, err := getAvailableRdsInstances(ctx, cfg, resource.Region, engine, "", "", gravitonClass, deploymentOption, rdsPricingPins{LicenseModel: rdsLicenseModelForPricing(licenseModel)})
 				if err != nil {
 					ctx.GetLogger().Warn("failed to get Graviton instance pricing", "error", err, "gravitonClass", gravitonClass, "region", resource.Region)
 				} else if len(gravitonInstances) > 0 {
@@ -1902,7 +2018,7 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 		//RDS alternate instance options
 		regionCodeAttr, regionCodeOk := existingInsatnceDetailAttributes["regionCode"].(string)
 		if regionCodeOk && dbEngineAttr != "" && memoryOk && vcpuOk {
-			availableInsatncesWithSimilarConfigs, err := getAvailableRdsInstances(cfg, regionCodeAttr, dbEngineAttr, memoryAttr, vcpuAttr, "", deployOptAttr)
+			availableInsatncesWithSimilarConfigs, err := getAvailableRdsInstances(ctx, cfg, regionCodeAttr, dbEngineAttr, memoryAttr, vcpuAttr, "", deployOptAttr, currentSkuPins)
 			if err != nil {
 				ctx.GetLogger().Warn("failed to get available rds instances", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
 			} else {
